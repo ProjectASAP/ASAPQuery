@@ -14,6 +14,7 @@ fn init_sketch_backend_for_tests() {
 pub mod data_model;
 pub mod drivers;
 pub mod engines;
+pub mod precompute_engine;
 pub mod precompute_operators;
 pub mod stores;
 
