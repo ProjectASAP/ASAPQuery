@@ -55,6 +55,10 @@ zstd = "0.13"
 reqwest = { version = "0.11", features = ["json"] }
 tracing-appender = "0.2"
 
+[[bin]]
+name = "precompute_engine"
+path = "src/bin/precompute_engine.rs"
+
 [dev-dependencies]
 tempfile = "3.20.0"
 
