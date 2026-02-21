@@ -50,6 +50,10 @@ prometheus = "0.13"
 lazy_static = "1.4"
 zstd = "0.13"
 
+[[bin]]
+name = "precompute_engine"
+path = "src/bin/precompute_engine.rs"
+
 [dev-dependencies]
 tempfile = "3.20.0"
 
