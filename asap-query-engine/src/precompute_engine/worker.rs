@@ -4,6 +4,7 @@ use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_buffer::SeriesBuffer;
 use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::WindowManager;
+use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +41,10 @@ pub struct Worker {
     max_buffer_per_series: usize,
     /// Allowed lateness in ms.
     allowed_lateness_ms: i64,
+    /// When true, skip aggregation and pass raw samples through.
+    pass_raw_samples: bool,
+    /// Aggregation ID stamped on each raw-mode output.
+    raw_mode_aggregation_id: u64,
 }
 
 impl Worker {
@@ -50,6 +55,8 @@ impl Worker {
         agg_configs: HashMap<u64, AggregationConfig>,
         max_buffer_per_series: usize,
         allowed_lateness_ms: i64,
+        pass_raw_samples: bool,
+        raw_mode_aggregation_id: u64,
     ) -> Self {
         Self {
             id,
@@ -59,6 +66,8 @@ impl Worker {
             agg_configs,
             max_buffer_per_series,
             allowed_lateness_ms,
+            pass_raw_samples,
+            raw_mode_aggregation_id,
         }
     }
 
@@ -149,6 +158,10 @@ impl Worker {
         series_key: &str,
         samples: Vec<(i64, f64)>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.pass_raw_samples {
+            return self.process_samples_raw(series_key, samples);
+        }
+
         // Copy scalars out of self before taking &mut self.series_map
         let worker_id = self.id;
         let allowed_lateness_ms = self.allowed_lateness_ms;
@@ -251,8 +264,45 @@ impl Worker {
         Ok(())
     }
 
+    /// Raw fast-path: emit each sample as a standalone `SumAccumulator`.
+    fn process_samples_raw(
+        &self,
+        series_key: &str,
+        samples: Vec<(i64, f64)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> =
+            Vec::with_capacity(samples.len());
+
+        for (ts, val) in samples {
+            let output = PrecomputedOutput::new(
+                ts as u64,
+                ts as u64,
+                None,
+                self.raw_mode_aggregation_id,
+            );
+            let accumulator = SumAccumulator::with_sum(val);
+            emit_batch.push((output, Box::new(accumulator)));
+        }
+
+        if !emit_batch.is_empty() {
+            debug!(
+                "Worker {} raw-emitting {} samples for {}",
+                self.id,
+                emit_batch.len(),
+                series_key
+            );
+            self.output_sink.emit_batch(emit_batch)?;
+        }
+
+        Ok(())
+    }
+
     /// Flush all series — force-close windows that are past due.
     fn flush_all(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.pass_raw_samples {
+            return Ok(());
+        }
+
         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
 
         for (series_key, state) in &mut self.series_map {
