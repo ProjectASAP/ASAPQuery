@@ -1,6 +1,7 @@
 use crate::data_model::{AggregateCore, PrecomputedOutput};
 use crate::stores::Store;
 use std::sync::Arc;
+use tracing::debug_span;
 
 /// Trait for emitting completed window outputs.
 pub trait OutputSink: Send + Sync {
@@ -29,6 +30,7 @@ impl OutputSink for StoreOutputSink {
         if outputs.is_empty() {
             return Ok(());
         }
+        let _span = debug_span!("store_insert", batch_size = outputs.len()).entered();
         self.store.insert_precomputed_output_batch(outputs)
     }
 }
@@ -54,6 +56,7 @@ impl OutputSink for RawPassthroughSink {
         if outputs.is_empty() {
             return Ok(());
         }
+        let _span = debug_span!("store_insert_raw", batch_size = outputs.len()).entered();
         self.store.insert_precomputed_output_batch(outputs)
     }
 }

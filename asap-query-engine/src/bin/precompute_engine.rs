@@ -12,6 +12,7 @@ use query_engine_rust::{HttpServer, HttpServerConfig};
 use query_engine_rust::data_model::QueryLanguage;
 use std::sync::Arc;
 use tracing::info;
+use tracing_subscriber::fmt::format::FmtSpan;
 
 #[derive(Parser, Debug)]
 #[command(name = "precompute_engine")]
@@ -70,6 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_span_events(FmtSpan::CLOSE)
         .init();
 
     let args = Args::parse();

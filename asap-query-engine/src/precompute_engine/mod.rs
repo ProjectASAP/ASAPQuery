@@ -17,7 +17,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use std::time::Instant;
+use tracing::{debug_span, info, warn, Instrument};
 
 /// Shared state for the ingest HTTP handler.
 struct IngestState {
@@ -141,39 +142,46 @@ async fn handle_ingest(
     State(state): State<Arc<IngestState>>,
     body: Bytes,
 ) -> StatusCode {
-    let samples = match decode_prometheus_remote_write(&body) {
-        Ok(s) => s,
-        Err(e) => {
-            warn!("Failed to decode remote write: {}", e);
-            return StatusCode::BAD_REQUEST;
+    let ingest_span = debug_span!("ingest", body_len = body.len());
+    let ingest_received_at = Instant::now();
+
+    async {
+        let samples = match decode_prometheus_remote_write(&body) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("Failed to decode remote write: {}", e);
+                return StatusCode::BAD_REQUEST;
+            }
+        };
+
+        if samples.is_empty() {
+            return StatusCode::NO_CONTENT;
         }
-    };
 
-    if samples.is_empty() {
-        return StatusCode::NO_CONTENT;
-    }
+        let count = samples.len() as u64;
+        state
+            .samples_ingested
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
 
-    let count = samples.len() as u64;
-    state
-        .samples_ingested
-        .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
-
-    // Group samples by series key for batch routing
-    let mut by_series: HashMap<&str, Vec<(i64, f64)>> = HashMap::new();
-    for s in &samples {
-        by_series
-            .entry(&s.labels)
-            .or_default()
-            .push((s.timestamp_ms, s.value));
-    }
-
-    // Route each series batch to the correct worker
-    for (series_key, batch) in by_series {
-        if let Err(e) = state.router.route(series_key, batch).await {
-            warn!("Routing error for {}: {}", series_key, e);
-            return StatusCode::INTERNAL_SERVER_ERROR;
+        // Group samples by series key for batch routing
+        let mut by_series: HashMap<&str, Vec<(i64, f64)>> = HashMap::new();
+        for s in &samples {
+            by_series
+                .entry(&s.labels)
+                .or_default()
+                .push((s.timestamp_ms, s.value));
         }
-    }
 
-    StatusCode::NO_CONTENT
+        // Route each series batch to the correct worker
+        for (series_key, batch) in by_series {
+            if let Err(e) = state.router.route(series_key, batch, ingest_received_at).await {
+                warn!("Routing error for {}: {}", series_key, e);
+                return StatusCode::INTERNAL_SERVER_ERROR;
+            }
+        }
+
+        StatusCode::NO_CONTENT
+    }
+    .instrument(ingest_span)
+    .await
 }

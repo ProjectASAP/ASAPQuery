@@ -1,3 +1,4 @@
+use std::time::Instant;
 use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
 
@@ -8,6 +9,7 @@ pub enum WorkerMessage {
     Samples {
         series_key: String,
         samples: Vec<(i64, f64)>, // (timestamp_ms, value)
+        ingest_received_at: Instant,
     },
     /// Signal the worker to flush/check idle windows.
     Flush,
@@ -36,12 +38,14 @@ impl SeriesRouter {
         &self,
         series_key: &str,
         samples: Vec<(i64, f64)>,
+        ingest_received_at: Instant,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let worker_idx = self.worker_for(series_key);
         self.senders[worker_idx]
             .send(WorkerMessage::Samples {
                 series_key: series_key.to_string(),
                 samples,
+                ingest_received_at,
             })
             .await
             .map_err(|e| format!("Failed to send to worker {}: {}", worker_idx, e))?;
