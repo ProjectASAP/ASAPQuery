@@ -388,6 +388,89 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     println!("  Batch latency test PASSED");
 
+    // -----------------------------------------------------------------------
+    // THROUGHPUT TEST
+    // Send many requests back-to-back and measure sustained throughput
+    // (samples/sec). Uses the raw-mode engine for a clean measurement.
+    // -----------------------------------------------------------------------
+    println!("\n=== Throughput test: 1000 requests × 10000 samples ===");
+
+    let num_requests = 1000u64;
+    let samples_per_request = 10_000u64;
+    let total_samples = num_requests * samples_per_request;
+
+    // Pre-build all request bodies so serialization doesn't count against throughput
+    let mut bodies = Vec::with_capacity(num_requests as usize);
+    for req_idx in 0..num_requests {
+        let mut timeseries = Vec::with_capacity(samples_per_request as usize);
+        for s in 0..samples_per_request {
+            let series_label = format!("tp_{}", s % 50); // 50 distinct series
+            let ts = 300_000 + req_idx as i64 * 10_000 + s as i64;
+            timeseries.push(make_sample("fake_metric", &series_label, ts, s as f64));
+        }
+        bodies.push(build_remote_write_body(timeseries));
+    }
+
+    let throughput_start = std::time::Instant::now();
+
+    for (i, body) in bodies.into_iter().enumerate() {
+        let resp = client
+            .post(format!("http://localhost:{RAW_INGEST_PORT}/api/v1/write"))
+            .header("Content-Type", "application/x-protobuf")
+            .header("Content-Encoding", "snappy")
+            .body(body)
+            .send()
+            .await?;
+        if resp.status() != reqwest::StatusCode::NO_CONTENT {
+            eprintln!("  Request {i} failed: {}", resp.status());
+        }
+    }
+
+    let send_elapsed = throughput_start.elapsed();
+    println!(
+        "  All {} requests sent in {:.1}ms",
+        num_requests,
+        send_elapsed.as_secs_f64() * 1000.0,
+    );
+
+    // Poll until workers drain or timeout after 60s
+    let max_ts = 300_000u64 + num_requests * 10_000 + samples_per_request;
+    let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut tp_buckets: usize;
+    loop {
+        let tp_results = store.query_precomputed_output(
+            "fake_metric",
+            raw_agg_id,
+            300_000,
+            max_ts,
+        )?;
+        tp_buckets = tp_results.values().map(|v| v.len()).sum();
+        if tp_buckets as u64 >= total_samples || std::time::Instant::now() > drain_deadline {
+            break;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+    }
+    let total_elapsed = throughput_start.elapsed();
+
+    let send_throughput = total_samples as f64 / send_elapsed.as_secs_f64();
+    let e2e_throughput = tp_buckets as f64 / total_elapsed.as_secs_f64();
+    println!("  Stored {tp_buckets}/{total_samples} samples");
+    println!(
+        "  Send throughput:  {:.0} samples/sec ({:.1}ms for {total_samples} samples)",
+        send_throughput,
+        send_elapsed.as_secs_f64() * 1000.0,
+    );
+    println!(
+        "  E2E throughput:   {:.0} samples/sec ({:.1}ms until all stored)",
+        e2e_throughput,
+        total_elapsed.as_secs_f64() * 1000.0,
+    );
+    assert!(
+        tp_buckets as u64 >= total_samples,
+        "Expected at least {total_samples} samples in store, got {tp_buckets}"
+    );
+    println!("  Throughput test PASSED");
+
     println!("\n=== E2E test complete ===");
 
     Ok(())
