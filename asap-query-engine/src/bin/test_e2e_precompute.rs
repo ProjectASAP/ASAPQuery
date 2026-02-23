@@ -327,6 +327,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     println!("  Raw mode test PASSED");
 
+    // -----------------------------------------------------------------------
+    // BATCH LATENCY TEST
+    // Send 1000 samples in a single HTTP request to measure realistic e2e
+    // latency. Uses the raw-mode engine to avoid window-close dependencies.
+    // -----------------------------------------------------------------------
+    println!("\n=== Batch latency test: 1000 samples in one request ===");
+
+    // Build a single WriteRequest with 1000 TimeSeries entries spread across
+    // 10 series × 100 timestamps each, so routing fans out to workers.
+    let mut batch_timeseries = Vec::with_capacity(1000);
+    for series_idx in 0..10 {
+        let label_val = format!("batch_{series_idx}");
+        for t in 0..100 {
+            let ts = 200_000 + (series_idx as i64) * 1000 + t; // unique ts per sample
+            let val = (series_idx * 100 + t) as f64;
+            batch_timeseries.push(make_sample("fake_metric", &label_val, ts, val));
+        }
+    }
+    let batch_body = build_remote_write_body(batch_timeseries);
+    println!("  Payload size: {} bytes (snappy-compressed)", batch_body.len());
+
+    let t0 = std::time::Instant::now();
+    let resp = client
+        .post(format!("http://localhost:{RAW_INGEST_PORT}/api/v1/write"))
+        .header("Content-Type", "application/x-protobuf")
+        .header("Content-Encoding", "snappy")
+        .body(batch_body)
+        .send()
+        .await?;
+    let client_rtt = t0.elapsed();
+    println!(
+        "  HTTP response: {} in {:.3}ms",
+        resp.status().as_u16(),
+        client_rtt.as_secs_f64() * 1000.0,
+    );
+
+    // Wait for all workers to finish processing
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Verify samples landed in the store
+    let batch_results = store.query_precomputed_output(
+        "fake_metric",
+        raw_agg_id,
+        200_000,
+        210_000,
+    )?;
+    let batch_buckets: usize = batch_results.values().map(|v| v.len()).sum();
+    println!("  Stored {batch_buckets} buckets from batch (expected 1000)");
+    assert!(
+        batch_buckets >= 1000,
+        "Expected at least 1000 raw samples in store, got {batch_buckets}"
+    );
+    println!("  Batch latency test PASSED");
+
     println!("\n=== E2E test complete ===");
 
     Ok(())
