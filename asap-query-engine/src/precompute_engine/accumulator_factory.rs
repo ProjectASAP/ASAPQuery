@@ -187,12 +187,14 @@ impl AccumulatorUpdater for IncreaseAccumulatorUpdater {
 
 pub struct KllAccumulatorUpdater {
     acc: DatasketchesKLLAccumulator,
+    k: u16,
 }
 
 impl KllAccumulatorUpdater {
     pub fn new(k: u16) -> Self {
         Self {
             acc: DatasketchesKLLAccumulator::new(k),
+            k,
         }
     }
 }
@@ -213,8 +215,7 @@ impl AccumulatorUpdater for KllAccumulatorUpdater {
     }
 
     fn reset(&mut self) {
-        // Re-create with same k
-        self.acc = DatasketchesKLLAccumulator::new(200); // TODO: preserve k from config
+        self.acc = DatasketchesKLLAccumulator::new(self.k);
     }
 
     fn is_keyed(&self) -> bool {
@@ -575,6 +576,52 @@ pub fn create_accumulator_updater(
                 Box::new(MultipleSumUpdater::new())
             }
         },
+        // Top-level aggregation types (e.g. "DatasketchesKLL" directly in aggregationType)
+        "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
+            let k = config
+                .parameters
+                .get("K")
+                .or_else(|| config.parameters.get("k"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200) as u16;
+            Box::new(KllAccumulatorUpdater::new(k))
+        }
+        "Sum" | "sum" => Box::new(SumAccumulatorUpdater::new()),
+        "Min" | "min" => Box::new(MinMaxAccumulatorUpdater::new("min".to_string())),
+        "Max" | "max" => Box::new(MinMaxAccumulatorUpdater::new("max".to_string())),
+        "Increase" | "increase" => Box::new(IncreaseAccumulatorUpdater::new()),
+        "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
+            let row_num = config
+                .parameters
+                .get("row_num")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(4) as usize;
+            let col_num = config
+                .parameters
+                .get("col_num")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1000) as usize;
+            Box::new(CmsAccumulatorUpdater::new(row_num, col_num))
+        }
+        "HydraKLL" | "hydra_kll" => {
+            let row_num = config
+                .parameters
+                .get("row_num")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(4) as usize;
+            let col_num = config
+                .parameters
+                .get("col_num")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1000) as usize;
+            let k = config
+                .parameters
+                .get("K")
+                .or_else(|| config.parameters.get("k"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(200) as u16;
+            Box::new(HydraKllAccumulatorUpdater::new(row_num, col_num, k))
+        }
         other => {
             tracing::warn!(
                 "Unknown aggregation_type '{}', defaulting to SingleSubpopulation Sum",
