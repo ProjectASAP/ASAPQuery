@@ -61,6 +61,10 @@ tracing-appender = "0.2"
 name = "precompute_engine"
 path = "src/bin/precompute_engine.rs"
 
+[[bin]]
+name = "test_e2e_precompute"
+path = "src/bin/test_e2e_precompute.rs"
+
 [dev-dependencies]
 ctor = "0.2"
 tempfile = "3.20.0"
