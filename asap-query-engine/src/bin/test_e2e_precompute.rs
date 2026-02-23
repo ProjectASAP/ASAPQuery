@@ -16,7 +16,7 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 use query_engine_rust::drivers::query::adapters::AdapterConfig;
 use query_engine_rust::engines::SimpleEngine;
 use query_engine_rust::precompute_engine::config::PrecomputeEngineConfig;
-use query_engine_rust::precompute_engine::output_sink::StoreOutputSink;
+use query_engine_rust::precompute_engine::output_sink::{RawPassthroughSink, StoreOutputSink};
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 const INGEST_PORT: u16 = 19090;
 const QUERY_PORT: u16 = 18080;
+const RAW_INGEST_PORT: u16 = 19091;
 const SCRAPE_INTERVAL: u64 = 1; // 1 second to match tumblingWindowSize
 
 fn build_remote_write_body(timeseries: Vec<TimeSeries>) -> Vec<u8> {
@@ -139,9 +140,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         max_buffer_per_series: 10000,
         flush_interval_ms: 200,
         channel_buffer_size: 10000,
+        pass_raw_samples: false,
+        raw_mode_aggregation_id: 0,
     };
     let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
-    let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink);
+    let engine = PrecomputeEngine::new(engine_config, streaming_config.clone(), output_sink);
     tokio::spawn(async move {
         if let Err(e) = engine.run().await {
             eprintln!("Precompute engine error: {e}");
@@ -248,6 +251,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .text()
         .await?;
     print_json(&resp);
+
+    // -----------------------------------------------------------------------
+    // RAW MODE TEST
+    // -----------------------------------------------------------------------
+    println!("\n=== Starting raw-mode precompute engine (ingest={RAW_INGEST_PORT}) ===");
+
+    // The raw engine reuses the same store so we can query results directly.
+    // Pick aggregation_id = 1 to match the existing streaming config.
+    let raw_agg_id: u64 = 1;
+    let raw_engine_config = PrecomputeEngineConfig {
+        num_workers: 1,
+        ingest_port: RAW_INGEST_PORT,
+        allowed_lateness_ms: 5000,
+        max_buffer_per_series: 10000,
+        flush_interval_ms: 200,
+        channel_buffer_size: 10000,
+        pass_raw_samples: true,
+        raw_mode_aggregation_id: raw_agg_id,
+    };
+    let raw_sink = Arc::new(RawPassthroughSink::new(store.clone()));
+    let raw_engine = PrecomputeEngine::new(
+        raw_engine_config,
+        streaming_config.clone(),
+        raw_sink,
+    );
+    tokio::spawn(async move {
+        if let Err(e) = raw_engine.run().await {
+            eprintln!("Raw precompute engine error: {e}");
+        }
+    });
+
+    // Wait for server to bind
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    // Send a few raw samples — no need to advance watermark.
+    println!("\n=== Sending raw-mode samples ===");
+    let raw_timestamps = vec![100_000i64, 101_000, 102_000];
+    let raw_values = vec![42.0f64, 43.0, 44.0];
+    for (&ts, &val) in raw_timestamps.iter().zip(raw_values.iter()) {
+        let body = build_remote_write_body(vec![make_sample("fake_metric", "groupA", ts, val)]);
+        let resp = client
+            .post(format!("http://localhost:{RAW_INGEST_PORT}/api/v1/write"))
+            .header("Content-Type", "application/x-protobuf")
+            .header("Content-Encoding", "snappy")
+            .body(body)
+            .send()
+            .await?;
+        println!("  Sent raw t={ts}ms v={val} -> HTTP {}", resp.status().as_u16());
+    }
+
+    // Short wait for processing (no watermark advancement needed)
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+
+    // Verify raw samples appeared in the store
+    println!("\n=== Verifying raw samples in store ===");
+    let results = store.query_precomputed_output(
+        "fake_metric",
+        raw_agg_id,
+        100_000,
+        103_000,
+    )?;
+    let total_buckets: usize = results.values().map(|v| v.len()).sum();
+    println!("  Found {total_buckets} buckets for aggregation_id={raw_agg_id} in [100000, 103000)");
+    assert!(
+        total_buckets >= 3,
+        "Expected at least 3 raw samples in store, got {total_buckets}"
+    );
+
+    for (key, buckets) in &results {
+        for ((start, end), _acc) in buckets {
+            println!("    key={key:?} start={start} end={end}");
+        }
+    }
+    println!("  Raw mode test PASSED");
 
     println!("\n=== E2E test complete ===");
 

@@ -5,7 +5,7 @@ use query_engine_rust::data_model::{
 use query_engine_rust::drivers::query::adapters::AdapterConfig;
 use query_engine_rust::engines::SimpleEngine;
 use query_engine_rust::precompute_engine::config::PrecomputeEngineConfig;
-use query_engine_rust::precompute_engine::output_sink::StoreOutputSink;
+use query_engine_rust::precompute_engine::output_sink::{RawPassthroughSink, StoreOutputSink};
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::{HttpServer, HttpServerConfig};
@@ -52,6 +52,14 @@ struct Args {
     /// Lock strategy for the store
     #[arg(long, value_enum, default_value_t = LockStrategy::PerKey)]
     lock_strategy: LockStrategy,
+
+    /// Skip aggregation and pass each raw sample directly to the store
+    #[arg(long, default_value_t = false)]
+    pass_raw_samples: bool,
+
+    /// Aggregation ID to stamp on each raw-mode output
+    #[arg(long, default_value_t = 0)]
+    raw_mode_aggregation_id: u64,
 }
 
 #[tokio::main]
@@ -122,11 +130,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         max_buffer_per_series: args.max_buffer_per_series,
         flush_interval_ms: args.flush_interval_ms,
         channel_buffer_size: args.channel_buffer_size,
+        pass_raw_samples: args.pass_raw_samples,
+        raw_mode_aggregation_id: args.raw_mode_aggregation_id,
     };
 
     // Create the output sink (writes directly to the store)
     let output_sink: Arc<dyn query_engine_rust::precompute_engine::output_sink::OutputSink> =
-        Arc::new(StoreOutputSink::new(store));
+        if args.pass_raw_samples {
+            Arc::new(RawPassthroughSink::new(store))
+        } else {
+            Arc::new(StoreOutputSink::new(store))
+        };
 
     // Build and run the engine
     let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink);

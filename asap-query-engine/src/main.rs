@@ -299,6 +299,8 @@ async fn main() -> Result<()> {
             max_buffer_per_series: args.precompute_max_buffer_per_series,
             flush_interval_ms: args.precompute_flush_interval_ms,
             channel_buffer_size: args.precompute_channel_buffer_size,
+            pass_raw_samples: false,
+            raw_mode_aggregation_id: 0,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
         let engine = PrecomputeEngine::new(
