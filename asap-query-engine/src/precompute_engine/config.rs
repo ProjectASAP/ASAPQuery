@@ -16,6 +16,11 @@ pub struct PrecomputeEngineConfig {
     pub flush_interval_ms: u64,
     /// Capacity of the MPSC channel between router and each worker.
     pub channel_buffer_size: usize,
+    /// When true, skip all aggregation and pass each raw sample directly to the
+    /// output sink as a `SumAccumulator::with_sum(value)`.
+    pub pass_raw_samples: bool,
+    /// Aggregation ID to stamp on each raw-mode output.
+    pub raw_mode_aggregation_id: u64,
 }
 
 impl Default for PrecomputeEngineConfig {
@@ -27,6 +32,8 @@ impl Default for PrecomputeEngineConfig {
             max_buffer_per_series: 10_000,
             flush_interval_ms: 1_000,
             channel_buffer_size: 10_000,
+            pass_raw_samples: false,
+            raw_mode_aggregation_id: 0,
         }
     }
 }
@@ -44,5 +51,7 @@ mod tests {
         assert_eq!(config.max_buffer_per_series, 10_000);
         assert_eq!(config.flush_interval_ms, 1_000);
         assert_eq!(config.channel_buffer_size, 10_000);
+        assert!(!config.pass_raw_samples);
+        assert_eq!(config.raw_mode_aggregation_id, 0);
     }
 }
