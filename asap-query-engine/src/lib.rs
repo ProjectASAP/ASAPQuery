@@ -43,6 +43,10 @@ pub use drivers::{
     OtlpReceiverConfig,
 };
 
+pub use precompute_engine::config::PrecomputeEngineConfig;
+pub use precompute_engine::output_sink::StoreOutputSink;
+pub use precompute_engine::PrecomputeEngine;
+
 pub use utils::{normalize_spatial_filter, read_inference_config, read_streaming_config};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

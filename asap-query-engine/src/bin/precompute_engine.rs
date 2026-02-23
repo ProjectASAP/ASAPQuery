@@ -9,7 +9,7 @@ use query_engine_rust::precompute_engine::output_sink::StoreOutputSink;
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::{HttpServer, HttpServerConfig};
-use sketch_db_common::enums::QueryLanguage;
+use query_engine_rust::data_model::QueryLanguage;
 use std::sync::Arc;
 use tracing::info;
 
