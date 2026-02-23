@@ -74,6 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
         .init();
 
     // Load configs the same way main.rs does
