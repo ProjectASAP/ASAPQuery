@@ -9,7 +9,7 @@ use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{debug, debug_span, info, warn};
 
 /// Per-aggregation state within a series: the window manager and active
 /// window accumulators.
@@ -80,10 +80,23 @@ impl Worker {
                 WorkerMessage::Samples {
                     series_key,
                     samples,
+                    ingest_received_at,
                 } => {
+                    let sample_count = samples.len();
+                    let _span = debug_span!(
+                        "worker_process",
+                        worker_id = self.id,
+                        series = %series_key,
+                        sample_count,
+                    )
+                    .entered();
                     if let Err(e) = self.process_samples(&series_key, samples) {
                         warn!("Worker {} error processing {}: {}", self.id, series_key, e);
                     }
+                    debug!(
+                        e2e_latency_us = ingest_received_at.elapsed().as_micros() as u64,
+                        "e2e: ingest->worker complete"
+                    );
                 }
                 WorkerMessage::Flush => {
                     if let Err(e) = self.flush_all() {
