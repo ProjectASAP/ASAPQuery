@@ -275,7 +275,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Pick aggregation_id = 1 to match the existing streaming config.
     let raw_agg_id: u64 = 1;
     let raw_engine_config = PrecomputeEngineConfig {
-        num_workers: 1,
+        num_workers: 4,
         ingest_port: RAW_INGEST_PORT,
         allowed_lateness_ms: 5000,
         max_buffer_per_series: 10000,
