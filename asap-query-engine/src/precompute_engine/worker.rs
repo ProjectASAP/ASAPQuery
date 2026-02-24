@@ -221,18 +221,20 @@ impl Worker {
                     continue; // already dropped
                 }
 
-                let window_start = agg_state.window_manager.window_start_for(ts);
+                let window_starts = agg_state.window_manager.window_starts_containing(ts);
 
-                let updater = agg_state
-                    .active_windows
-                    .entry(window_start)
-                    .or_insert_with(|| create_accumulator_updater(&agg_state.config));
+                for window_start in window_starts {
+                    let updater = agg_state
+                        .active_windows
+                        .entry(window_start)
+                        .or_insert_with(|| create_accumulator_updater(&agg_state.config));
 
-                if updater.is_keyed() {
-                    let key = extract_key_from_series(series_key, &agg_state.config);
-                    updater.update_keyed(&key, val, ts);
-                } else {
-                    updater.update_single(val, ts);
+                    if updater.is_keyed() {
+                        let key = extract_key_from_series(series_key, &agg_state.config);
+                        updater.update_keyed(&key, val, ts);
+                    } else {
+                        updater.update_single(val, ts);
+                    }
                 }
             }
 
