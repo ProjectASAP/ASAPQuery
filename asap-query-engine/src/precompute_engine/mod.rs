@@ -84,6 +84,7 @@ impl PrecomputeEngine {
                 self.config.allowed_lateness_ms,
                 self.config.pass_raw_samples,
                 self.config.raw_mode_aggregation_id,
+                self.config.late_data_policy,
             );
             let handle = tokio::spawn(async move {
                 worker.run().await;

@@ -15,7 +15,7 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 };
 use query_engine_rust::drivers::query::adapters::AdapterConfig;
 use query_engine_rust::engines::SimpleEngine;
-use query_engine_rust::precompute_engine::config::PrecomputeEngineConfig;
+use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::{RawPassthroughSink, StoreOutputSink};
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::SimpleMapStore;
@@ -143,6 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         channel_buffer_size: 10000,
         pass_raw_samples: false,
         raw_mode_aggregation_id: 0,
+        late_data_policy: LateDataPolicy::Drop,
     };
     let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
     let engine = PrecomputeEngine::new(engine_config, streaming_config.clone(), output_sink);
@@ -270,6 +271,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         channel_buffer_size: 10000,
         pass_raw_samples: true,
         raw_mode_aggregation_id: raw_agg_id,
+        late_data_policy: LateDataPolicy::Drop,
     };
     let raw_sink = Arc::new(RawPassthroughSink::new(store.clone()));
     let raw_engine = PrecomputeEngine::new(
