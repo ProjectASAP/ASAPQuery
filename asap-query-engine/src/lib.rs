@@ -27,7 +27,7 @@ pub use engines::{InstantVector, QueryResult, SimpleEngine};
 
 pub use drivers::{HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig};
 
-pub use precompute_engine::config::PrecomputeEngineConfig;
+pub use precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 pub use precompute_engine::output_sink::StoreOutputSink;
 pub use precompute_engine::PrecomputeEngine;
 
