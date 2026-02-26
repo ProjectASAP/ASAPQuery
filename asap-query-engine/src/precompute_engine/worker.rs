@@ -2,6 +2,7 @@ use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
 use crate::precompute_engine::accumulator_factory::{
     create_accumulator_updater, AccumulatorUpdater,
 };
+use crate::precompute_engine::config::LateDataPolicy;
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_buffer::SeriesBuffer;
 use crate::precompute_engine::series_router::WorkerMessage;
@@ -47,6 +48,8 @@ pub struct Worker {
     pass_raw_samples: bool,
     /// Aggregation ID stamped on each raw-mode output.
     raw_mode_aggregation_id: u64,
+    /// Policy for handling late samples that arrive after their window has closed.
+    late_data_policy: LateDataPolicy,
 }
 
 impl Worker {
@@ -60,6 +63,7 @@ impl Worker {
         allowed_lateness_ms: i64,
         pass_raw_samples: bool,
         raw_mode_aggregation_id: u64,
+        late_data_policy: LateDataPolicy,
     ) -> Self {
         Self {
             id,
@@ -71,6 +75,7 @@ impl Worker {
             allowed_lateness_ms,
             pass_raw_samples,
             raw_mode_aggregation_id,
+            late_data_policy,
         }
     }
 
@@ -178,6 +183,7 @@ impl Worker {
         // Copy scalars out of self before taking &mut self.series_map
         let worker_id = self.id;
         let allowed_lateness_ms = self.allowed_lateness_ms;
+        let late_data_policy = self.late_data_policy;
 
         // Ensure state exists
         self.get_or_create_series_state(series_key);
@@ -224,6 +230,51 @@ impl Worker {
                 let window_starts = agg_state.window_manager.window_starts_containing(ts);
 
                 for window_start in window_starts {
+                    let window_end = window_start + agg_state.window_manager.window_size_ms();
+
+                    // Check if this window was already closed in a previous batch
+                    if !agg_state.active_windows.contains_key(&window_start)
+                        && current_wm >= window_end
+                    {
+                        // Window already closed — handle according to policy
+                        match late_data_policy {
+                            LateDataPolicy::Drop => {
+                                debug!(
+                                    "Dropping late sample for closed window [{}, {})",
+                                    window_start, window_end
+                                );
+                                continue;
+                            }
+                            LateDataPolicy::ForwardToStore => {
+                                let mut updater = create_accumulator_updater(&agg_state.config);
+                                if updater.is_keyed() {
+                                    let key = extract_key_from_series(series_key, &agg_state.config);
+                                    updater.update_keyed(&key, val, ts);
+                                } else {
+                                    updater.update_single(val, ts);
+                                }
+                                let key = if updater.is_keyed() {
+                                    Some(extract_key_from_series(series_key, &agg_state.config))
+                                } else {
+                                    None
+                                };
+                                let output = PrecomputedOutput::new(
+                                    window_start as u64,
+                                    window_end as u64,
+                                    key,
+                                    agg_state.config.aggregation_id,
+                                );
+                                emit_batch.push((output, updater.take_accumulator()));
+                                debug!(
+                                    "Forwarding late sample to store for closed window [{}, {})",
+                                    window_start, window_end
+                                );
+                                continue;
+                            }
+                        }
+                    }
+
+                    // Normal path: window is still open (or newly opened)
                     let updater = agg_state
                         .active_windows
                         .entry(window_start)

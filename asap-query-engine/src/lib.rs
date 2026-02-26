@@ -43,7 +43,7 @@ pub use drivers::{
     OtlpReceiverConfig,
 };
 
-pub use precompute_engine::config::PrecomputeEngineConfig;
+pub use precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 pub use precompute_engine::output_sink::StoreOutputSink;
 pub use precompute_engine::PrecomputeEngine;
 
