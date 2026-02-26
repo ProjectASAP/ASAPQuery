@@ -1,8 +1,8 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, DatasketchesKLLAccumulator, HydraKllSketchAccumulator,
-    IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator,
-    MultipleMinMaxAccumulator, MultipleSumAccumulator, SumAccumulator,
+    IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
+    MultipleSumAccumulator, SumAccumulator,
 };
 use sketch_db_common::aggregation_config::AggregationConfig;
 
@@ -156,12 +156,7 @@ impl AccumulatorUpdater for IncreaseAccumulatorUpdater {
 
     fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
         let acc = self.acc.take().unwrap_or_else(|| {
-            IncreaseAccumulator::new(
-                Measurement::new(0.0),
-                0,
-                Measurement::new(0.0),
-                0,
-            )
+            IncreaseAccumulator::new(Measurement::new(0.0), 0, Measurement::new(0.0), 0)
         });
         let result = Box::new(acc);
         self.reset();
@@ -494,8 +489,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 
     fn memory_usage_bytes(&self) -> usize {
         // Rough estimate: each cell is a KLL sketch
-        std::mem::size_of::<HydraKllSketchAccumulator>()
-            + self.row_num * self.col_num * 4096
+        std::mem::size_of::<HydraKllSketchAccumulator>() + self.row_num * self.col_num * 4096
     }
 }
 
@@ -504,9 +498,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 // ---------------------------------------------------------------------------
 
 /// Create an appropriate `AccumulatorUpdater` from an `AggregationConfig`.
-pub fn create_accumulator_updater(
-    config: &AggregationConfig,
-) -> Box<dyn AccumulatorUpdater> {
+pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn AccumulatorUpdater> {
     let agg_type = config.aggregation_type.as_str();
     let sub_type = config.aggregation_sub_type.as_str();
 

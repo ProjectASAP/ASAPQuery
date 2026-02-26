@@ -1,6 +1,6 @@
+use futures::future::try_join_all;
 use std::collections::HashMap;
 use std::time::Instant;
-use futures::future::try_join_all;
 use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
 
@@ -82,15 +82,18 @@ impl SeriesRouter {
             let sender = &self.senders[worker_idx];
             async move {
                 for msg in messages {
-                    sender.send(msg).await.map_err(|e| {
-                        format!("Failed to send to worker {}: {}", worker_idx, e)
-                    })?;
+                    sender
+                        .send(msg)
+                        .await
+                        .map_err(|e| format!("Failed to send to worker {}: {}", worker_idx, e))?;
                 }
                 Ok::<(), String>(())
             }
         }))
         .await
-        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(std::io::Error::new(std::io::ErrorKind::Other, e)) })?;
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::new(std::io::ErrorKind::Other, e))
+        })?;
 
         Ok(())
     }
@@ -131,9 +134,8 @@ mod tests {
     #[test]
     fn test_consistent_routing() {
         // Build a router with dummy senders (we only test the hash logic)
-        let (senders, _receivers): (Vec<_>, Vec<_>) = (0..4)
-            .map(|_| mpsc::channel::<WorkerMessage>(10))
-            .unzip();
+        let (senders, _receivers): (Vec<_>, Vec<_>) =
+            (0..4).map(|_| mpsc::channel::<WorkerMessage>(10)).unzip();
 
         let router = SeriesRouter::new(senders);
 
