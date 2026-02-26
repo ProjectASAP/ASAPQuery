@@ -248,7 +248,8 @@ impl Worker {
                             LateDataPolicy::ForwardToStore => {
                                 let mut updater = create_accumulator_updater(&agg_state.config);
                                 if updater.is_keyed() {
-                                    let key = extract_key_from_series(series_key, &agg_state.config);
+                                    let key =
+                                        extract_key_from_series(series_key, &agg_state.config);
                                     updater.update_keyed(&key, val, ts);
                                 } else {
                                     updater.update_single(val, ts);
