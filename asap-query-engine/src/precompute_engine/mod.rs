@@ -16,9 +16,9 @@ use crate::precompute_engine::worker::Worker;
 use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use std::time::Instant;
 use tracing::{info, warn};
 
 /// Shared state for the ingest HTTP handler.
@@ -68,10 +68,8 @@ impl PrecomputeEngine {
         let router = SeriesRouter::new(senders);
 
         // Build aggregation config map from streaming config
-        let agg_configs: HashMap<u64, _> = self
-            .streaming_config
-            .get_all_aggregation_configs()
-            .clone();
+        let agg_configs: HashMap<u64, _> =
+            self.streaming_config.get_all_aggregation_configs().clone();
 
         // Spawn workers
         let mut worker_handles = Vec::with_capacity(num_workers);
@@ -171,7 +169,11 @@ async fn route_decoded_samples(
         .collect();
 
     // Route all series to workers concurrently
-    if let Err(e) = state.router.route_batch(by_series_owned, ingest_received_at).await {
+    if let Err(e) = state
+        .router
+        .route_batch(by_series_owned, ingest_received_at)
+        .await
+    {
         warn!("Batch routing error: {}", e);
         return StatusCode::INTERNAL_SERVER_ERROR;
     }

@@ -57,9 +57,8 @@ impl WindowManager {
         // A window is open if its end (start + window_size_ms) > previous_wm.
         // So the oldest open window start was: previous_wm - window_size_ms + 1,
         // aligned down to slide_interval.
-        let earliest_open_start = self.window_start_for(
-            (previous_wm - self.window_size_ms + 1).max(0),
-        );
+        let earliest_open_start =
+            self.window_start_for((previous_wm - self.window_size_ms + 1).max(0));
 
         let mut start = earliest_open_start;
         while start + self.window_size_ms <= current_wm {
