@@ -9,18 +9,24 @@ use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use sketch_db_common::aggregation_config::AggregationConfig;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, debug_span, info, warn};
 
 /// Per-aggregation state within a series: the window manager and active
-/// window accumulators.
+/// pane accumulators.
+///
+/// Uses pane-based sliding window computation: each sample is routed to
+/// exactly 1 pane (sub-window of size `slide_interval`). When a window
+/// closes, its constituent panes are merged. This reduces per-sample
+/// accumulator updates from W to 1 (where W = window_size / slide_interval).
 struct AggregationState {
     config: AggregationConfig,
     window_manager: WindowManager,
-    /// Active windows keyed by window_start_ms.
-    active_windows: HashMap<i64, Box<dyn AccumulatorUpdater>>,
+    /// Active panes keyed by pane_start_ms.
+    /// BTreeMap for ordered iteration (needed for pane eviction).
+    active_panes: BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
 }
 
 /// Per-series state owned by the worker.
@@ -153,7 +159,7 @@ impl Worker {
                 .map(|(_, config)| AggregationState {
                     window_manager: WindowManager::new(config.window_size, config.slide_interval),
                     config: config.clone(),
-                    active_windows: HashMap::new(),
+                    active_panes: BTreeMap::new(),
                 })
                 .collect();
 
@@ -220,84 +226,119 @@ impl Worker {
                 .window_manager
                 .closed_windows(previous_wm, current_wm);
 
-            // Feed each incoming sample to the correct active window accumulator
+            // Pane-based sample routing: each sample goes to exactly 1 pane
             for &(ts, val) in &samples {
                 if current_wm != i64::MIN && ts < current_wm - allowed_lateness_ms {
                     continue; // already dropped
                 }
 
-                let window_starts = agg_state.window_manager.window_starts_containing(ts);
+                let pane_start = agg_state.window_manager.pane_start_for(ts);
+                let pane_end = pane_start + agg_state.window_manager.slide_interval_ms();
 
-                for window_start in window_starts {
-                    let window_end = window_start + agg_state.window_manager.window_size_ms();
-
-                    // Check if this window was already closed in a previous batch
-                    if !agg_state.active_windows.contains_key(&window_start)
-                        && current_wm >= window_end
-                    {
-                        // Window already closed — handle according to policy
-                        match late_data_policy {
-                            LateDataPolicy::Drop => {
-                                debug!(
-                                    "Dropping late sample for closed window [{}, {})",
-                                    window_start, window_end
-                                );
-                                continue;
+                // Check if pane was already evicted (late data for a closed window).
+                // A pane is evicted when its oldest window closes, i.e. the window
+                // starting at pane_start. If that window is closed, the pane is gone.
+                if !agg_state.active_panes.contains_key(&pane_start)
+                    && current_wm >= pane_start + agg_state.window_manager.window_size_ms()
+                {
+                    // The window starting at this pane_start is already closed,
+                    // so this pane was evicted — handle as late data.
+                    let window_start = pane_start;
+                    let window_end = pane_start + agg_state.window_manager.window_size_ms();
+                    match late_data_policy {
+                        LateDataPolicy::Drop => {
+                            debug!(
+                                "Dropping late sample for evicted pane [{}, {})",
+                                pane_start, pane_end
+                            );
+                            continue;
+                        }
+                        LateDataPolicy::ForwardToStore => {
+                            let mut updater = create_accumulator_updater(&agg_state.config);
+                            if updater.is_keyed() {
+                                let key =
+                                    extract_key_from_series(series_key, &agg_state.config);
+                                updater.update_keyed(&key, val, ts);
+                            } else {
+                                updater.update_single(val, ts);
                             }
-                            LateDataPolicy::ForwardToStore => {
-                                let mut updater = create_accumulator_updater(&agg_state.config);
-                                if updater.is_keyed() {
-                                    let key =
-                                        extract_key_from_series(series_key, &agg_state.config);
-                                    updater.update_keyed(&key, val, ts);
-                                } else {
-                                    updater.update_single(val, ts);
-                                }
-                                let key = if updater.is_keyed() {
-                                    Some(extract_key_from_series(series_key, &agg_state.config))
-                                } else {
-                                    None
-                                };
-                                let output = PrecomputedOutput::new(
-                                    window_start as u64,
-                                    window_end as u64,
-                                    key,
-                                    agg_state.config.aggregation_id,
-                                );
-                                emit_batch.push((output, updater.take_accumulator()));
-                                debug!(
-                                    "Forwarding late sample to store for closed window [{}, {})",
-                                    window_start, window_end
-                                );
-                                continue;
-                            }
+                            let key = if updater.is_keyed() {
+                                Some(extract_key_from_series(series_key, &agg_state.config))
+                            } else {
+                                None
+                            };
+                            let output = PrecomputedOutput::new(
+                                window_start as u64,
+                                window_end as u64,
+                                key,
+                                agg_state.config.aggregation_id,
+                            );
+                            emit_batch.push((output, updater.take_accumulator()));
+                            debug!(
+                                "Forwarding late sample to store for evicted pane [{}, {})",
+                                pane_start, pane_end
+                            );
+                            continue;
                         }
                     }
+                }
 
-                    // Normal path: window is still open (or newly opened)
-                    let updater = agg_state
-                        .active_windows
-                        .entry(window_start)
-                        .or_insert_with(|| create_accumulator_updater(&agg_state.config));
+                // Normal path: route sample to its single pane
+                let updater = agg_state
+                    .active_panes
+                    .entry(pane_start)
+                    .or_insert_with(|| create_accumulator_updater(&agg_state.config));
 
-                    if updater.is_keyed() {
-                        let key = extract_key_from_series(series_key, &agg_state.config);
-                        updater.update_keyed(&key, val, ts);
-                    } else {
-                        updater.update_single(val, ts);
-                    }
+                if updater.is_keyed() {
+                    let key = extract_key_from_series(series_key, &agg_state.config);
+                    updater.update_keyed(&key, val, ts);
+                } else {
+                    updater.update_single(val, ts);
                 }
             }
 
-            // Emit closed windows
+            // Emit closed windows by merging their constituent panes
             for window_start in &closed {
-                if let Some(mut updater) = agg_state.active_windows.remove(window_start) {
-                    let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
+                let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
+                let pane_starts = agg_state.window_manager.panes_for_window(*window_start);
 
-                    let key = if updater.is_keyed() {
-                        Some(extract_key_from_series(series_key, &agg_state.config))
+                // Merge pane accumulators for this window.
+                // - Oldest pane (index 0): take_accumulator + remove (no future window needs it)
+                // - Remaining panes: snapshot_accumulator (shared with newer windows)
+                let mut merged: Option<Box<dyn AggregateCore>> = None;
+
+                for (i, &ps) in pane_starts.iter().enumerate() {
+                    let pane_acc = if i == 0 {
+                        // Oldest pane: destructive take + evict from active_panes
+                        agg_state
+                            .active_panes
+                            .remove(&ps)
+                            .map(|mut updater| updater.take_accumulator())
                     } else {
-                        None
+                        // Shared pane: non-destructive snapshot
+                        agg_state
+                            .active_panes
+                            .get(&ps)
+                            .map(|updater| updater.snapshot_accumulator())
+                    };
+
+                    if let Some(acc) = pane_acc {
+                        merged = Some(match merged {
+                            None => acc,
+                            Some(existing) => existing.merge_with(acc.as_ref()).unwrap_or(existing),
+                        });
+                    }
+                }
+
+                if let Some(accumulator) = merged {
+                    let key = {
+                        // Check keyed-ness from accumulator type name or config
+                        let test_updater = create_accumulator_updater(&agg_state.config);
+                        if test_updater.is_keyed() {
+                            Some(extract_key_from_series(series_key, &agg_state.config))
+                        } else {
+                            None
+                        }
                     };
 
                     let output = PrecomputedOutput::new(
@@ -307,7 +348,6 @@ impl Worker {
                         agg_state.config.aggregation_id,
                     );
 
-                    let accumulator = updater.take_accumulator();
                     emit_batch.push((output, accumulator));
                 }
             }
@@ -376,13 +416,42 @@ impl Worker {
                     .closed_windows(previous_wm, current_wm);
 
                 for window_start in &closed {
-                    if let Some(mut updater) = agg_state.active_windows.remove(window_start) {
-                        let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
+                    let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
+                    let pane_starts = agg_state.window_manager.panes_for_window(*window_start);
 
-                        let key = if updater.is_keyed() {
-                            Some(extract_key_from_series(series_key, &agg_state.config))
+                    let mut merged: Option<Box<dyn AggregateCore>> = None;
+
+                    for (i, &ps) in pane_starts.iter().enumerate() {
+                        let pane_acc = if i == 0 {
+                            agg_state
+                                .active_panes
+                                .remove(&ps)
+                                .map(|mut updater| updater.take_accumulator())
                         } else {
-                            None
+                            agg_state
+                                .active_panes
+                                .get(&ps)
+                                .map(|updater| updater.snapshot_accumulator())
+                        };
+
+                        if let Some(acc) = pane_acc {
+                            merged = Some(match merged {
+                                None => acc,
+                                Some(existing) => {
+                                    existing.merge_with(acc.as_ref()).unwrap_or(existing)
+                                }
+                            });
+                        }
+                    }
+
+                    if let Some(accumulator) = merged {
+                        let key = {
+                            let test_updater = create_accumulator_updater(&agg_state.config);
+                            if test_updater.is_keyed() {
+                                Some(extract_key_from_series(series_key, &agg_state.config))
+                            } else {
+                                None
+                            }
                         };
 
                         let output = PrecomputedOutput::new(
@@ -392,7 +461,6 @@ impl Worker {
                             agg_state.config.aggregation_id,
                         );
 
-                        let accumulator = updater.take_accumulator();
                         emit_batch.push((output, accumulator));
                     }
                 }

@@ -20,6 +20,10 @@ pub trait AccumulatorUpdater: Send {
     /// Extract the final accumulator as a boxed `AggregateCore`.
     fn take_accumulator(&mut self) -> Box<dyn AggregateCore>;
 
+    /// Non-destructive read of the current accumulator state (clone without reset).
+    /// Used by pane-based sliding windows to read shared panes.
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore>;
+
     /// Reset internal state for reuse (avoids re-allocation).
     fn reset(&mut self);
 
@@ -59,6 +63,10 @@ impl AccumulatorUpdater for SumAccumulatorUpdater {
         let result = Box::new(self.acc.clone());
         self.reset();
         result
+    }
+
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
     }
 
     fn reset(&mut self) {
@@ -105,6 +113,10 @@ impl AccumulatorUpdater for MinMaxAccumulatorUpdater {
         let result = Box::new(self.acc.clone());
         self.reset();
         result
+    }
+
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
     }
 
     fn reset(&mut self) {
@@ -163,6 +175,18 @@ impl AccumulatorUpdater for IncreaseAccumulatorUpdater {
         result
     }
 
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        match &self.acc {
+            Some(acc) => Box::new(acc.clone()),
+            None => Box::new(IncreaseAccumulator::new(
+                Measurement::new(0.0),
+                0,
+                Measurement::new(0.0),
+                0,
+            )),
+        }
+    }
+
     fn reset(&mut self) {
         self.acc = None;
     }
@@ -207,6 +231,10 @@ impl AccumulatorUpdater for KllAccumulatorUpdater {
         let result = Box::new(self.acc.clone());
         self.reset();
         result
+    }
+
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
     }
 
     fn reset(&mut self) {
@@ -254,6 +282,10 @@ impl AccumulatorUpdater for MultipleSumUpdater {
         result
     }
 
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
+    }
+
     fn reset(&mut self) {
         self.acc = MultipleSumAccumulator::new();
     }
@@ -299,6 +331,10 @@ impl AccumulatorUpdater for MultipleMinMaxUpdater {
         let result = Box::new(self.acc.clone());
         self.reset();
         result
+    }
+
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
     }
 
     fn reset(&mut self) {
@@ -358,6 +394,10 @@ impl AccumulatorUpdater for MultipleIncreaseUpdater {
         let result = Box::new(self.acc.clone());
         self.reset();
         result
+    }
+
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
     }
 
     fn reset(&mut self) {
@@ -428,6 +468,10 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
         result
     }
 
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
+    }
+
     fn reset(&mut self) {
         self.acc = CountMinSketchAccumulator::new(self.row_num, self.col_num);
     }
@@ -477,6 +521,10 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
         let result = Box::new(self.acc.clone());
         self.reset();
         result
+    }
+
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+        Box::new(self.acc.clone())
     }
 
     fn reset(&mut self) {
