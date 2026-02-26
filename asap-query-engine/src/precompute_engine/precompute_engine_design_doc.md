@@ -9,8 +9,9 @@ windowed aggregations (sketches), and writes the results to a store for fast
 query-time retrieval.
 
 **Key properties:**
+- Single-machine, multi-threaded architecture (all workers run as async tasks within one process)
 - Watermark-based windowed aggregation (tumbling and sliding windows)
-- Multi-threaded, shard-nothing worker architecture
+- Shared-nothing worker design: series are hash-partitioned across threads with no cross-worker coordination
 - Pluggable accumulator types (Sum, Min/Max, Increase, KLL, CMS, HydraKLL)
 - Configurable late-data handling (Drop or ForwardToStore)
 - Optional raw passthrough mode for bypassing aggregation
@@ -356,14 +357,26 @@ For case 2, the `LateDataPolicy` controls behavior:
 
 ## 7. Concurrency Model
 
+The current implementation is **single-machine, multi-threaded**. All components
+(HTTP server, workers, store) run within a single OS process as Tokio async
+tasks on a shared thread pool. There is no distributed coordination, no
+cross-machine communication, and no external dependency beyond the store.
+
 - **Ingest HTTP handler**: Axum async handler, stateless decoding.
 - **SeriesRouter**: Lock-free hash routing. No shared mutable state.
-- **Workers**: Each worker is single-threaded (owns its `series_map`).
-  No locks needed within a worker.
+- **Workers**: Each worker is a single Tokio task that owns its `series_map`
+  exclusively. No locks needed within a worker — thread safety comes from
+  the hash-partitioning guarantee that each series is assigned to exactly one
+  worker.
 - **OutputSink / Store**: Thread-safe (`Arc<dyn OutputSink>`, DashMap-backed store).
   Workers emit concurrently; the PerKey store uses per-aggregation_id RwLocks
   to minimize contention.
-- **Flush timer**: Separate tokio task, communicates via the same MPSC channels.
+- **Flush timer**: Separate Tokio task, communicates via the same MPSC channels.
+
+Scaling beyond a single machine would require partitioning the series space
+across multiple engine instances (e.g. via consistent hashing at the load
+balancer level), each running this same single-process architecture
+independently.
 
 ## 8. Performance Characteristics
 
