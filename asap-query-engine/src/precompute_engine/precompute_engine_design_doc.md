@@ -4,7 +4,7 @@
 
 The Precompute Engine is a real-time streaming aggregation system that sits between
 Prometheus-compatible metric producers and ASAP storage and query engine. It accepts raw
-time-series samples via the Prometheus remote-write protocol, buffers them, computes
+time-series samples via the Prometheus remote-write protocol ingestion connector, buffers them, computes
 windowed aggregations (sketches), and writes the results to a store for fast
 query-time retrieval.
 
