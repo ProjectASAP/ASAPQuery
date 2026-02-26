@@ -303,11 +303,8 @@ async fn main() -> Result<()> {
             raw_mode_aggregation_id: 0,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
-        let engine = PrecomputeEngine::new(
-            precompute_config,
-            streaming_config.clone(),
-            output_sink,
-        );
+        let engine =
+            PrecomputeEngine::new(precompute_config, streaming_config.clone(), output_sink);
         info!(
             "Starting precompute engine on port {}",
             args.prometheus_remote_write_port

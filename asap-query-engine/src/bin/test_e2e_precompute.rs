@@ -78,8 +78,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .init();
 
     // Load configs the same way main.rs does
-    let inference_config =
-        read_inference_config("examples/promql/inference_config.yaml", QueryLanguage::promql)?;
+    let inference_config = read_inference_config(
+        "examples/promql/inference_config.yaml",
+        QueryLanguage::promql,
+    )?;
     println!(
         "Loaded inference config with {} query configs",
         inference_config.query_configs.len()
@@ -101,13 +103,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("\n=== Starting precompute engine (ingest={INGEST_PORT}, query={QUERY_PORT}) ===");
 
     // Create store
-    let store: Arc<dyn query_engine_rust::stores::Store> = Arc::new(
-        SimpleMapStore::new_with_strategy(
+    let store: Arc<dyn query_engine_rust::stores::Store> =
+        Arc::new(SimpleMapStore::new_with_strategy(
             streaming_config.clone(),
             cleanup_policy,
             LockStrategy::PerKey,
-        ),
-    );
+        ));
 
     // Start query server
     let query_engine = Arc::new(SimpleEngine::new(
@@ -208,9 +209,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Use the exact query pattern from inference_config
     let queries_instant = vec![
-        ("quantile by (label_0) (0.99, fake_metric)", "10", "Configured query at t=10"),
-        ("quantile by (label_0) (0.99, fake_metric)", "15", "Configured query at t=15"),
-        ("sum_over_time(fake_metric[1s])", "10", "Temporal: sum_over_time at t=10"),
+        (
+            "quantile by (label_0) (0.99, fake_metric)",
+            "10",
+            "Configured query at t=10",
+        ),
+        (
+            "quantile by (label_0) (0.99, fake_metric)",
+            "15",
+            "Configured query at t=15",
+        ),
+        (
+            "sum_over_time(fake_metric[1s])",
+            "10",
+            "Temporal: sum_over_time at t=10",
+        ),
         ("sum(fake_metric)", "10", "Spatial: sum at t=10"),
     ];
 
@@ -274,11 +287,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         late_data_policy: LateDataPolicy::Drop,
     };
     let raw_sink = Arc::new(RawPassthroughSink::new(store.clone()));
-    let raw_engine = PrecomputeEngine::new(
-        raw_engine_config,
-        streaming_config.clone(),
-        raw_sink,
-    );
+    let raw_engine = PrecomputeEngine::new(raw_engine_config, streaming_config.clone(), raw_sink);
     tokio::spawn(async move {
         if let Err(e) = raw_engine.run().await {
             eprintln!("Raw precompute engine error: {e}");
@@ -301,7 +310,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .body(body)
             .send()
             .await?;
-        println!("  Sent raw t={ts}ms v={val} -> HTTP {}", resp.status().as_u16());
+        println!(
+            "  Sent raw t={ts}ms v={val} -> HTTP {}",
+            resp.status().as_u16()
+        );
     }
 
     // Short wait for processing (no watermark advancement needed)
@@ -309,12 +321,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Verify raw samples appeared in the store
     println!("\n=== Verifying raw samples in store ===");
-    let results = store.query_precomputed_output(
-        "fake_metric",
-        raw_agg_id,
-        100_000,
-        103_000,
-    )?;
+    let results = store.query_precomputed_output("fake_metric", raw_agg_id, 100_000, 103_000)?;
     let total_buckets: usize = results.values().map(|v| v.len()).sum();
     println!("  Found {total_buckets} buckets for aggregation_id={raw_agg_id} in [100000, 103000)");
     assert!(
@@ -348,7 +355,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
     let batch_body = build_remote_write_body(batch_timeseries);
-    println!("  Payload size: {} bytes (snappy-compressed)", batch_body.len());
+    println!(
+        "  Payload size: {} bytes (snappy-compressed)",
+        batch_body.len()
+    );
 
     let t0 = std::time::Instant::now();
     let resp = client
@@ -369,12 +379,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Verify samples landed in the store
-    let batch_results = store.query_precomputed_output(
-        "fake_metric",
-        raw_agg_id,
-        200_000,
-        210_000,
-    )?;
+    let batch_results =
+        store.query_precomputed_output("fake_metric", raw_agg_id, 200_000, 210_000)?;
     let batch_buckets: usize = batch_results.values().map(|v| v.len()).sum();
     println!("  Stored {batch_buckets} buckets from batch (expected 1000)");
     assert!(
@@ -433,12 +439,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut tp_buckets: usize;
     loop {
-        let tp_results = store.query_precomputed_output(
-            "fake_metric",
-            raw_agg_id,
-            300_000,
-            max_ts,
-        )?;
+        let tp_results =
+            store.query_precomputed_output("fake_metric", raw_agg_id, 300_000, max_ts)?;
         tp_buckets = tp_results.values().map(|v| v.len()).sum();
         if tp_buckets as u64 >= total_samples || std::time::Instant::now() > drain_deadline {
             break;
