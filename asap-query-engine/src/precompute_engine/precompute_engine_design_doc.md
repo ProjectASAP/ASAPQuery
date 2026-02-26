@@ -1,0 +1,431 @@
+# Precompute Engine Design Document
+
+## 1. Overview
+
+The Precompute Engine is a real-time streaming aggregation system that sits between
+Prometheus-compatible metric producers and ASAP storage and query engine. It accepts raw
+time-series samples via the Prometheus remote-write protocol, buffers them, computes
+windowed aggregations (sketches), and writes the results to a store for fast
+query-time retrieval.
+
+**Key properties:**
+- Watermark-based windowed aggregation (tumbling and sliding windows)
+- Multi-threaded, shard-nothing worker architecture
+- Pluggable accumulator types (Sum, Min/Max, Increase, KLL, CMS, HydraKLL)
+- Configurable late-data handling (Drop or ForwardToStore)
+- Optional raw passthrough mode for bypassing aggregation
+
+## 2. Architecture
+
+```
+                    Prometheus Remote Write
+                            |
+                    Axum HTTP Server (:9090)
+                     POST /api/v1/write
+                            |
+                    decode + group by series
+                            |
+                     SeriesRouter (hash)
+                   /        |        \
+              Worker 0   Worker 1   Worker 2  ...  Worker N-1
+              (shard 0)  (shard 1)  (shard 2)      (shard N-1)
+                 |           |           |              |
+                 +---------- + --------- + ----------- +
+                             |
+                      OutputSink.emit_batch()
+                             |
+                          Store
+                   (SimpleMapStore / PerKey)
+                             |
+                      Query Engine
+                   (PromQL / SQL / etc.)
+```
+
+A periodic **flush timer** broadcasts `Flush` messages to all workers so that
+windows that would otherwise remain open (no new samples arriving) are closed
+and emitted.
+
+## 3. Components
+
+### 3.1 PrecomputeEngine (`mod.rs`)
+
+Top-level orchestrator. On `run()`:
+
+1. Creates one `mpsc::channel<WorkerMessage>` per worker.
+2. Constructs a `SeriesRouter` with the sender halves.
+3. Spawns `Worker` tasks, each owning its receiver.
+4. Spawns a flush timer that calls `router.broadcast_flush()` every
+   `flush_interval_ms`.
+5. Starts the Axum HTTP server and blocks until shutdown.
+
+```rust
+pub struct PrecomputeEngine {
+    config: PrecomputeEngineConfig,
+    streaming_config: Arc<StreamingConfig>,
+    output_sink: Arc<dyn OutputSink>,
+}
+```
+
+### 3.2 Configuration (`config.rs`)
+
+```rust
+pub struct PrecomputeEngineConfig {
+    pub num_workers: usize,              // default: 4
+    pub ingest_port: u16,                // default: 9090
+    pub allowed_lateness_ms: i64,        // default: 5,000
+    pub max_buffer_per_series: usize,    // default: 10,000
+    pub flush_interval_ms: u64,          // default: 1,000
+    pub channel_buffer_size: usize,      // default: 10,000
+    pub pass_raw_samples: bool,          // default: false
+    pub raw_mode_aggregation_id: u64,    // default: 0
+    pub late_data_policy: LateDataPolicy, // default: Drop
+}
+
+pub enum LateDataPolicy {
+    Drop,            // Silently discard late samples for closed windows
+    ForwardToStore,  // Emit a mini-accumulator for query-time merge
+}
+```
+
+### 3.3 SeriesRouter (`series_router.rs`)
+
+Deterministic hash-based routing using XXHash64:
+
+```
+worker_idx = xxhash64(series_key) % num_workers
+```
+
+All samples for a given series always land on the same worker, so per-series
+state (buffer, watermark, active windows) needs no synchronization.
+
+**Message types:**
+```rust
+enum WorkerMessage {
+    Samples { series_key: String, samples: Vec<(i64, f64)>, ingest_received_at: Instant },
+    Flush,
+    Shutdown,
+}
+```
+
+`route_batch()` groups messages by target worker and sends them in parallel for
+throughput while preserving per-worker ordering.
+
+### 3.4 Worker (`worker.rs`)
+
+Each worker owns an isolated shard of the series space.
+
+```rust
+struct Worker {
+    id: usize,
+    receiver: mpsc::Receiver<WorkerMessage>,
+    output_sink: Arc<dyn OutputSink>,
+    series_map: HashMap<String, SeriesState>,
+    agg_configs: HashMap<u64, AggregationConfig>,
+    max_buffer_per_series: usize,
+    allowed_lateness_ms: i64,
+    pass_raw_samples: bool,
+    raw_mode_aggregation_id: u64,
+    late_data_policy: LateDataPolicy,
+}
+```
+
+**Per-series state:**
+```rust
+struct SeriesState {
+    buffer: SeriesBuffer,                      // sorted sample buffer
+    previous_watermark_ms: i64,                // last-seen watermark
+    aggregations: Vec<AggregationState>,       // one per matching config
+}
+
+struct AggregationState {
+    config: AggregationConfig,
+    window_manager: WindowManager,
+    active_windows: HashMap<i64, Box<dyn AccumulatorUpdater>>,
+}
+```
+
+#### Processing pipeline (`process_samples`)
+
+```
+1. Match series to AggregationConfigs (by metric name / spatial_filter)
+2. Insert samples into SeriesBuffer, update watermark
+3. Drop samples beyond allowed_lateness_ms behind watermark
+4. For each sample × each aggregation:
+   a. Compute window_starts_containing(ts)
+   b. For each window_start:
+      - If window not in active_windows AND already closed (watermark >= window_end):
+          → late_data_policy == Drop:           skip
+          → late_data_policy == ForwardToStore:  create mini-accumulator, emit
+      - Else: insert into active_windows, feed value to AccumulatorUpdater
+5. Detect newly closed windows via closed_windows(prev_wm, current_wm)
+6. Extract closed window accumulators → PrecomputedOutput + AggregateCore
+7. Emit batch to OutputSink
+8. Update previous_watermark_ms
+```
+
+#### Raw mode
+
+When `pass_raw_samples = true`, the entire aggregation pipeline is bypassed.
+Each sample is emitted as a `SumAccumulator::with_sum(value)` with point-window
+bounds `[ts, ts]` and the configured `raw_mode_aggregation_id`.
+
+### 3.5 SeriesBuffer (`series_buffer.rs`)
+
+Per-series in-memory buffer backed by `BTreeMap<i64, f64>`.
+
+```rust
+struct SeriesBuffer {
+    samples: BTreeMap<i64, f64>,   // timestamp_ms → value
+    watermark_ms: i64,              // max timestamp ever seen (monotonic)
+    max_buffer_size: usize,
+}
+```
+
+- Samples are automatically sorted by timestamp.
+- Watermark only advances forward (monotonic).
+- When the buffer exceeds `max_buffer_size`, the oldest samples are evicted.
+- Supports range reads (`read_range`) and destructive drains (`drain_up_to`).
+
+### 3.6 WindowManager (`window_manager.rs`)
+
+Handles both tumbling and sliding window semantics.
+
+```rust
+struct WindowManager {
+    window_size_ms: i64,       // e.g. 60_000
+    slide_interval_ms: i64,    // == window_size for tumbling; < window_size for sliding
+}
+```
+
+**Key methods:**
+
+| Method | Description |
+|--------|-------------|
+| `window_start_for(ts)` | Align timestamp down to nearest slide boundary |
+| `window_starts_containing(ts)` | All windows whose `[start, start+size)` includes `ts`. Tumbling → 1 window; sliding → `ceil(size/slide)` windows |
+| `closed_windows(prev_wm, curr_wm)` | Windows that transitioned open→closed as the watermark advanced |
+| `window_bounds(start)` | Returns `(start, start + window_size_ms)` |
+
+**Window closure rule:** a window `[S, S + size)` closes when `watermark >= S + size`.
+Once closed, a window never reopens.
+
+### 3.7 AccumulatorUpdater (`accumulator_factory.rs`)
+
+Trait-based interface for feeding samples into sketch accumulators:
+
+```rust
+trait AccumulatorUpdater: Send {
+    fn update_single(&mut self, value: f64, timestamp_ms: i64);
+    fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, timestamp_ms: i64);
+    fn take_accumulator(&mut self) -> Box<dyn AggregateCore>;
+    fn reset(&mut self);
+    fn is_keyed(&self) -> bool;
+    fn memory_usage_bytes(&self) -> usize;
+}
+```
+
+The factory function `create_accumulator_updater(config)` dispatches on
+`(aggregation_type, aggregation_sub_type)`:
+
+| Type | Sub-type | Updater |
+|------|----------|---------|
+| SingleSubpopulation | Sum | SumAccumulatorUpdater |
+| SingleSubpopulation | Min/Max | MinMaxAccumulatorUpdater |
+| SingleSubpopulation | Increase | IncreaseAccumulatorUpdater |
+| SingleSubpopulation | KLL | KllAccumulatorUpdater |
+| MultipleSubpopulation | Sum | MultipleSumUpdater |
+| MultipleSubpopulation | Min/Max | MultipleMinMaxUpdater |
+| MultipleSubpopulation | Increase | MultipleIncreaseUpdater |
+| MultipleSubpopulation | CMS | CmsAccumulatorUpdater |
+| MultipleSubpopulation | HydraKLL | HydraKllAccumulatorUpdater |
+
+### 3.8 OutputSink (`output_sink.rs`)
+
+```rust
+trait OutputSink: Send + Sync {
+    fn emit_batch(
+        &self,
+        outputs: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+```
+
+**Implementations:**
+- `StoreOutputSink` — calls `store.insert_precomputed_output_batch()`
+- `RawPassthroughSink` — same interface, used for raw mode
+- `NoopOutputSink` — testing helper that counts emitted items
+
+## 4. Data Model
+
+### PrecomputedOutput
+
+```rust
+pub struct PrecomputedOutput {
+    pub start_timestamp: u64,              // window start (ms)
+    pub end_timestamp: u64,                // window end (ms)
+    pub key: Option<KeyByLabelValues>,     // grouping key (e.g. method="GET")
+    pub aggregation_id: u64,
+}
+```
+
+### KeyByLabelValues
+
+Ordered vector of label values matching the `grouping_labels` in the aggregation
+config. Serialized as semicolon-delimited strings for hashing/storage.
+
+### AggregationConfig
+
+Loaded from `streaming_config.yaml`:
+
+```rust
+pub struct AggregationConfig {
+    pub aggregation_id: u64,
+    pub aggregation_type: String,        // "SingleSubpopulation" | "MultipleSubpopulation"
+    pub aggregation_sub_type: String,    // "Sum" | "Min" | "Max" | "Increase" | "KLL" | ...
+    pub parameters: HashMap<String, Value>,
+    pub grouping_labels: KeyByLabelNames,
+    pub window_size: u64,                // seconds
+    pub slide_interval: u64,             // seconds (0 = tumbling)
+    pub metric: String,
+    pub spatial_filter: String,
+    pub num_aggregates_to_retain: Option<u64>,
+    // ...
+}
+```
+
+## 5. Store Integration
+
+### Write path
+
+`OutputSink.emit_batch()` → `Store.insert_precomputed_output_batch()`
+
+The `SimpleMapStore` (PerKey variant) uses:
+```
+DashMap<aggregation_id, Arc<RwLock<StoreKeyData>>>
+```
+where:
+```rust
+struct StoreKeyData {
+    time_map: HashMap<(u64, u64), Vec<(Option<KeyByLabelValues>, Box<dyn AggregateCore>)>>,
+    read_counts: HashMap<(u64, u64), u64>,
+}
+```
+
+Multiple entries per `(start_ts, end_ts)` are allowed — they are appended, not
+overwritten. This is what makes `ForwardToStore` late-data policy work: the late
+mini-accumulator is stored alongside the original window accumulator.
+
+### Read path / query-time merge
+
+At query time, `PrecomputedSummaryReadExec` reads sparse buckets from the store.
+`SummaryMergeMultipleExec` groups by label key and merges via
+`accumulator.merge_with()`.
+
+The `NaiveMerger` re-merges all accumulators in the window on each slide.
+The store's existing multi-entry-per-window design means late data is
+automatically combined with original window data at query time.
+
+### Cleanup policies
+
+| Policy | Behavior |
+|--------|----------|
+| CircularBuffer | Keep N most recent windows (4x `num_aggregates_to_retain`) |
+| ReadBased | Remove after `read_count >= threshold` |
+| NoCleanup | Retain forever |
+
+## 6. Late Data Handling
+
+Two checks determine whether a sample is "late":
+
+1. **Watermark check** (sample-level): `ts < watermark - allowed_lateness_ms` →
+   sample is dropped entirely before reaching any aggregation logic.
+
+2. **Window closure check** (window-level): the sample passes the watermark check
+   but targets a window that is already closed
+   (`window not in active_windows && watermark >= window_end`).
+
+For case 2, the `LateDataPolicy` controls behavior:
+
+- **Drop**: log at debug level and skip. No ghost accumulator is created
+  (fixing the original bug where `or_insert_with` would create orphaned entries).
+
+- **ForwardToStore**: create a fresh `AccumulatorUpdater`, feed the single
+  late sample, wrap as `PrecomputedOutput`, and push into the same `emit_batch`
+  as normal closed-window outputs. The store appends it alongside the original
+  window data, and query-time merge combines them.
+
+## 7. Concurrency Model
+
+- **Ingest HTTP handler**: Axum async handler, stateless decoding.
+- **SeriesRouter**: Lock-free hash routing. No shared mutable state.
+- **Workers**: Each worker is single-threaded (owns its `series_map`).
+  No locks needed within a worker.
+- **OutputSink / Store**: Thread-safe (`Arc<dyn OutputSink>`, DashMap-backed store).
+  Workers emit concurrently; the PerKey store uses per-aggregation_id RwLocks
+  to minimize contention.
+- **Flush timer**: Separate tokio task, communicates via the same MPSC channels.
+
+## 8. Performance Characteristics
+
+**Ingest path (per batch):**
+- Sample insert: O(log B) per sample (BTreeMap, B = buffer size)
+- Window assignment: O(A × W) per sample (A = matching aggregations,
+  W = windows per sample — 1 for tumbling, ~3 for typical sliding)
+- Accumulator update: O(1) for Sum/MinMax, O(log k) for KLL
+
+**Memory:**
+- O(S × N) buffered samples (S = max per series, N = active series)
+- O(A × W_open) active window accumulators
+
+**Throughput:**
+- Workers process in parallel with no cross-shard coordination.
+- E2E test demonstrates ~10M samples/sec sustained throughput with raw mode.
+
+## 9. CLI Usage
+
+### Standalone binary
+
+```bash
+cargo run --bin precompute_engine -- \
+  --streaming-config streaming_config.yaml \
+  --ingest-port 9090 \
+  --num-workers 4 \
+  --allowed-lateness-ms 5000 \
+  --max-buffer-per-series 10000 \
+  --flush-interval-ms 1000 \
+  --channel-buffer-size 10000 \
+  --query-port 8080 \
+  --lock-strategy per-key \
+  --late-data-policy drop
+```
+
+### Embedded in main binary
+
+The precompute engine is also embedded in the main `query_engine_rust` binary,
+enabled via `--enable-prometheus-remote-write`. In this mode it shares the
+store with the Kafka consumer path.
+
+## 10. Testing
+
+- **Unit tests**: `worker.rs` (metric/label extraction), `window_manager.rs`
+  (tumbling/sliding arithmetic), `series_buffer.rs` (ordering, watermark),
+  `accumulator_factory.rs` (updater creation), `series_router.rs` (hashing),
+  `config.rs` (defaults).
+- **E2E test** (`bin/test_e2e_precompute.rs`): Starts engine + store + query
+  server in-process, sends remote-write samples, queries via PromQL HTTP,
+  validates results. Includes batch latency and throughput benchmarks.
+
+## 11. File Map
+
+| File | Purpose |
+|------|---------|
+| `precompute_engine/mod.rs` | Orchestrator, HTTP ingest handler |
+| `precompute_engine/config.rs` | `PrecomputeEngineConfig`, `LateDataPolicy` |
+| `precompute_engine/worker.rs` | Per-shard processing, aggregation, window management |
+| `precompute_engine/series_router.rs` | Hash-based series → worker routing |
+| `precompute_engine/series_buffer.rs` | Per-series BTreeMap sample buffer |
+| `precompute_engine/window_manager.rs` | Tumbling/sliding window logic |
+| `precompute_engine/accumulator_factory.rs` | `AccumulatorUpdater` trait + factory |
+| `precompute_engine/output_sink.rs` | `OutputSink` trait + Store/Noop impls |
+| `bin/precompute_engine.rs` | Standalone CLI binary |
+| `bin/test_e2e_precompute.rs` | End-to-end integration test |
