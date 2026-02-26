@@ -3,10 +3,10 @@
 ## 1. Overview
 
 The Precompute Engine is a real-time streaming aggregation system that sits between
-Prometheus-compatible metric producers and ASAP storage and query engine. It accepts raw
-time-series samples via the Prometheus remote-write protocol ingestion connector, buffers them, computes
-windowed aggregations (sketches), and writes the results to a store for fast
-query-time retrieval.
+metric producers and ASAP storage and query engine. It accepts raw
+time-series samples via multiple ingestion connectors (Prometheus remote write
+and VictoriaMetrics remote write), buffers them, computes windowed aggregations
+(sketches), and writes the results to a store for fast query-time retrieval.
 
 **Key properties:**
 - Single-machine, multi-threaded architecture (all workers run as async tasks within one process)
@@ -19,12 +19,17 @@ query-time retrieval.
 ## 2. Architecture
 
 ```
-                    Prometheus Remote Write
-                            |
+         Prometheus Remote Write       VictoriaMetrics Remote Write
+          (Snappy + Protobuf)             (Zstd + Protobuf)
+                  |                              |
+                  v                              v
+         POST /api/v1/write           POST /api/v1/import
+                  \                            /
+                   \                          /
                     Axum HTTP Server (:9090)
-                     POST /api/v1/write
                             |
-                    decode + group by series
+                  route_decoded_samples()
+                   (group by series key)
                             |
                      SeriesRouter (hash)
                    /        |        \
@@ -57,7 +62,7 @@ Top-level orchestrator. On `run()`:
 3. Spawns `Worker` tasks, each owning its receiver.
 4. Spawns a flush timer that calls `router.broadcast_flush()` every
    `flush_interval_ms`.
-5. Starts the Axum HTTP server and blocks until shutdown.
+5. Starts the Axum HTTP server with routes for each ingest connector and blocks until shutdown.
 
 ```rust
 pub struct PrecomputeEngine {
@@ -362,7 +367,7 @@ The current implementation is **single-machine, multi-threaded**. All components
 tasks on a shared thread pool. There is no distributed coordination, no
 cross-machine communication, and no external dependency beyond the store.
 
-- **Ingest HTTP handler**: Axum async handler, stateless decoding.
+- **Ingest HTTP handlers**: Per-connector Axum async handlers (Prometheus, VictoriaMetrics) with shared format-agnostic routing logic.
 - **SeriesRouter**: Lock-free hash routing. No shared mutable state.
 - **Workers**: Each worker is a single Tokio task that owns its `series_map`
   exclusively. No locks needed within a worker — thread safety comes from
