@@ -455,10 +455,10 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
         let key_str = key_values.join(";");
         let key_bytes = key_str.as_bytes();
 
-        for i in 0..self.acc.row_num {
+        for i in 0..self.acc.inner.row_num {
             let hash_value = xxhash_rust::xxh32::xxh32(key_bytes, i as u32);
-            let col_index = (hash_value as usize) % self.acc.col_num;
-            self.acc.sketch[i][col_index] += value;
+            let col_index = (hash_value as usize) % self.acc.inner.col_num;
+            self.acc.inner.sketch[i][col_index] += value;
         }
     }
 
