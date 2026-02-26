@@ -492,6 +492,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
     }
 
+    // -----------------------------------------------------------------------
+    // SCALABILITY TEST
+    // Measure throughput as a function of worker count (1, 2, 4, 8, 16)
+    // to verify linear scaling with cores. Uses sliding 30s/10s Sum (W=3)
+    // with NoopOutputSink.
+    // -----------------------------------------------------------------------
+    let scale_results = run_scalability_benchmark(&client).await?;
+    println!("\n=== Scalability benchmark summary (Sliding 30s/10s Sum, W=3) ===");
+    println!(
+        "  {:<10} {:>12} {:>12} {:>10}",
+        "Workers", "Send (s/s)", "E2E (s/s)", "Speedup"
+    );
+    let baseline_e2e = scale_results
+        .first()
+        .map(|r| r.e2e_throughput)
+        .unwrap_or(1.0);
+    for r in &scale_results {
+        println!(
+            "  {:<10} {:>12.0} {:>12.0} {:>10.2}x",
+            r.label,
+            r.send_throughput,
+            r.e2e_throughput,
+            r.e2e_throughput / baseline_e2e
+        );
+    }
+
     println!("\n=== E2E test complete ===");
 
     Ok(())
@@ -547,6 +573,7 @@ async fn run_single_bench(
     label: &str,
     port: u16,
     streaming_config: Arc<StreamingConfig>,
+    num_workers: usize,
     num_requests: u64,
     samples_per_request: u64,
     num_series: u64,
@@ -555,7 +582,7 @@ async fn run_single_bench(
 
     let noop_sink = Arc::new(NoopOutputSink::new());
     let engine_config = PrecomputeEngineConfig {
-        num_workers: 4,
+        num_workers,
         ingest_port: port,
         allowed_lateness_ms: 5000,
         max_buffer_per_series: 100_000,
@@ -685,6 +712,48 @@ async fn run_windowed_benchmarks(
             label,
             port,
             sc,
+            4,
+            num_requests,
+            samples_per_request,
+            num_series,
+        )
+        .await?;
+        results.push(r);
+    }
+
+    Ok(results)
+}
+
+async fn run_scalability_benchmark(
+    client: &reqwest::Client,
+) -> Result<Vec<BenchResult>, Box<dyn std::error::Error + Send + Sync>> {
+    let num_requests = 200u64;
+    let samples_per_request = 5_000u64;
+    let num_series = 100u64; // more series to give workers enough parallel work
+    let worker_counts: Vec<usize> = vec![1, 2, 4, 8, 16];
+    let base_port: u16 = 19200;
+
+    println!(
+        "\n=== Scalability benchmark ({num_requests} req × {samples_per_request} samples, \
+         {num_series} series, Sliding 30s/10s Sum) ==="
+    );
+
+    let mut results = Vec::new();
+    for (i, &num_workers) in worker_counts.iter().enumerate() {
+        let port = base_port + i as u16;
+        let label = format!("{num_workers}");
+
+        let agg_config = make_sum_agg_config(200 + i as u64, 30, 10);
+        let mut agg_map = HashMap::new();
+        agg_map.insert(200 + i as u64, agg_config);
+        let sc = Arc::new(StreamingConfig::new(agg_map));
+
+        let r = run_single_bench(
+            client,
+            &label,
+            port,
+            sc,
+            num_workers,
             num_requests,
             samples_per_request,
             num_series,
