@@ -3,15 +3,14 @@
 ## 1. Overview
 
 The Precompute Engine is a real-time streaming aggregation system that sits between
-metric producers and ASAP storage and query engine. It accepts raw
-time-series samples via multiple ingestion connectors (Prometheus remote write
-and VictoriaMetrics remote write), buffers them, computes windowed aggregations
-(sketches), and writes the results to a store for fast query-time retrieval.
+Prometheus-compatible metric producers and ASAP storage and query engine. It accepts raw
+time-series samples via the Prometheus remote-write protocol, buffers them, computes
+windowed aggregations (sketches), and writes the results to a store for fast
+query-time retrieval.
 
 **Key properties:**
-- Single-machine, multi-threaded architecture (all workers run as async tasks within one process)
 - Watermark-based windowed aggregation (tumbling and sliding windows)
-- Shared-nothing worker design: series are hash-partitioned across threads with no cross-worker coordination
+- Multi-threaded, shard-nothing worker architecture
 - Pluggable accumulator types (Sum, Min/Max, Increase, KLL, CMS, HydraKLL)
 - Configurable late-data handling (Drop or ForwardToStore)
 - Optional raw passthrough mode for bypassing aggregation
@@ -19,17 +18,12 @@ and VictoriaMetrics remote write), buffers them, computes windowed aggregations
 ## 2. Architecture
 
 ```
-         Prometheus Remote Write       VictoriaMetrics Remote Write
-          (Snappy + Protobuf)             (Zstd + Protobuf)
-                  |                              |
-                  v                              v
-         POST /api/v1/write           POST /api/v1/import
-                  \                            /
-                   \                          /
-                    Axum HTTP Server (:9090)
+                    Prometheus Remote Write
                             |
-                  route_decoded_samples()
-                   (group by series key)
+                    Axum HTTP Server (:9090)
+                     POST /api/v1/write
+                            |
+                    decode + group by series
                             |
                      SeriesRouter (hash)
                    /        |        \
@@ -62,7 +56,7 @@ Top-level orchestrator. On `run()`:
 3. Spawns `Worker` tasks, each owning its receiver.
 4. Spawns a flush timer that calls `router.broadcast_flush()` every
    `flush_interval_ms`.
-5. Starts the Axum HTTP server with routes for each ingest connector and blocks until shutdown.
+5. Starts the Axum HTTP server and blocks until shutdown.
 
 ```rust
 pub struct PrecomputeEngine {
@@ -146,53 +140,9 @@ struct SeriesState {
 struct AggregationState {
     config: AggregationConfig,
     window_manager: WindowManager,
-    active_panes: BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
+    active_windows: HashMap<i64, Box<dyn AccumulatorUpdater>>,
 }
 ```
-
-#### Pane-Based Sliding Window Optimization
-
-The worker uses **pane-based incremental computation** to reduce per-sample
-work for sliding windows. The timeline is divided into non-overlapping **panes**
-of size `slide_interval`. Each window is composed of `W = window_size /
-slide_interval` consecutive panes. Consecutive windows share W-1 panes.
-
-```
-Panes:     [0,10)  [10,20)  [20,30)  [30,40)  [40,50)
-Window A:  [───────── 0,30 ─────────)
-Window B:          [───────── 10,40 ─────────)
-Window C:                  [───────── 20,50 ─────────)
-```
-
-**Why panes instead of subtraction?** Only Sum is invertible. MinMax, Increase,
-KLL, CMS, HydraKLL are all non-invertible. Pane+merge works universally because
-all accumulator types implement `AggregateCore::merge_with()`.
-
-**Performance comparison** (N samples per window, W = window_size / slide_interval):
-
-| | Per-window approach | Pane-based |
-|--|---------|------------|
-| Per-sample accumulator updates | N × W | N × 1 |
-| Per-window-close merges | 0 | W - 1 |
-| Per-window-close clones | 0 | W - 2 (shared panes) |
-
-Net win when N >> W (typical: thousands of samples per window, W = 3-5).
-For tumbling windows (W=1), panes degenerate to 1 pane = 1 window with
-zero merges — identical behavior to the non-pane approach.
-
-**Key methods:**
-
-| Method | Description |
-|--------|-------------|
-| `pane_start_for(ts)` | Align timestamp to slide grid (same as `window_start_for`) |
-| `panes_for_window(ws)` | All pane starts composing window `[ws, ws+size)` |
-| `snapshot_accumulator()` | Non-destructive read of a pane's accumulator (for shared panes) |
-
-**Pane eviction:** When window `[S, S+W)` closes, pane `[S, S+slide)` is the
-oldest pane and is not needed by any later window (next window starts at
-`S+slide`). It is destructively consumed via `take_accumulator()` and removed
-from `active_panes`. Remaining panes are read non-destructively via
-`snapshot_accumulator()`.
 
 #### Processing pipeline (`process_samples`)
 
@@ -201,18 +151,14 @@ from `active_panes`. Remaining panes are read non-destructively via
 2. Insert samples into SeriesBuffer, update watermark
 3. Drop samples beyond allowed_lateness_ms behind watermark
 4. For each sample × each aggregation:
-   a. Compute pane_start = pane_start_for(ts)
-   b. If pane was evicted (late data for closed window):
-      → late_data_policy == Drop:           skip
-      → late_data_policy == ForwardToStore:  create mini-accumulator, emit
-   c. Else: get-or-create pane in active_panes, feed value (1 update per sample)
+   a. Compute window_starts_containing(ts)
+   b. For each window_start:
+      - If window not in active_windows AND already closed (watermark >= window_end):
+          → late_data_policy == Drop:           skip
+          → late_data_policy == ForwardToStore:  create mini-accumulator, emit
+      - Else: insert into active_windows, feed value to AccumulatorUpdater
 5. Detect newly closed windows via closed_windows(prev_wm, current_wm)
-6. For each closed window:
-   a. Get pane starts via panes_for_window(window_start)
-   b. Oldest pane: take_accumulator() + remove from active_panes (destructive)
-   c. Remaining panes: snapshot_accumulator() (non-destructive, shared)
-   d. Merge all pane accumulators via AggregateCore::merge_with()
-   e. Emit merged result as PrecomputedOutput + AggregateCore
+6. Extract closed window accumulators → PrecomputedOutput + AggregateCore
 7. Emit batch to OutputSink
 8. Update previous_watermark_ms
 ```
@@ -259,52 +205,9 @@ struct WindowManager {
 | `window_starts_containing(ts)` | All windows whose `[start, start+size)` includes `ts`. Tumbling → 1 window; sliding → `ceil(size/slide)` windows |
 | `closed_windows(prev_wm, curr_wm)` | Windows that transitioned open→closed as the watermark advanced |
 | `window_bounds(start)` | Returns `(start, start + window_size_ms)` |
-| `pane_start_for(ts)` | Pane start for a timestamp (same slide-aligned grid as `window_start_for`) |
-| `panes_for_window(ws)` | All pane starts composing window `[ws, ws+size)`, in ascending order |
-| `slide_interval_ms()` | Slide interval accessor |
 
 **Window closure rule:** a window `[S, S + size)` closes when `watermark >= S + size`.
 Once closed, a window never reopens.
-
-#### Sliding window mechanics
-
-Tumbling windows are a special case of sliding windows where
-`slide_interval == window_size`. The same code handles both — no separate paths.
-
-**`window_start_for(ts)`** aligns a timestamp to the slide grid:
-```rust
-let n = timestamp_ms.div_euclid(slide_interval_ms);
-n * slide_interval_ms
-```
-
-**`window_starts_containing(ts)`** returns all windows whose `[start, start+size)`
-contains the timestamp, by walking backwards from the aligned start:
-```rust
-let mut start = window_start_for(timestamp_ms);
-while start + window_size_ms > timestamp_ms {
-    starts.push(start);
-    start -= slide_interval_ms;
-}
-```
-
-For tumbling windows this always yields exactly 1 result. For sliding windows,
-each sample belongs to `ceil(window_size / slide_interval)` overlapping windows.
-
-**Example** (30s window, 10s slide):
-```
-t=15s → belongs to windows [0, 30s), [10s, 40s), [-10s, 20s)   (3 windows)
-t=35s → belongs to windows [30s, 60s), [20s, 50s), [10s, 40s)  (3 windows)
-```
-
-**`closed_windows(prev_wm, curr_wm)`** finds windows that transitioned open→closed
-as the watermark advanced. It scans forward from the earliest possibly-open window
-start, collecting those where `start + size <= curr_wm` (now closed) AND
-`start + size > prev_wm` (was still open before).
-
-The worker calls `window_starts_containing(ts)` for each incoming sample and feeds
-the value into the accumulator for every matching window. When
-`closed_windows()` fires, each closed window's accumulator is extracted and
-emitted independently.
 
 ### 3.7 AccumulatorUpdater (`accumulator_factory.rs`)
 
@@ -315,16 +218,11 @@ trait AccumulatorUpdater: Send {
     fn update_single(&mut self, value: f64, timestamp_ms: i64);
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, timestamp_ms: i64);
     fn take_accumulator(&mut self) -> Box<dyn AggregateCore>;
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore>;  // non-destructive clone
     fn reset(&mut self);
     fn is_keyed(&self) -> bool;
     fn memory_usage_bytes(&self) -> usize;
 }
 ```
-
-`snapshot_accumulator()` returns a clone of the current state without resetting.
-Used by pane-based sliding windows to read shared panes that are still needed
-by future windows.
 
 The factory function `create_accumulator_updater(config)` dispatches on
 `(aggregation_type, aggregation_sub_type)`:
@@ -401,28 +299,6 @@ pub struct AggregationConfig {
 
 `OutputSink.emit_batch()` → `Store.insert_precomputed_output_batch()`
 
-Because the precompute engine runs in the same process as the store, the write
-path involves **zero serialization and zero network hops**. Closed window
-accumulators flow from worker to store entirely as in-memory trait objects:
-
-```
-Worker: updater.take_accumulator()     → Box<dyn AggregateCore>  (in-memory)
-   ↓  (direct function call, no IPC)
-OutputSink: store.insert_precomputed_output_batch(outputs)  (pass-through)
-   ↓  (direct function call, same process)
-SimpleMapStore: HashMap entry insert   → Box<dyn AggregateCore>  (stored as-is)
-```
-
-No serialization, deserialization, compression, or network transfer occurs
-between the worker extracting an accumulator and the store persisting it.
-The only network hops in the system are at the edges: HTTP ingest (in) and
-HTTP query (out). Serialization of accumulators only happens on the read path
-when query results are returned to clients.
-
-This is in contrast to the external Kafka ingest path, where precomputes from
-Arroyo/Flink arrive hex-encoded + gzip-compressed + MessagePack-serialized and
-require multiple deserialization steps.
-
 The `SimpleMapStore` (PerKey variant) uses:
 ```
 DashMap<aggregation_id, Arc<RwLock<StoreKeyData>>>
@@ -480,40 +356,26 @@ For case 2, the `LateDataPolicy` controls behavior:
 
 ## 7. Concurrency Model
 
-The current implementation is **single-machine, multi-threaded**. All components
-(HTTP server, workers, store) run within a single OS process as Tokio async
-tasks on a shared thread pool. There is no distributed coordination, no
-cross-machine communication, and no external dependency beyond the store.
-
-- **Ingest HTTP handlers**: Per-connector Axum async handlers (Prometheus, VictoriaMetrics) with shared format-agnostic routing logic.
+- **Ingest HTTP handler**: Axum async handler, stateless decoding.
 - **SeriesRouter**: Lock-free hash routing. No shared mutable state.
-- **Workers**: Each worker is a single Tokio task that owns its `series_map`
-  exclusively. No locks needed within a worker — thread safety comes from
-  the hash-partitioning guarantee that each series is assigned to exactly one
-  worker.
+- **Workers**: Each worker is single-threaded (owns its `series_map`).
+  No locks needed within a worker.
 - **OutputSink / Store**: Thread-safe (`Arc<dyn OutputSink>`, DashMap-backed store).
   Workers emit concurrently; the PerKey store uses per-aggregation_id RwLocks
   to minimize contention.
-- **Flush timer**: Separate Tokio task, communicates via the same MPSC channels.
-
-Scaling beyond a single machine would require partitioning the series space
-across multiple engine instances (e.g. via consistent hashing at the load
-balancer level), each running this same single-process architecture
-independently.
+- **Flush timer**: Separate tokio task, communicates via the same MPSC channels.
 
 ## 8. Performance Characteristics
 
 **Ingest path (per batch):**
 - Sample insert: O(log B) per sample (BTreeMap, B = buffer size)
-- Pane routing: O(A) per sample (A = matching aggregations; each sample
-  touches exactly 1 pane per aggregation, regardless of window overlap)
+- Window assignment: O(A × W) per sample (A = matching aggregations,
+  W = windows per sample — 1 for tumbling, ~3 for typical sliding)
 - Accumulator update: O(1) for Sum/MinMax, O(log k) for KLL
-- Window close: O(W-1) merges per closed window (W = window_size / slide_interval)
 
 **Memory:**
 - O(S × N) buffered samples (S = max per series, N = active series)
-- O(A × W_open) active pane accumulators (fewer than window accumulators
-  since panes are shared across overlapping windows)
+- O(A × W_open) active window accumulators
 
 **Throughput:**
 - Workers process in parallel with no cross-shard coordination.
