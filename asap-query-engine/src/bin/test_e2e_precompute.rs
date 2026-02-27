@@ -399,37 +399,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Send many requests back-to-back and measure sustained throughput
     // (samples/sec). Uses the raw-mode engine for a clean measurement.
     // -----------------------------------------------------------------------
-    println!("\n=== Throughput test: 1000 requests × 10000 samples ===");
+    let num_concurrent_senders = 8usize;
+    println!("\n=== Throughput test: 1000 requests × 10000 samples ({num_concurrent_senders} concurrent senders) ===");
 
     let num_requests = 1000u64;
     let samples_per_request = 10_000u64;
     let total_samples = num_requests * samples_per_request;
 
-    // Pre-build all request bodies so serialization doesn't count against throughput
+    // Pre-build all request bodies in parallel using rayon-style chunking via tokio tasks.
+    // Each task builds its share of requests, then we flatten the results.
+    let num_build_tasks = num_concurrent_senders;
+    let requests_per_task = (num_requests as usize + num_build_tasks - 1) / num_build_tasks;
+    let mut build_handles = Vec::with_capacity(num_build_tasks);
+    for task_idx in 0..num_build_tasks {
+        let start = task_idx * requests_per_task;
+        let end = ((task_idx + 1) * requests_per_task).min(num_requests as usize);
+        build_handles.push(tokio::task::spawn_blocking(move || {
+            let mut chunk = Vec::with_capacity(end - start);
+            for req_idx in start..end {
+                let mut timeseries = Vec::with_capacity(samples_per_request as usize);
+                for s in 0..samples_per_request {
+                    let series_label = format!("tp_{}", s % 50); // 50 distinct series
+                    let ts = 300_000 + req_idx as i64 * 10_000 + s as i64;
+                    timeseries.push(make_sample("fake_metric", &series_label, ts, s as f64));
+                }
+                chunk.push(build_remote_write_body(timeseries));
+            }
+            chunk
+        }));
+    }
     let mut bodies = Vec::with_capacity(num_requests as usize);
-    for req_idx in 0..num_requests {
-        let mut timeseries = Vec::with_capacity(samples_per_request as usize);
-        for s in 0..samples_per_request {
-            let series_label = format!("tp_{}", s % 50); // 50 distinct series
-            let ts = 300_000 + req_idx as i64 * 10_000 + s as i64;
-            timeseries.push(make_sample("fake_metric", &series_label, ts, s as f64));
-        }
-        bodies.push(build_remote_write_body(timeseries));
+    for handle in build_handles {
+        bodies.extend(handle.await?);
     }
 
     let throughput_start = std::time::Instant::now();
 
+    // Send requests using multiple concurrent sender tasks
+    let mut body_chunks: Vec<Vec<Vec<u8>>> = vec![Vec::new(); num_concurrent_senders];
     for (i, body) in bodies.into_iter().enumerate() {
-        let resp = client
-            .post(format!("http://localhost:{RAW_INGEST_PORT}/api/v1/write"))
-            .header("Content-Type", "application/x-protobuf")
-            .header("Content-Encoding", "snappy")
-            .body(body)
-            .send()
-            .await?;
-        if resp.status() != reqwest::StatusCode::NO_CONTENT {
-            eprintln!("  Request {i} failed: {}", resp.status());
-        }
+        body_chunks[i % num_concurrent_senders].push(body);
+    }
+    let mut send_handles = Vec::new();
+    for chunk in body_chunks {
+        let client = client.clone();
+        let url = format!("http://localhost:{RAW_INGEST_PORT}/api/v1/write");
+        send_handles.push(tokio::spawn(async move {
+            for body in chunk {
+                let resp = client
+                    .post(&url)
+                    .header("Content-Type", "application/x-protobuf")
+                    .header("Content-Encoding", "snappy")
+                    .body(body)
+                    .send()
+                    .await;
+                if let Ok(r) = resp {
+                    if r.status() != reqwest::StatusCode::NO_CONTENT {
+                        eprintln!("  request failed: {}", r.status());
+                    }
+                }
+            }
+        }));
+    }
+    for handle in send_handles {
+        handle.await?;
     }
 
     let send_elapsed = throughput_start.elapsed();
@@ -574,6 +607,7 @@ async fn run_single_bench(
     port: u16,
     streaming_config: Arc<StreamingConfig>,
     num_workers: usize,
+    num_concurrent_senders: usize,
     num_requests: u64,
     samples_per_request: u64,
     num_series: u64,
@@ -626,19 +660,37 @@ async fn run_single_bench(
         .await?;
     let batch_latency_ms = t0.elapsed().as_secs_f64() * 1000.0;
 
-    // --- Throughput: all requests ---
+    // --- Throughput: all requests with concurrent senders ---
     let throughput_start = std::time::Instant::now();
-    for body in bodies {
-        let resp = client
-            .post(format!("http://localhost:{port}/api/v1/write"))
-            .header("Content-Type", "application/x-protobuf")
-            .header("Content-Encoding", "snappy")
-            .body(body)
-            .send()
-            .await?;
-        if resp.status() != reqwest::StatusCode::NO_CONTENT {
-            eprintln!("  {label}: request failed: {}", resp.status());
-        }
+
+    // Round-robin distribute request bodies across concurrent sender tasks
+    let mut body_chunks: Vec<Vec<Vec<u8>>> = vec![Vec::new(); num_concurrent_senders];
+    for (i, body) in bodies.into_iter().enumerate() {
+        body_chunks[i % num_concurrent_senders].push(body);
+    }
+    let mut send_handles = Vec::new();
+    for chunk in body_chunks {
+        let client = client.clone();
+        let url = format!("http://localhost:{port}/api/v1/write");
+        send_handles.push(tokio::spawn(async move {
+            for body in chunk {
+                let resp = client
+                    .post(&url)
+                    .header("Content-Type", "application/x-protobuf")
+                    .header("Content-Encoding", "snappy")
+                    .body(body)
+                    .send()
+                    .await;
+                if let Ok(r) = resp {
+                    if r.status() != reqwest::StatusCode::NO_CONTENT {
+                        eprintln!("  request failed: {}", r.status());
+                    }
+                }
+            }
+        }));
+    }
+    for handle in send_handles {
+        handle.await?;
     }
     let send_elapsed = throughput_start.elapsed();
 
@@ -713,6 +765,7 @@ async fn run_windowed_benchmarks(
             port,
             sc,
             4,
+            4, // concurrent senders to saturate workers
             num_requests,
             samples_per_request,
             num_series,
@@ -754,6 +807,7 @@ async fn run_scalability_benchmark(
             port,
             sc,
             num_workers,
+            num_workers, // concurrent senders match worker count
             num_requests,
             samples_per_request,
             num_series,
