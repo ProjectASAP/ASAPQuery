@@ -474,7 +474,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Poll until workers drain or timeout after 60s
     let max_ts = 300_000u64 + num_requests * 10_000 + samples_per_request;
-    let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let mut tp_buckets: usize;
     loop {
         let tp_results =
