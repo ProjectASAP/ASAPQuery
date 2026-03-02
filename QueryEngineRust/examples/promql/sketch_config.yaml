@@ -1,0 +1,10 @@
+eh_univ:
+  k: 50
+  time_window: 1000000
+eh_kll:
+  k: 50
+  kll_k: 256
+  time_window: 1000000
+sampling:
+  sample_rate: 0.2
+  time_window: 1000000

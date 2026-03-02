@@ -1,0 +1,21 @@
+aggregations:
+- aggregationId: 1
+  aggregationType: DatasketchesKLL
+  aggregationSubType: ''
+  labels:
+    grouping: [label_0]
+    rollup: [instance, job, label_1]
+    aggregated: []
+  metric: fake_metric
+  parameters:
+    K: 20
+  tumblingWindowSize: 1
+  windowSize: 1
+  windowType: tumbling
+  spatialFilter: ''
+metrics:
+  fake_metric:
+  - instance
+  - job
+  - label_0
+  - label_1

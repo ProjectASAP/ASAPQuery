@@ -1,0 +1,43 @@
+# QueryEngine Rust Docker Compose Template
+# This template is rendered with Jinja2 to generate the final docker-compose.yml
+
+version: '3.8'
+
+services:
+  queryengine-rust:
+    image: sketchdb-queryengine-rust:latest
+    container_name: {{ container_name }}
+    environment:
+      - RUST_LOG={{ log_level }}
+      - RUST_BACKTRACE=1
+    ports:
+      - "{{ http_port }}:8088"
+    network_mode: "host"
+    volumes:
+      # Mount output directory for experiment results
+      - "{{ experiment_output_dir }}:/app/outputs"
+      # Mount controller output directory for configuration files (read-only)
+      - "{{ controller_remote_output_dir }}:/app/controller_output:ro"
+    command: [
+      "--kafka-topic", "{{ kafka_topic }}",
+      "--kafka-broker", "{{ kafka_host }}:9092",
+      "--input-format", "{{ input_format }}",
+      "--config", "/app/controller_output/inference_config.yaml",
+      "--streaming-config", "/app/controller_output/streaming_config.yaml",
+      "--prometheus-server", "http://{{ prometheus_host }}:{{ prometheus_port }}",
+      "--prometheus-scrape-interval", "{{ prometheus_scrape_interval }}",
+      "--delete-existing-db",
+      "--log-level", "{{ log_level }}",
+      "--output-dir", "/app/outputs",
+      "--streaming-engine", "{{ streaming_engine }}",
+      "--query-language", "{{ query_language }}",
+      "--lock-strategy", "{{ lock_strategy }}"{% if compress_json %},
+      "--decompress-json"{% endif %}{% if profile_query_engine %},
+      "--do-profiling"{% endif %}{% if forward_unsupported_queries %},
+      "--forward-unsupported-queries"{% endif %}{% if dump_precomputes %},
+      "--dump-precomputes"{% endif %}
+    ]
+    extra_hosts:
+      - "kafka:{{ kafka_host }}"
+      - "prometheus:{{ prometheus_host }}"
+    restart: no
