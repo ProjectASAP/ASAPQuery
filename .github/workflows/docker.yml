@@ -1,0 +1,57 @@
+name: Docker Builds
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'CommonDependencies/installation/**'
+      - 'Controller/**'
+      - 'PrometheusClient/**'
+      - '.github/workflows/docker.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'CommonDependencies/installation/**'
+      - 'Controller/**'
+      - 'PrometheusClient/**'
+      - '.github/workflows/docker.yml'
+  workflow_dispatch:
+
+jobs:
+  build-images:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build base image
+        working-directory: CommonDependencies/installation
+        run: |
+          docker build \
+            -t sketchdb-base:latest \
+            -f Dockerfile \
+            ..
+
+      - name: Test base image
+        run: |
+          docker run --rm sketchdb-base:latest python --version
+          docker run --rm sketchdb-base:latest pip list
+
+      - name: Build Controller Docker image
+        working-directory: Controller
+        run: |
+          docker build \
+            -t sketchdb-controller:latest \
+            -f Dockerfile \
+            .
+
+      - name: Build PrometheusClient Docker image
+        working-directory: PrometheusClient
+        run: |
+          docker build \
+            -t sketchdb-prometheus-client:latest \
+            -f Dockerfile \
+            .

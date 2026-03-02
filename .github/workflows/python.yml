@@ -1,0 +1,248 @@
+name: Python Projects CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ArroyoSketch/**'
+      - 'PrometheusClient/**'
+      - 'Controller/**'
+      - 'Utilities/**'
+      - 'PrometheusExporters/**'
+      - 'ExecutionUtilities/**'
+      - 'CommonDependencies/dependencies/py/**'
+      - '.github/workflows/python.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'ArroyoSketch/**'
+      - 'PrometheusClient/**'
+      - 'Controller/**'
+      - 'Utilities/**'
+      - 'PrometheusExporters/**'
+      - 'ExecutionUtilities/**'
+      - 'CommonDependencies/dependencies/py/**'
+      - '.github/workflows/python.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      arroyo_sketch: ${{ steps.filter.outputs.arroyo_sketch }}
+      prometheus_client: ${{ steps.filter.outputs.prometheus_client }}
+      controller: ${{ steps.filter.outputs.controller }}
+      utilities: ${{ steps.filter.outputs.utilities }}
+      prometheus_exporters: ${{ steps.filter.outputs.prometheus_exporters }}
+      execution_utilities: ${{ steps.filter.outputs.execution_utilities }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v2
+        id: filter
+        with:
+          filters: |
+            arroyo_sketch:
+              - 'ArroyoSketch/**'
+              - 'CommonDependencies/dependencies/py/**'
+            prometheus_client:
+              - 'PrometheusClient/**'
+              - 'CommonDependencies/dependencies/py/**'
+            controller:
+              - 'Controller/**'
+              - 'CommonDependencies/dependencies/py/**'
+            utilities:
+              - 'Utilities/**'
+              - 'CommonDependencies/dependencies/py/**'
+            prometheus_exporters:
+              - 'PrometheusExporters/**'
+              - 'CommonDependencies/dependencies/py/**'
+            execution_utilities:
+              - 'ExecutionUtilities/**'
+              - 'CommonDependencies/dependencies/py/**'
+
+  test-arroyo-sketch:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.arroyo_sketch == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.8.0 flake8==6.1.0
+        if [ -f ArroyoSketch/requirements.txt ]; then pip install -r ArroyoSketch/requirements.txt; fi
+    - name: Check formatting with Black
+      working-directory: ArroyoSketch
+      run: black --check --diff .
+    - name: Lint with flake8
+      working-directory: ArroyoSketch
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+
+  test-prometheus-client:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.prometheus_client == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.8.0 flake8==6.1.0 mypy types-requests types-PyYAML typing-extensions numpy prometheus-client urllib3
+        if [ -f PrometheusClient/requirements.txt ]; then pip install -r PrometheusClient/requirements.txt; fi
+    - name: Check formatting with Black
+      working-directory: PrometheusClient
+      run: black --check --diff .
+    - name: Lint with flake8
+      working-directory: PrometheusClient
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+    - name: Type check with mypy
+      working-directory: PrometheusClient
+      run: mypy .
+
+  test-controller:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.controller == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.8.0 flake8==6.1.0
+        if [ -f Controller/requirements.txt ]; then pip install -r Controller/requirements.txt; fi
+    - name: Check formatting with Black
+      working-directory: Controller
+      run: black --check --diff .
+    - name: Lint with flake8
+      working-directory: Controller
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+
+  test-utilities:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.utilities == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.8.0 flake8==6.1.0
+        if [ -f Utilities/requirements.txt ]; then pip install -r Utilities/requirements.txt; fi
+    - name: Check formatting with Black
+      working-directory: Utilities
+      run: black --check --diff .
+    - name: Lint with flake8
+      working-directory: Utilities
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+
+  test-prometheus-exporters:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.prometheus_exporters == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.8.0 flake8==6.1.0 mypy isort
+        if [ -f PrometheusExporters/requirements.txt ]; then pip install -r PrometheusExporters/requirements.txt; fi
+    - name: Check formatting with Black
+      working-directory: PrometheusExporters
+      run: black --check --diff .
+    - name: Check import sorting with isort
+      working-directory: PrometheusExporters
+      run: isort --check-only --diff --settings-file .isort.cfg .
+    - name: Lint with flake8
+      working-directory: PrometheusExporters
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+    - name: Type check with mypy
+      working-directory: PrometheusExporters
+      run: mypy . --config-file=.mypy.ini
+
+  test-execution-utilities:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.execution_utilities == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.8", "3.9", "3.10", "3.11"]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.8.0 flake8==6.1.0
+        if [ -f ExecutionUtilities/requirements.txt ]; then pip install -r ExecutionUtilities/requirements.txt; fi
+    - name: Check formatting with Black
+      working-directory: ExecutionUtilities
+      run: black --check --diff .
+    - name: Lint with flake8
+      working-directory: ExecutionUtilities
+      run: |
+        # Stop the build if there are Python syntax errors or undefined names
+        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        # Exit-zero treats all errors as warnings
+        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics

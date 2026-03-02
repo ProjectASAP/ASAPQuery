@@ -1,0 +1,151 @@
+name: Rust Projects CI
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'QueryEngineRust/**'
+      - 'CommonDependencies/dependencies/rs/**'
+      - 'CommonDependencies/tests/**'
+      - 'sketch-core/**'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'QueryEngineRust/**'
+      - 'CommonDependencies/dependencies/rs/**'
+      - 'CommonDependencies/tests/**'
+      - 'sketch-core/**'
+      - '.github/workflows/rust.yml'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  format-and-lint:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    # - name: Configure git for private dependencies
+    #   run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+    # - name: Clone sketchlib-rust
+    #   run: git clone https://github.com/ProjectASAP/sketchlib-rust.git
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: rustfmt, clippy
+
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.4
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          QueryEngineRust/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Check formatting
+      run: cargo fmt -- --check
+      working-directory: QueryEngineRust
+
+    - name: Check formatting (sketch_db_common)
+      run: cargo fmt -- --check
+      working-directory: CommonDependencies/dependencies/rs/sketch_db_common
+
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      working-directory: QueryEngineRust
+      env:
+        RUSTC_WRAPPER: sccache
+
+    - name: Check formatting (sketch-core)
+      run: cargo fmt -- --check
+      working-directory: sketch-core
+
+    - name: Run clippy (sketch-core)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      working-directory: sketch-core
+      env:
+        RUSTC_WRAPPER: sccache
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    # - name: Configure git for private dependencies
+    #   run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+    # - name: Clone sketchlib-rust
+    #   run: git clone https://github.com/ProjectASAP/sketchlib-rust.git
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+
+    - name: Run sccache-cache
+      uses: mozilla-actions/sccache-action@v0.0.4
+
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          QueryEngineRust/target
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Run QueryEngineRust tests
+      run: cargo test
+      working-directory: QueryEngineRust
+      env:
+        RUSTC_WRAPPER: sccache
+
+    - name: Run sql_utilities tests
+      run: cargo test
+      working-directory: CommonDependencies/dependencies/rs/sql_utilities
+      env:
+        RUSTC_WRAPPER: sccache
+
+    - name: Run promql_utilities tests
+      run: cargo test
+      working-directory: CommonDependencies/dependencies/rs/promql_utilities
+      env:
+        RUSTC_WRAPPER: sccache
+
+    - name: Run sketch-core tests
+      run: cargo test
+      working-directory: sketch-core
+    - name: Run sketch_db_common tests
+      run: cargo test
+      working-directory: CommonDependencies/dependencies/rs/sketch_db_common
+      env:
+        RUSTC_WRAPPER: sccache
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: [format-and-lint, test]
+    steps:
+    - uses: actions/checkout@v4
+
+    # - name: Configure git for private dependencies
+    #   run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image
+      run: docker build -f QueryEngineRust/Dockerfile -t sketchdb-queryengine-rust:latest .
+    #   run: |
+    #     echo "${{ secrets.PRIVATE_REPO_TOKEN }}" > /tmp/git_token
+    #     docker build --secret id=git_token,src=/tmp/git_token -f QueryEngineRust/Dockerfile -t sketchdb-queryengine-rust:latest .
+    #     rm -f /tmp/git_token

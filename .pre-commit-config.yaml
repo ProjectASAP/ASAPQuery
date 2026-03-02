@@ -1,0 +1,179 @@
+repos:
+  # General hooks for all file types
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.4.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-executables-have-shebangs
+
+  # Docker linting
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.12.0
+    hooks:
+      - id: hadolint-docker
+        files: ^.*Dockerfile.*$
+        args: ['--ignore', 'DL3008']
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.9.0.5
+    hooks:
+      - id: shellcheck
+        files: \.(sh|bash)$
+
+  # Python formatting and linting
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        language_version: python3
+        files: \.(py|pyi)$
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2 # last version of isort that supports python 3.8
+    hooks:
+      - id: isort
+        name: isort (python)
+        files: ^PrometheusExporters/.*\.py$
+        args: ["--settings-file", "PrometheusExporters/.isort.cfg"]
+
+  - repo: https://github.com/pycqa/flake8
+    rev: 6.1.0
+    hooks:
+      - id: flake8
+        files: \.(py|pyi)$
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: "v1.14.1"
+    hooks:
+      - id: mypy
+        files: ^PrometheusExporters/.*\.py$
+        args: [--config-file=PrometheusExporters/.mypy.ini]
+
+      - id: mypy
+        files: ^PrometheusClient/
+        args: [--config-file=PrometheusClient/pyproject.toml]
+        additional_dependencies:
+          - types-requests
+          - types-PyYAML
+          - typing-extensions
+          - numpy
+          - prometheus-client
+          - urllib3
+
+  # Rust formatting and linting
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        description: Format Rust files with rustfmt.
+        entry: bash -c 'cargo fmt --manifest-path QueryEngineRust/Cargo.toml -- --check'
+        language: system
+        files: ^QueryEngineRust/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-check
+        name: cargo check
+        description: Check the package for errors.
+        entry: bash -c 'cargo check --manifest-path QueryEngineRust/Cargo.toml --all'
+        language: system
+        files: ^QueryEngineRust/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-clippy
+        name: cargo clippy
+        description: Lint Rust sources
+        entry: bash -c 'cargo clippy --manifest-path QueryEngineRust/Cargo.toml --all-targets --all-features -- -D warnings'
+        language: system
+        files: ^QueryEngineRust/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-fmt-datafusion-summary-library
+        name: cargo fmt (datafusion_summary_library)
+        description: Format datafusion_summary_libraryRust files with rustfmt.
+        entry: bash -c 'cargo fmt --manifest-path CommonDependencies/dependencies/rs/datafusion_summary_library/Cargo.toml -- --check'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/datafusion_summary_library/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-test-datafusion-summary-library
+        name: cargo test (datafusion_summary_library)
+        description: Run datafusion_summary_library tests.
+        entry: bash -c 'cargo test --manifest-path CommonDependencies/dependencies/rs/datafusion_summary_library/Cargo.toml'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/datafusion_summary_library/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-fmt-sql-utilities
+        name: cargo fmt (sql_utilities)
+        description: Format sql_utilities Rust files with rustfmt.
+        entry: bash -c 'cargo fmt --manifest-path CommonDependencies/dependencies/rs/sql_utilities/Cargo.toml -- --check'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/sql_utilities/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-test-sql-utilities
+        name: cargo test (sql_utilities)
+        description: Run sql_utilities tests.
+        entry: bash -c 'cargo test --manifest-path CommonDependencies/dependencies/rs/sql_utilities/Cargo.toml'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/sql_utilities/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-fmt-promql-utilities
+        name: cargo fmt (promql_utilities)
+        description: Format promql_utilities Rust files with rustfmt.
+        entry: bash -c 'cargo fmt --manifest-path CommonDependencies/dependencies/rs/promql_utilities/Cargo.toml -- --check'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/promql_utilities/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-test-promql-utilities
+        name: cargo test (promql_utilities)
+        description: Run promql_utilities tests.
+        entry: bash -c 'cargo test --manifest-path CommonDependencies/dependencies/rs/promql_utilities/Cargo.toml'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/promql_utilities/.*\.rs$
+        pass_filenames: false
+      - id: cargo-fmt-sketch-core
+        name: cargo fmt (sketch-core)
+        description: Format sketch-core Rust files with rustfmt.
+        entry: bash -c 'cargo fmt --manifest-path sketch-core/Cargo.toml -- --check'
+        language: system
+        files: ^sketch-core/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-clippy-sketch-core
+        name: cargo clippy (sketch-core)
+        description: Lint sketch-core Rust sources.
+        entry: bash -c 'cargo clippy --manifest-path sketch-core/Cargo.toml --all-targets --all-features -- -D warnings'
+        language: system
+        files: ^sketch-core/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-test-sketch-core
+        name: cargo test (sketch-core)
+        description: Run sketch-core tests.
+        entry: bash -c 'cargo test --manifest-path sketch-core/Cargo.toml'
+        language: system
+        files: ^sketch-core/.*\.rs$
+      - id: cargo-fmt-sketch-db-common
+        name: cargo fmt (sketch_db_common)
+        description: Format sketch_db_common Rust files with rustfmt.
+        entry: bash -c 'cargo fmt --manifest-path CommonDependencies/dependencies/rs/sketch_db_common/Cargo.toml -- --check'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/sketch_db_common/.*\.rs$
+        pass_filenames: false
+
+      - id: cargo-test-sketch-db-common
+        name: cargo test (sketch_db_common)
+        description: Run sketch_db_common tests.
+        entry: bash -c 'cargo test --manifest-path CommonDependencies/dependencies/rs/sketch_db_common/Cargo.toml'
+        language: system
+        files: ^CommonDependencies/dependencies/rs/sketch_db_common/.*\.rs$
+        pass_filenames: false
