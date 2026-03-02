@@ -1,0 +1,9 @@
+[project]
+name = "generate-prometheus-config"
+version = "0.1.0"
+description = "Generate Prometheus configuration from experiment config"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml",
+    "omegaconf",
+]

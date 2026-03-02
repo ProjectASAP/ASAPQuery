@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  vmsingle:
+    image: victoriametrics/victoria-metrics:latest
+    container_name: {{ vmsingle_container_name }}
+    user: "{{ user_id }}:{{ group_id }}"
+    network_mode: host
+    volumes:
+      - {{ vm_data_dir }}:/victoria-metrics-data
+    command:
+      - "-storageDataPath=/victoria-metrics-data"
+      - "-httpListenAddr=:8428"
+      - "-retentionPeriod=1d"
+    {% if cpu_limit or memory_limit -%}
+    deploy:
+      resources:
+        limits:
+          {% if cpu_limit -%}
+          cpus: '{{ cpu_limit }}'
+          {% endif -%}
+          {% if memory_limit -%}
+          memory: {{ memory_limit }}
+          {% endif -%}
+    {% endif -%}
+    restart: "no"
+
+  vmagent:
+    image: victoriametrics/vmagent:latest
+    container_name: {{ vmagent_container_name }}
+    user: "{{ user_id }}:{{ group_id }}"
+    network_mode: host
+    volumes:
+      - {{ vm_config_dir }}/{{ vmagent_scrape_config }}:/etc/prometheus/{{ vmagent_scrape_config }}:ro
+      - {{ vm_config_dir }}/{{ vmagent_remote_write_config }}:/etc/prometheus/{{ vmagent_remote_write_config }}:ro
+      - {{ vm_data_dir }}/vmagent-data:/vmagent-remotewrite-data
+    command:
+      - "-promscrape.config=/etc/prometheus/{{ vmagent_scrape_config }}"
+      {% for url in remote_write_urls -%}
+      - "-remoteWrite.url={{ url }}"
+      {% endfor -%}
+      - "-remoteWrite.relabelConfig=/etc/prometheus/{{ vmagent_remote_write_config }}"
+      - "-remoteWrite.forcePromProto=true"
+      - "-remoteWrite.tmpDataPath=/vmagent-remotewrite-data"
+      - "-httpListenAddr=:8429"
+    {% if cpu_limit or memory_limit -%}
+    deploy:
+      resources:
+        limits:
+          {% if cpu_limit -%}
+          cpus: '{{ cpu_limit }}'
+          {% endif -%}
+          {% if memory_limit -%}
+          memory: {{ memory_limit }}
+          {% endif -%}
+    {% endif -%}
+    restart: "no"
+    depends_on:
+      - vmsingle

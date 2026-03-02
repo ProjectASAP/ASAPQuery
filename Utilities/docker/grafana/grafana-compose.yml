@@ -1,0 +1,33 @@
+services:
+  grafana:
+    image: grafana/grafana-enterprise:latest
+    container_name: asap-grafana
+    hostname: grafana
+    networks:
+      - asap-network
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      # Allow embedding (for demos)
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+    volumes:
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Docker manages the storage location and lifetime of named volumes
+volumes:
+  grafana-data:
+    driver: local

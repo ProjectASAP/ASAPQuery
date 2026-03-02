@@ -1,0 +1,35 @@
+# my global config
+global:
+  scrape_interval: 1s # Set the scrape interval to every 15 seconds. Default is every 1 minute.
+  evaluation_interval: 1s # Evaluate rules every 15 seconds. The default is every 1 minute.
+  #query_log_file: /scratch/sketch_db_for_prometheus/prometheus/queries.log
+  # scrape_timeout is set to the global default (10s).
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+# Load rules once and periodically evaluate them according to the global 'evaluation_interval'.
+#rule_files:
+#   - "blackbox-exporter.yml"
+#   - "node-exporter.yml"
+#   - "google-cadvisor.yml"
+
+# A scrape configuration containing exactly one endpoint to scrape:
+# Here it's Prometheus itself.
+#scrape_configs:
+#  - job_name: "prometheus"
+#    static_configs:
+#      - targets: ["localhost:9090"]
+#  - job_name: "node_exporter"
+#    static_configs:
+#      - targets: ["localhost:9100"]
+#  - job_name: "blackbox_exporter"
+#    static_configs:
+#      - targets: ["localhost:9115"]
+#  - job_name: "cadvisor"
+#    static_configs:
+#      - targets: ["localhost:8082"]
