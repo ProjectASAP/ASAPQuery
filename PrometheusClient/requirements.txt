@@ -1,0 +1,10 @@
+prometheus-api-client==0.5.5
+prometheus_client==0.21.1
+pyyaml
+numpy
+loguru
+requests
+py-spy
+typing_extensions==4.13.2
+jinja2
+types-jinja2

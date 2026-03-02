@@ -1,0 +1,18 @@
+# fake_exporter Docker Compose Template
+# This template is rendered with Jinja2 to generate the final docker-compose.yml
+
+services:
+  fake-exporter:
+    image: sketchdb-fake-exporter-rust:latest
+    container_name: {{ container_name | default('sketchdb-fake-exporter') }}
+    ports:
+      - "{{ port }}:{{ port }}"
+    command: [
+      "--port", "{{ port }}",
+      "--valuescale", "{{ valuescale }}",
+      "--dataset", "{{ dataset }}",
+      "--num-labels", "{{ num_labels }}",
+      "--num-values-per-label", "{{ num_values_per_label | string }}",
+      "--metric-type", "{{ metric_type }}"
+    ]
+    restart: unless-stopped
