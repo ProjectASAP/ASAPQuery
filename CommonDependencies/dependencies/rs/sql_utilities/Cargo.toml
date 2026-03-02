@@ -1,0 +1,17 @@
+[package]
+name = "sql_utilities"
+version = "0.1.0"
+edition = "2021"
+authors = ["SketchDB Team"]
+description = "A standalone SQL pattern matching and query analysis library for Rust"
+license = "MIT"
+keywords = ["Clickhouse", "sql", "pattern-matching", "query-analysis"]
+categories = ["parsing", "database", "development-tools"]
+
+[dependencies]
+chrono = "0.4.39"
+parse_datetime = "0.13.3"
+sqlparser = "0.59.0"
+
+[dev-dependencies]
+tokio-test = "0.4"

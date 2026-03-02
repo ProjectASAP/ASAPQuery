@@ -1,0 +1,11 @@
+**/__pycache__
+**/*.pyc
+**/*.swp
+.DS_Store
+.vscode/
+
+dependencies/py/promql_utilities/promql_utilities.egg-info/
+dependencies/rs/**/target/
+
+tests/**/*.json
+tests/**/target/
