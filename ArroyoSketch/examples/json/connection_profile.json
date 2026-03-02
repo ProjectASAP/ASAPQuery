@@ -1,0 +1,10 @@
+{
+    "name": "default-kafka-config",
+    "connector": "kafka",
+    "config": {
+        "authentication": {},
+        "bootstrapServers": "localhost:9092",
+        "name": "default-kafka-config",
+        "schemaRegistryEnum": {}
+    }
+}

@@ -1,0 +1,62 @@
+{
+    "name": "{{ table_name }}",
+    "connector": "single_file_custom",
+    "tableType": "source",
+    "config": {
+        "path": "{{ file_path }}",
+        "file_format": "{{ file_format }}",
+        "timestamp_field": "{{ timestamp_field }}",
+        "ts_format": "{{ ts_format }}"
+    },
+    "schema": {
+        "format": {
+            "{{ file_format }}": {}
+        },
+        "badData": {
+            "fail": {}
+        },
+        "framing": null,
+        "structName": null,
+        "fields": [
+            {
+                "fieldName": "{{ time_column }}",
+                "fieldType": {
+                    "type": {
+                        "primitive": "{{ timestamp_primitive }}"
+                    },
+                    "sqlName": "TIMESTAMP"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            {% for value_col in value_columns %}
+            {
+                "fieldName": "{{ value_col }}",
+                "fieldType": {
+                    "type": {
+                        "primitive": "F64"
+                    },
+                    "sqlName": "DOUBLE"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            {% endfor %}
+            {% for col in metadata_columns %}
+            {
+                "fieldName": "{{ col }}",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            }{% if not loop.last %},{% endif %}
+            {% endfor %}
+        ],
+        "inferred": true,
+        "primaryKeys": []
+    }
+}

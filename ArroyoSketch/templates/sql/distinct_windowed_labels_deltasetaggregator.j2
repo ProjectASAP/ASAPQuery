@@ -1,0 +1,20 @@
+INSERT INTO
+    {{ sink_table }}
+SELECT
+    gzip_compress({{ agg_function }}{{ aggregation_id }}_({% if agg_columns %}concat_ws(';', {{ agg_columns }}){% else %}''{% endif %})) as precompute,
+    {{ aggregation_id }} as aggregation_id,
+    {% if group_by_columns %}concat_ws(';', {{ group_by_columns }}){% else %}''{% endif %} as key,
+    {%- if window_type == "sliding" %}
+    HOP(INTERVAL '{{ slide_interval }}', INTERVAL '{{ window_size }}') as window
+    {%- else %}
+    TUMBLE(INTERVAL '{{ window_interval }}') as window
+    {%- endif %}
+FROM
+    {{ source_table }}
+{%- if filter_metric_name %}
+WHERE
+    metric_name = '{{ filter_metric_name }}'
+{%- endif %}
+GROUP BY
+    window, key
+;

@@ -1,0 +1,19 @@
+{
+    "name": "p4",
+    "query": "-- INSERT INTO arroyo_output_sink\n-- SELECT COUNT(*) as count, labels.hostname as hostname, TUMBLE(INTERVAL '5 seconds') as window\n-- FROM arroyo_input_source\n-- GROUP BY hostname, window\n\nINSERT INTO arroyo_output_sink\nSELECT COUNT(*) as count, labels.hostname as hostname, TUMBLE(INTERVAL '5 seconds') as window, my_hashmap(value, string_to_hash(labels.location)) as hashmap\nFROM arroyo_input_source\nGROUP BY hostname, window",
+    "udfs": [
+        {
+            "definition": "use arroyo_udf_plugin::udf;\n\n// #[udf]\n// fn my_median(mut args: Vec<f64>) -> Option<f64> {\n//     if args.is_empty() {\n//         return None;\n//     }\n\n//     args.sort();\n\n//     let mid = args.len() / 2;\n//     if args.len() % 2 == 0 {\n//         Some((args[mid] + args[mid - 1]) as f64 / 2.0)\n//     } else {\n//         Some(args[mid] as f64)\n//     }\n// }\n\n#[udf]\nfn my_median(mut args: Vec<f64>) -> Option<f64> {\n    // Filter out NaN values\n    args.retain(|x| !x.is_nan());\n    \n    if args.is_empty() {\n        return None;\n    }\n    \n    args.sort_by(|a, b| a.partial_cmp(b).unwrap());  // Safe now, no NaNs\n\n    let mid = args.len() / 2;\n    if args.len() % 2 == 0 {\n        Some((args[mid] + args[mid - 1]) / 2.0)\n    } else {\n        Some(args[mid])\n    }\n}",
+            "language": "rust"
+        },
+        {
+            "definition": "\n/*\n[dependencies]\nbincode = \"1.3\"\n*/\n\nuse arroyo_udf_plugin::udf;\nuse std::collections::HashMap;\n\n#[udf]\nfn my_hashmap(mut values: Vec<f64>, keys: Vec<u64>) -> Option<Vec<u8>> {\n    // Create a new hashmap to store the count of each name\n    let mut name_counts: HashMap<u64, usize> = HashMap::new();\n    \n    // Iterate through the keys and update the count for each name\n    for key in keys {\n        *name_counts.entry(key).or_insert(0) += 1;\n    }\n    \n    // Serialize the hashmap to bytes using bincode\n    bincode::serialize(&name_counts).ok()\n}",
+            "language": "rust"
+        },
+        {
+            "definition": "\n/*\n[dependencies]\nahash = \"0.8.6\"\n*/\n\nuse arroyo_udf_plugin::udf;\nuse ahash::AHasher;\nuse std::hash::{Hash, Hasher};\n\n#[udf]\nfn string_to_hash(input: &str) -> u64 {\n    let mut hasher = AHasher::default();\n    input.hash(&mut hasher);\n    hasher.finish()\n}",
+            "language": "rust"
+        }
+    ],
+    "parallelism": 1
+}

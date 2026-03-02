@@ -1,0 +1,30 @@
+services:
+  arroyosketch:
+    build:
+      context: {{ arroyosketch_dir }}
+    container_name: {{ container_name }}
+    hostname: arroyosketch
+    networks:
+      - asap-network
+    command:
+      - "--config_file_path=/controller-output/streaming_config.yaml"
+      - "--source_type=prometheus_remote_write"
+      - "--prometheus_base_port={{ prometheus_base_port }}"
+      - "--prometheus_path={{ prometheus_path }}"
+      - "--prometheus_bind_ip={{ prometheus_bind_ip }}"
+      - "--parallelism={{ parallelism }}"
+      - "--output_kafka_topic={{ output_kafka_topic }}"
+      - "--output_format={{ output_format }}"
+      - "--pipeline_name={{ pipeline_name }}"
+      - "--output_dir=/arroyosketch-output"
+      - "--arroyo_url={{ arroyo_url }}"
+      - "--bootstrap_servers={{ bootstrap_servers }}"
+    volumes:
+      - {{ controller_output_dir }}:/controller-output:ro
+      - {{ arroyosketch_output_dir }}:/arroyosketch-output
+    depends_on:
+      controller:
+        condition: service_completed_successfully
+      arroyo:
+        condition: service_healthy
+    restart: "no"  # Init container - runs once and exits

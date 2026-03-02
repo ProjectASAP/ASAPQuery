@@ -1,0 +1,74 @@
+{
+    "name": "{{ table_name }}",
+    "connector": "kafka",
+    "tableType": "source",
+    "config": {
+        "topic": "{{ topic_name }}",
+        "type": {
+            "offset": "latest",
+            "read_mode": "read_uncommitted"
+        }
+    },
+    "schema": {
+        "format": {
+            "json": {
+                "confluentSchemaRegistry": false,
+                "schemaId": null,
+                "includeSchema": false,
+                "debezium": false,
+                "unstructured": false,
+                "timestampFormat": "rfc3339"
+            }
+        },
+        "badData": {
+            "fail": {}
+        },
+        "framing": null,
+        "structName": null,
+        "fields": [
+            {
+                "fieldName": "{{ time_column }}",
+                "fieldType": {
+                    "type": {
+                        "primitive": "UnixNanos"
+                    },
+                    "sqlName": "TIMESTAMP"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            {% for value_col in value_columns %}
+            {
+                "fieldName": "{{ value_col }}",
+                "fieldType": {
+                    "type": {
+                        "primitive": "F64"
+                    },
+                    "sqlName": "DOUBLE"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            {% endfor %}
+            {% for col in metadata_columns %}
+            {
+                "fieldName": "{{ col }}",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            }{% if not loop.last %},{% endif %}
+            {% endfor %}
+        ],
+        "definition": {
+            "json_schema": "{{ json_schema }}"
+        },
+        "inferred": null,
+        "primaryKeys": []
+    },
+    "connectionProfileId": "{{ profile_id }}"
+}

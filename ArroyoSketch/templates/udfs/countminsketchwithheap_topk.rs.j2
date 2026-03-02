@@ -1,0 +1,194 @@
+/*
+[dependencies]
+rmp-serde = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+twox-hash = "2.1.0"
+*/
+use arroyo_udf_plugin::udf;
+use rmp_serde::Serializer;
+use serde::{Deserialize, Serialize};
+use std::collections::BinaryHeap;
+use std::cmp::Ordering;
+use twox_hash::XxHash32;
+
+// Count-Min Sketch with Heap parameters
+const DEPTH: usize = {{ depth }}; // Number of hash functions
+const WIDTH: usize = {{ width }}; // Number of buckets per hash function
+const HEAP_SIZE: usize = {{ heapsize }}; // Maximum number of top-k items to track
+
+#[derive(Serialize, Deserialize, Clone)]
+struct CountMinSketch {
+    sketch: Vec<Vec<f64>>,
+    row_num: usize,
+    col_num: usize,
+}
+
+impl CountMinSketch {
+    fn new() -> Self {
+        CountMinSketch {
+            sketch: vec![vec![0.0; WIDTH]; DEPTH],
+            row_num: DEPTH,
+            col_num: WIDTH,
+        }
+    }
+
+    // Update the sketch with a key-value pair
+    fn update(&mut self, key: &str, value: f64) {
+        for i in 0..self.row_num {
+            // already UTF-8
+            let hash = XxHash32::oneshot(i as u32, key.as_bytes());
+            let bucket = (hash as usize) % self.col_num;
+            self.sketch[i][bucket] += value;
+        }
+    }
+
+    // Update the sketch and return the estimated frequency in one pass
+    fn update_with_query(&mut self, key: &str, value: f64) -> f64 {
+        let mut min_estimate = f64::MAX;
+        for i in 0..self.row_num {
+            // already UTF-8
+            let hash = XxHash32::oneshot(i as u32, key.as_bytes());
+            let bucket = (hash as usize) % self.col_num;
+            self.sketch[i][bucket] += value;
+            // Track minimum while updating
+            let estimate = self.sketch[i][bucket];
+            if estimate < min_estimate {
+                min_estimate = estimate;
+            }
+        }
+        min_estimate
+    }
+}
+
+// HeapItem: equality and ordering based on value only
+#[derive(Serialize, Deserialize, Clone)]
+struct HeapItem {
+    key: String,
+    value: f64,
+}
+
+// Implement PartialEq based on value only (consistent with Ord)
+impl PartialEq for HeapItem {
+    fn eq(&self, other: &Self) -> bool {
+        self.value == other.value
+    }
+}
+
+// Implement Eq for HeapItem (required for BinaryHeap)
+impl Eq for HeapItem {}
+
+// Implement Ord for HeapItem to create a min-heap (reverse ordering)
+impl Ord for HeapItem {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Reverse ordering for min-heap (smallest values at top)
+        // Suitable for topk, but if you want to implement bottomk, you should use a max-heap
+        other.value.partial_cmp(&self.value).unwrap_or(Ordering::Equal)
+    }
+}
+
+impl PartialOrd for HeapItem {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+struct CountMinSketchWithHeap {
+    sketch: CountMinSketch,
+    topk_heap: BinaryHeap<HeapItem>, // Maintain as heap during processing
+    heap_size: usize,
+}
+
+/// TODO: Make this serializable version more expanded as count_min_sketch_with_heap_accumulator.rs in QueryEngineRust
+// Serializable version for output
+#[derive(Serialize, Deserialize, Clone)]
+struct CountMinSketchWithHeapSerialized {
+    sketch: CountMinSketch,
+    topk_heap: Vec<HeapItem>, // Convert to Vec for serialization
+    heap_size: usize,
+}
+
+impl CountMinSketchWithHeap {
+    fn new() -> Self {
+        CountMinSketchWithHeap {
+            sketch: CountMinSketch::new(),
+            topk_heap: BinaryHeap::new(),
+            heap_size: HEAP_SIZE,
+        }
+    }
+
+    // Update the sketch and maintain the top-k heap
+    fn update_with_topk(&mut self, key: &str, value: f64) {
+        // Update the Count-Min Sketch and get the estimated frequency in one pass
+        let estimated_freq = self.sketch.update_with_query(key, value);
+
+        // Check if the key already exists in the heap
+        // TODO: This takes O(k) time, can we do better?
+        // Or is different keys guaranteed and we can just omit this check?
+        // Or can we optimize this with a HashMap?
+        let existing_item = self.topk_heap.iter().find(|item| item.key == key).cloned();
+
+        if let Some(existing) = existing_item {
+            // Remove the old entry and add updated one
+            self.topk_heap.retain(|item| item.key != key); // retain others = remove this one
+            self.topk_heap.push(HeapItem {
+                key: key.to_string(),
+                value: estimated_freq,
+            });
+        } else {
+            // New key: add to heap
+            if self.topk_heap.len() < self.heap_size {
+                // Heap not full, just add
+                self.topk_heap.push(HeapItem {
+                    key: key.to_string(),
+                    value: estimated_freq,
+                });
+            } else {
+                // Heap is full, check if this item should replace the minimum
+                // Peeking is cheap. No worries.
+                if let Some(min_item) = self.topk_heap.peek() {
+                    if estimated_freq > min_item.value {
+                        self.topk_heap.pop(); // Remove minimum
+                        self.topk_heap.push(HeapItem {
+                            key: key.to_string(),
+                            value: estimated_freq,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Convert to serializable format
+    fn to_serializable(self) -> CountMinSketchWithHeapSerialized {
+        CountMinSketchWithHeapSerialized {
+            sketch: self.sketch,
+            topk_heap: self.topk_heap.into_iter().collect(),
+            heap_size: self.heap_size,
+        }
+    }
+}
+
+#[udf]
+fn countminsketchwithheap_topk(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
+    // Check that keys and values have equal length
+    if keys.len() != values.len() {
+        return None;
+    }
+
+    // Create a new Count-Min Sketch with Heap
+    let mut cms_with_heap = CountMinSketchWithHeap::new();
+
+    // Iterate through the keys and values and update the sketch and heap
+    for (i, &key) in keys.iter().enumerate() {
+        cms_with_heap.update_with_topk(key, values[i]);
+    }
+
+    // Convert to serializable format (heap to vec conversion happens only once here)
+    let serializable = cms_with_heap.to_serializable();
+
+    let mut buf = Vec::new();
+    serializable
+        .serialize(&mut Serializer::new(&mut buf))
+        .ok()?;
+    Some(buf)
+}

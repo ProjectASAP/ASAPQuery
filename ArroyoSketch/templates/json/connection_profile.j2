@@ -1,0 +1,14 @@
+{
+    "name": "{{ profile_name }}",
+    "connector": "kafka",
+    "config": {
+        "authentication": {},
+        "bootstrapServers": "{{ bootstrap_servers }}",
+        "name": "{{ profile_name }}",
+        "schemaRegistryEnum": {},
+        "connectionProperties": {
+            "message.max.bytes": "20971520",
+            "batch.size": "20971520"
+        }
+    }
+}
