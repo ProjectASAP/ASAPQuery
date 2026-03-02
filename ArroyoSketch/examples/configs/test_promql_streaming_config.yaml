@@ -1,0 +1,28 @@
+metrics:
+  fake_metric_total:
+  - instance
+  - job
+  - label_0
+  - label_1
+  - label_2
+aggregations:
+- aggregationId: 1
+  aggregationSubType: ''
+  aggregationType: DatasketchesKLL
+  labels:
+    aggregated: []
+    grouping:
+    - instance
+    - job
+    - label_0
+    - label_1
+    - label_2
+    rollup: []
+  metric: fake_metric_total
+  parameters:
+    K: 20
+  slideInterval: 60
+  spatialFilter: ''
+  tumblingWindowSize: 60
+  windowSize: 60
+  windowType: tumbling

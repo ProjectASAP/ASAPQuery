@@ -1,0 +1,91 @@
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: asap-kafka
+    hostname: kafka
+    networks:
+      - asap-network
+    # ports:
+    #   - 9092:9092  # Uncomment for external access
+    environment:
+      # KRaft mode (no Zookeeper needed)
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
+      # Replication settings (set to 1 for single-node setup)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      # CRITICAL: Settings from bare-metal install.sh for large precomputes
+      # These are required for your system to handle large CountMinSketch data
+      KAFKA_MESSAGE_MAX_BYTES: 20971520  # 20MB max message size
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 20971520
+      KAFKA_LOG_RETENTION_HOURS: 1
+
+      # Storage configuration
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+
+      # Fixed cluster ID for repeatability (auto-formats storage on first run)
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+    volumes:
+      - kafka-data:/tmp/kraft-combined-logs
+    user: "0:0"  # Run as root to fix permissions
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # Fix permissions on the volume so appuser can write
+        chown -R appuser:appuser /tmp/kraft-combined-logs
+        chmod -R 755 /tmp/kraft-combined-logs
+
+        # Let Kafka's Docker wrapper handle formatting and startup
+        exec su appuser -c "/etc/kafka/docker/run"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s  # Give Kafka time to initialize and format storage
+    restart: unless-stopped
+
+  kafka-init:
+    image: apache/kafka:3.7.0
+    container_name: asap-kafka-init
+    networks:
+      - asap-network
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        echo "Creating Kafka topics..."
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+          --create --if-not-exists --topic flink_input \
+          --partitions 1 --replication-factor 1 \
+          --config max.message.bytes=20971520
+
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+          --create --if-not-exists --topic flink_output \
+          --partitions 1 --replication-factor 1 \
+          --config max.message.bytes=20971520
+
+        echo "Kafka topics created successfully"
+    restart: "no"
+
+# Docker manages the storage location and lifetime of named volumes
+volumes:
+  kafka-data:
+    driver: local

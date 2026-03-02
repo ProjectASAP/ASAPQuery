@@ -1,0 +1,62 @@
+/*
+[dependencies]
+rmp-serde = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+lazy_static = "1.4"
+*/
+
+use arroyo_udf_plugin::udf;
+use rmp_serde::Serializer;
+use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
+use std::sync::Mutex;
+use lazy_static::lazy_static;
+
+#[derive(Serialize, Deserialize, Clone)]
+struct DeltaResult {
+    added: HashSet<String>,
+    removed: HashSet<String>,
+}
+
+// Global state to store the previous window's labels for aggregation {{aggregation_id}}
+lazy_static! {
+    static ref PREVIOUS_LABELS_{{aggregation_id}}: Mutex<HashSet<String>> = Mutex::new(HashSet::new());
+}
+
+// Stateful UDAF that tracks label changes between windows
+// This takes all concatenated label strings for a window and computes delta vs previous window
+#[udf]
+fn deltasetaggregator_{{aggregation_id}}_(concatenated_labels: Vec<&str>) -> Option<Vec<u8>> {
+    // Return None if input is empty
+    if concatenated_labels.is_empty() {
+        return None;
+    }
+
+    // Collect current window's unique label combinations
+    let mut current_labels = HashSet::new();
+    for label_string in concatenated_labels {
+        current_labels.insert(label_string.to_string());
+    }
+
+    // Get previous window's labels and update state
+    let mut previous_labels_guard = PREVIOUS_LABELS_{{aggregation_id}}.lock().unwrap();
+    let previous_labels = previous_labels_guard.clone();
+
+    // Calculate differences
+    let added: HashSet<String> = current_labels.difference(&previous_labels).cloned().collect();
+    let removed: HashSet<String> = previous_labels.difference(&current_labels).cloned().collect();
+
+    // Update state for next window
+    *previous_labels_guard = current_labels;
+
+    // Create delta result
+    let delta_result = DeltaResult {
+        added,
+        removed,
+    };
+
+    // Serialize result
+    let mut buf = Vec::new();
+    delta_result.serialize(&mut Serializer::new(&mut buf)).ok()?;
+    Some(buf)
+}

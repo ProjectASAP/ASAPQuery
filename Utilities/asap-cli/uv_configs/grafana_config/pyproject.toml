@@ -1,0 +1,13 @@
+[project]
+name = "grafana-config"
+version = "0.1.0"
+description = "Grafana dashboard configuration for experiments"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "requests",
+    "pyyaml",
+    "omegaconf",
+    "grafana-foundation-sdk",
+    "promql-parser",
+    "hydra-core",
+]

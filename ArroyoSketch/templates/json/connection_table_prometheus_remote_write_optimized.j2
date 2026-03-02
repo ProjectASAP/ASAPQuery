@@ -1,0 +1,12 @@
+{
+    "name": "{{ table_name }}",
+    "connector": "prometheus_remote_write_optimized",
+    "tableType": "source",
+    "config": {
+        "bind_address": "{{ bind_ip }}",
+        "base_port": {{ base_port }},
+        "parallelism": {{ parallelism }},
+        "path": "{{ path }}",
+        "metrics": {{ metrics_json }}
+    }
+}

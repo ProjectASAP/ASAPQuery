@@ -1,0 +1,63 @@
+/*
+[dependencies]
+rmp-serde = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+twox-hash = "2.1.0"
+*/
+use arroyo_udf_plugin::udf;
+use rmp_serde::Serializer;
+use serde::{Deserialize, Serialize};
+use twox_hash::XxHash32;
+
+// Count-Min Sketch parameters
+const DEPTH: usize = {{ depth }}; // Number of hash functions
+const WIDTH: usize = {{ width }}; // Number of buckets per hash function
+
+#[derive(Serialize, Deserialize, Clone)]
+struct CountMinSketch {
+    sketch: Vec<Vec<f64>>,
+    row_num: usize,
+    col_num: usize,
+}
+
+impl CountMinSketch {
+    fn new() -> Self {
+        CountMinSketch {
+            sketch: vec![vec![0.0; WIDTH]; DEPTH],
+            row_num: DEPTH,
+            col_num: WIDTH,
+        }
+    }
+
+    // Update the sketch with a key-value pair
+    fn update(&mut self, key: &str, value: f64) {
+        for i in 0..self.row_num {
+            // already UTF-8
+            let hash = XxHash32::oneshot(i as u32, key.as_bytes());
+            let bucket = (hash as usize) % self.col_num;
+            self.sketch[i][bucket] += value;
+        }
+    }
+}
+
+#[udf]
+fn countminsketch_sum(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
+    // Check that keys and values have equal length
+    if keys.len() != values.len() {
+        return None;
+    }
+
+    // Create a new Count-Min Sketch
+    let mut countminsketch = CountMinSketch::new();
+
+    // Iterate through the keys and values and update the sketch for each entry
+    for (i, &key) in keys.iter().enumerate() {
+        countminsketch.update(key, values[i]);
+    }
+
+    let mut buf = Vec::new();
+    countminsketch
+        .serialize(&mut Serializer::new(&mut buf))
+        .ok()?;
+    Some(buf)
+}

@@ -1,0 +1,29 @@
+services:
+  arroyo:
+    image: ghcr.io/projectasap/asap-arroyo:${ARROYO_VERSION:-v0.1.0}
+    container_name: asap-arroyo
+    hostname: arroyo
+    networks:
+      - asap-network
+    ports:
+      - "5115:5115"
+    volumes:
+      - ../../ArroyoSketch/config.yaml:/config.yaml
+    command: ["--config", "/config.yaml", "cluster"]
+    environment:
+      - ARROYO__API__RUN_HTTP_PORT=5115
+      # Kafka connection
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: no
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -f http://localhost:5115/api/v1/pipelines || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5

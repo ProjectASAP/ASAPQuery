@@ -1,0 +1,51 @@
+# QueryEngine Docker Compose Template
+# This template is rendered with Jinja2 to generate the final docker-compose.yml
+services:
+  prometheusclient:
+    image: sketchdb-prometheusclient:latest
+    cap_add:
+      - SYS_PTRACE # For py-spy monitoring
+    security_opt: # For pyspy monitoring, gives container permission to trace processes
+      - seccomp=unconfined
+      - apparmor=unconfined
+    container_name: {{ container_name }}{% if latency_exporter_socket_addr is defined and latency_exporter_socket_addr is not none %}
+    ports:
+      - "{{ latency_exporter_socket_addr.split(":")[1] }}"{% endif %}
+    volumes:
+      - "{{ experiment_output_dir }}:/app/outputs"
+      - "{{ client_output_dir }}:/app/prometheus_client_output"
+      - "{{ config_file }}:/app/prometheus_client_config.yaml:ro"{% if query_engine_config_file is defined and query_engine_config_file is not none %}
+      - "{{ query_engine_config_file}}:/app/query_engine_config_file.yaml:ro"{% endif %}
+    network_mode: "host" # Allows prometheus client to send requests to localhost, not ideal for production
+    command: [
+      "--config_file", "/app/prometheus_client_config.yaml",
+      "--output_dir", "/app/prometheus_client_output",
+      "--output_file", "/app/prometheus_client_output/{{ client_output_file }}",{% if result_output_file is defined and result_output_file is not none %}
+      "--result_output_file", "{{ result_output_file }}",{% endif %}{% if query_engine_config_file is defined and query_engine_config_file is not none %}
+      "--query_engine_config_file", "/app/query_engine_config_file.yaml",{% endif %}{% if align_query_time %}
+      "--align_query_time",{% endif %}{% if server_for_alignment is defined and server_for_alignment is not none %}
+      "--server_for_alignment", "{{ server_for_alignment }}",{% endif %}{% if dry_run %}
+      "--dry_run",{% endif %}{% if compare_results %}
+      "--compare_results",{% endif %}{% if parallel %}
+      "--parallel",{% endif %}{% if query_engine_pid is defined and query_engine_pid is not none %}
+      "--profile_query_engine_pid", "{{ query_engine_pid }}",{% endif %}{% if profile_prometheus_time is defined and profile_prometheus_time is not none %}
+      "--profile_prometheus_time", "{{ profile_prometheus_time }}",{% endif %}{% if latency_exporter_socket_addr is defined and latency_exporter_socket_addr is not none %}
+      "--export_latencies_for_prometheus", "{{ latency_exporter_socket_addr }}",{% endif %}
+    ]
+    # pid: "container:sketchdb-queryengine"
+    pid: "host" # So py-spy can access processes running on the host
+    extra_hosts:
+    # host.docker.internal allows prometheus client to curl servers running on host system localhost,
+    # but this requires changing the server urls that the client reads from localhost:<PORT> to host.docker.internal:<PORT>
+    # Maybe there is a more elegant solution?
+     # - "host.docker.internal:host-gateway"
+      - "prometheus:{{ prometheus_host }}"
+      - "sketchdb:{{ sketchdb_host }}"
+    restart: no
+
+# networks:
+#  prometheusclient-net:
+#    driver: bridge
+#    ipam:
+#      config:
+#        - subnet: 172.20.0.0/16

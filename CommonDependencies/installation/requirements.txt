@@ -1,0 +1,7 @@
+loguru==0.7.3
+PyYAML==6.0.2
+confluent_kafka==2.3.0
+requests==2.32.3
+xxhash==3.5.0
+datasketches==5.1.1
+promql_parser==0.4.2

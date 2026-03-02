@@ -1,0 +1,32 @@
+x-bake:
+  - COMPOSE_BAKE=true
+
+services:
+  cluster-data-exporter:
+    build: .
+    container_name: cluster-data-exporter
+    volumes:
+      # CHANGE THIS: Replace './data' with the path to your Alibaba Node 2021 preprocessed csv.gz files
+      - ./data:/data:ro
+    ports:
+      # Map container port to host port - adjust as needed
+      - "40000:40000"
+    command: [
+        "--input-directory",
+        "/data",
+        "--port",
+        "40000",
+        "alibaba",
+        "--data-type=node",
+        "--data-year=2021",
+        "--all-parts", # or "--part-index=<INDEX_NO>"
+
+      ]
+    restart: unless-stopped
+    # Optional: set resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M

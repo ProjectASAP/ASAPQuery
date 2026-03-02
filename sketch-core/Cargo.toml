@@ -1,0 +1,10 @@
+[package]
+name = "sketch-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+rmp-serde = "1.1"
+xxhash-rust = { version = "0.8", features = ["xxh32"] }
+dsrs = { git = "https://github.com/ProjectASAP/datasketches-rs" }

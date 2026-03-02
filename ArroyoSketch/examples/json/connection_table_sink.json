@@ -1,0 +1,32 @@
+{
+    "name": "arroyo_output_sink",
+    "connector": "kafka",
+    "tableType": "sink",
+    "config": {
+        "topic": "arroyo_output",
+        "type": {
+            "commit_mode": "at_least_once"
+        }
+    },
+    "schema": {
+        "format": {
+            "json": {
+                "confluentSchemaRegistry": false,
+                "schemaId": null,
+                "includeSchema": false,
+                "debezium": false,
+                "unstructured": false,
+                "timestampFormat": "rfc3339"
+            }
+        },
+        "badData": {
+            "fail": {}
+        },
+        "framing": null,
+        "structName": null,
+        "fields": [],
+        "inferred": true,
+        "primaryKeys": []
+    },
+    "connectionProfileId": "cp_aBUB3tVozb"
+}

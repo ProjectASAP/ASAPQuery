@@ -1,0 +1,20 @@
+[package]
+name = "promql_cross_lang_tests"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "test_runner"
+path = "src/main.rs"
+
+[dependencies]
+promql-parser = "0.5.0"
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tokio = { version = "1.0", features = ["full"] }
+chrono = "0.4.41"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dependencies.promql_utilities]
+path = "../../../CommonDependencies/dependencies/rs/promql_utilities"

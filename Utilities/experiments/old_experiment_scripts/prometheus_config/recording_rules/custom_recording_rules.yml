@@ -1,0 +1,15 @@
+groups:
+- name: RecordingRules
+  interval: 5s  # Evaluation interval set to 5 seconds
+  rules:
+    - record: node_top_3_cpu_usage_60s
+      expr: |
+        #topk(3, sum by (instance, mode) (sum_over_time(node_cpu_seconds_total{mode!="idle"}[60s])))
+        topk(3, sum by (instance, mode) (sum_over_time(node_cpu_seconds_total[60s])))
+      labels:
+        metric_type: "high_cpu_instances_modes"
+    #- record: node_top_3_cpu_usage_30s
+    #  expr: |
+    #    topk(3, sum by(instance) (sum_over_time(node_cpu_seconds_total[60s])))
+    #  labels:
+    #    metric_type: "high_cpu_instances"

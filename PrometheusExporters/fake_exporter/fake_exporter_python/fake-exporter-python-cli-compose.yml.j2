@@ -1,0 +1,25 @@
+# fake_exporter Docker Compose Template
+# This template is rendered with Jinja2 to generate the final docker-compose.yml
+
+services:
+  fake-exporter:
+    image: sketchdb-fake-exporter-python:latest
+    container_name: {{ container_name | default('asap-fake-exporter') }}
+    hostname: {{ container_name }} # What prometheus uses to scrape
+    networks:
+      - asap-network
+    expose:
+      - "{{ port }}"
+    volumes:
+      - {{ experiment_output_dir }}:/app/outputs
+      - {{ output_dir }}:/app/exporter_output_dir
+    command: [
+      "--output_dir", "/app/exporter_output_dir",
+      "--port", "{{ port }}",
+      "--valuescale", "{{ valuescale }}",
+      "--dataset", " {{ dataset }}",
+      "--num_labels", "{{ num_labels }}",
+      "--num_values_per_label", "{{ num_values_per_label }}",
+      "--metric_type", "{{ metric_type }}"
+    ]
+    restart: no

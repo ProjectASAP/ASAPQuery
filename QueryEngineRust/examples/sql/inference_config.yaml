@@ -1,0 +1,16 @@
+tables:
+  - name: metrics_table
+    time_column: time
+    metadata_columns: [hostname, datacenter]
+    value_columns: [cpu_usage, memory_usage]
+cleanup_policy:
+  name: read_based
+queries:
+- aggregations:
+  - aggregation_id: 1
+    read_count_threshold: 1
+  query: |
+    SELECT datacenter, quantile(0.99)(cpu_usage) as p99
+    FROM metrics_table
+    GROUP BY datacenter
+    WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW())

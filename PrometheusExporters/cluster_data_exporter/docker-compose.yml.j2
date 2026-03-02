@@ -1,0 +1,41 @@
+# cluster_data_exporter Docker Compose Template
+# This template is rendered with Jinja2 to generate the final docker-compose.yml
+
+{% if x_bake %}
+x-bake:
+  - COMPOSE_BAKE=true
+
+{% endif %}
+services:
+  cluster-data-exporter:
+    image: sketchdb-cluster-data-exporter:latest
+    container_name: {{ container_name | default('sketchdb-cluster-data-exporter') }}
+    volumes:
+      - {{ data_directory }}:/data:ro
+    ports:
+      - "{{ port }}:{{ port }}"
+    command: [
+      "--input-directory","/data",
+      "--port","{{ port }}",
+      "{{ provider }}",{% if provider == "google" %}
+      "--metrics={{ metrics }}",{% if process_mode == "all-parts" %}
+      "--all-parts"{% else %}
+      "--part-index={{ part_index }}"{% endif %}{% elif provider == "alibaba" %}
+      "--data-type={{ data_type }}",
+      "--data-year={{ data_year }}",{% if process_mode == "all-parts" %}
+      "--all-parts"{% else %}
+      "--part-index={{ part_index }}"{% endif %}{% endif %}
+    ]
+    restart: unless-stopped
+{% if memory_limit or memory_reservation %}
+    deploy:
+      resources:
+{% if memory_limit %}
+        limits:
+          memory: {{ memory_limit }}
+{% endif %}
+{% if memory_reservation %}
+        reservations:
+          memory: {{ memory_reservation }}
+{% endif %}
+{% endif %}

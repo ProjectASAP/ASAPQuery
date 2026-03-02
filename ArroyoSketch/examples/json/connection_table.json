@@ -1,0 +1,118 @@
+{
+    "name": "arroyo_input_source",
+    "connector": "kafka",
+    "tableType": "source",
+    "config": {
+        "topic": "arroyo_input",
+        "type": {
+            "offset": "latest",
+            "read_mode": "read_uncommitted"
+        }
+    },
+    "schema": {
+        "format": {
+            "json": {
+                "confluentSchemaRegistry": false,
+                "schemaId": null,
+                "includeSchema": false,
+                "debezium": false,
+                "unstructured": false,
+                "timestampFormat": "rfc3339"
+            }
+        },
+        "badData": {
+            "fail": {}
+        },
+        "framing": null,
+        "structName": null,
+        "fields": [
+            {
+                "fieldName": "labels",
+                "fieldType": {
+                    "type": {
+                        "struct": {
+                            "name": null,
+                            "fields": [
+                                {
+                                    "fieldName": "application_name",
+                                    "fieldType": {
+                                        "type": {
+                                            "primitive": "String"
+                                        },
+                                        "sqlName": "TEXT"
+                                    },
+                                    "nullable": false,
+                                    "metadataKey": null
+                                },
+                                {
+                                    "fieldName": "hostname",
+                                    "fieldType": {
+                                        "type": {
+                                            "primitive": "String"
+                                        },
+                                        "sqlName": "TEXT"
+                                    },
+                                    "nullable": false,
+                                    "metadataKey": null
+                                },
+                                {
+                                    "fieldName": "location",
+                                    "fieldType": {
+                                        "type": {
+                                            "primitive": "String"
+                                        },
+                                        "sqlName": "TEXT"
+                                    },
+                                    "nullable": false,
+                                    "metadataKey": null
+                                }
+                            ]
+                        }
+                    },
+                    "sqlName": null
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            {
+                "fieldName": "name",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            {
+                "fieldName": "timestamp",
+                "fieldType": {
+                    "type": {
+                        "primitive": "UnixNanos"
+                    },
+                    "sqlName": "TIMESTAMP"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            {
+                "fieldName": "value",
+                "fieldType": {
+                    "type": {
+                        "primitive": "F64"
+                    },
+                    "sqlName": "DOUBLE"
+                },
+                "nullable": false,
+                "metadataKey": null
+            }
+        ],
+        "definition": {
+            "json_schema": "{\n  \"type\": \"object\",\n  \"required\": [\"labels\", \"value\", \"name\", \"timestamp\"],\n  \"properties\": {\n    \"labels\": {\n      \"type\": \"object\",\n      \"required\": [\"hostname\", \"location\", \"application_name\"],\n      \"properties\": {\n        \"hostname\": {\n          \"type\": \"string\",\n          \"description\": \"Host identifier\"\n        },\n        \"location\": {\n          \"type\": \"string\",\n          \"description\": \"Geographic or data center location\"\n        },\n        \"application_name\": {\n          \"type\": \"string\",\n          \"description\": \"Name of the application being monitored\"\n        }\n      },\n      \"additionalProperties\": false\n    },\n    \"value\": {\n      \"type\": \"number\",\n      \"description\": \"Metric value\"\n    },\n    \"name\": {\n      \"type\": \"string\",\n      \"description\": \"Metric name\"\n    },\n    \"timestamp\": {\n      \"type\": \"string\",\n      \"format\": \"date-time\",\n      \"description\": \"Time when the metric was recorded, in RFC 3339 format\"\n    }\n  },\n  \"additionalProperties\": false\n}"
+        },
+        "inferred": null,
+        "primaryKeys": []
+    },
+    "connectionProfileId": "cp_VzUf2EQ43R"
+}

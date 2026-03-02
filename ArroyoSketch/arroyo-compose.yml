@@ -1,0 +1,11 @@
+services:
+  arroyo:
+    image: ghcr.io/projectasap/asap-arroyo:${ARROYO_VERSION:-v0.1.0}
+    container_name: sketchdb-arroyo
+    network_mode: host
+    volumes:
+      - ./config.yaml:/config.yaml
+    command: ["--config", "/config.yaml", "cluster"]
+    environment:
+      - ARROYO__API__RUN_HTTP_PORT=5115
+    restart: no

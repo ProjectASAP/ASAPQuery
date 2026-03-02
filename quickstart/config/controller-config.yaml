@@ -1,0 +1,28 @@
+# SketchDB Configuration for Pattern-based Demo
+# Uses deterministic time-based patterns for visual comparison
+
+query_groups:
+  - id: 1
+    queries:
+      # Quantile queries grouped by pattern - shows each pattern type
+      - "quantile by (pattern) (0.99, sensor_reading)"
+      - "quantile by (pattern) (0.95, sensor_reading)"
+      - "quantile by (pattern) (0.90, sensor_reading)"
+      - "quantile by (pattern) (0.50, sensor_reading)"
+    repetition_delay: 10
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1
+
+# Metric metadata - includes the 'pattern' label
+metrics:
+  - metric: "sensor_reading"
+    labels: ["instance", "job", "pattern", "region", "service", "host"]
+
+# Cleanup policy for aggregates
+aggregate_cleanup:
+  policy: "read_based"
+
+sketch_parameters:
+  DatasketchesKLL:
+    K: 200

@@ -1,0 +1,162 @@
+# Default configuration for experiment_run_e2e.py
+# This replaces the argparse command line arguments
+
+# Experiment configuration
+experiment:
+  name: ???  # REQUIRED: Human-readable experiment name
+
+# CloudLab configuration
+cloudlab:
+  num_nodes: ???  # REQUIRED: Number of CloudLab nodes to use
+  node_offset: 0  # Starting node index (default 0, allows running multiple experiments in parallel)
+  username: ???  # REQUIRED: Your CloudLab username
+  hostname_suffix: ???  # REQUIRED: CloudLab experiment hostname suffix
+
+# Logging and debugging
+logging:
+  level: "INFO"
+
+# Profiling options
+profiling:
+  query_engine: false
+  prometheus_time: null  # Optional[int]
+  flink: false
+  arroyo: false
+
+# Throughput monitoring options
+throughput:
+  arroyo: false
+  prometheus: false
+
+# Health check monitoring options
+health_check:
+  prometheus: false  # Monitor target health and scrape duration
+
+# Manual mode options
+manual:
+  query_engine: false
+  remote_monitor: false
+
+# Experiment flow options
+flow:
+  no_teardown: false
+  replace_query_engine_with_dumb_consumer: false
+  steady_state_wait: 60
+  skip_copy_prometheus_data: false  # Skip copying Prometheus data back to local machine
+
+
+# Streaming engine configuration
+streaming:
+  engine: "arroyo"  # choices: ["flink", "arroyo"]
+  parallelism: 1  # Default parallelism for streaming pipelines
+  flink_input_format: "json"  # choices: ["json", "avro-json", "avro-binary"]
+  flink_output_format: "json"  # choices: ["json", "byte"]
+  enable_object_reuse: false
+  do_local_flink: false
+  forward_unsupported_queries: true
+  use_kafka_ingest: false  # Use Prometheus remote write by default, set to true for legacy Kafka ingest
+  # Prometheus remote write configuration
+  remote_write:
+    ip: "${remote_write_ip:${cloudlab.node_offset}}"
+    base_port: 8080
+    path: "/receive"
+    enable_optimized_source: true # Use optimized Prometheus remote_write source (10-20x faster)
+
+# Prometheus configuration
+prometheus:
+  # Global Prometheus settings
+  scrape_interval: "10s"  # How frequently to scrape targets
+  evaluation_interval: "10s"  # How frequently to evaluate rules
+  # query_log_file: "/scratch/sketch_db_for_prometheus/prometheus/queries.log"  # Disabled to avoid permission issues in Docker
+  # Recording rules settings
+  recording_rules:
+    interval: "5s"  # How frequently to evaluate recording rules
+
+# Fake exporter language
+fake_exporter_language: "rust"  # choices: ["python", "rust"]
+
+# Cluster data exporter configuration
+cluster_data_directory: "/data/cluster_traces"  # Path to directory containing Google/Alibaba cluster trace data
+
+# Query engine language
+query_engine_language: "rust"  # choices: ["python", "rust"]
+
+# Query language (SQL vs PROMQL) - only used by Rust query engine
+query_language: "PROMQL"  # choices: ["SQL", "PROMQL"]
+
+# Query engine options
+query_engine:
+  dump_precomputes: false  # Whether to dump precomputed values (Rust query engine only)
+  lock_strategy: "per-key"  # Lock strategy for SimpleMapStore: "global" or "per-key" (Rust query engine only)
+
+# Controller configuration
+controller:
+  punting: true  # Enable query punting based on performance heuristics (should_be_performant check)
+
+# Aggregate cleanup configuration
+# Policy options:
+#   - "circular_buffer": Keep N most recent aggregates (fixed-count cleanup)
+#   - "read_based": Remove aggregates after N reads (default)
+#   - "no_cleanup": Never clean up aggregates (retain all indefinitely)
+aggregate_cleanup:
+  policy: "read_based"
+
+# Sketch parameters configuration
+# These control the accuracy and memory usage of sketch data structures
+sketch_parameters:
+  CountMinSketch:
+    depth: 3       # Number of hash functions (more = better accuracy, more memory)
+    width: 1024 # Width of each hash table (more = better accuracy, more memory)
+  CountMinSketchWithHeap:
+    depth: 3       # Number of hash functions
+    width: 1024   # Width of each hash table
+    heap_multiplier: 4  # Heap size = k * heap_multiplier (k from topk query)
+  DatasketchesKLL:
+    K: 20           # K parameter for KLL sketch (higher = better accuracy, more memory)
+
+# Prometheus client configuration
+prometheus_client:
+  parallel: true # Enable/disable parallel query execution
+
+# Container deployment settings
+use_container:
+  query_engine: true       # QueryEngineService - containerized query engine
+  arroyo: true            # ArroyoService - containerized Arroyo streaming engine
+  controller: true        # ControllerService - containerized controller
+  fake_exporter: true     # ExporterServiceFactory - containerized fake exporters
+  prometheus_client: true # PrometheusClientService - containerized Prometheus client
+  grafana: true           # GrafanaService - containerized Grafana
+
+# Grafana configuration
+grafana:
+  host: "localhost:3000"
+  user: "admin"
+  password: "admin"
+
+# Experiment-specific configurations for different experiment types
+experiment_variants:
+  # Configuration for experiment_run_sketchdboffline.py
+  sketchdboffline:
+    # Offline analysis parameters
+    experiment_dir: ???  # REQUIRED: Path to experiment data directory
+    labels: ["label_0", "label_1", "label_2", "instance", "job"]  # Default labels
+    groupby: ???  # REQUIRED: List of labels to group by
+    aggregation: ???  # REQUIRED: Aggregation function to apply
+    # This is a completely different type - runs offline analysis on existing data
+
+defaults:
+  - _self_
+  - experiment_type: ???  # REQUIRED: Must specify which experiment type to use
+
+# Hydra configuration
+hydra:
+  run:
+    dir: ${local_experiment_dir:}/${experiment.name}/hydra_logs/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ./multirun/${experiment.name}/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra:job.num}
+  job:
+    name: experiment_run_e2e
+    chdir: false
+  launcher:
+    _target_: hydra._internal.BasicLauncher

@@ -1,0 +1,13 @@
+metrics:
+  fake_metric:
+  - instance
+  - job
+  - label_0
+  - label_1
+cleanup_policy:
+  name: read_based
+queries:
+- aggregations:
+  - aggregation_id: 1
+    read_count_threshold: 1
+  query: quantile by (label_0) (0.99, fake_metric)

@@ -1,0 +1,12 @@
+[package]
+name = "datafusion_summary_library"
+version = "0.1.0"
+edition = "2021"
+authors = ["ProjectASAP Team"]
+
+[dependencies]
+datafusion = "43"
+arrow = "53"
+hyperloglogplus = "0.4"
+async-trait = "0.1"
+futures = "0.3"

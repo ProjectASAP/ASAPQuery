@@ -1,0 +1,4 @@
+[workspace]
+members = ["sketch-core", "QueryEngineRust"]
+exclude = ["sketchlib-rust"]
+resolver = "2"

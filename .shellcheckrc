@@ -1,0 +1,4 @@
+# Disable warnings about not following external sources
+# SC1090: Can't follow non-constant source (e.g., source ~/.bashrc)
+# SC1091: Not following sourced files that are external/generated (e.g., nvm.sh, cargo env)
+disable=SC1090,SC1091

@@ -1,0 +1,2 @@
+numpy
+prometheus_client

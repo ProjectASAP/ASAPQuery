@@ -1,0 +1,6 @@
+{
+    "name": "{{ pipeline_name }}",
+    "query": "{{ sql_query }}",
+    "udfs": {{ udfs|tojson(indent=2) }},
+    "parallelism": {{ parallelism }}
+}

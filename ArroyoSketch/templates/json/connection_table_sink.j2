@@ -1,0 +1,32 @@
+{
+    "name": "{{ table_name }}",
+    "connector": "kafka",
+    "tableType": "sink",
+    "config": {
+        "topic": "{{ topic_name }}",
+        "type": {
+            "commit_mode": "at_least_once"
+        }
+    },
+    "schema": {
+        "format": {
+            "json": {
+                "confluentSchemaRegistry": false,
+                "schemaId": null,
+                "includeSchema": false,
+                "debezium": false,
+                "unstructured": false,
+                "timestampFormat": "rfc3339"
+            }
+        },
+        "badData": {
+            "fail": {}
+        },
+        "framing": null,
+        "structName": null,
+        "fields": [],
+        "inferred": true,
+        "primaryKeys": []
+    },
+    "connectionProfileId": "{{ profile_id }}"
+}

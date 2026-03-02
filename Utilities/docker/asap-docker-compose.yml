@@ -1,0 +1,21 @@
+name: asap
+
+# Bridge network for communications between containers
+networks:
+  asap-network:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.25.0.0/16
+
+# Services used by ProjectASAP
+include:
+  - ./kafka/kafka-compose.yml
+  - ./prometheus/prometheus-compose.yml
+  - ./grafana/grafana-compose.yml
+  - ./arroyo-cli-compose.yml
+  - ./generated_compose_files/controller-compose.yml
+  - ./generated_compose_files/arroyosketch-compose.yml
+  - ./generated_compose_files/query-engine-compose.yml
+  - ./generated_compose_files/fake-exporter-compose.yml

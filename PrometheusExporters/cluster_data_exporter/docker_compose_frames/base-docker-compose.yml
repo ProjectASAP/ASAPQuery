@@ -1,0 +1,39 @@
+x-bake:
+  - COMPOSE_BAKE=true
+
+services:
+  cluster-data-exporter:
+    build: .
+    container_name: cluster-data-exporter
+    volumes:
+      # Mount the local data directory to /data in the container
+      # Replace './data' with the path to your csv.gz files
+      - ./data:/data:ro
+    ports:
+      # Map container port to host port - adjust as needed
+      - "40000:40000"
+    command: [
+        "--input-directory",
+        "/data",
+        "--port",
+        "40000",
+        # Add your provider-specific arguments here
+        # For Google data example:
+        # "google",
+        # "--metrics", "mean_cpu_usage_rate,canonical_memory_usage",
+        # "--all-parts"
+        #
+        # For Alibaba data example:
+        # "alibaba",
+        # "--data-type", "node",
+        # "--data-year", "2021",
+        # "--all-parts"
+      ]
+    restart: unless-stopped
+    # Optional: set resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M

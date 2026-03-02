@@ -1,0 +1,15 @@
+[package]
+name = "fake_exporter"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+prometheus = "0.14.0"
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+rand = "0.9.1"
+rand_distr = "0.5.1"
+futures = "0.3"
+lazy_static = "1.5"

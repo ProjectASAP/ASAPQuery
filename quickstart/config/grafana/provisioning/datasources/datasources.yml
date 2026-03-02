@@ -1,0 +1,21 @@
+# Grafana datasources provisioning
+apiVersion: 1
+
+datasources:
+  - name: ASAPQuery
+    type: prometheus
+    access: proxy
+    url: http://queryengine:8088
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: "5s"
+
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: false
+    editable: true
+    jsonData:
+      timeInterval: "5s"
