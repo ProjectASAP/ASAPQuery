@@ -1,0 +1,19 @@
+# Docker compose Jinja2 template to be rendered and used by asap-cli
+
+services:
+  controller:
+    image: sketchdb-controller:latest # Change to 'asap' prefix
+    container_name: asap-controller
+    networks:
+      - asap-network
+    volumes:
+      - {{ input_config_path }}:/app/input/config.yaml:ro
+      - {{ output_dir }}:/app/outputs
+    command: [
+      "--input_config", "/app/input/config.yaml",
+      "--output_dir", "/app/outputs",
+      "--prometheus_scrape_interval", "{{ prometheus_scrape_interval }}",
+      "--streaming_engine", "{{ streaming_engine }}"{% if punting %},
+      "--enable-punting"{% endif %}
+      ]
+    restart: no

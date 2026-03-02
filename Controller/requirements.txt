@@ -1,0 +1,3 @@
+loguru==0.7.3
+promql_parser==0.5.0
+PyYAML==6.0.2

@@ -1,0 +1,8 @@
+# Environment configuration (if used)
+.env
+
+# Runtime output directories
+output/
+
+# Docker compose override files (local customizations)
+docker-compose.override.yml
