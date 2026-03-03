@@ -11,7 +11,7 @@ A framework for running end-to-end distributed systems experiments on CloudLab, 
 - **Local Machine:**
   - Ubuntu
   - Python 3.8+
-  - Local clone of `asap-internal` repo (at `$REPO_ROOT`)
+  - Local clone of `ASAPQuery` repo (at `$REPO_ROOT`)
 
 - **CloudLab:**
   - Active experiment with N nodes

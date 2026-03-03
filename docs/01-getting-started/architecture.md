@@ -248,7 +248,7 @@ graph LR
 ## Repository Structure
 
 ```
-asap-internal/
+ASAPQuery/
 ├── QueryEngineRust/          # Rust query processor
 │   ├── src/
 │   │   ├── drivers/          # Ingest, query adapters, servers
