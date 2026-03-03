@@ -56,6 +56,34 @@ parse_rsync_output() {
     printf '%s\n' "${synced_components[@]}"
 }
 
+build_rsync_file_paths() {
+    local this_dir="$1"
+    local files=("${@:2}")
+    local files_to_rsync=()
+
+    for file in "${files[@]}"; do
+        files_to_rsync+=("$this_dir/../../../$file")
+    done
+
+    printf '%s\n' "${files_to_rsync[@]}"
+}
+
+parse_rsync_output_files() {
+    local rsync_output="$1"
+    shift
+    local file_paths=("$@")
+    local synced_files=()
+
+    for file_path in "${file_paths[@]}"; do
+        local filename=$(basename "$file_path")
+        if echo "$rsync_output" | grep -v ".git/" | grep -qE " ${filename}$"; then
+            synced_files+=("$filename")
+        fi
+    done
+
+    printf '%s\n' "${synced_files[@]}"
+}
+
 perform_rsync() {
     local username="$1"
     local hostname="$2"

@@ -511,7 +511,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         prometheus_server = f"http://{prometheus_host}:{prometheus_port}"
 
         cmd = (
-            "mkdir -p {}; ./target/release/query_engine_rust "
+            "mkdir -p {}; ../target/release/query_engine_rust "
             "--kafka-topic {} "
             "--input-format {} "
             "--config {}/inference_config.yaml "
