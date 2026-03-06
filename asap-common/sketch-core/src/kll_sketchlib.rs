@@ -1,4 +1,4 @@
-use sketchlib_rust::{KLL, SketchInput};
+use sketchlib_rust::{SketchInput, KLL};
 
 /// Concrete KLL type from sketchlib-rust when sketchlib backend is enabled.
 pub type SketchlibKll = KLL;
@@ -34,4 +34,3 @@ pub fn bytes_from_sketchlib_kll(inner: &SketchlibKll) -> Vec<u8> {
 pub fn sketchlib_kll_from_bytes(bytes: &[u8]) -> Result<SketchlibKll, Box<dyn std::error::Error>> {
     Ok(KLL::deserialize_from_bytes(bytes)?)
 }
-

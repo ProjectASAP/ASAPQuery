@@ -3,8 +3,8 @@
 //! Uses CMSHeap (CountMin + HHHeap) from sketchlib-rust instead of CountMin + local heap,
 //! providing automatic top-k tracking during insert and merge.
 
-use sketchlib_rust::{CMSHeap, SketchInput, Vector2D};
 use sketchlib_rust::RegularPath;
+use sketchlib_rust::{CMSHeap, SketchInput, Vector2D};
 
 /// Wire-format heap item (key, value) to avoid circular dependency with count_min_with_heap.
 pub struct WireHeapItem {

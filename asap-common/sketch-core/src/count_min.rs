@@ -140,8 +140,7 @@ impl CountMinSketch {
         }
 
         if use_sketchlib_for_count_min() {
-            let mut sketchlib_inners: Vec<SketchlibCms> =
-                Vec::with_capacity(accumulators.len());
+            let mut sketchlib_inners: Vec<SketchlibCms> = Vec::with_capacity(accumulators.len());
             for acc in accumulators {
                 let matrix = acc.sketch();
                 let inner = sketchlib_cms_from_matrix(acc.row_num, acc.col_num, &matrix);
@@ -200,8 +199,7 @@ impl CountMinSketch {
         }
 
         if use_sketchlib_for_count_min() {
-            let mut sketchlib_inners: Vec<SketchlibCms> =
-                Vec::with_capacity(accumulators.len());
+            let mut sketchlib_inners: Vec<SketchlibCms> = Vec::with_capacity(accumulators.len());
             for acc in accumulators {
                 let acc_matrix = acc.sketch();
                 let matrix_has_values = acc_matrix
@@ -282,9 +280,10 @@ impl CountMinSketch {
             row_num: usize,
             col_num: usize,
         }
-        let wire: WireFormat = rmp_serde::from_slice(buffer).map_err(|e| -> Box<dyn std::error::Error> {
-            format!("Failed to deserialize CountMinSketch from MessagePack: {e}").into()
-        })?;
+        let wire: WireFormat =
+            rmp_serde::from_slice(buffer).map_err(|e| -> Box<dyn std::error::Error> {
+                format!("Failed to deserialize CountMinSketch from MessagePack: {e}").into()
+            })?;
 
         let backend = if use_sketchlib_for_count_min() {
             CountMinBackend::Sketchlib(sketchlib_cms_from_matrix(

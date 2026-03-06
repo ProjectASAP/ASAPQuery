@@ -18,8 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::use_sketchlib_for_kll;
 use crate::kll_sketchlib::{
-    bytes_from_sketchlib_kll, sketchlib_kll_from_bytes, sketchlib_kll_merge,
-    sketchlib_kll_quantile, sketchlib_kll_update, new_sketchlib_kll, SketchlibKll,
+    bytes_from_sketchlib_kll, new_sketchlib_kll, sketchlib_kll_from_bytes, sketchlib_kll_merge,
+    sketchlib_kll_quantile, sketchlib_kll_update, SketchlibKll,
 };
 
 /// Wire format used in MessagePack serialization (matches Arroyo UDF output).
@@ -179,10 +179,7 @@ impl KllSketch {
             )
         };
 
-        Ok(Self {
-            k: wire.k,
-            backend,
-        })
+        Ok(Self { k: wire.k, backend })
     }
 
     /// Merge from references without cloning.
@@ -263,10 +260,7 @@ impl Clone for KllSketch {
                 KllBackend::Sketchlib(sketchlib_kll_from_bytes(&bytes).unwrap())
             }
         };
-        Self {
-            k: self.k,
-            backend,
-        }
+        Self { k: self.k, backend }
     }
 }
 

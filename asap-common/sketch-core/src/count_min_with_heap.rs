@@ -139,9 +139,7 @@ impl Clone for CountMinSketchWithHeap {
 impl CountMinSketchWithHeap {
     pub fn new(row_num: usize, col_num: usize, heap_size: usize) -> Self {
         let backend = if use_sketchlib_for_count_min_with_heap() {
-            CountMinWithHeapBackend::Sketchlib(new_sketchlib_cms_heap(
-                row_num, col_num, heap_size,
-            ))
+            CountMinWithHeapBackend::Sketchlib(new_sketchlib_cms_heap(row_num, col_num, heap_size))
         } else {
             CountMinWithHeapBackend::Legacy {
                 sketch: vec![vec![0.0; col_num]; row_num],
@@ -201,7 +199,9 @@ impl CountMinSketchWithHeap {
     pub fn sketch_matrix(&self) -> Vec<Vec<f64>> {
         match &self.backend {
             CountMinWithHeapBackend::Legacy { sketch, .. } => sketch.clone(),
-            CountMinWithHeapBackend::Sketchlib(cms_heap) => matrix_from_sketchlib_cms_heap(cms_heap),
+            CountMinWithHeapBackend::Sketchlib(cms_heap) => {
+                matrix_from_sketchlib_cms_heap(cms_heap)
+            }
         }
     }
 
@@ -236,7 +236,9 @@ impl CountMinSketchWithHeap {
                 value,
             });
         } else if let Some(min_item) = heap.iter_mut().min_by(|a, b| {
-            a.value.partial_cmp(&b.value).unwrap_or(std::cmp::Ordering::Equal)
+            a.value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal)
         }) {
             if value > min_item.value {
                 *min_item = HeapItem {
@@ -366,7 +368,7 @@ impl CountMinSketchWithHeap {
                         CountMinWithHeapBackend::Legacy { sketch, .. } => sketch,
                         CountMinWithHeapBackend::Sketchlib(_) => {
                             return Err(
-                                "Cannot mix Legacy and Sketchlib backends when merging".into(),
+                                "Cannot mix Legacy and Sketchlib backends when merging".into()
                             );
                         }
                     };
@@ -413,10 +415,7 @@ impl CountMinSketchWithHeap {
     }
 
     pub fn serialize_msgpack(&self) -> Vec<u8> {
-        let (sketch, topk_heap) = (
-            self.sketch_matrix(),
-            self.topk_heap_items(),
-        );
+        let (sketch, topk_heap) = (self.sketch_matrix(), self.topk_heap_items());
 
         let serialized = CountMinSketchWithHeapSerialized {
             sketch: CmsData {

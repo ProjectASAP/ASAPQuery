@@ -294,7 +294,10 @@ fn run_hydra_kll_once(seed: u64, p: &HydraKllParams) -> HydraKllResult {
     for key in &keys {
         let mut vals = exact.get(key).cloned().unwrap_or_default();
         vals.sort_by(f64::total_cmp);
-        for (q, mean_ref, max_ref) in [(0.5, &mut mean_50, &mut max_50), (0.9, &mut mean_90, &mut max_90)] {
+        for (q, mean_ref, max_ref) in [
+            (0.5, &mut mean_50, &mut max_50),
+            (0.9, &mut mean_90, &mut max_90),
+        ] {
             let est = hydra.query(key, q);
             let err = (rank_fraction(&vals, est) - q).abs();
             *mean_ref += err;
@@ -327,10 +330,30 @@ fn main() {
 
     // CountMinSketch: multiple (depth, width, n, domain)
     let cms_param_sets: Vec<CmsParams> = vec![
-        CmsParams { depth: 3, width: 1024, n: 100_000, domain: 1000 },
-        CmsParams { depth: 5, width: 2048, n: 200_000, domain: 2000 },
-        CmsParams { depth: 7, width: 4096, n: 200_000, domain: 2000 },
-        CmsParams { depth: 5, width: 2048, n: 50_000, domain: 500 },
+        CmsParams {
+            depth: 3,
+            width: 1024,
+            n: 100_000,
+            domain: 1000,
+        },
+        CmsParams {
+            depth: 5,
+            width: 2048,
+            n: 200_000,
+            domain: 2000,
+        },
+        CmsParams {
+            depth: 7,
+            width: 4096,
+            n: 200_000,
+            domain: 2000,
+        },
+        CmsParams {
+            depth: 5,
+            width: 2048,
+            n: 50_000,
+            domain: 500,
+        },
     ];
 
     println!("## CountMinSketch ({mode})");
@@ -346,9 +369,27 @@ fn main() {
 
     // CountMinSketchWithHeap
     let cmwh_param_sets: Vec<CmwhParams> = vec![
-        CmwhParams { depth: 3, width: 1024, n: 100_000, domain: 1000, heap_size: 10 },
-        CmwhParams { depth: 5, width: 2048, n: 200_000, domain: 2000, heap_size: 20 },
-        CmwhParams { depth: 5, width: 2048, n: 200_000, domain: 2000, heap_size: 50 },
+        CmwhParams {
+            depth: 3,
+            width: 1024,
+            n: 100_000,
+            domain: 1000,
+            heap_size: 10,
+        },
+        CmwhParams {
+            depth: 5,
+            width: 2048,
+            n: 200_000,
+            domain: 2000,
+            heap_size: 20,
+        },
+        CmwhParams {
+            depth: 5,
+            width: 2048,
+            n: 200_000,
+            domain: 2000,
+            heap_size: 50,
+        },
     ];
 
     println!("\n## CountMinSketchWithHeap ({mode})");
@@ -371,8 +412,12 @@ fn main() {
     ];
 
     println!("\n## KllSketch ({mode})");
-    println!("| k | n_updates | q=0.5 abs_rank_error | q=0.9 abs_rank_error | q=0.99 abs_rank_error |");
-    println!("|---|-----------|----------------------|----------------------|-----------------------|");
+    println!(
+        "| k | n_updates | q=0.5 abs_rank_error | q=0.9 abs_rank_error | q=0.99 abs_rank_error |"
+    );
+    println!(
+        "|---|-----------|----------------------|----------------------|-----------------------|"
+    );
     for p in &kll_param_sets {
         let r = run_kll_once(seed, p);
         println!(
@@ -383,10 +428,38 @@ fn main() {
 
     // HydraKllSketch
     let hydra_param_sets: Vec<HydraKllParams> = vec![
-        HydraKllParams { rows: 2, cols: 64, k: 20, n: 200_000, domain: 200, eval_keys: 50 },
-        HydraKllParams { rows: 3, cols: 128, k: 20, n: 200_000, domain: 200, eval_keys: 50 },
-        HydraKllParams { rows: 3, cols: 128, k: 50, n: 200_000, domain: 200, eval_keys: 50 },
-        HydraKllParams { rows: 3, cols: 128, k: 20, n: 100_000, domain: 100, eval_keys: 50 },
+        HydraKllParams {
+            rows: 2,
+            cols: 64,
+            k: 20,
+            n: 200_000,
+            domain: 200,
+            eval_keys: 50,
+        },
+        HydraKllParams {
+            rows: 3,
+            cols: 128,
+            k: 20,
+            n: 200_000,
+            domain: 200,
+            eval_keys: 50,
+        },
+        HydraKllParams {
+            rows: 3,
+            cols: 128,
+            k: 50,
+            n: 200_000,
+            domain: 200,
+            eval_keys: 50,
+        },
+        HydraKllParams {
+            rows: 3,
+            cols: 128,
+            k: 20,
+            n: 100_000,
+            domain: 100,
+            eval_keys: 50,
+        },
     ];
 
     println!("\n## HydraKllSketch ({mode})");

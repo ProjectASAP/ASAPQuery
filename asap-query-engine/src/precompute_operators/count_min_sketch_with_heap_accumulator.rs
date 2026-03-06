@@ -248,14 +248,26 @@ mod tests {
             sketch[1][1] = 15.0;
         }
         for item in [
-            HeapItem { key: "key1".to_string(), value: 100.0 },
-            HeapItem { key: "key2".to_string(), value: 50.0 },
+            HeapItem {
+                key: "key1".to_string(),
+                value: 100.0,
+            },
+            HeapItem {
+                key: "key2".to_string(),
+                value: 50.0,
+            },
         ] {
             cms1.inner.update(&item.key, item.value);
         }
         for item in [
-            HeapItem { key: "key3".to_string(), value: 75.0 },
-            HeapItem { key: "key1".to_string(), value: 80.0 },
+            HeapItem {
+                key: "key3".to_string(),
+                value: 75.0,
+            },
+            HeapItem {
+                key: "key1".to_string(),
+                value: 80.0,
+            },
         ] {
             cms2.inner.update(&item.key, item.value);
         }
@@ -301,9 +313,7 @@ mod tests {
             value: 99.0,
         }];
         let cms = CountMinSketchWithHeapAccumulator {
-            inner: CountMinSketchWithHeap::from_legacy_matrix(
-                sketch, topk_heap, 2, 3, 5,
-            ),
+            inner: CountMinSketchWithHeap::from_legacy_matrix(sketch, topk_heap, 2, 3, 5),
         };
 
         let bytes = cms.serialize_to_bytes();

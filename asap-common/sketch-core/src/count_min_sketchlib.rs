@@ -9,7 +9,11 @@ pub fn new_sketchlib_cms(row_num: usize, col_num: usize) -> SketchlibCms {
 }
 
 /// Builds a sketchlib Count-Min sketch from an existing `sketch` matrix.
-pub fn sketchlib_cms_from_matrix(row_num: usize, col_num: usize, sketch: &[Vec<f64>]) -> SketchlibCms {
+pub fn sketchlib_cms_from_matrix(
+    row_num: usize,
+    col_num: usize,
+    sketch: &[Vec<f64>],
+) -> SketchlibCms {
     let matrix = Vector2D::from_fn(row_num, col_num, |r, c| {
         // Values are stored as f64 in the wire format; treat them as integer counts.
         sketch
