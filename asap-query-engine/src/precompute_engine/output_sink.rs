@@ -74,6 +74,12 @@ impl NoopOutputSink {
     }
 }
 
+impl Default for NoopOutputSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OutputSink for NoopOutputSink {
     fn emit_batch(
         &self,
