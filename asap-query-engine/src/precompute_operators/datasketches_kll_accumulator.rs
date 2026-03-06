@@ -5,6 +5,8 @@ use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use sketch_core::kll::KllSketch;
 use std::collections::HashMap;
+#[cfg(feature = "extra_debugging")]
+use std::time::Instant;
 use tracing::debug;
 
 use promql_utilities::query_logics::enums::Statistic;
