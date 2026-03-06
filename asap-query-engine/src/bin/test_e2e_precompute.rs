@@ -303,8 +303,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Send a few raw samples — no need to advance watermark.
     println!("\n=== Sending raw-mode samples ===");
-    let raw_timestamps = vec![100_000i64, 101_000, 102_000];
-    let raw_values = vec![42.0f64, 43.0, 44.0];
+    let raw_timestamps = [100_000i64, 101_000, 102_000];
+    let raw_values = [42.0f64, 43.0, 44.0];
     for (&ts, &val) in raw_timestamps.iter().zip(raw_values.iter()) {
         let body = build_remote_write_body(vec![make_sample("fake_metric", "groupA", ts, val)]);
         let resp = client
@@ -353,7 +353,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for series_idx in 0..10 {
         let label_val = format!("batch_{series_idx}");
         for t in 0..100 {
-            let ts = 200_000 + (series_idx as i64) * 1000 + t; // unique ts per sample
+            let ts = 200_000 + series_idx * 1000 + t; // unique ts per sample
             let val = (series_idx * 100 + t) as f64;
             batch_timeseries.push(make_sample("fake_metric", &label_val, ts, val));
         }
@@ -408,7 +408,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Pre-build all request bodies in parallel using rayon-style chunking via tokio tasks.
     // Each task builds its share of requests, then we flatten the results.
     let num_build_tasks = num_concurrent_senders;
-    let requests_per_task = (num_requests as usize + num_build_tasks - 1) / num_build_tasks;
+    let requests_per_task = (num_requests as usize).div_ceil(num_build_tasks);
     let mut build_handles = Vec::with_capacity(num_build_tasks);
     for task_idx in 0..num_build_tasks {
         let start = task_idx * requests_per_task;
@@ -566,6 +566,17 @@ struct BenchResult {
     batch_latency_ms: f64,
 }
 
+struct BenchRunConfig {
+    label: String,
+    port: u16,
+    streaming_config: Arc<StreamingConfig>,
+    num_workers: usize,
+    num_concurrent_senders: usize,
+    num_requests: u64,
+    samples_per_request: u64,
+    num_series: u64,
+}
+
 /// Build an AggregationConfig for Sum with specified window parameters.
 fn make_sum_agg_config(
     agg_id: u64,
@@ -602,15 +613,18 @@ fn make_sum_agg_config(
 /// Run a single windowed benchmark and return the results.
 async fn run_single_bench(
     client: &reqwest::Client,
-    label: &str,
-    port: u16,
-    streaming_config: Arc<StreamingConfig>,
-    num_workers: usize,
-    num_concurrent_senders: usize,
-    num_requests: u64,
-    samples_per_request: u64,
-    num_series: u64,
+    config: BenchRunConfig,
 ) -> Result<BenchResult, Box<dyn std::error::Error + Send + Sync>> {
+    let BenchRunConfig {
+        label,
+        port,
+        streaming_config,
+        num_workers,
+        num_concurrent_senders,
+        num_requests,
+        samples_per_request,
+        num_series,
+    } = config;
     let total_samples = num_requests * samples_per_request;
 
     let noop_sink = Arc::new(NoopOutputSink::new());
@@ -728,7 +742,7 @@ async fn run_single_bench(
     println!("    Batch latency: {batch_latency_ms:.1}ms");
 
     Ok(BenchResult {
-        label: label.to_string(),
+        label,
         send_throughput,
         e2e_throughput,
         batch_latency_ms,
@@ -760,14 +774,16 @@ async fn run_windowed_benchmarks(
 
         let r = run_single_bench(
             client,
-            label,
-            port,
-            sc,
-            4,
-            4, // concurrent senders to saturate workers
-            num_requests,
-            samples_per_request,
-            num_series,
+            BenchRunConfig {
+                label: label.to_string(),
+                port,
+                streaming_config: sc,
+                num_workers: 4,
+                num_concurrent_senders: 4, // concurrent senders to saturate workers
+                num_requests,
+                samples_per_request,
+                num_series,
+            },
         )
         .await?;
         results.push(r);
@@ -802,14 +818,16 @@ async fn run_scalability_benchmark(
 
         let r = run_single_bench(
             client,
-            &label,
-            port,
-            sc,
-            num_workers,
-            num_workers, // concurrent senders match worker count
-            num_requests,
-            samples_per_request,
-            num_series,
+            BenchRunConfig {
+                label,
+                port,
+                streaming_config: sc,
+                num_workers,
+                num_concurrent_senders: num_workers, // concurrent senders match worker count
+                num_requests,
+                samples_per_request,
+                num_series,
+            },
         )
         .await?;
         results.push(r);
