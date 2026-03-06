@@ -28,12 +28,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    # - name: Configure git for private dependencies
-    #   run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-    # - name: Clone sketchlib-rust
-    #   run: git clone https://github.com/ProjectASAP/sketchlib-rust.git
-
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
       with:
@@ -80,12 +74,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-
-    # - name: Configure git for private dependencies
-    #   run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-    # - name: Clone sketchlib-rust
-    #   run: git clone https://github.com/ProjectASAP/sketchlib-rust.git
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -145,7 +133,3 @@ jobs:
 
     - name: Build Docker image
       run: docker build -f asap-query-engine/Dockerfile -t sketchdb-queryengine-rust:latest .
-    #   run: |
-    #     echo "${{ secrets.PRIVATE_REPO_TOKEN }}" > /tmp/git_token
-    #     docker build --secret id=git_token,src=/tmp/git_token -f QueryEngineRust/Dockerfile -t sketchdb-queryengine-rust:latest .
-    #     rm -f /tmp/git_token
