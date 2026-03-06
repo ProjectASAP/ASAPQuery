@@ -7,7 +7,7 @@ This document provides an overview of all ASAP components and links to detailed 
 | Component | Purpose | Technology | Links |
 |-----------|---------|------------|-------|
 | **asap-query-engine** | Answers PromQL queries using sketches | Rust | [Details](query-engine.md) · [Code](../../asap-query-engine/) · [Dev Docs](../../asap-query-engine/docs/README.md) |
-| **Arroyo** | Stream processing for building sketches | Rust (forked) | [Details](arroyo.md) · [Code](../../arroyo/) |
+| **Arroyo** | Stream processing for building sketches | Rust (forked) | [Details](arroyo.md) · [Code](https://github.com/ProjectASAP/arroyo) |
 | **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | [Details](arroyosketch.md) · [Code](../../asap-sketch-ingest/) · [README](../../asap-sketch-ingest/README.md) |
 | **asap-planner** | Auto-determines sketch parameters | Python | [Details](controller.md) · [Code](../../asap-planner/) · [README](../../asap-planner/README.md) |
 | **Exporters** | Generate synthetic metrics for testing | Rust/Python | [Details](exporters.md) · [Code](../../asap-tools/prometheus-exporters/) · [README](../../asap-tools/prometheus-exporters/README.md) |
