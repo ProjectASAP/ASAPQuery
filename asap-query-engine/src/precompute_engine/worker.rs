@@ -58,17 +58,21 @@ pub struct Worker {
     late_data_policy: LateDataPolicy,
 }
 
+pub struct WorkerRuntimeConfig {
+    pub max_buffer_per_series: usize,
+    pub allowed_lateness_ms: i64,
+    pub pass_raw_samples: bool,
+    pub raw_mode_aggregation_id: u64,
+    pub late_data_policy: LateDataPolicy,
+}
+
 impl Worker {
     pub fn new(
         id: usize,
         receiver: mpsc::Receiver<WorkerMessage>,
         output_sink: Arc<dyn OutputSink>,
         agg_configs: HashMap<u64, AggregationConfig>,
-        max_buffer_per_series: usize,
-        allowed_lateness_ms: i64,
-        pass_raw_samples: bool,
-        raw_mode_aggregation_id: u64,
-        late_data_policy: LateDataPolicy,
+        runtime_config: WorkerRuntimeConfig,
     ) -> Self {
         Self {
             id,
@@ -76,11 +80,11 @@ impl Worker {
             output_sink,
             series_map: HashMap::new(),
             agg_configs,
-            max_buffer_per_series,
-            allowed_lateness_ms,
-            pass_raw_samples,
-            raw_mode_aggregation_id,
-            late_data_policy,
+            max_buffer_per_series: runtime_config.max_buffer_per_series,
+            allowed_lateness_ms: runtime_config.allowed_lateness_ms,
+            pass_raw_samples: runtime_config.pass_raw_samples,
+            raw_mode_aggregation_id: runtime_config.raw_mode_aggregation_id,
+            late_data_policy: runtime_config.late_data_policy,
         }
     }
 
@@ -604,8 +608,6 @@ mod tests {
 
     #[test]
     fn test_extract_key_from_series() {
-        use serde_json::json;
-
         let config = AggregationConfig::new(
             1,
             "SingleSubpopulation".to_string(),
