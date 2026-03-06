@@ -1,8 +1,8 @@
-name: asap-turboquery-quickstart
+name: asapquery-quickstart
 
 # Docker Compose file for pattern-based fake exporters demo
 # Uses deterministic time-based patterns instead of random data
-# This makes visual comparison between Prometheus and TurboQuery easier
+# This makes visual comparison between Prometheus and ASAPQuery easier
 
 networks:
   asap-network:
