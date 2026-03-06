@@ -3,18 +3,46 @@
 rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 twox-hash = "2.1.0"
+sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust" }
 */
+
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
+use std::sync::OnceLock;
+
 use arroyo_udf_plugin::udf;
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
-use std::collections::BinaryHeap;
-use std::cmp::Ordering;
 use twox_hash::XxHash32;
+
+use sketchlib_rust::{CountMin as SketchlibCountMin, RegularPath, SketchInput, Vector2D};
 
 // Count-Min Sketch with Heap parameters
 const DEPTH: usize = {{ depth }}; // Number of hash functions
 const WIDTH: usize = {{ width }}; // Number of buckets per hash function
 const HEAP_SIZE: usize = {{ heapsize }}; // Maximum number of top-k items to track
+
+// Implementation switch for Count-Min Sketch with Heap.
+enum ImplMode {
+    Legacy,
+    Sketchlib,
+}
+
+static IMPL_MODE: OnceLock<ImplMode> = OnceLock::new();
+
+fn use_sketchlib_for_cmwh() -> bool {
+    matches!(
+        IMPL_MODE.get_or_init(|| {
+            match std::env::var("ARROYO_SKETCH_CMWH_IMPL") {
+                Ok(v) if v.to_ascii_lowercase() == "legacy" => ImplMode::Legacy,
+                _ => ImplMode::Sketchlib,
+            }
+        }),
+        ImplMode::Sketchlib
+    )
+}
+
+type SketchlibCms = SketchlibCountMin<Vector2D<i64>, RegularPath>;
 
 #[derive(Serialize, Deserialize, Clone)]
 struct CountMinSketch {
@@ -93,7 +121,10 @@ impl PartialOrd for HeapItem {
 }
 
 struct CountMinSketchWithHeap {
+    // Legacy wire-format matrix representation.
     sketch: CountMinSketch,
+    // Optional sketchlib-rust Count-Min used when ARROYO_SKETCH_CMWH_IMPL selects sketchlib mode.
+    sketchlib: Option<SketchlibCms>,
     topk_heap: BinaryHeap<HeapItem>, // Maintain as heap during processing
     heap_size: usize,
 }
@@ -109,8 +140,14 @@ struct CountMinSketchWithHeapSerialized {
 
 impl CountMinSketchWithHeap {
     fn new() -> Self {
+        let use_sketchlib = use_sketchlib_for_cmwh();
         CountMinSketchWithHeap {
             sketch: CountMinSketch::new(),
+            sketchlib: if use_sketchlib {
+                Some(SketchlibCms::with_dimensions(DEPTH, WIDTH))
+            } else {
+                None
+            },
             topk_heap: BinaryHeap::new(),
             heap_size: HEAP_SIZE,
         }
@@ -118,8 +155,25 @@ impl CountMinSketchWithHeap {
 
     // Update the sketch and maintain the top-k heap
     fn update_with_topk(&mut self, key: &str, value: f64) {
-        // Update the Count-Min Sketch and get the estimated frequency in one pass
-        let estimated_freq = self.sketch.update_with_query(key, value);
+        // Compute estimated frequency using either legacy or sketchlib implementation.
+        let estimated_freq = if use_sketchlib_for_cmwh() {
+            let inner = self
+                .sketchlib
+                .as_mut()
+                .expect("sketchlib mode enabled but sketchlib state is missing");
+
+            // Values arrive as f64; Count-Min counters are integers.
+            let many = value.round() as i64;
+            if many <= 0 {
+                return;
+            }
+            let input = SketchInput::String(key.to_owned());
+            inner.insert_many(&input, many);
+            inner.estimate(&input) as f64
+        } else {
+            // Legacy Count-Min update + query in one pass.
+            self.sketch.update_with_query(key, value)
+        };
 
         // Check if the key already exists in the heap
         // TODO: This takes O(k) time, can we do better?
@@ -159,7 +213,30 @@ impl CountMinSketchWithHeap {
     }
 
     // Convert to serializable format
-    fn to_serializable(self) -> CountMinSketchWithHeapSerialized {
+    fn to_serializable(mut self) -> CountMinSketchWithHeapSerialized {
+        // In sketchlib mode, derive the matrix from the inner Count-Min sketch so that
+        // the wire format matches QueryEngineRust expectations.
+        if let Some(inner) = &self.sketchlib {
+            let storage: &Vector2D<i64> = inner.as_storage();
+            let rows = storage.rows();
+            let cols = storage.cols();
+            let mut sketch = vec![vec![0.0; cols]; rows];
+
+            for r in 0..rows {
+                for c in 0..cols {
+                    if let Some(v) = storage.get(r, c) {
+                        sketch[r][c] = *v as f64;
+                    }
+                }
+            }
+
+            self.sketch = CountMinSketch {
+                sketch,
+                row_num: rows,
+                col_num: cols,
+            };
+        }
+
         CountMinSketchWithHeapSerialized {
             sketch: self.sketch,
             topk_heap: self.topk_heap.into_iter().collect(),
