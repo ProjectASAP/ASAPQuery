@@ -88,10 +88,10 @@ impl CountMinSketch {
         match &mut self.backend {
             CountMinBackend::Legacy(sketch) => {
                 let key_bytes = key.as_bytes();
-                for i in 0..self.row_num {
+                for (i, row) in sketch.iter_mut().enumerate().take(self.row_num) {
                     let hash_value = xxh32(key_bytes, i as u32);
                     let col_index = (hash_value as usize) % self.col_num;
-                    sketch[i][col_index] += value;
+                    row[col_index] += value;
                 }
             }
             CountMinBackend::Sketchlib(s) => {
@@ -105,10 +105,10 @@ impl CountMinSketch {
             CountMinBackend::Legacy(sketch) => {
                 let key_bytes = key.as_bytes();
                 let mut min_value = f64::MAX;
-                for i in 0..self.row_num {
+                for (i, row) in sketch.iter().enumerate().take(self.row_num) {
                     let hash_value = xxh32(key_bytes, i as u32);
                     let col_index = (hash_value as usize) % self.col_num;
-                    min_value = min_value.min(sketch[i][col_index]);
+                    min_value = min_value.min(row[col_index]);
                 }
                 min_value
             }

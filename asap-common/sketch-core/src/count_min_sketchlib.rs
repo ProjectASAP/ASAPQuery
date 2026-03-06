@@ -33,10 +33,10 @@ pub fn matrix_from_sketchlib_cms(inner: &SketchlibCms) -> Vec<Vec<f64>> {
     let cols = storage.cols();
     let mut sketch = vec![vec![0.0; cols]; rows];
 
-    for r in 0..rows {
-        for c in 0..cols {
+    for (r, row) in sketch.iter_mut().enumerate().take(rows) {
+        for (c, cell) in row.iter_mut().enumerate().take(cols) {
             if let Some(v) = storage.get(r, c) {
-                sketch[r][c] = *v as f64;
+                *cell = *v as f64;
             }
         }
     }
