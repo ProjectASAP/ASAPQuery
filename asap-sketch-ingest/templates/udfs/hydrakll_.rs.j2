@@ -79,7 +79,7 @@ fn hydrakll_(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
             }
         }
 
-        let sketch_data: Vec<Vec<KllSketchData>> = sketches
+        let sketch_data: Option<Vec<Vec<KllSketchData>>> = sketches
             .iter()
             .map(|row| {
                 row.iter()
@@ -90,9 +90,10 @@ fn hydrakll_(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
                             sketch_bytes,
                         })
                     })
-                    .collect::<Option<Vec<_>>>()?
+                    .collect::<Option<Vec<_>>>()
             })
-            .collect::<Option<Vec<_>>>()?;
+            .collect::<Option<Vec<_>>>();
+        let sketch_data = sketch_data?;
 
         let hydra_data = HydraKllSketchData {
             row_num: ROW_NUM,
@@ -105,10 +106,13 @@ fn hydrakll_(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
         Some(buf)
     } else {
         // Legacy dsrs backed implementation
-        let mut sketches: Vec<Vec<KllDoubleSketch>> = vec![
-            vec![KllDoubleSketch::with_k(DEFAULT_K); COL_NUM];
-            ROW_NUM
-        ];
+        let mut sketches: Vec<Vec<KllDoubleSketch>> = (0..ROW_NUM)
+            .map(|_| {
+                (0..COL_NUM)
+                    .map(|_| KllDoubleSketch::with_k(DEFAULT_K))
+                    .collect()
+            })
+            .collect();
 
         for (i, &key) in keys.iter().enumerate() {
             if i >= values.len() {
