@@ -4,18 +4,18 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'QueryEngineRust/**'
-      - 'CommonDependencies/dependencies/rs/**'
-      - 'CommonDependencies/tests/**'
-      - 'sketch-core/**'
+      - 'asap-query-engine/**'
+      - 'asap-common/dependencies/rs/**'
+      - 'asap-common/tests/**'
+      - 'asap-common/sketch-core/**'
       - '.github/workflows/rust.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - 'QueryEngineRust/**'
-      - 'CommonDependencies/dependencies/rs/**'
-      - 'CommonDependencies/tests/**'
-      - 'sketch-core/**'
+      - 'asap-query-engine/**'
+      - 'asap-common/dependencies/rs/**'
+      - 'asap-common/tests/**'
+      - 'asap-common/sketch-core/**'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -49,30 +49,30 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          QueryEngineRust/target
+          asap-query-engine/target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Check formatting
       run: cargo fmt -- --check
-      working-directory: QueryEngineRust
+      working-directory: asap-query-engine
 
     - name: Check formatting (sketch_db_common)
       run: cargo fmt -- --check
-      working-directory: CommonDependencies/dependencies/rs/sketch_db_common
+      working-directory: asap-common/dependencies/rs/sketch_db_common
 
     - name: Run clippy
       run: cargo clippy --all-targets --all-features -- -D warnings
-      working-directory: QueryEngineRust
+      working-directory: asap-query-engine
       env:
         RUSTC_WRAPPER: sccache
 
     - name: Check formatting (sketch-core)
       run: cargo fmt -- --check
-      working-directory: sketch-core
+      working-directory: asap-common/sketch-core
 
     - name: Run clippy (sketch-core)
       run: cargo clippy --all-targets --all-features -- -D warnings
-      working-directory: sketch-core
+      working-directory: asap-common/sketch-core
       env:
         RUSTC_WRAPPER: sccache
 
@@ -101,33 +101,33 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          QueryEngineRust/target
+          asap-query-engine/target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Run QueryEngineRust tests
       run: cargo test
-      working-directory: QueryEngineRust
+      working-directory: asap-query-engine
       env:
         RUSTC_WRAPPER: sccache
 
     - name: Run sql_utilities tests
       run: cargo test
-      working-directory: CommonDependencies/dependencies/rs/sql_utilities
+      working-directory: asap-common/dependencies/rs/sql_utilities
       env:
         RUSTC_WRAPPER: sccache
 
     - name: Run promql_utilities tests
       run: cargo test
-      working-directory: CommonDependencies/dependencies/rs/promql_utilities
+      working-directory: asap-common/dependencies/rs/promql_utilities
       env:
         RUSTC_WRAPPER: sccache
 
     - name: Run sketch-core tests
       run: cargo test
-      working-directory: sketch-core
+      working-directory: asap-common/sketch-core
     - name: Run sketch_db_common tests
       run: cargo test
-      working-directory: CommonDependencies/dependencies/rs/sketch_db_common
+      working-directory: asap-common/dependencies/rs/sketch_db_common
       env:
         RUSTC_WRAPPER: sccache
 
@@ -144,7 +144,7 @@ jobs:
       uses: docker/setup-buildx-action@v3
 
     - name: Build Docker image
-      run: docker build -f QueryEngineRust/Dockerfile -t sketchdb-queryengine-rust:latest .
+      run: docker build -f asap-query-engine/Dockerfile -t sketchdb-queryengine-rust:latest .
     #   run: |
     #     echo "${{ secrets.PRIVATE_REPO_TOKEN }}" > /tmp/git_token
     #     docker build --secret id=git_token,src=/tmp/git_token -f QueryEngineRust/Dockerfile -t sketchdb-queryengine-rust:latest .

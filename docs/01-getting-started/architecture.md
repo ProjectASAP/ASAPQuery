@@ -183,14 +183,14 @@ graph LR
 
 | Component | Purpose | Technology | Location |
 |-----------|---------|------------|----------|
-| **QueryEngineRust** | Answers PromQL queries using sketches | Rust | `QueryEngineRust/` |
+| **asap-query-engine** | Answers PromQL queries using sketches | Rust | `asap-query-engine/` |
 | **Arroyo** | Stream processing for building sketches | Rust (forked) | `arroyo/` |
-| **ArroyoSketch** | Configures Arroyo pipelines from config | Python | `ArroyoSketch/` |
-| **Controller** | Auto-determines sketch parameters | Python | `Controller/` |
+| **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | `asap-sketch-ingest/` |
+| **asap-planner** | Auto-determines sketch parameters | Python | `asap-planner/` |
 | **Kafka** | Message broker for sketch distribution | Apache Kafka | (external) |
 | **Prometheus** | Time-series database (existing) | Go | (external) |
-| **Exporters** | Generate synthetic metrics for testing | Rust/Python | `PrometheusExporters/` |
-| **Utilities** | Experimental harness that uses Cloudlab | Python | `Utilities/` |
+| **Exporters** | Generate synthetic metrics for testing | Rust/Python | `asap-tools/prometheus-exporters/` |
+| **asap-tools** | Experimental harness that uses Cloudlab | Python | `asap-tools/` |
 
 **Links to detailed documentation:**
 - [QueryEngineRust](../02-components/query-engine.md)
@@ -222,13 +222,13 @@ graph LR
 ## Technology Stack
 
 ### Core Languages
-- **Rust** - QueryEngine, Arroyo, some exporters
+- **Rust** - asap-query-engine, Arroyo, some exporters
   - Tokio for async runtime
   - Axum for HTTP server
   - Serde for serialization
   - DataSketches (dsrs) for sketch algorithms
 
-- **Python** - Controller, ArroyoSketch, experiment framework
+- **Python** - asap-planner, asap-sketch-ingest, experiment framework
   - PyYAML for config parsing
   - Jinja2 for SQL templates
   - Requests for HTTP clients
@@ -249,7 +249,7 @@ graph LR
 
 ```
 ASAPQuery/
-├── QueryEngineRust/          # Rust query processor
+├── asap-query-engine/        # Rust query processor
 │   ├── src/
 │   │   ├── drivers/          # Ingest, query adapters, servers
 │   │   ├── engines/          # Query execution (SimpleEngine)
@@ -265,35 +265,36 @@ ASAPQuery/
 │           ├── prometheus_remote_write_with_schema/
 │           └── prometheus_remote_write_optimized/
 │
-├── ArroyoSketch/             # Pipeline configurator
+├── asap-sketch-ingest/       # Pipeline configurator
 │   ├── run_arroyosketch.py   # Main script
 │   ├── templates/            # Jinja2 SQL templates
 │   └── utils/                # Arroyo API client
 │
-├── Controller/               # Auto-configuration service
+├── asap-planner/             # Auto-configuration service
 │   ├── main_controller.py    # Entry point
 │   ├── classes/              # Config data structures
 │   └── utils/                # Decision logic
 │
-├── PrometheusExporters/      # Metric generators
-│   ├── fake_exporter/        # Rust/Python fake exporters
-│   ├── cluster_data_exporter/  # Real trace data
-│   ├── query_cost_exporter/  # Resource metrics
-│   └── query_latency_exporter/  # Latency metrics
-│
-├── Utilities/                # Experiment framework
+├── asap-tools/               # Experiment framework & tooling
+│   ├── prometheus-exporters/ # Metric generators
+│   │   ├── fake_exporter/        # Rust/Python fake exporters
+│   │   ├── cluster_data_exporter/  # Real trace data
+│   │   ├── query_cost_exporter/  # Resource metrics
+│   │   └── query_latency_exporter/  # Latency metrics
 │   ├── experiments/
 │   │   ├── experiment_run_e2e.py  # Main orchestrator
 │   │   ├── config/           # Hydra configs
 │   │   ├── experiment_utils/ # Services, providers
 │   │   └── post_experiment/  # Analysis scripts
-│   └── docs/                 # Utilities dev docs
+│   └── docs/                 # asap-tools dev docs
 │
-├── CommonDependencies/       # Shared libraries
-│   ├── promql_utilities/     # PromQL parsing (Rust/Python)
-│   └── sql_utilities/        # SQL utilities
+├── asap-common/              # Shared libraries
+│   ├── dependencies/
+│   │   ├── rs/               # Rust shared crates
+│   │   └── py/               # Python shared packages
+│   └── sketch-core/          # Core sketch library (Rust)
 │
-├── quickstart/               # Self-contained demo
+├── asap-quickstart/          # Self-contained demo
 │   ├── docker-compose.yml    # Demo stack
 │   └── config/               # Demo configs
 │

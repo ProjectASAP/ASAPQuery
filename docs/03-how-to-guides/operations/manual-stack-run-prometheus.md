@@ -1,26 +1,26 @@
 # Running the ASAP Stack Manually (Prometheus)
 
-This guide covers running the ASAP stack manually with Prometheus for development and debugging. For Clickhouse, see [manual-stack-run-clickhouse.md](manual-stack-run-clickhouse.md). For automated experiments, use the experiment framework in `Utilities/experiments/`.
+This guide covers running the ASAP stack manually with Prometheus for development and debugging. For Clickhouse, see [manual-stack-run-clickhouse.md](manual-stack-run-clickhouse.md). For automated experiments, use the experiment framework in `asap-tools/experiments/`.
 
 ## Prerequisites
 
 - Kafka installed
 - Arroyo built at `~/code/arroyo/target/release/arroyo`
-- QueryEngineRust built at `~/code/QueryEngineRust/target/release/query_engine_rust`
-- PrometheusExporters built (fake_exporter_rust)
+- asap-query-engine built at `~/code/asap-query-engine/target/release/query_engine_rust`
+- asap-tools/prometheus-exporters built (fake_exporter_rust)
 - Prometheus installed and accessible
 
 ## Directory Structure
 
 ```
 ~/code/
-├── ArroyoSketch/           # Pipeline configuration scripts
+├── asap-sketch-ingest/     # Pipeline configuration scripts
 │   ├── config.yaml         # Arroyo cluster config
 │   └── run_arroyosketch.py # Creates sources, sinks, and pipelines
-├── QueryEngineRust/        # Query interception layer
-├── PrometheusExporters/    # Data generators
+├── asap-query-engine/      # Query interception layer
+├── asap-tools/prometheus-exporters/  # Data generators
 │   └── fake_exporter/
-└── Utilities/experiments/  # Automated experiment framework
+└── asap-tools/experiments/ # Automated experiment framework
 ```
 
 ## Config Files
@@ -80,7 +80,7 @@ Baseline mode runs queries directly against Prometheus or Clickhouse without ASA
 The fake exporter generates synthetic metrics exposed at `/metrics`:
 
 ```bash
-cd ~/code/PrometheusExporters/fake_exporter/fake_exporter_rust/fake_exporter
+cd ~/code/asap-tools/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
 ./target/release/fake_exporter \
     --num-labels 3 \
     --cardinality 100 \
@@ -142,7 +142,7 @@ Wait for Kafka to be ready, then create topics:
 Same as baseline - exporter just exposes `/metrics`:
 
 ```bash
-cd ~/code/PrometheusExporters/fake_exporter/fake_exporter_rust/fake_exporter
+cd ~/code/asap-tools/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
 ./target/release/fake_exporter \
     --num-labels 3 \
     --cardinality 100 \
@@ -153,7 +153,7 @@ cd ~/code/PrometheusExporters/fake_exporter/fake_exporter_rust/fake_exporter
 
 ```bash
 cd ~/code/arroyo
-./target/release/arroyo --config ~/code/ArroyoSketch/config.yaml cluster
+./target/release/arroyo --config ~/code/asap-sketch-ingest/config.yaml cluster
 ```
 
 Arroyo API runs at `http://localhost:5115`. Verify with:
@@ -166,7 +166,7 @@ curl http://localhost:5115/api/v1/pipelines
 Run `run_arroyosketch.py` to create Arroyo sources, sinks, and pipeline:
 
 ```bash
-cd ~/code/ArroyoSketch
+cd ~/code/asap-sketch-ingest
 python run_arroyosketch.py \
     --source_type prometheus_remote_write \
     --prometheus_bind_ip 0.0.0.0 \
@@ -202,7 +202,7 @@ curl http://localhost:5115/api/v1/pipelines
 ### 5. Start QueryEngineRust
 
 ```bash
-cd ~/code/QueryEngineRust
+cd ~/code/asap-query-engine
 ./target/release/query_engine_rust \
     --kafka-topic sketch_topic \
     --input-format json \

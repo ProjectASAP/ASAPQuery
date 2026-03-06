@@ -1,4 +1,4 @@
 [workspace]
-members = ["sketch-core", "QueryEngineRust"]
+members = ["asap-common/sketch-core", "asap-query-engine"]
 exclude = ["sketchlib-rust"]
 resolver = "2"

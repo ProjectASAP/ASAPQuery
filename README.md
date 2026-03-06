@@ -16,13 +16,13 @@ Future versions of ASAPQuery will accelerate queries against other observability
 **Try ASAPQuery in 5 minutes** with our self-contained demo:
 
 ```bash
-cd quickstart
+cd asap-quickstart
 docker compose up -d
 ```
 
 Open http://localhost:3000 and see ASAPQuery vs Prometheus side-by-side!
 
-Full quickstart instructions at [**Quickstart Guide**](quickstart/README.md)
+Full quickstart instructions at [**Quickstart Guide**](asap-quickstart/README.md)
 
 ## Why ASAPQuery?
 
@@ -44,23 +44,23 @@ ASAPQuery uses **streaming sketches** to:
 
 ## Architecture
 
-ASAPQuery has four main components: the **Controller** generates sketch configurations from your query workload, **ArroyoSketch** deploys streaming pipelines in **Arroyo** that continuously build sketches from live Prometheus metrics, and **QueryEngineRust** intercepts PromQL queries and serves them from those pre-computed sketches.
+ASAPQuery has four main components: the **asap-planner** generates sketch configurations from your query workload, **asap-sketch-ingest** deploys streaming pipelines in **Arroyo** that continuously build sketches from live Prometheus metrics, and **asap-query-engine** intercepts PromQL queries and serves them from those pre-computed sketches.
 
 ### Components
 
-- **[Controller](Controller/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for ArroyoSketch and QueryEngineRust
-- **[ArroyoSketch](ArroyoSketch/)** - Deploys Arroyo streaming pipelines that continuously compute and publish sketches from live metrics
+- **[asap-planner](asap-planner/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-sketch-ingest and asap-query-engine
+- **[asap-sketch-ingest](asap-sketch-ingest/)** - Deploys Arroyo streaming pipelines that continuously compute and publish sketches from live metrics
 - **[arroyo](arroyo/)** - Fork of the [Arroyo](https://github.com/ArroyoSystems/Arroyo) stream processing engine that runs the sketch-building SQL pipelines
-- **[QueryEngineRust](QueryEngineRust/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries
+- **[asap-query-engine](asap-query-engine/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries
 
 ### Repository Structure
 
 ```
-├── quickstart/              # Self-contained demo (start here!)
-├── Controller/              # Auto-configuration service
-├── ArroyoSketch/            # Arroyo pipeline deployer
+├── asap-quickstart/         # Self-contained demo (start here!)
+├── asap-planner/            # Auto-configuration service
+├── asap-sketch-ingest/      # Arroyo pipeline deployer
 ├── arroyo/                  # Fork of Arroyo stream processing engine
-└── QueryEngineRust/         # Query serving engine
+└── asap-query-engine/       # Query serving engine
 ```
 
 ## Coming soon

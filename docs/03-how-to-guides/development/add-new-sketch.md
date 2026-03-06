@@ -1,10 +1,10 @@
 # How to Add a New Sketch Algorithm
 
-Adding a new sketch requires changes to 3 components: CommonDependencies (sketch selection logic), ArroyoSketch (UDF for building sketches), and QueryEngineRust (deserialization and query logic).
+Adding a new sketch requires changes to 3 components: asap-common (sketch selection logic), asap-sketch-ingest (UDF for building sketches), and asap-query-engine (deserialization and query logic).
 
-## Step 1: CommonDependencies - Define Sketch Mapping
+## Step 1: asap-common - Define Sketch Mapping
 
-**File**: `CommonDependencies/dependencies/py/promql_utilities/promql_utilities/query_logics/logics.py`
+**File**: `asap-common/dependencies/py/promql_utilities/promql_utilities/query_logics/logics.py`
 
 **What to modify**:
 - `map_statistic_to_precompute_operator()` - Add mapping from statistic to your sketch name
@@ -14,9 +14,9 @@ Adding a new sketch requires changes to 3 components: CommonDependencies (sketch
 
 ---
 
-## Step 2: ArroyoSketch - Create Sketch UDF
+## Step 2: asap-sketch-ingest - Create Sketch UDF
 
-**File to create**: `ArroyoSketch/templates/udfs/yoursketchname_[subop].rs.j2` (or `.rs` if no template vars)
+**File to create**: `asap-sketch-ingest/templates/udfs/yoursketchname_[subop].rs.j2` (or `.rs` if no template vars)
 
 **What to implement**:
 - Rust UDF function using `#[udf]` macro
@@ -29,16 +29,16 @@ Adding a new sketch requires changes to 3 components: CommonDependencies (sketch
 **Validate**: Run `python validate_udfs.py` to check UDF compiles.
 
 **Reference examples**:
-- `ArroyoSketch/templates/udfs/datasketcheskll_.rs.j2`
-- `ArroyoSketch/templates/udfs/countminsketch_sum.rs.j2`
+- `asap-sketch-ingest/templates/udfs/datasketcheskll_.rs.j2`
+- `asap-sketch-ingest/templates/udfs/countminsketch_sum.rs.j2`
 
 ---
 
-## Step 3: QueryEngineRust - Implement Accumulator
+## Step 3: asap-query-engine - Implement Accumulator
 
 ### 3.1 Create Accumulator File
 
-**File to create**: `QueryEngineRust/src/precompute_operators/your_sketch_accumulator.rs`
+**File to create**: `asap-query-engine/src/precompute_operators/your_sketch_accumulator.rs`
 
 **What to implement**:
 - `YourSketchAccumulator` struct with sketch state
@@ -55,7 +55,7 @@ Adding a new sketch requires changes to 3 components: CommonDependencies (sketch
 
 ### 3.2 Register Accumulator
 
-**File to modify**: `QueryEngineRust/src/precompute_operators/mod.rs`
+**File to modify**: `asap-query-engine/src/precompute_operators/mod.rs`
 
 **What to add**:
 ```rust
@@ -65,34 +65,34 @@ pub use your_sketch_accumulator::*;
 
 ### 3.3 Add Deserialization Dispatcher
 
-**Files to search**: Look for "DatasketchesKLL" pattern in `QueryEngineRust/src/stores/` or `QueryEngineRust/src/drivers/ingest/`
+**Files to search**: Look for "DatasketchesKLL" pattern in `asap-query-engine/src/stores/` or `asap-query-engine/src/drivers/ingest/`
 
 **What to add**: Match case for your sketch name calling `YourSketchAccumulator::deserialize_from_bytes_arroyo(buffer)`.
 
 **Reference examples**:
-- `QueryEngineRust/src/precompute_operators/datasketches_kll_accumulator.rs`
-- `QueryEngineRust/src/precompute_operators/count_min_sketch_accumulator.rs`
+- `asap-query-engine/src/precompute_operators/datasketches_kll_accumulator.rs`
+- `asap-query-engine/src/precompute_operators/count_min_sketch_accumulator.rs`
 
 ---
 
-## Step 4: Controller - Sketch Parameters (Optional)
+## Step 4: asap-planner - Sketch Parameters (Optional)
 
-**File to modify**: `Controller/classes/StreamingAggregationConfig.py` or `Controller/utils/logics.py`
+**File to modify**: `asap-planner/classes/StreamingAggregationConfig.py` or `asap-planner/utils/logics.py`
 
 **What to add**:
 - Custom sketch parameters (size, epsilon, etc.) in `get_sketch_parameters()` or similar
 - SLA-based parameter computation in `compute_sketch_parameters()` if needed
 
-**Usually**: Controller picks up sketch automatically from CommonDependencies mapping.
+**Usually**: asap-planner picks up sketch automatically from asap-common mapping.
 
 ---
 
 ## Testing Checklist
 
 - [ ] `validate_udfs.py` passes (ArroyoSketch)
-- [ ] `cargo build --release` succeeds (QueryEngineRust)
-- [ ] `cargo test` passes (QueryEngineRust)
-- [ ] End-to-end: Controller → ArroyoSketch → Arroyo → Kafka → QueryEngine → Query result
+- [ ] `cargo build --release` succeeds (asap-query-engine)
+- [ ] `cargo test` passes (asap-query-engine)
+- [ ] End-to-end: asap-planner → asap-sketch-ingest → Arroyo → Kafka → QueryEngine → Query result
 
 ---
 
@@ -100,8 +100,8 @@ pub use your_sketch_accumulator::*;
 
 | Component | Format | Example |
 |-----------|--------|---------|
-| CommonDependencies mapping | PascalCase | `DatasketchesKLL` |
-| ArroyoSketch UDF filename | lowercase_subop | `datasketcheskll_.rs.j2` |
+| asap-common mapping | PascalCase | `DatasketchesKLL` |
+| asap-sketch-ingest UDF filename | lowercase_subop | `datasketcheskll_.rs.j2` |
 | QueryEngine accumulator | PascalCase + Accumulator | `DatasketchesKLLAccumulator` |
 | `get_accumulator_type()` return | Must match mapping | `"DatasketchesKLL"` |
 
