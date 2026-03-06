@@ -16,7 +16,7 @@ volumes:
   kafka-data:
   prometheus-data:
   grafana-data:
-  controller-output:
+  asap-planner-output:
 
 services:
   #############################################################################
@@ -137,7 +137,7 @@ services:
       timeout: 5s
       retries: 5
     depends_on:
-      arroyosketch:
+      asap-sketch-ingest:
         condition: service_completed_successfully
     restart: no
 
@@ -169,32 +169,32 @@ services:
   # INIT CONTAINERS
   #############################################################################
 
-  controller:
+  asap-planner:
     image: ghcr.io/projectasap/asap-controller:v0.1.0
-    container_name: asap-controller
-    hostname: controller
+    container_name: asap-planner
+    hostname: asap-planner
     networks:
       - asap-network
     command:
       - "--input_config=/config/controller-config.yaml"
-      - "--output_dir=/controller-output"
+      - "--output_dir=/asap-planner-output"
       - "--prometheus_scrape_interval=1"
       - "--streaming_engine=arroyo"
       - "--range-duration=300"
       - "--step=10"
     volumes:
       - ./config/controller-config.yaml:/config/controller-config.yaml:ro
-      - controller-output:/controller-output
+      - asap-planner-output:/asap-planner-output
     restart: "no"
 
-  arroyosketch:
+  asap-sketch-ingest:
     image: ghcr.io/projectasap/asap-arroyosketch:v0.1.0
-    container_name: asap-arroyosketch
-    hostname: arroyosketch
+    container_name: asap-sketch-ingest
+    hostname: asap-sketch-ingest
     networks:
       - asap-network
     command:
-      - "--config_file_path=/controller-output/streaming_config.yaml"
+      - "--config_file_path=/asap-planner-output/streaming_config.yaml"
       - "--source_type=prometheus_remote_write"
       - "--prometheus_base_port=9091"
       - "--prometheus_path=/receive"
@@ -203,14 +203,14 @@ services:
       - "--output_kafka_topic=flink_output"
       - "--output_format=json"
       - "--pipeline_name=asap-demo"
-      - "--output_dir=/arroyosketch-output"
+      - "--output_dir=/asap-sketch-ingest-output"
       - "--arroyo_url=http://arroyo:5115/api/v1"
       - "--bootstrap_servers=kafka:9092"
     volumes:
-      - controller-output:/controller-output:ro
-      - ./output/arroyosketch:/arroyosketch-output
+      - asap-planner-output:/asap-planner-output:ro
+      - ./output/asap-sketch-ingest:/asap-sketch-ingest-output
     depends_on:
-      controller:
+      asap-planner:
         condition: service_completed_successfully
       arroyo:
         condition: service_healthy
@@ -232,14 +232,14 @@ services:
       - RUST_LOG=INFO
       - RUST_BACKTRACE=1
     volumes:
-      - controller-output:/controller-output:ro
+      - asap-planner-output:/asap-planner-output:ro
       - ./output/queryengine:/app/outputs
     command:
       - "--kafka-topic=flink_output"
       - "--kafka-broker=kafka:9092"
       - "--input-format=json"
-      - "--config=/controller-output/inference_config.yaml"
-      - "--streaming-config=/controller-output/streaming_config.yaml"
+      - "--config=/asap-planner-output/inference_config.yaml"
+      - "--streaming-config=/asap-planner-output/streaming_config.yaml"
       - "--prometheus-server=http://prometheus:9090"
       - "--prometheus-scrape-interval=1"
       - "--streaming-engine=arroyo"
@@ -251,7 +251,7 @@ services:
       - "--decompress-json"
       - "--forward-unsupported-queries"
     depends_on:
-      arroyosketch:
+      asap-sketch-ingest:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
