@@ -184,7 +184,7 @@ graph LR
 | Component | Purpose | Technology | Location |
 |-----------|---------|------------|----------|
 | **asap-query-engine** | Answers PromQL queries using sketches | Rust | `asap-query-engine/` |
-| **Arroyo** | Stream processing for building sketches | Rust (forked) | `arroyo/` |
+| **Arroyo** | Stream processing for building sketches | Rust (forked) | [github.com/ProjectASAP/arroyo](https://github.com/ProjectASAP/arroyo) |
 | **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | `asap-sketch-ingest/` |
 | **asap-planner** | Auto-determines sketch parameters | Python | `asap-planner/` |
 | **Kafka** | Message broker for sketch distribution | Apache Kafka | (external) |
@@ -258,12 +258,6 @@ ASAPQuery/
 │   │   ├── precompute_operators/  # Sketch operators
 │   │   └── tests/            # Integration tests
 │   └── docs/                 # QueryEngine dev docs
-│
-├── arroyo/                   # Arroyo streaming engine (forked)
-│   └── crates/
-│       └── arroyo-connectors/
-│           ├── prometheus_remote_write_with_schema/
-│           └── prometheus_remote_write_optimized/
 │
 ├── asap-sketch-ingest/       # Pipeline configurator
 │   ├── run_arroyosketch.py   # Main script
