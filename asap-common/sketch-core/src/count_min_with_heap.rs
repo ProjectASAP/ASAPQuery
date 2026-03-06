@@ -525,31 +525,25 @@ mod tests {
             sketch[0][0] = 5.0;
             sketch[1][1] = 15.0;
         }
-        match &mut cms1.backend {
-            CountMinWithHeapBackend::Legacy { heap, .. } => {
-                heap.push(HeapItem {
-                    key: "key1".to_string(),
-                    value: 100.0,
-                });
-                heap.push(HeapItem {
-                    key: "key2".to_string(),
-                    value: 50.0,
-                });
-            }
-            _ => {}
+        if let CountMinWithHeapBackend::Legacy { heap, .. } = &mut cms1.backend {
+            heap.push(HeapItem {
+                key: "key1".to_string(),
+                value: 100.0,
+            });
+            heap.push(HeapItem {
+                key: "key2".to_string(),
+                value: 50.0,
+            });
         }
-        match &mut cms2.backend {
-            CountMinWithHeapBackend::Legacy { heap, .. } => {
-                heap.push(HeapItem {
-                    key: "key3".to_string(),
-                    value: 75.0,
-                });
-                heap.push(HeapItem {
-                    key: "key1".to_string(),
-                    value: 80.0,
-                });
-            }
-            _ => {}
+        if let CountMinWithHeapBackend::Legacy { heap, .. } = &mut cms2.backend {
+            heap.push(HeapItem {
+                key: "key3".to_string(),
+                value: 75.0,
+            });
+            heap.push(HeapItem {
+                key: "key1".to_string(),
+                value: 80.0,
+            });
         }
 
         let merged = CountMinSketchWithHeap::merge(vec![cms1, cms2]).unwrap();
