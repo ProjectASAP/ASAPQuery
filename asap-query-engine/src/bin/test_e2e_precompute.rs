@@ -117,7 +117,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Start query server
     let query_engine = Arc::new(SimpleEngine::new(
         store.clone(),
-        None, // no PromSketchStore for precompute E2E test
         inference_config,
         streaming_config.clone(),
         SCRAPE_INTERVAL,

@@ -19,6 +19,42 @@
 //     pub port: u16,
 // }
 
+use super::prometheus_remote_write::{labels_to_string, DecodedSample, WriteRequest};
+use prost::Message;
+
+#[derive(Debug, thiserror::Error)]
+pub enum VictoriaMetricsRemoteWriteError {
+    #[error("zstd decompression failed: {0}")]
+    ZstdDecompress(String),
+    #[error("protobuf decode failed: {0}")]
+    ProtobufDecode(String),
+}
+
+/// Decode zstd-compressed VictoriaMetrics remote-write body into flat samples.
+pub fn decode_victoriametrics_remote_write(
+    body: &[u8],
+) -> Result<Vec<DecodedSample>, VictoriaMetricsRemoteWriteError> {
+    let decompressed = zstd::decode_all(body)
+        .map_err(|e| VictoriaMetricsRemoteWriteError::ZstdDecompress(e.to_string()))?;
+
+    let write_req = WriteRequest::decode(decompressed.as_slice())
+        .map_err(|e| VictoriaMetricsRemoteWriteError::ProtobufDecode(e.to_string()))?;
+
+    let mut out = Vec::new();
+    for ts in &write_req.timeseries {
+        let labels_str = labels_to_string(&ts.labels);
+        for sample in &ts.samples {
+            out.push(DecodedSample {
+                labels: labels_str.clone(),
+                timestamp_ms: sample.timestamp,
+                value: sample.value,
+            });
+        }
+    }
+
+    Ok(out)
+}
+
 // impl Default for VictoriaMetricsRemoteWriteConfig {
 //     fn default() -> Self {
 //         // VictoriaMetrics commonly uses 8428, but the caller can override this.

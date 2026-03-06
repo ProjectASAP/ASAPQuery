@@ -20,6 +20,117 @@
 //     pub timeseries: Vec<TimeSeries>,
 // }
 
+use prost::Message;
+
+/// Protobuf payload root for Prometheus remote-write.
+#[derive(Clone, PartialEq, Message)]
+pub struct WriteRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub timeseries: Vec<TimeSeries>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct TimeSeries {
+    #[prost(message, repeated, tag = "1")]
+    pub labels: Vec<Label>,
+    #[prost(message, repeated, tag = "2")]
+    pub samples: Vec<Sample>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct Label {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub value: String,
+}
+
+#[derive(Clone, PartialEq, Message)]
+pub struct Sample {
+    #[prost(double, tag = "1")]
+    pub value: f64,
+    #[prost(int64, tag = "2")]
+    pub timestamp: i64,
+}
+
+/// Flattened sample used by ingest handlers.
+#[derive(Debug, Clone)]
+pub struct DecodedSample {
+    pub labels: String,
+    pub timestamp_ms: i64,
+    pub value: f64,
+}
+
+/// Convert labels into canonical metric-with-labelset string.
+pub fn labels_to_string(labels: &[Label]) -> String {
+    let mut metric_name: Option<&str> = None;
+    let mut rest: Vec<(&str, &str)> = Vec::new();
+
+    for label in labels {
+        if label.name == "__name__" {
+            metric_name = Some(&label.value);
+        } else {
+            rest.push((&label.name, &label.value));
+        }
+    }
+
+    rest.sort_by(|a, b| a.0.cmp(b.0));
+
+    let metric = metric_name.unwrap_or("");
+    if rest.is_empty() {
+        return metric.to_string();
+    }
+
+    let mut out = String::with_capacity(metric.len() + 2 + rest.len() * 16);
+    out.push_str(metric);
+    out.push('{');
+    for (idx, (k, v)) in rest.iter().enumerate() {
+        if idx > 0 {
+            out.push(',');
+        }
+        out.push_str(k);
+        out.push_str("=\"");
+        out.push_str(v);
+        out.push('"');
+    }
+    out.push('}');
+    out
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum PrometheusRemoteWriteError {
+    #[error("snappy decompression failed: {0}")]
+    SnappyDecompress(String),
+    #[error("protobuf decode failed: {0}")]
+    ProtobufDecode(String),
+}
+
+/// Decode snappy-compressed Prometheus remote-write body into flat samples.
+pub fn decode_prometheus_remote_write(
+    body: &[u8],
+) -> Result<Vec<DecodedSample>, PrometheusRemoteWriteError> {
+    let decompressed = snap::raw::Decoder::new()
+        .decompress_vec(body)
+        .map_err(|e| PrometheusRemoteWriteError::SnappyDecompress(e.to_string()))?;
+
+    let write_req = WriteRequest::decode(decompressed.as_slice())
+        .map_err(|e| PrometheusRemoteWriteError::ProtobufDecode(e.to_string()))?;
+
+    let mut out = Vec::new();
+    for ts in &write_req.timeseries {
+        let labels_str = labels_to_string(&ts.labels);
+        for sample in &ts.samples {
+            out.push(DecodedSample {
+                labels: labels_str.clone(),
+                timestamp_ms: sample.timestamp,
+                value: sample.value,
+            });
+        }
+    }
+
+    Ok(out)
+}
+
 // #[derive(Clone, PartialEq, Message)]
 // pub struct TimeSeries {
 //     #[prost(message, repeated, tag = "1")]
