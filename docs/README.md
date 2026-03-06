@@ -13,10 +13,10 @@ Deep dives into each component:
 - [Component Index](02-components/README.md) - Component overview & 1-liners
 - [Query Engine](02-components/query-engine.md) - Rust query processor
 - [Arroyo](02-components/arroyo.md) - Streaming engine (fork + customizations)
-- [ArroyoSketch](02-components/arroyosketch.md) - Pipeline configurator
-- [Controller](02-components/controller.md) - Auto-configuration service
+- [asap-sketch-ingest](02-components/arroyosketch.md) - Pipeline configurator
+- [asap-planner](02-components/controller.md) - Auto-configuration service
 - [Exporters](02-components/exporters.md) - Metric generators
-- [Utilities](02-components/utilities.md) - Experiment framework
+- [asap-tools](02-components/utilities.md) - Experiment framework
 
 ## 03. How-To Guides
 
@@ -52,8 +52,8 @@ Developer practices and infrastructure:
 ## Component-Specific Documentation
 
 Technical details co-located with code:
-- [QueryEngineRust](../QueryEngineRust/docs/README.md) - Extensibility guides
-- [Utilities/Experiments](../Utilities/docs/architecture.md) - Experiment framework architecture
-- [Controller](../Controller/README.md) - Controller internals
-- [ArroyoSketch](../ArroyoSketch/README.md) - Pipeline configuration
-- [PrometheusExporters](../PrometheusExporters/README.md) - Exporter implementations
+- [asap-query-engine](../asap-query-engine/docs/README.md) - Extensibility guides
+- [asap-tools/Experiments](../asap-tools/docs/architecture.md) - Experiment framework architecture
+- [asap-planner](../asap-planner/README.md) - Controller internals
+- [asap-sketch-ingest](../asap-sketch-ingest/README.md) - Pipeline configuration
+- [asap-tools/prometheus-exporters](../asap-tools/prometheus-exporters/README.md) - Exporter implementations

@@ -6,12 +6,12 @@ This document provides an overview of all ASAP components and links to detailed 
 
 | Component | Purpose | Technology | Links |
 |-----------|---------|------------|-------|
-| **QueryEngineRust** | Answers PromQL queries using sketches | Rust | [Details](query-engine.md) · [Code](../../QueryEngineRust/) · [Dev Docs](../../QueryEngineRust/docs/README.md) |
+| **asap-query-engine** | Answers PromQL queries using sketches | Rust | [Details](query-engine.md) · [Code](../../asap-query-engine/) · [Dev Docs](../../asap-query-engine/docs/README.md) |
 | **Arroyo** | Stream processing for building sketches | Rust (forked) | [Details](arroyo.md) · [Code](../../arroyo/) |
-| **ArroyoSketch** | Configures Arroyo pipelines from config | Python | [Details](arroyosketch.md) · [Code](../../ArroyoSketch/) · [README](../../ArroyoSketch/README.md) |
-| **Controller** | Auto-determines sketch parameters | Python | [Details](controller.md) · [Code](../../Controller/) · [README](../../Controller/README.md) |
-| **Exporters** | Generate synthetic metrics for testing | Rust/Python | [Details](exporters.md) · [Code](../../PrometheusExporters/) · [README](../../PrometheusExporters/README.md) |
-| **Utilities** | Experiment framework for CloudLab | Python | [Details](utilities.md) · [Code](../../Utilities/) · [Docs](../../Utilities/docs/architecture.md) |
+| **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | [Details](arroyosketch.md) · [Code](../../asap-sketch-ingest/) · [README](../../asap-sketch-ingest/README.md) |
+| **asap-planner** | Auto-determines sketch parameters | Python | [Details](controller.md) · [Code](../../asap-planner/) · [README](../../asap-planner/README.md) |
+| **Exporters** | Generate synthetic metrics for testing | Rust/Python | [Details](exporters.md) · [Code](../../asap-tools/prometheus-exporters/) · [README](../../asap-tools/prometheus-exporters/README.md) |
+| **asap-tools** | Experiment framework for CloudLab | Python | [Details](utilities.md) · [Code](../../asap-tools/) · [Docs](../../asap-tools/docs/architecture.md) |
 
 ## Component Interaction
 
@@ -19,8 +19,8 @@ This document provides an overview of all ASAP components and links to detailed 
 graph TB
     subgraph "Configuration (Offline)"
         U[User] -->|edits| CC[controller-config.yaml]
-        CC --> C[Controller]
-        C -->|streaming_config.yaml| AS[ArroyoSketch]
+        CC --> C[asap-planner]
+        C -->|streaming_config.yaml| AS[asap-sketch-ingest]
         C -->|inference_config.yaml| Q
         AS -->|create pipelines| A
     end
@@ -40,7 +40,7 @@ graph TB
     end
 
     subgraph "Experiments (Research)"
-        EXP[Utilities] -->|deploy & run| E
+        EXP[asap-tools] -->|deploy & run| E
         EXP -->|deploy & run| P
         EXP -->|deploy & run| A
         EXP -->|collect results| EXP
@@ -59,7 +59,7 @@ graph TB
 
 These run continuously to serve queries:
 
-- **[QueryEngineRust](query-engine.md)** - Answers PromQL queries using sketches
+- **[asap-query-engine](query-engine.md)** - Answers PromQL queries using sketches
   - Consumes sketches from Kafka
   - Implements Prometheus HTTP API
   - Forwards unsupported queries to Prometheus
@@ -73,12 +73,12 @@ These run continuously to serve queries:
 
 These run once to set up the system:
 
-- **[Controller](controller.md)** - Determines optimal sketch parameters
+- **[asap-planner](controller.md)** - Determines optimal sketch parameters
   - Analyzes query workload
   - Selects sketch algorithms
   - Generates configs for Arroyo and QueryEngine
 
-- **[ArroyoSketch](arroyosketch.md)** - Creates Arroyo pipelines
+- **[asap-sketch-ingest](arroyosketch.md)** - Creates Arroyo pipelines
   - Reads streaming_config.yaml
   - Renders SQL templates
   - Creates pipelines via Arroyo API
@@ -92,7 +92,7 @@ These are used for development and experiments:
   - Real trace data exporters
   - Performance monitoring exporters
 
-- **[Utilities](utilities.md)** - Experiment orchestration
+- **[asap-tools](utilities.md)** - Experiment orchestration
   - Deploy ASAP to CloudLab
   - Run controlled experiments
   - Collect and analyze results
@@ -103,7 +103,7 @@ These are used for development and experiments:
 
 Performance-critical components written in Rust:
 
-- **QueryEngineRust** - Sub-millisecond query execution
+- **asap-query-engine** - Sub-millisecond query execution
 - **Arroyo** - High-throughput stream processing
 - **Fake Exporters** - Fast metric generation
 
@@ -111,37 +111,37 @@ Performance-critical components written in Rust:
 
 Configuration and orchestration in Python:
 
-- **Controller** - Query analysis and config generation
-- **ArroyoSketch** - Pipeline configuration
-- **Utilities** - Experiment framework
+- **asap-planner** - Query analysis and config generation
+- **asap-sketch-ingest** - Pipeline configuration
+- **asap-tools** - Experiment framework
 - **Python Exporters** - Simpler metric generators
 
 ## Component Dependencies
 
 ```
-QueryEngineRust
+asap-query-engine
 ├── Kafka (runtime) - Consumes sketches
 ├── Prometheus (runtime, optional) - Fallback queries
-└── inference_config.yaml (config) - From Controller
+└── inference_config.yaml (config) - From asap-planner
 
 Arroyo
 ├── Prometheus (runtime) - Remote write source
 ├── Kafka (runtime) - Sketch output
-└── SQL pipelines (config) - From ArroyoSketch
+└── SQL pipelines (config) - From asap-sketch-ingest
 
-ArroyoSketch
+asap-sketch-ingest
 ├── Arroyo (runtime) - Creates pipelines via API
-└── streaming_config.yaml (config) - From Controller
+└── streaming_config.yaml (config) - From asap-planner
 
-Controller
+asap-planner
 ├── controller-config.yaml (input) - User-provided
-├── streaming_config.yaml (output) - For ArroyoSketch
-└── inference_config.yaml (output) - For QueryEngine
+├── streaming_config.yaml (output) - For asap-sketch-ingest
+└── inference_config.yaml (output) - For asap-query-engine
 
 Exporters
 └── (standalone, no dependencies)
 
-Utilities
+asap-tools
 ├── All components (deploys and orchestrates)
 └── Hydra configs (experiment specifications)
 ```
@@ -150,19 +150,19 @@ Utilities
 
 ### Detailed Component Docs
 
-- [QueryEngineRust](query-engine.md) - Query processor deep dive
+- [asap-query-engine](query-engine.md) - Query processor deep dive
 - [Arroyo](arroyo.md) - Streaming engine + ASAP customizations
-- [ArroyoSketch](arroyosketch.md) - Pipeline configurator
-- [Controller](controller.md) - Auto-configuration service
+- [asap-sketch-ingest](arroyosketch.md) - Pipeline configurator
+- [asap-planner](controller.md) - Auto-configuration service
 - [Exporters](exporters.md) - Metric generators
-- [Utilities](utilities.md) - Experiment framework
+- [asap-tools](utilities.md) - Experiment framework
 
 ### Component-Specific READMEs
 
 For implementation details, see READMEs co-located with code:
 
-- [QueryEngineRust/docs/](../../QueryEngineRust/docs/README.md) - Extensibility guides
-- [Controller/README.md](../../Controller/README.md) - Controller internals
-- [ArroyoSketch/README.md](../../ArroyoSketch/README.md) - Pipeline config internals
-- [PrometheusExporters/README.md](../../PrometheusExporters/README.md) - Exporter implementations
-- [Utilities/docs/](../../Utilities/docs/architecture.md) - Experiment framework architecture
+- [asap-query-engine/docs/](../../asap-query-engine/docs/README.md) - Extensibility guides
+- [asap-planner/README.md](../../asap-planner/README.md) - asap-planner internals
+- [asap-sketch-ingest/README.md](../../asap-sketch-ingest/README.md) - Pipeline config internals
+- [asap-tools/prometheus-exporters/README.md](../../asap-tools/prometheus-exporters/README.md) - Exporter implementations
+- [asap-tools/docs/](../../asap-tools/docs/architecture.md) - Experiment framework architecture

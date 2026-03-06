@@ -1,0 +1,36 @@
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.mypy]
+python_version = "3.8"
+mypy_path = "../../asap-common/py"
+
+# STRICT MODE ENABLED
+# This enables all 14 strict type checking flags
+strict = false
+
+# Ignore missing imports for third-party libraries without stubs
+[[tool.mypy.overrides]]
+module = [
+    "prometheus_api_client.*",
+    "loguru.*",
+    "promql_utilities.*",
+    "jinja2.*"
+]
+ignore_missing_imports = true

@@ -4,24 +4,24 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'ArroyoSketch/**'
-      - 'PrometheusClient/**'
-      - 'Controller/**'
-      - 'Utilities/**'
-      - 'PrometheusExporters/**'
-      - 'ExecutionUtilities/**'
-      - 'CommonDependencies/dependencies/py/**'
+      - 'asap-sketch-ingest/**'
+      - 'asap-tools/prometheus-client/**'
+      - 'asap-planner/**'
+      - 'asap-tools/**'
+      - 'asap-tools/prometheus-exporters/**'
+      - 'asap-tools/execution-utilities/**'
+      - 'asap-common/dependencies/py/**'
       - '.github/workflows/python.yml'
   pull_request:
     branches: [ main ]
     paths:
-      - 'ArroyoSketch/**'
-      - 'PrometheusClient/**'
-      - 'Controller/**'
-      - 'Utilities/**'
-      - 'PrometheusExporters/**'
-      - 'ExecutionUtilities/**'
-      - 'CommonDependencies/dependencies/py/**'
+      - 'asap-sketch-ingest/**'
+      - 'asap-tools/prometheus-client/**'
+      - 'asap-planner/**'
+      - 'asap-tools/**'
+      - 'asap-tools/prometheus-exporters/**'
+      - 'asap-tools/execution-utilities/**'
+      - 'asap-common/dependencies/py/**'
       - '.github/workflows/python.yml'
   workflow_dispatch:
 
@@ -46,23 +46,23 @@ jobs:
         with:
           filters: |
             arroyo_sketch:
-              - 'ArroyoSketch/**'
-              - 'CommonDependencies/dependencies/py/**'
+              - 'asap-sketch-ingest/**'
+              - 'asap-common/dependencies/py/**'
             prometheus_client:
-              - 'PrometheusClient/**'
-              - 'CommonDependencies/dependencies/py/**'
+              - 'asap-tools/prometheus-client/**'
+              - 'asap-common/dependencies/py/**'
             controller:
-              - 'Controller/**'
-              - 'CommonDependencies/dependencies/py/**'
+              - 'asap-planner/**'
+              - 'asap-common/dependencies/py/**'
             utilities:
-              - 'Utilities/**'
-              - 'CommonDependencies/dependencies/py/**'
+              - 'asap-tools/**'
+              - 'asap-common/dependencies/py/**'
             prometheus_exporters:
-              - 'PrometheusExporters/**'
-              - 'CommonDependencies/dependencies/py/**'
+              - 'asap-tools/prometheus-exporters/**'
+              - 'asap-common/dependencies/py/**'
             execution_utilities:
-              - 'ExecutionUtilities/**'
-              - 'CommonDependencies/dependencies/py/**'
+              - 'asap-tools/execution-utilities/**'
+              - 'asap-common/dependencies/py/**'
 
   test-arroyo-sketch:
     needs: detect-changes
@@ -81,12 +81,12 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0
-        if [ -f ArroyoSketch/requirements.txt ]; then pip install -r ArroyoSketch/requirements.txt; fi
+        if [ -f asap-sketch-ingest/requirements.txt ]; then pip install -r asap-sketch-ingest/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: ArroyoSketch
+      working-directory: asap-sketch-ingest
       run: black --check --diff .
     - name: Lint with flake8
-      working-directory: ArroyoSketch
+      working-directory: asap-sketch-ingest
       run: |
         # Stop the build if there are Python syntax errors or undefined names
         flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -110,19 +110,19 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0 mypy types-requests types-PyYAML typing-extensions numpy prometheus-client urllib3
-        if [ -f PrometheusClient/requirements.txt ]; then pip install -r PrometheusClient/requirements.txt; fi
+        if [ -f asap-tools/prometheus-client/requirements.txt ]; then pip install -r asap-tools/prometheus-client/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: PrometheusClient
+      working-directory: asap-tools/prometheus-client
       run: black --check --diff .
     - name: Lint with flake8
-      working-directory: PrometheusClient
+      working-directory: asap-tools/prometheus-client
       run: |
         # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --config=../../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
         # Exit-zero treats all errors as warnings
-        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+        flake8 . --config=../../.flake8 --count --exit-zero --max-complexity=10 --statistics
     - name: Type check with mypy
-      working-directory: PrometheusClient
+      working-directory: asap-tools/prometheus-client
       run: mypy .
 
   test-controller:
@@ -142,12 +142,12 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0
-        if [ -f Controller/requirements.txt ]; then pip install -r Controller/requirements.txt; fi
+        if [ -f asap-planner/requirements.txt ]; then pip install -r asap-planner/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: Controller
+      working-directory: asap-planner
       run: black --check --diff .
     - name: Lint with flake8
-      working-directory: Controller
+      working-directory: asap-planner
       run: |
         # Stop the build if there are Python syntax errors or undefined names
         flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -171,12 +171,12 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0
-        if [ -f Utilities/requirements.txt ]; then pip install -r Utilities/requirements.txt; fi
+        if [ -f asap-tools/requirements.txt ]; then pip install -r asap-tools/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: Utilities
+      working-directory: asap-tools
       run: black --check --diff .
     - name: Lint with flake8
-      working-directory: Utilities
+      working-directory: asap-tools
       run: |
         # Stop the build if there are Python syntax errors or undefined names
         flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
@@ -200,22 +200,22 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0 mypy isort
-        if [ -f PrometheusExporters/requirements.txt ]; then pip install -r PrometheusExporters/requirements.txt; fi
+        if [ -f asap-tools/prometheus-exporters/requirements.txt ]; then pip install -r asap-tools/prometheus-exporters/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: PrometheusExporters
+      working-directory: asap-tools/prometheus-exporters
       run: black --check --diff .
     - name: Check import sorting with isort
-      working-directory: PrometheusExporters
+      working-directory: asap-tools/prometheus-exporters
       run: isort --check-only --diff --settings-file .isort.cfg .
     - name: Lint with flake8
-      working-directory: PrometheusExporters
+      working-directory: asap-tools/prometheus-exporters
       run: |
         # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --config=../../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
         # Exit-zero treats all errors as warnings
-        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+        flake8 . --config=../../.flake8 --count --exit-zero --max-complexity=10 --statistics
     - name: Type check with mypy
-      working-directory: PrometheusExporters
+      working-directory: asap-tools/prometheus-exporters
       run: mypy . --config-file=.mypy.ini
 
   test-execution-utilities:
@@ -235,14 +235,14 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0
-        if [ -f ExecutionUtilities/requirements.txt ]; then pip install -r ExecutionUtilities/requirements.txt; fi
+        if [ -f asap-tools/execution-utilities/requirements.txt ]; then pip install -r asap-tools/execution-utilities/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: ExecutionUtilities
+      working-directory: asap-tools/execution-utilities
       run: black --check --diff .
     - name: Lint with flake8
-      working-directory: ExecutionUtilities
+      working-directory: asap-tools/execution-utilities
       run: |
         # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --config=../../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
         # Exit-zero treats all errors as warnings
-        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
+        flake8 . --config=../../.flake8 --count --exit-zero --max-complexity=10 --statistics
