@@ -77,7 +77,7 @@ fn countminsketch_sum(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
 
     if use_sketchlib_for_cms() {
         // sketchlib-rust backed implementation: integer counters + internal hashing.
-        let mut inner = InnerCountMin::with_dimensions(DEPTH, WIDTH);
+        let mut inner = SketchlibCms::with_dimensions(DEPTH, WIDTH);
 
         for (i, &key) in keys.iter().enumerate() {
             let value = values[i];
