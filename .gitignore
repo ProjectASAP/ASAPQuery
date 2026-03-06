@@ -1,9 +1,6 @@
 target/
 experiment_outputs/
 
-# Private repo, vendored locally until open sourced (see GitHub issue)
-sketchlib-rust/
-
 # Runtime and generated files
 metadata/
 preprocessed_configs/
