@@ -7,10 +7,11 @@ use tracing::{error, info};
 
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
+use query_engine_rust::precompute_engine::config::LateDataPolicy;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
-    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, Result, SimpleEngine,
-    SimpleMapStore,
+    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, PrecomputeEngine,
+    PrecomputeEngineConfig, Result, SimpleEngine, SimpleMapStore, StoreOutputSink,
 };
 
 #[derive(Parser, Debug)]
@@ -100,13 +101,29 @@ struct Args {
     #[arg(long, default_value = "9090")]
     prometheus_remote_write_port: u16,
 
-    /// Automatically initialize all sketch types for newly seen series during ingestion
-    #[arg(long, default_value = "true")]
-    auto_init_sketches: bool,
-
     /// Path to promsketch configuration YAML file (optional; uses defaults if omitted)
     #[arg(long)]
     promsketch_config: Option<String>,
+
+    /// Number of precompute engine worker threads
+    #[arg(long, default_value = "4")]
+    precompute_num_workers: usize,
+
+    /// Maximum allowed lateness for out-of-order samples (milliseconds)
+    #[arg(long, default_value = "5000")]
+    precompute_allowed_lateness_ms: i64,
+
+    /// Maximum buffered samples per series before eviction
+    #[arg(long, default_value = "10000")]
+    precompute_max_buffer_per_series: usize,
+
+    /// Interval at which the flush timer fires (milliseconds)
+    #[arg(long, default_value = "1000")]
+    precompute_flush_interval_ms: u64,
+
+    /// Capacity of the channel between router and each worker
+    #[arg(long, default_value = "10000")]
+    precompute_channel_buffer_size: usize,
 }
 
 #[tokio::main]
@@ -219,25 +236,34 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Setup Prometheus remote write server
-    // let prometheus_remote_write_handle = if args.enable_prometheus_remote_write {
-    //     let prw_config = PrometheusRemoteWriteConfig {
-    //         port: args.prometheus_remote_write_port,
-    //         auto_init_sketches: args.auto_init_sketches,
-    //     };
-    //     let server = PrometheusRemoteWriteServer::new(prw_config, promsketch_store.clone());
-    //     info!(
-    //         "Starting Prometheus remote write server on port {}",
-    //         args.prometheus_remote_write_port
-    //     );
-    //     Some(tokio::spawn(async move {
-    //         if let Err(e) = server.run().await {
-    //             error!("Prometheus remote write server error: {}", e);
-    //         }
-    //     }))
-    // } else {
-    //     None
-    // };
+    // Setup precompute engine (replaces standalone Prometheus remote write server)
+    let precompute_handle = if args.enable_prometheus_remote_write {
+        let precompute_config = PrecomputeEngineConfig {
+            num_workers: args.precompute_num_workers,
+            ingest_port: args.prometheus_remote_write_port,
+            allowed_lateness_ms: args.precompute_allowed_lateness_ms,
+            max_buffer_per_series: args.precompute_max_buffer_per_series,
+            flush_interval_ms: args.precompute_flush_interval_ms,
+            channel_buffer_size: args.precompute_channel_buffer_size,
+            pass_raw_samples: false,
+            raw_mode_aggregation_id: 0,
+            late_data_policy: LateDataPolicy::Drop,
+        };
+        let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
+        let engine =
+            PrecomputeEngine::new(precompute_config, streaming_config.clone(), output_sink);
+        info!(
+            "Starting precompute engine on port {}",
+            args.prometheus_remote_write_port
+        );
+        Some(tokio::spawn(async move {
+            if let Err(e) = engine.run().await {
+                error!("Precompute engine error: {}", e);
+            }
+        }))
+    } else {
+        None
+    };
 
     //info!("=== TEMPORARY: Using ClickHouse HTTP adapter ===");
     //info!("ClickHouse endpoint will be available at: /clickhouse/query");
@@ -283,11 +309,11 @@ async fn main() -> Result<()> {
         let _ = handle.await;
     }
 
-    // if let Some(handle) = prometheus_remote_write_handle {
-    //     info!("Shutting down Prometheus remote write server...");
-    //     handle.abort();
-    //     let _ = handle.await;
-    // }
+    if let Some(handle) = precompute_handle {
+        info!("Shutting down precompute engine...");
+        handle.abort();
+        let _ = handle.await;
+    }
 
     info!("Shutdown complete");
     Ok(())
