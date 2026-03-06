@@ -171,7 +171,9 @@ class PrometheusClientService(BaseService):
         if profile_prometheus_time is not None:
             cmd += " --profile_prometheus_time {}".format(profile_prometheus_time)
 
-        cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-tools", "prometheus-client")
+        cmd_dir = os.path.join(
+            self.provider.get_home_dir(), "code", "asap-tools", "prometheus-client"
+        )
         utils.run_cmd(f"cd {cmd_dir}; {cmd}", popen=False)
 
         return

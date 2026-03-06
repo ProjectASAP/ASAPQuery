@@ -551,7 +551,9 @@ class QueryEngineRustService(BaseQueryEngineService):
             cmd += "--dump-precomputes "
         cmd += "> {}/query_engine_rust.out 2>&1 &".format(output_dir)
 
-        cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-query-engine")
+        cmd_dir = os.path.join(
+            self.provider.get_home_dir(), "code", "asap-query-engine"
+        )
         self.provider.execute_command(
             node_idx=self.node_offset,
             cmd=cmd,

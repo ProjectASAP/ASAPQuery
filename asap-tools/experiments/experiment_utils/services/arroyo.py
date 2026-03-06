@@ -65,7 +65,9 @@ class ArroyoService(BaseService):
     def stop_all_jobs(self) -> None:
         """Stop all running Arroyo jobs."""
         cmd = "python3 delete_pipeline.py --all_pipelines"
-        cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-sketch-ingest")
+        cmd_dir = os.path.join(
+            self.provider.get_home_dir(), "code", "asap-sketch-ingest"
+        )
         self.provider.execute_command(
             node_idx=self.node_offset,
             cmd=cmd,
@@ -157,7 +159,9 @@ class ArroyoService(BaseService):
             # Add optimized source flag if enabled
             if enable_optimized_remote_write:
                 cmd += " --prometheus_remote_write_source optimized"
-        cmd_dir = os.path.join(constants.CLOUDLAB_HOME_DIR, "code", "asap-sketch-ingest")
+        cmd_dir = os.path.join(
+            constants.CLOUDLAB_HOME_DIR, "code", "asap-sketch-ingest"
+        )
 
         if avoid_long_ssh:
             # Run in background to avoid long SSH connection
@@ -211,7 +215,9 @@ class ArroyoService(BaseService):
             pipeline_id: ID of the pipeline to stop
         """
         cmd = "python3 delete_pipeline.py --pipeline_id {}".format(pipeline_id)
-        cmd_dir = os.path.join(constants.CLOUDLAB_HOME_DIR, "code", "asap-sketch-ingest")
+        cmd_dir = os.path.join(
+            constants.CLOUDLAB_HOME_DIR, "code", "asap-sketch-ingest"
+        )
         self.provider.execute_command(
             node_idx=self.node_offset,
             cmd=cmd,
