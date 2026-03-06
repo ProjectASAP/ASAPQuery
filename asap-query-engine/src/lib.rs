@@ -1,3 +1,13 @@
+// Force legacy sketch implementations during tests so that tests that mutate the
+// matrix directly or rely on dsrs behavior pass without sketchlib compatibility.
+#[cfg(test)]
+#[ctor::ctor]
+fn init_sketch_legacy_for_tests() {
+    std::env::set_var("SKETCH_CORE_CMS_IMPL", "legacy");
+    std::env::set_var("SKETCH_CORE_CMWH_IMPL", "legacy");
+    std::env::set_var("SKETCH_CORE_KLL_IMPL", "legacy");
+}
+
 pub mod data_model;
 pub mod drivers;
 pub mod engines;

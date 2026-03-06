@@ -5,7 +5,6 @@ use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use sketch_core::kll::KllSketch;
 use std::collections::HashMap;
-use std::time::Instant;
 use tracing::debug;
 
 use promql_utilities::query_logics::enums::Statistic;
@@ -113,7 +112,7 @@ impl std::fmt::Debug for DatasketchesKLLAccumulator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatasketchesKLLAccumulator")
             .field("k", &self.inner.k)
-            .field("sketch_n", &self.inner.sketch.get_n())
+            .field("sketch_n", &self.inner.count())
             .finish()
     }
 }
@@ -128,7 +127,7 @@ unsafe impl Sync for DatasketchesKLLAccumulator {}
 impl SerializableToSink for DatasketchesKLLAccumulator {
     fn serialize_to_json(&self) -> Value {
         // Mirror Python implementation: {"sketch": base64_encoded_string}
-        let sketch_bytes = self.inner.sketch.serialize();
+        let sketch_bytes = self.inner.sketch_bytes();
         let sketch_b64 = general_purpose::STANDARD.encode(&sketch_bytes);
         serde_json::json!({ "sketch": sketch_b64 })
     }
@@ -161,7 +160,7 @@ impl AggregateCore for DatasketchesKLLAccumulator {
         debug!(
             "[PERF] DatasketchesKLLAccumulator::merge_with() started - self.k={}, self.n={}",
             self.inner.k,
-            self.inner.sketch.get_n()
+            self.inner.count()
         );
 
         if other.get_accumulator_type() != self.get_accumulator_type() {
@@ -258,7 +257,7 @@ mod tests {
     #[test]
     fn test_datasketches_kll_creation() {
         let kll = DatasketchesKLLAccumulator::new(200);
-        assert!(kll.inner.sketch.get_n() == 0);
+        assert!(kll.inner.count() == 0);
         assert_eq!(kll.inner.k, 200);
     }
 
@@ -268,7 +267,7 @@ mod tests {
         kll._update(10.0);
         kll._update(20.0);
         kll._update(15.0);
-        assert_eq!(kll.inner.sketch.get_n(), 3);
+        assert_eq!(kll.inner.count(), 3);
     }
 
     #[test]
@@ -310,7 +309,7 @@ mod tests {
         }
 
         let merged = DatasketchesKLLAccumulator::merge_accumulators(vec![kll1, kll2]).unwrap();
-        assert_eq!(merged.inner.sketch.get_n(), 10);
+        assert_eq!(merged.inner.count(), 10);
         assert_eq!(merged.get_quantile(0.0), 1.0);
         assert_eq!(merged.get_quantile(1.0), 10.0);
     }
@@ -327,7 +326,7 @@ mod tests {
             DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
 
         assert_eq!(deserialized.inner.k, 200);
-        assert_eq!(deserialized.inner.sketch.get_n(), 5);
+        assert_eq!(deserialized.inner.count(), 5);
         assert_eq!(deserialized.get_quantile(0.0), 1.0);
         assert_eq!(deserialized.get_quantile(1.0), 5.0);
     }
@@ -409,7 +408,7 @@ mod tests {
             vec![Box::new(kll1), Box::new(kll2), Box::new(kll3)];
 
         let merged = DatasketchesKLLAccumulator::merge_multiple(&boxed_accs).unwrap();
-        assert_eq!(merged.inner.sketch.get_n(), 15);
+        assert_eq!(merged.inner.count(), 15);
         assert_eq!(merged.get_quantile(0.0), 1.0);
         assert_eq!(merged.get_quantile(1.0), 15.0);
         assert_eq!(merged.get_quantile(0.5), 8.0);

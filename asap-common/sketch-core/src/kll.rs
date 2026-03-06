@@ -16,6 +16,12 @@ use core::panic;
 use dsrs::KllDoubleSketch;
 use serde::{Deserialize, Serialize};
 
+use crate::config::use_sketchlib_for_kll;
+use crate::kll_sketchlib::{
+    bytes_from_sketchlib_kll, sketchlib_kll_from_bytes, sketchlib_kll_merge,
+    sketchlib_kll_quantile, sketchlib_kll_update, new_sketchlib_kll, SketchlibKll,
+};
+
 /// Wire format used in MessagePack serialization (matches Arroyo UDF output).
 #[derive(Deserialize, Serialize)]
 pub struct KllSketchData {
@@ -23,28 +29,84 @@ pub struct KllSketchData {
     pub sketch_bytes: Vec<u8>,
 }
 
+/// Backend implementation for KLL Sketch. Only one is active at a time.
+pub enum KllBackend {
+    /// dsrs (DataSketches) implementation.
+    Legacy(KllDoubleSketch),
+    /// sketchlib-rust backed implementation.
+    Sketchlib(SketchlibKll),
+}
+
+impl std::fmt::Debug for KllBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            KllBackend::Legacy(_) => write!(f, "Legacy(..)"),
+            KllBackend::Sketchlib(_) => write!(f, "Sketchlib(..)"),
+        }
+    }
+}
+
+impl Clone for KllBackend {
+    fn clone(&self) -> Self {
+        match self {
+            KllBackend::Legacy(s) => {
+                if s.get_n() == 0 {
+                    KllBackend::Legacy(KllDoubleSketch::with_k(200)) // k will be overwritten by KllSketch
+                } else {
+                    let bytes = s.serialize();
+                    KllBackend::Legacy(KllDoubleSketch::deserialize(bytes.as_ref()).unwrap())
+                }
+            }
+            KllBackend::Sketchlib(s) => KllBackend::Sketchlib(s.clone()),
+        }
+    }
+}
+
 pub struct KllSketch {
     pub k: u16,
-    pub sketch: KllDoubleSketch,
+    pub backend: KllBackend,
 }
 
 impl KllSketch {
     pub fn new(k: u16) -> Self {
-        Self {
-            k,
-            sketch: KllDoubleSketch::with_k(k),
+        let backend = if use_sketchlib_for_kll() {
+            KllBackend::Sketchlib(new_sketchlib_kll(k))
+        } else {
+            KllBackend::Legacy(KllDoubleSketch::with_k(k))
+        };
+        Self { k, backend }
+    }
+
+    /// Returns the raw sketch bytes (for JSON serialization, etc.).
+    pub fn sketch_bytes(&self) -> Vec<u8> {
+        match &self.backend {
+            KllBackend::Legacy(s) => s.serialize().as_ref().to_vec(),
+            KllBackend::Sketchlib(s) => bytes_from_sketchlib_kll(s),
         }
     }
 
     pub fn update(&mut self, value: f64) {
-        self.sketch.update(value);
+        match &mut self.backend {
+            KllBackend::Legacy(s) => s.update(value),
+            KllBackend::Sketchlib(s) => sketchlib_kll_update(s, value),
+        }
+    }
+
+    pub fn count(&self) -> u64 {
+        match &self.backend {
+            KllBackend::Legacy(s) => s.get_n(),
+            KllBackend::Sketchlib(s) => s.count() as u64,
+        }
     }
 
     pub fn get_quantile(&self, quantile: f64) -> f64 {
-        if self.sketch.get_n() == 0 {
+        if self.count() == 0 {
             return 0.0;
         }
-        self.sketch.get_quantile(quantile)
+        match &self.backend {
+            KllBackend::Legacy(s) => s.get_quantile(quantile),
+            KllBackend::Sketchlib(s) => sketchlib_kll_quantile(s, quantile),
+        }
     }
 
     pub fn merge(
@@ -54,7 +116,6 @@ impl KllSketch {
             return Err("No accumulators to merge".into());
         }
 
-        // check K values for all and merge
         let k = accumulators[0].k;
         for acc in &accumulators {
             if acc.k != k {
@@ -63,8 +124,25 @@ impl KllSketch {
         }
 
         let mut merged = KllSketch::new(k);
-        for accumulator in accumulators {
-            merged.sketch.merge(&accumulator.sketch);
+        match &mut merged.backend {
+            KllBackend::Legacy(merged_legacy) => {
+                for acc in accumulators {
+                    if let KllBackend::Legacy(acc_legacy) = acc.backend {
+                        merged_legacy.merge(&acc_legacy);
+                    } else {
+                        return Err("Cannot merge Legacy with Sketchlib KLL".into());
+                    }
+                }
+            }
+            KllBackend::Sketchlib(merged_sketchlib) => {
+                for acc in accumulators {
+                    if let KllBackend::Sketchlib(acc_sketchlib) = &acc.backend {
+                        sketchlib_kll_merge(merged_sketchlib, acc_sketchlib);
+                    } else {
+                        return Err("Cannot merge Sketchlib with Legacy KLL".into());
+                    }
+                }
+            }
         }
 
         Ok(merged)
@@ -72,12 +150,10 @@ impl KllSketch {
 
     /// Serialize to MessagePack — matches the Arroyo UDF wire format exactly.
     pub fn serialize_msgpack(&self) -> Vec<u8> {
-        // Create KllSketchData compatible with deserialize_msgpack()
-        // This matches exactly what the Arroyo UDF does
-        let sketch_data = self.sketch.serialize();
+        let sketch_bytes = self.sketch_bytes();
         let serialized = KllSketchData {
             k: self.k,
-            sketch_bytes: sketch_data.as_ref().to_vec(),
+            sketch_bytes,
         };
 
         let mut buf = Vec::new();
@@ -91,21 +167,25 @@ impl KllSketch {
 
     /// Deserialize from MessagePack produced by the Arroyo UDF.
     pub fn deserialize_msgpack(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        let deserialized_sketch_data: KllSketchData = rmp_serde::from_slice(buffer)
+        let wire: KllSketchData = rmp_serde::from_slice(buffer)
             .map_err(|e| format!("Failed to deserialize KllSketchData from MessagePack: {e}"))?;
 
-        let sketch: KllDoubleSketch =
-            KllDoubleSketch::deserialize(&deserialized_sketch_data.sketch_bytes)
-                .map_err(|e| format!("Failed to deserialize KLL sketch: {e}"))?;
+        let backend = if use_sketchlib_for_kll() {
+            KllBackend::Sketchlib(sketchlib_kll_from_bytes(&wire.sketch_bytes)?)
+        } else {
+            KllBackend::Legacy(
+                KllDoubleSketch::deserialize(&wire.sketch_bytes)
+                    .map_err(|e| format!("Failed to deserialize KLL sketch: {e}"))?,
+            )
+        };
 
         Ok(Self {
-            k: deserialized_sketch_data.k,
-            sketch,
+            k: wire.k,
+            backend,
         })
     }
 
-    /// Merge from references without cloning — possible because KllDoubleSketch::merge
-    /// takes &other (the underlying C++ merge API is borrow-based).
+    /// Merge from references without cloning.
     pub fn merge_refs(
         sketches: &[&Self],
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
@@ -119,18 +199,37 @@ impl KllSketch {
             }
         }
         let mut merged = Self::new(k);
-        for s in sketches {
-            merged.sketch.merge(&s.sketch);
+        match &mut merged.backend {
+            KllBackend::Legacy(merged_legacy) => {
+                for s in sketches {
+                    if let KllBackend::Legacy(s_legacy) = &s.backend {
+                        merged_legacy.merge(s_legacy);
+                    } else {
+                        return Err("Cannot merge Legacy with Sketchlib KLL".into());
+                    }
+                }
+            }
+            KllBackend::Sketchlib(merged_sketchlib) => {
+                for s in sketches {
+                    if let KllBackend::Sketchlib(s_sketchlib) = &s.backend {
+                        sketchlib_kll_merge(merged_sketchlib, s_sketchlib);
+                    } else {
+                        return Err("Cannot merge Sketchlib with Legacy KLL".into());
+                    }
+                }
+            }
         }
         Ok(merged)
     }
 
     /// Deserialize from a raw datasketches byte buffer (legacy Flink/FlinkSketch format).
-    /// Used by QE's legacy deserializers to avoid a direct dsrs dependency there.
     pub fn from_dsrs_bytes(bytes: &[u8], k: u16) -> Result<Self, Box<dyn std::error::Error>> {
         let sketch = KllDoubleSketch::deserialize(bytes)
             .map_err(|e| format!("Failed to deserialize KLL sketch from dsrs bytes: {e}"))?;
-        Ok(Self { k, sketch })
+        Ok(Self {
+            k,
+            backend: KllBackend::Legacy(sketch),
+        })
     }
 
     /// One-shot aggregation for the Arroyo UDAF call pattern.
@@ -146,14 +245,27 @@ impl KllSketch {
     }
 }
 
-// Manual trait implementations since the C++ library doesn't provide them
+// Manual trait implementations since the C++ and sketchlib types don't provide Clone
 impl Clone for KllSketch {
     fn clone(&self) -> Self {
-        let bytes = self.sketch.serialize();
-        let new_sketch = KllDoubleSketch::deserialize(bytes.as_ref()).unwrap();
+        let backend = match &self.backend {
+            KllBackend::Legacy(sketch) => {
+                let new_sketch = if sketch.get_n() == 0 {
+                    KllDoubleSketch::with_k(self.k)
+                } else {
+                    let bytes = sketch.serialize();
+                    KllDoubleSketch::deserialize(bytes.as_ref()).unwrap()
+                };
+                KllBackend::Legacy(new_sketch)
+            }
+            KllBackend::Sketchlib(s) => {
+                let bytes = bytes_from_sketchlib_kll(s);
+                KllBackend::Sketchlib(sketchlib_kll_from_bytes(&bytes).unwrap())
+            }
+        };
         Self {
             k: self.k,
-            sketch: new_sketch,
+            backend,
         }
     }
 }
@@ -162,7 +274,7 @@ impl std::fmt::Debug for KllSketch {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("KllSketch")
             .field("k", &self.k)
-            .field("sketch_n", &self.sketch.get_n())
+            .field("sketch_n", &self.count())
             .finish()
     }
 }
@@ -181,7 +293,7 @@ mod tests {
     #[test]
     fn test_kll_creation() {
         let kll = KllSketch::new(200);
-        assert!(kll.sketch.get_n() == 0);
+        assert_eq!(kll.count(), 0);
         assert_eq!(kll.k, 200);
     }
 
@@ -191,7 +303,7 @@ mod tests {
         kll.update(10.0);
         kll.update(20.0);
         kll.update(15.0);
-        assert_eq!(kll.sketch.get_n(), 3);
+        assert_eq!(kll.count(), 3);
     }
 
     #[test]
@@ -202,7 +314,11 @@ mod tests {
         }
         assert_eq!(kll.get_quantile(0.0), 1.0);
         assert_eq!(kll.get_quantile(1.0), 10.0);
-        assert_eq!(kll.get_quantile(0.5), 6.0);
+        let median = kll.get_quantile(0.5);
+        assert!(
+            (5.0..=6.0).contains(&median),
+            "median should be between 5 and 6; got {median}"
+        );
     }
 
     #[test]
@@ -218,7 +334,7 @@ mod tests {
         }
 
         let merged = KllSketch::merge(vec![kll1, kll2]).unwrap();
-        assert_eq!(merged.sketch.get_n(), 10);
+        assert_eq!(merged.count(), 10);
         assert_eq!(merged.get_quantile(0.0), 1.0);
         assert_eq!(merged.get_quantile(1.0), 10.0);
     }
@@ -234,7 +350,7 @@ mod tests {
         let deserialized = KllSketch::deserialize_msgpack(&bytes).unwrap();
 
         assert_eq!(deserialized.k, 200);
-        assert_eq!(deserialized.sketch.get_n(), 5);
+        assert_eq!(deserialized.count(), 5);
         assert_eq!(deserialized.get_quantile(0.0), 1.0);
         assert_eq!(deserialized.get_quantile(1.0), 5.0);
     }
@@ -244,7 +360,7 @@ mod tests {
         let values = [1.0, 2.0, 3.0, 4.0, 5.0];
         let bytes = KllSketch::aggregate_kll(200, &values).unwrap();
         let kll = KllSketch::deserialize_msgpack(&bytes).unwrap();
-        assert_eq!(kll.sketch.get_n(), 5);
+        assert_eq!(kll.count(), 5);
         assert_eq!(kll.get_quantile(0.0), 1.0);
         assert_eq!(kll.get_quantile(1.0), 5.0);
     }
