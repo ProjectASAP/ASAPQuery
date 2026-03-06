@@ -14,9 +14,9 @@ This quickstart simulates a typical monitoring deployment with components you mi
 
 Then it adds ASAPQuery's components on top:
 - **Query Engine** - Prometheus-compatible API with sketch-based acceleration
-- **Arroyo + ArroyoSketch** - Streaming engine with pipelines configured for building sketches
+- **Arroyo + asap-sketch-ingest** - Streaming engine with pipelines configured for building sketches
 - **Kafka** - Message broker for streaming data from Arroyo to the Query Engine
-- **Controller** - Automatically configures sketches from PromQL queries
+- **asap-planner** - Automatically configures sketches from PromQL queries
 
 Once you run the quickstart, you will see a pre-configured Grafana dashboard that compares Prometheues and ASAPQuery side-by-side. You will see **visually indistinguishable** results from Prometheus and ASAPQuery, with ASAPQuery being 100x faster
 
@@ -88,7 +88,7 @@ Run `python3 set_data_cardinality.py <M> <N>` where `M` is the number of labels 
 
 To modify the queries in the Grafana dashboard and run ASAPQuery against those:
 
-#### 1. Edit the Controller Config
+#### 1. Edit the asap-planner Config
 
 Edit `config/controller-config.yaml`:
 
