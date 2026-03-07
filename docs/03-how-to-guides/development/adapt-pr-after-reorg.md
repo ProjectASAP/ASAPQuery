@@ -15,8 +15,8 @@ This guide walks you through rebasing onto the new structure.
 | `ArroyoSketch/` | `asap-sketch-ingest/` |
 | `Controller/` | `asap-planner/` |
 | `Utilities/` | `asap-tools/` |
-| `PrometheusExporters/` | `asap-tools/prometheus-exporters/` |
-| `PrometheusClient/` | `asap-tools/prometheus-client/` |
+| `PrometheusExporters/` | `asap-tools/data-sources/prometheus-exporters/` |
+| `PrometheusClient/` | `asap-tools/queriers/prometheus-client/` |
 | `ExecutionUtilities/` | `asap-tools/execution-utilities/` |
 | `quickstart/` | `asap-quickstart/` |
 | `sketch-core/` | `asap-common/sketch-core/` |
@@ -122,7 +122,7 @@ git push --force-with-lease origin your-branch-name
 
 Key CI jobs to watch:
 - **Rust** — Cargo build and tests for `asap-query-engine` and `asap-common`
-- **Python** — Linting/type-checking for `asap-tools/prometheus-client` and `asap-planner`
+- **Python** — Linting/type-checking for `asap-tools/queriers/prometheus-client` and `asap-planner`
 - **Docker** — Image builds for `asap-query-engine`, `asap-planner`, `asap-sketch-ingest`
 
 ---
@@ -143,8 +143,8 @@ sed -i 's|CommonDependencies|asap-common|g' your_file.toml
 sed -i 's|"Utilities"|"asap-tools"|g' your_file.py
 sed -i 's|"Controller"|"asap-planner"|g' your_file.py
 sed -i 's|"ArroyoSketch"|"asap-sketch-ingest"|g' your_file.py
-sed -i 's|"PrometheusClient"|"asap-tools/prometheus-client"|g' your_file.py
-sed -i 's|"PrometheusExporters"|"asap-tools/prometheus-exporters"|g' your_file.py
+sed -i 's|"PrometheusClient"|"asap-tools/queriers/prometheus-client"|g' your_file.py
+sed -i 's|"PrometheusExporters"|"asap-tools/data-sources/prometheus-exporters"|g' your_file.py
 
 # Rename in shell scripts
 sed -i 's|/Utilities/|/asap-tools/|g' your_script.sh

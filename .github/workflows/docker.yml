@@ -6,14 +6,14 @@ on:
     paths:
       - 'asap-common/installation/**'
       - 'asap-planner/**'
-      - 'asap-tools/prometheus-client/**'
+      - 'asap-tools/queriers/prometheus-client/**'
       - '.github/workflows/docker.yml'
   pull_request:
     branches: [ main ]
     paths:
       - 'asap-common/installation/**'
       - 'asap-planner/**'
-      - 'asap-tools/prometheus-client/**'
+      - 'asap-tools/queriers/prometheus-client/**'
       - '.github/workflows/docker.yml'
   workflow_dispatch:
 
@@ -49,7 +49,7 @@ jobs:
             .
 
       - name: Build PrometheusClient Docker image
-        working-directory: asap-tools/prometheus-client
+        working-directory: asap-tools/queriers/prometheus-client
         run: |
           docker build \
             -t sketchdb-prometheus-client:latest \

@@ -7,7 +7,7 @@ This guide covers running the ASAP stack manually with Clickhouse for developmen
 - Kafka installed
 - Arroyo built at `~/code/arroyo/target/release/arroyo`
 - asap-query-engine built at `~/code/asap-query-engine/target/release/query_engine_rust`
-- asap-tools/prometheus-exporters built (fake_kafka_exporter)
+- asap-tools/data-sources/prometheus-exporters built (fake_kafka_exporter)
 - Clickhouse installed and accessible
 
 ## Directory Structure
@@ -18,7 +18,7 @@ This guide covers running the ASAP stack manually with Clickhouse for developmen
 │   ├── config.yaml         # Arroyo cluster config
 │   └── run_arroyosketch.py # Creates sources, sinks, and pipelines
 ├── asap-query-engine/      # Query interception layer
-├── asap-tools/prometheus-exporters/  # Data generators
+├── asap-tools/data-sources/prometheus-exporters/  # Data generators
 │   └── fake_kafka_exporter/
 └── asap-tools/experiments/ # Automated experiment framework
 ```
@@ -110,7 +110,7 @@ Wait for Kafka to be ready, then create topics:
 The fake_kafka_exporter generates synthetic data and writes directly to Kafka:
 
 ```bash
-cd ~/code/asap-tools/prometheus-exporters/fake_kafka_exporter
+cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_kafka_exporter
 ./target/release/fake_kafka_exporter \
     --kafka-topic raw_data_topic \
     --metadata-columns hostname,datacenter \
@@ -208,7 +208,7 @@ Wait for Kafka to be ready, then create topics:
 Same as baseline - exporter writes to Kafka:
 
 ```bash
-cd ~/code/asap-tools/prometheus-exporters/fake_kafka_exporter
+cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_kafka_exporter
 ./target/release/fake_kafka_exporter \
     --kafka-topic raw_data_topic \
     --metadata-columns hostname,datacenter \

@@ -56,4 +56,4 @@ Technical details co-located with code:
 - [asap-tools/Experiments](../asap-tools/docs/architecture.md) - Experiment framework architecture
 - [asap-planner](../asap-planner/README.md) - Controller internals
 - [asap-sketch-ingest](../asap-sketch-ingest/README.md) - Pipeline configuration
-- [asap-tools/prometheus-exporters](../asap-tools/prometheus-exporters/README.md) - Exporter implementations
+- [asap-tools/data-sources/prometheus-exporters](../asap-tools/data-sources/prometheus-exporters/README.md) - Exporter implementations

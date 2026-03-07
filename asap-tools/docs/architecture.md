@@ -107,7 +107,7 @@ Start throughput/health monitors (if enabled)
 Wait for steady state (default 60s)
   ↓
 Run remote monitor (execute queries)
-  ├─ Execute PromQL queries via asap-tools/prometheus-client
+  ├─ Execute PromQL queries via asap-tools/queriers/prometheus-client
   ├─ Monitor process health
   ├─ Profile components (if enabled)
   └─ Record results
@@ -162,7 +162,7 @@ QueryEngine
   ↓
 PromQL Query Results
   ↓
-asap-tools/prometheus-client (logs results)
+asap-tools/queriers/prometheus-client (logs results)
 ``` -->
 
 ### SketchDB Mode with Ingest from Prometheus Remote Write
@@ -196,7 +196,7 @@ Prometheus TSDB
   ↓ (query)
 PromQL Query API
   ↓
-asap-tools/prometheus-client (logs results)
+asap-tools/queriers/prometheus-client (logs results)
 ```
 
 ## Services in the Experiment Framework

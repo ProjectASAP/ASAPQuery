@@ -45,7 +45,7 @@ def update_docker_compose(file_path: str, num_exporters: int) -> None:
     # Generate new exporter services
     exporter_template = """  fake-exporter-{idx}:
     build:
-      context: ../asap-tools/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
     container_name: asap-fake-exporter-{idx}
     hostname: fake-exporter-{idx}
     networks:
