@@ -7,6 +7,7 @@ use parse_datetime::parse_datetime;
 use sqlparser::ast::Value::SingleQuotedString;
 
 pub struct SQLPatternParser {
+    #[allow(dead_code)]
     schema: SQLSchema,
     query_evaluation_time: f64,
 }
@@ -149,9 +150,28 @@ impl SQLPatternParser {
         let name = func.name.to_string().to_uppercase();
 
         match (&func.args, name.as_str()) {
-            (FunctionArguments::List(args), "QUANTILE") => {
-                let mut quantile_arg = Vec::new();
+            (FunctionArguments::List(_), "QUANTILE") => {
+                // ClickHouse parametric syntax: quantile(0.95)(column)
+                // The quantile level is in func.parameters; func.args holds the column.
+                if let FunctionArguments::List(params) = &func.parameters {
+                    if !params.args.is_empty() {
+                        let mut quantile_arg = Vec::new();
+                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(value))) =
+                            &params.args[0]
+                        {
+                            quantile_arg.push(value.value.to_string());
+                        }
+                        return quantile_arg;
+                    }
+                }
 
+                // ASAP syntax: QUANTILE(0.95, column)
+                // Both the quantile level and column are in func.args.
+                let args = match &func.args {
+                    FunctionArguments::List(a) => a,
+                    _ => return Vec::new(),
+                };
+                let mut quantile_arg = Vec::new();
                 match &args.args[0] {
                     FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(value))) => {
                         quantile_arg.push(value.value.to_string());
@@ -206,15 +226,30 @@ impl SQLPatternParser {
                     FunctionArguments::Subquery(_) => return None,
                     FunctionArguments::List(func_args) => {
                         if name == "QUANTILE" {
-                            // QUANTILE(0.95, value) - column is second argument
-                            if func_args.args.len() < 2 {
-                                return None;
-                            }
-                            match &func_args.args[1] {
-                                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(
-                                    ident,
-                                ))) => ident.value.clone(),
-                                _ => return None,
+                            if let FunctionArguments::List(params) = &func.parameters {
+                                if !params.args.is_empty() {
+                                    // ClickHouse parametric syntax: quantile(0.95)(column)
+                                    // Column is the sole argument in func.args.
+                                    match func_args.args.first() {
+                                        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(
+                                            Expr::Identifier(ident),
+                                        ))) => ident.value.clone(),
+                                        _ => return None,
+                                    }
+                                } else {
+                                    return None;
+                                }
+                            } else {
+                                // ASAP syntax: QUANTILE(0.95, value) - column is second argument
+                                if func_args.args.len() < 2 {
+                                    return None;
+                                }
+                                match &func_args.args[1] {
+                                    FunctionArg::Unnamed(FunctionArgExpr::Expr(
+                                        Expr::Identifier(ident),
+                                    )) => ident.value.clone(),
+                                    _ => return None,
+                                }
                             }
                         } else if name == "PERCENTILE" {
                             // PERCENTILE(value, 95) - column is first argument
@@ -307,7 +342,7 @@ impl SQLPatternParser {
         }
     }
 
-    fn get_time_info(&self, select: &Select, table_name: &str) -> Option<TimeInfo> {
+    fn get_time_info(&self, select: &Select, _table_name: &str) -> Option<TimeInfo> {
         let selection = select.selection.as_ref()?;
 
         match selection {
@@ -326,16 +361,6 @@ impl SQLPatternParser {
                     Expr::Identifier(ident) => ident.value.clone(),
                     _ => return None,
                 };
-
-                let time_col_name = self.schema.get_time_column(table_name)?;
-
-                if col_name != *time_col_name {
-                    println!(
-                        "Found selection statement with column name {} but time column name is {}",
-                        col_name, time_col_name
-                    );
-                    return None;
-                }
 
                 let start = self.get_timestamp_from_between_highlow(low.as_ref())?;
                 let end = self.get_timestamp_from_between_highlow(high.as_ref())?;
