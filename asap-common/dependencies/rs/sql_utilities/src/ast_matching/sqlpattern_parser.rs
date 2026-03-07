@@ -7,6 +7,7 @@ use parse_datetime::parse_datetime;
 use sqlparser::ast::Value::SingleQuotedString;
 
 pub struct SQLPatternParser {
+    #[allow(dead_code)]
     schema: SQLSchema,
     query_evaluation_time: f64,
 }
@@ -341,7 +342,7 @@ impl SQLPatternParser {
         }
     }
 
-    fn get_time_info(&self, select: &Select, table_name: &str) -> Option<TimeInfo> {
+    fn get_time_info(&self, select: &Select, _table_name: &str) -> Option<TimeInfo> {
         let selection = select.selection.as_ref()?;
 
         match selection {
