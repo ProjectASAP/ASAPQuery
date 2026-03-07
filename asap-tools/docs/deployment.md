@@ -67,7 +67,7 @@ The script executes these phases in order:
   - asap-planner (Docker image)
   - Arroyo (Node.js frontend + Rust binary + Docker image)
   - asap-sketch-ingest (Python scripts)
-  - asap-tools/prometheus-client, asap-tools/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
+  - asap-tools/queriers/prometheus-client, asap-tools/data-sources/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
 
 ### Directory Structure Created
 
@@ -150,8 +150,8 @@ asap-query-engine
 asap-planner
 asap-sketch-ingest
 asap-quickstart
-asap-tools/prometheus-exporters
-asap-tools/prometheus-client
+asap-tools/data-sources/prometheus-exporters
+asap-tools/queriers/prometheus-client
 asap-tools/execution-utilities
 ```
 
@@ -305,11 +305,11 @@ pip install -r requirements.txt  # jinja2 for templating
 ```
 **Deployment:** Python scripts, no Docker image
 
-#### 6. asap-tools/prometheus-client
+#### 6. asap-tools/queriers/prometheus-client
 **What:** Client for executing PromQL queries against Prometheus or SketchDB
 **Build Process:** Language-specific (Python or Rust)
 
-#### 7. asap-tools/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
+#### 7. asap-tools/data-sources/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
 **What:** Various testing and monitoring tools
 **Build Process:** Component-specific
 

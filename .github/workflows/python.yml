@@ -5,10 +5,10 @@ on:
     branches: [ main ]
     paths:
       - 'asap-sketch-ingest/**'
-      - 'asap-tools/prometheus-client/**'
+      - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-planner/**'
       - 'asap-tools/**'
-      - 'asap-tools/prometheus-exporters/**'
+      - 'asap-tools/data-sources/prometheus-exporters/**'
       - 'asap-tools/execution-utilities/**'
       - 'asap-common/dependencies/py/**'
       - '.github/workflows/python.yml'
@@ -16,10 +16,10 @@ on:
     branches: [ main ]
     paths:
       - 'asap-sketch-ingest/**'
-      - 'asap-tools/prometheus-client/**'
+      - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-planner/**'
       - 'asap-tools/**'
-      - 'asap-tools/prometheus-exporters/**'
+      - 'asap-tools/data-sources/prometheus-exporters/**'
       - 'asap-tools/execution-utilities/**'
       - 'asap-common/dependencies/py/**'
       - '.github/workflows/python.yml'
@@ -49,7 +49,7 @@ jobs:
               - 'asap-sketch-ingest/**'
               - 'asap-common/dependencies/py/**'
             prometheus_client:
-              - 'asap-tools/prometheus-client/**'
+              - 'asap-tools/queriers/prometheus-client/**'
               - 'asap-common/dependencies/py/**'
             controller:
               - 'asap-planner/**'
@@ -58,7 +58,7 @@ jobs:
               - 'asap-tools/**'
               - 'asap-common/dependencies/py/**'
             prometheus_exporters:
-              - 'asap-tools/prometheus-exporters/**'
+              - 'asap-tools/data-sources/prometheus-exporters/**'
               - 'asap-common/dependencies/py/**'
             execution_utilities:
               - 'asap-tools/execution-utilities/**'
@@ -110,19 +110,19 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0 mypy types-requests types-PyYAML typing-extensions numpy prometheus-client urllib3
-        if [ -f asap-tools/prometheus-client/requirements.txt ]; then pip install -r asap-tools/prometheus-client/requirements.txt; fi
+        if [ -f asap-tools/queriers/prometheus-client/requirements.txt ]; then pip install -r asap-tools/queriers/prometheus-client/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: asap-tools/prometheus-client
+      working-directory: asap-tools/queriers/prometheus-client
       run: black --check --diff .
     - name: Lint with flake8
-      working-directory: asap-tools/prometheus-client
+      working-directory: asap-tools/queriers/prometheus-client
       run: |
         # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --config=../../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --config=../../../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
         # Exit-zero treats all errors as warnings
-        flake8 . --config=../../.flake8 --count --exit-zero --max-complexity=10 --statistics
+        flake8 . --config=../../../.flake8 --count --exit-zero --max-complexity=10 --statistics
     - name: Type check with mypy
-      working-directory: asap-tools/prometheus-client
+      working-directory: asap-tools/queriers/prometheus-client
       run: mypy .
 
   test-controller:
@@ -200,22 +200,22 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0 mypy isort
-        if [ -f asap-tools/prometheus-exporters/requirements.txt ]; then pip install -r asap-tools/prometheus-exporters/requirements.txt; fi
+        if [ -f asap-tools/data-sources/prometheus-exporters/requirements.txt ]; then pip install -r asap-tools/data-sources/prometheus-exporters/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: asap-tools/prometheus-exporters
+      working-directory: asap-tools/data-sources/prometheus-exporters
       run: black --check --diff .
     - name: Check import sorting with isort
-      working-directory: asap-tools/prometheus-exporters
+      working-directory: asap-tools/data-sources/prometheus-exporters
       run: isort --check-only --diff --settings-file .isort.cfg .
     - name: Lint with flake8
-      working-directory: asap-tools/prometheus-exporters
+      working-directory: asap-tools/data-sources/prometheus-exporters
       run: |
         # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --config=../../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
+        flake8 . --config=../../../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
         # Exit-zero treats all errors as warnings
-        flake8 . --config=../../.flake8 --count --exit-zero --max-complexity=10 --statistics
+        flake8 . --config=../../../.flake8 --count --exit-zero --max-complexity=10 --statistics
     - name: Type check with mypy
-      working-directory: asap-tools/prometheus-exporters
+      working-directory: asap-tools/data-sources/prometheus-exporters
       run: mypy . --config-file=.mypy.ini
 
   test-execution-utilities:

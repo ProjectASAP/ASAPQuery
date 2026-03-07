@@ -82,6 +82,7 @@ class PrometheusClientService(BaseService):
             self.provider.get_home_dir(),
             "code",
             "asap-tools",
+            "queriers",
             "prometheus-client",
         )
         template_path = os.path.join(prometheus_client_dir, "docker-compose.yml.j2")
@@ -172,7 +173,7 @@ class PrometheusClientService(BaseService):
             cmd += " --profile_prometheus_time {}".format(profile_prometheus_time)
 
         cmd_dir = os.path.join(
-            self.provider.get_home_dir(), "code", "asap-tools", "prometheus-client"
+            self.provider.get_home_dir(), "code", "asap-tools", "queriers", "prometheus-client"
         )
         utils.run_cmd(f"cd {cmd_dir}; {cmd}", popen=False)
 

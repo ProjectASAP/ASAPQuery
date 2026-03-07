@@ -23,7 +23,7 @@ else
   source "$HOME/.cargo/env"
 fi
 # (cd "$THIS_DIR/../../experiments/fake_exporter_rust/fake_exporter"; cargo build --release)
-(cd "$THIS_DIR/../../../asap-tools/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter" && cargo build --release)
+(cd "$THIS_DIR/../../../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter" && cargo build --release)
 
 DOCKER_DATA_DIR=/scratch/var_lib_docker
 
