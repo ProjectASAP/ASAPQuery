@@ -189,7 +189,7 @@ graph LR
 | **asap-planner** | Auto-determines sketch parameters | Python | `asap-planner/` |
 | **Kafka** | Message broker for sketch distribution | Apache Kafka | (external) |
 | **Prometheus** | Time-series database (existing) | Go | (external) |
-| **Exporters** | Generate synthetic metrics for testing | Rust/Python | `asap-tools/prometheus-exporters/` |
+| **Exporters** | Generate synthetic metrics for testing | Rust/Python | `asap-tools/data-sources/prometheus-exporters/` |
 | **asap-tools** | Experimental harness that uses Cloudlab | Python | `asap-tools/` |
 
 **Links to detailed documentation:**
@@ -270,11 +270,14 @@ ASAPQuery/
 │   └── utils/                # Decision logic
 │
 ├── asap-tools/               # Experiment framework & tooling
-│   ├── prometheus-exporters/ # Metric generators
-│   │   ├── fake_exporter/        # Rust/Python fake exporters
-│   │   ├── cluster_data_exporter/  # Real trace data
-│   │   ├── query_cost_exporter/  # Resource metrics
-│   │   └── query_latency_exporter/  # Latency metrics
+│   ├── data-sources/
+│   │   └── prometheus-exporters/ # Metric generators
+│   │       ├── fake_exporter/        # Rust/Python fake exporters
+│   │       ├── cluster_data_exporter/  # Real trace data
+│   │       ├── query_cost_exporter/  # Resource metrics
+│   │       └── query_latency_exporter/  # Latency metrics
+│   ├── queriers/
+│   │   └── prometheus-client/    # PromQL query client
 │   ├── experiments/
 │   │   ├── experiment_run_e2e.py  # Main orchestrator
 │   │   ├── config/           # Hydra configs

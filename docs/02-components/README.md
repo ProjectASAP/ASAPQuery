@@ -10,7 +10,7 @@ This document provides an overview of all ASAP components and links to detailed 
 | **Arroyo** | Stream processing for building sketches | Rust (forked) | [Details](arroyo.md) · [Code](https://github.com/ProjectASAP/arroyo) |
 | **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | [Details](arroyosketch.md) · [Code](../../asap-sketch-ingest/) · [README](../../asap-sketch-ingest/README.md) |
 | **asap-planner** | Auto-determines sketch parameters | Python | [Details](controller.md) · [Code](../../asap-planner/) · [README](../../asap-planner/README.md) |
-| **Exporters** | Generate synthetic metrics for testing | Rust/Python | [Details](exporters.md) · [Code](../../asap-tools/prometheus-exporters/) · [README](../../asap-tools/prometheus-exporters/README.md) |
+| **Exporters** | Generate synthetic metrics for testing | Rust/Python | [Details](exporters.md) · [Code](../../asap-tools/data-sources/prometheus-exporters/) · [README](../../asap-tools/data-sources/prometheus-exporters/README.md) |
 | **asap-tools** | Experiment framework for CloudLab | Python | [Details](utilities.md) · [Code](../../asap-tools/) · [Docs](../../asap-tools/docs/architecture.md) |
 
 ## Component Interaction
@@ -164,5 +164,5 @@ For implementation details, see READMEs co-located with code:
 - [asap-query-engine/docs/](../../asap-query-engine/docs/README.md) - Extensibility guides
 - [asap-planner/README.md](../../asap-planner/README.md) - asap-planner internals
 - [asap-sketch-ingest/README.md](../../asap-sketch-ingest/README.md) - Pipeline config internals
-- [asap-tools/prometheus-exporters/README.md](../../asap-tools/prometheus-exporters/README.md) - Exporter implementations
+- [asap-tools/data-sources/prometheus-exporters/README.md](../../asap-tools/data-sources/prometheus-exporters/README.md) - Exporter implementations
 - [asap-tools/docs/](../../asap-tools/docs/architecture.md) - Experiment framework architecture

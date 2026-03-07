@@ -7,7 +7,7 @@ This guide covers running the ASAP stack manually with Prometheus for developmen
 - Kafka installed
 - Arroyo built at `~/code/arroyo/target/release/arroyo`
 - asap-query-engine built at `~/code/asap-query-engine/target/release/query_engine_rust`
-- asap-tools/prometheus-exporters built (fake_exporter_rust)
+- asap-tools/data-sources/prometheus-exporters built (fake_exporter_rust)
 - Prometheus installed and accessible
 
 ## Directory Structure
@@ -18,7 +18,7 @@ This guide covers running the ASAP stack manually with Prometheus for developmen
 │   ├── config.yaml         # Arroyo cluster config
 │   └── run_arroyosketch.py # Creates sources, sinks, and pipelines
 ├── asap-query-engine/      # Query interception layer
-├── asap-tools/prometheus-exporters/  # Data generators
+├── asap-tools/data-sources/prometheus-exporters/  # Data generators
 │   └── fake_exporter/
 └── asap-tools/experiments/ # Automated experiment framework
 ```
@@ -80,7 +80,7 @@ Baseline mode runs queries directly against Prometheus or Clickhouse without ASA
 The fake exporter generates synthetic metrics exposed at `/metrics`:
 
 ```bash
-cd ~/code/asap-tools/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
 ./target/release/fake_exporter \
     --num-labels 3 \
     --cardinality 100 \
@@ -142,7 +142,7 @@ Wait for Kafka to be ready, then create topics:
 Same as baseline - exporter just exposes `/metrics`:
 
 ```bash
-cd ~/code/asap-tools/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
 ./target/release/fake_exporter \
     --num-labels 3 \
     --cardinality 100 \

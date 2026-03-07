@@ -107,7 +107,7 @@ experiments:
 - mode: prometheus
 ```
 
-With this config, 2 experiments are run independently. In the first experiment, `asap-tools/prometheus-client` only sends queries to ASAP. After this experiment finishes, the infra is torn down. Then the second experiment is set up and `asap-tools/prometheus-client` sends queries only to Prometheus directly. In the second experiment (i.e. when `mode=prometheus`), none of ASAP's components are set up (apart from `asap-tools/prometheus-client`).
+With this config, 2 experiments are run independently. In the first experiment, `asap-tools/queriers/prometheus-client` only sends queries to ASAP. After this experiment finishes, the infra is torn down. Then the second experiment is set up and `asap-tools/queriers/prometheus-client` sends queries only to Prometheus directly. In the second experiment (i.e. when `mode=prometheus`), none of ASAP's components are set up (apart from `asap-tools/queriers/prometheus-client`).
 
 Post-experiment analysis:
 - Use `compare_costs.py` and `compare_latencies.py` from `$REPO_DIR/asap-tools/experiments/post_experiments/`.

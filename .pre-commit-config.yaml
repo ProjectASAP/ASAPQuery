@@ -39,8 +39,8 @@ repos:
     hooks:
       - id: isort
         name: isort (python)
-        files: ^asap-tools/prometheus-exporters/.*\.py$
-        args: ["--settings-file", "asap-tools/prometheus-exporters/.isort.cfg"]
+        files: ^asap-tools/data-sources/prometheus-exporters/.*\.py$
+        args: ["--settings-file", "asap-tools/data-sources/prometheus-exporters/.isort.cfg"]
 
   - repo: https://github.com/pycqa/flake8
     rev: 6.1.0
@@ -52,12 +52,12 @@ repos:
     rev: "v1.14.1"
     hooks:
       - id: mypy
-        files: ^asap-tools/prometheus-exporters/.*\.py$
-        args: [--config-file=asap-tools/prometheus-exporters/.mypy.ini]
+        files: ^asap-tools/data-sources/prometheus-exporters/.*\.py$
+        args: [--config-file=asap-tools/data-sources/prometheus-exporters/.mypy.ini]
 
       - id: mypy
-        files: ^asap-tools/prometheus-client/
-        args: [--config-file=asap-tools/prometheus-client/pyproject.toml]
+        files: ^asap-tools/queriers/prometheus-client/
+        args: [--config-file=asap-tools/queriers/prometheus-client/pyproject.toml]
         additional_dependencies:
           - types-requests
           - types-PyYAML
