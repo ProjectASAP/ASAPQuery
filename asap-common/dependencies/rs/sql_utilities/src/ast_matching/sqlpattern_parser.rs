@@ -361,16 +361,6 @@ impl SQLPatternParser {
                     _ => return None,
                 };
 
-                let time_col_name = self.schema.get_time_column(table_name)?;
-
-                if col_name != *time_col_name {
-                    println!(
-                        "Found selection statement with column name {} but time column name is {}",
-                        col_name, time_col_name
-                    );
-                    return None;
-                }
-
                 let start = self.get_timestamp_from_between_highlow(low.as_ref())?;
                 let end = self.get_timestamp_from_between_highlow(high.as_ref())?;
 
