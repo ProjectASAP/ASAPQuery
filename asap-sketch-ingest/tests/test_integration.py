@@ -225,8 +225,8 @@ class TestGetSqlQuerySQL:
             use_nested_labels=False,
         )
 
-        assert "cpu_usage" in sql_query
-        assert "value" not in sql_query or "cpu_usage" in sql_query
+        assert '"cpu_usage"' in sql_query
+        assert '"value"' not in sql_query or '"cpu_usage"' in sql_query
 
     def test_sql_query_no_label_prefix(
         self, sql_schema_config, sql_agg_config, sql_template
@@ -246,12 +246,11 @@ class TestGetSqlQuerySQL:
             use_nested_labels=False,
         )
 
-        # Should have flat column names, not labels.host
-        assert "labels.host" not in sql_query
-        assert "labels.region" not in sql_query
-        # Should have host and region directly
-        assert "host" in sql_query
-        assert "region" in sql_query
+        # Should have flat quoted column names, not labels.host
+        assert "labels." not in sql_query
+        # Should have double-quoted host and region directly
+        assert '"host"' in sql_query
+        assert '"region"' in sql_query
 
 
 class TestGetSqlQueryPromQL:
@@ -310,7 +309,7 @@ class TestGetSqlQueryPromQL:
             use_nested_labels=True,
         )
 
-        assert "value" in sql_query
+        assert '"value"' in sql_query
 
     def test_promql_query_uses_label_prefix(
         self, promql_metric_config, promql_agg_config, sql_template
@@ -330,8 +329,8 @@ class TestGetSqlQueryPromQL:
             use_nested_labels=True,
         )
 
-        assert "labels.instance" in sql_query
-        assert "labels.job" in sql_query
+        assert 'labels."instance"' in sql_query
+        assert 'labels."job"' in sql_query
 
 
 class TestEndToEndConfigParsing:
