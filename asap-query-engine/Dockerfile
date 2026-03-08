@@ -17,9 +17,12 @@ COPY asap-common/sketch-core ./asap-common/sketch-core
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/
+COPY asap-planner-rs/Cargo.toml ./asap-planner-rs/
 
-# Create a dummy main.rs to build dependencies
-RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs
+# Create dummy source files so Cargo can resolve all workspace members
+RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs && \
+    mkdir -p asap-planner-rs/src && echo "fn main() {}" > asap-planner-rs/src/main.rs && \
+    echo "pub fn placeholder() {}" >> asap-planner-rs/src/lib.rs
 
 # Build dependencies (this layer will be cached)
 WORKDIR /code/asap-query-engine
