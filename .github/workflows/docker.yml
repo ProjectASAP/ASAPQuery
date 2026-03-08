@@ -41,14 +41,14 @@ jobs:
         run: |
           docker build \
             -t sketchdb-base:latest \
-            -t ghcr.io/projectasap/asap-base:${{ github.ref_name }} \
-            -t ghcr.io/projectasap/asap-base:latest \
             -f asap-common/installation/Dockerfile \
             asap-common
 
       - name: Push base image
         if: startsWith(github.ref, 'refs/tags/')
         run: |
+          docker tag sketchdb-base:latest ghcr.io/projectasap/asap-base:${{ github.ref_name }}
+          docker tag sketchdb-base:latest ghcr.io/projectasap/asap-base:latest
           docker push ghcr.io/projectasap/asap-base:${{ github.ref_name }}
           docker push ghcr.io/projectasap/asap-base:latest
 
@@ -56,14 +56,15 @@ jobs:
       - name: Build planner image
         run: |
           docker build \
-            -t ghcr.io/projectasap/asap-planner:${{ github.ref_name }} \
-            -t ghcr.io/projectasap/asap-planner:latest \
+            -t asap-planner:local \
             -f asap-planner/Dockerfile \
             asap-planner
 
       - name: Push planner image
         if: startsWith(github.ref, 'refs/tags/')
         run: |
+          docker tag asap-planner:local ghcr.io/projectasap/asap-planner:${{ github.ref_name }}
+          docker tag asap-planner:local ghcr.io/projectasap/asap-planner:latest
           docker push ghcr.io/projectasap/asap-planner:${{ github.ref_name }}
           docker push ghcr.io/projectasap/asap-planner:latest
 
@@ -71,14 +72,15 @@ jobs:
       - name: Build sketch-ingest image
         run: |
           docker build \
-            -t ghcr.io/projectasap/asap-sketch-ingest:${{ github.ref_name }} \
-            -t ghcr.io/projectasap/asap-sketch-ingest:latest \
+            -t asap-sketch-ingest:local \
             -f asap-sketch-ingest/Dockerfile \
             asap-sketch-ingest
 
       - name: Push sketch-ingest image
         if: startsWith(github.ref, 'refs/tags/')
         run: |
+          docker tag asap-sketch-ingest:local ghcr.io/projectasap/asap-sketch-ingest:${{ github.ref_name }}
+          docker tag asap-sketch-ingest:local ghcr.io/projectasap/asap-sketch-ingest:latest
           docker push ghcr.io/projectasap/asap-sketch-ingest:${{ github.ref_name }}
           docker push ghcr.io/projectasap/asap-sketch-ingest:latest
 
@@ -86,14 +88,15 @@ jobs:
       - name: Build prometheus-client image
         run: |
           docker build \
-            -t ghcr.io/projectasap/asap-prometheus-client:${{ github.ref_name }} \
-            -t ghcr.io/projectasap/asap-prometheus-client:latest \
+            -t asap-prometheus-client:local \
             -f asap-tools/queriers/prometheus-client/Dockerfile \
             asap-tools/queriers/prometheus-client
 
       - name: Push prometheus-client image
         if: startsWith(github.ref, 'refs/tags/')
         run: |
+          docker tag asap-prometheus-client:local ghcr.io/projectasap/asap-prometheus-client:${{ github.ref_name }}
+          docker tag asap-prometheus-client:local ghcr.io/projectasap/asap-prometheus-client:latest
           docker push ghcr.io/projectasap/asap-prometheus-client:${{ github.ref_name }}
           docker push ghcr.io/projectasap/asap-prometheus-client:latest
 
@@ -105,7 +108,7 @@ jobs:
           file: asap-query-engine/Dockerfile
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
           tags: |
-            ghcr.io/projectasap/asap-query-engine:${{ github.ref_name }}
+            ghcr.io/projectasap/asap-query-engine:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'pr-test' }}
             ghcr.io/projectasap/asap-query-engine:latest
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache
           cache-to: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache,mode=max
