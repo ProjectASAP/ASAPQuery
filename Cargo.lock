@@ -3713,6 +3713,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sql_utilities",
 ]
 
 [[package]]
