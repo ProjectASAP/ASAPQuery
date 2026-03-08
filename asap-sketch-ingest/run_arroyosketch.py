@@ -656,9 +656,7 @@ def get_sql_query(
         source_identifier = streaming_aggregation_config.metric
         all_labels = schema_config.config[source_identifier].keys
 
-    all_labels_agg_columns = [
-        _quote_col(label_prefix, label) for label in all_labels
-    ]
+    all_labels_agg_columns = [_quote_col(label_prefix, label) for label in all_labels]
 
     # Quote the scalar column references for the same reason.
     time_column = f'"{time_column}"'
