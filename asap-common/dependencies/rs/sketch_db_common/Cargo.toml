@@ -1,12 +1,12 @@
 [package]
 name = "sketch_db_common"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-promql_utilities = { path = "../promql_utilities" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
-anyhow = "1.0"
-clap = { version = "4.0", features = ["derive"] }
+promql_utilities.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+anyhow.workspace = true
+clap.workspace = true

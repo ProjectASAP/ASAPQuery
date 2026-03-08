@@ -1,38 +1,42 @@
 [package]
 name = "query_engine_rust"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 
 [dependencies]
-sketch-core = { path = "../asap-common/sketch-core" }
+# Internal crates (workspace)
+sketch-core.workspace = true
+promql_utilities.workspace = true
+sql_utilities.workspace = true
+sketch_db_common.workspace = true
+datafusion_summary_library.workspace = true
+
+# Shared external (workspace)
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+clap.workspace = true
+chrono.workspace = true
+promql-parser.workspace = true
+tokio.workspace = true
+
+# Crate-specific (keep version pinned here)
 form_urlencoded = "1.2"
-promql_utilities = { path = "../asap-common/dependencies/rs/promql_utilities" }
-sql_utilities = { path = "../asap-common/dependencies/rs/sql_utilities" }
-sketch_db_common = { path = "../asap-common/dependencies/rs/sketch_db_common" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-serde_yaml = "0.9"
 rmp-serde = "1.1"
-tokio = { version = "1.0", features = ["full"] }
 axum = "0.7"
 rdkafka = "0.34"
 rusqlite = { version = "0.31", features = ["bundled"] }
-clap = { version = "4.0", features = ["derive"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-appender = "0.2"
-thiserror = "1.0"
-anyhow = "1.0"
 bincode = "1.3"
 dashmap = "5.5"
 uuid = { version = "1.0", features = ["v4"] }
-chrono = { version = "0.4", features = ["serde"] }
 structopt = "0.3"
 urlencoding = "2.1"
 flate2 = "1.0"
 async-trait = "0.1"
-promql-parser = "0.5.0"
-reqwest = { version = "0.11", features = ["json"] }
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
 dsrs = { git = "https://github.com/ProjectASAP/datasketches-rs" }
 sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust" }
@@ -41,7 +45,6 @@ hex = "0.4"
 sqlparser = "0.59.0"
 datafusion = "43"
 arrow = "53.4.1"
-datafusion_summary_library = { path = "../asap-common/dependencies/rs/datafusion_summary_library" }
 futures = "0.3"
 prost = "0.13"
 snap = "1"
@@ -49,6 +52,8 @@ regex = "1"
 prometheus = "0.13"
 lazy_static = "1.4"
 zstd = "0.13"
+reqwest = { version = "0.11", features = ["json"] }
+tracing-appender = "0.2"
 
 [dev-dependencies]
 tempfile = "3.20.0"

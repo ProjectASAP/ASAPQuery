@@ -1,10 +1,11 @@
 [package]
 name = "datafusion_summary_library"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 authors = ["ProjectASAP Team"]
 
 [dependencies]
+# All crate-specific — keep as-is
 datafusion = "43"
 arrow = "53"
 hyperloglogplus = "0.4"
