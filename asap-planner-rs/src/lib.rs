@@ -3,8 +3,8 @@ pub mod error;
 pub mod output;
 pub mod planner;
 
-use std::path::Path;
 use serde_yaml::Value as YamlValue;
+use std::path::Path;
 
 pub use config::input::ControllerConfig;
 pub use error::ControllerError;
@@ -109,7 +109,10 @@ impl Controller {
 
     pub fn from_yaml(yaml: &str, opts: RuntimeOptions) -> Result<Self, ControllerError> {
         let config: ControllerConfig = serde_yaml::from_str(yaml)?;
-        Ok(Self { config, options: opts })
+        Ok(Self {
+            config,
+            options: opts,
+        })
     }
 
     pub fn generate(&self) -> Result<PlannerOutput, ControllerError> {

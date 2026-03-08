@@ -1,10 +1,10 @@
-use std::collections::HashMap;
+use crate::config::input::SketchParameterOverrides;
 use promql_utilities::ast_matching::PromQLMatchResult;
+use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
 use promql_utilities::query_logics::logics::does_precompute_operator_support_subpopulations;
-use promql_utilities::data_model::KeyByLabelNames;
 use sketch_db_common::enums::CleanupPolicy;
-use crate::config::input::SketchParameterOverrides;
+use std::collections::HashMap;
 
 // Default sketch parameters
 const DEFAULT_CMS_DEPTH: u64 = 3;
@@ -23,7 +23,10 @@ pub fn get_effective_repeat(t_repeat: u64, step: u64) -> u64 {
     }
 }
 
-pub fn should_use_sliding_window(_query_pattern_type: QueryPatternType, _aggregation_type: &str) -> bool {
+pub fn should_use_sliding_window(
+    _query_pattern_type: QueryPatternType,
+    _aggregation_type: &str,
+) -> bool {
     // HARDCODED: sliding windows crash Arroyo
     false
 }
@@ -39,7 +42,12 @@ pub fn set_window_parameters(
     let effective_repeat = get_effective_repeat(t_repeat, step);
     let _use_sliding = should_use_sliding_window(query_pattern_type, aggregation_type);
     // use_sliding is always false, so always tumbling
-    set_tumbling_window_parameters(query_pattern_type, effective_repeat, prometheus_scrape_interval, config);
+    set_tumbling_window_parameters(
+        query_pattern_type,
+        effective_repeat,
+        prometheus_scrape_interval,
+        config,
+    );
 }
 
 fn set_tumbling_window_parameters(
@@ -162,8 +170,14 @@ pub fn get_precompute_operator_parameters(
                 .map(|p| p.k)
                 .unwrap_or(DEFAULT_HYDRA_K);
             let mut m = HashMap::new();
-            m.insert("row_num".to_string(), serde_json::Value::Number(row_num.into()));
-            m.insert("col_num".to_string(), serde_json::Value::Number(col_num.into()));
+            m.insert(
+                "row_num".to_string(),
+                serde_json::Value::Number(row_num.into()),
+            );
+            m.insert(
+                "col_num".to_string(),
+                serde_json::Value::Number(col_num.into()),
+            );
             m.insert("k".to_string(), serde_json::Value::Number(k.into()));
             Ok(m)
         }

@@ -1,10 +1,10 @@
 use indexmap::IndexMap;
-use std::collections::HashMap;
 use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
+use std::collections::HashMap;
 
-use sketch_db_common::enums::CleanupPolicy;
 use promql_utilities::data_model::KeyByLabelNames;
+use sketch_db_common::enums::CleanupPolicy;
 
 use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
@@ -19,10 +19,8 @@ pub fn generate_plan(
     // Build metric schema
     let mut metric_schema = sketch_db_common::PromQLSchema::new();
     for md in &controller_config.metrics {
-        metric_schema = metric_schema.add_metric(
-            md.metric.clone(),
-            KeyByLabelNames::new(md.labels.clone()),
-        );
+        metric_schema =
+            metric_schema.add_metric(md.metric.clone(), KeyByLabelNames::new(md.labels.clone()));
     }
 
     // Determine cleanup policy
@@ -203,7 +201,10 @@ fn build_streaming_yaml(
                 YamlValue::String("rollup".to_string()),
                 key_by_labels_to_yaml(&cfg.rollup_labels),
             );
-            map.insert(YamlValue::String("labels".to_string()), YamlValue::Mapping(labels_map));
+            map.insert(
+                YamlValue::String("labels".to_string()),
+                YamlValue::Mapping(labels_map),
+            );
 
             map.insert(
                 YamlValue::String("metric".to_string()),

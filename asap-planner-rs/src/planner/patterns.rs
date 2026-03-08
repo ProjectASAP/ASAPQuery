@@ -4,9 +4,8 @@ use promql_utilities::query_logics::enums::QueryPatternType;
 /// Build all 5 patterns in priority order: ONLY_TEMPORAL (2), ONLY_SPATIAL (1), ONE_TEMPORAL_ONE_SPATIAL (2)
 pub fn build_patterns() -> Vec<(QueryPatternType, PromQLPattern)> {
     let metric_pattern = || PromQLPatternBuilder::metric(None, None, None, Some("metric"));
-    let range_vector_pattern = || {
-        PromQLPatternBuilder::matrix_selector(metric_pattern(), None, Some("range_vector"))
-    };
+    let range_vector_pattern =
+        || PromQLPatternBuilder::matrix_selector(metric_pattern(), None, Some("range_vector"));
 
     // ONLY_TEMPORAL pattern 1: quantile_over_time(phi, metric[range])
     let ot_quantile = PromQLPattern::new(PromQLPatternBuilder::function(

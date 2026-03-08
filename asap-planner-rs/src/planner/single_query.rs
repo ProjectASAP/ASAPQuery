@@ -1,14 +1,16 @@
-use std::collections::HashMap;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, QueryTreatmentType, Statistic};
-use promql_utilities::query_logics::logics::{get_is_collapsable, map_statistic_to_precompute_operator};
+use promql_utilities::query_logics::logics::{
+    get_is_collapsable, map_statistic_to_precompute_operator,
+};
 use promql_utilities::query_logics::parsing::{
     get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
 };
+use serde_json::Value;
 use sketch_db_common::enums::CleanupPolicy;
 use sketch_db_common::PromQLSchema;
-use serde_json::Value;
+use std::collections::HashMap;
 
 use crate::config::input::SketchParameterOverrides;
 use crate::error::ControllerError;
@@ -60,11 +62,7 @@ impl IntermediateAggConfig {
                 "rollup" => &self.rollup_labels,
                 _ => unreachable!(),
             };
-            label_parts.push_str(&format!(
-                "{}:{:?};",
-                k,
-                labels.labels
-            ));
+            label_parts.push_str(&format!("{}:{:?};", k, labels.labels));
         }
 
         format!(
@@ -124,7 +122,10 @@ impl SingleQueryProcessor {
     }
 
     /// Try to match query and return (pattern_type, match_result) or None
-    fn match_pattern(&self, ast: &promql_parser::parser::Expr) -> Option<(QueryPatternType, PromQLMatchResult)> {
+    fn match_pattern(
+        &self,
+        ast: &promql_parser::parser::Expr,
+    ) -> Option<(QueryPatternType, PromQLMatchResult)> {
         let patterns = build_patterns();
         for (pattern_type, pattern) in &patterns {
             let result = pattern.matches(ast);
@@ -142,22 +143,19 @@ impl SingleQueryProcessor {
     ) -> QueryTreatmentType {
         match pattern_type {
             QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
-                let fn_name = match_result
-                    .get_function_name()
-                    .unwrap_or_default();
+                let fn_name = match_result.get_function_name().unwrap_or_default();
                 match fn_name.as_str() {
-                    "quantile_over_time" | "sum_over_time" | "count_over_time" | "avg_over_time" => {
-                        QueryTreatmentType::Approximate
-                    }
+                    "quantile_over_time" | "sum_over_time" | "count_over_time"
+                    | "avg_over_time" => QueryTreatmentType::Approximate,
                     _ => QueryTreatmentType::Exact,
                 }
             }
             QueryPatternType::OnlySpatial => {
-                let op = match_result
-                    .get_aggregation_op()
-                    .unwrap_or_default();
+                let op = match_result.get_aggregation_op().unwrap_or_default();
                 match op.as_str() {
-                    "quantile" | "sum" | "count" | "avg" | "topk" => QueryTreatmentType::Approximate,
+                    "quantile" | "sum" | "count" | "avg" | "topk" => {
+                        QueryTreatmentType::Approximate
+                    }
                     _ => QueryTreatmentType::Exact,
                 }
             }
@@ -187,8 +185,7 @@ impl SingleQueryProcessor {
         if pattern_type == QueryPatternType::OnlyTemporal {
             let fn_name = match_result.get_function_name().unwrap_or_default();
             if matches!(fn_name.as_str(), "rate" | "increase" | "quantile_over_time") {
-                let num_data_points =
-                    self.t_repeat as f64 / self.prometheus_scrape_interval as f64;
+                let num_data_points = self.t_repeat as f64 / self.prometheus_scrape_interval as f64;
                 if num_data_points < 60.0 {
                     return false;
                 }
@@ -212,9 +209,9 @@ impl SingleQueryProcessor {
         let ast = promql_parser::parser::parse(&self.query)
             .map_err(|e| ControllerError::PromQLParse(e.to_string()))?;
 
-        let (pattern_type, match_result) = self
-            .match_pattern(&ast)
-            .ok_or_else(|| ControllerError::PlannerError(format!("Unsupported query: {}", self.query)))?;
+        let (pattern_type, match_result) = self.match_pattern(&ast).ok_or_else(|| {
+            ControllerError::PlannerError(format!("Unsupported query: {}", self.query))
+        })?;
 
         let treatment_type = Self::get_treatment_type(pattern_type, &match_result);
 
@@ -349,13 +346,22 @@ fn compute_labels(
     match pattern_type {
         QueryPatternType::OnlyTemporal => {
             rollup = KeyByLabelNames::empty();
-            set_subpopulation_labels(statistic, aggregation_type, all_labels, &mut rollup, &mut grouping, &mut aggregated);
+            set_subpopulation_labels(
+                statistic,
+                aggregation_type,
+                all_labels,
+                &mut rollup,
+                &mut grouping,
+                &mut aggregated,
+            );
         }
         QueryPatternType::OnlySpatial => {
             // Match Python: if no by/without modifier, spatial_output = [] (rollup gets all labels).
             // promql_utilities::get_spatial_aggregation_output_labels has a topk patch that returns
             // all_labels when there is no modifier, but the Python planner returns [] in that case.
-            let has_modifier = match_result.tokens.get("aggregation")
+            let has_modifier = match_result
+                .tokens
+                .get("aggregation")
                 .and_then(|t| t.aggregation.as_ref())
                 .and_then(|a| a.modifier.as_ref())
                 .is_some();
@@ -365,7 +371,14 @@ fn compute_labels(
                 KeyByLabelNames::empty()
             };
             rollup = all_labels.difference(&spatial_output);
-            set_subpopulation_labels(statistic, aggregation_type, &spatial_output, &mut rollup, &mut grouping, &mut aggregated);
+            set_subpopulation_labels(
+                statistic,
+                aggregation_type,
+                &spatial_output,
+                &mut rollup,
+                &mut grouping,
+                &mut aggregated,
+            );
         }
         QueryPatternType::OneTemporalOneSpatial => {
             let fn_name = match_result.get_function_name().unwrap_or_default();
@@ -373,11 +386,26 @@ fn compute_labels(
             let collapsable = get_is_collapsable(&fn_name, &agg_op);
             if !collapsable {
                 rollup = KeyByLabelNames::empty();
-                set_subpopulation_labels(statistic, aggregation_type, all_labels, &mut rollup, &mut grouping, &mut aggregated);
+                set_subpopulation_labels(
+                    statistic,
+                    aggregation_type,
+                    all_labels,
+                    &mut rollup,
+                    &mut grouping,
+                    &mut aggregated,
+                );
             } else {
-                let spatial_output = get_spatial_aggregation_output_labels(match_result, all_labels);
+                let spatial_output =
+                    get_spatial_aggregation_output_labels(match_result, all_labels);
                 rollup = all_labels.difference(&spatial_output);
-                set_subpopulation_labels(statistic, aggregation_type, &spatial_output, &mut rollup, &mut grouping, &mut aggregated);
+                set_subpopulation_labels(
+                    statistic,
+                    aggregation_type,
+                    &spatial_output,
+                    &mut rollup,
+                    &mut grouping,
+                    &mut aggregated,
+                );
             }
         }
     }

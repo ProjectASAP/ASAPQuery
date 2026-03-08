@@ -1,6 +1,6 @@
-use std::path::PathBuf;
-use clap::Parser;
 use asap_planner::{Controller, RuntimeOptions, StreamingEngine};
+use clap::Parser;
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "asap-planner", about = "ASAP Query Planner")]
@@ -63,9 +63,6 @@ fn main() -> anyhow::Result<()> {
     let controller = Controller::from_file(&args.input_config, opts)?;
     controller.generate_to_dir(&args.output_dir)?;
 
-    println!(
-        "Generated configs in {}",
-        args.output_dir.display()
-    );
+    println!("Generated configs in {}", args.output_dir.display());
     Ok(())
 }
