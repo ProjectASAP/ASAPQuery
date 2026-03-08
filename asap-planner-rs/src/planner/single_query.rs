@@ -413,3 +413,75 @@ fn compute_labels(
 
     (rollup, grouping, aggregated)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+    use std::collections::HashMap;
+
+    fn base_config() -> IntermediateAggConfig {
+        IntermediateAggConfig {
+            aggregation_type: "MultipleIncrease".to_string(),
+            aggregation_sub_type: "rate".to_string(),
+            window_type: "tumbling".to_string(),
+            window_size: 300,
+            slide_interval: 300,
+            tumbling_window_size: 300,
+            spatial_filter: String::new(),
+            metric: "http_requests_total".to_string(),
+            table_name: None,
+            value_column: None,
+            parameters: HashMap::new(),
+            rollup_labels: KeyByLabelNames::new(vec!["instance".to_string()]),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::empty(),
+        }
+    }
+
+    #[test]
+    fn identifying_key_is_stable() {
+        let cfg = base_config();
+        assert_eq!(cfg.identifying_key(), cfg.identifying_key());
+    }
+
+    #[test]
+    fn identical_configs_have_same_key() {
+        assert_eq!(base_config().identifying_key(), base_config().identifying_key());
+    }
+
+    #[test]
+    fn different_aggregation_type_produces_different_key() {
+        let cfg1 = base_config();
+        let mut cfg2 = base_config();
+        cfg2.aggregation_type = "DatasketchesKLL".to_string();
+        assert_ne!(cfg1.identifying_key(), cfg2.identifying_key());
+    }
+
+    #[test]
+    fn different_window_size_produces_different_key() {
+        let cfg1 = base_config();
+        let mut cfg2 = base_config();
+        cfg2.window_size = 60;
+        assert_ne!(cfg1.identifying_key(), cfg2.identifying_key());
+    }
+
+    #[test]
+    fn different_rollup_labels_produce_different_key() {
+        let cfg1 = base_config();
+        let mut cfg2 = base_config();
+        cfg2.rollup_labels = KeyByLabelNames::new(vec!["job".to_string()]);
+        assert_ne!(cfg1.identifying_key(), cfg2.identifying_key());
+    }
+
+    #[test]
+    fn parameter_insertion_order_does_not_affect_key() {
+        let mut cfg1 = base_config();
+        let mut cfg2 = base_config();
+        cfg1.parameters.insert("depth".to_string(), Value::Number(3.into()));
+        cfg1.parameters.insert("width".to_string(), Value::Number(1024.into()));
+        cfg2.parameters.insert("width".to_string(), Value::Number(1024.into()));
+        cfg2.parameters.insert("depth".to_string(), Value::Number(3.into()));
+        assert_eq!(cfg1.identifying_key(), cfg2.identifying_key());
+    }
+}

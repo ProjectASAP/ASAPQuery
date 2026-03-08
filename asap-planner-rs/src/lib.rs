@@ -92,6 +92,69 @@ impl PlannerOutput {
         false
     }
 
+    /// Returns the sorted labels for the first aggregation matching `agg_type`,
+    /// for the given `label_kind` ("rollup", "grouping", or "aggregated").
+    pub fn aggregation_labels(&self, agg_type: &str, label_kind: &str) -> Vec<String> {
+        if let YamlValue::Mapping(root) = &self.streaming_yaml {
+            if let Some(YamlValue::Sequence(aggs)) = root.get("aggregations") {
+                for agg in aggs {
+                    if let YamlValue::Mapping(m) = agg {
+                        if let Some(YamlValue::String(t)) = m.get("aggregationType") {
+                            if t == agg_type {
+                                if let Some(YamlValue::Mapping(labels)) = m.get("labels") {
+                                    if let Some(YamlValue::Sequence(seq)) = labels.get(label_kind) {
+                                        let mut result: Vec<String> = seq
+                                            .iter()
+                                            .filter_map(|v| {
+                                                if let YamlValue::String(s) = v {
+                                                    Some(s.clone())
+                                                } else {
+                                                    None
+                                                }
+                                            })
+                                            .collect();
+                                        result.sort();
+                                        return result;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        vec![]
+    }
+
+    /// Returns the cleanup param (read_count_threshold or num_aggregates_to_retain)
+    /// for the first aggregation entry of the given query string.
+    pub fn inference_cleanup_param(&self, query: &str) -> Option<u64> {
+        if let YamlValue::Mapping(root) = &self.inference_yaml {
+            if let Some(YamlValue::Sequence(queries)) = root.get("queries") {
+                for q in queries {
+                    if let YamlValue::Mapping(qm) = q {
+                        if let Some(YamlValue::String(qs)) = qm.get("query") {
+                            if qs == query {
+                                if let Some(YamlValue::Sequence(aggs)) = qm.get("aggregations") {
+                                    if let Some(YamlValue::Mapping(agg)) = aggs.first() {
+                                        for key in ["read_count_threshold", "num_aggregates_to_retain"] {
+                                            if let Some(v) = agg.get(key) {
+                                                if let YamlValue::Number(n) = v {
+                                                    return n.as_u64();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn to_streaming_yaml_string(&self) -> Result<String, anyhow::Error> {
         Ok(serde_yaml::to_string(&self.streaming_yaml)?)
     }

@@ -74,15 +74,13 @@ pub fn generate_plan(
 
             if should_process {
                 let (configs, cleanup_param) = processor.get_streaming_aggregation_configs()?;
-                query_keys_map.insert(query_string.clone(), Vec::new());
+                let mut keys_for_query = Vec::new();
                 for config in configs {
                     let key = config.identifying_key();
-                    query_keys_map
-                        .get_mut(query_string)
-                        .unwrap()
-                        .push((key.clone(), cleanup_param));
+                    keys_for_query.push((key.clone(), cleanup_param));
                     dedup_map.entry(key).or_insert(config);
                 }
+                query_keys_map.insert(query_string.clone(), keys_for_query);
             }
         }
     }

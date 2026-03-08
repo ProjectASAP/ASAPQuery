@@ -250,6 +250,117 @@ pub fn get_cleanup_param(
     Ok(result)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::planner::patterns::build_patterns;
+    use promql_utilities::ast_matching::PromQLMatchResult;
+    use promql_utilities::query_logics::enums::QueryPatternType;
+
+    fn match_query(query: &str) -> (QueryPatternType, PromQLMatchResult) {
+        let ast = promql_parser::parser::parse(query).unwrap();
+        let patterns = build_patterns();
+        for (pt, pattern) in &patterns {
+            let result = pattern.matches(&ast);
+            if result.matches {
+                return (*pt, result);
+            }
+        }
+        panic!("no pattern matched query: {}", query);
+    }
+
+    // --- get_effective_repeat ---
+
+    #[test]
+    fn effective_repeat_no_step() {
+        assert_eq!(get_effective_repeat(300, 0), 300);
+    }
+
+    #[test]
+    fn effective_repeat_step_smaller_than_t_repeat() {
+        assert_eq!(get_effective_repeat(300, 30), 30);
+    }
+
+    #[test]
+    fn effective_repeat_step_larger_than_t_repeat() {
+        assert_eq!(get_effective_repeat(30, 300), 30);
+    }
+
+    // --- get_cleanup_param ---
+
+    #[test]
+    fn cleanup_param_circular_buffer_spatial_instant_query() {
+        let (pt, mr) = match_query("sum(some_metric)");
+        assert_eq!(pt, QueryPatternType::OnlySpatial);
+        // t_lookback = t_repeat = 300 (OnlySpatial path)
+        // effective_repeat = 300 (step=0)
+        // ceil((300 + 0) / 300) = 1
+        let result =
+            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 300, "tumbling", 0, 0)
+                .unwrap();
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn cleanup_param_circular_buffer_spatial_range_query() {
+        let (pt, mr) = match_query("sum(some_metric)");
+        // t_lookback = t_repeat = 300, effective_repeat = min(300, 30) = 30
+        // ceil((300 + 3600) / 30) = ceil(130) = 130
+        let result =
+            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 300, "tumbling", 3600, 30)
+                .unwrap();
+        assert_eq!(result, 130);
+    }
+
+    #[test]
+    fn cleanup_param_read_based_spatial_instant_query() {
+        let (pt, mr) = match_query("sum(some_metric)");
+        // lookback_buckets = ceil(300/300) = 1, num_steps = 1 → result = 1
+        let result =
+            get_cleanup_param(CleanupPolicy::ReadBased, pt, &mr, 300, "tumbling", 0, 0).unwrap();
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn cleanup_param_read_based_spatial_range_query() {
+        let (pt, mr) = match_query("sum(some_metric)");
+        // lookback_buckets = ceil(300/30) = 10, num_steps = 3600/30 + 1 = 121
+        // result = 10 * 121 = 1210
+        let result =
+            get_cleanup_param(CleanupPolicy::ReadBased, pt, &mr, 300, "tumbling", 3600, 30)
+                .unwrap();
+        assert_eq!(result, 1210);
+    }
+
+    #[test]
+    fn cleanup_param_circular_buffer_temporal_instant_query() {
+        let (pt, mr) = match_query("rate(some_metric[5m])");
+        assert_eq!(pt, QueryPatternType::OnlyTemporal);
+        // t_lookback = 5m = 300s (from [5m] range vector), range_duration=0, step=0
+        // effective_repeat = 60, ceil((300 + 0) / 60) = 5
+        let result =
+            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 60, "tumbling", 0, 0)
+                .unwrap();
+        assert_eq!(result, 5);
+    }
+
+    #[test]
+    fn cleanup_param_no_cleanup_returns_error() {
+        let (pt, mr) = match_query("sum(some_metric)");
+        let result = get_cleanup_param(CleanupPolicy::NoCleanup, pt, &mr, 300, "tumbling", 0, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cleanup_param_mismatched_range_and_step_returns_error() {
+        let (pt, mr) = match_query("sum(some_metric)");
+        // range_duration > 0 but step == 0 is invalid
+        let result =
+            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 300, "tumbling", 3600, 0);
+        assert!(result.is_err());
+    }
+}
+
 pub fn set_subpopulation_labels(
     statistic: Statistic,
     aggregation_type: &str,

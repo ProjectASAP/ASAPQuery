@@ -1,4 +1,4 @@
-use asap_planner::{Controller, RuntimeOptions, StreamingEngine};
+use asap_planner::{Controller, ControllerError, RuntimeOptions, StreamingEngine};
 use std::path::Path;
 
 fn arroyo_opts() -> RuntimeOptions {
@@ -102,16 +102,265 @@ fn output_files_written_to_dir() {
 }
 
 #[test]
-fn punting_runs_without_panic() {
+fn rate_tumbling_window_size_equals_effective_repeat() {
+    // For range queries, effective_repeat = min(t_repeat=300, step=30) = 30
+    // Tumbling window size must equal effective_repeat (sliding is always disabled)
     let opts = RuntimeOptions {
-        enable_punting: true,
+        range_duration: 3600,
+        step: 30,
         ..arroyo_opts()
     };
     let c = Controller::from_file(
-        Path::new("tests/comparison/test_data/configs/mixed_workload.yaml"),
+        Path::new("tests/comparison/test_data/configs/rate_increase.yaml"),
         opts,
     )
     .unwrap();
     let out = c.generate().unwrap();
-    let _ = &out.punted_queries;
+    assert!(out.all_tumbling_window_sizes_eq(30));
+}
+
+#[test]
+fn increase_tumbling_window_size_equals_effective_repeat() {
+    // effective_repeat = min(t_repeat=300, step=30) = 30
+    let opts = RuntimeOptions {
+        range_duration: 3600,
+        step: 30,
+        ..arroyo_opts()
+    };
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/increase.yaml"),
+        opts,
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert!(out.has_aggregation_type("MultipleIncrease"));
+    assert!(out.all_tumbling_window_sizes_eq(30));
+}
+
+#[test]
+fn quantile_over_time_tumbling_window_size_equals_effective_repeat() {
+    // effective_repeat = min(t_repeat=300, step=30) = 30
+    let opts = RuntimeOptions {
+        range_duration: 3600,
+        step: 30,
+        ..arroyo_opts()
+    };
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/quantile_over_time.yaml"),
+        opts,
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert!(out.has_aggregation_type("DatasketchesKLL"));
+    assert!(out.all_tumbling_window_sizes_eq(30));
+}
+
+#[test]
+fn sum_over_time_produces_count_min_sketch_with_delta_set() {
+    // sum_over_time is Approximate → CountMinSketch + DeltaSetAggregator pairing
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/sum_over_time.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.streaming_aggregation_count(), 2);
+    assert!(out.has_aggregation_type("CountMinSketch"));
+    assert!(out.has_aggregation_type("DeltaSetAggregator"));
+}
+
+#[test]
+fn sum_by_produces_count_min_sketch_with_delta_set() {
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/sum_by.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.streaming_aggregation_count(), 2);
+    assert!(out.has_aggregation_type("CountMinSketch"));
+    assert!(out.has_aggregation_type("DeltaSetAggregator"));
+}
+
+#[test]
+fn sum_by_rollup_excludes_groupby_labels() {
+    // sum by (job, method) → rollup gets labels NOT in by-clause
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/sum_by.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(
+        out.aggregation_labels("CountMinSketch", "rollup"),
+        vec!["instance", "status"]
+    );
+}
+
+// --- Error-path tests ---
+
+#[test]
+fn unknown_cleanup_policy_returns_planner_error() {
+    let yaml = r#"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "http_requests_total"
+    labels: ["instance"]
+aggregate_cleanup:
+  policy: "not_a_real_policy"
+"#;
+    let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
+    assert!(matches!(c.generate(), Err(ControllerError::PlannerError(_))));
+}
+
+#[test]
+fn duplicate_query_in_same_group_returns_error() {
+    let yaml = r#"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[5m])"
+      - "rate(http_requests_total[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "http_requests_total"
+    labels: ["instance"]
+"#;
+    let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
+    assert!(matches!(c.generate(), Err(ControllerError::DuplicateQuery(_))));
+}
+
+#[test]
+fn duplicate_query_across_groups_returns_error() {
+    let yaml = r#"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+  - id: 2
+    queries:
+      - "rate(http_requests_total[5m])"
+    repetition_delay: 60
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "http_requests_total"
+    labels: ["instance"]
+"#;
+    let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
+    assert!(matches!(c.generate(), Err(ControllerError::DuplicateQuery(_))));
+}
+
+#[test]
+fn query_referencing_unknown_metric_returns_error() {
+    let yaml = r#"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(unknown_metric[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "http_requests_total"
+    labels: ["instance"]
+"#;
+    let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
+    assert!(matches!(c.generate(), Err(ControllerError::UnknownMetric(_))));
+}
+
+#[test]
+fn malformed_yaml_returns_parse_error() {
+    let result = Controller::from_yaml("{ invalid yaml :", arroyo_opts());
+    assert!(matches!(result, Err(ControllerError::YamlParse(_))));
+}
+
+// --- Overlapping window tests ---
+// Queries where range vector > t_repeat: e.g. [5m] repeated every 60s.
+// Windows are always tumbling (sliding disabled); the planner emits tumblingWindowSize=t_repeat
+// and the cleanup param tells the query engine how many windows to retain to cover the range.
+
+#[test]
+fn temporal_overlapping_window_size_equals_t_repeat() {
+    // [5m] range repeated every 60s → tumblingWindowSize = 60, not 300
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert!(out.all_tumbling_window_sizes_eq(60));
+}
+
+#[test]
+fn temporal_overlapping_all_function_types_present() {
+    // rate+increase → MultipleIncrease (deduped to 1), sum_over_time → CountMinSketch+DeltaSet,
+    // quantile_over_time → DatasketchesKLL; 4 unique streaming aggregation configs total
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.streaming_aggregation_count(), 4);
+    assert!(out.has_aggregation_type("MultipleIncrease"));
+    assert!(out.has_aggregation_type("CountMinSketch"));
+    assert!(out.has_aggregation_type("DatasketchesKLL"));
+}
+
+#[test]
+fn temporal_overlapping_cleanup_param_equals_range_over_repeat() {
+    // t_lookback = 5m = 300s, effective_repeat = 60s → ceil(300/60) = 5
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(
+        out.inference_cleanup_param("rate(http_requests_total[5m])"),
+        Some(5)
+    );
+    assert_eq!(
+        out.inference_cleanup_param("increase(http_requests_total[5m])"),
+        Some(5)
+    );
+    assert_eq!(
+        out.inference_cleanup_param("sum_over_time(http_requests_total[5m])"),
+        Some(5)
+    );
+    assert_eq!(
+        out.inference_cleanup_param("quantile_over_time(0.99, http_requests_total[5m])"),
+        Some(5)
+    );
+}
+
+#[test]
+fn temporal_overlapping_rate_increase_deduped() {
+    // rate and increase produce identical MultipleIncrease configs → 1 streaming entry shared,
+    // but inference config still tracks 4 queries separately
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.inference_query_count(), 4);
+    assert_eq!(out.streaming_aggregation_count(), 4); // not 5
 }
