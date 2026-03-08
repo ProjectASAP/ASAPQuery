@@ -47,6 +47,7 @@ pub fn map_statistic_to_precompute_operator(
         Statistic::Rate | Statistic::Increase => {
             Ok(("MultipleIncrease".to_string(), "".to_string()))
         }
+        Statistic::Topk => Ok(("CountMinSketchWithHeap".to_string(), "topk".to_string())),
         _ => Err(format!("Statistic {statistic:?} not supported")),
     }
 }
@@ -155,6 +156,19 @@ mod tests {
             Statistic::Sum,
             "CountMinSketch"
         ));
+    }
+
+    #[test]
+    fn test_topk_maps_to_count_min_sketch_with_heap() {
+        let result = map_statistic_to_precompute_operator(
+            Statistic::Topk,
+            QueryTreatmentType::Approximate,
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            ("CountMinSketchWithHeap".to_string(), "topk".to_string())
+        );
     }
 
     #[test]
