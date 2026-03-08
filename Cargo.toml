@@ -7,6 +7,7 @@ members = [
     "asap-common/dependencies/rs/sketch_db_common",
     "asap-common/dependencies/rs/datafusion_summary_library",
     "asap-query-engine",
+    "asap-planner-rs",
 ]
 
 [workspace.package]
@@ -33,3 +34,5 @@ promql_utilities = { path = "asap-common/dependencies/rs/promql_utilities" }
 sql_utilities = { path = "asap-common/dependencies/rs/sql_utilities" }
 sketch_db_common = { path = "asap-common/dependencies/rs/sketch_db_common" }
 datafusion_summary_library = { path = "asap-common/dependencies/rs/datafusion_summary_library" }
+asap_planner = { path = "asap-planner-rs" }
+indexmap = { version = "2.0", features = ["serde"] }
