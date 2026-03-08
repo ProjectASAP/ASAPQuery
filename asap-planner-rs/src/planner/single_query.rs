@@ -97,6 +97,7 @@ pub struct SingleQueryProcessor {
 }
 
 impl SingleQueryProcessor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         query: String,
         t_repeat: u64,
@@ -244,7 +245,7 @@ impl SingleQueryProcessor {
         for statistic in statistics {
             let (aggregation_type, aggregation_sub_type) =
                 map_statistic_to_precompute_operator(statistic, treatment_type)
-                    .map_err(|e| ControllerError::PlannerError(e))?;
+                    .map_err(ControllerError::PlannerError)?;
 
             // Compute labels
             let (rollup_labels, grouping_labels, aggregated_labels) = compute_labels(
@@ -262,7 +263,7 @@ impl SingleQueryProcessor {
                 &match_result,
                 self.sketch_parameters.as_ref(),
             )
-            .map_err(|e| ControllerError::PlannerError(e))?;
+            .map_err(ControllerError::PlannerError)?;
 
             // DeltaSetAggregator pairing (hardcoded TODO)
             if matches!(aggregation_type.as_str(), "CountMinSketch" | "HydraKLL") {
@@ -272,7 +273,7 @@ impl SingleQueryProcessor {
                     &match_result,
                     self.sketch_parameters.as_ref(),
                 )
-                .map_err(|e| ControllerError::PlannerError(e))?;
+                .map_err(ControllerError::PlannerError)?;
 
                 configs.push(IntermediateAggConfig {
                     aggregation_type: "DeltaSetAggregator".to_string(),
@@ -324,7 +325,7 @@ impl SingleQueryProcessor {
                     self.range_duration,
                     self.step,
                 )
-                .map_err(|e| ControllerError::PlannerError(e))?,
+                .map_err(ControllerError::PlannerError)?,
             )
         };
 

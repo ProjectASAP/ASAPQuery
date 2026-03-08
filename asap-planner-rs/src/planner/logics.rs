@@ -230,11 +230,11 @@ pub fn get_cleanup_param(
         CleanupPolicy::CircularBuffer => {
             // ceil((t_lookback + range_duration) / effective_repeat)
             let numerator = t_lookback + range_duration;
-            (numerator + effective_repeat - 1) / effective_repeat
+            numerator.div_ceil(effective_repeat)
         }
         CleanupPolicy::ReadBased => {
             // ceil(t_lookback / effective_repeat) * (range_duration / step + 1)
-            let lookback_buckets = (t_lookback + effective_repeat - 1) / effective_repeat;
+            let lookback_buckets = t_lookback.div_ceil(effective_repeat);
             let num_steps = if is_range_query {
                 range_duration / step + 1
             } else {
