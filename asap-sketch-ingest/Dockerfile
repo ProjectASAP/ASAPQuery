@@ -10,7 +10,6 @@ WORKDIR /app
 RUN pip3 install --no-cache-dir jinja2 requests loguru pyyaml
 
 # Copy application code
-COPY classes/ ./classes/
 COPY utils/ ./utils/
 COPY templates/ ./templates/
 COPY examples/ ./examples/
