@@ -149,14 +149,8 @@ impl InferenceConfig {
         // metrics
         let mut metrics_map = Mapping::new();
         for (metric, labels) in metrics {
-            let labels_seq: Vec<Value> = labels
-                .iter()
-                .map(|l| Value::String(l.clone()))
-                .collect();
-            metrics_map.insert(
-                Value::String(metric.clone()),
-                Value::Sequence(labels_seq),
-            );
+            let labels_seq: Vec<Value> = labels.iter().map(|l| Value::String(l.clone())).collect();
+            metrics_map.insert(Value::String(metric.clone()), Value::Sequence(labels_seq));
         }
         root.insert(
             Value::String("metrics".to_string()),

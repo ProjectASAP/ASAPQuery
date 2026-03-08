@@ -160,11 +160,9 @@ mod tests {
 
     #[test]
     fn test_topk_maps_to_count_min_sketch_with_heap() {
-        let result = map_statistic_to_precompute_operator(
-            Statistic::Topk,
-            QueryTreatmentType::Approximate,
-        )
-        .unwrap();
+        let result =
+            map_statistic_to_precompute_operator(Statistic::Topk, QueryTreatmentType::Approximate)
+                .unwrap();
         assert_eq!(
             result,
             ("CountMinSketchWithHeap".to_string(), "topk".to_string())
