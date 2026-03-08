@@ -53,8 +53,8 @@ mod tests {
     fn check_query(sql: &str, expected_types: Vec<QueryType>, expected_error: Option<QueryError>) {
         let schema = create_test_schema();
         let matcher = SQLPatternMatcher::new(schema, 1.0);
-        let query_data = parse_sql_query(sql)
-            .unwrap_or_else(|| panic!("Failed to parse query: {}", sql));
+        let query_data =
+            parse_sql_query(sql).unwrap_or_else(|| panic!("Failed to parse query: {}", sql));
         let result = matcher.query_info_to_pattern(&query_data);
         assert_eq!(result.query_type, expected_types);
         assert_eq!(result.error, expected_error);

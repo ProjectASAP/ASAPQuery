@@ -60,6 +60,12 @@ jobs:
       env:
         RUSTC_WRAPPER: sccache
 
+    - name: Run clippy (sketch_db_common)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      working-directory: asap-common/dependencies/rs/sketch_db_common
+      env:
+        RUSTC_WRAPPER: sccache
+
     - name: Check formatting (sketch-core)
       run: cargo fmt -- --check
       working-directory: asap-common/sketch-core
@@ -67,6 +73,36 @@ jobs:
     - name: Run clippy (sketch-core)
       run: cargo clippy --all-targets --all-features -- -D warnings
       working-directory: asap-common/sketch-core
+      env:
+        RUSTC_WRAPPER: sccache
+
+    - name: Check formatting (sql_utilities)
+      run: cargo fmt -- --check
+      working-directory: asap-common/dependencies/rs/sql_utilities
+
+    - name: Run clippy (sql_utilities)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      working-directory: asap-common/dependencies/rs/sql_utilities
+      env:
+        RUSTC_WRAPPER: sccache
+
+    - name: Check formatting (promql_utilities)
+      run: cargo fmt -- --check
+      working-directory: asap-common/dependencies/rs/promql_utilities
+
+    - name: Run clippy (promql_utilities)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      working-directory: asap-common/dependencies/rs/promql_utilities
+      env:
+        RUSTC_WRAPPER: sccache
+
+    - name: Check formatting (datafusion_summary_library)
+      run: cargo fmt -- --check
+      working-directory: asap-common/dependencies/rs/datafusion_summary_library
+
+    - name: Run clippy (datafusion_summary_library)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      working-directory: asap-common/dependencies/rs/datafusion_summary_library
       env:
         RUSTC_WRAPPER: sccache
 
