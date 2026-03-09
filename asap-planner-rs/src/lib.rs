@@ -137,7 +137,9 @@ impl PlannerOutput {
                             if qs == query {
                                 if let Some(YamlValue::Sequence(aggs)) = qm.get("aggregations") {
                                     if let Some(YamlValue::Mapping(agg)) = aggs.first() {
-                                        for key in ["read_count_threshold", "num_aggregates_to_retain"] {
+                                        for key in
+                                            ["read_count_threshold", "num_aggregates_to_retain"]
+                                        {
                                             if let Some(v) = agg.get(key) {
                                                 if let YamlValue::Number(n) = v {
                                                     return n.as_u64();

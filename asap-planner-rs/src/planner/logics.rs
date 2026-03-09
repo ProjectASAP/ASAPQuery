@@ -295,9 +295,16 @@ mod tests {
         // t_lookback = t_repeat = 300 (OnlySpatial path)
         // effective_repeat = 300 (step=0)
         // ceil((300 + 0) / 300) = 1
-        let result =
-            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 300, "tumbling", 0, 0)
-                .unwrap();
+        let result = get_cleanup_param(
+            CleanupPolicy::CircularBuffer,
+            pt,
+            &mr,
+            300,
+            "tumbling",
+            0,
+            0,
+        )
+        .unwrap();
         assert_eq!(result, 1);
     }
 
@@ -306,9 +313,16 @@ mod tests {
         let (pt, mr) = match_query("sum(some_metric)");
         // t_lookback = t_repeat = 300, effective_repeat = min(300, 30) = 30
         // ceil((300 + 3600) / 30) = ceil(130) = 130
-        let result =
-            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 300, "tumbling", 3600, 30)
-                .unwrap();
+        let result = get_cleanup_param(
+            CleanupPolicy::CircularBuffer,
+            pt,
+            &mr,
+            300,
+            "tumbling",
+            3600,
+            30,
+        )
+        .unwrap();
         assert_eq!(result, 130);
     }
 
@@ -355,8 +369,15 @@ mod tests {
     fn cleanup_param_mismatched_range_and_step_returns_error() {
         let (pt, mr) = match_query("sum(some_metric)");
         // range_duration > 0 but step == 0 is invalid
-        let result =
-            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 300, "tumbling", 3600, 0);
+        let result = get_cleanup_param(
+            CleanupPolicy::CircularBuffer,
+            pt,
+            &mr,
+            300,
+            "tumbling",
+            3600,
+            0,
+        );
         assert!(result.is_err());
     }
 }

@@ -447,7 +447,10 @@ mod tests {
 
     #[test]
     fn identical_configs_have_same_key() {
-        assert_eq!(base_config().identifying_key(), base_config().identifying_key());
+        assert_eq!(
+            base_config().identifying_key(),
+            base_config().identifying_key()
+        );
     }
 
     #[test]
@@ -478,10 +481,14 @@ mod tests {
     fn parameter_insertion_order_does_not_affect_key() {
         let mut cfg1 = base_config();
         let mut cfg2 = base_config();
-        cfg1.parameters.insert("depth".to_string(), Value::Number(3.into()));
-        cfg1.parameters.insert("width".to_string(), Value::Number(1024.into()));
-        cfg2.parameters.insert("width".to_string(), Value::Number(1024.into()));
-        cfg2.parameters.insert("depth".to_string(), Value::Number(3.into()));
+        cfg1.parameters
+            .insert("depth".to_string(), Value::Number(3.into()));
+        cfg1.parameters
+            .insert("width".to_string(), Value::Number(1024.into()));
+        cfg2.parameters
+            .insert("width".to_string(), Value::Number(1024.into()));
+        cfg2.parameters
+            .insert("depth".to_string(), Value::Number(3.into()));
         assert_eq!(cfg1.identifying_key(), cfg2.identifying_key());
     }
 }

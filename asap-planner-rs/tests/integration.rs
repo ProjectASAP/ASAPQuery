@@ -217,7 +217,10 @@ aggregate_cleanup:
   policy: "not_a_real_policy"
 "#;
     let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
-    assert!(matches!(c.generate(), Err(ControllerError::PlannerError(_))));
+    assert!(matches!(
+        c.generate(),
+        Err(ControllerError::PlannerError(_))
+    ));
 }
 
 #[test]
@@ -237,7 +240,10 @@ metrics:
     labels: ["instance"]
 "#;
     let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
-    assert!(matches!(c.generate(), Err(ControllerError::DuplicateQuery(_))));
+    assert!(matches!(
+        c.generate(),
+        Err(ControllerError::DuplicateQuery(_))
+    ));
 }
 
 #[test]
@@ -263,7 +269,10 @@ metrics:
     labels: ["instance"]
 "#;
     let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
-    assert!(matches!(c.generate(), Err(ControllerError::DuplicateQuery(_))));
+    assert!(matches!(
+        c.generate(),
+        Err(ControllerError::DuplicateQuery(_))
+    ));
 }
 
 #[test]
@@ -282,7 +291,10 @@ metrics:
     labels: ["instance"]
 "#;
     let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
-    assert!(matches!(c.generate(), Err(ControllerError::UnknownMetric(_))));
+    assert!(matches!(
+        c.generate(),
+        Err(ControllerError::UnknownMetric(_))
+    ));
 }
 
 #[test]
