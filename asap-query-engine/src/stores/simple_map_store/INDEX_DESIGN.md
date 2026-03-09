@@ -43,17 +43,53 @@ StoreData {
 
 No inner Mutex for `read_counts` since the outer Mutex already serializes all access.
 
-## Operation Complexity
+## Theoretical Complexity
+
+### Variables
+
+| Symbol | Meaning |
+|---|---|
+| A | Number of distinct aggregation IDs |
+| L | Number of distinct label combinations (cardinality) |
+| N | Number of distinct time windows stored per (agg_id, label) |
+| k | Number of results matched or entries removed in a given operation |
+| m | Number of labels present in a specific time window |
+| V | Number of aggregate objects stored per (label, window) slot (typically 1) |
+
+### Time Complexity
+
+| Operation | Time | Notes |
+|---|---|---|
+| **Insert** (single entry) | **O(log N)** | DashMap O(1) + RwLock O(1) + HashMap O(1) + BTreeMap O(log N) + BTreeSet O(log N) |
+| **Insert** (batch of B entries, same agg_id) | **O(B · log N)** | One write-lock acquisition amortized over B items |
+| **Range query** | **O(L · (log N + k))** | BTreeMap::range per label in O(log N + k_L); results already grouped by label |
+| **Exact query** | **O(m · log N)** | window_to_labels lookup O(1) + BTreeMap point get O(log N) per matching label |
+| **CircularBuffer cleanup** | **O(k · m)** amortized | BTreeSet iteration O(k) + targeted label-map removals via window_to_labels |
+| **ReadBased cleanup** | **O(N + k · m)** | Full read_counts scan O(N) + targeted removals O(k · m) |
+| **get_earliest_timestamp** | **O(A)** | DashMap iteration over A entries with atomic loads |
+
+### Space Complexity
+
+| Structure | Space | Notes |
+|---|---|---|
+| `label_map` | O(A · L · N · V) | Primary index: agg_id → label → BTreeMap(window → Vec<Arc<Agg>>) |
+| `window_to_labels` | O(A · N · L) | Reverse index: agg_id → window → HashSet\<label\> |
+| `time_ranges` | O(A · N) | Secondary index: agg_id → BTreeSet of all windows |
+| `read_counts` | O(A · N) | agg_id → HashMap\<window, u64\> |
+| **Total** | **O(A · L · N · V)** | Dominated by the primary label_map |
+
+Arc-sharing means query results hold references into the store; no deep copies are made for read paths.
+
+### Operation Complexity Summary
 
 | Operation | Complexity |
 |---|---|
-| Range query | O(L x (log n + k)) via `BTreeMap::range()`, already grouped by label |
-| Exact query | O(m x log n) where m = labels present in target window (via reverse index) |
-| Insert | O(log n) BTreeMap insert per label |
-| CircularBuffer cleanup | O(k) iterate first k from `BTreeSet` + targeted removals via `window_to_labels` |
-| ReadBased cleanup | O(n) scan `read_counts` + targeted removals via `window_to_labels` |
-
-Where: n = total time ranges, k = matching/removed results, L = number of distinct labels.
+| Range query | O(L × (log N + k)) via `BTreeMap::range()`, already grouped by label |
+| Exact query | O(m × log N) where m = labels present in target window (via reverse index) |
+| Insert | O(log N) BTreeMap insert per label |
+| CircularBuffer cleanup | O(k × m) iterate first k from `BTreeSet` + targeted removals via `window_to_labels` |
+| ReadBased cleanup | O(N + k × m) scan `read_counts` + targeted removals via `window_to_labels` |
+| Space | O(A × L × N × V) — proportional to stored aggregates, not index overhead |
 
 ## Query Mechanics
 
