@@ -610,6 +610,7 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------------
 
+    use crate::data_model::StreamingConfig;
     use crate::precompute_engine::config::LateDataPolicy;
     use crate::precompute_engine::output_sink::CapturingOutputSink;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
@@ -999,6 +1000,81 @@ mod tests {
         assert!(
             (sum_acc.sum - 55.0).abs() < 1e-10,
             "late sample sum should be 55.0, got {}",
+            sum_acc.sum
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: worker built from a parsed streaming_config YAML
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_worker_from_streaming_config_yaml() {
+        // A minimal streaming_config.yaml payload — the same format the Python
+        // controller writes to disk and the engine reads at startup.
+        let yaml = r#"
+aggregations:
+- aggregationId: 10
+  aggregationType: SingleSubpopulation
+  aggregationSubType: Sum
+  labels:
+    grouping: []
+    rollup: []
+    aggregated: []
+  metric: requests_total
+  parameters: {}
+  tumblingWindowSize: 10
+  windowSize: 10
+  windowType: tumbling
+  slideInterval: 0
+  spatialFilter: ''
+"#;
+
+        let data: serde_yaml::Value = serde_yaml::from_str(yaml).expect("valid YAML");
+        let streaming_config =
+            StreamingConfig::from_yaml_data(&data, None).expect("valid streaming config");
+
+        assert!(
+            streaming_config.contains(10),
+            "aggregation 10 should be present"
+        );
+
+        let agg_configs = streaming_config.get_all_aggregation_configs().clone();
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+
+        // Three samples inside window [0, 10_000ms)
+        worker
+            .process_samples("requests_total", vec![(1_000_i64, 3.0)])
+            .unwrap();
+        worker
+            .process_samples("requests_total", vec![(5_000_i64, 4.0)])
+            .unwrap();
+        worker
+            .process_samples("requests_total", vec![(9_000_i64, 5.0)])
+            .unwrap();
+        assert_eq!(sink.len(), 0, "window not yet closed");
+
+        // Advance watermark past window boundary to close [0, 10_000ms)
+        worker
+            .process_samples("requests_total", vec![(10_000_i64, 0.0)])
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1, "exactly one window should close");
+
+        let (output, acc) = &captured[0];
+        assert_eq!(output.aggregation_id, 10);
+        assert_eq!(output.start_timestamp, 0);
+        assert_eq!(output.end_timestamp, 10_000);
+
+        let sum_acc = acc
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("should be SumAccumulator");
+        assert!(
+            (sum_acc.sum - 12.0).abs() < 1e-10,
+            "sum should be 3+4+5=12, got {}",
             sum_acc.sum
         );
     }
