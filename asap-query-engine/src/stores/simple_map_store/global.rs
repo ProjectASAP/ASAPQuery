@@ -1,18 +1,149 @@
-use crate::data_model::{
-    AggregateCore, CleanupPolicy, KeyByLabelValues, PrecomputedOutput, StreamingConfig,
-};
+use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use crate::stores::simple_map_store::common::{EpochData, EpochID, InternTable, TimestampRange};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
 use tracing::{debug, error, info};
 
-type TimestampRange = (u64, u64); // (start_timestamp, end_timestamp)
 type StoreKey = u64; // aggregation_id
-type LabelMap =
-    HashMap<Option<KeyByLabelValues>, BTreeMap<TimestampRange, Vec<Arc<dyn AggregateCore>>>>;
-type WindowToLabels = HashMap<TimestampRange, HashSet<Option<KeyByLabelValues>>>;
+
+/// Per-aggregation_id state within the global store
+struct PerKeyState {
+    /// Label interning table (Optimization 1)
+    intern: InternTable,
+
+    /// Epoch-partitioned storage (Optimization 2)
+    epochs: BTreeMap<EpochID, EpochData>,
+
+    /// Current epoch ID (monotonically increasing)
+    current_epoch_id: EpochID,
+
+    /// Max distinct time-windows per epoch before opening a new one.
+    /// None = unlimited (set on first insert from num_aggregates_to_retain).
+    epoch_capacity: Option<usize>,
+
+    /// Max number of epochs to retain (O(1) drop of oldest when exceeded).
+    max_epochs: usize,
+}
+
+impl PerKeyState {
+    fn new() -> Self {
+        let mut epochs = BTreeMap::new();
+        epochs.insert(0u64, EpochData::new());
+        Self {
+            intern: InternTable::new(),
+            epochs,
+            current_epoch_id: 0,
+            epoch_capacity: None,
+            max_epochs: 4,
+        }
+    }
+
+    /// Set epoch_capacity on first insert (no-op after first call).
+    fn configure_epochs(&mut self, num_aggregates_to_retain: Option<u64>) {
+        if self.epoch_capacity.is_none() {
+            if let Some(cap) = num_aggregates_to_retain {
+                self.epoch_capacity = Some(cap as usize);
+            }
+        }
+    }
+
+    /// O(1) epoch rotation: if current epoch is full, open new epoch and drop oldest if needed.
+    /// Returns windows of the dropped epoch (for cleaning up read_counts).
+    fn maybe_rotate_epoch(&mut self) -> Vec<TimestampRange> {
+        let capacity = match self.epoch_capacity {
+            Some(c) if c > 0 => c,
+            _ => return Vec::new(), // unlimited
+        };
+
+        let current_count = self
+            .epochs
+            .get(&self.current_epoch_id)
+            .map(|e| e.window_count())
+            .unwrap_or(0);
+
+        if current_count < capacity {
+            return Vec::new();
+        }
+
+        // Open new epoch
+        let new_epoch_id = self.current_epoch_id + 1;
+        self.epochs.insert(new_epoch_id, EpochData::new());
+        self.current_epoch_id = new_epoch_id;
+
+        // Drop oldest epoch if we now exceed max_epochs (O(1))
+        if self.epochs.len() > self.max_epochs {
+            if let Some((&oldest_id, _)) = self.epochs.iter().next() {
+                if oldest_id != self.current_epoch_id {
+                    if let Some(oldest_epoch) = self.epochs.remove(&oldest_id) {
+                        return oldest_epoch.time_ranges.into_iter().collect();
+                    }
+                }
+            }
+        }
+
+        Vec::new()
+    }
+
+    /// Apply ReadBased cleanup across all epochs.
+    #[allow(dead_code)]
+    fn cleanup_read_based(
+        &mut self,
+        read_counts: &mut HashMap<TimestampRange, u64>,
+        metric: &str,
+        aggregation_id: u64,
+        threshold: u64,
+    ) {
+        let windows_to_remove: Vec<TimestampRange> = read_counts
+            .iter()
+            .filter(|(_, &count)| count >= threshold)
+            .map(|(range, _)| *range)
+            .collect();
+
+        if windows_to_remove.is_empty() {
+            return;
+        }
+
+        for window in &windows_to_remove {
+            debug!(
+                "Removed aggregate for {} aggregation_id {} window {}-{} (read_count >= threshold: {})",
+                metric, aggregation_id, window.0, window.1, threshold
+            );
+            read_counts.remove(window);
+        }
+
+        // Remove from all epochs; drop empty epochs
+        for epoch in self.epochs.values_mut() {
+            epoch.remove_windows(&windows_to_remove);
+        }
+        self.epochs.retain(|_, epoch| !epoch.is_empty());
+
+        // Ensure current epoch still exists
+        if !self.epochs.contains_key(&self.current_epoch_id) {
+            self.epochs.insert(self.current_epoch_id, EpochData::new());
+        }
+    }
+}
+
+struct StoreData {
+    /// Per-aggregation_id state (replaces old nested HashMap)
+    stores: HashMap<StoreKey, PerKeyState>,
+
+    /// Track metrics that have been created
+    metrics: HashSet<String>,
+
+    /// Count items inserted per metric for logging
+    items_inserted: HashMap<String, u64>,
+
+    /// Track earliest timestamp per aggregation ID
+    earliest_timestamp_per_aggregation_id: HashMap<u64, u64>,
+
+    /// Track how many times each aggregate window has been read (per store key)
+    /// No inner Mutex needed — outer Mutex serializes everything.
+    read_counts: HashMap<StoreKey, HashMap<TimestampRange, u64>>,
+}
 
 /// In-memory storage implementation using single mutex (like Python version)
 pub struct SimpleMapStoreGlobal {
@@ -26,241 +157,18 @@ pub struct SimpleMapStoreGlobal {
     cleanup_policy: CleanupPolicy,
 }
 
-struct StoreData {
-    // Main storage: aggregation_id -> label -> time-sorted aggregates (inverted index)
-    store: HashMap<StoreKey, LabelMap>,
-
-    // Reverse index: aggregation_id -> (time range -> labels that contain data for this window)
-    window_to_labels: HashMap<StoreKey, WindowToLabels>,
-
-    // Secondary index: all known time ranges per aggregation_id (for cleanup counting/iteration)
-    time_ranges: HashMap<StoreKey, BTreeSet<TimestampRange>>,
-
-    // Track metrics that have been created
-    metrics: std::collections::HashSet<String>,
-
-    // Count items inserted per metric for logging
-    items_inserted: HashMap<String, u64>,
-
-    // Track earliest timestamp per aggregation ID
-    earliest_timestamp_per_aggregation_id: HashMap<u64, u64>,
-
-    // Track how many times each aggregate window has been read
-    read_counts: HashMap<StoreKey, HashMap<TimestampRange, u64>>,
-}
-
 impl SimpleMapStoreGlobal {
     pub fn new(streaming_config: Arc<StreamingConfig>, cleanup_policy: CleanupPolicy) -> Self {
         Self {
             lock: Mutex::new(StoreData {
-                store: HashMap::new(),
-                window_to_labels: HashMap::new(),
-                time_ranges: HashMap::new(),
-                metrics: std::collections::HashSet::new(),
+                stores: HashMap::new(),
+                metrics: HashSet::new(),
                 items_inserted: HashMap::new(),
                 earliest_timestamp_per_aggregation_id: HashMap::new(),
                 read_counts: HashMap::new(),
             }),
             streaming_config,
             cleanup_policy,
-        }
-    }
-
-    fn create_table(&self, data: &mut StoreData, metric: &str) {
-        // In the in-memory implementation, "creating a table" just means
-        // marking the metric as known
-        data.metrics.insert(metric.to_string());
-    }
-
-    fn remove_windows_from_store_key(
-        &self,
-        data: &mut StoreData,
-        store_key: StoreKey,
-        windows_to_remove: &[TimestampRange],
-    ) {
-        let Some(label_map) = data.store.get_mut(&store_key) else {
-            return;
-        };
-
-        let Some(window_to_labels) = data.window_to_labels.get_mut(&store_key) else {
-            return;
-        };
-
-        for window in windows_to_remove {
-            let Some(labels) = window_to_labels.remove(window) else {
-                continue;
-            };
-
-            for label in labels {
-                let remove_label = if let Some(btree) = label_map.get_mut(&label) {
-                    btree.remove(window);
-                    btree.is_empty()
-                } else {
-                    false
-                };
-
-                if remove_label {
-                    label_map.remove(&label);
-                }
-            }
-        }
-    }
-
-    fn cleanup_old_aggregates_fixed_count(
-        &self,
-        data: &mut StoreData,
-        metric: &str,
-        aggregation_id: u64,
-        num_aggregates_to_retain: Option<u64>,
-    ) {
-        // Return early if no retention limit configured
-        let configured_limit = match num_aggregates_to_retain {
-            Some(limit) => limit as usize,
-            None => return,
-        };
-
-        let retention_limit = configured_limit.saturating_mul(4);
-        let store_key = aggregation_id;
-
-        // Check time_ranges count
-        let time_ranges = match data.time_ranges.get(&store_key) {
-            Some(tr) => tr,
-            None => return,
-        };
-
-        if time_ranges.len() <= retention_limit {
-            return; // Nothing to clean up
-        }
-
-        // Iterate time_ranges from start (already sorted in BTreeSet), take oldest
-        let num_to_remove = time_ranges.len() - retention_limit;
-        let windows_to_remove: Vec<TimestampRange> =
-            time_ranges.iter().copied().take(num_to_remove).collect();
-
-        // Remove from time_ranges
-        if let Some(time_ranges) = data.time_ranges.get_mut(&store_key) {
-            for window in &windows_to_remove {
-                time_ranges.remove(window);
-            }
-        }
-
-        // Remove from read_counts
-        if let Some(read_count_map) = data.read_counts.get_mut(&store_key) {
-            for window in &windows_to_remove {
-                read_count_map.remove(window);
-            }
-        }
-
-        // Remove only from labels known to have each removed window.
-        self.remove_windows_from_store_key(data, store_key, &windows_to_remove);
-
-        for window in &windows_to_remove {
-            debug!(
-                "Removed old aggregate for {} aggregation_id {} window {}-{} (retention limit: {}, configured: {})",
-                metric,
-                aggregation_id,
-                window.0,
-                window.1,
-                retention_limit,
-                configured_limit
-            );
-        }
-    }
-
-    fn cleanup_old_aggregates_read_based(
-        &self,
-        data: &mut StoreData,
-        metric: &str,
-        aggregation_id: u64,
-        read_count_threshold: Option<u64>,
-    ) {
-        // Return early if no threshold configured
-        let threshold = match read_count_threshold {
-            Some(t) => t,
-            None => return,
-        };
-
-        let store_key = aggregation_id;
-
-        // Collect windows where read_count >= threshold
-        let windows_to_remove: Vec<(TimestampRange, u64)> = data
-            .read_counts
-            .get(&store_key)
-            .map(|read_count_map| {
-                read_count_map
-                    .iter()
-                    .filter(|(_, &count)| count >= threshold)
-                    .map(|(range, &count)| (*range, count))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let windows_only: Vec<TimestampRange> = windows_to_remove
-            .iter()
-            .map(|(window, _)| *window)
-            .collect();
-
-        if windows_to_remove.is_empty() {
-            return;
-        }
-
-        // Remove from read_counts
-        if let Some(read_count_map) = data.read_counts.get_mut(&store_key) {
-            for (window, _) in &windows_to_remove {
-                read_count_map.remove(window);
-            }
-        }
-
-        // Remove from time_ranges
-        if let Some(time_ranges) = data.time_ranges.get_mut(&store_key) {
-            for (window, _) in &windows_to_remove {
-                time_ranges.remove(window);
-            }
-        }
-
-        // Remove only from labels known to have each removed window.
-        self.remove_windows_from_store_key(data, store_key, &windows_only);
-
-        for (window, read_count) in &windows_to_remove {
-            debug!(
-                "Removed aggregate for {} aggregation_id {} window {}-{} (read_count: {} >= threshold: {})",
-                metric,
-                aggregation_id,
-                window.0,
-                window.1,
-                read_count,
-                threshold
-            );
-        }
-    }
-
-    fn cleanup_old_aggregates(
-        &self,
-        data: &mut StoreData,
-        metric: &str,
-        aggregation_id: u64,
-        num_aggregates_to_retain: Option<u64>,
-        read_count_threshold: Option<u64>,
-    ) {
-        match self.cleanup_policy {
-            CleanupPolicy::CircularBuffer => {
-                self.cleanup_old_aggregates_fixed_count(
-                    data,
-                    metric,
-                    aggregation_id,
-                    num_aggregates_to_retain,
-                );
-            }
-            CleanupPolicy::ReadBased => {
-                self.cleanup_old_aggregates_read_based(
-                    data,
-                    metric,
-                    aggregation_id,
-                    read_count_threshold,
-                );
-            }
-            CleanupPolicy::NoCleanup => {
-                // Do nothing - no cleanup
-            }
         }
     }
 }
@@ -318,11 +226,10 @@ impl Store for SimpleMapStoreGlobal {
 
             let metric = aggregation_config.metric.clone();
             let aggregation_id = output.aggregation_id;
+            let store_key = aggregation_id;
 
             // Create table if it doesn't exist
-            if !data.metrics.contains(&metric) {
-                self.create_table(&mut data, &metric);
-            }
+            data.metrics.insert(metric.clone());
 
             // Update earliest timestamp tracking
             if let Some(current_earliest) = data
@@ -337,38 +244,83 @@ impl Store for SimpleMapStoreGlobal {
                     .insert(aggregation_id, output.start_timestamp);
             }
 
-            let store_key = aggregation_id;
             let timestamp_range = (output.start_timestamp, output.end_timestamp);
-            let label_key = output.key;
 
-            // Insert into inverted index: label → BTreeMap<TimestampRange, Vec<Aggregate>>
-            let label_map = data.store.entry(store_key).or_default();
-            label_map
-                .entry(label_key.clone())
-                .or_default()
-                .entry(timestamp_range)
-                .or_default()
-                .push(Arc::from(precompute));
-            data.window_to_labels
-                .entry(store_key)
-                .or_default()
-                .entry(timestamp_range)
-                .or_default()
-                .insert(label_key);
-            data.time_ranges
-                .entry(store_key)
-                .or_default()
-                .insert(timestamp_range);
+            // Get or create PerKeyState
+            let per_key = data.stores.entry(store_key).or_insert_with(PerKeyState::new);
+
+            // Configure epoch capacity on first insert (Optimization 2)
+            if aggregation_config.aggregation_type != "DeltaSetAggregator" {
+                per_key.configure_epochs(aggregation_config.num_aggregates_to_retain);
+            }
+
+            // Intern the label key (Optimization 1)
+            let metric_id = per_key.intern.intern(output.key);
+
+            // Insert into current epoch
+            let current_epoch_id = per_key.current_epoch_id;
+            let epoch = per_key
+                .epochs
+                .get_mut(&current_epoch_id)
+                .expect("current epoch always exists");
+            epoch.insert(metric_id, timestamp_range, Arc::from(precompute));
 
             // Apply retention policy if configured (but exclude DeltaSetAggregator)
             if aggregation_config.aggregation_type != "DeltaSetAggregator" {
-                self.cleanup_old_aggregates(
-                    &mut data,
-                    &metric,
-                    aggregation_id,
-                    aggregation_config.num_aggregates_to_retain,
-                    aggregation_config.read_count_threshold,
-                );
+                match self.cleanup_policy {
+                    CleanupPolicy::CircularBuffer => {
+                        // Optimization 2: O(1) epoch rotation
+                        let dropped_windows = per_key.maybe_rotate_epoch();
+                        if !dropped_windows.is_empty() {
+                            if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
+                                for window in &dropped_windows {
+                                    rc_map.remove(window);
+                                }
+                            }
+                            for window in &dropped_windows {
+                                debug!(
+                                    "Removed old aggregate for {} aggregation_id {} window {}-{} (epoch rotation)",
+                                    metric, aggregation_id, window.0, window.1
+                                );
+                            }
+                        }
+                    }
+                    CleanupPolicy::ReadBased => {
+                        if let Some(threshold) = aggregation_config.read_count_threshold {
+                            let rc_map =
+                                data.read_counts.entry(store_key).or_default();
+                            // We need to temporarily detach to satisfy borrow checker
+                            let windows_to_remove: Vec<TimestampRange> = rc_map
+                                .iter()
+                                .filter(|(_, &count)| count >= threshold)
+                                .map(|(range, _)| *range)
+                                .collect();
+
+                            if !windows_to_remove.is_empty() {
+                                for window in &windows_to_remove {
+                                    debug!(
+                                        "Removed aggregate for {} aggregation_id {} window {}-{} (read_count >= threshold: {})",
+                                        metric, aggregation_id, window.0, window.1, threshold
+                                    );
+                                    rc_map.remove(window);
+                                }
+
+                                let per_key = data.stores.get_mut(&store_key).unwrap();
+                                for epoch in per_key.epochs.values_mut() {
+                                    epoch.remove_windows(&windows_to_remove);
+                                }
+                                per_key.epochs.retain(|_, epoch| !epoch.is_empty());
+                                if !per_key.epochs.contains_key(&per_key.current_epoch_id) {
+                                    let cur_id = per_key.current_epoch_id;
+                                    per_key.epochs.insert(cur_id, EpochData::new());
+                                }
+                            }
+                        }
+                    }
+                    CleanupPolicy::NoCleanup => {
+                        // Do nothing
+                    }
+                }
             }
 
             // Update insertion count
@@ -442,50 +394,45 @@ impl Store for SimpleMapStoreGlobal {
 
         let mut results: TimestampedBucketsMap = HashMap::new();
         let mut total_entries = 0;
+        let mut matched_windows: Vec<TimestampRange> = Vec::new();
 
-        // Find all matching entries using the inverted index (label → BTreeMap)
         let range_scan_start_time = Instant::now();
 
         {
-            let label_map = match data.store.get(&store_key) {
-                Some(map) => map,
+            let per_key = match data.stores.get(&store_key) {
+                Some(pk) => pk,
                 None => {
                     info!("Metric {} not found in store", metric);
                     return Ok(HashMap::new());
                 }
             };
 
-            for (label, btree) in label_map.iter() {
-                for (&timestamp_range, aggregates) in btree.range((start, 0)..=(end, u64::MAX)) {
-                    if timestamp_range.1 > end {
-                        continue; // Filter: range_end must be <= end
+            for epoch in per_key.epochs.values() {
+                // Skip epoch if it has no windows overlapping [start, end]
+                if let (Some(&min_tr), Some(&max_tr)) = (
+                    epoch.time_ranges.iter().next(),
+                    epoch.time_ranges.iter().next_back(),
+                ) {
+                    if min_tr.0 > end || max_tr.1 < start {
+                        continue;
                     }
-                    let entry = results.entry(label.clone()).or_default();
-                    for agg in aggregates {
-                        entry.push((timestamp_range, Arc::clone(agg)));
-                        total_entries += 1;
-                    }
+                } else {
+                    continue; // empty epoch
+                }
+
+                for (metric_id, tr, agg) in epoch.range_query(start, end) {
+                    let label = per_key.intern.resolve(metric_id).clone();
+                    results.entry(label).or_default().push((tr, agg));
+                    total_entries += 1;
+                    matched_windows.push(tr);
                 }
             }
         }
 
-        // Update read counts using secondary index (after label_map borrow is dropped)
-        // Collect matching ranges first to avoid simultaneous borrows on data fields
-        let matching_ranges: Vec<TimestampRange> = data
-            .time_ranges
-            .get(&store_key)
-            .map(|time_ranges| {
-                time_ranges
-                    .range((start, 0)..=(end, u64::MAX))
-                    .filter(|&&(_, range_end)| range_end <= end)
-                    .copied()
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        let read_count_map = data.read_counts.entry(store_key).or_default();
-        for timestamp_range in &matching_ranges {
-            *read_count_map.entry(*timestamp_range).or_insert(0) += 1;
+        // Update read counts (outer Mutex already held — no inner Mutex needed)
+        let rc_map = data.read_counts.entry(store_key).or_default();
+        for window in &matched_windows {
+            *rc_map.entry(*window).or_insert(0) += 1;
         }
 
         let range_scan_duration = range_scan_start_time.elapsed();
@@ -566,69 +513,51 @@ impl Store for SimpleMapStoreGlobal {
         let mut found_match = false;
         let mut total_entries = 0;
 
-        // Fast miss path: avoid scanning all labels if this window does not exist.
-        if !data
-            .window_to_labels
-            .get(&store_key)
-            .is_some_and(|index| index.contains_key(&timestamp_range))
         {
-            debug!(
-                "Exact match NOT FOUND for metric: {}, agg_id: {}, range: [{}, {}]",
-                metric, aggregation_id, exact_start, exact_end
-            );
-            return Ok(HashMap::new());
-        }
-
-        // Use reverse index to scan only labels that actually have this window.
-        {
-            let label_map = match data.store.get(&store_key) {
-                Some(map) => map,
+            let per_key = match data.stores.get(&store_key) {
+                Some(pk) => pk,
                 None => {
                     debug!("Metric {} not found in store for exact query", metric);
                     return Ok(HashMap::new());
                 }
             };
 
-            if let Some(labels) = data
-                .window_to_labels
-                .get(&store_key)
-                .and_then(|index| index.get(&timestamp_range))
-            {
-                for label in labels {
-                    if let Some(aggregates) = label_map
-                        .get(label)
-                        .and_then(|btree| btree.get(&timestamp_range))
-                    {
-                        found_match = true;
-                        let entry = results.entry(label.clone()).or_default();
-                        for agg in aggregates {
-                            entry.push((timestamp_range, Arc::clone(agg)));
-                            total_entries += 1;
-                        }
+            // Search epochs newest-first for exact window match
+            for epoch in per_key.epochs.values().rev() {
+                if let Some(entries) = epoch.exact_query(timestamp_range) {
+                    found_match = true;
+                    for (metric_id, agg) in entries {
+                        let label = per_key.intern.resolve(metric_id).clone();
+                        results
+                            .entry(label)
+                            .or_default()
+                            .push((timestamp_range, agg));
+                        total_entries += 1;
                     }
+                    break; // exact match found in newest containing epoch
                 }
-            }
-
-            if found_match {
-                debug!(
-                    "Exact match FOUND for [{}, {}]: {} entries across {} keys",
-                    exact_start,
-                    exact_end,
-                    total_entries,
-                    results.len()
-                );
-            } else {
-                debug!(
-                    "Exact match NOT FOUND for metric: {}, agg_id: {}, range: [{}, {}]",
-                    metric, aggregation_id, exact_start, exact_end
-                );
             }
         }
 
-        // Now update read count (after label_map borrow is dropped)
         if found_match {
-            let read_count_map = data.read_counts.entry(store_key).or_default();
-            *read_count_map.entry(timestamp_range).or_insert(0) += 1;
+            debug!(
+                "Exact match FOUND for [{}, {}]: {} entries across {} keys",
+                exact_start,
+                exact_end,
+                total_entries,
+                results.len()
+            );
+        } else {
+            debug!(
+                "Exact match NOT FOUND for metric: {}, agg_id: {}, range: [{}, {}]",
+                metric, aggregation_id, exact_start, exact_end
+            );
+        }
+
+        // Now update read count (outer Mutex held — no inner Mutex needed)
+        if found_match {
+            let rc_map = data.read_counts.entry(store_key).or_default();
+            *rc_map.entry(timestamp_range).or_insert(0) += 1;
         }
 
         #[cfg(feature = "lock_profiling")]
