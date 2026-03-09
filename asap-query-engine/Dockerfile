@@ -18,8 +18,12 @@ COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/
 
-# Create a dummy main.rs to build dependencies
-RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs
+# Create dummy Rust targets to build dependencies.
+# Cargo.toml declares explicit bin paths, so they must exist in this cache layer.
+RUN mkdir -p asap-query-engine/src/bin \
+    && echo "fn main() {}" > asap-query-engine/src/main.rs \
+    && echo "fn main() {}" > asap-query-engine/src/bin/precompute_engine.rs \
+    && echo "fn main() {}" > asap-query-engine/src/bin/test_e2e_precompute.rs
 
 # Build dependencies (this layer will be cached)
 WORKDIR /code/asap-query-engine
