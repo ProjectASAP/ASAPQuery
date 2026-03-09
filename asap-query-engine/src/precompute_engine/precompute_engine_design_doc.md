@@ -150,6 +150,49 @@ struct AggregationState {
 }
 ```
 
+#### Accumulator lifecycle and ownership
+
+Accumulators are not pre-assigned — they are created **lazily** at three nested levels:
+
+**1. At engine startup** (`engine.rs`): every worker receives a full copy of all `AggregationConfig`s. All workers are symmetric; none is pre-assigned to any series or config.
+
+```rust
+let agg_configs = streaming_config.get_all_aggregation_configs().clone();
+for (id, rx) in receivers {
+    Worker::new(id, rx, sink.clone(), agg_configs.clone(), ...)
+}
+```
+
+**2. On first sample for a series** (`get_or_create_series_state`): the worker calls `matching_agg_configs(series_key)` to filter the config map by metric name, then creates one `AggregationState` per match (a `WindowManager` + empty pane map). No accumulators exist yet.
+
+```rust
+let aggregations = matching_agg_configs(series_key).map(|(_, config)| AggregationState {
+    window_manager: WindowManager::new(config.window_size, config.slide_interval),
+    config: config.clone(),
+    active_panes: BTreeMap::new(),   // ← empty; no memory allocated for sketches yet
+}).collect();
+```
+
+**3. On first sample in a pane** (`process_samples`): the accumulator is created the moment a sample falls into a pane that does not yet exist in `active_panes`.
+
+```rust
+let updater = agg_state.active_panes
+    .entry(pane_start)
+    .or_insert_with(|| create_accumulator_updater(&agg_state.config));
+```
+
+**Ownership hierarchy:**
+
+```
+Worker
+└── series_map[series_key]           one entry per series this worker owns
+    └── aggregations[i]              one AggregationState per matching config
+        └── active_panes[pane_start] one AccumulatorUpdater per open pane
+            └── Box<dyn AggregateCore>   the actual sketch / sum / minmax / etc.
+```
+
+Because `xxhash64(series_key) % N` is deterministic, a series always lands on the same worker. Its accumulators live in exactly one worker with no sharing and no locking. Workers that never receive a series never allocate any state for it.
+
 #### Pane-Based Sliding Window Optimization
 
 The worker uses **pane-based incremental computation** to reduce per-sample
