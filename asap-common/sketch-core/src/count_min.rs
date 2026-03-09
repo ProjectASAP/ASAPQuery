@@ -153,12 +153,13 @@ impl CountMinSketch {
                 let inner = sketchlib_cms_from_matrix(acc.row_num, acc.col_num, &matrix);
                 sketchlib_inners.push(inner);
             }
-            let merged_sketchlib = sketchlib_inners.into_iter().reduce(
-                |mut lhs: SketchlibCms, rhs: SketchlibCms| {
+            let merged_sketchlib = sketchlib_inners
+                .into_iter()
+                .reduce(|mut lhs: SketchlibCms, rhs: SketchlibCms| {
                     lhs.merge(&rhs);
                     lhs
-                },
-            ).ok_or("No accumulators to merge")?;
+                })
+                .ok_or("No accumulators to merge")?;
 
             let sketch = matrix_from_sketchlib_cms(&merged_sketchlib);
             let row_num = sketch.len();
@@ -223,12 +224,13 @@ impl CountMinSketch {
                 sketchlib_inners.push(inner);
             }
 
-            let merged_sketchlib = sketchlib_inners.into_iter().reduce(
-                |mut lhs: SketchlibCms, rhs: SketchlibCms| {
+            let merged_sketchlib = sketchlib_inners
+                .into_iter()
+                .reduce(|mut lhs: SketchlibCms, rhs: SketchlibCms| {
                     lhs.merge(&rhs);
                     lhs
-                },
-            ).ok_or("No accumulators to merge")?;
+                })
+                .ok_or("No accumulators to merge")?;
 
             let sketch = matrix_from_sketchlib_cms(&merged_sketchlib);
             let r = sketch.len();

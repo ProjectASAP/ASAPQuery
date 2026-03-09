@@ -242,27 +242,35 @@ mod tests {
             vec![0.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         ];
         let heap1 = vec![
-            HeapItem { key: "key1".to_string(), value: 100.0 },
-            HeapItem { key: "key2".to_string(), value: 50.0 },
+            HeapItem {
+                key: "key1".to_string(),
+                value: 100.0,
+            },
+            HeapItem {
+                key: "key2".to_string(),
+                value: 50.0,
+            },
         ];
         let sketch2 = vec![
             vec![5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
             vec![0.0, 15.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         ];
         let heap2 = vec![
-            HeapItem { key: "key3".to_string(), value: 75.0 },
-            HeapItem { key: "key1".to_string(), value: 80.0 },
+            HeapItem {
+                key: "key3".to_string(),
+                value: 75.0,
+            },
+            HeapItem {
+                key: "key1".to_string(),
+                value: 80.0,
+            },
         ];
 
         let cms1 = CountMinSketchWithHeapAccumulator {
-            inner: CountMinSketchWithHeap::from_legacy_matrix(
-                sketch1, heap1, 2, 10, 5,
-            ),
+            inner: CountMinSketchWithHeap::from_legacy_matrix(sketch1, heap1, 2, 10, 5),
         };
         let cms2 = CountMinSketchWithHeapAccumulator {
-            inner: CountMinSketchWithHeap::from_legacy_matrix(
-                sketch2, heap2, 2, 10, 3,
-            ),
+            inner: CountMinSketchWithHeap::from_legacy_matrix(sketch2, heap2, 2, 10, 3),
         };
 
         let result = CountMinSketchWithHeapAccumulator::merge_accumulators(vec![cms1, cms2]);
@@ -349,10 +357,8 @@ mod tests {
         let keys = cms.get_topk_keys();
         assert_eq!(keys.len(), 2);
         // Top-k order can differ between Legacy and Sketchlib backends (heap ordering / estimates).
-        let label_sets: std::collections::HashSet<_> = keys
-            .iter()
-            .map(|k| k.labels.clone())
-            .collect();
+        let label_sets: std::collections::HashSet<_> =
+            keys.iter().map(|k| k.labels.clone()).collect();
         assert!(label_sets.contains(&vec!["label1".to_string(), "label2".to_string()]));
         assert!(label_sets.contains(&vec!["label3".to_string(), "label4".to_string()]));
     }

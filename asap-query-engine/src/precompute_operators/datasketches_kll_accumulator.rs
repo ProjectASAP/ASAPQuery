@@ -296,7 +296,10 @@ mod tests {
         query_kwargs.insert("quantile".to_string(), "0.5".to_string());
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
         // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
-        assert!((result - 6.0).abs() <= 2.0, "expected median ~6, got {result}");
+        assert!(
+            (result - 6.0).abs() <= 2.0,
+            "expected median ~6, got {result}"
+        );
 
         assert!(kll.query(Statistic::Sum, Some(&query_kwargs)).is_err());
     }
@@ -361,12 +364,18 @@ mod tests {
         query_kwargs.insert("quantile".to_string(), "0.5".to_string());
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
         // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
-        assert!((result - 6.0).abs() <= 2.0, "expected median ~6, got {result}");
+        assert!(
+            (result - 6.0).abs() <= 2.0,
+            "expected median ~6, got {result}"
+        );
 
         query_kwargs.insert("quantile".to_string(), "0.9".to_string());
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
         // Sketchlib KLL is approximate; 0.9 quantile of 1..10 may be 9 or 10.
-        assert!(result >= 9.0 && result <= 10.0, "expected 0.9 quantile in [9,10], got {result}");
+        assert!(
+            result >= 9.0 && result <= 10.0,
+            "expected 0.9 quantile in [9,10], got {result}"
+        );
 
         query_kwargs.insert("quantile".to_string(), "0.0".to_string());
         assert_eq!(
