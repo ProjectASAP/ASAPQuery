@@ -116,6 +116,38 @@ enum WorkerMessage {
 `route_batch()` groups messages by target worker and sends them in parallel for
 throughput while preserving per-worker ordering.
 
+#### Load balancing trade-offs and alternatives
+
+The current hash-mod scheme is correct and low-overhead but has four distinct failure modes. Each has a corresponding mitigation strategy.
+
+**Problem 1: hash skew — uneven series count per worker**
+
+With a good hash and N workers the variance in series count is O(√(S/N)), which is negligible at large S. Virtual nodes (each physical worker owns K hash ring slots) reduce variance further at zero runtime cost but are rarely necessary with xxhash64 in practice.
+
+**Problem 2: hot series — a few series dominate sample volume**
+
+The hash does not know about per-series sample rates. If one metric is scraped at 1 s while others are at 60 s, the owning worker handles 60× more samples.
+
+*Mitigation — weight-aware initial placement:* on first sight of a series, assign it to the least-loaded worker (by current sample rate) and record the assignment in a small routing table that replaces the hash lookup. The assignment remains stable (one series = one worker always), so no cross-worker state is needed. The routing table fits in memory for millions of series. Works well when series rates are observable at assignment time (e.g. from Prometheus service discovery).
+
+**Problem 3: GROUP BY fan-in — cross-worker store entries require query-time merge**
+
+Because routing is by full series key, two series that share a `grouping_labels` value but differ in rolled-up labels land on different workers and emit independent accumulators for the same `(agg_id, key, window)` tuple (see §4). The store must append multiple entries and the query engine merges them.
+
+*Mitigation A — route by grouping key:* use `xxhash64(grouping_key)` instead of the full series key. All series rolling up into the same GROUP BY bucket land on one worker, which merges them before emitting. The store gets exactly one entry per `(agg_id, key, window)` and no query-time fan-in is needed. Trade-offs: routing requires knowing the config's `grouping_labels` at ingest time; creates a new hot-key risk when one grouping value covers far more series than others; a series matched by multiple configs with different grouping keys would need to be sent to multiple workers.
+
+*Mitigation B — two-phase aggregation:* keep routing by series key (local aggregation as now) but emit partial accumulators to a second tier of reduce-workers routed by grouping key. Reduce-workers merge partials and write a single entry to the store. Eliminates query-time fan-in without the hot-key risk. Adds one extra hop of latency and requires coordinating two flush cycles.
+
+**Problem 4: static assignment — series stuck on overloaded workers**
+
+Hash-based assignment is fixed for the lifetime of the process. A series that begins emitting at 100× its original rate stays on the same worker forever.
+
+*Mitigation — state migration at window boundaries:* when a series has no open panes (i.e. `active_panes` is empty after a window close), its state can be serialized, sent to a new worker, and the routing table updated atomically. The empty-panes condition occurs naturally at every tumbling window boundary, or periodically for sliding windows after all panes are evicted. Operationally complex but sound — no split-window state is possible if migration is gated on the empty-panes condition.
+
+**Practical signal: channel backpressure**
+
+Before investing in any of the above, add observability to the bounded MPSC channels — if a worker's channel is frequently near capacity, that is the primary signal that routing is imbalanced. Exposing `channel.capacity()` (remaining slots) per worker as a metric is cheap and pinpoints which worker is the bottleneck, providing the data needed to choose between the mitigations above.
+
 ### 3.4 Worker (`worker.rs`)
 
 Each worker owns an isolated shard of the series space.
