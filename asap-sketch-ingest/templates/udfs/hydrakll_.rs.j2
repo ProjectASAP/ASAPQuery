@@ -8,8 +8,6 @@ serde = { version = "1.0", features = ["derive"] }
 xxhash-rust = { version = "0.8", features = ["xxh32"] }
 */
 
-use std::sync::OnceLock;
-
 use arroyo_udf_plugin::udf;
 use dsrs::KllDoubleSketch;
 use rmp_serde::Serializer;
@@ -21,24 +19,16 @@ const ROW_NUM: usize = {{ row_num }};
 const COL_NUM: usize = {{ col_num }};
 const DEFAULT_K: u16 = {{ k }};
 
-// Implementation switch for KLL Sketch.
+// Implementation mode for KLL Sketch. Set at compile time; no env vars.
 enum ImplMode {
     Legacy,
     Sketchlib,
 }
 
-static IMPL_MODE: OnceLock<ImplMode> = OnceLock::new();
+const IMPL_MODE: ImplMode = ImplMode::Sketchlib;
 
 fn use_sketchlib_for_kll() -> bool {
-    matches!(
-        IMPL_MODE.get_or_init(|| {
-            match std::env::var("ARROYO_SKETCH_KLL_IMPL") {
-                Ok(v) if v.eq_ignore_ascii_case("legacy") => ImplMode::Legacy,
-                _ => ImplMode::Sketchlib,
-            }
-        }),
-        ImplMode::Sketchlib
-    )
+    matches!(IMPL_MODE, ImplMode::Sketchlib)
 }
 
 // Match QueryEngineRust format exactly

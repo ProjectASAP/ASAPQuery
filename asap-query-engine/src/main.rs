@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info};
 
+use sketch_core::config::{self, ImplMode as BackendImplMode};
+
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
@@ -107,11 +109,46 @@ struct Args {
     /// Path to promsketch configuration YAML file (optional; uses defaults if omitted)
     #[arg(long)]
     promsketch_config: Option<String>,
+
+    /// Backend implementation for Count-Min Sketch (legacy | sketchlib)
+    #[arg(long, value_enum, default_value = "sketchlib")]
+    sketch_cms_impl: BackendImpl,
+
+    /// Backend implementation for KLL Sketch (legacy | sketchlib)
+    #[arg(long, value_enum, default_value = "sketchlib")]
+    sketch_kll_impl: BackendImpl,
+
+    /// Backend implementation for Count-Min-With-Heap (legacy | sketchlib)
+    #[arg(long, value_enum, default_value = "sketchlib")]
+    sketch_cmwh_impl: BackendImpl,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum BackendImpl {
+    Legacy,
+    Sketchlib,
+}
+
+impl From<BackendImpl> for BackendImplMode {
+    fn from(value: BackendImpl) -> Self {
+        match value {
+            BackendImpl::Legacy => BackendImplMode::Legacy,
+            BackendImpl::Sketchlib => BackendImplMode::Sketchlib,
+        }
+    }
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Configure sketch-core backends before any sketch operations.
+    config::configure(
+        BackendImplMode::from(args.sketch_cms_impl.clone()),
+        BackendImplMode::from(args.sketch_kll_impl.clone()),
+        BackendImplMode::from(args.sketch_cmwh_impl.clone()),
+    )
+    .expect("sketch backend already initialised");
 
     // Create output directory
     fs::create_dir_all(&args.output_dir)?;

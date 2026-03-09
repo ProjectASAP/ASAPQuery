@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use sketch_core::config::{
-    use_sketchlib_for_count_min, use_sketchlib_for_count_min_with_heap, use_sketchlib_for_kll,
-};
+use clap::Parser;
+use sketch_core::config::{self, ImplMode};
 use sketch_core::count_min::CountMinSketch;
 use sketch_core::count_min_with_heap::CountMinSketchWithHeap;
 use sketch_core::hydra_kll::HydraKllSketch;
@@ -91,6 +90,31 @@ fn rmse_percentage(exact: &[f64], est: &[f64]) -> f64 {
         return if exact == est { 0.0 } else { f64::INFINITY };
     }
     (sum_sq / denom).sqrt() * 100.0
+}
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long, value_enum, default_value = "sketchlib")]
+    cms_impl: BackendImpl,
+    #[arg(long, value_enum, default_value = "sketchlib")]
+    kll_impl: BackendImpl,
+    #[arg(long, value_enum, default_value = "sketchlib")]
+    cmwh_impl: BackendImpl,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum BackendImpl {
+    Legacy,
+    Sketchlib,
+}
+
+impl From<BackendImpl> for ImplMode {
+    fn from(value: BackendImpl) -> Self {
+        match value {
+            BackendImpl::Legacy => ImplMode::Legacy,
+            BackendImpl::Sketchlib => ImplMode::Sketchlib,
+        }
+    }
 }
 
 fn rank_fraction(sorted: &[f64], x: f64) -> f64 {
@@ -318,14 +342,22 @@ fn run_hydra_kll_once(seed: u64, p: &HydraKllParams) -> HydraKllResult {
 }
 
 fn main() {
+    let args = Args::parse();
+    config::configure(
+        ImplMode::from(args.cms_impl.clone()),
+        ImplMode::from(args.kll_impl.clone()),
+        ImplMode::from(args.cmwh_impl.clone()),
+    )
+    .expect("sketch backend already initialised");
+
     let seed = 0xC0FFEE_u64;
-    let mode = if use_sketchlib_for_count_min()
-        || use_sketchlib_for_count_min_with_heap()
-        || use_sketchlib_for_kll()
+    let mode = if matches!(args.cms_impl, BackendImpl::Legacy)
+        || matches!(args.kll_impl, BackendImpl::Legacy)
+        || matches!(args.cmwh_impl, BackendImpl::Legacy)
     {
-        "sketchlib-rust"
-    } else {
         "Legacy"
+    } else {
+        "sketchlib-rust"
     };
 
     // CountMinSketch: multiple (depth, width, n, domain)

@@ -12,25 +12,21 @@ Compares the **legacy** sketch implementations in `sketch-core` vs the new **ske
 
 ### Fidelity harness
 
-| Goal                    | Command                                                                                                  |
-|-------------------------|----------------------------------------------------------------------------------------------------------|
-| Default (sketchlib-rust) | `cargo run -p sketch-core --bin sketchlib_fidelity`                                                      |
-| All legacy              | `SKETCH_CORE_CMS_IMPL=legacy SKETCH_CORE_CMWH_IMPL=legacy SKETCH_CORE_KLL_IMPL=legacy cargo run -p sketch-core --bin sketchlib_fidelity` |
-| legacy KLL only | `SKETCH_CORE_KLL_IMPL=legacy cargo run -p sketch-core --bin sketchlib_fidelity`                         |
+The fidelity binary now selects backends via CLI flags instead of environment variables.
+
+| Goal                     | Command                                                                                                      |
+|--------------------------|--------------------------------------------------------------------------------------------------------------|
+| Default (all sketchlib)  | `cargo run -p sketch-core --bin sketchlib_fidelity`                                                          |
+| All legacy               | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl legacy --kll-impl legacy --cmwh-impl legacy` |
+| Legacy KLL only          | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl sketchlib --kll-impl legacy --cmwh-impl sketchlib` |
 
 ### Unit tests
 
-The same environment variables control which backend the unit tests exercise:
+Unit tests always run with **legacy** backends enabled (the test ctor calls
+`force_legacy_mode_for_tests()`), so you only need:
 
 ```bash
-# sketchlib-rust (default)
 cargo test -p sketch-core
-
-# force all legacy backends
-SKETCH_CORE_CMS_IMPL=legacy \
-SKETCH_CORE_CMWH_IMPL=legacy \
-SKETCH_CORE_KLL_IMPL=legacy \
-  cargo test -p sketch-core
 ```
 
 ## Results

@@ -20,6 +20,13 @@ use crate::count_min_sketchlib::{
     sketchlib_cms_update, SketchlibCms,
 };
 
+#[derive(Serialize, Deserialize)]
+struct WireFormat {
+    sketch: Vec<Vec<f64>>,
+    row_num: usize,
+    col_num: usize,
+}
+
 /// Backend implementation for Count-Min Sketch. Only one is active at a time.
 #[derive(Debug, Clone)]
 pub enum CountMinBackend {
@@ -146,13 +153,12 @@ impl CountMinSketch {
                 let inner = sketchlib_cms_from_matrix(acc.row_num, acc.col_num, &matrix);
                 sketchlib_inners.push(inner);
             }
-            let merged_sketchlib = sketchlib_inners
-                .into_iter()
-                .reduce(|mut lhs, rhs| {
+            let merged_sketchlib = sketchlib_inners.into_iter().reduce(
+                |mut lhs: SketchlibCms, rhs: SketchlibCms| {
                     lhs.merge(&rhs);
                     lhs
-                })
-                .ok_or("No accumulators to merge")?;
+                },
+            ).ok_or("No accumulators to merge")?;
 
             let sketch = matrix_from_sketchlib_cms(&merged_sketchlib);
             let row_num = sketch.len();
@@ -217,13 +223,12 @@ impl CountMinSketch {
                 sketchlib_inners.push(inner);
             }
 
-            let merged_sketchlib = sketchlib_inners
-                .into_iter()
-                .reduce(|mut lhs, rhs| {
+            let merged_sketchlib = sketchlib_inners.into_iter().reduce(
+                |mut lhs: SketchlibCms, rhs: SketchlibCms| {
                     lhs.merge(&rhs);
                     lhs
-                })
-                .ok_or("No accumulators to merge")?;
+                },
+            ).ok_or("No accumulators to merge")?;
 
             let sketch = matrix_from_sketchlib_cms(&merged_sketchlib);
             let r = sketch.len();
@@ -252,13 +257,6 @@ impl CountMinSketch {
 
     /// Serialize to MessagePack — matches the Arroyo UDF wire format exactly.
     pub fn serialize_msgpack(&self) -> Vec<u8> {
-        #[derive(Serialize)]
-        struct WireFormat {
-            sketch: Vec<Vec<f64>>,
-            row_num: usize,
-            col_num: usize,
-        }
-
         let sketch = self.sketch();
         let wire = WireFormat {
             sketch,
@@ -274,12 +272,6 @@ impl CountMinSketch {
 
     /// Deserialize from MessagePack produced by the Arroyo UDF.
     pub fn deserialize_msgpack(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        #[derive(Deserialize)]
-        struct WireFormat {
-            sketch: Vec<Vec<f64>>,
-            row_num: usize,
-            col_num: usize,
-        }
         let wire: WireFormat =
             rmp_serde::from_slice(buffer).map_err(|e| -> Box<dyn std::error::Error> {
                 format!("Failed to deserialize CountMinSketch from MessagePack: {e}").into()

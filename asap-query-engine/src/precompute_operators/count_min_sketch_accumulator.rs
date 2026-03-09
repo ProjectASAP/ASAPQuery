@@ -285,13 +285,21 @@ mod tests {
 
     #[test]
     fn test_count_min_sketch_merge() {
-        let mut cms1 = CountMinSketchAccumulator::new(2, 3);
-        let mut cms2 = CountMinSketchAccumulator::new(2, 3);
-
-        cms1.inner.sketch_mut().unwrap()[0][0] = 5.0;
-        cms1.inner.sketch_mut().unwrap()[1][2] = 10.0;
-        cms2.inner.sketch_mut().unwrap()[0][0] = 3.0;
-        cms2.inner.sketch_mut().unwrap()[0][1] = 7.0;
+        // Build controlled state via from_legacy_matrix (works for both Legacy and Sketchlib backends).
+        let cms1 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]],
+                2,
+                3,
+            ),
+        };
+        let cms2 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]],
+                2,
+                3,
+            ),
+        };
 
         let merged = CountMinSketchAccumulator::merge_accumulators(vec![cms1, cms2]).unwrap();
 
@@ -311,9 +319,13 @@ mod tests {
 
     #[test]
     fn test_count_min_sketch_serialization() {
-        let mut cms = CountMinSketchAccumulator::new(2, 3);
-        cms.inner.sketch_mut().unwrap()[0][1] = 42.0;
-        cms.inner.sketch_mut().unwrap()[1][2] = 100.0;
+        let cms = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]],
+                2,
+                3,
+            ),
+        };
 
         let bytes = cms.serialize_to_bytes();
         let deserialized =
@@ -391,16 +403,28 @@ mod tests {
 
     #[test]
     fn test_count_min_sketch_merge_multiple() {
-        let mut cms1 = CountMinSketchAccumulator::new(2, 3);
-        let mut cms2 = CountMinSketchAccumulator::new(2, 3);
-        let mut cms3 = CountMinSketchAccumulator::new(2, 3);
-
-        cms1.inner.sketch_mut().unwrap()[0][0] = 5.0;
-        cms1.inner.sketch_mut().unwrap()[1][2] = 10.0;
-        cms2.inner.sketch_mut().unwrap()[0][0] = 3.0;
-        cms2.inner.sketch_mut().unwrap()[0][1] = 7.0;
-        cms3.inner.sketch_mut().unwrap()[0][0] = 2.0;
-        cms3.inner.sketch_mut().unwrap()[1][2] = 5.0;
+        // Build controlled state via from_legacy_matrix (works for both Legacy and Sketchlib backends).
+        let cms1 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]],
+                2,
+                3,
+            ),
+        };
+        let cms2 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]],
+                2,
+                3,
+            ),
+        };
+        let cms3 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![2.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]],
+                2,
+                3,
+            ),
+        };
 
         let boxed_accs: Vec<Box<dyn AggregateCore>> =
             vec![Box::new(cms1), Box::new(cms2), Box::new(cms3)];

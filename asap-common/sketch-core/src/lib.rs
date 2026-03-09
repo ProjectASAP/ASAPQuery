@@ -3,9 +3,7 @@
 #[cfg(test)]
 #[ctor::ctor]
 fn init_sketch_legacy_for_tests() {
-    std::env::set_var("SKETCH_CORE_CMS_IMPL", "legacy");
-    std::env::set_var("SKETCH_CORE_CMWH_IMPL", "legacy");
-    std::env::set_var("SKETCH_CORE_KLL_IMPL", "legacy");
+    crate::config::force_legacy_mode_for_tests();
 }
 
 pub mod config;

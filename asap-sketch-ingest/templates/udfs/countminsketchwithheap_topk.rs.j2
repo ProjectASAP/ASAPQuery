@@ -8,7 +8,6 @@ sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust" }
 
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
-use std::sync::OnceLock;
 
 use arroyo_udf_plugin::udf;
 use rmp_serde::Serializer;
@@ -22,24 +21,16 @@ const DEPTH: usize = {{ depth }}; // Number of hash functions
 const WIDTH: usize = {{ width }}; // Number of buckets per hash function
 const HEAP_SIZE: usize = {{ heapsize }}; // Maximum number of top-k items to track
 
-// Implementation switch for Count-Min Sketch with Heap.
+// Implementation mode for Count-Min Sketch with Heap. Set at compile time; no env vars.
 enum ImplMode {
     Legacy,
     Sketchlib,
 }
 
-static IMPL_MODE: OnceLock<ImplMode> = OnceLock::new();
+const IMPL_MODE: ImplMode = ImplMode::Sketchlib;
 
 fn use_sketchlib_for_cmwh() -> bool {
-    matches!(
-        IMPL_MODE.get_or_init(|| {
-            match std::env::var("ARROYO_SKETCH_CMWH_IMPL") {
-                Ok(v) if v.to_ascii_lowercase() == "legacy" => ImplMode::Legacy,
-                _ => ImplMode::Sketchlib,
-            }
-        }),
-        ImplMode::Sketchlib
-    )
+    matches!(IMPL_MODE, ImplMode::Sketchlib)
 }
 
 type SketchlibCms = SketchlibCountMin<Vector2D<i64>, RegularPath>;

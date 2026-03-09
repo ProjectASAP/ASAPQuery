@@ -49,10 +49,6 @@ prometheus = "0.13"
 lazy_static = "1.4"
 zstd = "0.13"
 
-[dev-dependencies]
-ctor = "0.2"
-tempfile = "3.20.0"
-
 [features]
 #default = ["lock_profiling", "extra_debugging"]
 default = []
@@ -60,3 +56,8 @@ default = []
 lock_profiling = []
 # Enable extra debugging output
 extra_debugging = []
+sketchlib-tests = []
+
+[dev-dependencies]
+ctor = "0.2"
+tempfile = "3.20.0"
