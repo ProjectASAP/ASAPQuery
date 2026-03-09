@@ -715,7 +715,46 @@ store with the Kafka consumer path.
   validates aggregated results. Includes batch latency benchmark, windowed throughput
   benchmark (W=1/3/6), and worker scalability benchmark (1–16 workers).
 
-## 12. File Map
+## 12. Known Data Loss Cases and Fault Tolerance TODOs
+
+The engine is currently in-memory and single-process with no persistence of in-flight window state. The following cases result in data loss:
+
+| # | Case | When it occurs | Mitigation status |
+|---|---|---|---|
+| 1 | **Explicit late drop** | `LateDataPolicy::Drop` + `ts < watermark - allowed_lateness_ms` | Intended; use `ForwardToStore` to avoid |
+| 2 | **Intra-batch lateness** | Within a single `process_samples` call, `current_wm` is set to the batch's max timestamp before pane routing; with `allowed_lateness_ms=0` every sample below the batch max is dropped | Set `allowed_lateness_ms` ≥ max timestamp spread within a producer batch |
+| 3 | **Evicted pane + Drop** | Sample passes watermark check but its pane was already evicted (window closed); `Drop` policy discards it | Use `ForwardToStore` |
+| 4 | **No matching config** | `matching_agg_configs` returns empty — metric name in the series key does not match any config's `metric` or `spatial_filter`; worker silently returns `Ok(())` | No warning is logged. TODO: emit a metric or log at warn level for unmatched series |
+| 5 | **Open panes on shutdown** | `flush_all` only emits windows already closed by the watermark; panes that are still open at shutdown are discarded | TODO (see below) |
+| 6 | **Worker panic** | Tokio task dies; all series owned by that worker lose their pane state; subsequent sends log a warning and drop | TODO (see below) |
+
+### TODO: open-pane flush on shutdown
+
+`flush_all` currently only closes windows whose `end <= watermark`. On graceful shutdown it should optionally force-close all open panes by advancing each series watermark to `i64::MAX` (or to `current_wm + window_size_ms`) before the final flush. This would emit partial windows with whatever samples have accumulated, allowing downstream consumers to decide whether to use them.
+
+This behaviour should be opt-in (a `force_flush_on_shutdown: bool` config flag) because partial windows can be misleading for consumers that expect complete windows.
+
+### TODO: warn on unmatched series
+
+Case 4 is silent and hard to diagnose. The fix is a single warn-level log (rate-limited per series key) in `get_or_create_series_state` when `aggregations.is_empty()`, plus a Prometheus counter `precompute_unmatched_series_total`.
+
+### TODO: worker restart on panic
+
+Currently a panicked worker is never restarted. The engine should catch task failures (via `JoinHandle`) in the main `run()` loop and respawn the worker with a fresh receiver, re-routing future series to surviving workers (or to the replacement) in the meantime. In-flight pane state for the crashed worker is still lost — full recovery would require the WAL approach below.
+
+### TODO: write-ahead log (WAL) for pane state
+
+Cases 5 and 6 both stem from the same root cause: pane accumulators exist only in memory. A WAL would persist each pane update (series key, aggregation id, pane start, serialized accumulator delta) to disk or an external log (e.g. Kafka) before acknowledging the ingest HTTP request. On restart, the worker replays the WAL to reconstruct open panes before resuming normal processing.
+
+Trade-offs:
+- Serialization cost: accumulators must be serializable (all current types are, via `rmp-serde`)
+- WAL volume: one entry per sample per matching aggregation config — potentially high; batching per pane per flush interval reduces this significantly
+- Recovery time: proportional to WAL size since last checkpoint
+- Complexity: requires a checkpoint mechanism to bound recovery time and WAL size
+
+A lighter alternative: **periodic pane snapshots** written to disk at each flush interval. On restart, replay only samples received since the last snapshot. This bounds recovery time to `flush_interval_ms` worth of samples at the cost of snapshot I/O every flush cycle.
+
+## 13. File Map
 
 | File | Purpose |
 |------|---------|

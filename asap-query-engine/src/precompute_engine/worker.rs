@@ -612,8 +612,8 @@ mod tests {
 
     use crate::precompute_engine::config::LateDataPolicy;
     use crate::precompute_engine::output_sink::CapturingOutputSink;
-    use crate::precompute_operators::sum_accumulator::SumAccumulator;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
+    use crate::precompute_operators::sum_accumulator::SumAccumulator;
 
     fn make_agg_config(
         id: u64,
@@ -715,16 +715,21 @@ mod tests {
         agg_configs.insert(1, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
 
         // Samples in window [0, 10000ms): sum should be 1+2+3=6.
         // Send one at a time so the watermark advances incrementally —
         // a batch's max-ts becomes the new watermark, and with
         // allowed_lateness_ms=0 any ts < watermark in the same call is dropped.
-        worker.process_samples("cpu", vec![(1000_i64, 1.0)]).unwrap();
-        worker.process_samples("cpu", vec![(5000_i64, 2.0)]).unwrap();
-        worker.process_samples("cpu", vec![(9000_i64, 3.0)]).unwrap();
+        worker
+            .process_samples("cpu", vec![(1000_i64, 1.0)])
+            .unwrap();
+        worker
+            .process_samples("cpu", vec![(5000_i64, 2.0)])
+            .unwrap();
+        worker
+            .process_samples("cpu", vec![(9000_i64, 3.0)])
+            .unwrap();
         // No windows closed yet (watermark still below 10000)
         assert_eq!(sink.len(), 0);
 
@@ -740,7 +745,10 @@ mod tests {
         assert_eq!(output.aggregation_id, 1);
         assert_eq!(output.start_timestamp, 0);
         assert_eq!(output.end_timestamp, 10_000);
-        assert!(output.key.is_none(), "SingleSubpopulation should have no key");
+        assert!(
+            output.key.is_none(),
+            "SingleSubpopulation should have no key"
+        );
 
         let sum_acc = acc
             .as_any()
@@ -765,8 +773,7 @@ mod tests {
         agg_configs.insert(2, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
 
         // Sample at t=15000ms → goes to pane 10000ms
         // previous_wm == i64::MIN → no windows close
@@ -792,10 +799,7 @@ mod tests {
         );
 
         let window_starts: Vec<u64> = captured.iter().map(|(o, _)| o.start_timestamp).collect();
-        assert!(
-            window_starts.contains(&0),
-            "window [0, 30000) should emit"
-        );
+        assert!(window_starts.contains(&0), "window [0, 30000) should emit");
         assert!(
             window_starts.contains(&10_000),
             "window [10000, 40000) should emit"
@@ -836,8 +840,7 @@ mod tests {
         agg_configs.insert(3, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
 
         // Feed two series in the same window [0, 10000ms)
         worker
@@ -931,11 +934,7 @@ mod tests {
             .unwrap();
 
         // No new emission should occur (late sample is dropped)
-        assert_eq!(
-            sink.len(),
-            0,
-            "late sample should be dropped, not emitted"
-        );
+        assert_eq!(sink.len(), 0, "late sample should be dropped, not emitted");
     }
 
     // -----------------------------------------------------------------------
@@ -968,9 +967,7 @@ mod tests {
         );
 
         // Seed pane 0, then advance watermark to 20000 (evicts pane 0)
-        worker
-            .process_samples("cpu", vec![(500_i64, 1.0)])
-            .unwrap();
+        worker.process_samples("cpu", vec![(500_i64, 1.0)]).unwrap();
         worker
             .process_samples("cpu", vec![(20_000_i64, 0.0)])
             .unwrap();
