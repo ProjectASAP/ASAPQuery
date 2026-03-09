@@ -140,10 +140,8 @@ impl PlannerOutput {
                                         for key in
                                             ["read_count_threshold", "num_aggregates_to_retain"]
                                         {
-                                            if let Some(v) = agg.get(key) {
-                                                if let YamlValue::Number(n) = v {
-                                                    return n.as_u64();
-                                                }
+                                            if let Some(YamlValue::Number(n)) = agg.get(key) {
+                                                return n.as_u64();
                                             }
                                         }
                                     }
