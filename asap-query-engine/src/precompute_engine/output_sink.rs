@@ -80,6 +80,10 @@ impl CapturingOutputSink {
     pub fn len(&self) -> usize {
         self.captured.lock().unwrap().len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.captured.lock().unwrap().is_empty()
+    }
 }
 
 impl Default for CapturingOutputSink {
