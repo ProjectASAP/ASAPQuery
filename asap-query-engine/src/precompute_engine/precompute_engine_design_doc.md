@@ -355,9 +355,49 @@ trait OutputSink: Send + Sync {
 **Implementations:**
 - `StoreOutputSink` — calls `store.insert_precomputed_output_batch()`
 - `RawPassthroughSink` — same interface, used for raw mode
-- `NoopOutputSink` — testing helper that counts emitted items
+- `NoopOutputSink` — testing helper that counts emitted items via `AtomicU64`
+- `CapturingOutputSink` — testing helper that stores all emitted `(PrecomputedOutput, Box<dyn AggregateCore>)` pairs in a `Mutex<Vec<...>>`, with `drain()` and `len()` for assertions
 
-## 4. Data Model
+## 4. Cross-Series (GROUP BY) Aggregation
+
+### Label dimension roles
+
+`AggregationConfig` has three label dimension fields that control the spatial aggregation shape:
+
+| Field | Role |
+|---|---|
+| `grouping_labels` | Labels preserved in `PrecomputedOutput.key`; form the GROUP BY key visible at query time |
+| `aggregated_labels` | Internal sub-keys for MultipleSubpopulation sketches (e.g. CMS, HydraKLL) |
+| `rollup_labels` | Dropped entirely at ingest; not recoverable at query time |
+
+A config with `grouping_labels: [job]` and `rollup_labels: [instance]` means: "aggregate across all instances, keep one output series per job value." Multiple input series (`metric{job=j1,instance=h1}`, `metric{job=j1,instance=h2}`, ...) all contribute to the same logical output key `(job=j1)`.
+
+### Cross-worker fan-in
+
+Because routing is by full series key (`xxhash64(series_key) % N`), two series that share a `grouping_labels` value but differ in rolled-up labels typically land on different workers:
+
+```
+metric{job=j1, instance=h1} → Worker 0 → pane accumulator with key (job=j1)
+metric{job=j1, instance=h2} → Worker 3 → pane accumulator with key (job=j1)
+```
+
+Each worker independently closes its window and emits a separate `PrecomputedOutput` with key `(job=j1)` for the same window `[0, 60s)`. The store **appends** rather than overwrites on the same `(aggregation_id, key, window)` tuple:
+
+```
+store[(agg_id, key=(j1), [0,60s))] → [acc_worker0, acc_worker3]
+```
+
+Query-time `SummaryMergeMultipleExec` merges all entries for the same key and window via `AggregateCore::merge_with()`. No ingest-time cross-worker coordination is needed.
+
+### Eventual consistency
+
+Workers have independent watermarks. For a standard Prometheus scrape (all instances delivered in one HTTP batch via `route_batch()`), all workers receive their samples in the same round-trip and close the window on the same flush cycle. The incompleteness window — time between the first and last worker emitting for the same cross-series window — is typically milliseconds (bounded by Tokio task scheduling jitter).
+
+For staggered multi-source producers arriving at different times, the incompleteness window is bounded by the spread of producer arrival times. In both cases the result is **eventually consistent**: once all contributing workers have emitted, the store holds a complete set of accumulators and queries return the correct merged value.
+
+This deferred-merge design is intentional — it preserves the shared-nothing worker architecture with zero ingest-time cross-worker coordination. The store's append-multiple-per-window design and the query-time merge handle the fan-in correctly for both cross-series aggregation and `ForwardToStore` late data.
+
+## 5. Data Model
 
 ### PrecomputedOutput
 
@@ -395,7 +435,7 @@ pub struct AggregationConfig {
 }
 ```
 
-## 5. Store Integration
+## 6. Store Integration
 
 ### Write path
 
@@ -457,7 +497,7 @@ automatically combined with original window data at query time.
 | ReadBased | Remove after `read_count >= threshold` |
 | NoCleanup | Retain forever |
 
-## 6. Late Data Handling
+## 7. Late Data Handling
 
 Two checks determine whether a sample is "late":
 
@@ -478,7 +518,7 @@ For case 2, the `LateDataPolicy` controls behavior:
   as normal closed-window outputs. The store appends it alongside the original
   window data, and query-time merge combines them.
 
-## 7. Concurrency Model
+## 8. Concurrency Model
 
 The current implementation is **single-machine, multi-threaded**. All components
 (HTTP server, workers, store) run within a single OS process as Tokio async
@@ -501,7 +541,7 @@ across multiple engine instances (e.g. via consistent hashing at the load
 balancer level), each running this same single-process architecture
 independently.
 
-## 8. Performance Characteristics
+## 9. Performance Characteristics
 
 **Ingest path (per batch):**
 - Sample insert: O(log B) per sample (BTreeMap, B = buffer size)
@@ -515,11 +555,14 @@ independently.
 - O(A × W_open) active pane accumulators (fewer than window accumulators
   since panes are shared across overlapping windows)
 
-**Throughput:**
+**Throughput (measured, 2× Xeon E5-2630 v3, 32 logical CPUs, 125 GiB RAM):**
+- Raw mode, `NoopOutputSink`, 16 workers: **~8.9M samples/sec** flush throughput; near-linear scaling (19× at 16 workers vs 16× ideal).
+- Windowed aggregation (Sum, W=1–6), 4 workers: **~660K samples/sec** E2E; throughput is nearly identical across W=1 and W=6, confirming the pane-based optimization.
 - Workers process in parallel with no cross-shard coordination.
-- E2E test demonstrates ~10M samples/sec sustained throughput with raw mode.
 
-## 9. CLI Usage
+**Benchmark caveat — `workers = senders` coupling:** The raw-mode scalability benchmark uses one concurrent HTTP sender per worker. The 1-worker baseline is bottlenecked by a single sender (one CPU for Snappy compression, one in-flight HTTP connection); at 16 workers, 16 senders parallelize compression across cores and pipeline connections. The apparent super-linear speedup (9.37× at 8 workers, 19.13× at 16 workers) reflects sender-side parallelism as much as engine-side scaling. A clean engine-scaling measurement would fix sender count and vary only worker count.
+
+## 10. CLI Usage
 
 ### Standalone binary
 
@@ -543,17 +586,27 @@ The precompute engine is also embedded in the main `query_engine_rust` binary,
 enabled via `--enable-prometheus-remote-write`. In this mode it shares the
 store with the Kafka consumer path.
 
-## 10. Testing
+## 11. Testing
 
-- **Unit tests**: `worker.rs` (metric/label extraction), `window_manager.rs`
-  (tumbling/sliding arithmetic), `series_buffer.rs` (ordering, watermark),
-  `accumulator_factory.rs` (updater creation), `series_router.rs` (hashing),
-  `config.rs` (defaults).
+- **Unit tests — `worker.rs` (correctness, via `CapturingOutputSink`):**
+
+  | Test | What it verifies |
+  |---|---|
+  | `test_raw_mode_forwarding` | 3 samples → 3 emits; `start == end == ts`, `SumAccumulator.sum == value` |
+  | `test_tumbling_window_correctness` | Samples at t=1s/5s/9s; window [0,10s) closes on t=10s; `sum=6` |
+  | `test_sliding_window_pane_sharing` | Sample at t=15s in 30s/10s window → 2 emits for [0,30s) and [10s,40s), both `sum=42` via shared pane snapshot/take |
+  | `test_groupby_separate_emits_per_series` | Two series (`host=A`, `host=B`) on same worker → 2 independent `MultipleSumAccumulator` emits (no ingest-time cross-series merge) |
+  | `test_late_data_drop` | Sample behind `watermark - allowed_lateness_ms` with `Drop` policy → 0 emits |
+  | `test_late_data_forward_to_store` | Late sample for evicted pane with `ForwardToStore` → 1 emit as mini-accumulator with correct window bounds and sum |
+
+- **Unit tests — other modules**: `window_manager.rs` (tumbling/sliding arithmetic, pane enumeration, closure detection), `series_buffer.rs` (ordering, watermark), `accumulator_factory.rs` (updater creation and reset), `series_router.rs` (consistent hash routing), `config.rs` (defaults).
+
 - **E2E test** (`bin/test_e2e_precompute.rs`): Starts engine + store + query
-  server in-process, sends remote-write samples, queries via PromQL HTTP,
-  validates results. Includes batch latency and throughput benchmarks.
+  server in-process, sends remote-write samples over HTTP, queries via PromQL HTTP,
+  validates aggregated results. Includes batch latency benchmark, windowed throughput
+  benchmark (W=1/3/6), and worker scalability benchmark (1–16 workers).
 
-## 11. File Map
+## 12. File Map
 
 | File | Purpose |
 |------|---------|
@@ -564,6 +617,6 @@ store with the Kafka consumer path.
 | `precompute_engine/series_buffer.rs` | Per-series BTreeMap sample buffer |
 | `precompute_engine/window_manager.rs` | Tumbling/sliding window logic |
 | `precompute_engine/accumulator_factory.rs` | `AccumulatorUpdater` trait + factory |
-| `precompute_engine/output_sink.rs` | `OutputSink` trait + Store/Noop impls |
+| `precompute_engine/output_sink.rs` | `OutputSink` trait + `StoreOutputSink`, `NoopOutputSink`, `CapturingOutputSink` (testing) |
 | `bin/precompute_engine.rs` | Standalone CLI binary |
 | `bin/test_e2e_precompute.rs` | End-to-end integration test |
