@@ -3,30 +3,41 @@ use crate::data_model::{
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tracing::{debug, error, info};
 
 type TimestampRange = (u64, u64); // (start_timestamp, end_timestamp)
 type StoreKey = u64; // aggregation_id
-type StoreValue = Vec<(Option<KeyByLabelValues>, Box<dyn AggregateCore>)>;
+type LabelMap =
+    HashMap<Option<KeyByLabelValues>, BTreeMap<TimestampRange, Vec<Arc<dyn AggregateCore>>>>;
+type WindowToLabels = HashMap<TimestampRange, HashSet<Option<KeyByLabelValues>>>;
 
 /// Per-aggregation_id data protected by RwLock
 struct StoreKeyData {
-    // Main storage: (start_time, end_time) -> [(key, precompute)]
-    time_map: HashMap<TimestampRange, StoreValue>,
+    // Primary index: label → time-sorted aggregates (inverted index)
+    label_map: LabelMap,
+
+    // Reverse index: time range -> labels that contain data for this window
+    window_to_labels: WindowToLabels,
+
+    // Secondary index: all known time ranges (for cleanup counting/iteration)
+    time_ranges: BTreeSet<TimestampRange>,
 
     // Track how many times each timestamp range has been read
-    read_counts: HashMap<TimestampRange, u64>,
+    // Behind Mutex so queries can use a read lock on the outer RwLock
+    read_counts: Mutex<HashMap<TimestampRange, u64>>,
 }
 
 impl StoreKeyData {
     fn new() -> Self {
         Self {
-            time_map: HashMap::new(),
-            read_counts: HashMap::new(),
+            label_map: HashMap::new(),
+            window_to_labels: HashMap::new(),
+            time_ranges: BTreeSet::new(),
+            read_counts: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -60,6 +71,31 @@ impl LegacySimpleMapStorePerKey {
         }
     }
 
+    fn remove_windows_from_label_index(
+        &self,
+        data: &mut StoreKeyData,
+        windows_to_remove: &[TimestampRange],
+    ) {
+        for window in windows_to_remove {
+            let Some(labels) = data.window_to_labels.remove(window) else {
+                continue;
+            };
+
+            for label in labels {
+                let remove_label = if let Some(btree) = data.label_map.get_mut(&label) {
+                    btree.remove(window);
+                    btree.is_empty()
+                } else {
+                    false
+                };
+
+                if remove_label {
+                    data.label_map.remove(&label);
+                }
+            }
+        }
+    }
+
     fn cleanup_old_aggregates_fixed_count(
         &self,
         data: &mut StoreKeyData,
@@ -73,35 +109,41 @@ impl LegacySimpleMapStorePerKey {
             None => return,
         };
 
-        let retention_limit = configured_limit * 4;
+        let retention_limit = configured_limit.saturating_mul(4);
 
-        if data.time_map.len() <= retention_limit {
+        if data.time_ranges.len() <= retention_limit {
             return; // Nothing to clean up
         }
 
-        // Collect all timestamp ranges and sort by start timestamp (oldest first)
-        let mut timestamp_windows: Vec<TimestampRange> = data.time_map.keys().copied().collect();
-        timestamp_windows.sort_by_key(|&(start, _end)| start);
+        // Iterate time_ranges from start (already sorted in BTreeSet), take oldest
+        let num_to_remove = data.time_ranges.len() - retention_limit;
+        let windows_to_remove: Vec<TimestampRange> = data
+            .time_ranges
+            .iter()
+            .copied()
+            .take(num_to_remove)
+            .collect();
 
-        // Calculate which ones to remove (oldest first)
-        let num_to_remove = timestamp_windows.len() - retention_limit;
-        let windows_to_remove: Vec<TimestampRange> =
-            timestamp_windows.into_iter().take(num_to_remove).collect();
+        // Remove from read_counts (bypass Mutex via get_mut since we have &mut self)
+        let read_counts = data.read_counts.get_mut().unwrap();
+        for window in &windows_to_remove {
+            data.time_ranges.remove(window);
+            read_counts.remove(window);
+        }
 
-        // Remove old windows from both time_map and read_counts
-        for window in windows_to_remove {
-            if data.time_map.remove(&window).is_some() {
-                data.read_counts.remove(&window); // Also remove from read_counts
-                debug!(
-                    "Removed old aggregate for {} aggregation_id {} window {}-{} (retention limit: {}, configured: {})",
-                    metric,
-                    aggregation_id,
-                    window.0,
-                    window.1,
-                    retention_limit,
-                    configured_limit
-                );
-            }
+        // Remove only from labels known to have each removed window.
+        self.remove_windows_from_label_index(data, &windows_to_remove);
+
+        for window in &windows_to_remove {
+            debug!(
+                "Removed old aggregate for {} aggregation_id {} window {}-{} (retention limit: {}, configured: {})",
+                metric,
+                aggregation_id,
+                window.0,
+                window.1,
+                retention_limit,
+                configured_limit
+            );
         }
     }
 
@@ -118,35 +160,38 @@ impl LegacySimpleMapStorePerKey {
             None => return,
         };
 
+        // Access read_counts directly (bypass Mutex via get_mut since we have &mut self)
+        let read_counts = data.read_counts.get_mut().unwrap();
+
         // Collect windows where read_count >= threshold
-        let mut windows_to_remove: Vec<TimestampRange> = Vec::new();
+        let windows_to_remove: Vec<(TimestampRange, u64)> = read_counts
+            .iter()
+            .filter(|(_, &count)| count >= threshold)
+            .map(|(range, &count)| (*range, count))
+            .collect();
+        let windows_only: Vec<TimestampRange> = windows_to_remove
+            .iter()
+            .map(|(window, _)| *window)
+            .collect();
 
-        for (timestamp_range, _) in data.time_map.iter() {
-            let read_count = data.read_counts.get(timestamp_range).copied().unwrap_or(0);
+        // Remove from read_counts and time_ranges
+        for (window, read_count) in &windows_to_remove {
+            read_counts.remove(window);
+            data.time_ranges.remove(window);
 
-            if read_count >= threshold {
-                windows_to_remove.push(*timestamp_range);
-            }
+            debug!(
+                "Removed aggregate for {} aggregation_id {} window {}-{} (read_count: {} >= threshold: {})",
+                metric,
+                aggregation_id,
+                window.0,
+                window.1,
+                read_count,
+                threshold
+            );
         }
 
-        // Remove windows that exceeded threshold
-        for window in &windows_to_remove {
-            //if let Some(_) = data.time_map.remove(window) {
-            if data.time_map.remove(window).is_some() {
-                let read_count = data.read_counts.get(window).copied().unwrap_or(0);
-                data.read_counts.remove(window);
-
-                debug!(
-                    "Removed aggregate for {} aggregation_id {} window {}-{} (read_count: {} >= threshold: {})",
-                    metric,
-                    aggregation_id,
-                    window.0,
-                    window.1,
-                    read_count,
-                    threshold
-                );
-            }
-        }
+        // Remove only from labels known to have each removed window.
+        self.remove_windows_from_label_index(data, &windows_only);
     }
 
     fn cleanup_old_aggregates(
@@ -187,6 +232,8 @@ impl LegacySimpleMapStorePerKey {
         items: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
     ) -> StoreResult<()> {
         let aggregation_id = *store_key;
+        let metric_key = metric.to_string();
+        let inserted_delta = items.len() as u64;
 
         // Measure lock acquisition time
         #[cfg(feature = "lock_profiling")]
@@ -236,38 +283,43 @@ impl LegacySimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let lock_hold_start = Instant::now();
 
-        for (output, precompute) in items {
-            // Create metric if needed (lock-free DashMap insert)
-            self.metrics.entry(metric.to_string()).or_insert(());
+        // Create metric if needed (lock-free DashMap insert)
+        self.metrics.entry(metric_key.clone()).or_insert(());
 
+        // Update insertion counter once per grouped batch (instead of once per item).
+        let items_inserted_counter = self
+            .items_inserted
+            .entry(metric_key)
+            .or_insert_with(|| AtomicU64::new(0));
+        let previous_total = items_inserted_counter.fetch_add(inserted_delta, Ordering::Relaxed);
+        let new_total = previous_total + inserted_delta;
+        if new_total / 1000 > previous_total / 1000 {
+            debug!("Inserted {} items into {}", new_total, metric);
+        }
+
+        for (output, precompute) in items {
             // Update earliest timestamp (lock-free atomic operation)
             self.earliest_timestamps
                 .entry(aggregation_id)
                 .and_modify(|earliest| {
-                    let current = earliest.load(Ordering::Relaxed);
-                    if output.start_timestamp < current {
-                        earliest.store(output.start_timestamp, Ordering::Relaxed);
-                    }
+                    earliest.fetch_min(output.start_timestamp, Ordering::Relaxed);
                 })
                 .or_insert_with(|| AtomicU64::new(output.start_timestamp));
 
-            // Insert into time map
+            // Insert into inverted index: label → BTreeMap<TimestampRange, Vec<Aggregate>>
             let timestamp_range = (output.start_timestamp, output.end_timestamp);
-            data.time_map
+            let label_key = output.key;
+            data.label_map
+                .entry(label_key.clone())
+                .or_default()
                 .entry(timestamp_range)
                 .or_default()
-                .push((output.key, precompute));
-
-            // Update insertion count (lock-free atomic increment)
-            self.items_inserted
-                .entry(metric.to_string())
-                .and_modify(|count| {
-                    let new_count = count.fetch_add(1, Ordering::Relaxed) + 1;
-                    if new_count.is_multiple_of(1000) {
-                        debug!("Inserted {} items into {}", new_count, metric);
-                    }
-                })
-                .or_insert_with(|| AtomicU64::new(1));
+                .push(Arc::from(precompute));
+            data.window_to_labels
+                .entry(timestamp_range)
+                .or_default()
+                .insert(label_key);
+            data.time_ranges.insert(timestamp_range);
         }
 
         // Apply retention policy if configured (but exclude DeltaSetAggregator)
@@ -349,13 +401,8 @@ impl Store for LegacySimpleMapStorePerKey {
                 .push((output, precompute));
         }
 
-        // Sort keys to avoid deadlock when acquiring multiple locks
-        let mut keys: Vec<_> = grouped.keys().cloned().collect();
-        keys.sort();
-
-        // Process each group
-        for store_key in keys {
-            let (metric, items) = grouped.remove(&store_key).unwrap();
+        // Process each aggregation_id group; each iteration locks at most one key.
+        for (store_key, (metric, items)) in grouped {
             self.insert_for_store_key(&store_key, &metric, items)?;
         }
 
@@ -375,6 +422,14 @@ impl Store for LegacySimpleMapStorePerKey {
         start: u64,
         end: u64,
     ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+        if start > end {
+            debug!(
+                "Invalid query range for metric {} agg_id {}: start {} > end {}",
+                metric, aggregation_id, start, end
+            );
+            return Ok(HashMap::new());
+        }
+
         let query_start_time = Instant::now();
         let store_key = aggregation_id;
 
@@ -405,10 +460,10 @@ impl Store for LegacySimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let rwlock_wait_start = Instant::now();
 
-        // Acquire write lock (needed to update read_counts)
-        let mut data = store_data_lock.write().map_err(|e| {
+        // Acquire read lock (read_counts behind inner Mutex)
+        let data = store_data_lock.read().map_err(|e| {
             format!(
-                "Failed to acquire write lock for query aggregation_id {}: {}",
+                "Failed to acquire read lock for query aggregation_id {}: {}",
                 store_key, e
             )
         })?;
@@ -430,38 +485,31 @@ impl Store for LegacySimpleMapStorePerKey {
         let mut results: TimestampedBucketsMap = HashMap::new();
         let mut total_entries = 0;
 
-        // Find all timestamp ranges that overlap with our query range
+        // Find all matching entries using the inverted index (label → BTreeMap)
         let range_scan_start_time = Instant::now();
 
-        // First, collect all matching timestamp ranges
-        let mut matching_ranges: Vec<TimestampRange> = data
-            .time_map
-            .keys()
-            .filter(|(range_start, range_end)| start <= *range_start && end >= *range_end)
-            .copied()
-            .collect();
-
-        // Sort by start timestamp to ensure chronological order
-        // This is important for range queries that use sliding windows
-        matching_ranges.sort_by_key(|(range_start, _)| *range_start);
-
-        // Now iterate in sorted order, including timestamp with each bucket
-        for timestamp_range in &matching_ranges {
-            if let Some(store_values) = data.time_map.get(timestamp_range) {
-                for (key_opt, precompute) in store_values.iter() {
-                    results
-                        .entry(key_opt.clone())
-                        .or_default()
-                        .push((*timestamp_range, precompute.clone_boxed_core()));
-
+        for (label, btree) in data.label_map.iter() {
+            for (&timestamp_range, aggregates) in btree.range((start, 0)..=(end, u64::MAX)) {
+                if timestamp_range.1 > end {
+                    continue; // Filter: range_end must be <= end
+                }
+                let entry = results.entry(label.clone()).or_default();
+                for agg in aggregates {
+                    entry.push((timestamp_range, Arc::clone(agg)));
                     total_entries += 1;
                 }
             }
         }
 
-        // Update read counts for accessed ranges
-        for timestamp_range in &matching_ranges {
-            *data.read_counts.entry(*timestamp_range).or_insert(0) += 1;
+        // Update read counts using secondary index (lock inner Mutex briefly)
+        {
+            let mut read_counts = data.read_counts.lock().unwrap();
+            for &timestamp_range in data.time_ranges.range((start, 0)..=(end, u64::MAX)) {
+                if timestamp_range.1 > end {
+                    continue;
+                }
+                *read_counts.entry(timestamp_range).or_insert(0) += 1;
+            }
         }
 
         let range_scan_duration = range_scan_start_time.elapsed();
@@ -504,6 +552,14 @@ impl Store for LegacySimpleMapStorePerKey {
         exact_start: u64,
         exact_end: u64,
     ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+        if exact_start > exact_end {
+            debug!(
+                "Invalid exact query range for metric {} agg_id {}: start {} > end {}",
+                metric, aggregation_id, exact_start, exact_end
+            );
+            return Ok(HashMap::new());
+        }
+
         let query_start_time = Instant::now();
         let store_key = aggregation_id;
 
@@ -534,10 +590,10 @@ impl Store for LegacySimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let rwlock_wait_start = Instant::now();
 
-        // Acquire write lock (needed to update read_counts)
-        let mut data = store_data_lock.write().map_err(|e| {
+        // Acquire read lock (read_counts behind inner Mutex)
+        let data = store_data_lock.read().map_err(|e| {
             format!(
-                "Failed to acquire write lock for exact query aggregation_id {}: {}",
+                "Failed to acquire read lock for exact query aggregation_id {}: {}",
                 store_key, e
             )
         })?;
@@ -557,25 +613,38 @@ impl Store for LegacySimpleMapStorePerKey {
         let lock_hold_start = Instant::now();
 
         let mut results: TimestampedBucketsMap = HashMap::new();
-
-        // Look for exact timestamp match (strict - no tolerance)
         let timestamp_range = (exact_start, exact_end);
         let mut found_match = false;
+        let mut total_entries = 0;
 
-        // First, collect the results (immutable borrow of time_map)
-        if let Some(store_values) = data.time_map.get(&timestamp_range) {
-            found_match = true;
+        // Fast miss path: avoid scanning all labels if this window does not exist.
+        if !data.window_to_labels.contains_key(&timestamp_range) {
+            debug!(
+                "Exact match NOT FOUND for metric: {}, agg_id: {}, range: [{}, {}]",
+                metric, aggregation_id, exact_start, exact_end
+            );
+            return Ok(HashMap::new());
+        }
 
-            // Collect results with timestamp
-            let mut total_entries = 0;
-            for (key_opt, precompute) in store_values.iter() {
-                results
-                    .entry(key_opt.clone())
-                    .or_default()
-                    .push((timestamp_range, precompute.clone_boxed_core()));
-                total_entries += 1;
+        // Use reverse index to scan only labels that actually have this window.
+        if let Some(labels) = data.window_to_labels.get(&timestamp_range) {
+            for label in labels {
+                if let Some(aggregates) = data
+                    .label_map
+                    .get(label)
+                    .and_then(|btree| btree.get(&timestamp_range))
+                {
+                    found_match = true;
+                    let entry = results.entry(label.clone()).or_default();
+                    for agg in aggregates {
+                        entry.push((timestamp_range, Arc::clone(agg)));
+                        total_entries += 1;
+                    }
+                }
             }
+        }
 
+        if found_match {
             debug!(
                 "Exact match FOUND for [{}, {}]: {} entries across {} keys",
                 exact_start,
@@ -590,9 +659,10 @@ impl Store for LegacySimpleMapStorePerKey {
             );
         }
 
-        // Now update read count (mutable borrow of data.read_counts)
+        // Update read count (lock inner Mutex briefly)
         if found_match {
-            *data.read_counts.entry(timestamp_range).or_insert(0) += 1;
+            let mut read_counts = data.read_counts.lock().unwrap();
+            *read_counts.entry(timestamp_range).or_insert(0) += 1;
         }
 
         #[cfg(feature = "lock_profiling")]

@@ -743,7 +743,7 @@ impl SimpleEngine {
                     }
                     // Extract bucket from timestamped tuple
                     let (_, bucket) = timestamped_buckets.into_iter().next().unwrap();
-                    (key, bucket)
+                    (key, bucket.as_ref().clone_boxed_core())
                 })
                 .collect()
         } else {
@@ -2811,9 +2811,9 @@ impl SimpleEngine {
             };
 
             // Build lookup: bucket_start_timestamp -> bucket for O(1) access
-            let bucket_map: HashMap<u64, &Box<dyn AggregateCore>> = timestamped_buckets
+            let bucket_map: HashMap<u64, &dyn AggregateCore> = timestamped_buckets
                 .iter()
-                .map(|((start, _), bucket)| (*start, bucket))
+                .map(|((start, _), bucket)| (*start, bucket.as_ref()))
                 .collect();
 
             debug!(
