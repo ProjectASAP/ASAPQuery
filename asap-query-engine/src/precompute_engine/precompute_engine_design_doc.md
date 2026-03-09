@@ -397,6 +397,40 @@ For staggered multi-source producers arriving at different times, the incomplete
 
 This deferred-merge design is intentional — it preserves the shared-nothing worker architecture with zero ingest-time cross-worker coordination. The store's append-multiple-per-window design and the query-time merge handle the fan-in correctly for both cross-series aggregation and `ForwardToStore` late data.
 
+### Sliding windows with cross-worker GROUP BY
+
+The pane-sharing optimization is an **intra-worker** implementation detail. From the store and query engine's perspective, each worker always emits a complete, self-consistent accumulator for each closed window — tumbling or sliding makes no difference to the cross-worker fan-in.
+
+**Within a single worker** (e.g. Worker 0, series `{job=j1, instance=h1}`, 30s/10s sliding):
+
+```
+Window [0, 30s)  — panes [0, 10s, 20s]
+  pane 0:   take (evict — no future window needs it)
+  pane 10s: snapshot (shared with [10s, 40s))
+  pane 20s: snapshot (shared with [10s, 40s) and [20s, 50s))
+  → emit: acc_w0, key=(j1), window=[0,30s), sum = v_0 + v_10 + v_20
+
+Window [10s, 40s)  — panes [10s, 20s, 30s]
+  pane 10s: take (evict — snapshot for [0,30s) already completed)
+  pane 20s: snapshot
+  pane 30s: snapshot (or take, depending on future windows)
+  → emit: acc_w0, key=(j1), window=[10s,40s), sum = v_10 + v_20 + v_30
+```
+
+Worker 3 (series `{job=j1, instance=h2}`) performs the same steps independently — its own pane `BTreeMap`, its own snapshots, its own emits.
+
+**What the store sees:**
+
+```
+store[(agg_id, key=(j1), [0,  30s))] → [acc_w0, acc_w3]
+store[(agg_id, key=(j1), [10s,40s))] → [acc_w0, acc_w3]
+store[(agg_id, key=(j1), [20s,50s))] → [acc_w0, acc_w3]
+```
+
+Each entry is a complete accumulator from one worker for one window. Query-time merge combines them identically to the tumbling case.
+
+The pane snapshot/take logic reduces memory and CPU inside each worker (avoiding re-accumulation of shared panes), but what exits the worker is always one standalone `Box<dyn AggregateCore>` per window. Consecutive sliding windows `[0,30s)` and `[10s,40s)` share panes *inside* the worker but have independent store entries — their cross-worker merges at query time are completely unrelated.
+
 ## 5. Data Model
 
 ### PrecomputedOutput
