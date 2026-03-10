@@ -3694,6 +3694,7 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 name = "sketch-core"
 version = "0.1.0"
 dependencies = [
+ "clap 4.5.60",
  "ctor",
  "dsrs",
  "rmp-serde",
@@ -3717,7 +3718,7 @@ dependencies = [
 [[package]]
 name = "sketchlib-rust"
 version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketchlib-rust#348db8415f97246c42de68b407b47fa038cf8b1f"
+source = "git+https://github.com/ProjectASAP/sketchlib-rust#a729288270cc8f74a4ac9451e5c63cd9c693668c"
 dependencies = [
  "ahash",
  "clap 4.5.60",

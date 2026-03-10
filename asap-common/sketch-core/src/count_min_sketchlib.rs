@@ -1,12 +1,12 @@
-use sketchlib_rust::countmin::CountMinF64;
-use sketchlib_rust::{SketchInput, Vector2D};
+use sketchlib_rust::{CountMin, RegularPath, SketchInput, Vector2D};
 
 /// Concrete Count-Min type from sketchlib-rust when sketchlib backend is enabled.
-pub type SketchlibCms = CountMinF64;
+/// Uses f64 counters (Vector2D<f64>) for weighted updates without integer rounding.
+pub type SketchlibCms = CountMin<Vector2D<f64>, RegularPath>;
 
 /// Creates a fresh sketchlib Count-Min sketch with the given dimensions.
 pub fn new_sketchlib_cms(row_num: usize, col_num: usize) -> SketchlibCms {
-    CountMinF64::with_dimensions(row_num, col_num)
+    SketchlibCms::with_dimensions(row_num, col_num)
 }
 
 /// Builds a sketchlib Count-Min sketch from an existing `sketch` matrix.
@@ -22,7 +22,7 @@ pub fn sketchlib_cms_from_matrix(
             .copied()
             .unwrap_or(0.0)
     });
-    CountMinF64::from_storage(matrix)
+    SketchlibCms::from_storage(matrix)
 }
 
 /// Converts a sketchlib Count-Min sketch into the legacy `Vec<Vec<f64>>` matrix.
