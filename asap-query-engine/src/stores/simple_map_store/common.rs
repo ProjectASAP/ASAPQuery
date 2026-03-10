@@ -38,6 +38,11 @@ impl InternTable {
     pub fn resolve(&self, id: MetricID) -> &Option<KeyByLabelValues> {
         &self.id_to_label[id as usize]
     }
+
+    /// Number of interned labels.
+    pub fn len(&self) -> usize {
+        self.id_to_label.len()
+    }
 }
 
 /// One epoch slot: holds up to `epoch_capacity` distinct time windows.
@@ -110,24 +115,28 @@ impl EpochData {
         }
     }
 
-    /// Collect all results matching [start, end].
-    pub fn range_query(
+    /// Stream results matching [start, end] directly into `out` (grouped by MetricID),
+    /// appending each matched window to `matched_windows` for read-count tracking.
+    /// Avoids an intermediate Vec allocation compared to returning a flat list.
+    pub fn range_query_into(
         &self,
         start: u64,
         end: u64,
-    ) -> Vec<(MetricID, TimestampRange, Arc<dyn AggregateCore>)> {
-        let mut out = Vec::new();
+        out: &mut HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>,
+        matched_windows: &mut Vec<TimestampRange>,
+    ) {
         for (&metric_id, btree) in &self.label_map {
             for (&tr, aggs) in btree.range((start, 0)..=(end, u64::MAX)) {
                 if tr.1 > end {
                     continue;
                 }
+                let slot = out.entry(metric_id).or_default();
                 for agg in aggs {
-                    out.push((metric_id, tr, Arc::clone(agg)));
+                    slot.push((tr, Arc::clone(agg)));
+                    matched_windows.push(tr);
                 }
             }
         }
-        out
     }
 
     /// Collect results for an exact window match using the reverse index.
@@ -141,11 +150,7 @@ impl EpochData {
         }
         let mut out = Vec::new();
         for &metric_id in ids {
-            if let Some(aggs) = self
-                .label_map
-                .get(&metric_id)
-                .and_then(|b| b.get(&range))
-            {
+            if let Some(aggs) = self.label_map.get(&metric_id).and_then(|b| b.get(&range)) {
                 for agg in aggs {
                     out.push((metric_id, Arc::clone(agg)));
                 }

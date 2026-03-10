@@ -18,8 +18,10 @@ COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/
 
-# Create a dummy main.rs to build dependencies
-RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs
+# Create dummy src and bench files to build dependencies
+RUN mkdir -p asap-query-engine/src asap-query-engine/benches \
+    && echo "fn main() {}" > asap-query-engine/src/main.rs \
+    && echo "fn main() {}" > asap-query-engine/benches/simple_map_store_benchmark.rs
 
 # Build dependencies (this layer will be cached)
 WORKDIR /code/asap-query-engine
