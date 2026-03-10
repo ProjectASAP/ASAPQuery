@@ -49,8 +49,19 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          asap-query-engine/target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          target
+        key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+    - name: Validate lockfile
+      run: |
+        cp Cargo.lock Cargo.lock.bak
+        cargo generate-lockfile
+        if ! diff -q Cargo.lock Cargo.lock.bak >/dev/null; then
+          echo "::error::Cargo.lock is out of sync. Run 'cargo update' or 'rm Cargo.lock && cargo build' locally and commit the updated Cargo.lock."
+          exit 1
+        fi
+        rm Cargo.lock.bak
+      working-directory: .
 
     - name: Check formatting
       run: cargo fmt -- --check
@@ -101,8 +112,18 @@ jobs:
         path: |
           ~/.cargo/registry
           ~/.cargo/git
-          asap-query-engine/target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          target
+        key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+    - name: Validate lockfile
+      run: |
+        cp Cargo.lock Cargo.lock.bak
+        cargo generate-lockfile
+        if ! diff -q Cargo.lock Cargo.lock.bak >/dev/null; then
+          echo "::error::Cargo.lock is out of sync. Run 'cargo update' or 'rm Cargo.lock && cargo build' locally and commit the updated Cargo.lock."
+          exit 1
+        fi
+        rm Cargo.lock.bak
 
     - name: Run QueryEngineRust tests
       run: cargo test
