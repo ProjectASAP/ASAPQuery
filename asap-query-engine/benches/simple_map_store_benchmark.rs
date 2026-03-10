@@ -141,8 +141,8 @@ fn populate_store_with_offset(
 fn bench_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert");
 
-    // (time_ranges, labels) combinations that total roughly 1K, 10K, 100K inserts
-    let configs: Vec<(usize, usize)> = vec![(100, 10), (1000, 10), (10000, 10)];
+    // (time_ranges, labels) combinations that total roughly 100, 1K, 10K inserts
+    let configs: Vec<(usize, usize)> = vec![(10, 10), (100, 10), (1000, 10)];
 
     for &(time_ranges, labels) in &configs {
         let total = time_ranges * labels;
@@ -167,7 +167,7 @@ fn bench_insert(c: &mut Criterion) {
 
 fn bench_range_query(c: &mut Criterion) {
     let mut group = c.benchmark_group("range_query");
-    let time_ranges = 10_000;
+    let time_ranges = 1_000;
 
     for labels in [1, 10, 100] {
         let store = build_populated_store(time_ranges, labels);
@@ -200,7 +200,7 @@ fn bench_range_query(c: &mut Criterion) {
 
 fn bench_exact_query(c: &mut Criterion) {
     let mut group = c.benchmark_group("exact_query");
-    let time_ranges = 10_000;
+    let time_ranges = 1_000;
 
     for labels in [1, 10, 100] {
         let store = build_populated_store(time_ranges, labels);
@@ -236,7 +236,7 @@ fn bench_scaling(c: &mut Criterion) {
     let mut group = c.benchmark_group("scaling");
     let labels = 10;
 
-    for time_ranges in [100, 1_000, 10_000, 100_000] {
+    for time_ranges in [10, 100, 1_000, 10_000] {
         let store = build_populated_store(time_ranges, labels);
 
         // Query ~10% of the time range
@@ -271,9 +271,9 @@ fn bench_scaling(c: &mut Criterion) {
 
 fn bench_batch_insert(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_insert");
-    let total_inserts = 10_000usize;
+    let total_inserts = 1_000usize;
     let labels = 10usize;
-    let time_ranges = total_inserts / labels; // 1000 time ranges
+    let time_ranges = total_inserts / labels; // 100 time ranges
 
     for batch_size in [1, 10, 100, 1000] {
         group.bench_with_input(
@@ -320,9 +320,9 @@ fn bench_batch_insert(c: &mut Criterion) {
 
 fn bench_concurrent_writes(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent_writes");
-    let entries_per_thread = 2_500usize;
+    let entries_per_thread = 500usize;
     let labels = 10usize;
-    let time_ranges_per_thread = entries_per_thread / labels; // 250
+    let time_ranges_per_thread = entries_per_thread / labels; // 50
 
     for num_threads in [1, 2, 4, 8, 16] {
         group.bench_with_input(
@@ -369,10 +369,10 @@ fn bench_concurrent_writes(c: &mut Criterion) {
 
 fn bench_concurrent_mixed_read_write(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent_mixed_rw");
-    let pre_pop_time_ranges = 5_000usize;
+    let pre_pop_time_ranges = 500usize;
     let labels = 10usize;
-    let write_entries_per_thread = 1_000usize;
-    let read_queries_per_thread = 1_000usize;
+    let write_entries_per_thread = 100usize;
+    let read_queries_per_thread = 100usize;
 
     let configs: Vec<(usize, usize)> = vec![(1, 1), (2, 2), (4, 4), (1, 4), (4, 1)];
 
@@ -443,10 +443,10 @@ fn bench_concurrent_mixed_read_write(c: &mut Criterion) {
 fn bench_lock_strategy_comparison(c: &mut Criterion) {
     let mut group = c.benchmark_group("lock_strategy");
     let num_threads = 4usize;
-    let entries_per_thread = 2_500usize;
+    let entries_per_thread = 500usize;
     let labels = 10usize;
     let time_ranges_per_thread = entries_per_thread / labels;
-    let query_time_ranges = 5_000usize;
+    let query_time_ranges = 1_000usize;
 
     for strategy in [LockStrategy::PerKey, LockStrategy::Global] {
         let strategy_name = match strategy {
@@ -509,7 +509,7 @@ fn bench_lock_strategy_comparison(c: &mut Criterion) {
                             let barrier_ref = barrier.clone();
                             s.spawn(move || {
                                 barrier_ref.wait();
-                                for _ in 0..100 {
+                                for _ in 0..20 {
                                     let result = store_ref
                                         .query_precomputed_output("test_metric", 1, 0, query_end)
                                         .unwrap();
@@ -532,7 +532,7 @@ fn bench_lock_strategy_comparison(c: &mut Criterion) {
 
 fn bench_cleanup_overhead(c: &mut Criterion) {
     let mut group = c.benchmark_group("cleanup_overhead");
-    let time_ranges = 1_000usize;
+    let time_ranges = 200usize;
     let labels = 5usize;
 
     // NoCleanup
@@ -561,20 +561,20 @@ fn bench_cleanup_overhead(c: &mut Criterion) {
             let config = make_streaming_config_with_cleanup(&[1], "test_metric", None, Some(2));
             let store = SimpleMapStore::new(config, CleanupPolicy::ReadBased);
 
-            // Phase 1: populate first 500 time ranges
-            populate_store(&store, 500, labels);
+            // Phase 1: populate first 100 time ranges
+            populate_store(&store, 100, labels);
 
             // Phase 2: read twice to hit threshold
-            let query_end = 500u64 * 1000;
+            let query_end = 100u64 * 1000;
             for _ in 0..2 {
                 let _ = store
                     .query_precomputed_output("test_metric", 1, 0, query_end)
                     .unwrap();
             }
 
-            // Phase 3: insert 500 more
+            // Phase 3: insert 100 more
             let label_strs: Vec<String> = (0..labels).map(|j| format!("host-{j}")).collect();
-            populate_store_with_offset(&store, 500, 1000, &label_strs);
+            populate_store_with_offset(&store, 100, 200, &label_strs);
 
             black_box(&store);
         });
@@ -589,7 +589,7 @@ fn bench_cleanup_overhead(c: &mut Criterion) {
 
 fn bench_query_patterns(c: &mut Criterion) {
     let mut group = c.benchmark_group("query_patterns");
-    let time_ranges = 10_000usize;
+    let time_ranges = 1_000usize;
     let labels = 10usize;
     let total_time = (time_ranges as u64) * 1000;
 
@@ -683,9 +683,9 @@ fn bench_query_patterns(c: &mut Criterion) {
 
 fn bench_high_label_cardinality(c: &mut Criterion) {
     let mut group = c.benchmark_group("high_label_cardinality");
-    let time_ranges = 100usize;
+    let time_ranges = 20usize;
 
-    for label_count in [10, 100, 1000, 5000] {
+    for label_count in [10, 100, 500, 1000] {
         // Insert sub-benchmark
         group.bench_with_input(
             BenchmarkId::new("insert", label_count),
@@ -733,7 +733,7 @@ fn bench_high_label_cardinality(c: &mut Criterion) {
 fn bench_multi_agg_id(c: &mut Criterion) {
     let mut group = c.benchmark_group("multi_agg_id");
     let num_agg_ids = 10u64;
-    let time_ranges = 1_000usize;
+    let time_ranges = 100usize;
     let labels = 5usize;
     let agg_ids: Vec<u64> = (1..=num_agg_ids).collect();
 
@@ -801,7 +801,7 @@ fn bench_multi_agg_id(c: &mut Criterion) {
         // Concurrent variant — 4 threads with hot/cold pattern
         group.bench_function("concurrent_hot_cold", |b| {
             let num_threads = 4usize;
-            let queries_per_thread = 250usize;
+            let queries_per_thread = 50usize;
 
             b.iter(|| {
                 let barrier = Arc::new(Barrier::new(num_threads));
