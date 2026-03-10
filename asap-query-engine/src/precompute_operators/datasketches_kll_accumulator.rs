@@ -373,7 +373,7 @@ mod tests {
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
         // Sketchlib KLL is approximate; 0.9 quantile of 1..10 may be 9 or 10.
         assert!(
-            result >= 9.0 && result <= 10.0,
+            (9.0..=10.0).contains(&result),
             "expected 0.9 quantile in [9,10], got {result}"
         );
 
