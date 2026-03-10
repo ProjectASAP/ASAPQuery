@@ -8,6 +8,7 @@ use query_engine_rust::data_model::{
     StreamingConfig,
 };
 use query_engine_rust::precompute_operators::sum_accumulator::SumAccumulator;
+use query_engine_rust::stores::simple_map_store::per_key_legacy::LegacySimpleMapStorePerKey;
 use query_engine_rust::stores::simple_map_store::SimpleMapStore;
 use query_engine_rust::stores::Store;
 use sketch_db_common::aggregation_config::AggregationConfig;
@@ -834,6 +835,266 @@ fn bench_multi_agg_id(c: &mut Criterion) {
     group.finish();
 }
 
+// ---------------------------------------------------------------------------
+// Legacy store helpers — use the real deprecated LegacySimpleMapStorePerKey
+// ---------------------------------------------------------------------------
+
+#[allow(deprecated)]
+fn build_legacy_store(time_ranges: usize, labels: usize) -> LegacySimpleMapStorePerKey {
+    let config = make_streaming_config();
+    let store = LegacySimpleMapStorePerKey::new(config, CleanupPolicy::NoCleanup);
+    for i in 0..time_ranges {
+        let start = (i as u64) * 1000;
+        let end = start + 1000;
+        for j in 0..labels {
+            let key = KeyByLabelValues::new_with_labels(vec![format!("host-{j}")]);
+            let output = PrecomputedOutput::new(start, end, Some(key), 1);
+            let acc: Box<dyn AggregateCore> = Box::new(SumAccumulator::with_sum(1.0));
+            store.insert_precomputed_output(output, acc).unwrap();
+        }
+    }
+    store
+}
+
+// ---------------------------------------------------------------------------
+// Old vs New comparison benchmarks
+// ---------------------------------------------------------------------------
+
+#[allow(deprecated)]
+fn bench_old_vs_new_insert(c: &mut Criterion) {
+    let mut group = c.benchmark_group("old_vs_new/insert");
+
+    for &(time_ranges, labels) in &[(10usize, 10usize), (100, 10), (1000, 10)] {
+        let total = time_ranges * labels;
+
+        group.bench_with_input(
+            BenchmarkId::new("legacy", total),
+            &(time_ranges, labels),
+            |b, &(tr, l)| {
+                b.iter(|| {
+                    black_box(build_legacy_store(black_box(tr), black_box(l)));
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("new", total),
+            &(time_ranges, labels),
+            |b, &(tr, l)| {
+                b.iter(|| {
+                    black_box(build_populated_store(black_box(tr), black_box(l)));
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+#[allow(deprecated)]
+fn bench_old_vs_new_range_query(c: &mut Criterion) {
+    let mut group = c.benchmark_group("old_vs_new/range_query");
+    let time_ranges = 1_000;
+    let query_start = 0u64;
+    let query_end = (time_ranges as u64) * 1000 / 10;
+
+    for labels in [1, 10, 100] {
+        {
+            let store = build_legacy_store(time_ranges, labels);
+            group.bench_with_input(BenchmarkId::new("legacy", labels), &labels, |b, _| {
+                b.iter(|| {
+                    black_box(
+                        store
+                            .query_precomputed_output(
+                                black_box("test_metric"),
+                                black_box(1),
+                                black_box(query_start),
+                                black_box(query_end),
+                            )
+                            .unwrap(),
+                    )
+                });
+            });
+        }
+        {
+            let store = build_populated_store(time_ranges, labels);
+            group.bench_with_input(BenchmarkId::new("new", labels), &labels, |b, _| {
+                b.iter(|| {
+                    black_box(
+                        store
+                            .query_precomputed_output(
+                                black_box("test_metric"),
+                                black_box(1),
+                                black_box(query_start),
+                                black_box(query_end),
+                            )
+                            .unwrap(),
+                    )
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
+#[allow(deprecated)]
+fn bench_old_vs_new_exact_query(c: &mut Criterion) {
+    let mut group = c.benchmark_group("old_vs_new/exact_query");
+    let time_ranges = 1_000;
+    let mid = (time_ranges / 2) as u64;
+    let exact_start = mid * 1000;
+    let exact_end = exact_start + 1000;
+
+    for labels in [1, 10, 100] {
+        {
+            let store = build_legacy_store(time_ranges, labels);
+            group.bench_with_input(BenchmarkId::new("legacy", labels), &labels, |b, _| {
+                b.iter(|| {
+                    black_box(
+                        store
+                            .query_precomputed_output_exact(
+                                black_box("test_metric"),
+                                black_box(1),
+                                black_box(exact_start),
+                                black_box(exact_end),
+                            )
+                            .unwrap(),
+                    )
+                });
+            });
+        }
+        {
+            let store = build_populated_store(time_ranges, labels);
+            group.bench_with_input(BenchmarkId::new("new", labels), &labels, |b, _| {
+                b.iter(|| {
+                    black_box(
+                        store
+                            .query_precomputed_output_exact(
+                                black_box("test_metric"),
+                                black_box(1),
+                                black_box(exact_start),
+                                black_box(exact_end),
+                            )
+                            .unwrap(),
+                    )
+                });
+            });
+        }
+    }
+
+    group.finish();
+}
+
+#[allow(deprecated)]
+fn bench_old_vs_new_concurrent_reads(c: &mut Criterion) {
+    let mut group = c.benchmark_group("old_vs_new/concurrent_reads");
+    let time_ranges = 1_000;
+    let labels = 10;
+    let query_end = (time_ranges as u64) * 1000 / 10;
+    let num_threads = 4;
+    let queries_per_thread = 20;
+
+    // Legacy — write lock on every query serialises all concurrent reads
+    {
+        let store = Arc::new(build_legacy_store(time_ranges, labels));
+        group.bench_function("legacy", |b| {
+            b.iter(|| {
+                let barrier = Arc::new(Barrier::new(num_threads));
+                std::thread::scope(|s| {
+                    for _ in 0..num_threads {
+                        let store_ref = Arc::clone(&store);
+                        let barrier_ref = barrier.clone();
+                        s.spawn(move || {
+                            barrier_ref.wait();
+                            for _ in 0..queries_per_thread {
+                                black_box(
+                                    store_ref
+                                        .query_precomputed_output("test_metric", 1, 0, query_end)
+                                        .unwrap(),
+                                );
+                            }
+                        });
+                    }
+                });
+            });
+        });
+    }
+
+    // New — shared read lock per agg_id allows true concurrency
+    {
+        let store = Arc::new(build_populated_store(time_ranges, labels));
+        group.bench_function("new", |b| {
+            b.iter(|| {
+                let barrier = Arc::new(Barrier::new(num_threads));
+                std::thread::scope(|s| {
+                    for _ in 0..num_threads {
+                        let store_ref = Arc::clone(&store);
+                        let barrier_ref = barrier.clone();
+                        s.spawn(move || {
+                            barrier_ref.wait();
+                            for _ in 0..queries_per_thread {
+                                black_box(
+                                    store_ref
+                                        .query_precomputed_output("test_metric", 1, 0, query_end)
+                                        .unwrap(),
+                                );
+                            }
+                        });
+                    }
+                });
+            });
+        });
+    }
+
+    group.finish();
+}
+
+#[allow(deprecated)]
+fn bench_old_vs_new_scaling(c: &mut Criterion) {
+    let mut group = c.benchmark_group("old_vs_new/scaling");
+    let labels = 10;
+
+    for time_ranges in [100usize, 1_000, 10_000] {
+        let query_end = (time_ranges as u64) * 1000 / 10;
+
+        {
+            let store = build_legacy_store(time_ranges, labels);
+            group.bench_with_input(
+                BenchmarkId::new("legacy", time_ranges),
+                &time_ranges,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(
+                            store
+                                .query_precomputed_output("test_metric", 1, 0, query_end)
+                                .unwrap(),
+                        )
+                    });
+                },
+            );
+        }
+        {
+            let store = build_populated_store(time_ranges, labels);
+            group.bench_with_input(
+                BenchmarkId::new("new", time_ranges),
+                &time_ranges,
+                |b, _| {
+                    b.iter(|| {
+                        black_box(
+                            store
+                                .query_precomputed_output("test_metric", 1, 0, query_end)
+                                .unwrap(),
+                        )
+                    });
+                },
+            );
+        }
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_insert,
@@ -848,5 +1109,10 @@ criterion_group!(
     bench_query_patterns,
     bench_high_label_cardinality,
     bench_multi_agg_id,
+    bench_old_vs_new_insert,
+    bench_old_vs_new_range_query,
+    bench_old_vs_new_exact_query,
+    bench_old_vs_new_concurrent_reads,
+    bench_old_vs_new_scaling,
 );
 criterion_main!(benches);
