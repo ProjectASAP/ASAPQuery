@@ -1,6 +1,7 @@
 mod common;
 mod global;
 mod per_key;
+pub mod per_key_legacy;
 
 use crate::data_model::{
     AggregateCore, CleanupPolicy, LockStrategy, PrecomputedOutput, StreamingConfig,
