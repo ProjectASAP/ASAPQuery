@@ -21,7 +21,7 @@ COPY asap-planner-rs/Cargo.toml ./asap-planner-rs/
 
 # Create dummy source files so Cargo can resolve all workspace members
 RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs && \
-    mkdir -p asap-query-engine/benches && echo "fn main() {}" > asap-query-engine/benches/simple_store_bench.rs && \
+    mkdir -p asap-query-engine/benches && echo "fn main() {}" > asap-query-engine/benches/simple_map_store_benchmark.rs && \
     mkdir -p asap-planner-rs/src && echo "fn main() {}" > asap-planner-rs/src/main.rs && \
     echo "pub fn placeholder() {}" >> asap-planner-rs/src/lib.rs
 

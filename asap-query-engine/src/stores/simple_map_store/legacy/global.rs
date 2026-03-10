@@ -1,6 +1,8 @@
 use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
+use crate::stores::simple_map_store::common::{
+    EpochData, EpochID, InternTable, MetricID, TimestampRange,
+};
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
-use crate::stores::simple_map_store::common::{EpochData, EpochID, InternTable, TimestampRange};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -247,7 +249,10 @@ impl Store for LegacySimpleMapStoreGlobal {
             let timestamp_range = (output.start_timestamp, output.end_timestamp);
 
             // Get or create PerKeyState
-            let per_key = data.stores.entry(store_key).or_insert_with(PerKeyState::new);
+            let per_key = data
+                .stores
+                .entry(store_key)
+                .or_insert_with(PerKeyState::new);
 
             // Configure epoch capacity on first insert (Optimization 2)
             if aggregation_config.aggregation_type != "DeltaSetAggregator" {
@@ -287,8 +292,7 @@ impl Store for LegacySimpleMapStoreGlobal {
                     }
                     CleanupPolicy::ReadBased => {
                         if let Some(threshold) = aggregation_config.read_count_threshold {
-                            let rc_map =
-                                data.read_counts.entry(store_key).or_default();
+                            let rc_map = data.read_counts.entry(store_key).or_default();
                             // We need to temporarily detach to satisfy borrow checker
                             let windows_to_remove: Vec<TimestampRange> = rc_map
                                 .iter()
@@ -392,13 +396,13 @@ impl Store for LegacySimpleMapStoreGlobal {
         #[cfg(feature = "lock_profiling")]
         let lock_hold_start = Instant::now();
 
-        let mut results: TimestampedBucketsMap = HashMap::new();
         let mut total_entries = 0;
         let mut matched_windows: Vec<TimestampRange> = Vec::new();
 
         let range_scan_start_time = Instant::now();
 
-        {
+        // Accumulate by MetricID first (no intermediate flat Vec allocation).
+        let mut mid: HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>> = {
             let per_key = match data.stores.get(&store_key) {
                 Some(pk) => pk,
                 None => {
@@ -406,6 +410,9 @@ impl Store for LegacySimpleMapStoreGlobal {
                     return Ok(HashMap::new());
                 }
             };
+
+            let mut mid: HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>> =
+                HashMap::with_capacity(per_key.intern.len());
 
             for epoch in per_key.epochs.values() {
                 // Skip epoch if it has no windows overlapping [start, end]
@@ -420,14 +427,22 @@ impl Store for LegacySimpleMapStoreGlobal {
                     continue; // empty epoch
                 }
 
-                for (metric_id, tr, agg) in epoch.range_query(start, end) {
-                    let label = per_key.intern.resolve(metric_id).clone();
-                    results.entry(label).or_default().push((tr, agg));
-                    total_entries += 1;
-                    matched_windows.push(tr);
-                }
+                epoch.range_query_into(start, end, &mut mid, &mut matched_windows);
             }
-        }
+            mid
+        };
+
+        // Resolve MetricIDs → labels in a single pass (scope ends before read_counts borrow)
+        let mut results: TimestampedBucketsMap = {
+            let per_key = data.stores.get(&store_key).unwrap();
+            let mut r = HashMap::with_capacity(mid.len());
+            for (metric_id, buckets) in mid.drain() {
+                total_entries += buckets.len();
+                let label = per_key.intern.resolve(metric_id).clone();
+                r.insert(label, buckets);
+            }
+            r
+        };
 
         // Update read counts (outer Mutex already held — no inner Mutex needed)
         let rc_map = data.read_counts.entry(store_key).or_default();

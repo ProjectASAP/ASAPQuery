@@ -1,6 +1,8 @@
 use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
+use crate::stores::simple_map_store::common::{
+    EpochData, EpochID, InternTable, MetricID, TimestampRange,
+};
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
-use crate::stores::simple_map_store::common::{EpochData, EpochID, InternTable, MetricID, TimestampRange};
 use dashmap::DashMap;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -452,18 +454,22 @@ impl Store for LegacySimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let lock_hold_start = Instant::now();
 
-        let mut results: TimestampedBucketsMap = HashMap::new();
         let mut total_entries = 0;
         let mut matched_windows: Vec<TimestampRange> = Vec::new();
 
         let range_scan_start_time = Instant::now();
 
+        // Accumulate by MetricID first (no intermediate flat Vec allocation).
+        let mut mid: HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>> =
+            HashMap::with_capacity(data.intern.len());
+
         // Query each epoch; skip if time_ranges don't overlap [start, end]
         for epoch in data.epochs.values() {
             // Skip epoch if it has no windows overlapping [start, end]
-            if let (Some(&min_tr), Some(&max_tr)) =
-                (epoch.time_ranges.iter().next(), epoch.time_ranges.iter().next_back())
-            {
+            if let (Some(&min_tr), Some(&max_tr)) = (
+                epoch.time_ranges.iter().next(),
+                epoch.time_ranges.iter().next_back(),
+            ) {
                 // min_tr.0 is the smallest start; max_tr.1 is the largest end
                 if min_tr.0 > end || max_tr.1 < start {
                     continue;
@@ -472,12 +478,15 @@ impl Store for LegacySimpleMapStorePerKey {
                 continue; // empty epoch
             }
 
-            for (metric_id, tr, agg) in epoch.range_query(start, end) {
-                let label = data.intern.resolve(metric_id).clone();
-                results.entry(label).or_default().push((tr, agg));
-                total_entries += 1;
-                matched_windows.push(tr);
-            }
+            epoch.range_query_into(start, end, &mut mid, &mut matched_windows);
+        }
+
+        // Resolve MetricIDs → labels in a single pass
+        let mut results: TimestampedBucketsMap = HashMap::with_capacity(mid.len());
+        for (metric_id, buckets) in mid {
+            total_entries += buckets.len();
+            let label = data.intern.resolve(metric_id).clone();
+            results.insert(label, buckets);
         }
 
         // Update read counts via inner Mutex
