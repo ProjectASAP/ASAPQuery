@@ -2370,16 +2370,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libloading"
-version = "0.6.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "351a32417a12d5f7e82c368a66781e307834dae04c6ce0cd4456d52989229883"
-dependencies = [
- "cfg-if",
- "winapi",
-]
-
-[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3738,22 +3728,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sql_utilities",
-]
-
-[[package]]
-name = "sketchlib-rust"
-version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketchlib-rust#348db8415f97246c42de68b407b47fa038cf8b1f"
-dependencies = [
- "ahash",
- "clap 4.5.60",
- "pcap",
- "rand 0.9.2",
- "rmp-serde",
- "serde",
- "serde-big-array",
- "smallvec",
- "twox-hash 2.1.2",
 ]
 
 [[package]]
