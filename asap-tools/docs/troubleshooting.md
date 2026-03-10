@@ -35,7 +35,7 @@ for i in {0..N-1}; do ssh -o StrictHostKeyChecking=no <cloudlab_username>@node"$
 - `experiment_run_e2e.py` script continuously shows "Waiting for X seconds for remote monitor to finish" for multiple minutes (e.g. > 5 min)
 
 **Possible Causes:**
-- Could be a variety of causes, but usually indicates something wrong with `asap-tools/prometheus-client`, `asap-query-engine`, or `remote_monitor.py`
+- Could be a variety of causes, but usually indicates something wrong with `asap-tools/queriers/prometheus-client`, `asap-query-engine`, or `remote_monitor.py`
 
 **Solutions:**
 Look at log files for the above components on the cloudlab nodes. You can also check `docker logs`

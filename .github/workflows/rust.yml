@@ -8,6 +8,8 @@ on:
       - 'asap-common/dependencies/rs/**'
       - 'asap-common/tests/**'
       - 'asap-common/sketch-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/rust.yml'
   pull_request:
     branches: [ main ]
@@ -16,6 +18,8 @@ on:
       - 'asap-common/dependencies/rs/**'
       - 'asap-common/tests/**'
       - 'asap-common/sketch-core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
       - '.github/workflows/rust.yml'
   workflow_dispatch:
 
@@ -27,12 +31,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-
-    # - name: Configure git for private dependencies
-    #   run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-    # - name: Clone sketchlib-rust
-    #   run: git clone https://github.com/ProjectASAP/sketchlib-rust.git
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -50,40 +48,13 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-
-    - name: Validate lockfile
-      run: |
-        cp Cargo.lock Cargo.lock.bak
-        cargo generate-lockfile
-        if ! diff -q Cargo.lock Cargo.lock.bak >/dev/null; then
-          echo "::error::Cargo.lock is out of sync. Run 'cargo update' or 'rm Cargo.lock && cargo build' locally and commit the updated Cargo.lock."
-          exit 1
-        fi
-        rm Cargo.lock.bak
-      working-directory: .
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Check formatting
-      run: cargo fmt -- --check
-      working-directory: asap-query-engine
-
-    - name: Check formatting (sketch_db_common)
-      run: cargo fmt -- --check
-      working-directory: asap-common/dependencies/rs/sketch_db_common
+      run: cargo fmt --all -- --check
 
     - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings
-      working-directory: asap-query-engine
-      env:
-        RUSTC_WRAPPER: sccache
-
-    - name: Check formatting (sketch-core)
-      run: cargo fmt -- --check
-      working-directory: asap-common/sketch-core
-
-    - name: Run clippy (sketch-core)
-      run: cargo clippy --all-targets --all-features -- -D warnings
-      working-directory: asap-common/sketch-core
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       env:
         RUSTC_WRAPPER: sccache
 
@@ -91,12 +62,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-
-    # - name: Configure git for private dependencies
-    #   run: git config --global url."https://x-access-token:${{ secrets.PRIVATE_REPO_TOKEN }}@github.com/".insteadOf "https://github.com/"
-
-    # - name: Clone sketchlib-rust
-    #   run: git clone https://github.com/ProjectASAP/sketchlib-rust.git
 
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
@@ -113,42 +78,10 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-v2-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Validate lockfile
-      run: |
-        cp Cargo.lock Cargo.lock.bak
-        cargo generate-lockfile
-        if ! diff -q Cargo.lock Cargo.lock.bak >/dev/null; then
-          echo "::error::Cargo.lock is out of sync. Run 'cargo update' or 'rm Cargo.lock && cargo build' locally and commit the updated Cargo.lock."
-          exit 1
-        fi
-        rm Cargo.lock.bak
-
-    - name: Run QueryEngineRust tests
-      run: cargo test
-      working-directory: asap-query-engine
-      env:
-        RUSTC_WRAPPER: sccache
-
-    - name: Run sql_utilities tests
-      run: cargo test
-      working-directory: asap-common/dependencies/rs/sql_utilities
-      env:
-        RUSTC_WRAPPER: sccache
-
-    - name: Run promql_utilities tests
-      run: cargo test
-      working-directory: asap-common/dependencies/rs/promql_utilities
-      env:
-        RUSTC_WRAPPER: sccache
-
-    - name: Run sketch-core tests
-      run: cargo test
-      working-directory: asap-common/sketch-core
-    - name: Run sketch_db_common tests
-      run: cargo test
-      working-directory: asap-common/dependencies/rs/sketch_db_common
+    - name: Run all workspace tests
+      run: cargo test --workspace
       env:
         RUSTC_WRAPPER: sccache
 
@@ -166,7 +99,3 @@ jobs:
 
     - name: Build Docker image
       run: docker build -f asap-query-engine/Dockerfile -t sketchdb-queryengine-rust:latest .
-    #   run: |
-    #     echo "${{ secrets.PRIVATE_REPO_TOKEN }}" > /tmp/git_token
-    #     docker build --secret id=git_token,src=/tmp/git_token -f QueryEngineRust/Dockerfile -t sketchdb-queryengine-rust:latest .
-    #     rm -f /tmp/git_token

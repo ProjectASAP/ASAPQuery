@@ -184,12 +184,12 @@ graph LR
 | Component | Purpose | Technology | Location |
 |-----------|---------|------------|----------|
 | **asap-query-engine** | Answers PromQL queries using sketches | Rust | `asap-query-engine/` |
-| **Arroyo** | Stream processing for building sketches | Rust (forked) | `arroyo/` |
+| **Arroyo** | Stream processing for building sketches | Rust (forked) | [github.com/ProjectASAP/arroyo](https://github.com/ProjectASAP/arroyo) |
 | **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | `asap-sketch-ingest/` |
 | **asap-planner** | Auto-determines sketch parameters | Python | `asap-planner/` |
 | **Kafka** | Message broker for sketch distribution | Apache Kafka | (external) |
 | **Prometheus** | Time-series database (existing) | Go | (external) |
-| **Exporters** | Generate synthetic metrics for testing | Rust/Python | `asap-tools/prometheus-exporters/` |
+| **Exporters** | Generate synthetic metrics for testing | Rust/Python | `asap-tools/data-sources/prometheus-exporters/` |
 | **asap-tools** | Experimental harness that uses Cloudlab | Python | `asap-tools/` |
 
 **Links to detailed documentation:**
@@ -259,12 +259,6 @@ ASAPQuery/
 │   │   └── tests/            # Integration tests
 │   └── docs/                 # QueryEngine dev docs
 │
-├── arroyo/                   # Arroyo streaming engine (forked)
-│   └── crates/
-│       └── arroyo-connectors/
-│           ├── prometheus_remote_write_with_schema/
-│           └── prometheus_remote_write_optimized/
-│
 ├── asap-sketch-ingest/       # Pipeline configurator
 │   ├── run_arroyosketch.py   # Main script
 │   ├── templates/            # Jinja2 SQL templates
@@ -276,11 +270,14 @@ ASAPQuery/
 │   └── utils/                # Decision logic
 │
 ├── asap-tools/               # Experiment framework & tooling
-│   ├── prometheus-exporters/ # Metric generators
-│   │   ├── fake_exporter/        # Rust/Python fake exporters
-│   │   ├── cluster_data_exporter/  # Real trace data
-│   │   ├── query_cost_exporter/  # Resource metrics
-│   │   └── query_latency_exporter/  # Latency metrics
+│   ├── data-sources/
+│   │   └── prometheus-exporters/ # Metric generators
+│   │       ├── fake_exporter/        # Rust/Python fake exporters
+│   │       ├── cluster_data_exporter/  # Real trace data
+│   │       ├── query_cost_exporter/  # Resource metrics
+│   │       └── query_latency_exporter/  # Latency metrics
+│   ├── queriers/
+│   │   └── prometheus-client/    # PromQL query client
 │   ├── experiments/
 │   │   ├── experiment_run_e2e.py  # Main orchestrator
 │   │   ├── config/           # Hydra configs

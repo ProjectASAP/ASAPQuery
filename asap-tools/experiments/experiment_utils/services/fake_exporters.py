@@ -139,6 +139,7 @@ class PythonExporterService(BaseExporterService):
             constants.CLOUDLAB_HOME_DIR,
             "code",
             "asap-tools",
+            "data-sources",
             "prometheus-exporters",
             "fake_exporter",
             "fake_exporter_python",
@@ -395,7 +396,7 @@ class RustExporterService(BaseExporterService):
             )
             cmds.append(cmd)
 
-        cmd_dir = f"{constants.CLOUDLAB_HOME_DIR}/code/asap-tools/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter"
+        cmd_dir = f"{constants.CLOUDLAB_HOME_DIR}/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter"
 
         # Dump workload configuration to a file
         os.makedirs(

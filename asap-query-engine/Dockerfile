@@ -17,31 +17,19 @@ COPY asap-common/sketch-core ./asap-common/sketch-core
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/
-# COPY asap-query-engine/.cargo ./asap-query-engine/.cargo
 
 # Create a dummy main.rs to build dependencies
 RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/src/main.rs
 
 # Build dependencies (this layer will be cached)
-# Uses BuildKit secret mount to pass git credentials without baking into a layer
 WORKDIR /code/asap-query-engine
 RUN cargo build --release && rm -rf src/
-# RUN --mount=type=secret,id=git_token \
-#     if [ -f /run/secrets/git_token ]; then \
-#       git config --global url."https://x-access-token:$(cat /run/secrets/git_token)@github.com/".insteadOf "https://github.com/"; \
-#     fi && \
-#     cargo build --release && rm -rf src/
 
 # Copy source code
 COPY asap-query-engine/src ./src
 
 # Build the actual application
 RUN touch src/main.rs && cargo build --release
-# RUN --mount=type=secret,id=git_token \
-#     if [ -f /run/secrets/git_token ]; then \
-#       git config --global url."https://x-access-token:$(cat /run/secrets/git_token)@github.com/".insteadOf "https://github.com/"; \
-#     fi && \
-#     touch src/main.rs && cargo build --release
 
 # Runtime stage with Ubuntu 24.04 (has newer glibc/libstdc++)
 FROM ubuntu:24.04

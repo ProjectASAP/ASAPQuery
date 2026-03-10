@@ -50,7 +50,7 @@ ASAPQuery has four main components: the **asap-planner** generates sketch config
 
 - **[asap-planner](asap-planner/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-sketch-ingest and asap-query-engine
 - **[asap-sketch-ingest](asap-sketch-ingest/)** - Deploys Arroyo streaming pipelines that continuously compute and publish sketches from live metrics
-- **[arroyo](arroyo/)** - Fork of the [Arroyo](https://github.com/ArroyoSystems/Arroyo) stream processing engine that runs the sketch-building SQL pipelines
+- **[arroyo](https://github.com/ProjectASAP/arroyo)** - Fork of the [Arroyo](https://github.com/ArroyoSystems/arroyo) stream processing engine that runs the sketch-building SQL pipelines
 - **[asap-query-engine](asap-query-engine/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries
 
 ### Repository Structure
@@ -59,8 +59,8 @@ ASAPQuery has four main components: the **asap-planner** generates sketch config
 ├── asap-quickstart/         # Self-contained demo (start here!)
 ├── asap-planner/            # Auto-configuration service
 ├── asap-sketch-ingest/      # Arroyo pipeline deployer
-├── arroyo/                  # Fork of Arroyo stream processing engine
 └── asap-query-engine/       # Query serving engine
+# Note: Arroyo fork lives at https://github.com/ProjectASAP/arroyo
 ```
 
 ## Coming soon
