@@ -6,14 +6,10 @@
 
 use std::collections::HashMap;
 
-use axum::{
-    body::Bytes,
-    extract::State,
-    routing::post,
-    Json, Router,
-};
+use axum::{body::Bytes, extract::State, routing::post, Json, Router};
 use opentelemetry_proto::tonic::collector::metrics::v1::{
-    metrics_service_server::MetricsService, ExportMetricsServiceRequest, ExportMetricsServiceResponse,
+    metrics_service_server::MetricsService, ExportMetricsServiceRequest,
+    ExportMetricsServiceResponse,
 };
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberValue;
 use prost::Message;
@@ -96,8 +92,12 @@ async fn handle_otlp_http(
     State(_state): State<()>,
     body: Bytes,
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
-    let req = ExportMetricsServiceRequest::decode(body.as_ref())
-        .map_err(|e| (axum::http::StatusCode::BAD_REQUEST, format!("Protobuf decode error: {}", e)))?;
+    let req = ExportMetricsServiceRequest::decode(body.as_ref()).map_err(|e| {
+        (
+            axum::http::StatusCode::BAD_REQUEST,
+            format!("Protobuf decode error: {}", e),
+        )
+    })?;
     process_otlp_request(&req);
     Ok(Json(serde_json::json!({"rejected": 0})))
 }
@@ -109,7 +109,7 @@ fn process_otlp_request(request: &ExportMetricsServiceRequest) {
         "OTLP ingest: received {} resource metrics, {} total data points",
         resource_count, total_points
     );
-    // TODO: Pass metrics to precompute engine. 
+    // TODO: Pass metrics to precompute engine.
 }
 
 /// Count total data points by traversing resource_metrics -> scope_metrics -> metrics.
