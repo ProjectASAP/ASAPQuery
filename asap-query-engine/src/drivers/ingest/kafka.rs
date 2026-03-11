@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tracing::{debug, error, info, warn};
 
-use crate::data_model::enums::InputFormat;
+use crate::data_model::enums::{InputFormat, StreamingEngine};
 use crate::data_model::traits::SerializableToSink;
 use crate::data_model::PrecomputedOutput;
 use crate::data_model::StreamingConfig;
@@ -22,6 +22,7 @@ pub struct KafkaConsumerConfig {
     pub decompress_json: bool,
     pub batch_size: usize,
     pub poll_timeout_ms: u64,
+    pub streaming_engine: StreamingEngine,
     pub dump_precomputes: bool,
     pub dump_output_dir: Option<String>,
 }
@@ -301,7 +302,9 @@ impl<T: Store + Send + Sync + 'static> KafkaConsumer<T> {
                             "Arroyo deserialization took: {:.2}ms",
                             deserialize_duration.as_secs_f64() * 1000.0
                         );
-                        debug!("Successfully deserialized Arroyo JSON message with precompute data");
+                        debug!(
+                            "Successfully deserialized Arroyo JSON message with precompute data"
+                        );
                         let total_message_duration = message_start_time.elapsed();
                         debug!(
                             "Total Arroyo message processing took: {:.2}ms",

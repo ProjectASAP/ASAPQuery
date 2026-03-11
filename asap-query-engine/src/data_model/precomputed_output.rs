@@ -398,11 +398,10 @@ impl PrecomputedOutput {
                 Ok(Box::new(accumulator))
             }
             "MultipleIncrease" => {
-                let accumulator =
-                    MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(buffer)
-                        .map_err(|e| {
-                            format!("Failed to deserialize MultipleIncreaseAccumulator: {e}")
-                        })?;
+                let accumulator = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+                    buffer,
+                )
+                .map_err(|e| format!("Failed to deserialize MultipleIncreaseAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             "CountMinSketch" => {
@@ -414,34 +413,27 @@ impl PrecomputedOutput {
                 let accumulator =
                     CountMinSketchWithHeapAccumulator::deserialize_from_bytes_arroyo(buffer)
                         .map_err(|e| {
-                            format!(
-                                "Failed to deserialize CountMinSketchWithHeapAccumulator: {e}"
-                            )
+                            format!("Failed to deserialize CountMinSketchWithHeapAccumulator: {e}")
                         })?;
                 Ok(Box::new(accumulator))
             }
             "DatasketchesKLL" => {
-                let accumulator =
-                    DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(buffer)
-                        .map_err(|e| {
-                            format!("Failed to deserialize DatasketchesKLLAccumulator: {e}")
-                        })?;
+                let accumulator = DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(buffer)
+                    .map_err(|e| {
+                        format!("Failed to deserialize DatasketchesKLLAccumulator: {e}")
+                    })?;
                 Ok(Box::new(accumulator))
             }
             "HydraKLL" => {
-                let accumulator =
-                    HydraKllSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
-                        .map_err(|e| {
-                            format!("Failed to deserialize HydraKllSketchAccumulator: {e}")
-                        })?;
+                let accumulator = HydraKllSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
+                    .map_err(|e| format!("Failed to deserialize HydraKllSketchAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             "DeltaSetAggregator" => {
-                let accumulator =
-                    DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(buffer)
-                        .map_err(|e| {
-                            format!("Failed to deserialize DeltaSetAggregatorAccumulator: {e}")
-                        })?;
+                let accumulator = DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(
+                    buffer,
+                )
+                .map_err(|e| format!("Failed to deserialize DeltaSetAggregatorAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             _ => Err(format!("Unknown precompute type: {precompute_type}").into()),
