@@ -5,6 +5,7 @@ use std::sync::Arc;
 pub type MetricID = u32;
 pub type EpochID = u64;
 pub type TimestampRange = (u64, u64);
+pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
 
 /// Assigns a compact MetricID (u32) to each unique label combination.
 /// Label strings stored once; all internal maps use MetricID (O(1) key ops).
@@ -122,7 +123,7 @@ impl EpochData {
         &self,
         start: u64,
         end: u64,
-        out: &mut HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>,
+        out: &mut MetricBucketMap,
         matched_windows: &mut Vec<TimestampRange>,
     ) {
         for (&metric_id, btree) in &self.label_map {

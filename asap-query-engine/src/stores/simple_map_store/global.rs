@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
 use crate::stores::simple_map_store::common::{
-    EpochData, EpochID, InternTable, MetricID, TimestampRange,
+    EpochData, EpochID, InternTable, MetricBucketMap, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -402,7 +402,7 @@ impl Store for SimpleMapStoreGlobal {
         let range_scan_start_time = Instant::now();
 
         // Accumulate by MetricID first (no intermediate flat Vec allocation).
-        let mut mid: HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>> = {
+        let mut mid: MetricBucketMap = {
             let per_key = match data.stores.get(&store_key) {
                 Some(pk) => pk,
                 None => {
@@ -411,8 +411,7 @@ impl Store for SimpleMapStoreGlobal {
                 }
             };
 
-            let mut mid: HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>> =
-                HashMap::with_capacity(per_key.intern.len());
+            let mut mid: MetricBucketMap = HashMap::with_capacity(per_key.intern.len());
 
             for epoch in per_key.epochs.values() {
                 // Skip epoch if it has no windows overlapping [start, end]
@@ -433,7 +432,7 @@ impl Store for SimpleMapStoreGlobal {
         };
 
         // Resolve MetricIDs → labels in a single pass (scope ends before read_counts borrow)
-        let mut results: TimestampedBucketsMap = {
+        let results: TimestampedBucketsMap = {
             let per_key = data.stores.get(&store_key).unwrap();
             let mut r = HashMap::with_capacity(mid.len());
             for (metric_id, buckets) in mid.drain() {
