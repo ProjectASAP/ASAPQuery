@@ -385,8 +385,12 @@ impl PrecomputedOutput {
                 Ok(Box::new(accumulator))
             }
             "MultipleSum" => {
-                let accumulator = MultipleSumAccumulator::deserialize_from_bytes(buffer)
-                    .map_err(|e| format!("Failed to deserialize MultipleSumAccumulator: {e}"))?;
+                let accumulator = if streaming_engine == "flink" {
+                    MultipleSumAccumulator::deserialize_from_bytes(buffer)
+                } else {
+                    MultipleSumAccumulator::deserialize_from_bytes_arroyo(buffer)
+                }
+                .map_err(|e| format!("Failed to deserialize MultipleSumAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             "MultipleMinMax" => {

@@ -1,6 +1,7 @@
 pub mod data_model;
 pub mod drivers;
 pub mod engines;
+pub mod precompute_engine;
 pub mod precompute_operators;
 pub mod stores;
 
@@ -25,6 +26,10 @@ pub use stores::{SimpleMapStore, Store, StoreResult};
 pub use engines::{InstantVector, QueryResult, SimpleEngine};
 
 pub use drivers::{HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig};
+
+pub use precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
+pub use precompute_engine::output_sink::StoreOutputSink;
+pub use precompute_engine::PrecomputeEngine;
 
 pub use utils::{normalize_spatial_filter, read_inference_config, read_streaming_config};
 
