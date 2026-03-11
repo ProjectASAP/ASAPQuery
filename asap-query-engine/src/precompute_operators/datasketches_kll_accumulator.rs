@@ -42,7 +42,6 @@ impl DatasketchesKLLAccumulator {
             .decode(sketch_b64)
             .map_err(|e| format!("Failed to decode base64 sketch data: {e}"))?;
 
-        // TODO: remove this hardcoding once FlinkSketch serializes k in its output
         Ok(Self {
             inner: KllSketch::from_dsrs_bytes(&sketch_bytes, 200)?,
         })
@@ -50,7 +49,6 @@ impl DatasketchesKLLAccumulator {
 
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         // Mirror Python implementation: deserialize sketch directly from bytes
-        // TODO: remove this hardcoding once FlinkSketch serializes k in its output
         Ok(Self {
             inner: KllSketch::from_dsrs_bytes(buffer, 200)?,
         })

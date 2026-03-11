@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info};
 
-use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
+use query_engine_rust::data_model::enums::{InputFormat, LockStrategy};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
@@ -31,10 +31,6 @@ struct Args {
     /// File path for streaming_config
     #[arg(long)]
     streaming_config: String,
-
-    /// Streaming engine to use
-    #[arg(long, value_enum)]
-    streaming_engine: StreamingEngine,
 
     /// Prometheus scrape interval in seconds
     #[arg(long)]
@@ -191,7 +187,6 @@ async fn main() -> Result<()> {
         decompress_json: args.decompress_json,
         batch_size: 1000,
         poll_timeout_ms: 1000,
-        streaming_engine: args.streaming_engine.clone(),
         dump_precomputes: args.dump_precomputes,
         dump_output_dir: if args.dump_precomputes {
             Some(args.output_dir.clone())

@@ -4,12 +4,6 @@ pub enum InputFormat {
     Byte,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
-pub enum StreamingEngine {
-    Flink,
-    Arroyo,
-}
-
 pub use sketch_db_common::enums::{CleanupPolicy, QueryLanguage};
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
