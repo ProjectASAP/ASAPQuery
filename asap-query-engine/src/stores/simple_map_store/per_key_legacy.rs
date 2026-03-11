@@ -50,6 +50,7 @@ pub struct LegacySimpleMapStorePerKey {
     cleanup_policy: CleanupPolicy,
 }
 
+#[allow(deprecated)]
 impl LegacySimpleMapStorePerKey {
     pub fn new(streaming_config: Arc<StreamingConfig>, cleanup_policy: CleanupPolicy) -> Self {
         Self {
@@ -303,6 +304,7 @@ impl LegacySimpleMapStorePerKey {
     }
 }
 
+#[allow(deprecated)]
 #[async_trait::async_trait]
 impl Store for LegacySimpleMapStorePerKey {
     fn insert_precomputed_output(
