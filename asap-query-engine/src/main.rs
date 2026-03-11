@@ -9,8 +9,8 @@ use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingE
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
-    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpConsumer,
-    OtlpConsumerConfig, Result, SimpleEngine, SimpleMapStore,
+    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
+    OtlpReceiverConfig, Result, SimpleEngine, SimpleMapStore,
 };
 
 #[derive(Parser, Debug)]
@@ -231,20 +231,20 @@ async fn main() -> Result<()> {
         }
     };
 
-    // Setup OTLP ingest server
+    // Setup OTLP receiver
     let otel_handle = if args.enable_otel_ingest {
-        let otel_config = OtlpConsumerConfig {
+        let otel_config = OtlpReceiverConfig {
             grpc_port: args.otel_grpc_port,
             http_port: args.otel_http_port,
         };
-        let consumer = OtlpConsumer::new(otel_config);
+        let receiver = OtlpReceiver::new(otel_config);
         info!(
-            "Starting OTLP consumer (gRPC port {}, HTTP port {})",
+            "Starting OTLP receiver (gRPC port {}, HTTP port {})",
             args.otel_grpc_port, args.otel_http_port
         );
         Some(tokio::spawn(async move {
-            if let Err(e) = consumer.run().await {
-                error!("OTLP consumer error: {}", e);
+            if let Err(e) = receiver.run().await {
+                error!("OTLP receiver error: {}", e);
             }
         }))
     } else {
@@ -316,7 +316,7 @@ async fn main() -> Result<()> {
     }
 
     if let Some(handle) = otel_handle {
-        info!("Shutting down OTLP consumer...");
+        info!("Shutting down OTLP receiver...");
         handle.abort();
         let _ = handle.await;
     }

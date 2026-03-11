@@ -16,20 +16,20 @@ use prost::Message;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
-/// Configuration for the OTLP ingest consumer.
+/// Configuration for the OTLP receiver.
 #[derive(Debug, Clone)]
-pub struct OtlpConsumerConfig {
+pub struct OtlpReceiverConfig {
     pub grpc_port: u16,
     pub http_port: u16,
 }
 
-/// OTLP consumer that accepts metrics via gRPC and HTTP.
-pub struct OtlpConsumer {
-    config: OtlpConsumerConfig,
+/// OTLP receiver that accepts metrics via gRPC and HTTP.
+pub struct OtlpReceiver {
+    config: OtlpReceiverConfig,
 }
 
-impl OtlpConsumer {
-    pub fn new(config: OtlpConsumerConfig) -> Self {
+impl OtlpReceiver {
+    pub fn new(config: OtlpReceiverConfig) -> Self {
         Self { config }
     }
 
