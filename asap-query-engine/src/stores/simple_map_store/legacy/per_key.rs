@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
 use crate::stores::simple_map_store::common::{
-    EpochData, EpochID, InternTable, MetricID, TimestampRange,
+    EpochData, EpochID, InternTable, MetricBucketMap, MetricID, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
@@ -292,10 +292,10 @@ impl LegacySimpleMapStorePerKey {
             epoch.insert(metric_id, timestamp_range, Arc::from(precompute));
 
             // After each item, check if we should rotate (CircularBuffer, Optimization 2)
-            if aggregation_config.aggregation_type != "DeltaSetAggregator" {
-                if matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer) {
-                    data.maybe_rotate_epoch();
-                }
+            if aggregation_config.aggregation_type != "DeltaSetAggregator"
+                && matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer)
+            {
+                data.maybe_rotate_epoch();
             }
         }
 
@@ -460,8 +460,7 @@ impl Store for LegacySimpleMapStorePerKey {
         let range_scan_start_time = Instant::now();
 
         // Accumulate by MetricID first (no intermediate flat Vec allocation).
-        let mut mid: HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>> =
-            HashMap::with_capacity(data.intern.len());
+        let mut mid: MetricBucketMap = HashMap::with_capacity(data.intern.len());
 
         // Query each epoch; skip if time_ranges don't overlap [start, end]
         for epoch in data.epochs.values() {
