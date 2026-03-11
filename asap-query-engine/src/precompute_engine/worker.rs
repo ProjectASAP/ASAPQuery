@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
 use crate::precompute_engine::accumulator_factory::{
-    create_accumulator_updater, AccumulatorUpdater,
+    config_is_keyed, create_accumulator_updater, AccumulatorUpdater,
 };
 use crate::precompute_engine::config::LateDataPolicy;
 use crate::precompute_engine::output_sink::OutputSink;
@@ -22,7 +22,7 @@ use tracing::{debug, debug_span, info, warn};
 /// closes, its constituent panes are merged. This reduces per-sample
 /// accumulator updates from W to 1 (where W = window_size / slide_interval).
 struct AggregationState {
-    config: AggregationConfig,
+    config: Arc<AggregationConfig>,
     window_manager: WindowManager,
     /// Active panes keyed by pane_start_ms.
     /// BTreeMap for ordered iteration (needed for pane eviction).
@@ -45,7 +45,7 @@ pub struct Worker {
     /// Map from series key to per-series state.
     series_map: HashMap<String, SeriesState>,
     /// Aggregation configs, keyed by aggregation_id.
-    agg_configs: HashMap<u64, AggregationConfig>,
+    agg_configs: HashMap<u64, Arc<AggregationConfig>>,
     /// Max buffer size per series.
     max_buffer_per_series: usize,
     /// Allowed lateness in ms.
@@ -71,7 +71,7 @@ impl Worker {
         id: usize,
         receiver: mpsc::Receiver<WorkerMessage>,
         output_sink: Arc<dyn OutputSink>,
-        agg_configs: HashMap<u64, AggregationConfig>,
+        agg_configs: HashMap<u64, Arc<AggregationConfig>>,
         runtime_config: WorkerRuntimeConfig,
     ) -> Self {
         Self {
@@ -139,7 +139,8 @@ impl Worker {
     }
 
     /// Find all aggregation configs whose metric/spatial_filter matches this series.
-    fn matching_agg_configs(&self, series_key: &str) -> Vec<(u64, &AggregationConfig)> {
+    /// Returns owned `Arc` clones so callers are not lifetime-bound to `&self`.
+    fn matching_agg_configs(&self, series_key: &str) -> Vec<(u64, Arc<AggregationConfig>)> {
         let metric_name = extract_metric_name(series_key);
 
         self.agg_configs
@@ -150,7 +151,7 @@ impl Worker {
                     || config.spatial_filter_normalized == metric_name
                     || config.spatial_filter == metric_name
             })
-            .map(|(&id, config)| (id, config))
+            .map(|(&id, config)| (id, Arc::clone(config)))
             .collect()
     }
 
@@ -162,7 +163,7 @@ impl Worker {
                 .into_iter()
                 .map(|(_, config)| AggregationState {
                     window_manager: WindowManager::new(config.window_size, config.slide_interval),
-                    config: config.clone(),
+                    config, // Arc clone is cheap; no deep copy
                     active_panes: BTreeMap::new(),
                 })
                 .collect();
@@ -259,13 +260,8 @@ impl Worker {
                         }
                         LateDataPolicy::ForwardToStore => {
                             let mut updater = create_accumulator_updater(&agg_state.config);
-                            if updater.is_keyed() {
-                                let key = extract_key_from_series(series_key, &agg_state.config);
-                                updater.update_keyed(&key, val, ts);
-                            } else {
-                                updater.update_single(val, ts);
-                            }
-                            let key = if updater.is_keyed() {
+                            apply_sample(&mut *updater, series_key, val, ts, &agg_state.config);
+                            let key = if config_is_keyed(&agg_state.config) {
                                 Some(extract_key_from_series(series_key, &agg_state.config))
                             } else {
                                 None
@@ -292,12 +288,7 @@ impl Worker {
                     .entry(pane_start)
                     .or_insert_with(|| create_accumulator_updater(&agg_state.config));
 
-                if updater.is_keyed() {
-                    let key = extract_key_from_series(series_key, &agg_state.config);
-                    updater.update_keyed(&key, val, ts);
-                } else {
-                    updater.update_single(val, ts);
-                }
+                apply_sample(&mut **updater, series_key, val, ts, &agg_state.config);
             }
 
             // Emit closed windows by merging their constituent panes
@@ -305,43 +296,13 @@ impl Worker {
                 let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
                 let pane_starts = agg_state.window_manager.panes_for_window(*window_start);
 
-                // Merge pane accumulators for this window.
-                // - Oldest pane (index 0): take_accumulator + remove (no future window needs it)
-                // - Remaining panes: snapshot_accumulator (shared with newer windows)
-                let mut merged: Option<Box<dyn AggregateCore>> = None;
-
-                for (i, &ps) in pane_starts.iter().enumerate() {
-                    let pane_acc = if i == 0 {
-                        // Oldest pane: destructive take + evict from active_panes
-                        agg_state
-                            .active_panes
-                            .remove(&ps)
-                            .map(|mut updater| updater.take_accumulator())
+                if let Some(accumulator) =
+                    merge_panes_for_window(&mut agg_state.active_panes, &pane_starts)
+                {
+                    let key = if config_is_keyed(&agg_state.config) {
+                        Some(extract_key_from_series(series_key, &agg_state.config))
                     } else {
-                        // Shared pane: non-destructive snapshot
-                        agg_state
-                            .active_panes
-                            .get(&ps)
-                            .map(|updater| updater.snapshot_accumulator())
-                    };
-
-                    if let Some(acc) = pane_acc {
-                        merged = Some(match merged {
-                            None => acc,
-                            Some(existing) => existing.merge_with(acc.as_ref()).unwrap_or(existing),
-                        });
-                    }
-                }
-
-                if let Some(accumulator) = merged {
-                    let key = {
-                        // Check keyed-ness from accumulator type name or config
-                        let test_updater = create_accumulator_updater(&agg_state.config);
-                        if test_updater.is_keyed() {
-                            Some(extract_key_from_series(series_key, &agg_state.config))
-                        } else {
-                            None
-                        }
+                        None
                     };
 
                     let output = PrecomputedOutput::new(
@@ -422,39 +383,13 @@ impl Worker {
                     let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
                     let pane_starts = agg_state.window_manager.panes_for_window(*window_start);
 
-                    let mut merged: Option<Box<dyn AggregateCore>> = None;
-
-                    for (i, &ps) in pane_starts.iter().enumerate() {
-                        let pane_acc = if i == 0 {
-                            agg_state
-                                .active_panes
-                                .remove(&ps)
-                                .map(|mut updater| updater.take_accumulator())
+                    if let Some(accumulator) =
+                        merge_panes_for_window(&mut agg_state.active_panes, &pane_starts)
+                    {
+                        let key = if config_is_keyed(&agg_state.config) {
+                            Some(extract_key_from_series(series_key, &agg_state.config))
                         } else {
-                            agg_state
-                                .active_panes
-                                .get(&ps)
-                                .map(|updater| updater.snapshot_accumulator())
-                        };
-
-                        if let Some(acc) = pane_acc {
-                            merged = Some(match merged {
-                                None => acc,
-                                Some(existing) => {
-                                    existing.merge_with(acc.as_ref()).unwrap_or(existing)
-                                }
-                            });
-                        }
-                    }
-
-                    if let Some(accumulator) = merged {
-                        let key = {
-                            let test_updater = create_accumulator_updater(&agg_state.config);
-                            if test_updater.is_keyed() {
-                                Some(extract_key_from_series(series_key, &agg_state.config))
-                            } else {
-                                None
-                            }
+                            None
                         };
 
                         let output = PrecomputedOutput::new(
@@ -570,6 +505,60 @@ fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
     labels
 }
 
+/// Route a single sample to `updater`, dispatching keyed vs. non-keyed based on config.
+/// Eliminates repeated `if updater.is_keyed()` blocks at call sites.
+fn apply_sample(
+    updater: &mut dyn AccumulatorUpdater,
+    series_key: &str,
+    val: f64,
+    ts: i64,
+    config: &AggregationConfig,
+) {
+    if updater.is_keyed() {
+        let key = extract_key_from_series(series_key, config);
+        updater.update_keyed(&key, val, ts);
+    } else {
+        updater.update_single(val, ts);
+    }
+}
+
+/// Merge the pane accumulators that constitute a closed window.
+///
+/// The oldest pane (index 0) is taken destructively from `active_panes`
+/// (no future window needs it). All later panes are snapshot-read
+/// (non-destructive; they are shared by newer overlapping windows).
+///
+/// Returns `None` if all panes for the window are absent.
+fn merge_panes_for_window(
+    active_panes: &mut BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
+    pane_starts: &[i64],
+) -> Option<Box<dyn AggregateCore>> {
+    let mut merged: Option<Box<dyn AggregateCore>> = None;
+
+    for (i, &ps) in pane_starts.iter().enumerate() {
+        let pane_acc = if i == 0 {
+            // Oldest pane: destructive take + evict
+            active_panes
+                .remove(&ps)
+                .map(|mut updater| updater.take_accumulator())
+        } else {
+            // Shared pane: non-destructive snapshot
+            active_panes
+                .get(&ps)
+                .map(|updater| updater.snapshot_accumulator())
+        };
+
+        if let Some(acc) = pane_acc {
+            merged = Some(match merged {
+                None => acc,
+                Some(existing) => existing.merge_with(acc.as_ref()).unwrap_or(existing),
+            });
+        }
+    }
+
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -656,7 +645,7 @@ mod tests {
     }
 
     fn make_worker(
-        agg_configs: HashMap<u64, AggregationConfig>,
+        agg_configs: HashMap<u64, Arc<AggregationConfig>>,
         sink: Arc<CapturingOutputSink>,
         pass_raw: bool,
         raw_agg_id: u64,
@@ -678,6 +667,16 @@ mod tests {
         )
     }
 
+    /// Wrap a `HashMap<u64, AggregationConfig>` for use with `make_worker`.
+    fn arc_configs(
+        configs: HashMap<u64, AggregationConfig>,
+    ) -> HashMap<u64, Arc<AggregationConfig>> {
+        configs
+            .into_iter()
+            .map(|(k, v)| (k, Arc::new(v)))
+            .collect()
+    }
+
     // -----------------------------------------------------------------------
     // Test: raw mode — each sample forwarded as SumAccumulator with sum==value
     // -----------------------------------------------------------------------
@@ -685,7 +684,8 @@ mod tests {
     #[test]
     fn test_raw_mode_forwarding() {
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker = make_worker(HashMap::new(), sink.clone(), true, 99, LateDataPolicy::Drop);
+        let mut worker =
+            make_worker(HashMap::new(), sink.clone(), true, 99, LateDataPolicy::Drop);
 
         let samples = vec![(1000_i64, 1.5_f64), (2000, 2.5), (3000, 7.0)];
         worker
@@ -722,7 +722,8 @@ mod tests {
         agg_configs.insert(1, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker =
+            make_worker(arc_configs(agg_configs), sink.clone(), false, 0, LateDataPolicy::Drop);
 
         // Samples in window [0, 10000ms): sum should be 1+2+3=6.
         // Send one at a time so the watermark advances incrementally —
@@ -780,7 +781,8 @@ mod tests {
         agg_configs.insert(2, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker =
+            make_worker(arc_configs(agg_configs), sink.clone(), false, 0, LateDataPolicy::Drop);
 
         // Sample at t=15000ms → goes to pane 10000ms
         // previous_wm == i64::MIN → no windows close
@@ -847,7 +849,8 @@ mod tests {
         agg_configs.insert(3, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker =
+            make_worker(arc_configs(agg_configs), sink.clone(), false, 0, LateDataPolicy::Drop);
 
         // Feed two series in the same window [0, 10000ms)
         worker
@@ -910,7 +913,7 @@ mod tests {
 
         let sink = Arc::new(CapturingOutputSink::new());
         let mut worker = make_worker(
-            agg_configs.clone(),
+            arc_configs(agg_configs.clone()),
             sink.clone(),
             false,
             0,
@@ -995,7 +998,7 @@ mod tests {
 
         let sink = Arc::new(CapturingOutputSink::new());
         let mut worker = make_worker(
-            agg_configs.clone(),
+            arc_configs(agg_configs.clone()),
             sink.clone(),
             false,
             0,
@@ -1095,7 +1098,7 @@ mod tests {
             0,
             rx,
             sink.clone(),
-            agg_configs,
+            arc_configs(agg_configs),
             WorkerRuntimeConfig {
                 max_buffer_per_series: 10_000,
                 allowed_lateness_ms: 0,
@@ -1139,7 +1142,7 @@ mod tests {
             0,
             rx,
             sink.clone(),
-            agg_configs,
+            arc_configs(agg_configs),
             WorkerRuntimeConfig {
                 max_buffer_per_series: 10_000,
                 allowed_lateness_ms: 15_000,
@@ -1221,7 +1224,7 @@ aggregations:
             "aggregation 10 should be present"
         );
 
-        let agg_configs = streaming_config.get_all_aggregation_configs().clone();
+        let agg_configs = arc_configs(streaming_config.get_all_aggregation_configs().clone());
         let sink = Arc::new(CapturingOutputSink::new());
         let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
 
