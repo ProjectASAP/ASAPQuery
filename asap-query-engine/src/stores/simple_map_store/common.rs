@@ -1,5 +1,5 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 pub type MetricID = u32;
@@ -46,84 +46,78 @@ impl InternTable {
     }
 }
 
-/// Mutable (active) epoch: accepts inserts.
+/// Mutable (active) epoch: pure append-only insert, O(1) amortized.
 ///
-/// Optimization 1: flat `HashMap<(MetricID, TimestampRange), _>` replaces the nested
-///   `HashMap<MetricID, BTreeMap<TimestampRange, _>>`, giving O(1) inserts and lookups.
+/// Raw entries are stored in insertion order — no sorting, no deduplication, no index
+/// maintenance during writes.  All ordering work is deferred to `seal()`, which is
+/// called at most once per epoch (at rotation time).  This matches VictoriaMetrics'
+/// rawRows → in-memory part pipeline.
 ///
-/// Optimization 3 (time-primary index): `window_to_ids` is a `BTreeMap` keyed by
-///   TimestampRange so range queries scan windows in order rather than scanning every
-///   label.  Each value is a sorted `Vec<MetricID>` (binary-search dedup on insert).
+/// Queries on the active epoch do a bounded linear scan (epoch size ≤ epoch_capacity ×
+/// labels), which is acceptable because the vast majority of historical data lives in
+/// sealed (already-sorted) epochs.
 pub struct MutableEpoch {
-    /// Primary storage: (MetricID, TimestampRange) → aggregates.
-    pub data: HashMap<(MetricID, TimestampRange), Vec<Arc<dyn AggregateCore>>>,
-    /// Time-primary index: window → sorted Vec<MetricID>.  BTreeMap enables O(log N)
-    /// range scan without touching labels that have no data in the query window.
-    pub window_to_ids: BTreeMap<TimestampRange, Vec<MetricID>>,
+    /// Append-only raw inserts.  Sorted only at seal() time.
+    pub raw: Vec<(TimestampRange, MetricID, Arc<dyn AggregateCore>)>,
+    /// Distinct windows for rotation threshold — O(1) insert, O(1) len.
+    windows: HashSet<TimestampRange>,
+    /// Epoch time bounds for O(1) skip check, updated incrementally on insert.
+    min_start: Option<u64>,
+    max_end: Option<u64>,
 }
 
 impl MutableEpoch {
     pub fn new() -> Self {
         Self {
-            data: HashMap::new(),
-            window_to_ids: BTreeMap::new(),
+            raw: Vec::new(),
+            windows: HashSet::new(),
+            min_start: None,
+            max_end: None,
         }
     }
 
     pub fn window_count(&self) -> usize {
-        self.window_to_ids.len()
+        self.windows.len()
     }
 
-    #[allow(dead_code)]
-    pub fn is_empty(&self) -> bool {
-        self.window_to_ids.is_empty()
+    /// Returns `(min_start, max_end)` across all windows, or `None` if empty.
+    /// Used by callers for the epoch-skip check: `min_start > end || max_end < start`.
+    pub fn time_bounds(&self) -> Option<(u64, u64)> {
+        match (self.min_start, self.max_end) {
+            (Some(s), Some(e)) => Some((s, e)),
+            _ => None,
+        }
     }
 
-    pub fn min_tr(&self) -> Option<TimestampRange> {
-        self.window_to_ids.keys().next().copied()
-    }
-
-    pub fn max_tr(&self) -> Option<TimestampRange> {
-        self.window_to_ids.keys().next_back().copied()
-    }
-
+    /// O(1) amortized: Vec push + HashSet insert + two scalar comparisons.
     pub fn insert(
         &mut self,
         metric_id: MetricID,
         range: TimestampRange,
         agg: Arc<dyn AggregateCore>,
     ) {
-        self.data.entry((metric_id, range)).or_default().push(agg);
-        // Maintain sorted Vec<MetricID> in time-primary index.
-        let ids = self.window_to_ids.entry(range).or_default();
-        let pos = ids.partition_point(|&id| id < metric_id);
-        if ids.get(pos) != Some(&metric_id) {
-            ids.insert(pos, metric_id);
-        }
+        self.raw.push((range, metric_id, agg));
+        self.windows.insert(range);
+        self.min_start = Some(self.min_start.map_or(range.0, |m| m.min(range.0)));
+        self.max_end = Some(self.max_end.map_or(range.1, |m| m.max(range.1)));
     }
 
-    /// Seal this epoch into a cache-friendly flat sorted array.
+    /// Consume this epoch and produce an immutable SealedEpoch by sorting in-place.
+    /// O(M log M) where M = number of raw entries — paid once at rotation, not at query time.
     pub fn seal(self) -> SealedEpoch {
-        let mut entries: Vec<(TimestampRange, MetricID, Arc<dyn AggregateCore>)> = self
-            .data
-            .into_iter()
-            .flat_map(|((metric_id, tr), aggs)| {
-                aggs.into_iter().map(move |agg| (tr, metric_id, agg))
-            })
-            .collect();
-        // Sort by (TimestampRange, MetricID): windows contiguous, labels ordered within window.
+        let min_start = self.min_start;
+        let max_end = self.max_end;
+        let mut entries = self.raw;
         entries.sort_unstable_by_key(|(tr, metric_id, _)| (*tr, *metric_id));
-        let min_tr = entries.first().map(|(tr, _, _)| *tr);
-        let max_tr = entries.last().map(|(tr, _, _)| *tr);
         SealedEpoch {
             entries,
-            min_tr,
-            max_tr,
+            min_start,
+            max_end,
         }
     }
 
-    /// Stream results for [start, end] into `out` using the time-primary BTreeMap index.
-    /// Only visits labels that actually have data in matching windows — O(log N + actual_matches).
+    /// Linear scan over raw entries for [start, end] — O(M) where M ≤ epoch_capacity × L.
+    /// Acceptable because: (a) the epoch is bounded, (b) most data is in sealed epochs.
     pub fn range_query_into(
         &self,
         start: u64,
@@ -131,37 +125,26 @@ impl MutableEpoch {
         out: &mut MetricBucketMap,
         matched_windows: &mut Vec<TimestampRange>,
     ) {
-        for (&tr, metric_ids) in self.window_to_ids.range((start, 0)..=(end, u64::MAX)) {
-            if tr.1 > end {
+        for (tr, metric_id, agg) in &self.raw {
+            if tr.0 < start || tr.0 > end || tr.1 > end {
                 continue;
             }
-            for &metric_id in metric_ids {
-                if let Some(aggs) = self.data.get(&(metric_id, tr)) {
-                    let slot = out.entry(metric_id).or_default();
-                    for agg in aggs {
-                        slot.push((tr, Arc::clone(agg)));
-                        matched_windows.push(tr);
-                    }
-                }
-            }
+            out.entry(*metric_id)
+                .or_default()
+                .push((*tr, Arc::clone(agg)));
+            matched_windows.push(*tr);
         }
     }
 
-    /// Exact match for a single window using the time-primary index.
+    /// Linear scan for exact window match — O(M), bounded.
     pub fn exact_query(
         &self,
         range: TimestampRange,
     ) -> Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> {
-        let ids = self.window_to_ids.get(&range)?;
-        if ids.is_empty() {
-            return None;
-        }
         let mut out = Vec::new();
-        for &metric_id in ids {
-            if let Some(aggs) = self.data.get(&(metric_id, range)) {
-                for agg in aggs {
-                    out.push((metric_id, Arc::clone(agg)));
-                }
+        for (tr, metric_id, agg) in &self.raw {
+            if *tr == range {
+                out.push((*metric_id, Arc::clone(agg)));
             }
         }
         if out.is_empty() {
@@ -173,34 +156,39 @@ impl MutableEpoch {
 
     /// Remove specific windows (ReadBased cleanup).
     pub fn remove_windows(&mut self, windows: &[TimestampRange]) {
-        for &window in windows {
-            if let Some(ids) = self.window_to_ids.remove(&window) {
-                for metric_id in ids {
-                    self.data.remove(&(metric_id, window));
-                }
-            }
-        }
+        let window_set: HashSet<TimestampRange> = windows.iter().copied().collect();
+        self.raw.retain(|(tr, _, _)| !window_set.contains(tr));
+        self.windows.retain(|tr| !window_set.contains(tr));
+        // Recompute bounds (cleanup is rare, linear scan is fine).
+        self.min_start = self.raw.iter().map(|(tr, _, _)| tr.0).min();
+        self.max_end = self.raw.iter().map(|(tr, _, _)| tr.1).max();
     }
 }
 
 /// Sealed (immutable) epoch: flat sorted `Vec` for cache-friendly range scans.
 ///
-/// Optimization 2: once an epoch is full and rotated, it is converted to a contiguous
-/// array sorted by `(TimestampRange, MetricID)`.  Range queries use binary search to
-/// find the start position and then do a linear scan — no pointer chasing through
-/// nested HashMap/BTreeMap nodes.
+/// Produced by `MutableEpoch::seal()`.  Entries are sorted by `(TimestampRange, MetricID)`:
+/// all entries for the same window are contiguous, which is cache-friendly for both
+/// range queries (binary-search start + linear scan) and exact queries.
 pub struct SealedEpoch {
-    /// Sorted by (TimestampRange, MetricID).  All entries for the same window are
-    /// contiguous; within a window entries are ordered by MetricID.
+    /// Sorted by (TimestampRange, MetricID).
     pub entries: Vec<(TimestampRange, MetricID, Arc<dyn AggregateCore>)>,
-    /// Precomputed min/max for O(1) epoch-skip check.
-    pub min_tr: Option<TimestampRange>,
-    pub max_tr: Option<TimestampRange>,
+    /// Precomputed for O(1) epoch-skip check.
+    pub min_start: Option<u64>,
+    pub max_end: Option<u64>,
 }
 
 impl SealedEpoch {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// Returns `(min_start, max_end)`, or `None` if empty.
+    pub fn time_bounds(&self) -> Option<(u64, u64)> {
+        match (self.min_start, self.max_end) {
+            (Some(s), Some(e)) => Some((s, e)),
+            _ => None,
+        }
     }
 
     /// Binary-search start + linear scan — O(log N + actual_matches), cache-friendly.
@@ -246,16 +234,15 @@ impl SealedEpoch {
         }
     }
 
-    /// Remove specific windows (ReadBased cleanup).  Rebuilds the Vec in one pass.
+    /// Remove specific windows (ReadBased cleanup).  Rebuilds Vec in one pass.
     pub fn remove_windows(&mut self, windows: &[TimestampRange]) {
-        let window_set: std::collections::HashSet<TimestampRange> =
-            windows.iter().copied().collect();
+        let window_set: HashSet<TimestampRange> = windows.iter().copied().collect();
         self.entries.retain(|(tr, _, _)| !window_set.contains(tr));
-        self.min_tr = self.entries.first().map(|(tr, _, _)| *tr);
-        self.max_tr = self.entries.last().map(|(tr, _, _)| *tr);
+        self.min_start = self.entries.iter().map(|(tr, _, _)| tr.0).min();
+        self.max_end = self.entries.iter().map(|(tr, _, _)| tr.1).max();
     }
 
-    /// Deduplicated windows (entries are sorted so consecutive dupes are adjacent).
+    /// Deduplicated windows (entries sorted, so consecutive dupes are adjacent).
     /// Used to purge `read_counts` when this epoch is dropped.
     pub fn unique_windows(&self) -> Vec<TimestampRange> {
         let mut windows: Vec<TimestampRange> = self.entries.iter().map(|(tr, _, _)| *tr).collect();

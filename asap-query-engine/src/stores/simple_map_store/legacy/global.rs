@@ -362,11 +362,8 @@ impl Store for LegacySimpleMapStoreGlobal {
             let mut mid: MetricBucketMap = HashMap::with_capacity(per_key.intern.len());
 
             // Query current (mutable) epoch.
-            if let (Some(min), Some(max)) = (
-                per_key.current_epoch.min_tr(),
-                per_key.current_epoch.max_tr(),
-            ) {
-                if !(min.0 > end || max.1 < start) {
+            if let Some((min_start, max_end)) = per_key.current_epoch.time_bounds() {
+                if !(min_start > end || max_end < start) {
                     per_key.current_epoch.range_query_into(
                         start,
                         end,
@@ -378,13 +375,11 @@ impl Store for LegacySimpleMapStoreGlobal {
 
             // Query sealed epochs; skip those with no overlap.
             for epoch in per_key.sealed_epochs.values() {
-                match (epoch.min_tr, epoch.max_tr) {
-                    (Some(min), Some(max)) => {
-                        if min.0 > end || max.1 < start {
-                            continue;
-                        }
-                    }
-                    _ => continue, // empty epoch
+                let Some((min_start, max_end)) = epoch.time_bounds() else {
+                    continue;
+                };
+                if min_start > end || max_end < start {
+                    continue;
                 }
                 epoch.range_query_into(start, end, &mut mid, &mut matched_windows);
             }
