@@ -7,6 +7,7 @@ use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
 use crate::precompute_engine::worker::{Worker, WorkerRuntimeConfig};
 use axum::{routing::post, Router};
+use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -53,9 +54,14 @@ impl PrecomputeEngine {
         // Build the router
         let router = SeriesRouter::new(senders);
 
-        // Build aggregation config map from streaming config
-        let agg_configs: HashMap<u64, _> =
-            self.streaming_config.get_all_aggregation_configs().clone();
+        // Build aggregation config map from streaming config, wrapping each config
+        // in Arc so all workers share one copy per aggregation (no N×M deep clones).
+        let agg_configs: HashMap<u64, Arc<AggregationConfig>> = self
+            .streaming_config
+            .get_all_aggregation_configs()
+            .iter()
+            .map(|(&id, cfg)| (id, Arc::new(cfg.clone())))
+            .collect();
 
         // Spawn workers
         let mut worker_handles = Vec::with_capacity(num_workers);

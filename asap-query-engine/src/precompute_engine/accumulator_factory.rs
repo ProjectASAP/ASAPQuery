@@ -6,6 +6,24 @@ use crate::precompute_operators::{
 };
 use sketch_db_common::aggregation_config::AggregationConfig;
 
+/// Generate the two boilerplate clone-based `AccumulatorUpdater` methods
+/// for updaters whose inner `acc` field implements `Clone + AggregateCore`.
+/// Not applicable to `IncreaseAccumulatorUpdater` (its `acc` is `Option<_>`
+/// with non-trivial `None` handling).
+macro_rules! impl_clone_accumulator_methods {
+    ($acc_field:ident) => {
+        fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
+            let result = Box::new(self.$acc_field.clone());
+            self.reset();
+            result
+        }
+
+        fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
+            Box::new(self.$acc_field.clone())
+        }
+    };
+}
+
 /// Trait for feeding samples into accumulators in the precompute engine.
 ///
 /// This provides a uniform interface over all accumulator types so that the
@@ -65,15 +83,7 @@ impl AccumulatorUpdater for SumAccumulatorUpdater {
         self.update_single(value, timestamp_ms);
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = SumAccumulator::new();
@@ -115,15 +125,7 @@ impl AccumulatorUpdater for MinMaxAccumulatorUpdater {
         self.update_single(value, timestamp_ms);
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = MinMaxAccumulator::new(self.sub_type.clone());
@@ -178,6 +180,7 @@ impl AccumulatorUpdater for IncreaseAccumulatorUpdater {
         self.update_single(value, timestamp_ms);
     }
 
+    // Hand-written: acc is Option<_> with non-trivial None handling.
     fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
         let acc = self.acc.take().unwrap_or_else(|| {
             IncreaseAccumulator::new(Measurement::new(0.0), 0, Measurement::new(0.0), 0)
@@ -239,15 +242,7 @@ impl AccumulatorUpdater for KllAccumulatorUpdater {
         self.update_single(value, timestamp_ms);
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = DatasketchesKLLAccumulator::new(self.k);
@@ -294,15 +289,7 @@ impl AccumulatorUpdater for MultipleSumUpdater {
         self.acc.update(key.clone(), value);
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = MultipleSumAccumulator::new();
@@ -345,15 +332,7 @@ impl AccumulatorUpdater for MultipleMinMaxUpdater {
         self.acc.update(key.clone(), value);
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = MultipleMinMaxAccumulator::new(self.sub_type.clone());
@@ -414,15 +393,7 @@ impl AccumulatorUpdater for MultipleIncreaseUpdater {
         }
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = MultipleIncreaseAccumulator::new();
@@ -486,15 +457,7 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
         }
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = CountMinSketchAccumulator::new(self.row_num, self.col_num);
@@ -541,15 +504,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
         self.acc.update(key, value);
     }
 
-    fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
-        let result = Box::new(self.acc.clone());
-        self.reset();
-        result
-    }
-
-    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
-        Box::new(self.acc.clone())
-    }
+    impl_clone_accumulator_methods!(acc);
 
     fn reset(&mut self) {
         self.acc = HydraKllSketchAccumulator::new(self.row_num, self.col_num, self.k);
@@ -563,6 +518,67 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
         // Rough estimate: each cell is a KLL sketch
         std::mem::size_of::<HydraKllSketchAccumulator>() + self.row_num * self.col_num * 4096
     }
+}
+
+// ---------------------------------------------------------------------------
+// Config helpers
+// ---------------------------------------------------------------------------
+
+/// Return `true` if `config` produces a keyed (MultipleSubpopulation) updater,
+/// without allocating an updater object.
+///
+/// **Contract:** this must agree with every concrete `AccumulatorUpdater::is_keyed()`
+/// implementation. When a new accumulator type is added, update both here and
+/// in the corresponding struct.
+pub fn config_is_keyed(config: &AggregationConfig) -> bool {
+    matches!(
+        config.aggregation_type.as_str(),
+        "MultipleSubpopulation"
+            | "MultipleSum"
+            | "multiple_sum"
+            | "MultipleIncrease"
+            | "multiple_increase"
+            | "MultipleMinMax"
+            | "multiple_min_max"
+            | "CountMinSketch"
+            | "count_min_sketch"
+            | "CMS"
+            | "cms"
+            | "HydraKLL"
+            | "hydra_kll"
+    )
+}
+
+/// Extract the KLL `k` parameter. Capital `"K"` takes precedence over lowercase
+/// `"k"` to match the convention used by the top-level aggregation type arms.
+fn kll_k_param(config: &AggregationConfig) -> u16 {
+    config
+        .parameters
+        .get("K")
+        .or_else(|| config.parameters.get("k"))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(200) as u16
+}
+
+/// Extract `(row_num, col_num)` for CMS / HydraKLL configs.
+fn cms_params(config: &AggregationConfig) -> (usize, usize) {
+    let row_num = config
+        .parameters
+        .get("row_num")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(4) as usize;
+    let col_num = config
+        .parameters
+        .get("col_num")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(1000) as usize;
+    (row_num, col_num)
+}
+
+/// Extract `(row_num, col_num, k)` for HydraKLL configs.
+fn hydra_kll_params(config: &AggregationConfig) -> (usize, usize, u16) {
+    let (row_num, col_num) = cms_params(config);
+    (row_num, col_num, kll_k_param(config))
 }
 
 // ---------------------------------------------------------------------------
@@ -581,12 +597,7 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
             "Max" | "max" => Box::new(MinMaxAccumulatorUpdater::new("max".to_string())),
             "Increase" | "increase" => Box::new(IncreaseAccumulatorUpdater::new()),
             "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
-                let k = config
-                    .parameters
-                    .get("k")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(200) as u16;
-                Box::new(KllAccumulatorUpdater::new(k))
+                Box::new(KllAccumulatorUpdater::new(kll_k_param(config)))
             }
             other => {
                 tracing::warn!(
@@ -602,34 +613,11 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
             "Max" | "max" => Box::new(MultipleMinMaxUpdater::new("max".to_string())),
             "Increase" | "increase" => Box::new(MultipleIncreaseUpdater::new()),
             "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
-                let row_num = config
-                    .parameters
-                    .get("row_num")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(4) as usize;
-                let col_num = config
-                    .parameters
-                    .get("col_num")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1000) as usize;
+                let (row_num, col_num) = cms_params(config);
                 Box::new(CmsAccumulatorUpdater::new(row_num, col_num))
             }
             "HydraKLL" | "hydra_kll" => {
-                let row_num = config
-                    .parameters
-                    .get("row_num")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(4) as usize;
-                let col_num = config
-                    .parameters
-                    .get("col_num")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(1000) as usize;
-                let k = config
-                    .parameters
-                    .get("k")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(200) as u16;
+                let (row_num, col_num, k) = hydra_kll_params(config);
                 Box::new(HydraKllAccumulatorUpdater::new(row_num, col_num, k))
             }
             other => {
@@ -640,15 +628,9 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
                 Box::new(MultipleSumUpdater::new())
             }
         },
-        // Top-level aggregation types (e.g. "DatasketchesKLL" directly in aggregationType)
+        // Top-level aggregation type aliases
         "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
-            let k = config
-                .parameters
-                .get("K")
-                .or_else(|| config.parameters.get("k"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(200) as u16;
-            Box::new(KllAccumulatorUpdater::new(k))
+            Box::new(KllAccumulatorUpdater::new(kll_k_param(config)))
         }
         "MultipleSum" | "multiple_sum" => Box::new(MultipleSumUpdater::new()),
         "MultipleIncrease" | "multiple_increase" => Box::new(MultipleIncreaseUpdater::new()),
@@ -664,35 +646,11 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
         "Max" | "max" => Box::new(MinMaxAccumulatorUpdater::new("max".to_string())),
         "Increase" | "increase" => Box::new(IncreaseAccumulatorUpdater::new()),
         "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
-            let row_num = config
-                .parameters
-                .get("row_num")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(4) as usize;
-            let col_num = config
-                .parameters
-                .get("col_num")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1000) as usize;
+            let (row_num, col_num) = cms_params(config);
             Box::new(CmsAccumulatorUpdater::new(row_num, col_num))
         }
         "HydraKLL" | "hydra_kll" => {
-            let row_num = config
-                .parameters
-                .get("row_num")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(4) as usize;
-            let col_num = config
-                .parameters
-                .get("col_num")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(1000) as usize;
-            let k = config
-                .parameters
-                .get("K")
-                .or_else(|| config.parameters.get("k"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(200) as u16;
+            let (row_num, col_num, k) = hydra_kll_params(config);
             Box::new(HydraKllAccumulatorUpdater::new(row_num, col_num, k))
         }
         other => {
@@ -777,5 +735,102 @@ mod tests {
         // After reset, should produce a fresh accumulator
         let acc = updater.take_accumulator();
         assert_eq!(acc.type_name(), "SumAccumulator");
+    }
+
+    #[test]
+    fn test_config_is_keyed() {
+        use std::collections::HashMap;
+
+        let make_config = |agg_type: &str, sub_type: &str| {
+            AggregationConfig::new(
+                1,
+                agg_type.to_string(),
+                sub_type.to_string(),
+                HashMap::new(),
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                String::new(),
+                60,
+                "m".to_string(),
+                "m".to_string(),
+                None,
+                None,
+                Some(60),
+                Some(0),
+                None,
+                None,
+                None,
+            )
+        };
+
+        // Non-keyed types
+        assert!(!config_is_keyed(&make_config("SingleSubpopulation", "Sum")));
+        assert!(!config_is_keyed(&make_config("Sum", "")));
+        assert!(!config_is_keyed(&make_config("DatasketchesKLL", "")));
+        assert!(!config_is_keyed(&make_config("KLL", "")));
+        assert!(!config_is_keyed(&make_config("Increase", "")));
+
+        // Keyed types
+        assert!(config_is_keyed(&make_config("MultipleSubpopulation", "Sum")));
+        assert!(config_is_keyed(&make_config("MultipleSum", "")));
+        assert!(config_is_keyed(&make_config("MultipleIncrease", "")));
+        assert!(config_is_keyed(&make_config("MultipleMinMax", "")));
+        assert!(config_is_keyed(&make_config("CountMinSketch", "")));
+        assert!(config_is_keyed(&make_config("CMS", "")));
+        assert!(config_is_keyed(&make_config("HydraKLL", "")));
+
+        // Verify agreement with updater.is_keyed()
+        for (agg_type, sub_type) in &[
+            ("SingleSubpopulation", "Sum"),
+            ("MultipleSubpopulation", "Sum"),
+            ("MultipleSum", ""),
+            ("DatasketchesKLL", ""),
+            ("CountMinSketch", ""),
+        ] {
+            let config = make_config(agg_type, sub_type);
+            let updater = create_accumulator_updater(&config);
+            assert_eq!(
+                config_is_keyed(&config),
+                updater.is_keyed(),
+                "config_is_keyed disagrees with updater.is_keyed() for type={}",
+                agg_type
+            );
+        }
+    }
+
+    #[test]
+    fn test_kll_k_param_capital_k() {
+        // SingleSubpopulation/KLL with capital "K" param should use it (not default to 200)
+        use std::collections::HashMap;
+        let mut params = HashMap::new();
+        params.insert("K".to_string(), serde_json::Value::from(50_u64));
+        let config = AggregationConfig::new(
+            1,
+            "SingleSubpopulation".to_string(),
+            "DatasketchesKLL".to_string(),
+            params,
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            Some(60),
+            Some(0),
+            None,
+            None,
+            None,
+        );
+        let updater = create_accumulator_updater(&config);
+        let acc = updater.snapshot_accumulator();
+        let kll = acc
+            .as_any()
+            .downcast_ref::<crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator>()
+            .expect("should be KLL");
+        assert_eq!(kll.inner.k, 50, "k should be 50 from capital-K param");
     }
 }
