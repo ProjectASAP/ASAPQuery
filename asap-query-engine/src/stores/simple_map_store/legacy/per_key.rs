@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
 use crate::stores::simple_map_store::common::{
-    EpochData, EpochID, InternTable, MetricBucketMap, MetricID, TimestampRange,
+    EpochID, InternTable, MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
@@ -17,17 +17,20 @@ struct StoreKeyData {
     /// Label interning table (Optimization 1)
     intern: InternTable,
 
-    /// Epoch-partitioned storage (Optimization 2)
-    epochs: BTreeMap<EpochID, EpochData>,
+    /// Active epoch — always present, accepts inserts.
+    current_epoch: MutableEpoch,
 
-    /// Current epoch ID (monotonically increasing)
+    /// Sealed (immutable) epochs stored as flat sorted Vecs (Optimization 2).
+    sealed_epochs: BTreeMap<EpochID, SealedEpoch>,
+
+    /// Monotonically increasing ID of the current epoch.
     current_epoch_id: EpochID,
 
-    /// Max distinct time-windows per epoch before opening a new one.
+    /// Max distinct time-windows per epoch before sealing.
     /// None = unlimited (set on first insert from num_aggregates_to_retain).
     epoch_capacity: Option<usize>,
 
-    /// Max number of epochs to retain (O(1) drop of oldest when exceeded).
+    /// Max total epochs (1 current + sealed) to retain before dropping the oldest.
     max_epochs: usize,
 
     /// Track how many times each timestamp range has been read.
@@ -37,11 +40,10 @@ struct StoreKeyData {
 
 impl StoreKeyData {
     fn new() -> Self {
-        let mut epochs = BTreeMap::new();
-        epochs.insert(0u64, EpochData::new());
         Self {
             intern: InternTable::new(),
-            epochs,
+            current_epoch: MutableEpoch::new(),
+            sealed_epochs: BTreeMap::new(),
             current_epoch_id: 0,
             epoch_capacity: None,
             max_epochs: 4,
@@ -58,47 +60,39 @@ impl StoreKeyData {
         }
     }
 
-    /// O(1) epoch rotation: if current epoch is full, open new epoch and drop oldest if needed.
+    /// Seal the current epoch into a flat sorted Vec and open a fresh one.
+    /// Drops the oldest sealed epoch (O(1)) if total exceeds max_epochs.
     fn maybe_rotate_epoch(&mut self) {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
             _ => return, // unlimited
         };
 
-        let current_count = self
-            .epochs
-            .get(&self.current_epoch_id)
-            .map(|e| e.window_count())
-            .unwrap_or(0);
-
-        if current_count < capacity {
+        if self.current_epoch.window_count() < capacity {
             return;
         }
 
-        // Open new epoch
-        let new_epoch_id = self.current_epoch_id + 1;
-        self.epochs.insert(new_epoch_id, EpochData::new());
-        self.current_epoch_id = new_epoch_id;
+        // Seal current epoch → flat sorted Vec, then open a fresh MutableEpoch.
+        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::new());
+        let sealed = old.seal();
+        self.sealed_epochs.insert(self.current_epoch_id, sealed);
+        self.current_epoch_id += 1;
 
-        // Drop oldest epoch if we now exceed max_epochs (O(1))
-        if self.epochs.len() > self.max_epochs {
-            if let Some((&oldest_id, _)) = self.epochs.iter().next() {
-                if oldest_id != self.current_epoch_id {
-                    // Also purge read_counts for windows in the oldest epoch
-                    if let Some(oldest_epoch) = self.epochs.remove(&oldest_id) {
-                        let read_counts = self.read_counts.get_mut().unwrap();
-                        for window in &oldest_epoch.time_ranges {
-                            read_counts.remove(window);
-                        }
+        // Drop oldest sealed epoch if total epochs exceed the limit.
+        if 1 + self.sealed_epochs.len() > self.max_epochs {
+            if let Some((&oldest_id, _)) = self.sealed_epochs.iter().next() {
+                if let Some(oldest) = self.sealed_epochs.remove(&oldest_id) {
+                    let read_counts = self.read_counts.get_mut().unwrap();
+                    for window in oldest.unique_windows() {
+                        read_counts.remove(&window);
                     }
                 }
             }
         }
     }
 
-    /// Apply ReadBased cleanup across all epochs.
+    /// Apply ReadBased cleanup across current and sealed epochs.
     fn cleanup_read_based(&mut self, metric: &str, aggregation_id: u64, threshold: u64) {
-        // Access read_counts directly (we have &mut self so get_mut avoids the Mutex overhead)
         let read_counts = self.read_counts.get_mut().unwrap();
 
         let windows_to_remove: Vec<TimestampRange> = read_counts
@@ -119,16 +113,14 @@ impl StoreKeyData {
             read_counts.remove(window);
         }
 
-        // Remove from all epochs; drop empty epochs
-        for epoch in self.epochs.values_mut() {
-            epoch.remove_windows(&windows_to_remove);
-        }
-        self.epochs.retain(|_, epoch| !epoch.is_empty());
+        // Remove from current epoch.
+        self.current_epoch.remove_windows(&windows_to_remove);
 
-        // Ensure current epoch still exists
-        if !self.epochs.contains_key(&self.current_epoch_id) {
-            self.epochs.insert(self.current_epoch_id, EpochData::new());
-        }
+        // Remove from sealed epochs; drop any that become empty.
+        self.sealed_epochs.retain(|_, epoch| {
+            epoch.remove_windows(&windows_to_remove);
+            !epoch.is_empty()
+        });
     }
 }
 
@@ -283,13 +275,9 @@ impl LegacySimpleMapStorePerKey {
             let timestamp_range = (output.start_timestamp, output.end_timestamp);
             let metric_id: MetricID = data.intern.intern(output.key);
 
-            // Insert into current epoch
-            let current_epoch_id = data.current_epoch_id;
-            let epoch = data
-                .epochs
-                .get_mut(&current_epoch_id)
-                .expect("current epoch always exists");
-            epoch.insert(metric_id, timestamp_range, Arc::from(precompute));
+            // Insert into current (mutable) epoch.
+            data.current_epoch
+                .insert(metric_id, timestamp_range, Arc::from(precompute));
 
             // After each item, check if we should rotate (CircularBuffer, Optimization 2)
             if aggregation_config.aggregation_type != "DeltaSetAggregator"
@@ -459,24 +447,26 @@ impl Store for LegacySimpleMapStorePerKey {
 
         let range_scan_start_time = Instant::now();
 
-        // Accumulate by MetricID first (no intermediate flat Vec allocation).
         let mut mid: MetricBucketMap = HashMap::with_capacity(data.intern.len());
 
-        // Query each epoch; skip if time_ranges don't overlap [start, end]
-        for epoch in data.epochs.values() {
-            // Skip epoch if it has no windows overlapping [start, end]
-            if let (Some(&min_tr), Some(&max_tr)) = (
-                epoch.time_ranges.iter().next(),
-                epoch.time_ranges.iter().next_back(),
-            ) {
-                // min_tr.0 is the smallest start; max_tr.1 is the largest end
-                if min_tr.0 > end || max_tr.1 < start {
-                    continue;
-                }
-            } else {
-                continue; // empty epoch
+        // Query current (mutable) epoch.
+        if let (Some(min), Some(max)) = (data.current_epoch.min_tr(), data.current_epoch.max_tr()) {
+            if !(min.0 > end || max.1 < start) {
+                data.current_epoch
+                    .range_query_into(start, end, &mut mid, &mut matched_windows);
             }
+        }
 
+        // Query sealed epochs; skip those with no overlap.
+        for epoch in data.sealed_epochs.values() {
+            match (epoch.min_tr, epoch.max_tr) {
+                (Some(min), Some(max)) => {
+                    if min.0 > end || max.1 < start {
+                        continue;
+                    }
+                }
+                _ => continue, // empty epoch
+            }
             epoch.range_query_into(start, end, &mut mid, &mut matched_windows);
         }
 
@@ -601,19 +591,32 @@ impl Store for LegacySimpleMapStorePerKey {
         let mut found_match = false;
         let mut total_entries = 0;
 
-        // Search epochs newest-first for exact window match
-        for epoch in data.epochs.values().rev() {
-            if let Some(entries) = epoch.exact_query(timestamp_range) {
-                found_match = true;
-                for (metric_id, agg) in entries {
-                    let label = data.intern.resolve(metric_id).clone();
-                    results
-                        .entry(label)
-                        .or_default()
-                        .push((timestamp_range, agg));
-                    total_entries += 1;
+        // Check current epoch first (it is the newest).
+        if let Some(entries) = data.current_epoch.exact_query(timestamp_range) {
+            found_match = true;
+            for (metric_id, agg) in entries {
+                let label = data.intern.resolve(metric_id).clone();
+                results
+                    .entry(label)
+                    .or_default()
+                    .push((timestamp_range, agg));
+                total_entries += 1;
+            }
+        } else {
+            // Search sealed epochs newest-first; stop at first match.
+            for epoch in data.sealed_epochs.values().rev() {
+                if let Some(entries) = epoch.exact_query(timestamp_range) {
+                    found_match = true;
+                    for (metric_id, agg) in entries {
+                        let label = data.intern.resolve(metric_id).clone();
+                        results
+                            .entry(label)
+                            .or_default()
+                            .push((timestamp_range, agg));
+                        total_entries += 1;
+                    }
+                    break;
                 }
-                break; // exact match found in newest containing epoch
             }
         }
 

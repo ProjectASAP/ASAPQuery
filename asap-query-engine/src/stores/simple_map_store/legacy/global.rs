@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
 use crate::stores::simple_map_store::common::{
-    EpochData, EpochID, InternTable, MetricBucketMap, TimestampRange,
+    EpochID, InternTable, MetricBucketMap, MutableEpoch, SealedEpoch, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -16,27 +16,29 @@ struct PerKeyState {
     /// Label interning table (Optimization 1)
     intern: InternTable,
 
-    /// Epoch-partitioned storage (Optimization 2)
-    epochs: BTreeMap<EpochID, EpochData>,
+    /// Active epoch — always present, accepts inserts.
+    current_epoch: MutableEpoch,
 
-    /// Current epoch ID (monotonically increasing)
+    /// Sealed (immutable) epochs stored as flat sorted Vecs (Optimization 2).
+    sealed_epochs: BTreeMap<EpochID, SealedEpoch>,
+
+    /// Monotonically increasing ID of the current epoch.
     current_epoch_id: EpochID,
 
-    /// Max distinct time-windows per epoch before opening a new one.
+    /// Max distinct time-windows per epoch before sealing.
     /// None = unlimited (set on first insert from num_aggregates_to_retain).
     epoch_capacity: Option<usize>,
 
-    /// Max number of epochs to retain (O(1) drop of oldest when exceeded).
+    /// Max total epochs (1 current + sealed) to retain.
     max_epochs: usize,
 }
 
 impl PerKeyState {
     fn new() -> Self {
-        let mut epochs = BTreeMap::new();
-        epochs.insert(0u64, EpochData::new());
         Self {
             intern: InternTable::new(),
-            epochs,
+            current_epoch: MutableEpoch::new(),
+            sealed_epochs: BTreeMap::new(),
             current_epoch_id: 0,
             epoch_capacity: None,
             max_epochs: 4,
@@ -52,80 +54,34 @@ impl PerKeyState {
         }
     }
 
-    /// O(1) epoch rotation: if current epoch is full, open new epoch and drop oldest if needed.
-    /// Returns windows of the dropped epoch (for cleaning up read_counts).
+    /// Seal the current epoch into a flat sorted Vec and open a fresh one.
+    /// Returns the unique windows of the dropped epoch for read_counts cleanup.
     fn maybe_rotate_epoch(&mut self) -> Vec<TimestampRange> {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
             _ => return Vec::new(), // unlimited
         };
 
-        let current_count = self
-            .epochs
-            .get(&self.current_epoch_id)
-            .map(|e| e.window_count())
-            .unwrap_or(0);
-
-        if current_count < capacity {
+        if self.current_epoch.window_count() < capacity {
             return Vec::new();
         }
 
-        // Open new epoch
-        let new_epoch_id = self.current_epoch_id + 1;
-        self.epochs.insert(new_epoch_id, EpochData::new());
-        self.current_epoch_id = new_epoch_id;
+        // Seal current epoch → flat sorted Vec, then open a fresh MutableEpoch.
+        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::new());
+        let sealed = old.seal();
+        self.sealed_epochs.insert(self.current_epoch_id, sealed);
+        self.current_epoch_id += 1;
 
-        // Drop oldest epoch if we now exceed max_epochs (O(1))
-        if self.epochs.len() > self.max_epochs {
-            if let Some((&oldest_id, _)) = self.epochs.iter().next() {
-                if oldest_id != self.current_epoch_id {
-                    if let Some(oldest_epoch) = self.epochs.remove(&oldest_id) {
-                        return oldest_epoch.time_ranges.into_iter().collect();
-                    }
+        // Drop oldest sealed epoch if total exceeds the limit.
+        if 1 + self.sealed_epochs.len() > self.max_epochs {
+            if let Some((&oldest_id, _)) = self.sealed_epochs.iter().next() {
+                if let Some(oldest) = self.sealed_epochs.remove(&oldest_id) {
+                    return oldest.unique_windows();
                 }
             }
         }
 
         Vec::new()
-    }
-
-    /// Apply ReadBased cleanup across all epochs.
-    #[allow(dead_code)]
-    fn cleanup_read_based(
-        &mut self,
-        read_counts: &mut HashMap<TimestampRange, u64>,
-        metric: &str,
-        aggregation_id: u64,
-        threshold: u64,
-    ) {
-        let windows_to_remove: Vec<TimestampRange> = read_counts
-            .iter()
-            .filter(|(_, &count)| count >= threshold)
-            .map(|(range, _)| *range)
-            .collect();
-
-        if windows_to_remove.is_empty() {
-            return;
-        }
-
-        for window in &windows_to_remove {
-            debug!(
-                "Removed aggregate for {} aggregation_id {} window {}-{} (read_count >= threshold: {})",
-                metric, aggregation_id, window.0, window.1, threshold
-            );
-            read_counts.remove(window);
-        }
-
-        // Remove from all epochs; drop empty epochs
-        for epoch in self.epochs.values_mut() {
-            epoch.remove_windows(&windows_to_remove);
-        }
-        self.epochs.retain(|_, epoch| !epoch.is_empty());
-
-        // Ensure current epoch still exists
-        if !self.epochs.contains_key(&self.current_epoch_id) {
-            self.epochs.insert(self.current_epoch_id, EpochData::new());
-        }
     }
 }
 
@@ -262,19 +218,16 @@ impl Store for LegacySimpleMapStoreGlobal {
             // Intern the label key (Optimization 1)
             let metric_id = per_key.intern.intern(output.key);
 
-            // Insert into current epoch
-            let current_epoch_id = per_key.current_epoch_id;
-            let epoch = per_key
-                .epochs
-                .get_mut(&current_epoch_id)
-                .expect("current epoch always exists");
-            epoch.insert(metric_id, timestamp_range, Arc::from(precompute));
+            // Insert into current (mutable) epoch.
+            per_key
+                .current_epoch
+                .insert(metric_id, timestamp_range, Arc::from(precompute));
 
             // Apply retention policy if configured (but exclude DeltaSetAggregator)
             if aggregation_config.aggregation_type != "DeltaSetAggregator" {
                 match self.cleanup_policy {
                     CleanupPolicy::CircularBuffer => {
-                        // Optimization 2: O(1) epoch rotation
+                        // Seal current epoch and drop oldest if needed.
                         let dropped_windows = per_key.maybe_rotate_epoch();
                         if !dropped_windows.is_empty() {
                             if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
@@ -293,7 +246,6 @@ impl Store for LegacySimpleMapStoreGlobal {
                     CleanupPolicy::ReadBased => {
                         if let Some(threshold) = aggregation_config.read_count_threshold {
                             let rc_map = data.read_counts.entry(store_key).or_default();
-                            // We need to temporarily detach to satisfy borrow checker
                             let windows_to_remove: Vec<TimestampRange> = rc_map
                                 .iter()
                                 .filter(|(_, &count)| count >= threshold)
@@ -310,14 +262,11 @@ impl Store for LegacySimpleMapStoreGlobal {
                                 }
 
                                 let per_key = data.stores.get_mut(&store_key).unwrap();
-                                for epoch in per_key.epochs.values_mut() {
+                                per_key.current_epoch.remove_windows(&windows_to_remove);
+                                per_key.sealed_epochs.retain(|_, epoch| {
                                     epoch.remove_windows(&windows_to_remove);
-                                }
-                                per_key.epochs.retain(|_, epoch| !epoch.is_empty());
-                                if !per_key.epochs.contains_key(&per_key.current_epoch_id) {
-                                    let cur_id = per_key.current_epoch_id;
-                                    per_key.epochs.insert(cur_id, EpochData::new());
-                                }
+                                    !epoch.is_empty()
+                                });
                             }
                         }
                     }
@@ -401,7 +350,6 @@ impl Store for LegacySimpleMapStoreGlobal {
 
         let range_scan_start_time = Instant::now();
 
-        // Accumulate by MetricID first (no intermediate flat Vec allocation).
         let mut mid: MetricBucketMap = {
             let per_key = match data.stores.get(&store_key) {
                 Some(pk) => pk,
@@ -413,21 +361,34 @@ impl Store for LegacySimpleMapStoreGlobal {
 
             let mut mid: MetricBucketMap = HashMap::with_capacity(per_key.intern.len());
 
-            for epoch in per_key.epochs.values() {
-                // Skip epoch if it has no windows overlapping [start, end]
-                if let (Some(&min_tr), Some(&max_tr)) = (
-                    epoch.time_ranges.iter().next(),
-                    epoch.time_ranges.iter().next_back(),
-                ) {
-                    if min_tr.0 > end || max_tr.1 < start {
-                        continue;
-                    }
-                } else {
-                    continue; // empty epoch
+            // Query current (mutable) epoch.
+            if let (Some(min), Some(max)) = (
+                per_key.current_epoch.min_tr(),
+                per_key.current_epoch.max_tr(),
+            ) {
+                if !(min.0 > end || max.1 < start) {
+                    per_key.current_epoch.range_query_into(
+                        start,
+                        end,
+                        &mut mid,
+                        &mut matched_windows,
+                    );
                 }
+            }
 
+            // Query sealed epochs; skip those with no overlap.
+            for epoch in per_key.sealed_epochs.values() {
+                match (epoch.min_tr, epoch.max_tr) {
+                    (Some(min), Some(max)) => {
+                        if min.0 > end || max.1 < start {
+                            continue;
+                        }
+                    }
+                    _ => continue, // empty epoch
+                }
                 epoch.range_query_into(start, end, &mut mid, &mut matched_windows);
             }
+
             mid
         };
 
@@ -536,19 +497,32 @@ impl Store for LegacySimpleMapStoreGlobal {
                 }
             };
 
-            // Search epochs newest-first for exact window match
-            for epoch in per_key.epochs.values().rev() {
-                if let Some(entries) = epoch.exact_query(timestamp_range) {
-                    found_match = true;
-                    for (metric_id, agg) in entries {
-                        let label = per_key.intern.resolve(metric_id).clone();
-                        results
-                            .entry(label)
-                            .or_default()
-                            .push((timestamp_range, agg));
-                        total_entries += 1;
+            // Check current epoch first (it is the newest).
+            if let Some(entries) = per_key.current_epoch.exact_query(timestamp_range) {
+                found_match = true;
+                for (metric_id, agg) in entries {
+                    let label = per_key.intern.resolve(metric_id).clone();
+                    results
+                        .entry(label)
+                        .or_default()
+                        .push((timestamp_range, agg));
+                    total_entries += 1;
+                }
+            } else {
+                // Search sealed epochs newest-first; stop at first match.
+                for epoch in per_key.sealed_epochs.values().rev() {
+                    if let Some(entries) = epoch.exact_query(timestamp_range) {
+                        found_match = true;
+                        for (metric_id, agg) in entries {
+                            let label = per_key.intern.resolve(metric_id).clone();
+                            results
+                                .entry(label)
+                                .or_default()
+                                .push((timestamp_range, agg));
+                            total_entries += 1;
+                        }
+                        break;
                     }
-                    break; // exact match found in newest containing epoch
                 }
             }
         }
@@ -568,7 +542,7 @@ impl Store for LegacySimpleMapStoreGlobal {
             );
         }
 
-        // Now update read count (outer Mutex held — no inner Mutex needed)
+        // Update read count (outer Mutex held — no inner Mutex needed)
         if found_match {
             let rc_map = data.read_counts.entry(store_key).or_default();
             *rc_map.entry(timestamp_range).or_insert(0) += 1;
