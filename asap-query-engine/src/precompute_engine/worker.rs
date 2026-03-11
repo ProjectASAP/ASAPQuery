@@ -909,7 +909,13 @@ mod tests {
         agg_configs.insert(11, config.clone());
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker = make_worker(agg_configs.clone(), sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(
+            agg_configs.clone(),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
 
         worker
             .process_samples("cpu{host=\"A\"}", vec![(1_000_i64, 1.0)])
@@ -961,12 +967,18 @@ mod tests {
             .downcast_ref::<MultipleSumAccumulator>()
             .expect("Arroyo payload should deserialize to MultipleSumAccumulator");
 
-        assert_eq!(handcrafted_output.aggregation_id, arroyo_output.aggregation_id);
+        assert_eq!(
+            handcrafted_output.aggregation_id,
+            arroyo_output.aggregation_id
+        );
         assert_eq!(
             handcrafted_output.start_timestamp,
             arroyo_output.start_timestamp
         );
-        assert_eq!(handcrafted_output.end_timestamp, arroyo_output.end_timestamp);
+        assert_eq!(
+            handcrafted_output.end_timestamp,
+            arroyo_output.end_timestamp
+        );
         assert_eq!(handcrafted_output.key, arroyo_output.key);
         assert_eq!(handcrafted_acc.sums, arroyo_acc.sums);
     }
@@ -982,12 +994,19 @@ mod tests {
         agg_configs.insert(12, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(agg_configs.clone(), sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(
+            agg_configs.clone(),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
 
         let samples = vec![(1_000_i64, 10.0), (5_000_i64, 20.0), (9_000_i64, 30.0)];
         for &(ts, value) in &samples {
-            worker.process_samples("latency", vec![(ts, value)]).unwrap();
+            worker
+                .process_samples("latency", vec![(ts, value)])
+                .unwrap();
         }
         worker
             .process_samples("latency", vec![(10_000_i64, 0.0)])
@@ -1028,16 +1047,23 @@ mod tests {
             .downcast_ref::<DatasketchesKLLAccumulator>()
             .expect("Arroyo payload should deserialize to DatasketchesKLLAccumulator");
 
-        assert_eq!(handcrafted_output.aggregation_id, arroyo_output.aggregation_id);
+        assert_eq!(
+            handcrafted_output.aggregation_id,
+            arroyo_output.aggregation_id
+        );
         assert_eq!(
             handcrafted_output.start_timestamp,
             arroyo_output.start_timestamp
         );
-        assert_eq!(handcrafted_output.end_timestamp, arroyo_output.end_timestamp);
+        assert_eq!(
+            handcrafted_output.end_timestamp,
+            arroyo_output.end_timestamp
+        );
         assert_eq!(handcrafted_output.key, None);
-        assert_eq!(arroyo_output.key, Some(KeyByLabelValues::new_with_labels(vec![
-            String::new()
-        ])));
+        assert_eq!(
+            arroyo_output.key,
+            Some(KeyByLabelValues::new_with_labels(vec![String::new()]))
+        );
         assert_eq!(handcrafted_acc.inner.k, arroyo_acc.inner.k);
         assert_eq!(
             handcrafted_acc.inner.sketch.get_n(),
