@@ -102,6 +102,15 @@ async fn handle_otlp_http(
     Ok(Json(serde_json::json!({"rejected": 0})))
 }
 
+/// A parsed metric data point: name, labels, timestamp (nanos), and numeric value.
+#[derive(Debug)]
+pub struct MetricPoint {
+    pub name: String,
+    pub labels: HashMap<String, String>,
+    pub timestamp_nanos: u64,
+    pub value: f64,
+}
+
 fn process_otlp_request(request: &ExportMetricsServiceRequest) {
     let resource_count = request.resource_metrics.len();
     let total_points = otlp_to_record_count(request);
@@ -109,6 +118,14 @@ fn process_otlp_request(request: &ExportMetricsServiceRequest) {
         "OTLP ingest: received {} resource metrics, {} total data points",
         resource_count, total_points
     );
+
+    let points = otlp_to_metric_points(request);
+    if let Some(first) = points.first() {
+        debug!(
+            "OTLP parse example: {} {:?} @{}ns = {}",
+            first.name, first.labels, first.timestamp_nanos, first.value
+        );
+    }
     // TODO: Pass metrics to precompute engine.
 }
 
@@ -160,7 +177,134 @@ fn otlp_to_record_count(request: &ExportMetricsServiceRequest) -> usize {
     count
 }
 
-#[allow(dead_code)]
+/// Parse OTLP request and convert to metric data points (name, labels, timestamp, value).
+fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoint> {
+    let mut points = Vec::new();
+    for resource_metrics in &request.resource_metrics {
+        let resource_attrs = resource_metrics
+            .resource
+            .as_ref()
+            .map(|r| attributes_to_map(&r.attributes))
+            .unwrap_or_default();
+
+        for scope_metrics in &resource_metrics.scope_metrics {
+            let scope_attrs = scope_metrics
+                .scope
+                .as_ref()
+                .map(|s| attributes_to_map(&s.attributes))
+                .unwrap_or_default();
+
+            for metric in &scope_metrics.metrics {
+                if metric.name.is_empty() {
+                    continue;
+                }
+
+                let base_labels: HashMap<String, String> = scope_attrs
+                    .iter()
+                    .chain(resource_attrs.iter())
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+
+                use opentelemetry_proto::tonic::metrics::v1::metric::Data;
+                match &metric.data {
+                    Some(Data::Gauge(g)) => {
+                        for dp in &g.data_points {
+                            let labels = merge_point_attributes(&base_labels, &dp.attributes);
+                            let value = number_value_to_f64(&dp.value);
+                            points.push(MetricPoint {
+                                name: metric.name.clone(),
+                                labels,
+                                timestamp_nanos: dp.time_unix_nano,
+                                value,
+                            });
+                        }
+                    }
+                    Some(Data::Sum(s)) => {
+                        for dp in &s.data_points {
+                            let labels = merge_point_attributes(&base_labels, &dp.attributes);
+                            let value = number_value_to_f64(&dp.value);
+                            points.push(MetricPoint {
+                                name: metric.name.clone(),
+                                labels,
+                                timestamp_nanos: dp.time_unix_nano,
+                                value,
+                            });
+                        }
+                    }
+                    Some(Data::Histogram(hist)) => {
+                        for dp in &hist.data_points {
+                            let labels = merge_point_attributes(&base_labels, &dp.attributes);
+                            if let Some(sum) = dp.sum {
+                                points.push(MetricPoint {
+                                    name: format!("{}_sum", metric.name),
+                                    labels: labels.clone(),
+                                    timestamp_nanos: dp.time_unix_nano,
+                                    value: sum,
+                                });
+                            }
+                            points.push(MetricPoint {
+                                name: format!("{}_count", metric.name),
+                                labels: labels.clone(),
+                                timestamp_nanos: dp.time_unix_nano,
+                                value: dp.count as f64,
+                            });
+                        }
+                    }
+                    Some(Data::ExponentialHistogram(eh)) => {
+                        for dp in &eh.data_points {
+                            let labels = merge_point_attributes(&base_labels, &dp.attributes);
+                            if let Some(sum) = dp.sum {
+                                points.push(MetricPoint {
+                                    name: format!("{}_sum", metric.name),
+                                    labels: labels.clone(),
+                                    timestamp_nanos: dp.time_unix_nano,
+                                    value: sum,
+                                });
+                            }
+                            points.push(MetricPoint {
+                                name: format!("{}_count", metric.name),
+                                labels: labels.clone(),
+                                timestamp_nanos: dp.time_unix_nano,
+                                value: dp.count as f64,
+                            });
+                        }
+                    }
+                    Some(Data::Summary(sm)) => {
+                        for dp in &sm.data_points {
+                            let labels = merge_point_attributes(&base_labels, &dp.attributes);
+                            points.push(MetricPoint {
+                                name: format!("{}_sum", metric.name),
+                                labels: labels.clone(),
+                                timestamp_nanos: dp.time_unix_nano,
+                                value: dp.sum,
+                            });
+                            points.push(MetricPoint {
+                                name: format!("{}_count", metric.name),
+                                labels: labels.clone(),
+                                timestamp_nanos: dp.time_unix_nano,
+                                value: dp.count as f64,
+                            });
+                        }
+                    }
+                    None => {}
+                }
+            }
+        }
+    }
+    points
+}
+
+fn merge_point_attributes(
+    base: &HashMap<String, String>,
+    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+) -> HashMap<String, String> {
+    let mut m = base.clone();
+    for (k, v) in attributes_to_map(attrs) {
+        m.insert(k, v);
+    }
+    m
+}
+
 fn number_value_to_f64(v: &Option<NumberValue>) -> f64 {
     match v {
         Some(NumberValue::AsDouble(x)) => *x,
@@ -169,7 +313,6 @@ fn number_value_to_f64(v: &Option<NumberValue>) -> f64 {
     }
 }
 
-#[allow(dead_code)]
 fn any_value_to_string(v: &opentelemetry_proto::tonic::common::v1::AnyValue) -> String {
     use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValueVariant;
     match &v.value {
@@ -182,7 +325,6 @@ fn any_value_to_string(v: &opentelemetry_proto::tonic::common::v1::AnyValue) -> 
     }
 }
 
-#[allow(dead_code)]
 fn attributes_to_map(
     attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
 ) -> HashMap<String, String> {
