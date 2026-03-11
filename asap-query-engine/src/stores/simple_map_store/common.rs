@@ -61,6 +61,11 @@ pub struct MutableEpoch {
     pub raw: Vec<(TimestampRange, MetricID, Arc<dyn AggregateCore>)>,
     /// Distinct windows for rotation threshold — O(1) insert, O(1) len.
     windows: HashSet<TimestampRange>,
+    /// Exact-lookup index: window → (MetricID, Arc<Agg>) pairs.
+    /// Maintained O(1) on insert (Arc clone is a refcount bump, not a data copy).
+    /// Allows exact_query to return in O(m) without scanning raw.
+    #[allow(clippy::type_complexity)]
+    window_to_ids: HashMap<TimestampRange, Vec<(MetricID, Arc<dyn AggregateCore>)>>,
     /// Epoch time bounds for O(1) skip check, updated incrementally on insert.
     min_start: Option<u64>,
     max_end: Option<u64>,
@@ -71,6 +76,7 @@ impl MutableEpoch {
         Self {
             raw: Vec::new(),
             windows: HashSet::new(),
+            window_to_ids: HashMap::new(),
             min_start: None,
             max_end: None,
         }
@@ -89,13 +95,17 @@ impl MutableEpoch {
         }
     }
 
-    /// O(1) amortized: Vec push + HashSet insert + two scalar comparisons.
+    /// O(1) amortized: Vec push + HashSet insert + HashMap entry + two scalar comparisons.
     pub fn insert(
         &mut self,
         metric_id: MetricID,
         range: TimestampRange,
         agg: Arc<dyn AggregateCore>,
     ) {
+        self.window_to_ids
+            .entry(range)
+            .or_default()
+            .push((metric_id, Arc::clone(&agg)));
         self.raw.push((range, metric_id, agg));
         self.windows.insert(range);
         self.min_start = Some(self.min_start.map_or(range.0, |m| m.min(range.0)));
@@ -136,22 +146,19 @@ impl MutableEpoch {
         }
     }
 
-    /// Linear scan for exact window match — O(M), bounded.
+    /// O(m) exact match via window_to_ids index — no raw scan needed.
+    /// m = number of (MetricID, agg) pairs stored for this window.
     pub fn exact_query(
         &self,
         range: TimestampRange,
     ) -> Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> {
-        let mut out = Vec::new();
-        for (tr, metric_id, agg) in &self.raw {
-            if *tr == range {
-                out.push((*metric_id, Arc::clone(agg)));
-            }
-        }
-        if out.is_empty() {
-            None
-        } else {
-            Some(out)
-        }
+        let entries = self.window_to_ids.get(&range)?;
+        Some(
+            entries
+                .iter()
+                .map(|(metric_id, agg)| (*metric_id, Arc::clone(agg)))
+                .collect(),
+        )
     }
 
     /// Remove specific windows (ReadBased cleanup).
@@ -159,6 +166,9 @@ impl MutableEpoch {
         let window_set: HashSet<TimestampRange> = windows.iter().copied().collect();
         self.raw.retain(|(tr, _, _)| !window_set.contains(tr));
         self.windows.retain(|tr| !window_set.contains(tr));
+        for window in windows {
+            self.window_to_ids.remove(window);
+        }
         // Recompute bounds (cleanup is rare, linear scan is fine).
         self.min_start = self.raw.iter().map(|(tr, _, _)| tr.0).min();
         self.max_end = self.raw.iter().map(|(tr, _, _)| tr.1).max();
