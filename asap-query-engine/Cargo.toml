@@ -63,6 +63,9 @@ path = "src/bin/precompute_engine.rs"
 name = "test_e2e_precompute"
 path = "src/bin/test_e2e_precompute.rs"
 
+[[bin]]
+name = "bench_precompute_sketch"
+path = "src/bin/bench_precompute_sketch.rs"
 
 [dev-dependencies]
 tempfile = "3.20.0"
