@@ -6,7 +6,6 @@ pub enum InputFormat {
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub enum StreamingEngine {
-    Flink,
     Arroyo,
 }
 

@@ -129,7 +129,7 @@ impl SerializableToSink for SetAggregatorAccumulator {
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        // Legacy binary format (Flink); matches deserialize_from_bytes().
+        // Legacy binary format; matches deserialize_from_bytes().
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&(self.added.len() as u32).to_le_bytes());
         for key in &self.added {
