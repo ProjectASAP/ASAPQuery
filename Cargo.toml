@@ -7,8 +7,6 @@ members = [
     "asap-common/dependencies/rs/sketch_db_common",
     "asap-common/dependencies/rs/datafusion_summary_library",
     "asap-query-engine",
-    "asap-otel-ingest",
-    "asap-tools/data-sources/otlp-exporters"
 ]
 
 [workspace.package]

@@ -9,8 +9,8 @@ use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingE
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
-    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtelIngestConfig,
-    OtelIngestServer, Result, SimpleEngine, SimpleMapStore,
+    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpConsumer,
+    OtlpConsumerConfig, Result, SimpleEngine, SimpleMapStore,
 };
 
 #[derive(Parser, Debug)]
@@ -233,18 +233,18 @@ async fn main() -> Result<()> {
 
     // Setup OTLP ingest server
     let otel_handle = if args.enable_otel_ingest {
-        let otel_config = OtelIngestConfig {
+        let otel_config = OtlpConsumerConfig {
             grpc_port: args.otel_grpc_port,
             http_port: args.otel_http_port,
         };
-        let server = OtelIngestServer::new(otel_config);
+        let consumer = OtlpConsumer::new(otel_config);
         info!(
-            "Starting OTLP ingest server (gRPC port {}, HTTP port {})",
+            "Starting OTLP consumer (gRPC port {}, HTTP port {})",
             args.otel_grpc_port, args.otel_http_port
         );
         Some(tokio::spawn(async move {
-            if let Err(e) = server.run().await {
-                error!("OTLP ingest server error: {}", e);
+            if let Err(e) = consumer.run().await {
+                error!("OTLP consumer error: {}", e);
             }
         }))
     } else {
@@ -316,7 +316,7 @@ async fn main() -> Result<()> {
     }
 
     if let Some(handle) = otel_handle {
-        info!("Shutting down OTLP ingest server...");
+        info!("Shutting down OTLP consumer...");
         handle.abort();
         let _ = handle.await;
     }

@@ -4,7 +4,7 @@ pub mod prometheus_remote_write;
 pub mod victoriametrics_remote_write;
 
 pub use kafka::{KafkaConsumer, KafkaConsumerConfig};
-pub use otel::{OtelIngestConfig, OtelIngestServer};
+pub use otel::{OtlpConsumer, OtlpConsumerConfig};
 // pub use prometheus_remote_write::{PrometheusRemoteWriteConfig, PrometheusRemoteWriteServer};
 // pub use victoriametrics_remote_write::{
 //     VictoriaMetricsRemoteWriteConfig, VictoriaMetricsRemoteWriteServer,

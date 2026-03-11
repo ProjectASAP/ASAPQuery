@@ -1,4 +1,4 @@
-//! OTLP ingest driver (phase 1).
+//! OTLP ingest driver.
 //!
 //! Accepts OTLP metrics via gRPC (4317) and HTTP (4318, POST /v1/metrics),
 //! parses ExportMetricsServiceRequest, logs counts at DEBUG, and leaves
@@ -20,20 +20,20 @@ use prost::Message;
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
-/// Configuration for the OTLP ingest server.
+/// Configuration for the OTLP ingest consumer.
 #[derive(Debug, Clone)]
-pub struct OtelIngestConfig {
+pub struct OtlpConsumerConfig {
     pub grpc_port: u16,
     pub http_port: u16,
 }
 
-/// OTLP ingest server that accepts metrics via gRPC and HTTP.
-pub struct OtelIngestServer {
-    config: OtelIngestConfig,
+/// OTLP consumer that accepts metrics via gRPC and HTTP.
+pub struct OtlpConsumer {
+    config: OtlpConsumerConfig,
 }
 
-impl OtelIngestServer {
-    pub fn new(config: OtelIngestConfig) -> Self {
+impl OtlpConsumer {
+    pub fn new(config: OtlpConsumerConfig) -> Self {
         Self { config }
     }
 
@@ -109,7 +109,7 @@ fn process_otlp_request(request: &ExportMetricsServiceRequest) {
         "OTLP ingest: received {} resource metrics, {} total data points",
         resource_count, total_points
     );
-    // TODO(otel-phase1): Pass metrics to precompute engine. For Arroyo pipeline: produce to Kafka topic (e.g. otel_metrics) in JSON format { name, labels, timestamp, value }. See asap-otel-ingest for conversion and produce logic.
+    // TODO: Pass metrics to precompute engine. 
 }
 
 /// Count total data points by traversing resource_metrics -> scope_metrics -> metrics.
