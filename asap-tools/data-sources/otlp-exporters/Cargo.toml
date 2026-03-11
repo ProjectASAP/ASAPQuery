@@ -1,0 +1,21 @@
+[package]
+name = "otlp_exporter"
+version = "0.1.0"
+edition = "2021"
+description = "OTLP test data generator that sends synthetic metrics to an OTLP endpoint"
+
+[[bin]]
+name = "otlp_exporter"
+path = "src/main.rs"
+
+[dependencies]
+opentelemetry = { version = "0.27", features = ["metrics"] }
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic", "metrics"] }
+tonic = "0.12"
+tokio = { version = "1.0", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+rand = "0.8"
+rand_distr = "0.4"
+tracing = "0.1"
+tracing-subscriber = "0.3"

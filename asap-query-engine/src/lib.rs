@@ -24,7 +24,10 @@ pub use stores::{SimpleMapStore, Store, StoreResult};
 
 pub use engines::{InstantVector, QueryResult, SimpleEngine};
 
-pub use drivers::{HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig};
+pub use drivers::{
+    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtelIngestConfig,
+    OtelIngestServer,
+};
 
 pub use utils::{normalize_spatial_filter, read_inference_config, read_streaming_config};
 
