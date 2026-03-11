@@ -650,6 +650,15 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
                 .unwrap_or(200) as u16;
             Box::new(KllAccumulatorUpdater::new(k))
         }
+        "MultipleSum" | "multiple_sum" => Box::new(MultipleSumUpdater::new()),
+        "MultipleIncrease" | "multiple_increase" => Box::new(MultipleIncreaseUpdater::new()),
+        "MultipleMinMax" | "multiple_min_max" => Box::new(MultipleMinMaxUpdater::new(
+            if sub_type.eq_ignore_ascii_case("max") {
+                "max".to_string()
+            } else {
+                "min".to_string()
+            },
+        )),
         "Sum" | "sum" => Box::new(SumAccumulatorUpdater::new()),
         "Min" | "min" => Box::new(MinMaxAccumulatorUpdater::new("min".to_string())),
         "Max" | "max" => Box::new(MinMaxAccumulatorUpdater::new("max".to_string())),
