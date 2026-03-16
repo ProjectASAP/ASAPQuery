@@ -1,5 +1,6 @@
 use super::config::AdapterConfig;
 use super::traits::*;
+use crate::QueryResult;
 use crate::data_model::QueryLanguage;
 use async_trait::async_trait;
 use axum::{
@@ -11,7 +12,7 @@ use axum::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::{debug, error, info};
 
 /// Elasticsearch HTTP protocol adapter
 pub struct ElasticHttpAdapter {
@@ -26,33 +27,29 @@ impl ElasticHttpAdapter {
 
     /// Parse Elasticsearch query from JSON body
     fn parse_elasticsearch_query(&self, body: &Bytes) -> Result<ParsedQueryRequest, AdapterError> {
-        debug!(
-            "Elasticsearch adapter: parsing query for language {:?}",
-            self.config.language
-        );
-
-        // Parse the JSON body
         let json_body: Value = serde_json::from_slice(body)
             .map_err(|e| AdapterError::ParseError(format!("Invalid JSON: {}", e)))?;
 
-        // Store the entire query as a JSON string
-        let query = serde_json::to_string(&json_body)
-            .map_err(|e| AdapterError::ParseError(format!("Failed to serialize query: {}", e)))?;
+        // Extract the SQL string from the "query" field
+        let query = match &self.config.language {
+            QueryLanguage::elastic_sql => {
+                json_body
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| AdapterError::MissingParameter("query".to_string()))?
+                    .to_string()
+            }
+            _ => {
+                // For QueryDSL, keep the full JSON as before
+                serde_json::to_string(&json_body)
+                    .map_err(|e| AdapterError::ParseError(format!("Failed to serialize query: {}", e)))?
+            }
+        };
 
         let time = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-
-        debug!(
-            "Elasticsearch adapter: parsed {} query with time={}",
-            if matches!(self.config.language, QueryLanguage::elastic_sql) {
-                "SQL"
-            } else {
-                "Query DSL"
-            },
-            time
-        );
 
         Ok(ParsedQueryRequest { query, time })
     }
@@ -125,34 +122,52 @@ impl QueryRequestAdapter for ElasticHttpAdapter {
 #[async_trait]
 impl QueryResponseAdapter for ElasticHttpAdapter {
     async fn format_success_response(
-        &self,
-        _result: &QueryExecutionResult,
-    ) -> Result<Response, StatusCode> {
-        debug!("Elasticsearch adapter: formatting success response");
+    &self,
+    result: &QueryExecutionResult,
+) -> Result<Response, StatusCode> {
+        info!("SKETCH HIT: serving {} rows from precomputed sketches", 
+          match &result.query_result {
+              QueryResult::Vector(v) => v.values.len(),
+              QueryResult::Matrix(_) => 0,
+          });
 
-        // For now, since we're falling back for every query,
-        // the result from the fallback will be passed through
-        // In the future, this could transform local execution results
-        // to Elasticsearch format
+        let label_names = &result.query_output_labels.labels;
 
-        // Return a stub Elasticsearch-style response for now.
+        let hits: Vec<Value> = match &result.query_result {
+            QueryResult::Vector(instant_vector) => {
+                instant_vector
+                    .values
+                    .iter()
+                    .map(|element| {
+                        let mut source = serde_json::Map::new();
+                        for (i, label_name) in label_names.iter().enumerate() {
+                            let label_value =
+                                element.labels.get(i).map(|s| s.as_str()).unwrap_or("");
+                            source.insert(label_name.clone(), json!(label_value));
+                        }
+                        source.insert("value".to_string(), json!(element.value));
+                        json!({
+                            "_source": source
+                        })
+                    })
+                    .collect()
+            }
+            QueryResult::Matrix(_) => {
+                return Err(StatusCode::NOT_IMPLEMENTED);
+            }
+        };
+
         let response = json!({
             "took": 0,
             "timed_out": false,
             "hits": {
                 "total": {
-                    "value": 0,
+                    "value": hits.len(),
                     "relation": "eq"
                 },
-                "hits": []
+                "hits": hits
             }
         });
-
-        debug!(
-            "Elasticsearch adapter: returning stub response: {}",
-            serde_json::to_string_pretty(&response)
-                .unwrap_or_else(|_| "Unable to format".to_string())
-        );
 
         Ok(Json(response).into_response())
     }

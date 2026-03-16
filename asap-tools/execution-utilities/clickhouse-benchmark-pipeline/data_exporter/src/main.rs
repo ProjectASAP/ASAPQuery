@@ -929,7 +929,7 @@ async fn run_h2o_elasticsearch_mode(args: &Args) -> Result<(), Box<dyn std::erro
 
         // Create document with timestamp
         let doc = H2oEsDoc {
-            timestamp: base_timestamp + (row_num * 1000), // Increment by 1 second per row
+            timestamp: base_timestamp + (row_num * 10), // Increment by 10 ms per row
             id1: cols[0].to_string(),
             id2: cols[1].to_string(),
             id3: cols[2].to_string(),

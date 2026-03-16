@@ -84,7 +84,6 @@ impl HttpServer {
             .route(range_query_endpoint, post(handle_range_query_post))
             .route(runtime_info_path, get(handle_runtime_info))
             .route(runtime_info_path, post(handle_runtime_info))
-            .route("/metrics", get(handle_metrics))
             .with_state(app_state);
 
         let listener = TcpListener::bind(format!("0.0.0.0:{}", self.config.port)).await?;
@@ -183,8 +182,8 @@ async fn process_query_request(
     {
         Some((query_output_labels, query_result)) => {
             let query_duration = query_start_time.elapsed();
-            debug!("=== QUERY ENGINE SUCCESS ===");
-            debug!(
+            info!("=== QUERY ENGINE SUCCESS ===");
+            info!(
                 "Query engine execution took: {:.2}ms",
                 query_duration.as_secs_f64() * 1000.0
             );
@@ -217,11 +216,13 @@ async fn process_query_request(
         }
         None => {
             let total_duration = start_time.elapsed();
-            debug!("=== QUERY ENGINE RETURNED NONE ===");
-            debug!(
+            info!("=== QUERY ENGINE RETURNED NONE ===");
+            info!(
                 "Request failed after: {:.2}ms",
                 total_duration.as_secs_f64() * 1000.0
             );
+            info!("SKETCH MISS: query='{}', forwarding to fallback",
+            parsed_request.query.chars().take(150).collect::<String>());
 
             // Step 4: Handle unsupported query using fallback client
             if let Some(fallback) = &state.fallback {
@@ -400,25 +401,6 @@ async fn handle_runtime_info(
         .adapter
         .handle_runtime_info_with_headers(state.store.clone(), forwarding_headers)
         .await
-}
-
-// ============================================================
-// Metrics Handler
-// ============================================================
-
-async fn handle_metrics() -> impl IntoResponse {
-    let encoder = prometheus::TextEncoder::new();
-    let metric_families = prometheus::gather();
-    let mut buffer = Vec::new();
-    prometheus::Encoder::encode(&encoder, &metric_families, &mut buffer)
-        .unwrap_or_else(|e| tracing::error!("Failed to encode metrics: {}", e));
-    (
-        [(
-            axum::http::header::CONTENT_TYPE,
-            "text/plain; version=0.0.4",
-        )],
-        buffer,
-    )
 }
 
 // ============================================================
@@ -604,7 +586,6 @@ mod tests {
         ));
         let query_engine = Arc::new(SimpleEngine::new(
             store.clone(),
-            // None,
             inference_config,
             streaming_config.clone(),
             15000,

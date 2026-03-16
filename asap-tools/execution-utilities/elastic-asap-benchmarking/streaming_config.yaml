@@ -1,0 +1,24 @@
+# ASAP Streaming Config for H2O Benchmark Dataset (Elasticsearch)
+
+tables:
+  - name: h2o_benchmark
+    time_column: timestamp
+    metadata_columns: [id1, id2]
+    value_columns: [v3]
+
+aggregations:
+  - aggregationId: 12
+    aggregationType: DatasketchesKLL
+    aggregationSubType: ''
+    labels:
+      grouping: [id1, id2]
+      rollup: []
+      aggregated: []
+    table_name: h2o_benchmark
+    value_column: v3
+    parameters:
+      K: 200
+    tumblingWindowSize: 10
+    windowSize: 10
+    windowType: tumbling
+    spatialFilter: ''

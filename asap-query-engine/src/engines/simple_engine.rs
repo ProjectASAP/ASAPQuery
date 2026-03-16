@@ -286,12 +286,49 @@ impl SimpleEngine {
 
     /// Finds the query configuration for a given query string
     fn find_query_config(&self, query: &str) -> Option<&QueryConfig> {
-        self.inference_config
-            .query_configs
-            .iter()
-            .find(|config| config.query == query)
-    }
+        // For PromQL, keep exact string matching
+        if self.query_language == QueryLanguage::promql {
+            return self.inference_config
+                .query_configs
+                .iter()
+                .find(|config| config.query.trim() == query.trim());
+        }
 
+        // For SQL, match structurally (ignores absolute timestamps)
+        let schema = match &self.inference_config.schema {
+            SchemaConfig::SQL(s) => s.clone(),
+            SchemaConfig::ElasticSQL(s) => s.clone(),
+            _ => {
+                return self.inference_config
+                    .query_configs
+                    .iter()
+                    .find(|config| config.query.trim() == query.trim());
+            }
+        };
+
+        // Parse the incoming query
+        let incoming_statements = parser::parse_sql(&GenericDialect {}, query).ok()?;
+        let incoming_data = SQLPatternParser::new(&schema, 0.0).parse_query(&incoming_statements)?;
+
+        self.inference_config.query_configs.iter().find(|config| {
+            // Parse each config query with dummy time (0.0) so NOW() resolves to 0
+            let config_statements = parser::parse_sql(&GenericDialect {}, config.query.trim()).ok();
+            let config_data = config_statements.and_then(|stmts| {
+                SQLPatternParser::new(&schema, 0.0).parse_query(&stmts)
+            });
+
+            match config_data {
+                None => false,
+                Some(cd) => {
+                    cd.metric == incoming_data.metric
+                        && cd.aggregation_info.get_name() == incoming_data.aggregation_info.get_name()
+                        && cd.aggregation_info.get_args() == incoming_data.aggregation_info.get_args()
+                        && cd.labels == incoming_data.labels
+                        && (cd.time_info.get_duration() - incoming_data.time_info.get_duration()).abs() < 1.0
+                }
+            }
+        })
+    }
     /// Validates and potentially aligns end timestamp based on query pattern
     fn validate_and_align_end_timestamp(
         &self,
@@ -1105,7 +1142,7 @@ impl SimpleEngine {
                 return None;
             }
             &SchemaConfig::ElasticQueryDSL => todo!(),
-            &SchemaConfig::ElasticSQL => todo!(),
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
         };
 
         let statements = parser::parse_sql(&GenericDialect {}, query.as_str()).unwrap();
@@ -1318,7 +1355,7 @@ impl SimpleEngine {
             .streaming_config
             .get_aggregation_config(agg_info.aggregation_id_for_key)
             .map(|config| config.aggregated_labels.clone())
-            .unwrap_or_else(KeyByLabelNames::empty);
+            .unwrap_or_else(KeyByLabelNames::empty); 
 
         Some(QueryExecutionContext {
             metric: metric.to_string(),
@@ -1446,14 +1483,13 @@ impl SimpleEngine {
             QueryLanguage::promql => self.handle_query_promql(query, time),
             QueryLanguage::sql => self.handle_query_sql(query, time),
             QueryLanguage::elastic_querydsl => self.handle_query_elastic(),
-            QueryLanguage::elastic_sql => self.handle_query_elastic(),
+            QueryLanguage::elastic_sql => self.handle_query_sql(query, time),
         }
     }
 
     pub fn handle_query_elastic(&self) -> Option<(KeyByLabelNames, QueryResult)> {
         None
     }
-
     // /// Try to extract sketch query components from a PromQL query string.
     // ///
     // /// Attempts the standard AST parser first. If that fails (e.g. for custom
@@ -1892,7 +1928,7 @@ impl SimpleEngine {
                 warn!("PromQL query requested but config has ElasticQueryDSL schema");
                 return None;
             }
-            &SchemaConfig::ElasticSQL => {
+            SchemaConfig::ElasticSQL(_) => {
                 warn!("PromQL query requested but config has ElasticSQL schema");
                 return None;
             }

@@ -1,29 +1,2109 @@
--- Q1: Sum v1 by id1
-SELECT id1, sum(v1) AS v1 FROM "h2o_benchmark" GROUP BY id1 ORDER BY id1;
+-- H2O Benchmark: Temporal Quantile Queries for Elasticsearch SQL
+-- 264 x 10-minute (600s) non-overlapping windows from 2024-01-01T00:00:00Z
 
--- Q2: Sum v1 by id1:id2
-SELECT id1, id2, sum(v1) AS v1 FROM "h2o_benchmark" GROUP BY id1, id2 ORDER BY id1, id2;
+-- T000: quantile window ending at 2024-01-01T00:10:00Z
+SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3 FROM "h2o_benchmark" WHERE timestamp BETWEEN DATE_ADD('seconds', -600, CAST('2024-01-01T00:10:00.000Z' AS TIMESTAMP)) AND CAST('2024-01-01T00:10:00.000Z' AS TIMESTAMP) GROUP BY id1, id2 ORDER BY id1, id2;
 
--- Q3: Sum v1 mean v3 by id3
-SELECT id3, sum(v1) AS v1, avg(v3) AS v3 FROM "h2o_benchmark" GROUP BY id3 ORDER BY id3;
+-- -- T001: quantile window ending at 2024-01-01T00:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T00:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T00:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
 
--- Q4: Mean v1:v3 by id4
-SELECT id4, avg(v1) AS v1, avg(v2) AS v2, avg(v3) AS v3 FROM "h2o_benchmark" GROUP BY id4 ORDER BY id4;
+-- -- T002: quantile window ending at 2024-01-01T00:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T00:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T00:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
 
--- Q5: Sum v1:v3 by id6
-SELECT id6, sum(v1) AS v1, sum(v2) AS v2, sum(v3) AS v3 FROM "h2o_benchmark" GROUP BY id6 ORDER BY id6;
+-- -- T003: quantile window ending at 2024-01-01T00:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T00:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T00:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
 
--- Q6: Median v3 sd v3 by id4 id5
-SELECT id4, id5, PERCENTILE(v3, 50) AS median_v3, STDDEV_SAMP(v3) AS sd_v3 FROM "h2o_benchmark" GROUP BY id4, id5 ORDER BY id4, id5;
+-- -- T004: quantile window ending at 2024-01-01T00:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T00:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T00:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
 
--- Q7: Max v1 - min v2 by id3
-SELECT id3, max(v1) - min(v2) AS range_v1_v2 FROM "h2o_benchmark" GROUP BY id3 ORDER BY id3;
+-- -- T005: quantile window ending at 2024-01-01T01:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T01:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T01:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
 
--- Q8: Largest two v3 by id6 (Elasticsearch SQL doesn't support LIMIT BY)
-SELECT id6, v3 FROM "h2o_benchmark" ORDER BY v3 DESC LIMIT 20;
+-- -- T006: quantile window ending at 2024-01-01T01:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T01:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T01:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
 
--- Q9: Count rows
-SELECT id2, id4, COUNT(*) as count FROM "h2o_benchmark" GROUP BY id2, id4 ORDER BY id2, id4;
+-- -- T007: quantile window ending at 2024-01-01T01:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T01:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T01:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
 
--- Q10: Sum v3 count by id1:id6
-SELECT id1, id6, sum(v3) AS v3, count(*) AS count FROM "h2o_benchmark" GROUP BY id1, id6 ORDER BY id1, id6;
+-- -- T008: quantile window ending at 2024-01-01T01:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T01:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T01:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T009: quantile window ending at 2024-01-01T01:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T01:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T01:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T010: quantile window ending at 2024-01-01T01:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T01:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T01:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T011: quantile window ending at 2024-01-01T02:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T02:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T02:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T012: quantile window ending at 2024-01-01T02:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T02:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T02:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T013: quantile window ending at 2024-01-01T02:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T02:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T02:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T014: quantile window ending at 2024-01-01T02:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T02:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T02:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T015: quantile window ending at 2024-01-01T02:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T02:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T02:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T016: quantile window ending at 2024-01-01T02:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T02:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T02:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T017: quantile window ending at 2024-01-01T03:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T03:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T03:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T018: quantile window ending at 2024-01-01T03:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T03:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T03:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T019: quantile window ending at 2024-01-01T03:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T03:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T03:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T020: quantile window ending at 2024-01-01T03:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T03:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T03:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T021: quantile window ending at 2024-01-01T03:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T03:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T03:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T022: quantile window ending at 2024-01-01T03:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T03:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T03:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T023: quantile window ending at 2024-01-01T04:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T04:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T04:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T024: quantile window ending at 2024-01-01T04:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T04:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T04:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T025: quantile window ending at 2024-01-01T04:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T04:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T04:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T026: quantile window ending at 2024-01-01T04:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T04:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T04:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T027: quantile window ending at 2024-01-01T04:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T04:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T04:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T028: quantile window ending at 2024-01-01T04:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T04:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T04:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T029: quantile window ending at 2024-01-01T05:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T05:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T05:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T030: quantile window ending at 2024-01-01T05:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T05:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T05:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T031: quantile window ending at 2024-01-01T05:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T05:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T05:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T032: quantile window ending at 2024-01-01T05:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T05:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T05:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T033: quantile window ending at 2024-01-01T05:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T05:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T05:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T034: quantile window ending at 2024-01-01T05:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T05:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T05:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T035: quantile window ending at 2024-01-01T06:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T06:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T06:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T036: quantile window ending at 2024-01-01T06:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T06:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T06:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T037: quantile window ending at 2024-01-01T06:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T06:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T06:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T038: quantile window ending at 2024-01-01T06:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T06:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T06:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T039: quantile window ending at 2024-01-01T06:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T06:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T06:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T040: quantile window ending at 2024-01-01T06:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T06:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T06:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T041: quantile window ending at 2024-01-01T07:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T07:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T07:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T042: quantile window ending at 2024-01-01T07:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T07:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T07:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T043: quantile window ending at 2024-01-01T07:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T07:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T07:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T044: quantile window ending at 2024-01-01T07:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T07:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T07:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T045: quantile window ending at 2024-01-01T07:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T07:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T07:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T046: quantile window ending at 2024-01-01T07:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T07:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T07:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T047: quantile window ending at 2024-01-01T08:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T08:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T08:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T048: quantile window ending at 2024-01-01T08:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T08:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T08:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T049: quantile window ending at 2024-01-01T08:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T08:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T08:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T050: quantile window ending at 2024-01-01T08:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T08:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T08:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T051: quantile window ending at 2024-01-01T08:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T08:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T08:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T052: quantile window ending at 2024-01-01T08:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T08:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T08:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T053: quantile window ending at 2024-01-01T09:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T09:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T09:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T054: quantile window ending at 2024-01-01T09:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T09:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T09:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T055: quantile window ending at 2024-01-01T09:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T09:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T09:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T056: quantile window ending at 2024-01-01T09:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T09:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T09:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T057: quantile window ending at 2024-01-01T09:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T09:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T09:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T058: quantile window ending at 2024-01-01T09:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T09:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T09:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T059: quantile window ending at 2024-01-01T10:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T10:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T10:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T060: quantile window ending at 2024-01-01T10:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T10:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T10:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T061: quantile window ending at 2024-01-01T10:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T10:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T10:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T062: quantile window ending at 2024-01-01T10:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T10:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T10:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T063: quantile window ending at 2024-01-01T10:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T10:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T10:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T064: quantile window ending at 2024-01-01T10:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T10:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T10:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T065: quantile window ending at 2024-01-01T11:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T11:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T11:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T066: quantile window ending at 2024-01-01T11:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T11:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T11:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T067: quantile window ending at 2024-01-01T11:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T11:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T11:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T068: quantile window ending at 2024-01-01T11:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T11:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T11:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T069: quantile window ending at 2024-01-01T11:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T11:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T11:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T070: quantile window ending at 2024-01-01T11:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T11:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T11:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T071: quantile window ending at 2024-01-01T12:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T12:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T12:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T072: quantile window ending at 2024-01-01T12:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T12:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T12:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T073: quantile window ending at 2024-01-01T12:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T12:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T12:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T074: quantile window ending at 2024-01-01T12:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T12:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T12:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T075: quantile window ending at 2024-01-01T12:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T12:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T12:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T076: quantile window ending at 2024-01-01T12:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T12:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T12:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T077: quantile window ending at 2024-01-01T13:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T13:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T13:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T078: quantile window ending at 2024-01-01T13:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T13:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T13:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T079: quantile window ending at 2024-01-01T13:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T13:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T13:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T080: quantile window ending at 2024-01-01T13:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T13:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T13:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T081: quantile window ending at 2024-01-01T13:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T13:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T13:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T082: quantile window ending at 2024-01-01T13:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T13:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T13:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T083: quantile window ending at 2024-01-01T14:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T14:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T14:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T084: quantile window ending at 2024-01-01T14:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T14:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T14:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T085: quantile window ending at 2024-01-01T14:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T14:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T14:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T086: quantile window ending at 2024-01-01T14:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T14:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T14:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T087: quantile window ending at 2024-01-01T14:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T14:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T14:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T088: quantile window ending at 2024-01-01T14:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T14:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T14:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T089: quantile window ending at 2024-01-01T15:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T15:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T15:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T090: quantile window ending at 2024-01-01T15:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T15:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T15:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T091: quantile window ending at 2024-01-01T15:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T15:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T15:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T092: quantile window ending at 2024-01-01T15:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T15:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T15:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T093: quantile window ending at 2024-01-01T15:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T15:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T15:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T094: quantile window ending at 2024-01-01T15:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T15:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T15:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T095: quantile window ending at 2024-01-01T16:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T16:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T16:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T096: quantile window ending at 2024-01-01T16:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T16:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T16:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T097: quantile window ending at 2024-01-01T16:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T16:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T16:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T098: quantile window ending at 2024-01-01T16:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T16:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T16:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T099: quantile window ending at 2024-01-01T16:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T16:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T16:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T100: quantile window ending at 2024-01-01T16:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T16:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T16:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T101: quantile window ending at 2024-01-01T17:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T17:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T17:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T102: quantile window ending at 2024-01-01T17:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T17:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T17:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T103: quantile window ending at 2024-01-01T17:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T17:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T17:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T104: quantile window ending at 2024-01-01T17:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T17:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T17:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T105: quantile window ending at 2024-01-01T17:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T17:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T17:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T106: quantile window ending at 2024-01-01T17:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T17:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T17:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T107: quantile window ending at 2024-01-01T18:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T18:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T18:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T108: quantile window ending at 2024-01-01T18:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T18:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T18:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T109: quantile window ending at 2024-01-01T18:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T18:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T18:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T110: quantile window ending at 2024-01-01T18:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T18:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T18:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T111: quantile window ending at 2024-01-01T18:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T18:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T18:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T112: quantile window ending at 2024-01-01T18:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T18:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T18:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T113: quantile window ending at 2024-01-01T19:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T19:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T19:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T114: quantile window ending at 2024-01-01T19:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T19:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T19:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T115: quantile window ending at 2024-01-01T19:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T19:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T19:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T116: quantile window ending at 2024-01-01T19:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T19:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T19:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T117: quantile window ending at 2024-01-01T19:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T19:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T19:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T118: quantile window ending at 2024-01-01T19:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T19:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T19:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T119: quantile window ending at 2024-01-01T20:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T20:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T20:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T120: quantile window ending at 2024-01-01T20:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T20:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T20:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T121: quantile window ending at 2024-01-01T20:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T20:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T20:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T122: quantile window ending at 2024-01-01T20:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T20:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T20:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T123: quantile window ending at 2024-01-01T20:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T20:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T20:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T124: quantile window ending at 2024-01-01T20:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T20:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T20:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T125: quantile window ending at 2024-01-01T21:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T21:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T21:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T126: quantile window ending at 2024-01-01T21:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T21:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T21:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T127: quantile window ending at 2024-01-01T21:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T21:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T21:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T128: quantile window ending at 2024-01-01T21:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T21:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T21:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T129: quantile window ending at 2024-01-01T21:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T21:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T21:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T130: quantile window ending at 2024-01-01T21:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T21:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T21:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T131: quantile window ending at 2024-01-01T22:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T22:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T22:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T132: quantile window ending at 2024-01-01T22:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T22:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T22:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T133: quantile window ending at 2024-01-01T22:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T22:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T22:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T134: quantile window ending at 2024-01-01T22:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T22:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T22:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T135: quantile window ending at 2024-01-01T22:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T22:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T22:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T136: quantile window ending at 2024-01-01T22:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T22:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T22:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T137: quantile window ending at 2024-01-01T23:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T23:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T23:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T138: quantile window ending at 2024-01-01T23:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T23:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T23:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T139: quantile window ending at 2024-01-01T23:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T23:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T23:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T140: quantile window ending at 2024-01-01T23:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T23:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T23:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T141: quantile window ending at 2024-01-01T23:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T23:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T23:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T142: quantile window ending at 2024-01-01T23:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-01T23:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-01T23:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T143: quantile window ending at 2024-01-02T00:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T00:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T00:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T144: quantile window ending at 2024-01-02T00:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T00:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T00:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T145: quantile window ending at 2024-01-02T00:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T00:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T00:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T146: quantile window ending at 2024-01-02T00:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T00:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T00:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T147: quantile window ending at 2024-01-02T00:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T00:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T00:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T148: quantile window ending at 2024-01-02T00:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T00:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T00:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T149: quantile window ending at 2024-01-02T01:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T01:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T01:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T150: quantile window ending at 2024-01-02T01:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T01:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T01:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T151: quantile window ending at 2024-01-02T01:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T01:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T01:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T152: quantile window ending at 2024-01-02T01:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T01:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T01:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T153: quantile window ending at 2024-01-02T01:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T01:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T01:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T154: quantile window ending at 2024-01-02T01:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T01:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T01:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T155: quantile window ending at 2024-01-02T02:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T02:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T02:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T156: quantile window ending at 2024-01-02T02:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T02:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T02:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T157: quantile window ending at 2024-01-02T02:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T02:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T02:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T158: quantile window ending at 2024-01-02T02:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T02:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T02:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T159: quantile window ending at 2024-01-02T02:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T02:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T02:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T160: quantile window ending at 2024-01-02T02:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T02:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T02:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T161: quantile window ending at 2024-01-02T03:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T03:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T03:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T162: quantile window ending at 2024-01-02T03:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T03:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T03:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T163: quantile window ending at 2024-01-02T03:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T03:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T03:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T164: quantile window ending at 2024-01-02T03:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T03:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T03:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T165: quantile window ending at 2024-01-02T03:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T03:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T03:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T166: quantile window ending at 2024-01-02T03:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T03:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T03:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T167: quantile window ending at 2024-01-02T04:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T04:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T04:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T168: quantile window ending at 2024-01-02T04:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T04:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T04:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T169: quantile window ending at 2024-01-02T04:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T04:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T04:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T170: quantile window ending at 2024-01-02T04:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T04:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T04:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T171: quantile window ending at 2024-01-02T04:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T04:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T04:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T172: quantile window ending at 2024-01-02T04:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T04:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T04:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T173: quantile window ending at 2024-01-02T05:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T05:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T05:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T174: quantile window ending at 2024-01-02T05:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T05:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T05:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T175: quantile window ending at 2024-01-02T05:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T05:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T05:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T176: quantile window ending at 2024-01-02T05:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T05:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T05:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T177: quantile window ending at 2024-01-02T05:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T05:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T05:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T178: quantile window ending at 2024-01-02T05:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T05:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T05:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T179: quantile window ending at 2024-01-02T06:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T06:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T06:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T180: quantile window ending at 2024-01-02T06:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T06:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T06:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T181: quantile window ending at 2024-01-02T06:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T06:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T06:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T182: quantile window ending at 2024-01-02T06:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T06:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T06:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T183: quantile window ending at 2024-01-02T06:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T06:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T06:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T184: quantile window ending at 2024-01-02T06:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T06:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T06:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T185: quantile window ending at 2024-01-02T07:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T07:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T07:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T186: quantile window ending at 2024-01-02T07:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T07:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T07:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T187: quantile window ending at 2024-01-02T07:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T07:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T07:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T188: quantile window ending at 2024-01-02T07:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T07:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T07:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T189: quantile window ending at 2024-01-02T07:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T07:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T07:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T190: quantile window ending at 2024-01-02T07:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T07:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T07:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T191: quantile window ending at 2024-01-02T08:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T08:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T08:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T192: quantile window ending at 2024-01-02T08:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T08:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T08:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T193: quantile window ending at 2024-01-02T08:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T08:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T08:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T194: quantile window ending at 2024-01-02T08:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T08:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T08:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T195: quantile window ending at 2024-01-02T08:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T08:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T08:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T196: quantile window ending at 2024-01-02T08:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T08:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T08:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T197: quantile window ending at 2024-01-02T09:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T09:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T09:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T198: quantile window ending at 2024-01-02T09:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T09:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T09:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T199: quantile window ending at 2024-01-02T09:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T09:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T09:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T200: quantile window ending at 2024-01-02T09:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T09:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T09:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T201: quantile window ending at 2024-01-02T09:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T09:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T09:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T202: quantile window ending at 2024-01-02T09:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T09:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T09:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T203: quantile window ending at 2024-01-02T10:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T10:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T10:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T204: quantile window ending at 2024-01-02T10:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T10:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T10:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T205: quantile window ending at 2024-01-02T10:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T10:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T10:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T206: quantile window ending at 2024-01-02T10:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T10:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T10:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T207: quantile window ending at 2024-01-02T10:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T10:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T10:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T208: quantile window ending at 2024-01-02T10:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T10:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T10:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T209: quantile window ending at 2024-01-02T11:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T11:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T11:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T210: quantile window ending at 2024-01-02T11:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T11:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T11:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T211: quantile window ending at 2024-01-02T11:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T11:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T11:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T212: quantile window ending at 2024-01-02T11:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T11:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T11:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T213: quantile window ending at 2024-01-02T11:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T11:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T11:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T214: quantile window ending at 2024-01-02T11:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T11:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T11:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T215: quantile window ending at 2024-01-02T12:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T12:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T12:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T216: quantile window ending at 2024-01-02T12:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T12:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T12:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T217: quantile window ending at 2024-01-02T12:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T12:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T12:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T218: quantile window ending at 2024-01-02T12:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T12:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T12:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T219: quantile window ending at 2024-01-02T12:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T12:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T12:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T220: quantile window ending at 2024-01-02T12:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T12:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T12:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T221: quantile window ending at 2024-01-02T13:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T13:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T13:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T222: quantile window ending at 2024-01-02T13:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T13:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T13:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T223: quantile window ending at 2024-01-02T13:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T13:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T13:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T224: quantile window ending at 2024-01-02T13:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T13:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T13:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T225: quantile window ending at 2024-01-02T13:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T13:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T13:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T226: quantile window ending at 2024-01-02T13:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T13:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T13:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T227: quantile window ending at 2024-01-02T14:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T14:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T14:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T228: quantile window ending at 2024-01-02T14:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T14:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T14:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T229: quantile window ending at 2024-01-02T14:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T14:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T14:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T230: quantile window ending at 2024-01-02T14:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T14:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T14:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T231: quantile window ending at 2024-01-02T14:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T14:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T14:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T232: quantile window ending at 2024-01-02T14:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T14:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T14:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T233: quantile window ending at 2024-01-02T15:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T15:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T15:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T234: quantile window ending at 2024-01-02T15:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T15:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T15:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T235: quantile window ending at 2024-01-02T15:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T15:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T15:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T236: quantile window ending at 2024-01-02T15:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T15:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T15:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T237: quantile window ending at 2024-01-02T15:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T15:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T15:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T238: quantile window ending at 2024-01-02T15:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T15:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T15:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T239: quantile window ending at 2024-01-02T16:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T16:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T16:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T240: quantile window ending at 2024-01-02T16:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T16:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T16:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T241: quantile window ending at 2024-01-02T16:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T16:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T16:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T242: quantile window ending at 2024-01-02T16:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T16:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T16:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T243: quantile window ending at 2024-01-02T16:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T16:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T16:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T244: quantile window ending at 2024-01-02T16:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T16:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T16:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T245: quantile window ending at 2024-01-02T17:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T17:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T17:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T246: quantile window ending at 2024-01-02T17:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T17:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T17:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T247: quantile window ending at 2024-01-02T17:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T17:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T17:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T248: quantile window ending at 2024-01-02T17:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T17:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T17:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T249: quantile window ending at 2024-01-02T17:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T17:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T17:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T250: quantile window ending at 2024-01-02T17:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T17:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T17:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T251: quantile window ending at 2024-01-02T18:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T18:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T18:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T252: quantile window ending at 2024-01-02T18:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T18:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T18:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T253: quantile window ending at 2024-01-02T18:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T18:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T18:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T254: quantile window ending at 2024-01-02T18:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T18:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T18:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T255: quantile window ending at 2024-01-02T18:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T18:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T18:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T256: quantile window ending at 2024-01-02T18:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T18:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T18:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T257: quantile window ending at 2024-01-02T19:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T19:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T19:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T258: quantile window ending at 2024-01-02T19:10:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T19:10:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T19:10:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T259: quantile window ending at 2024-01-02T19:20:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T19:20:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T19:20:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T260: quantile window ending at 2024-01-02T19:30:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T19:30:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T19:30:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T261: quantile window ending at 2024-01-02T19:40:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T19:40:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T19:40:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T262: quantile window ending at 2024-01-02T19:50:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T19:50:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T19:50:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;
+
+-- -- T263: quantile window ending at 2024-01-02T20:00:00Z
+-- SELECT id1, id2, PERCENTILE(v3, 95) AS p95_v3
+-- FROM "h2o_benchmark"
+-- WHERE timestamp BETWEEN DATEADD('second', -600, CAST('2024-01-02T20:00:00Z' AS DATETIME))
+--   AND CAST('2024-01-02T20:00:00Z' AS DATETIME)
+-- GROUP BY id1, id2
+-- ORDER BY id1, id2;

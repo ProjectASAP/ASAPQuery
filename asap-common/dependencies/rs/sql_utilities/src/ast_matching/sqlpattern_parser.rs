@@ -7,7 +7,6 @@ use parse_datetime::parse_datetime;
 use sqlparser::ast::Value::SingleQuotedString;
 
 pub struct SQLPatternParser {
-    #[allow(dead_code)]
     schema: SQLSchema,
     query_evaluation_time: f64,
 }
@@ -40,7 +39,7 @@ impl SQLPatternParser {
         let query = self.cte_to_subquery(query);
 
         match &query.body.as_ref() {
-            SetExpr::Select(select) => self.parse_select(select),
+            SetExpr::Select(select) => self.parse_select(&select),
             _ => {
                 println!("Not a SELECT statement");
                 None
@@ -92,7 +91,7 @@ impl SQLPatternParser {
 
             // Check for unexpected fields
             if select.distinct.is_some()
-                || select.top.is_some()
+                || !select.top.is_none()
                 || select.into.is_some()
                 || !select.lateral_views.is_empty()
                 || select.prewhere.is_some()
@@ -111,7 +110,7 @@ impl SQLPatternParser {
                 aggregation_info: aggregation,
                 metric,
                 labels: group_bys,
-                time_info,
+                time_info: time_info,
                 subquery: None,
             })
         } else {
@@ -127,7 +126,7 @@ impl SQLPatternParser {
                             aggregation_info: inner_aggregation,
                             metric: metric.clone(),
                             labels: inner_group_bys,
-                            time_info,
+                            time_info: time_info,
                             subquery: None,
                         }))
                     }
@@ -140,7 +139,7 @@ impl SQLPatternParser {
                 aggregation_info: aggregation,
                 metric,
                 labels: group_bys,
-                time_info: TimeInfo::new("UNUSED".to_string(), -1.0, -1_f64),
+                time_info: TimeInfo::new("UNUSED".to_string(), -1.0, -1 as f64),
                 subquery: Some(subquery),
             })
         }
@@ -150,28 +149,9 @@ impl SQLPatternParser {
         let name = func.name.to_string().to_uppercase();
 
         match (&func.args, name.as_str()) {
-            (FunctionArguments::List(_), "QUANTILE") => {
-                // ClickHouse parametric syntax: quantile(0.95)(column)
-                // The quantile level is in func.parameters; func.args holds the column.
-                if let FunctionArguments::List(params) = &func.parameters {
-                    if !params.args.is_empty() {
-                        let mut quantile_arg = Vec::new();
-                        if let FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(value))) =
-                            &params.args[0]
-                        {
-                            quantile_arg.push(value.value.to_string());
-                        }
-                        return quantile_arg;
-                    }
-                }
-
-                // ASAP syntax: QUANTILE(0.95, column)
-                // Both the quantile level and column are in func.args.
-                let args = match &func.args {
-                    FunctionArguments::List(a) => a,
-                    _ => return Vec::new(),
-                };
+            (FunctionArguments::List(args), "QUANTILE") => {
                 let mut quantile_arg = Vec::new();
+
                 match &args.args[0] {
                     FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(value))) => {
                         quantile_arg.push(value.value.to_string());
@@ -226,30 +206,15 @@ impl SQLPatternParser {
                     FunctionArguments::Subquery(_) => return None,
                     FunctionArguments::List(func_args) => {
                         if name == "QUANTILE" {
-                            if let FunctionArguments::List(params) = &func.parameters {
-                                if !params.args.is_empty() {
-                                    // ClickHouse parametric syntax: quantile(0.95)(column)
-                                    // Column is the sole argument in func.args.
-                                    match func_args.args.first() {
-                                        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(
-                                            Expr::Identifier(ident),
-                                        ))) => ident.value.clone(),
-                                        _ => return None,
-                                    }
-                                } else {
-                                    return None;
-                                }
-                            } else {
-                                // ASAP syntax: QUANTILE(0.95, value) - column is second argument
-                                if func_args.args.len() < 2 {
-                                    return None;
-                                }
-                                match &func_args.args[1] {
-                                    FunctionArg::Unnamed(FunctionArgExpr::Expr(
-                                        Expr::Identifier(ident),
-                                    )) => ident.value.clone(),
-                                    _ => return None,
-                                }
+                            // QUANTILE(0.95, value) - column is second argument
+                            if func_args.args.len() < 2 {
+                                return None;
+                            }
+                            match &func_args.args[1] {
+                                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(
+                                    ident,
+                                ))) => ident.value.clone(),
+                                _ => return None,
                             }
                         } else if name == "PERCENTILE" {
                             // PERCENTILE(value, 95) - column is first argument
@@ -324,8 +289,8 @@ impl SQLPatternParser {
         Some(parsed_datetime.timestamp().as_second() as f64)
     }
 
-    fn get_timestamp_from_between_highlow(&self, highlow: &Expr) -> Option<f64> {
-        match highlow {
+    fn get_timestamp_from_between_highlow(&self, highlow: &Box<Expr>) -> Option<f64> {
+        match highlow.as_ref() {
             Expr::Function(func) if func.name.to_string().to_uppercase() == "NOW" => {
                 Some(self.query_evaluation_time)
             }
@@ -336,13 +301,24 @@ impl SQLPatternParser {
             Expr::Function(func) if func.name.to_string().to_uppercase() == "DATEADD" => {
                 self.parse_dateadd(func)
             }
+
+            Expr::Cast { expr, .. } => {
+                match expr.as_ref() {
+                    Expr::Value(ValueWithSpan {
+                        value: SingleQuotedString(datetime_str),
+                        ..
+                    }) => Self::get_timestamp_from_datetime_str(datetime_str),
+                    _ => return None,
+                }
+            }
+
             _ => {
                 panic!("invalid time syntax {:?}", highlow);
             }
         }
     }
 
-    fn get_time_info(&self, select: &Select, _table_name: &str) -> Option<TimeInfo> {
+    fn get_time_info(&self, select: &Select, table_name: &str) -> Option<TimeInfo> {
         let selection = select.selection.as_ref()?;
 
         match selection {
@@ -362,8 +338,18 @@ impl SQLPatternParser {
                     _ => return None,
                 };
 
-                let start = self.get_timestamp_from_between_highlow(low.as_ref())?;
-                let end = self.get_timestamp_from_between_highlow(high.as_ref())?;
+                let time_col_name = self.schema.get_time_column(table_name)?;
+
+                if col_name != *time_col_name {
+                    println!(
+                        "Found selection statement with column name {} but time column name is {}",
+                        col_name, time_col_name
+                    );
+                    return None;
+                }
+
+                let start = self.get_timestamp_from_between_highlow(low)?;
+                let end = self.get_timestamp_from_between_highlow(high)?;
 
                 let duration = end - start;
 
@@ -388,6 +374,10 @@ impl SQLPatternParser {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
                 ident.value.to_lowercase()
             }
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(ValueWithSpan {
+                value: SingleQuotedString(s),
+                ..
+            }))) => s.to_lowercase(),
             _ => return None,
         };
 
@@ -402,7 +392,7 @@ impl SQLPatternParser {
                     Expr::Value(ValueWithSpan {
                         value: Value::Number(n, _),
                         span: _,
-                    }) => -n.parse::<i64>().ok()?,
+                    }) => -1 * n.parse::<i64>().ok()?,
                     _ => return None,
                 }
             }
@@ -429,6 +419,20 @@ impl SQLPatternParser {
                 value: SingleQuotedString(datetime_str),
                 span: _,
             }))) => parse_datetime(datetime_str).ok()?.timestamp().as_second() as f64,
+
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Cast { expr, .. })) => {
+                match expr.as_ref() {
+                    Expr::Value(ValueWithSpan {
+                        value: SingleQuotedString(datetime_str),
+                        ..
+                    }) => parse_datetime(datetime_str).ok()?.timestamp().as_second() as f64,
+                    _ => {
+                        println!("Unsupported CAST expression in DATEADD");
+                        return None;
+                    }
+                }
+            }
+
             _ => {
                 println!("time upper bound not calculating from present");
                 return None;
