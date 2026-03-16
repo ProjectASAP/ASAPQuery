@@ -1,0 +1,338 @@
+use serde_json::Value;
+
+use crate::types::{BucketSpec, LabelFilter, MetricAggType, MetricAggregation, TimeRange};
+
+// ---------------------------------------------------------------------------
+// Metric aggregation helpers
+// ---------------------------------------------------------------------------
+
+/// Try to extract a list of metric aggregations from the top-level `"aggs"`
+/// object of a query.  Returns `None` if *any* aggregation entry is not one of
+/// the recognised metric types (avg / min / max / sum / percentiles).
+pub fn extract_metric_aggs(aggs: &Value) -> Option<Vec<MetricAggregation>> {
+    let obj = aggs.as_object()?;
+    if obj.is_empty() {
+        return None;
+    }
+
+    let mut result = Vec::with_capacity(obj.len());
+    for (result_name, agg_body) in obj {
+        // Each aggregation body is an object that should contain exactly one
+        // recognised metric aggregation key.
+        let body_obj = agg_body.as_object()?;
+        let mut found = None;
+        for (key, inner) in body_obj {
+            if let Some(agg_type) = MetricAggType::from_str(key) {
+                let field = inner.get("field")?.as_str()?.to_owned();
+                found = Some(MetricAggregation {
+                    result_name: result_name.clone(),
+                    agg_type,
+                    field,
+                });
+                break;
+            }
+        }
+        result.push(found?);
+    }
+    Some(result)
+}
+
+// ---------------------------------------------------------------------------
+// Time range helpers
+// ---------------------------------------------------------------------------
+
+/// Try to extract a `TimeRange` from a bare `{"range": {"<field>": {...}}}`
+/// query value.  Accepts either string or numeric values for gte/lte.
+pub fn extract_time_range(query: &Value) -> Option<TimeRange> {
+    let range_obj = query.get("range")?.as_object()?;
+    // There should be exactly one field entry in the range object.
+    if range_obj.len() != 1 {
+        return None;
+    }
+    let (field, bounds) = range_obj.iter().next()?;
+    let gte = bounds.get("gte").and_then(value_to_string);
+    let lte = bounds.get("lte").and_then(value_to_string);
+    Some(TimeRange {
+        field: field.clone(),
+        gte,
+        lte,
+    })
+}
+
+fn value_to_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Term / label-filter helpers
+// ---------------------------------------------------------------------------
+
+/// Strip the `.keyword` suffix from a field name, if present.
+fn strip_keyword_suffix(field: &str) -> &str {
+    field.strip_suffix(".keyword").unwrap_or(field)
+}
+
+/// Try to extract a `LabelFilter` from a single `"term"` query object.
+///
+/// Handles both the opensearch-dsl long form:
+/// ```json
+/// { "term": { "field": { "value": "val" } } }
+/// ```
+/// and the ES shorthand:
+/// ```json
+/// { "term": { "field": "val" } }
+/// ```
+pub fn extract_label_filter_from_term(term_query: &Value) -> Option<LabelFilter> {
+    let term_obj = term_query.get("term")?.as_object()?;
+    if term_obj.len() != 1 {
+        return None;
+    }
+    let (raw_field, field_value) = term_obj.iter().next()?;
+    let field = strip_keyword_suffix(raw_field).to_owned();
+    let value = if let Some(s) = field_value.as_str() {
+        // Shorthand: "field": "value"
+        s.to_owned()
+    } else if let Some(inner) = field_value.as_object() {
+        // Long form: "field": { "value": "..." }
+        inner.get("value")?.as_str()?.to_owned()
+    } else {
+        return None;
+    };
+    Some(LabelFilter { field, value })
+}
+
+// ---------------------------------------------------------------------------
+// Bool filter helpers
+// ---------------------------------------------------------------------------
+
+/// Try to extract a list of label filters (and optionally a time range) from a
+/// `{"bool": {"filter": [...]}}` query structure.
+///
+/// The `filter` array must contain at least a term query, and may also contain
+/// a range query.  Additional (unrecognised) entries in the array cause this
+/// function to return `None`.
+pub fn extract_label_filters(query: &Value) -> Option<(Vec<LabelFilter>, Option<TimeRange>)> {
+    let filter_clauses = query.get("bool")?.get("filter")?;
+
+    // The filter value may be an array (multiple clauses) or a single object.
+    let clauses: Vec<&Value> = if let Some(arr) = filter_clauses.as_array() {
+        arr.iter().collect()
+    } else if filter_clauses.is_object() {
+        vec![filter_clauses]
+    } else {
+        return None;
+    };
+
+    let mut label_filters: Vec<LabelFilter> = Vec::new();
+    let mut time_range: Option<TimeRange> = None;
+
+    for clause in clauses {
+        if clause.get("term").is_some() {
+            label_filters.push(extract_label_filter_from_term(clause)?);
+        } else if clause.get("range").is_some() {
+            if time_range.is_some() {
+                continue; // Multiple range clauses - ignore all but the first.
+            }
+            time_range = Some(extract_time_range(clause)?);
+        } else {
+            // Unknown clause type in the filter.
+            return None;
+        }
+    }
+
+    Some((label_filters, time_range))
+}
+
+// ---------------------------------------------------------------------------
+// Batched-filters helpers
+// ---------------------------------------------------------------------------
+
+/// Try to extract a batched filters aggregation (essentially the groupby buckets) from the top-level `"aggs"`
+/// object.
+///
+/// Expected shape:
+/// ```json
+/// {
+///   "aggs": {
+///     "<result_name>": {
+///       "filters": {
+///         "filters": {
+///           "<bucket1>": { "term": { ... } },
+///           "<bucket2>": { "term": { ... } }
+///         }
+///       },
+///       "aggs": { ... metric aggs ... }
+///     }
+///   }
+/// }
+/// ```
+///
+/// Returns `(result_name, buckets, metric_aggregations)` on success.
+pub fn extract_batched_filters(
+    aggs: &Value,
+) -> Option<(String, Vec<BucketSpec>, Vec<MetricAggregation>)> {
+    let obj = aggs.as_object()?;
+    // There must be exactly one top-level aggregation entry.
+    if obj.len() != 1 {
+        return None;
+    }
+    let (result_name, agg_body) = obj.iter().next()?;
+
+    // The body must have a "filters" key (the bucket aggregation type).
+    let filters_agg = agg_body.get("filters")?;
+    let filters_map = filters_agg.get("filters")?.as_object()?;
+
+    let mut buckets = Vec::with_capacity(filters_map.len());
+    for (bucket_name, bucket_filter) in filters_map {
+        let label_filter = extract_label_filter_from_term(bucket_filter)?;
+        buckets.push(BucketSpec {
+            bucket_name: bucket_name.clone(),
+            filter: label_filter,
+        });
+    }
+
+    if buckets.is_empty() {
+        return None;
+    }
+
+    // The nested "aggs" holds the metric sub-aggregations.
+    let nested_aggs = agg_body.get("aggs").unwrap_or(&Value::Null);
+    let metric_aggs = extract_metric_aggs(nested_aggs)?;
+
+    Some((result_name.clone(), buckets, metric_aggs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_extract_metric_aggs_basic() {
+        let aggs = json!({
+            "avg_latency": { "avg": { "field": "latency_ms" } },
+            "max_latency": { "max": { "field": "latency_ms" } },
+            "p95_latency": { "percentiles": { "field": "latency_ms", "percents": [95] } }
+        });
+        let result = extract_metric_aggs(&aggs).unwrap();
+        assert_eq!(result.len(), 3);
+        let avg = result.iter().find(|a| a.result_name == "avg_latency").unwrap();
+        assert_eq!(avg.agg_type, MetricAggType::Avg);
+        assert_eq!(avg.field, "latency_ms");
+        let p95 = result.iter().find(|a| a.result_name == "p95_latency").unwrap();
+        assert_eq!(p95.agg_type, MetricAggType::Percentiles);
+        assert_eq!(p95.field, "latency_ms");
+    }
+
+    #[test]
+    fn test_extract_metric_aggs_rejects_unknown_type() {
+        let aggs = json!({
+            "by_service": { "terms": { "field": "service" } }
+        });
+        assert!(extract_metric_aggs(&aggs).is_none());
+    }
+
+    #[test]
+    fn test_extract_time_range() {
+        let query = json!({
+            "range": {
+                "@timestamp": { "gte": "now-30s", "lte": "now" }
+            }
+        });
+        let tr = extract_time_range(&query).unwrap();
+        assert_eq!(tr.field, "@timestamp");
+        assert_eq!(tr.gte.as_deref(), Some("now-30s"));
+        assert_eq!(tr.lte.as_deref(), Some("now"));
+    }
+
+    #[test]
+    fn test_extract_label_filter_long_form() {
+        let term = json!({ "term": { "service.keyword": { "value": "frontend" } } });
+        let f = extract_label_filter_from_term(&term).unwrap();
+        assert_eq!(f.field, "service");
+        assert_eq!(f.value, "frontend");
+    }
+
+    #[test]
+    fn test_extract_label_filter_shorthand() {
+        let term = json!({ "term": { "env": "production" } });
+        let f = extract_label_filter_from_term(&term).unwrap();
+        assert_eq!(f.field, "env");
+        assert_eq!(f.value, "production");
+    }
+
+    #[test]
+    fn test_extract_bool_filter_term_and_range() {
+        let query = json!({
+            "bool": {
+                "filter": [
+                    { "term": { "service.keyword": { "value": "frontend" } } },
+                    { "term": { "env.keyword": { "value": "production" } } },
+                    { "range": { "@timestamp": { "gte": "now-30s", "lte": "now" } } }
+                ]
+            }
+        });
+        let (lf, tr) = extract_label_filters(&query).unwrap();
+        assert_eq!(lf[0].field, "service");
+        assert_eq!(lf[0].value, "frontend");
+        assert_eq!(lf[1].field, "env");
+        assert_eq!(lf[1].value, "production");
+        let tr = tr.unwrap();
+        assert_eq!(tr.field, "@timestamp");
+    }
+
+    #[test]
+    fn test_extract_bool_filter_term_only() {
+        let query = json!({
+            "bool": {
+                "filter": [
+                    { "term": { "env": "staging" } }
+                ]
+            }
+        });
+        let (lf, tr) = extract_label_filters(&query).unwrap();
+        assert_eq!(lf[0].field, "env");
+        assert_eq!(lf[0].value, "staging");
+        assert!(tr.is_none());
+    }
+
+    #[test]
+    fn test_extract_bool_filter_single_object() {
+        // filter as a plain object (not array)
+        let query = json!({
+            "bool": {
+                "filter": { "term": { "region": "us-east-1" } }
+            }
+        });
+        let (lf, tr) = extract_label_filters(&query).unwrap();
+        assert_eq!(lf[0].field, "region");
+        assert_eq!(lf[0].value, "us-east-1");
+        assert!(tr.is_none());
+    }
+
+    #[test]
+    fn test_extract_batched_filters() {
+        let aggs = json!({
+            "by_service": {
+                "filters": {
+                    "filters": {
+                        "frontend": { "term": { "service.keyword": { "value": "frontend" } } },
+                        "backend":  { "term": { "service.keyword": { "value": "backend" } } }
+                    }
+                },
+                "aggs": {
+                    "avg_latency": { "avg": { "field": "latency_ms" } }
+                }
+            }
+        });
+        let (name, buckets, metric_aggs) = extract_batched_filters(&aggs).unwrap();
+        assert_eq!(name, "by_service");
+        assert_eq!(buckets.len(), 2);
+        assert_eq!(metric_aggs.len(), 1);
+        assert_eq!(metric_aggs[0].agg_type, MetricAggType::Avg);
+    }
+}

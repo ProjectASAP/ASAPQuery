@@ -4,6 +4,7 @@ members = [
     "asap-common/sketch-core",
     "asap-common/dependencies/rs/promql_utilities",
     "asap-common/dependencies/rs/sql_utilities",
+    "asap-common/dependencies/rs/elastic_dsl_utilities",
     "asap-common/dependencies/rs/sketch_db_common",
     "asap-common/dependencies/rs/datafusion_summary_library",
     "asap-query-engine",
@@ -33,3 +34,4 @@ promql_utilities = { path = "asap-common/dependencies/rs/promql_utilities" }
 sql_utilities = { path = "asap-common/dependencies/rs/sql_utilities" }
 sketch_db_common = { path = "asap-common/dependencies/rs/sketch_db_common" }
 datafusion_summary_library = { path = "asap-common/dependencies/rs/datafusion_summary_library" }
+elastic_dsl_utilities = { path = "asap-common/dependencies/rs/elastic_dsl_utilities" }
