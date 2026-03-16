@@ -9,8 +9,8 @@ use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingE
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
-    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, Result, SimpleEngine,
-    SimpleMapStore,
+    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
+    OtlpReceiverConfig, Result, SimpleEngine, SimpleMapStore,
 };
 
 #[derive(Parser, Debug)]
@@ -107,6 +107,18 @@ struct Args {
     /// Path to promsketch configuration YAML file (optional; uses defaults if omitted)
     #[arg(long)]
     promsketch_config: Option<String>,
+
+    /// Enable OTLP metrics ingest (gRPC + HTTP)
+    #[arg(long)]
+    enable_otel_ingest: bool,
+
+    /// OTLP gRPC listen port
+    #[arg(long, default_value = "4317")]
+    otel_grpc_port: u16,
+
+    /// OTLP HTTP listen port
+    #[arg(long, default_value = "4318")]
+    otel_http_port: u16,
 }
 
 #[tokio::main]
@@ -219,6 +231,26 @@ async fn main() -> Result<()> {
         }
     };
 
+    // Setup OTLP receiver
+    let otel_handle = if args.enable_otel_ingest {
+        let otel_config = OtlpReceiverConfig {
+            grpc_port: args.otel_grpc_port,
+            http_port: args.otel_http_port,
+        };
+        let receiver = OtlpReceiver::new(otel_config);
+        info!(
+            "Starting OTLP receiver (gRPC port {}, HTTP port {})",
+            args.otel_grpc_port, args.otel_http_port
+        );
+        Some(tokio::spawn(async move {
+            if let Err(e) = receiver.run().await {
+                error!("OTLP receiver error: {}", e);
+            }
+        }))
+    } else {
+        None
+    };
+
     // Setup Prometheus remote write server
     // let prometheus_remote_write_handle = if args.enable_prometheus_remote_write {
     //     let prw_config = PrometheusRemoteWriteConfig {
@@ -279,6 +311,12 @@ async fn main() -> Result<()> {
     // Cleanup - gracefully shutdown background tasks
     if let Some(handle) = kafka_handle {
         info!("Shutting down Kafka consumer...");
+        handle.abort();
+        let _ = handle.await;
+    }
+
+    if let Some(handle) = otel_handle {
+        info!("Shutting down OTLP receiver...");
         handle.abort();
         let _ = handle.await;
     }
