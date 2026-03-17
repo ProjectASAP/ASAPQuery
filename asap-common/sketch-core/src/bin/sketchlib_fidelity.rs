@@ -329,7 +329,7 @@ fn run_hydra_kll_once(seed: u64, p: &HydraKllParams) -> HydraKllResult {
 fn main() {
     let args = Args::parse();
     config::configure(args.cms_impl, args.kll_impl, args.cmwh_impl)
-    .expect("sketch backend already initialised");
+        .expect("sketch backend already initialised");
 
     let seed = 0xC0FFEE_u64;
     let mode = if matches!(args.cms_impl, ImplMode::Legacy)
