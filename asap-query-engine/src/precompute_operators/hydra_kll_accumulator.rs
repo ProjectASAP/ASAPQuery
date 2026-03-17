@@ -30,8 +30,7 @@ impl HydraKllSketchAccumulator {
     }
 
     pub fn deserialize_from_bytes(_buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        // HydraKLLSketch is only used with Arroyo, not Flink
-        Err("deserialize_from_bytes for HydraKllSketchAccumulator not implemented for Flink".into())
+        Err("deserialize_from_bytes for HydraKllSketchAccumulator not implemented".into())
     }
 
     pub fn deserialize_from_bytes_arroyo(

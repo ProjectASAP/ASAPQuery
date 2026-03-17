@@ -273,155 +273,51 @@ impl<T: Store + Send + Sync + 'static> KafkaConsumer<T> {
                 Err("Binary input format with precompute not implemented".into())
             }
             InputFormat::Json => {
-                // Handle streaming engine specific logic
-                match self.config.streaming_engine {
-                    StreamingEngine::Flink => {
-                        // debug!("Received message of length: {}", payload.len());
-
-                        // let json_data = if self.config.decompress_json {
-                        //     // Decompress using gzip
-                        //     let mut decoder = GzDecoder::new(payload);
-                        //     let mut decompressed = Vec::new();
-                        //     match decoder.read_to_end(&mut decompressed) {
-                        //         Ok(_) => {
-                        //             debug!(
-                        //                 "Decompressed JSON message of length: {}",
-                        //                 decompressed.len()
-                        //             );
-                        //             decompressed
-                        //         }
-                        //         Err(e) => {
-                        //             error!("Error decompressing gzip data: {}", e);
-                        //             return Err(format!("Gzip decompression error: {e}").into());
-                        //         }
-                        //     }
-                        // } else {
-                        //     payload.to_vec()
-                        // };
-
-                        // let json_str = match String::from_utf8(json_data) {
-                        //     Ok(s) => s,
-                        //     Err(e) => {
-                        //         error!("Error converting bytes to UTF-8: {}", e);
-                        //         return Err(format!("UTF-8 conversion error: {e}").into());
-                        //     }
-                        // };
-
-                        // let json_parse_start_time = Instant::now();
-
-                        // let json_dict: serde_json::Value = match serde_json::from_str(&json_str) {
-                        //     Ok(dict) => {
-                        //         let json_parse_duration = json_parse_start_time.elapsed();
-                        //         debug!(
-                        //             "JSON parsing took: {:.2}ms",
-                        //             json_parse_duration.as_secs_f64() * 1000.0
-                        //         );
-                        //         dict
-                        //     }
-                        //     Err(e) => {
-                        //         error!("Error parsing JSON: {}", e);
-                        //         debug!("JSON content: {}", json_str);
-                        //         return Err(format!("JSON parsing error: {e}").into());
-                        //     }
-                        // };
-
-                        // debug!(
-                        //     "Deserializing JSON message: {}, {}, {}",
-                        //     json_dict
-                        //         .get("aggregation_id")
-                        //         .and_then(|v| v.as_u64())
-                        //         .unwrap_or(0),
-                        //     json_dict
-                        //         .get("start_timestamp")
-                        //         .and_then(|v| v.as_u64())
-                        //         .unwrap_or(0),
-                        //     json_dict
-                        //         .get("end_timestamp")
-                        //         .and_then(|v| v.as_u64())
-                        //         .unwrap_or(0)
-                        // );
-
-                        // let deserialize_start_time = Instant::now();
-
-                        // match PrecomputedOutput::deserialize_from_json_with_precompute(&json_dict) {
-                        //     Ok((output, precompute)) => {
-                        //         let deserialize_duration = deserialize_start_time.elapsed();
-                        //         debug!(
-                        //             "Deserialization took: {:.2}ms",
-                        //             deserialize_duration.as_secs_f64() * 1000.0
-                        //         );
-                        //         debug!(
-                        //             "Deserialized item: {}, {}, {}",
-                        //             output.config.aggregation_id,
-                        //             output.start_timestamp,
-                        //             output.end_timestamp
-                        //         );
-                        //         debug!("Successfully deserialized Flink JSON message with precompute data");
-                        //         let total_message_duration = message_start_time.elapsed();
-                        //         debug!(
-                        //             "Total message processing took: {:.2}ms",
-                        //             total_message_duration.as_secs_f64() * 1000.0
-                        //         );
-                        //         Ok(Some((output, precompute)))
-                        //     }
-                        //     Err(e) => {
-                        //         error!(
-                        //             "Error deserializing Flink PrecomputedOutput from JSON with precompute: {}",
-                        //             e
-                        //         );
-                        //         debug!("JSON content: {}", json_str);
-                        //         Err(e)
-                        //     }
-                        // }
-                        error!("Flink input format with precompute not implemented");
-                        Err("Flink input format with precompute not implemented".into())
+                // Arroyo messages - gzip decompression is applied at precompute level, not message level
+                let json_str = match String::from_utf8(payload.to_vec()) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Error converting bytes to UTF-8: {}", e);
+                        return Err(format!("UTF-8 conversion error: {e}").into());
                     }
-                    StreamingEngine::Arroyo => {
-                        // Arroyo messages - gzip decompression is applied at precompute level, not message level
-                        let json_str = match String::from_utf8(payload.to_vec()) {
-                            Ok(s) => s,
-                            Err(e) => {
-                                error!("Error converting bytes to UTF-8: {}", e);
-                                return Err(format!("UTF-8 conversion error: {e}").into());
-                            }
-                        };
+                };
 
-                        let json_dict: serde_json::Value = match serde_json::from_str(&json_str) {
-                            Ok(dict) => dict,
-                            Err(e) => {
-                                error!("Error parsing Arroyo JSON: {}", e);
-                                debug!("JSON content: {}", json_str);
-                                return Err(format!("JSON parsing error: {e}").into());
-                            }
-                        };
+                let json_dict: serde_json::Value = match serde_json::from_str(&json_str) {
+                    Ok(dict) => dict,
+                    Err(e) => {
+                        error!("Error parsing Arroyo JSON: {}", e);
+                        debug!("JSON content: {}", json_str);
+                        return Err(format!("JSON parsing error: {e}").into());
+                    }
+                };
 
-                        let deserialize_start_time = Instant::now();
-                        match PrecomputedOutput::deserialize_from_json_arroyo(
-                            &json_dict,
-                            &self.streaming_config,
-                        ) {
-                            Ok((output, precompute)) => {
-                                let deserialize_duration = deserialize_start_time.elapsed();
-                                debug!(
-                                    "Arroyo deserialization took: {:.2}ms",
-                                    deserialize_duration.as_secs_f64() * 1000.0
-                                );
-                                debug!("Successfully deserialized Arroyo JSON message with precompute data");
-                                let total_message_duration = message_start_time.elapsed();
-                                debug!(
-                                    "Total Arroyo message processing took: {:.2}ms",
-                                    total_message_duration.as_secs_f64() * 1000.0
-                                );
-                                Ok(Some((output, precompute)))
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Error deserializing Arroyo PrecomputedOutput from JSON with precompute: {e}"
-                                );
-                                debug!("JSON content: {}", json_str);
-                                Err(e)
-                            }
-                        }
+                let deserialize_start_time = Instant::now();
+                match PrecomputedOutput::deserialize_from_json_arroyo(
+                    &json_dict,
+                    &self.streaming_config,
+                ) {
+                    Ok((output, precompute)) => {
+                        let deserialize_duration = deserialize_start_time.elapsed();
+                        debug!(
+                            "Arroyo deserialization took: {:.2}ms",
+                            deserialize_duration.as_secs_f64() * 1000.0
+                        );
+                        debug!(
+                            "Successfully deserialized Arroyo JSON message with precompute data"
+                        );
+                        let total_message_duration = message_start_time.elapsed();
+                        debug!(
+                            "Total Arroyo message processing took: {:.2}ms",
+                            total_message_duration.as_secs_f64() * 1000.0
+                        );
+                        Ok(Some((output, precompute)))
+                    }
+                    Err(e) => {
+                        error!(
+                            "Error deserializing Arroyo PrecomputedOutput from JSON with precompute: {e}"
+                        );
+                        debug!("JSON content: {}", json_str);
+                        Err(e)
                     }
                 }
             }
