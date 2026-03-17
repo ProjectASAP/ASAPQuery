@@ -60,6 +60,7 @@ pub struct MetricAggregation {
     pub agg_type: MetricAggType,
     /// The document field being aggregated over.
     pub field: String,
+    pub params: Option<serde_json::Value>, // Optional additional parameters (e.g. percentiles values)
 }
 
 /// One bucket in a batched-filter (multi-bucket) aggregation.

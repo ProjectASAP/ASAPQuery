@@ -24,10 +24,16 @@ pub fn extract_metric_aggs(aggs: &Value) -> Option<Vec<MetricAggregation>> {
         for (key, inner) in body_obj {
             if let Some(agg_type) = MetricAggType::from_str(key) {
                 let field = inner.get("field")?.as_str()?.to_owned();
+                let kwargs_map = inner.as_object()?.iter()
+                    .filter(|(k, _)| *k != "field")
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect();
+                let kwargs = serde_json::Value::Object(kwargs_map);
                 found = Some(MetricAggregation {
                     result_name: result_name.clone(),
                     agg_type,
                     field,
+                    params: Some(kwargs),
                 });
                 break;
             }
@@ -226,6 +232,7 @@ mod tests {
         let p95 = result.iter().find(|a| a.result_name == "p95_latency").unwrap();
         assert_eq!(p95.agg_type, MetricAggType::Percentiles);
         assert_eq!(p95.field, "latency_ms");
+        assert_eq!(p95.params.as_ref().unwrap().get("percents").unwrap(), &json!([95]));
     }
 
     #[test]
