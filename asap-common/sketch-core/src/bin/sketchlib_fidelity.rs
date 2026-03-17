@@ -95,26 +95,11 @@ fn rmse_percentage(exact: &[f64], est: &[f64]) -> f64 {
 #[derive(Parser)]
 struct Args {
     #[arg(long, value_enum, default_value = "sketchlib")]
-    cms_impl: BackendImpl,
+    cms_impl: ImplMode,
     #[arg(long, value_enum, default_value = "sketchlib")]
-    kll_impl: BackendImpl,
+    kll_impl: ImplMode,
     #[arg(long, value_enum, default_value = "sketchlib")]
-    cmwh_impl: BackendImpl,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-enum BackendImpl {
-    Legacy,
-    Sketchlib,
-}
-
-impl From<BackendImpl> for ImplMode {
-    fn from(value: BackendImpl) -> Self {
-        match value {
-            BackendImpl::Legacy => ImplMode::Legacy,
-            BackendImpl::Sketchlib => ImplMode::Sketchlib,
-        }
-    }
+    cmwh_impl: ImplMode,
 }
 
 fn rank_fraction(sorted: &[f64], x: f64) -> f64 {
@@ -343,17 +328,13 @@ fn run_hydra_kll_once(seed: u64, p: &HydraKllParams) -> HydraKllResult {
 
 fn main() {
     let args = Args::parse();
-    config::configure(
-        ImplMode::from(args.cms_impl.clone()),
-        ImplMode::from(args.kll_impl.clone()),
-        ImplMode::from(args.cmwh_impl.clone()),
-    )
+    config::configure(args.cms_impl, args.kll_impl, args.cmwh_impl)
     .expect("sketch backend already initialised");
 
     let seed = 0xC0FFEE_u64;
-    let mode = if matches!(args.cms_impl, BackendImpl::Legacy)
-        || matches!(args.kll_impl, BackendImpl::Legacy)
-        || matches!(args.cmwh_impl, BackendImpl::Legacy)
+    let mode = if matches!(args.cms_impl, ImplMode::Legacy)
+        || matches!(args.kll_impl, ImplMode::Legacy)
+        || matches!(args.cmwh_impl, ImplMode::Legacy)
     {
         "Legacy"
     } else {

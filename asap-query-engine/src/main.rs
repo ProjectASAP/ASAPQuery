@@ -5,7 +5,7 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info};
 
-use sketch_core::config::{self, ImplMode as BackendImplMode};
+use sketch_core::config::{self, ImplMode};
 
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
@@ -112,30 +112,15 @@ struct Args {
 
     /// Backend implementation for Count-Min Sketch (legacy | sketchlib)
     #[arg(long, value_enum, default_value = "sketchlib")]
-    sketch_cms_impl: BackendImpl,
+    sketch_cms_impl: ImplMode,
 
     /// Backend implementation for KLL Sketch (legacy | sketchlib)
     #[arg(long, value_enum, default_value = "sketchlib")]
-    sketch_kll_impl: BackendImpl,
+    sketch_kll_impl: ImplMode,
 
     /// Backend implementation for Count-Min-With-Heap (legacy | sketchlib)
     #[arg(long, value_enum, default_value = "sketchlib")]
-    sketch_cmwh_impl: BackendImpl,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug)]
-enum BackendImpl {
-    Legacy,
-    Sketchlib,
-}
-
-impl From<BackendImpl> for BackendImplMode {
-    fn from(value: BackendImpl) -> Self {
-        match value {
-            BackendImpl::Legacy => BackendImplMode::Legacy,
-            BackendImpl::Sketchlib => BackendImplMode::Sketchlib,
-        }
-    }
+    sketch_cmwh_impl: ImplMode,
 }
 
 #[tokio::main]
@@ -144,9 +129,9 @@ async fn main() -> Result<()> {
 
     // Configure sketch-core backends before any sketch operations.
     config::configure(
-        BackendImplMode::from(args.sketch_cms_impl.clone()),
-        BackendImplMode::from(args.sketch_kll_impl.clone()),
-        BackendImplMode::from(args.sketch_cmwh_impl.clone()),
+        args.sketch_cms_impl,
+        args.sketch_kll_impl,
+        args.sketch_cmwh_impl,
     )
     .expect("sketch backend already initialised");
 

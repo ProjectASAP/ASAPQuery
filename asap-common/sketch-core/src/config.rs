@@ -1,7 +1,7 @@
 use std::sync::OnceLock;
 
 /// Implementation mode for sketch-core internals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum ImplMode {
     /// Use the original hand-written implementations.
     Legacy,

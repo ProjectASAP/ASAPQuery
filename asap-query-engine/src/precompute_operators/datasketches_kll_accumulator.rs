@@ -282,7 +282,7 @@ mod tests {
         assert_eq!(kll.get_quantile(1.0), 10.0);
         // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
         let q50 = kll.get_quantile(0.5);
-        assert!((q50 - 6.0).abs() <= 2.0, "expected median ~6, got {q50}");
+        assert!((q50 - 6.0).abs() <= 1.0, "expected median ~6, got {q50}");
     }
 
     #[test]
@@ -297,7 +297,7 @@ mod tests {
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
         // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
         assert!(
-            (result - 6.0).abs() <= 2.0,
+            (result - 6.0).abs() <= 1.0,
             "expected median ~6, got {result}"
         );
 
@@ -365,7 +365,7 @@ mod tests {
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
         // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
         assert!(
-            (result - 6.0).abs() <= 2.0,
+            (result - 6.0).abs() <= 1.0,
             "expected median ~6, got {result}"
         );
 
