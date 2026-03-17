@@ -20,8 +20,7 @@ set +a
 IMPORTER_DIR="${PROJECT_DIR}/benchmark_importer"
 DATA_DIR="${IMPORTER_DIR}/data"
 
-# Hardcoded Kafka Path
-KAFKA_HOME="${PROJECT_DIR}/../../Utilities/installation/kafka/kafka"
+KAFKA_HOME="${INSTALL_DIR}/kafka"
 KAFKA_BIN="${KAFKA_HOME}/bin"
 
 # Check Mode

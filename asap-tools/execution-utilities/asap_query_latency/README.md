@@ -89,7 +89,7 @@ $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --create \
 ### Step 4 — Init ClickHouse tables
 
 ```bash
-cd ~/asap-internal/ExecutionUtilities/clickhouse-benchmark-pipeline
+cd ~/ASAPQuery/asap-tools/execution-utilities/clickhouse-benchmark-pipeline
 CLICKHOUSE_BIN=$INSTALL_DIR/clickhouse bash scripts/init_clickhouse.sh
 ```
 
