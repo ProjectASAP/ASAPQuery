@@ -21,7 +21,7 @@ IMPORTER_DIR="${PROJECT_DIR}/benchmark_importer"
 DATA_DIR="${IMPORTER_DIR}/data"
 
 # Hardcoded Kafka Path
-KAFKA_HOME="${PROJECT_DIR}/../../installation/kafka/kafka"
+KAFKA_HOME="${PROJECT_DIR}/../../Utilities/installation/kafka/kafka"
 KAFKA_BIN="${KAFKA_HOME}/bin"
 
 # Check Mode
@@ -47,7 +47,7 @@ case "${DATA_MODE}" in
         # Synthetic Data Generation
         # Note: We don't strictly need to create the topic here as the producer will auto-create it,
         # but if you wanted to enforce partitions, you would use ${KAFKA_BIN}/kafka-topics.sh here.
-        
+
         EXTRA_ARGS=()
         if [ -n "${TOTAL_RECORDS}" ] && [ "${TOTAL_RECORDS}" -gt 0 ]; then
             EXTRA_ARGS+=(--total-records "${TOTAL_RECORDS}")
@@ -63,33 +63,44 @@ case "${DATA_MODE}" in
     clickbench)
         # Real ClickBench Data
         echo "Ensuring ClickBench data exists..."
-        
+
         # Call the Python downloader
         python3 "${IMPORTER_DIR}/download_data.py" \
             --output-dir "${DATA_DIR}"
 
-        FILE_NAME="hits.json" 
+        FILE_NAME="hits.json"
         # Check for .gz if .json doesn't exist
         if [ ! -f "${DATA_DIR}/${FILE_NAME}" ] && [ -f "${DATA_DIR}/hits.json.gz" ]; then
             FILE_NAME="hits.json.gz"
         fi
+
+        # Build args for data_exporter in clickbench mode
+        EXTRA_ARGS=()
+        if [ -n "${TOTAL_RECORDS}" ] && [ "${TOTAL_RECORDS}" -gt 0 ]; then
+            EXTRA_ARGS+=(--total-records "${TOTAL_RECORDS}")
+        fi
+
+        # Enable event-time Kafka timestamps by default in clickbench mode (required for Arroyo windowing)
+        USE_EVENT_TIME_TIMESTAMP="${USE_EVENT_TIME_TIMESTAMP:-true}"
+        [ "${USE_EVENT_TIME_TIMESTAMP}" = "true" ] && EXTRA_ARGS+=(--use-event-time-timestamp)
 
         echo "Ingesting ${FILE_NAME} to Kafka..."
         ./data_exporter/target/release/data_exporter \
             --mode clickbench \
             --clickbench-file "${DATA_DIR}/${FILE_NAME}" \
             --kafka-broker "${KAFKA_BROKER}" \
-            --kafka-topic "${KAFKA_TOPIC}"
+            --kafka-topic "${KAFKA_TOPIC}" \
+            "${EXTRA_ARGS[@]}"
         ;;
 
     h2o)
         # H2O Benchmark Data
         H2O_TOPIC=${H2O_KAFKA_TOPIC:-h2o_groupby}
         H2O_FILE="G1_1e7_1e2_0_0.csv"
-        
+
         # 1. Ensure Topic Exists using hardcoded path
         echo "Ensuring topic '${H2O_TOPIC}' exists..."
-        
+
         if [ -x "${KAFKA_BIN}/kafka-topics.sh" ]; then
             "${KAFKA_BIN}/kafka-topics.sh" --create --if-not-exists \
                 --topic "${H2O_TOPIC}" \
@@ -101,7 +112,7 @@ case "${DATA_MODE}" in
 
         # 2. Download Data
         echo "Ensuring H2O data exists..."
-        
+
         # Check and install gdown if missing (required for H2O download)
         if ! python3 -c "import gdown" 2>/dev/null; then
             echo "Installing python dependency: gdown..."

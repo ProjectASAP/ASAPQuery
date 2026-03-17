@@ -10,7 +10,7 @@ source "${PROJECT_DIR}/config.env"
 set +a
 
 # --- CONFIGURATION ---
-CH_INSTALL_DIR="${PROJECT_DIR}/../../installation/clickhouse/clickhouse"
+CH_INSTALL_DIR="${PROJECT_DIR}/../../Utilities/installation/clickhouse/clickhouse"
 CLICKHOUSE_BIN="${CH_INSTALL_DIR}/clickhouse"
 
 # Set Defaults if config variables are missing
