@@ -8,27 +8,27 @@ Install and run Kafka and ClickHouse natively (no Docker):
 
 ```bash
 # Install Kafka (one-time)
-cd /path/to/Utilities/installation/kafka
-./install.sh /path/to/Utilities/installation/kafka
+cd ~/ASAPQuery/asap-tools/installation/kafka
+./install.sh ~/ASAPQuery/asap-tools/installation/kafka
 
 # Install ClickHouse (one-time)
-cd /path/to/Utilities/installation/clickhouse
-./install.sh /path/to/Utilities/installation/clickhouse
+cd ~/ASAPQuery/asap-tools/installation/clickhouse
+./install.sh ~/ASAPQuery/asap-tools/installation/clickhouse
 ```
 
 ## Usage
 
 ```bash
 # 1. Start Kafka (in a terminal)
-cd /path/to/Utilities/installation/kafka
+cd ~/ASAPQuery/asap-tools/installation/kafka
 ./run.sh kafka/
 
 # 2. Create Kafka topic
 kafka/bin/kafka-topics.sh --create --topic hits --bootstrap-server localhost:9092
 
 # 3. Start ClickHouse (in another terminal)
-cd /path/to/Utilities/installation/clickhouse
-./run.sh /path/to/Utilities/installation/clickhouse
+cd ~/ASAPQuery/asap-tools/installation/clickhouse
+./run.sh ~/ASAPQuery/asap-tools/installation/clickhouse
 
 # 4. Initialize ClickHouse tables
 ./scripts/init_clickhouse.sh
@@ -61,7 +61,7 @@ Edit `config.env` to change defaults. Environment variables override config valu
 
 Follow instructions to install Elasticsearch:
 ```bash
-cd /path/to/Utilities/installation/elastic
+cd ~/ASAPQuery/asap-tools/installation/elastic
 ```
 
 ## Configuration

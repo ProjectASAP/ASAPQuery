@@ -31,7 +31,7 @@ export INSTALL_DIR=/scratch/sketch_db_for_prometheus
 
 ```bash
 # QueryEngineRust
-cd ~/asap-internal/QueryEngineRust && cargo build --release
+cd ~/ASAPQuery/asap-query-engine && cargo build --release
 
 # data_exporter
 cd ~/ASAPQuery/asap-tools/execution-utilities/clickhouse-benchmark-pipeline/data_exporter
@@ -66,7 +66,7 @@ pip3 install --user ~/ASAPQuery/asap-common/dependencies/py/promql_utilities/
 ### Step 1 — Start Kafka
 
 ```bash
-~/asap-internal/Utilities/installation/kafka/run.sh $INSTALL_DIR/kafka
+~/ASAPQuery/asap-tools/installation/kafka/run.sh $INSTALL_DIR/kafka
 ```
 
 ### Step 2 — Create Kafka topics
@@ -83,7 +83,7 @@ $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --create \
 ### Step 3 — Start ClickHouse
 
 ```bash
-~/asap-internal/Utilities/installation/clickhouse/run.sh $INSTALL_DIR
+~/ASAPQuery/asap-tools/installation/clickhouse/run.sh $INSTALL_DIR
 ```
 
 ### Step 4 — Init ClickHouse tables
@@ -96,15 +96,15 @@ CLICKHOUSE_BIN=$INSTALL_DIR/clickhouse bash scripts/init_clickhouse.sh
 ### Step 5 — Start Arroyo cluster
 
 ```bash
-~/asap-internal/arroyo/target/release/arroyo \
-    --config ~/asap-internal/ArroyoSketch/config.yaml cluster \
+~/ASAPQuery/asap-sketch-ingest/target/release/arroyo \
+    --config ~/ASAPQuery/asap-sketch-ingest/config.yaml cluster \
     > /tmp/arroyo.log 2>&1 &
 ```
 
 ### Step 6 — Create ArroyoSketch pipeline
 
 ```bash
-cd ~/asap-internal/ArroyoSketch
+cd ~/ASAPQuery/asap-sketch-ingest
 python3 run_arroyosketch.py \
     --source_type kafka \
     --kafka_input_format json \
@@ -121,7 +121,7 @@ python3 run_arroyosketch.py \
 ### Step 7 — Start QueryEngineRust
 
 ```bash
-cd ~/asap-internal/QueryEngineRust
+cd ~/ASAPQuery/asap-query-engine
 nohup ./target/release/query_engine_rust \
     --kafka-topic sketch_topic --input-format json \
     --config ~/ASAPQuery/asap-tools/execution-utilities/asap_query_latency/inference_config.yaml \
@@ -195,7 +195,7 @@ $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic hits
 $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic sketch_topic
 
 # Delete old Arroyo pipeline
-cd ~/asap-internal/ArroyoSketch
+cd ~/ASAPQuery/asap-sketch-ingest
 python3 delete_pipeline.py --all_pipelines
 
 # Clear ClickHouse table
