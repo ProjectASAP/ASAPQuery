@@ -3165,6 +3165,7 @@ dependencies = [
  "datafusion",
  "datafusion_summary_library",
  "dsrs",
+ "elastic_dsl_utilities",
  "flate2",
  "form_urlencoded",
  "futures",
