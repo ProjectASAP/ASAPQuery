@@ -34,17 +34,17 @@ export INSTALL_DIR=/scratch/sketch_db_for_prometheus
 cd ~/asap-internal/QueryEngineRust && cargo build --release
 
 # data_exporter
-cd ~/asap-internal/ExecutionUtilities/clickhouse-benchmark-pipeline/data_exporter
+cd ~/ASAPQuery/asap-tools/execution-utilities/clickhouse-benchmark-pipeline/data_exporter
 cargo build --release
 ```
 
 ### Download and chunk ClickBench data (one-time)
 
 ```bash
-cd ~/asap-internal/ExecutionUtilities/clickhouse-benchmark-pipeline
-python3 clickbench_importer/download_data.py
+cd ~/ASAPQuery/asap-tools/execution-utilities/clickhouse-benchmark-pipeline
+python3 benchmark_importer/download_data.py
 
-DATA_DIR=~/asap-internal/ExecutionUtilities/clickhouse-benchmark-pipeline/clickbench_importer/data
+DATA_DIR=~/ASAPQuery/asap-tools/execution-utilities/clickhouse-benchmark-pipeline/benchmark_importer/data
 cd $DATA_DIR
 mv hits.json.gz hits_full.json.gz
 zcat hits_full.json.gz | head -n 1000000 | gzip > hits.json.gz
@@ -54,7 +54,7 @@ zcat hits_full.json.gz | head -n 1000000 | gzip > hits.json.gz
 
 ```bash
 pip3 install --user requests matplotlib numpy
-pip3 install --user ~/asap-internal/CommonDependencies/dependencies/py/promql_utilities/
+pip3 install --user ~/ASAPQuery/asap-common/dependencies/py/promql_utilities/
 ```
 
 ---
@@ -111,7 +111,7 @@ python3 run_arroyosketch.py \
     --input_kafka_topic hits \
     --output_format json \
     --pipeline_name asap_hits_pipeline \
-    --config_file_path ~/asap-internal/ExecutionUtilities/asap_query_latency/streaming_config.yaml \
+    --config_file_path ~/ASAPQuery/asap-tools/execution-utilities/asap_query_latency/streaming_config.yaml \
     --output_kafka_topic sketch_topic \
     --output_dir ./outputs \
     --parallelism 1 \
@@ -124,8 +124,8 @@ python3 run_arroyosketch.py \
 cd ~/asap-internal/QueryEngineRust
 nohup ./target/release/query_engine_rust \
     --kafka-topic sketch_topic --input-format json \
-    --config ~/asap-internal/ExecutionUtilities/asap_query_latency/inference_config.yaml \
-    --streaming-config ~/asap-internal/ExecutionUtilities/asap_query_latency/streaming_config.yaml \
+    --config ~/ASAPQuery/asap-tools/execution-utilities/asap_query_latency/inference_config.yaml \
+    --streaming-config ~/ASAPQuery/asap-tools/execution-utilities/asap_query_latency/streaming_config.yaml \
     --http-port 8088 --delete-existing-db --log-level DEBUG \
     --output-dir ./output --streaming-engine arroyo \
     --query-language SQL --lock-strategy per-key \
@@ -137,7 +137,7 @@ nohup ./target/release/query_engine_rust \
 `data_exporter` reads all 1M records, transforms them (RFC3339 EventTime, stringify integer fields), sorts by EventTime, then sends to Kafka with event-time Kafka timestamps. This enables Arroyo's watermark to advance correctly for event-time windowing.
 
 ```bash
-cd ~/asap-internal/ExecutionUtilities/clickhouse-benchmark-pipeline
+cd ~/ASAPQuery/asap-tools/execution-utilities/clickhouse-benchmark-pipeline
 TOTAL_RECORDS=1000000 DATA_MODE=clickbench bash scripts/generate_data.sh
 ```
 
@@ -146,7 +146,7 @@ Wait for completion before running the benchmark.
 ### Step 9 — Run ASAP benchmark
 
 ```bash
-cd ~/asap-internal/ExecutionUtilities/asap_query_latency
+cd ~/ASAPQuery/asap-tools/execution-utilities/asap_query_latency
 ./run_benchmark.py \
     --mode asap \
     --sql-file asap_quantile_queries.sql \
@@ -165,7 +165,7 @@ $INSTALL_DIR/clickhouse client --query "SELECT count(*) FROM hits"
 Run the benchmark:
 
 ```bash
-cd ~/asap-internal/ExecutionUtilities/asap_query_latency
+cd ~/ASAPQuery/asap-tools/execution-utilities/asap_query_latency
 ./run_benchmark.py \
     --mode baseline \
     --sql-file clickhouse_quantile_queries.sql \

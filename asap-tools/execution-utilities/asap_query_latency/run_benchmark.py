@@ -167,8 +167,12 @@ def load_clickbench_data(clickhouse_url: str):
         return True
 
     # Load data from hits.json.gz
-    data_file = Path(
-        "/users/STWang/asap-internal/ExecutionUtilities/clickhouse-benchmark-pipeline/clickbench_importer/data/hits.json.gz"
+    data_file = (
+        Path(__file__).parent.parent
+        / "clickhouse-benchmark-pipeline"
+        / "benchmark_importer"
+        / "data"
+        / "hits.json.gz"
     )
     if not data_file.exists():
         print(f"✗ Data file not found: {data_file}")
