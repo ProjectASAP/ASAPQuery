@@ -30,7 +30,7 @@ pub struct MetricDefinition {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AggregateCleanupConfig {
-    pub policy: String,
+    pub policy: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -27,7 +27,7 @@ pub fn generate_plan(
     let cleanup_policy_str = controller_config
         .aggregate_cleanup
         .as_ref()
-        .map(|c| c.policy.as_str())
+        .and_then(|c| c.policy.as_deref())
         .unwrap_or("read_based");
     let cleanup_policy = parse_cleanup_policy(cleanup_policy_str)?;
 
