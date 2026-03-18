@@ -1,0 +1,643 @@
+{
+  "test_cases": [
+    {
+      "id": "mixed_workload",
+      "input_config": "test_data/configs/mixed_workload.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "range_query",
+      "input_config": "test_data/configs/range_query.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 3600,
+      "step": 60
+    },
+    {
+      "id": "cleanup_circular",
+      "input_config": "test_data/configs/cleanup_circular.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_over_time",
+      "input_config": "test_data/configs/quantile_over_time.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "spatial_quantile",
+      "input_config": "test_data/configs/spatial_quantile.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "rate_increase",
+      "input_config": "test_data/configs/rate_increase.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "topk",
+      "input_config": "test_data/configs/topk.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "cleanup_read_based",
+      "input_config": "test_data/configs/cleanup_read_based.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "deduplicated",
+      "input_config": "test_data/configs/deduplicated.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "increase",
+      "input_config": "test_data/configs/increase.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "sum_over_time",
+      "input_config": "test_data/configs/sum_over_time.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "sum_by",
+      "input_config": "test_data/configs/sum_by.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "temporal_overlapping",
+      "input_config": "test_data/configs/temporal_overlapping.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "sum_by_overlapping",
+      "input_config": "test_data/configs/sum_by_overlapping.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "arroyo_optimized_test_generated_1_run1",
+      "input_config": "test_data/configs/experiments/arroyo_optimized_test_generated_1_run1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "arroyo_optimized_test_generated_1_run1_only_temporal",
+      "input_config": "test_data/configs/experiments/arroyo_optimized_test_generated_1_run1_only_temporal.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "arroyo_optimized_test_generated_1_run2_only_temporal",
+      "input_config": "test_data/configs/experiments/arroyo_optimized_test_generated_1_run2_only_temporal.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "bad_workload_1_test_1",
+      "input_config": "test_data/configs/experiments/bad_workload_1_test_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "debugging_qot_1",
+      "input_config": "test_data/configs/experiments/debugging_qot_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "debugging_rate_1",
+      "input_config": "test_data/configs/experiments/debugging_rate_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_10",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_10.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_2",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_2.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_3",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_3.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_4",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_4.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_5",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_5.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_6",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_6.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_7",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_7.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_8",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_8.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "final_generated_workload_prometheus_20251204_231532_9",
+      "input_config": "test_data/configs/experiments/final_generated_workload_prometheus_20251204_231532_9.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_prometheus_20251204_231532_1_no_parallel",
+      "input_config": "test_data/configs/experiments/generated_workload_prometheus_20251204_231532_1_no_parallel.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_10",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_10.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_2",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_2.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_3",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_3.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_4",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_4.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_5",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_5.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_6",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_6.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_7",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_7.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_8",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_8.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "generated_workload_victoriametrics_20251204_231532_9",
+      "input_config": "test_data/configs/experiments/generated_workload_victoriametrics_20251204_231532_9.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "non_quantile_1_test",
+      "input_config": "test_data/configs/experiments/non_quantile_1_test.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "non_quantile_1s_4queries_100valuesperlabel_2labels",
+      "input_config": "test_data/configs/experiments/non_quantile_1s_4queries_100valuesperlabel_2labels.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "non_quantile_30m_10_card_1000_1",
+      "input_config": "test_data/configs/experiments/non_quantile_30m_10_card_1000_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "non_quantile_30m_30_card_1000_1",
+      "input_config": "test_data/configs/experiments/non_quantile_30m_30_card_1000_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "non_quantile_30m_60_card_1000_1",
+      "input_config": "test_data/configs/experiments/non_quantile_30m_60_card_1000_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "post_optimization_generated_workload_prometheus_20251204_231532_4_nopunt_debug4",
+      "input_config": "test_data/configs/experiments/post_optimization_generated_workload_prometheus_20251204_231532_4_nopunt_debug4.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": true,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_120m_1_card_2_0",
+      "input_config": "test_data/configs/experiments/qot_120m_1_card_2_0.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_120m_1_card_2_7",
+      "input_config": "test_data/configs/experiments/qot_120m_1_card_2_7.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_15m_1_card_2_0",
+      "input_config": "test_data/configs/experiments/qot_15m_1_card_2_0.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_15m_1_card_2_7_rerun",
+      "input_config": "test_data/configs/experiments/qot_15m_1_card_2_7_rerun.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_15m_1s_card_1000",
+      "input_config": "test_data/configs/experiments/qot_15m_1s_card_1000.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_15m_1s_optimizedmerge_1",
+      "input_config": "test_data/configs/experiments/qot_15m_1s_optimizedmerge_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_15m_300s_card_1000_2",
+      "input_config": "test_data/configs/experiments/qot_15m_300s_card_1000_2.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_15m_60s_card_1000_2",
+      "input_config": "test_data/configs/experiments/qot_15m_60s_card_1000_2.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_15m_900s_card_1000",
+      "input_config": "test_data/configs/experiments/qot_15m_900s_card_1000.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_1m_1_card_2_0",
+      "input_config": "test_data/configs/experiments/qot_1m_1_card_2_0.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_30m_15m",
+      "input_config": "test_data/configs/experiments/qot_30m_15m.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_30m_1_card_2_0",
+      "input_config": "test_data/configs/experiments/qot_30m_1_card_2_0.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_30m_1m",
+      "input_config": "test_data/configs/experiments/qot_30m_1m.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_30m_30m",
+      "input_config": "test_data/configs/experiments/qot_30m_30m.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_30m_5m",
+      "input_config": "test_data/configs/experiments/qot_30m_5m.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "qot_60m_1_card_2_0",
+      "input_config": "test_data/configs/experiments/qot_60m_1_card_2_0.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_1s_10queries_100valuesperlabel_2labels",
+      "input_config": "test_data/configs/experiments/quantile_1s_10queries_100valuesperlabel_2labels.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_1s_10queries_10valuesperlabel",
+      "input_config": "test_data/configs/experiments/quantile_1s_10queries_10valuesperlabel.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_1s_10queries_10valuesperlabel_3_K_10",
+      "input_config": "test_data/configs/experiments/quantile_1s_10queries_10valuesperlabel_3_K_10.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_1s_10queries_10valuesperlabel_3_K_100",
+      "input_config": "test_data/configs/experiments/quantile_1s_10queries_10valuesperlabel_3_K_100.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_1s_10queries_10valuesperlabel_3_K_20",
+      "input_config": "test_data/configs/experiments/quantile_1s_10queries_10valuesperlabel_3_K_20.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_1s_10queries_10valuesperlabel_3_K_50",
+      "input_config": "test_data/configs/experiments/quantile_1s_10queries_10valuesperlabel_3_K_50.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "quantile_1s_10queries_10valuesperlabel_3_K_8",
+      "input_config": "test_data/configs/experiments/quantile_1s_10queries_10valuesperlabel_3_K_8.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "result_1_collapsable_1",
+      "input_config": "test_data/configs/experiments/result_1_collapsable_1.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "result_1_collapsable_3",
+      "input_config": "test_data/configs/experiments/result_1_collapsable_3.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    },
+    {
+      "id": "result_1_non_quantile_1s_1_vm",
+      "input_config": "test_data/configs/experiments/result_1_non_quantile_1s_1_vm.yaml",
+      "prometheus_scrape_interval": 15,
+      "streaming_engine": "arroyo",
+      "enable_punting": false,
+      "range_duration": 0,
+      "step": 0
+    }
+  ]
+}
