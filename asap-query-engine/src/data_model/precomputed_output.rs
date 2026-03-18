@@ -138,56 +138,6 @@ impl PrecomputedOutput {
     //     })
     // }
 
-    // /// Deserialization for Flink streaming engine
-    // pub fn deserialize_from_json_flink(
-    //     data: &serde_json::Value,
-    //     streaming_config: &HashMap<u64, AggregationConfig>,
-    // ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-    //     let aggregation_id = data
-    //         .get("aggregation_id")
-    //         .and_then(|v| v.as_u64())
-    //         .ok_or("Missing or invalid 'aggregation_id' field")?;
-
-    //     let start_timestamp = data
-    //         .get("start_timestamp")
-    //         .and_then(|v| v.as_u64())
-    //         .ok_or("Missing or invalid 'start_timestamp' field")?;
-
-    //     let end_timestamp = data
-    //         .get("end_timestamp")
-    //         .and_then(|v| v.as_u64())
-    //         .ok_or("Missing or invalid 'end_timestamp' field")?;
-
-    //     let key = if let Some(key_data) = data.get("key") {
-    //         if key_data.is_null() {
-    //             None
-    //         } else {
-    //             Some(KeyByLabelValues::deserialize_from_json(key_data).map_err(
-    //                 |e| -> Box<dyn std::error::Error + Send + Sync> {
-    //                     format!("Failed to deserialize key: {e}").into()
-    //                 },
-    //             )?)
-    //         }
-    //     } else {
-    //         None
-    //     };
-
-    //     // Get aggregation type from streaming config lookup
-    //     let config = streaming_config
-    //         .get(&aggregation_id)
-    //         .ok_or_else(|| {
-    //             format!("Aggregation ID {aggregation_id} not found in streaming config")
-    //         })?
-    //         .clone();
-
-    //     Ok(Self {
-    //         start_timestamp,
-    //         end_timestamp,
-    //         key,
-    //         config,
-    //     })
-    // }
-
     /// Deserialization for Arroyo streaming engine
     pub fn deserialize_from_json_arroyo(
         data: &serde_json::Value,
@@ -283,7 +233,6 @@ impl PrecomputedOutput {
         let precompute = Self::create_precompute_from_bytes(
             &config.aggregation_type,
             Vec::as_slice(&precompute_bytes),
-            "arroyo",
         )?;
 
         Ok((precomputed_output, precompute))
@@ -415,22 +364,14 @@ impl PrecomputedOutput {
     fn create_precompute_from_bytes(
         precompute_type: &str,
         buffer: &[u8],
-        streaming_engine: &str,
     ) -> Result<Box<dyn crate::data_model::AggregateCore>, Box<dyn std::error::Error + Send + Sync>>
     {
         use crate::precompute_operators::*;
 
-        // TODO: add arroyo methods in each operator
-        // TODO: remove flink methods
-
         match precompute_type {
             "Sum" | "sum" => {
-                let accumulator = if streaming_engine == "flink" {
-                    SumAccumulator::deserialize_from_bytes(buffer)
-                } else {
-                    SumAccumulator::deserialize_from_bytes_arroyo(buffer)
-                }
-                .map_err(|e| format!("Failed to deserialize SumAccumulator: {e}"))?;
+                let accumulator = SumAccumulator::deserialize_from_bytes_arroyo(buffer)
+                    .map_err(|e| format!("Failed to deserialize SumAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             "MinMax" => {
@@ -457,58 +398,41 @@ impl PrecomputedOutput {
                 Ok(Box::new(accumulator))
             }
             "MultipleIncrease" => {
-                let accumulator = if streaming_engine == "flink" {
-                    MultipleIncreaseAccumulator::deserialize_from_bytes(buffer)
-                } else {
-                    MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(buffer)
-                }
+                let accumulator = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+                    buffer,
+                )
                 .map_err(|e| format!("Failed to deserialize MultipleIncreaseAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             "CountMinSketch" => {
-                let accumulator = if streaming_engine == "flink" {
-                    CountMinSketchAccumulator::deserialize_from_bytes(buffer)
-                } else {
-                    CountMinSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
-                }
-                .map_err(|e| format!("Failed to deserialize CountMinSketchAccumulator: {e}"))?;
+                let accumulator = CountMinSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
+                    .map_err(|e| format!("Failed to deserialize CountMinSketchAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             "CountMinSketchWithHeap" => {
-                let accumulator = if streaming_engine == "flink" {
-                    CountMinSketchWithHeapAccumulator::deserialize_from_bytes(buffer)
-                } else {
+                let accumulator =
                     CountMinSketchWithHeapAccumulator::deserialize_from_bytes_arroyo(buffer)
-                }
-                .map_err(|e| {
-                    format!("Failed to deserialize CountMinSketchWithHeapAccumulator: {e}")
-                })?;
+                        .map_err(|e| {
+                            format!("Failed to deserialize CountMinSketchWithHeapAccumulator: {e}")
+                        })?;
                 Ok(Box::new(accumulator))
             }
             "DatasketchesKLL" => {
-                let accumulator = if streaming_engine == "flink" {
-                    DatasketchesKLLAccumulator::deserialize_from_bytes(buffer)
-                } else {
-                    DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(buffer)
-                }
-                .map_err(|e| format!("Failed to deserialize DatasketchesKLLAccumulator: {e}"))?;
+                let accumulator = DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(buffer)
+                    .map_err(|e| {
+                        format!("Failed to deserialize DatasketchesKLLAccumulator: {e}")
+                    })?;
                 Ok(Box::new(accumulator))
             }
             "HydraKLL" => {
-                let accumulator = if streaming_engine == "flink" {
-                    return Err("HydraKLL not supported for Flink".into());
-                } else {
-                    HydraKllSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
-                }
-                .map_err(|e| format!("Failed to deserialize HydraKllSketchAccumulator: {e}"))?;
+                let accumulator = HydraKllSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
+                    .map_err(|e| format!("Failed to deserialize HydraKllSketchAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             "DeltaSetAggregator" => {
-                let accumulator = if streaming_engine == "flink" {
-                    DeltaSetAggregatorAccumulator::deserialize_from_bytes(buffer)
-                } else {
-                    DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(buffer)
-                }
+                let accumulator = DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(
+                    buffer,
+                )
                 .map_err(|e| format!("Failed to deserialize DeltaSetAggregatorAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
