@@ -48,8 +48,10 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "value=${{ inputs.image-tag }}" >> $GITHUB_OUTPUT
-          else
+          elif [ "${{ github.event_name }}" = "push" ]; then
             echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=pr-test" >> $GITHUB_OUTPUT
           fi
 
       # --- Base image (Python, fast) ---
