@@ -63,11 +63,13 @@ pub struct MetricAggregation {
     pub params: Option<serde_json::Value>, // Optional additional parameters (e.g. percentiles values)
 }
 
-/// One bucket in a batched-filter (multi-bucket) aggregation.
+/// Group-by shape in a grouped aggregation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BucketSpec {
-    pub bucket_name: String,
-    pub filter: LabelFilter,
+pub enum GroupBySpec {
+    /// `{"terms": {"field": "..."}}`
+    Terms { field: String },
+    /// `{"multi_terms": {"terms": [{"field": "..."}, ...]}}`
+    MultiTerms { fields: Vec<String> },
 }
 
 /// The classified pattern of an ES DSL query, along with the extracted
@@ -75,34 +77,25 @@ pub struct BucketSpec {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EsDslQueryPattern {
     /// Template 1: metric aggregations over all data, with an optional time
-    /// range filter.
+    /// range and optional label filters in `bool.filter`.
     ///
     /// ES: `{ "size": 0, "query": { "range": {...} }, "aggs": { ... } }`
     SimpleAggregation {
-        time_range: Option<TimeRange>,
-        aggregations: Vec<MetricAggregation>,
-    },
-
-    /// Template 2: metric aggregations with a label equality filter plus an
-    /// optional time range, expressed as a bool filter.
-    ///
-    /// ES: `{ "size": 0, "query": { "bool": { "filter": [...] } }, "aggs": { ... } }`
-    FilteredAggregation {
         label_filters: Vec<LabelFilter>,
         time_range: Option<TimeRange>,
         aggregations: Vec<MetricAggregation>,
     },
 
-    /// Template 3: a single top-level bucket aggregation that groups documents
-    /// into named buckets via per-bucket term filters, with nested metric
-    /// sub-aggregations.
+    /// Template 2: grouped aggregation by one or more labels (`terms` or
+    /// `multi_terms`) with nested metric aggregations, and optional
+    /// `bool.filter` predicates.
     ///
-    /// ES: `{ "size": 0, "aggs": { "<name>": { "filters": { "filters": {...} },
+    /// ES: `{ "size": 0, "aggs": { "<name>": { "terms"|"multi_terms": ...,
     ///         "aggs": { ... } } } }`
-    FilteredAggregationBatched {
-        /// The name of the outer (bucket) aggregation.
-        result_name: String,
-        buckets: Vec<BucketSpec>,
+    GroupByAggregation {
+        grouped_result_name: String,
+        group_by: GroupBySpec,
+        label_filters: Vec<LabelFilter>,
         time_range: Option<TimeRange>,
         aggregations: Vec<MetricAggregation>,
     },

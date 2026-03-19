@@ -2,8 +2,7 @@ use serde_json::Value;
 
 use crate::{
     parsing::{
-        extract_batched_filters, extract_label_filters, extract_metric_aggs,
-        extract_time_range,
+        extract_group_by_agg, extract_metric_aggs, extract_predicates_from_query,
     },
     types::EsDslQueryPattern,
 };
@@ -11,20 +10,14 @@ use crate::{
 /// Classify a parsed ES DSL query `Value` into one of the recognised
 /// sketch-acceleratable patterns (or `Unknown` if it does not match any).
 ///
-/// The classification logic follows the three templates documented in
+/// The classification logic follows the templates documented in
 /// `supported_es_queries.md`:
 ///
 /// - **Template 1** (`SimpleAggregation`): `size=0`, top-level metric `aggs`
 ///   (avg/min/max/sum/percentiles), optional bare `range` query.
-/// - **Template 2** (`FilteredAggregation`): `size=0`, top-level metric `aggs`
-///   (avg/min/max/sum/percentiles),
-///   `bool.filter` query combining a `term` label filter and an optional
-///   `range` time filter.
-/// - **Template 3** (`FilteredAggregationBatched`): `size=0`, single top-level
-///   `filters` bucket aggregation with named buckets, nested metric sub-aggs,
-///   optional bare `range` top-level query.
-/// 
-/// TODO: More robust parsing logic and complex pattern support (e.g. generic pattern building, structured AST, etc).
+/// - **Template 2** (`GroupByAggregation`): `size=0`, one top-level grouped
+///   aggregation (`terms` or `multi_terms`) with nested metric sub-aggregations,
+///   optional `bool.filter` predicates (term labels + optional range).
 pub fn classify(value: &Value) -> EsDslQueryPattern {
     // Gate: size must be explicitly 0.
     match value.get("size") {
@@ -40,23 +33,25 @@ pub fn classify(value: &Value) -> EsDslQueryPattern {
     let aggs = value.get("aggs").unwrap_or(&Value::Null);
     let query = value.get("query");
 
+    let (label_filters, time_range) = match query {
+        None => (Vec::new(), None),
+        Some(q) => match extract_predicates_from_query(q) {
+            Some(predicates) => predicates,
+            None => return EsDslQueryPattern::Unknown,
+        },
+    };
+
     // ------------------------------------------------------------------
-    // Template 3: batched filters aggregation.
+    // Template 2: grouped aggregation (`terms` or `multi_terms`).
     // ------------------------------------------------------------------
-    if let Some((result_name, buckets, aggregations)) = extract_batched_filters(aggs) {
-        // Allow an optional top-level range query alongside the batched aggs.
-        let time_range = query.and_then(|q| extract_time_range(q));
-        // If there *is* a query but it's not a range, reject the match.
-        if query.is_some() && time_range.is_none() && query != Some(&Value::Null) {
-            // Non-range query next to batched filters — not a supported pattern.
-        } else {
-            return EsDslQueryPattern::FilteredAggregationBatched {
-                result_name,
-                buckets,
-                time_range,
-                aggregations,
-            };
-        }
+    if let Some((grouped_result_name, group_by, aggregations)) = extract_group_by_agg(aggs) {
+        return EsDslQueryPattern::GroupByAggregation {
+            grouped_result_name,
+            group_by,
+            label_filters,
+            time_range,
+            aggregations,
+        };
     }
 
     // ------------------------------------------------------------------
@@ -67,34 +62,10 @@ pub fn classify(value: &Value) -> EsDslQueryPattern {
         None => return EsDslQueryPattern::Unknown,
     };
 
-    match query {
-        // No query clause at all -> Template 1 without time range.
-        None => EsDslQueryPattern::SimpleAggregation {
-            time_range: None,
-            aggregations,
-        },
-
-        Some(q) => {
-            // Template 2: bool.filter with term (+ optional range).
-            if let Some((label_filters, time_range)) = extract_label_filters(q) {
-                return EsDslQueryPattern::FilteredAggregation {
-                    label_filters,
-                    time_range,
-                    aggregations,
-                };
-            }
-
-            // Template 1: bare range query.
-            if let Some(time_range) = extract_time_range(q) {
-                return EsDslQueryPattern::SimpleAggregation {
-                    time_range: Some(time_range),
-                    aggregations,
-                };
-            }
-
-            // Query is present but doesn't match any supported form.
-            EsDslQueryPattern::Unknown
-        }
+    EsDslQueryPattern::SimpleAggregation {
+        label_filters,
+        time_range,
+        aggregations,
     }
 }
 
@@ -109,7 +80,7 @@ pub fn parse_and_classify(json: &str) -> Result<EsDslQueryPattern, serde_json::E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{LabelFilter, MetricAggType};
+    use crate::types::{GroupBySpec, LabelFilter, MetricAggType};
     use serde_json::json;
 
     // -----------------------------------------------------------------------
@@ -133,7 +104,12 @@ mod tests {
 
         let pattern = classify(&query);
         match pattern {
-            EsDslQueryPattern::SimpleAggregation { time_range, aggregations } => {
+            EsDslQueryPattern::SimpleAggregation {
+                label_filters,
+                time_range,
+                aggregations,
+            } => {
+                assert!(label_filters.is_empty());
                 let tr = time_range.unwrap();
                 assert_eq!(tr.field, "@timestamp");
                 assert_eq!(tr.gte.as_deref(), Some("now-30s"));
@@ -155,7 +131,12 @@ mod tests {
 
         let pattern = classify(&query);
         match pattern {
-            EsDslQueryPattern::SimpleAggregation { time_range, aggregations } => {
+            EsDslQueryPattern::SimpleAggregation {
+                label_filters,
+                time_range,
+                aggregations,
+            } => {
+                assert!(label_filters.is_empty());
                 assert!(time_range.is_none());
                 assert_eq!(aggregations.len(), 1);
                 assert_eq!(aggregations[0].agg_type, MetricAggType::Sum);
@@ -176,7 +157,12 @@ mod tests {
 
         let pattern = classify(&query);
         match pattern {
-            EsDslQueryPattern::SimpleAggregation { time_range, aggregations } => {
+            EsDslQueryPattern::SimpleAggregation {
+                label_filters,
+                time_range,
+                aggregations,
+            } => {
+                assert!(label_filters.is_empty());
                 assert!(time_range.is_none());
                 assert_eq!(aggregations.len(), 1);
                 assert_eq!(aggregations[0].agg_type, MetricAggType::Percentiles);
@@ -187,22 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_neg_size_absent_is_unknown() {
-        let query = json!({
-            "aggs": {
-                "min_val": { "min": { "field": "response_time" } }
-            }
-        });
-
-        assert_eq!(classify(&query), EsDslQueryPattern::Unknown);
-    }
-
-    // -----------------------------------------------------------------------
-    // Template 2 — Filtered Aggregation
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_t2_filtered_agg_term_and_range() {
+    fn test_simple_agg_with_bool_filter_predicates() {
         let query = json!({
             "size": 0,
             "query": {
@@ -221,61 +192,53 @@ mod tests {
 
         let pattern = classify(&query);
         match pattern {
-            EsDslQueryPattern::FilteredAggregation { label_filters, time_range, aggregations } => {
-                assert_eq!(label_filters[0].field, "service");
-                assert_eq!(label_filters[0].value, "frontend");
-                assert_eq!(label_filters[1].field, "env");
-                assert_eq!(label_filters[1].value, "staging");
-                let tr = time_range.unwrap();
-                assert_eq!(tr.field, "@timestamp");
+            EsDslQueryPattern::SimpleAggregation {
+                label_filters,
+                time_range,
+                aggregations,
+            } => {
+                assert_eq!(label_filters.len(), 2);
+                assert_eq!(label_filters[0], LabelFilter { field: "service".into(), value: "frontend".into() });
+                assert_eq!(label_filters[1], LabelFilter { field: "env".into(), value: "staging".into() });
+                assert!(time_range.is_some());
                 assert_eq!(aggregations.len(), 1);
             }
-            other => panic!("Expected FilteredAggregation, got {:?}", other),
+            other => panic!("Expected SimpleAggregation, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_t2_filtered_agg_term_only() {
+    fn test_neg_size_absent_is_unknown() {
+        let query = json!({
+            "aggs": {
+                "min_val": { "min": { "field": "response_time" } }
+            }
+        });
+
+        assert_eq!(classify(&query), EsDslQueryPattern::Unknown);
+    }
+
+    // -----------------------------------------------------------------------
+    // Template 2 — GroupBy Aggregation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_t2_groupby_terms_with_filters_and_range() {
         let query = json!({
             "size": 0,
             "query": {
                 "bool": {
                     "filter": [
-                        { "term": { "env": "staging" } }
+                        { "term": { "service.keyword": { "value": "frontend" } } },
+                        { "term": { "env.keyword": { "value": "staging" } } },
+                        { "range": { "@timestamp": { "gte": "now-30s", "lte": "now" } } }
                     ]
                 }
             },
             "aggs": {
-                "p99_latency": { "max": { "field": "latency_ms" } }
-            }
-        });
-
-        let pattern = classify(&query);
-        match pattern {
-            EsDslQueryPattern::FilteredAggregation { label_filters, time_range, aggregations } => {
-                assert_eq!(label_filters[0], LabelFilter { field: "env".into(), value: "staging".into() });
-                assert!(time_range.is_none());
-                assert_eq!(aggregations.len(), 1);
-            }
-            other => panic!("Expected FilteredAggregation, got {:?}", other),
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Template 3 — Filtered Aggregation Batched
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_t3_batched_filters() {
-        let query = json!({
-            "size": 0,
-            "aggs": {
-                "by_service": {
-                    "filters": {
-                        "filters": {
-                            "frontend": { "term": { "service.keyword": { "value": "frontend" } } },
-                            "backend":  { "term": { "service.keyword": { "value": "backend" } } }
-                        }
+                "grouped_result": {
+                    "terms": {
+                        "field": "service.keyword"
                     },
                     "aggs": {
                         "avg_latency": { "avg": { "field": "latency_ms" } }
@@ -286,36 +249,48 @@ mod tests {
 
         let pattern = classify(&query);
         match pattern {
-            EsDslQueryPattern::FilteredAggregationBatched { result_name, buckets, time_range, aggregations } => {
-                assert_eq!(result_name, "by_service");
-                assert_eq!(buckets.len(), 2);
-                assert!(time_range.is_none());
+            EsDslQueryPattern::GroupByAggregation {
+                grouped_result_name,
+                group_by,
+                label_filters,
+                time_range,
+                aggregations,
+            } => {
+                assert_eq!(grouped_result_name, "grouped_result");
+                assert_eq!(group_by, GroupBySpec::Terms { field: "service".into() });
+                assert_eq!(label_filters[0].field, "service");
+                assert_eq!(label_filters[0].value, "frontend");
+                assert_eq!(label_filters[1].field, "env");
+                assert_eq!(label_filters[1].value, "staging");
+                let tr = time_range.unwrap();
+                assert_eq!(tr.field, "@timestamp");
                 assert_eq!(aggregations.len(), 1);
-                assert_eq!(aggregations[0].agg_type, MetricAggType::Avg);
             }
-            other => panic!("Expected FilteredAggregationBatched, got {:?}", other),
+            other => panic!("Expected GroupByAggregation, got {:?}", other),
         }
     }
 
     #[test]
-    fn test_t3_batched_filters_with_time_range() {
+    fn test_t2_groupby_multi_terms() {
         let query = json!({
             "size": 0,
             "query": {
-                "range": {
-                    "@timestamp": { "gte": "now-1m", "lte": "now" }
+                "bool": {
+                    "filter": [
+                        { "term": { "env": "staging" } }
+                    ]
                 }
             },
             "aggs": {
-                "by_region": {
-                    "filters": {
-                        "filters": {
-                            "us-east": { "term": { "region": "us-east-1" } },
-                            "us-west": { "term": { "region": "us-west-2" } }
-                        }
+                "grouped_result": {
+                    "multi_terms": {
+                        "terms": [
+                            { "field": "service.keyword" },
+                            { "field": "region.keyword" }
+                        ]
                     },
                     "aggs": {
-                        "total_requests": { "sum": { "field": "request_count" } }
+                        "p99_latency": { "max": { "field": "latency_ms" } }
                     }
                 }
             }
@@ -323,13 +298,25 @@ mod tests {
 
         let pattern = classify(&query);
         match pattern {
-            EsDslQueryPattern::FilteredAggregationBatched { time_range, aggregations, .. } => {
-                let tr = time_range.unwrap();
-                assert_eq!(tr.field, "@timestamp");
-                assert_eq!(tr.gte.as_deref(), Some("now-1m"));
-                assert_eq!(aggregations[0].agg_type, MetricAggType::Sum);
+            EsDslQueryPattern::GroupByAggregation {
+                grouped_result_name,
+                group_by,
+                label_filters,
+                time_range,
+                aggregations,
+            } => {
+                assert_eq!(grouped_result_name, "grouped_result");
+                assert_eq!(
+                    group_by,
+                    GroupBySpec::MultiTerms {
+                        fields: vec!["service".into(), "region".into()]
+                    }
+                );
+                assert_eq!(label_filters[0], LabelFilter { field: "env".into(), value: "staging".into() });
+                assert!(time_range.is_none());
+                assert_eq!(aggregations.len(), 1);
             }
-            other => panic!("Expected FilteredAggregationBatched, got {:?}", other),
+            other => panic!("Expected GroupByAggregation, got {:?}", other),
         }
     }
 
@@ -353,7 +340,12 @@ mod tests {
         let query = json!({
             "size": 0,
             "aggs": {
-                "by_service": { "terms": { "field": "service" } }
+                "by_service": {
+                    "terms": { "field": "service" },
+                    "aggs": {
+                        "foo": { "median": { "field": "latency" } }
+                    }
+                }
             }
         });
         assert_eq!(classify(&query), EsDslQueryPattern::Unknown);

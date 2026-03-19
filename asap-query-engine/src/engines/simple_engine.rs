@@ -33,7 +33,7 @@ use sqlparser::parser::Parser as parser;
 
 use elastic_dsl_utilities::pattern::parse_and_classify;
 use elastic_dsl_utilities::types::{
-    EsDslQueryPattern, LabelFilter, MetricAggType, MetricAggregation,
+    EsDslQueryPattern, GroupBySpec, MetricAggType, MetricAggregation,
 };
 
 // Type alias for merged outputs (single aggregate per key after merging)
@@ -1560,21 +1560,19 @@ impl SimpleEngine {
         // By default, we only include grouping labels in the output for ES DSL.
         let aggregation: MetricAggregation; // Take first aggregation by default since current engine doesn't support multiple aggregations in a single query.
         let mut query_output_labels = match query_pattern {
-            EsDslQueryPattern::SimpleAggregation { aggregations, .. }
-            | EsDslQueryPattern::FilteredAggregation { aggregations, .. } => {
+            EsDslQueryPattern::SimpleAggregation { aggregations, .. } => {
                 aggregation = aggregations.first()?.clone();
                 KeyByLabelNames::empty()
             }
-            EsDslQueryPattern::FilteredAggregationBatched {
+            EsDslQueryPattern::GroupByAggregation {
                 aggregations,
-                buckets,
+                group_by,
                 ..
             } => {
-                // The labels output = every unique column that we grouped by in the DSL query.
-                let mut labels: HashSet<String> = HashSet::new();
-                for bucket in buckets {
-                    labels.insert(bucket.filter.field.clone());
-                }
+                let labels: HashSet<String> = match group_by {
+                    GroupBySpec::Terms { field } => [field.clone()].into_iter().collect(),
+                    GroupBySpec::MultiTerms { fields } => fields.iter().cloned().collect(),
+                };
                 aggregation = aggregations.first()?.clone();
                 KeyByLabelNames::new(labels.into_iter().collect())
             }
