@@ -1461,6 +1461,7 @@ impl SimpleEngine {
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
         let context = self.build_query_execution_context_elastic(query, time)?;
+        println!("Built execution context for ElasticSearch query {:?}", context);
         // Execute complete query pipeline
         let results = self
             .execute_query_pipeline(&context, false) // SQL: topk disabled
@@ -1501,9 +1502,9 @@ impl SimpleEngine {
 
         // TODO: Figure out how to handle query configuration for ElasticSearch queries.
         let query_config = self.find_query_config(&query)?;
+        let agg_info = self.get_aggregation_id_info(query_config);
 
         let do_merge = true; // No "instant" queries in ElasticSearch supported for now, so we always need to merge.
-        let agg_info = self.get_aggregation_id_info(query_config);
 
         let (metric, query_metadata) = self.build_query_metadata_elastic(&query_pattern)?;
 
@@ -1511,8 +1512,8 @@ impl SimpleEngine {
 
         // TODO: Need way to parse ES DSL "date math".
         let timestamps = QueryTimestamps {
-            start_timestamp: query_time - 60000, // Placeholder - determine based on query
-            end_timestamp: query_time,
+            start_timestamp: 0, // Placeholder - determine based on query
+            end_timestamp: query_time, // Placeholder - 1 hour before query_time
         };
 
         let query_plan = self
