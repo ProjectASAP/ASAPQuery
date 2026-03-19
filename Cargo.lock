@@ -376,7 +376,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap 4.5.60",
- "indexmap",
+ "indexmap 2.13.0",
  "pretty_assertions",
  "promql-parser",
  "promql_utilities",

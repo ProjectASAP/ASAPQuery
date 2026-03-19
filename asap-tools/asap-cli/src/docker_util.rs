@@ -583,7 +583,7 @@ pub async fn generate_arroyosketch_compose(
     let code_dir = project_root.to_string_lossy();
 
     // Paths
-    let arroyosketch_dir = format!("{}/asap-sketch-ingest", code_dir);
+    let arroyosketch_dir = format!("{}/asap-summary-ingest", code_dir);
     let template_path = format!("{}/arroyosketch-cli-compose.yml.j2", arroyosketch_dir);
     let helper_script = format!("{}/asap-tools/experiments/generate_arroyosketch_compose.py", code_dir);
     let compose_output_path = format!("{}/asap-tools/docker/generated_compose_files/arroyosketch-compose.yml", code_dir);

@@ -137,7 +137,7 @@ services:
       timeout: 5s
       retries: 5
     depends_on:
-      asap-sketch-ingest:
+      asap-summary-ingest:
         condition: service_completed_successfully
     restart: no
 
@@ -187,10 +187,10 @@ services:
       - asap-planner-output:/asap-planner-output
     restart: "no"
 
-  asap-sketch-ingest:
+  asap-summary-ingest:
     image: ghcr.io/projectasap/asap-summary-ingest:v0.1.0
-    container_name: asap-sketch-ingest
-    hostname: asap-sketch-ingest
+    container_name: asap-summary-ingest
+    hostname: asap-summary-ingest
     networks:
       - asap-network
     command:
@@ -203,12 +203,12 @@ services:
       - "--output_kafka_topic=flink_output"
       - "--output_format=json"
       - "--pipeline_name=asap-demo"
-      - "--output_dir=/asap-sketch-ingest-output"
+      - "--output_dir=/asap-summary-ingest-output"
       - "--arroyo_url=http://arroyo:5115/api/v1"
       - "--bootstrap_servers=kafka:9092"
     volumes:
       - asap-planner-output:/asap-planner-output:ro
-      - ./output/asap-sketch-ingest:/asap-sketch-ingest-output
+      - ./output/asap-summary-ingest:/asap-summary-ingest-output
     depends_on:
       asap-planner:
         condition: service_completed_successfully
@@ -251,7 +251,7 @@ services:
       - "--decompress-json"
       - "--forward-unsupported-queries"
     depends_on:
-      asap-sketch-ingest:
+      asap-summary-ingest:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy

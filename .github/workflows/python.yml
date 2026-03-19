@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'asap-sketch-ingest/**'
+      - 'asap-summary-ingest/**'
       - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-planner/**'
       - 'asap-tools/**'
@@ -15,7 +15,7 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'asap-sketch-ingest/**'
+      - 'asap-summary-ingest/**'
       - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-planner/**'
       - 'asap-tools/**'
@@ -33,7 +33,7 @@ jobs:
   detect-changes:
     runs-on: ubuntu-latest
     outputs:
-      arroyo_sketch: ${{ steps.filter.outputs.arroyo_sketch }}
+      summary_ingest: ${{ steps.filter.outputs.summary_ingest }}
       prometheus_client: ${{ steps.filter.outputs.prometheus_client }}
       controller: ${{ steps.filter.outputs.controller }}
       utilities: ${{ steps.filter.outputs.utilities }}
@@ -45,8 +45,8 @@ jobs:
         id: filter
         with:
           filters: |
-            arroyo_sketch:
-              - 'asap-sketch-ingest/**'
+            summary_ingest:
+              - 'asap-summary-ingest/**'
               - 'asap-common/dependencies/py/**'
             prometheus_client:
               - 'asap-tools/queriers/prometheus-client/**'
@@ -64,9 +64,9 @@ jobs:
               - 'asap-tools/execution-utilities/**'
               - 'asap-common/dependencies/py/**'
 
-  test-arroyo-sketch:
+  test-summary-ingest:
     needs: detect-changes
-    if: needs.detect-changes.outputs.arroyo_sketch == 'true'
+    if: needs.detect-changes.outputs.summary_ingest == 'true'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -81,12 +81,12 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install black==24.8.0 flake8==6.1.0
-        if [ -f asap-sketch-ingest/requirements.txt ]; then pip install -r asap-sketch-ingest/requirements.txt; fi
+        if [ -f asap-summary-ingest/requirements.txt ]; then pip install -r asap-summary-ingest/requirements.txt; fi
     - name: Check formatting with Black
-      working-directory: asap-sketch-ingest
+      working-directory: asap-summary-ingest
       run: black --check --diff .
     - name: Lint with flake8
-      working-directory: asap-sketch-ingest
+      working-directory: asap-summary-ingest
       run: |
         # Stop the build if there are Python syntax errors or undefined names
         flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
