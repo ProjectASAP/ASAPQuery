@@ -24,7 +24,7 @@ RUN cargo build --release && rm -rf src/
 COPY asap-planner-rs/src ./src
 
 # Build the actual application
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs src/lib.rs && cargo build --release
 
 FROM ubuntu:24.04
 
