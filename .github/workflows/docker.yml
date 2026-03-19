@@ -9,11 +9,18 @@ on:
     paths:
       - 'asap-common/installation/**'
       - 'asap-planner/**'
+      - 'asap-planner-rs/**'
       - 'asap-sketch-ingest/**'
       - 'asap-query-engine/**'
       - 'asap-tools/queriers/prometheus-client/**'
+      - 'asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/**'
       - '.github/workflows/docker.yml'
   workflow_dispatch:
+    inputs:
+      image-tag:
+        description: 'Tag to use for pushed images (e.g. v0.1.0, dev)'
+        required: true
+        default: 'dev'
 
 permissions:
   packages: write
@@ -36,6 +43,15 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "value=${{ inputs.image-tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "value=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          fi
+
       # --- Base image (Python, fast) ---
       - name: Build base image
         run: |
@@ -45,11 +61,11 @@ jobs:
             asap-common
 
       - name: Push base image
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
-          docker tag sketchdb-base:latest ghcr.io/projectasap/asap-base:${{ github.ref_name }}
+          docker tag sketchdb-base:latest ghcr.io/projectasap/asap-base:${{ steps.tag.outputs.value }}
           docker tag sketchdb-base:latest ghcr.io/projectasap/asap-base:latest
-          docker push ghcr.io/projectasap/asap-base:${{ github.ref_name }}
+          docker push ghcr.io/projectasap/asap-base:${{ steps.tag.outputs.value }}
           docker push ghcr.io/projectasap/asap-base:latest
 
       # --- Planner (Python, depends on base) ---
@@ -61,28 +77,41 @@ jobs:
             asap-planner
 
       - name: Push planner image
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
-          docker tag asap-planner:local ghcr.io/projectasap/asap-planner:${{ github.ref_name }}
+          docker tag asap-planner:local ghcr.io/projectasap/asap-planner:${{ steps.tag.outputs.value }}
           docker tag asap-planner:local ghcr.io/projectasap/asap-planner:latest
-          docker push ghcr.io/projectasap/asap-planner:${{ github.ref_name }}
+          docker push ghcr.io/projectasap/asap-planner:${{ steps.tag.outputs.value }}
           docker push ghcr.io/projectasap/asap-planner:latest
 
-      # --- Sketch Ingest (Python, depends on base) ---
-      - name: Build sketch-ingest image
+      # --- Planner RS (Rust) ---
+      - name: Build and push planner-rs
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: asap-planner-rs/Dockerfile
+          push: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+          tags: |
+            ghcr.io/projectasap/asap-planner-rs:${{ steps.tag.outputs.value }}
+            ghcr.io/projectasap/asap-planner-rs:latest
+          cache-from: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache
+          cache-to: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache,mode=max
+
+      # --- Summary Ingest (Python, depends on base) ---
+      - name: Build summary-ingest image
         run: |
           docker build \
-            -t asap-sketch-ingest:local \
+            -t asap-summary-ingest:local \
             -f asap-sketch-ingest/Dockerfile \
             asap-sketch-ingest
 
-      - name: Push sketch-ingest image
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Push summary-ingest image
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
-          docker tag asap-sketch-ingest:local ghcr.io/projectasap/asap-sketch-ingest:${{ github.ref_name }}
-          docker tag asap-sketch-ingest:local ghcr.io/projectasap/asap-sketch-ingest:latest
-          docker push ghcr.io/projectasap/asap-sketch-ingest:${{ github.ref_name }}
-          docker push ghcr.io/projectasap/asap-sketch-ingest:latest
+          docker tag asap-summary-ingest:local ghcr.io/projectasap/asap-summary-ingest:${{ steps.tag.outputs.value }}
+          docker tag asap-summary-ingest:local ghcr.io/projectasap/asap-summary-ingest:latest
+          docker push ghcr.io/projectasap/asap-summary-ingest:${{ steps.tag.outputs.value }}
+          docker push ghcr.io/projectasap/asap-summary-ingest:latest
 
       # --- Prometheus Client (Python, depends on base) ---
       - name: Build prometheus-client image
@@ -93,12 +122,25 @@ jobs:
             asap-tools/queriers/prometheus-client
 
       - name: Push prometheus-client image
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
         run: |
-          docker tag asap-prometheus-client:local ghcr.io/projectasap/asap-prometheus-client:${{ github.ref_name }}
+          docker tag asap-prometheus-client:local ghcr.io/projectasap/asap-prometheus-client:${{ steps.tag.outputs.value }}
           docker tag asap-prometheus-client:local ghcr.io/projectasap/asap-prometheus-client:latest
-          docker push ghcr.io/projectasap/asap-prometheus-client:${{ github.ref_name }}
+          docker push ghcr.io/projectasap/asap-prometheus-client:${{ steps.tag.outputs.value }}
           docker push ghcr.io/projectasap/asap-prometheus-client:latest
+
+      # --- Fake Exporter (Rust) ---
+      - name: Build and push fake-exporter
+        uses: docker/build-push-action@v6
+        with:
+          context: asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+          file: asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter/Dockerfile
+          push: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
+          tags: |
+            ghcr.io/projectasap/asap-fake-exporter:${{ steps.tag.outputs.value }}
+            ghcr.io/projectasap/asap-fake-exporter:latest
+          cache-from: type=registry,ref=ghcr.io/projectasap/asap-fake-exporter:buildcache
+          cache-to: type=registry,ref=ghcr.io/projectasap/asap-fake-exporter:buildcache,mode=max
 
       # --- Query Engine (Rust, slow — uses GHCR layer cache) ---
       - name: Build and push query-engine
@@ -106,9 +148,9 @@ jobs:
         with:
           context: .
           file: asap-query-engine/Dockerfile
-          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          push: ${{ startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' }}
           tags: |
-            ghcr.io/projectasap/asap-query-engine:${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'pr-test' }}
+            ghcr.io/projectasap/asap-query-engine:${{ steps.tag.outputs.value }}
             ghcr.io/projectasap/asap-query-engine:latest
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache
           cache-to: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache,mode=max

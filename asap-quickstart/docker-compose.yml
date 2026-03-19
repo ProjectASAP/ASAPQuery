@@ -170,7 +170,7 @@ services:
   #############################################################################
 
   asap-planner:
-    image: ghcr.io/projectasap/asap-controller:v0.1.0
+    image: ghcr.io/projectasap/asap-planner-rs:v0.1.0
     container_name: asap-planner
     hostname: asap-planner
     networks:
@@ -188,7 +188,7 @@ services:
     restart: "no"
 
   asap-sketch-ingest:
-    image: ghcr.io/projectasap/asap-arroyosketch:v0.1.0
+    image: ghcr.io/projectasap/asap-summary-ingest:v0.1.0
     container_name: asap-sketch-ingest
     hostname: asap-sketch-ingest
     networks:
@@ -221,7 +221,7 @@ services:
   #############################################################################
 
   queryengine:
-    image: ghcr.io/projectasap/asap-queryengine:v0.1.0
+    image: ghcr.io/projectasap/asap-query-engine:v0.1.0
     container_name: asap-queryengine
     hostname: queryengine
     networks:
