@@ -97,7 +97,7 @@ jobs:
             ghcr.io/projectasap/asap-planner-rs:${{ steps.tag.outputs.value }}
             ghcr.io/projectasap/asap-planner-rs:latest
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache
-          cache-to: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache,mode=max
+          cache-to: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache,mode=max' || '' }}
 
 
       # --- Summary Ingest (Python, depends on base) ---
@@ -143,7 +143,7 @@ jobs:
             ghcr.io/projectasap/asap-fake-exporter:${{ steps.tag.outputs.value }}
             ghcr.io/projectasap/asap-fake-exporter:latest
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-fake-exporter:buildcache
-          cache-to: type=registry,ref=ghcr.io/projectasap/asap-fake-exporter:buildcache,mode=max
+          cache-to: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'type=registry,ref=ghcr.io/projectasap/asap-fake-exporter:buildcache,mode=max' || '' }}
 
       # --- Query Engine (Rust, slow — uses GHCR layer cache) ---
       - name: Build and push query-engine
@@ -156,4 +156,4 @@ jobs:
             ghcr.io/projectasap/asap-query-engine:${{ steps.tag.outputs.value }}
             ghcr.io/projectasap/asap-query-engine:latest
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache
-          cache-to: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache,mode=max
+          cache-to: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache,mode=max' || '' }}
