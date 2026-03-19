@@ -1,6 +1,7 @@
 /*
 [dependencies]
-dsrs = { git = "https://github.com/SketchDB/datasketches-rs" }
+dsrs = { git = "https://github.com/ProjectASAP/datasketches-rs" }
+sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust" }
 arroyo-udf-plugin = "0.1"
 rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }
@@ -11,11 +12,24 @@ use arroyo_udf_plugin::udf;
 use dsrs::KllDoubleSketch;
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
+use sketchlib_rust::{KLL, SketchInput};
 use xxhash_rust::xxh32::xxh32;
 
 const ROW_NUM: usize = {{ row_num }};
 const COL_NUM: usize = {{ col_num }};
 const DEFAULT_K: u16 = {{ k }};
+
+// Implementation mode for KLL Sketch. Set at compile time; no env vars.
+enum ImplMode {
+    Legacy,
+    Sketchlib,
+}
+
+const IMPL_MODE: ImplMode = ImplMode::Sketchlib;
+
+fn use_sketchlib_for_kll() -> bool {
+    matches!(IMPL_MODE, ImplMode::Sketchlib)
+}
 
 // Match QueryEngineRust format exactly
 #[derive(Deserialize, Serialize)]
@@ -33,51 +47,100 @@ struct HydraKllSketchData {
 
 #[udf]
 fn hydrakll_(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
-    // Initialize 2D matrix of KLL sketches
-    let mut sketches: Vec<Vec<KllDoubleSketch>> = vec![
-        vec![KllDoubleSketch::with_k(DEFAULT_K); COL_NUM];
-        ROW_NUM
-    ];
+    if use_sketchlib_for_kll() {
+        // sketchlib-rust backed implementation
+        let mut sketches: Vec<Vec<KLL>> = (0..ROW_NUM)
+            .map(|_| {
+                (0..COL_NUM)
+                    .map(|_| KLL::init_kll(DEFAULT_K as i32))
+                    .collect()
+            })
+            .collect();
 
-    // Process each key-value pair
-    for (i, &key) in keys.iter().enumerate() {
-        if i >= values.len() {
-            break;
+        for (i, &key) in keys.iter().enumerate() {
+            if i >= values.len() {
+                break;
+            }
+            let key_bytes = key.as_bytes();
+            for row in 0..ROW_NUM {
+                let hash_value = xxh32(key_bytes, row as u32);
+                let col_index = (hash_value as usize) % COL_NUM;
+                let _ = sketches[row][col_index].update(&SketchInput::F64(values[i]));
+            }
         }
 
-        let key_bytes = key.as_bytes();
+        let sketch_data: Option<Vec<Vec<KllSketchData>>> = sketches
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|sketch| {
+                        let sketch_bytes = sketch.serialize_to_bytes().ok()?;
+                        Some(KllSketchData {
+                            k: DEFAULT_K,
+                            sketch_bytes,
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()
+            })
+            .collect::<Option<Vec<_>>>();
+        let sketch_data = sketch_data?;
 
-        // Update each row using different hash functions
-        for row in 0..ROW_NUM {
-            let hash_value = xxh32(key_bytes, row as u32);
-            let col_index = (hash_value as usize) % COL_NUM;
-            sketches[row][col_index].update(values[i]);
+        let hydra_data = HydraKllSketchData {
+            row_num: ROW_NUM,
+            col_num: COL_NUM,
+            sketches: sketch_data,
+        };
+
+        let mut buf = Vec::new();
+        hydra_data.serialize(&mut Serializer::new(&mut buf)).ok()?;
+        Some(buf)
+    } else {
+        // Legacy dsrs backed implementation
+        let mut sketches: Vec<Vec<KllDoubleSketch>> = (0..ROW_NUM)
+            .map(|_| {
+                (0..COL_NUM)
+                    .map(|_| KllDoubleSketch::with_k(DEFAULT_K))
+                    .collect()
+            })
+            .collect();
+
+        for (i, &key) in keys.iter().enumerate() {
+            if i >= values.len() {
+                break;
+            }
+
+            let key_bytes = key.as_bytes();
+
+            for row in 0..ROW_NUM {
+                let hash_value = xxh32(key_bytes, row as u32);
+                let col_index = (hash_value as usize) % COL_NUM;
+                sketches[row][col_index].update(values[i]);
+            }
         }
+
+        let sketch_data: Vec<Vec<KllSketchData>> = sketches
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|sketch| {
+                        let sketch_bytes = sketch.serialize();
+                        KllSketchData {
+                            k: DEFAULT_K,
+                            sketch_bytes: sketch_bytes.as_ref().to_vec(),
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        let hydra_data = HydraKllSketchData {
+            row_num: ROW_NUM,
+            col_num: COL_NUM,
+            sketches: sketch_data,
+        };
+
+        let mut buf = Vec::new();
+        hydra_data.serialize(&mut Serializer::new(&mut buf)).ok()?;
+        Some(buf)
     }
-
-    // Serialize to match QueryEngineRust format
-    let sketch_data: Vec<Vec<KllSketchData>> = sketches
-        .iter()
-        .map(|row| {
-            row.iter()
-                .map(|sketch| {
-                    let sketch_bytes = sketch.serialize();
-                    KllSketchData {
-                        k: DEFAULT_K,
-                        sketch_bytes: sketch_bytes.as_ref().to_vec(),
-                    }
-                })
-                .collect()
-        })
-        .collect();
-
-    let hydra_data = HydraKllSketchData {
-        row_num: ROW_NUM,
-        col_num: COL_NUM,
-        sketches: sketch_data,
-    };
-
-    let mut buf = Vec::new();
-    hydra_data.serialize(&mut Serializer::new(&mut buf)).ok()?;
-    Some(buf)
 }
