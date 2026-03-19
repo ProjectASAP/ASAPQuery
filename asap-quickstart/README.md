@@ -14,7 +14,7 @@ This quickstart simulates a typical monitoring deployment with components you mi
 
 Then it adds ASAPQuery's components on top:
 - **Query Engine** - Prometheus-compatible API with sketch-based acceleration
-- **[Arroyo](https://github.com/ProjectASAP/arroyo) + asap-sketch-ingest** - Streaming engine with pipelines configured for building sketches
+- **[Arroyo](https://github.com/ProjectASAP/arroyo) + asap-summary-ingest** - Streaming engine with pipelines configured for building sketches
 - **Kafka** - Message broker for streaming data from Arroyo to the Query Engine
 - **asap-planner** - Automatically configures sketches from PromQL queries
 
