@@ -56,11 +56,7 @@ impl CountMinSketchAccumulator {
         }
 
         Ok(Self {
-            inner: CountMinSketch {
-                sketch,
-                row_num,
-                col_num,
-            },
+            inner: CountMinSketch::from_legacy_matrix(sketch, row_num, col_num),
         })
     }
 
@@ -111,11 +107,7 @@ impl CountMinSketchAccumulator {
         }
 
         Ok(Self {
-            inner: CountMinSketch {
-                row_num,
-                col_num,
-                sketch,
-            },
+            inner: CountMinSketch::from_legacy_matrix(sketch, row_num, col_num),
         })
     }
 
@@ -168,7 +160,7 @@ impl SerializableToSink for CountMinSketchAccumulator {
         serde_json::json!({
             "row_num": self.inner.row_num,
             "col_num": self.inner.col_num,
-            "sketch": self.inner.sketch
+            "sketch": self.inner.sketch()
         })
     }
 
@@ -261,10 +253,11 @@ mod tests {
         let cms = CountMinSketchAccumulator::new(4, 1000);
         assert_eq!(cms.inner.row_num, 4);
         assert_eq!(cms.inner.col_num, 1000);
-        assert_eq!(cms.inner.sketch.len(), 4);
-        assert_eq!(cms.inner.sketch[0].len(), 1000);
+        let sketch = cms.inner.sketch();
+        assert_eq!(sketch.len(), 4);
+        assert_eq!(sketch[0].len(), 1000);
 
-        for row in &cms.inner.sketch {
+        for row in &sketch {
             for &value in row {
                 assert_eq!(value, 0.0);
             }
@@ -292,19 +285,28 @@ mod tests {
 
     #[test]
     fn test_count_min_sketch_merge() {
-        let mut cms1 = CountMinSketchAccumulator::new(2, 3);
-        let mut cms2 = CountMinSketchAccumulator::new(2, 3);
-
-        cms1.inner.sketch[0][0] = 5.0;
-        cms1.inner.sketch[1][2] = 10.0;
-        cms2.inner.sketch[0][0] = 3.0;
-        cms2.inner.sketch[0][1] = 7.0;
+        // Build controlled state via from_legacy_matrix (works for both Legacy and Sketchlib backends).
+        let cms1 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]],
+                2,
+                3,
+            ),
+        };
+        let cms2 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]],
+                2,
+                3,
+            ),
+        };
 
         let merged = CountMinSketchAccumulator::merge_accumulators(vec![cms1, cms2]).unwrap();
 
-        assert_eq!(merged.inner.sketch[0][0], 8.0);
-        assert_eq!(merged.inner.sketch[0][1], 7.0);
-        assert_eq!(merged.inner.sketch[1][2], 10.0);
+        let merged_sketch = merged.inner.sketch();
+        assert_eq!(merged_sketch[0][0], 8.0);
+        assert_eq!(merged_sketch[0][1], 7.0);
+        assert_eq!(merged_sketch[1][2], 10.0);
     }
 
     #[test]
@@ -317,9 +319,13 @@ mod tests {
 
     #[test]
     fn test_count_min_sketch_serialization() {
-        let mut cms = CountMinSketchAccumulator::new(2, 3);
-        cms.inner.sketch[0][1] = 42.0;
-        cms.inner.sketch[1][2] = 100.0;
+        let cms = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]],
+                2,
+                3,
+            ),
+        };
 
         let bytes = cms.serialize_to_bytes();
         let deserialized =
@@ -327,8 +333,9 @@ mod tests {
 
         assert_eq!(deserialized.inner.row_num, 2);
         assert_eq!(deserialized.inner.col_num, 3);
-        assert_eq!(deserialized.inner.sketch[0][1], 42.0);
-        assert_eq!(deserialized.inner.sketch[1][2], 100.0);
+        let deser_sketch = deserialized.inner.sketch();
+        assert_eq!(deser_sketch[0][1], 42.0);
+        assert_eq!(deser_sketch[1][2], 100.0);
     }
 
     #[test]
@@ -396,25 +403,38 @@ mod tests {
 
     #[test]
     fn test_count_min_sketch_merge_multiple() {
-        let mut cms1 = CountMinSketchAccumulator::new(2, 3);
-        let mut cms2 = CountMinSketchAccumulator::new(2, 3);
-        let mut cms3 = CountMinSketchAccumulator::new(2, 3);
-
-        cms1.inner.sketch[0][0] = 5.0;
-        cms1.inner.sketch[1][2] = 10.0;
-        cms2.inner.sketch[0][0] = 3.0;
-        cms2.inner.sketch[0][1] = 7.0;
-        cms3.inner.sketch[0][0] = 2.0;
-        cms3.inner.sketch[1][2] = 5.0;
+        // Build controlled state via from_legacy_matrix (works for both Legacy and Sketchlib backends).
+        let cms1 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]],
+                2,
+                3,
+            ),
+        };
+        let cms2 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]],
+                2,
+                3,
+            ),
+        };
+        let cms3 = CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(
+                vec![vec![2.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]],
+                2,
+                3,
+            ),
+        };
 
         let boxed_accs: Vec<Box<dyn AggregateCore>> =
             vec![Box::new(cms1), Box::new(cms2), Box::new(cms3)];
 
         let merged = CountMinSketchAccumulator::merge_multiple(&boxed_accs).unwrap();
 
-        assert_eq!(merged.inner.sketch[0][0], 10.0);
-        assert_eq!(merged.inner.sketch[0][1], 7.0);
-        assert_eq!(merged.inner.sketch[1][2], 15.0);
+        let merged_sketch = merged.inner.sketch();
+        assert_eq!(merged_sketch[0][0], 10.0);
+        assert_eq!(merged_sketch[0][1], 7.0);
+        assert_eq!(merged_sketch[1][2], 15.0);
     }
 
     #[test]
