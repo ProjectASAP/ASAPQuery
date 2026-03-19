@@ -66,7 +66,7 @@ The script executes these phases in order:
   - asap-query-engine (Rust binary + Docker image)
   - asap-planner (Docker image)
   - Arroyo (Node.js frontend + Rust binary + Docker image)
-  - asap-sketch-ingest (Python scripts)
+  - asap-summary-ingest (Python scripts)
   - asap-tools/queriers/prometheus-client, asap-tools/data-sources/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
 
 ### Directory Structure Created
@@ -77,7 +77,7 @@ The script executes these phases in order:
 │   ├── asap-tools/
 │   ├── asap-query-engine/
 │   ├── asap-planner/
-│   ├── asap-sketch-ingest/
+│   ├── asap-summary-ingest/
 │   ├── arroyo/
 │   ├── asap-common/
 │   └── asap-tools/prometheus-benchmark/
@@ -148,7 +148,7 @@ asap-common
 sketchlib-rust
 asap-query-engine
 asap-planner
-asap-sketch-ingest
+asap-summary-ingest
 asap-quickstart
 asap-tools/data-sources/prometheus-exporters
 asap-tools/queriers/prometheus-client
@@ -296,11 +296,11 @@ cargo install refinery_cli
 - Web console (Node.js/React frontend)
 - Controller and workers (Rust binaries)
 
-#### 5. asap-sketch-ingest
-**What:** Python scripts for deploying asap-sketch-ingest pipelines
+#### 5. asap-summary-ingest
+**What:** Python scripts for deploying asap-summary-ingest pipelines
 **Build Process:**
 ```bash
-cd asap-sketch-ingest
+cd asap-summary-ingest
 pip install -r requirements.txt  # jinja2 for templating
 ```
 **Deployment:** Python scripts, no Docker image
