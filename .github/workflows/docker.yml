@@ -9,7 +9,7 @@ on:
     paths:
       - 'asap-common/installation/**'
       - 'asap-planner/**'
-      - 'asap-sketch-ingest/**'
+      - 'asap-summary-ingest/**'
       - 'asap-query-engine/**'
       - 'asap-tools/queriers/prometheus-client/**'
       - '.github/workflows/docker.yml'
@@ -68,21 +68,21 @@ jobs:
           docker push ghcr.io/projectasap/asap-planner:${{ github.ref_name }}
           docker push ghcr.io/projectasap/asap-planner:latest
 
-      # --- Sketch Ingest (Python, depends on base) ---
-      - name: Build sketch-ingest image
+      # --- Summary Ingest (Python, depends on base) ---
+      - name: Build summary-ingest image
         run: |
           docker build \
-            -t asap-sketch-ingest:local \
-            -f asap-sketch-ingest/Dockerfile \
-            asap-sketch-ingest
+            -t asap-summary-ingest:local \
+            -f asap-summary-ingest/Dockerfile \
+            asap-summary-ingest
 
-      - name: Push sketch-ingest image
+      - name: Push summary-ingest image
         if: startsWith(github.ref, 'refs/tags/')
         run: |
-          docker tag asap-sketch-ingest:local ghcr.io/projectasap/asap-sketch-ingest:${{ github.ref_name }}
-          docker tag asap-sketch-ingest:local ghcr.io/projectasap/asap-sketch-ingest:latest
-          docker push ghcr.io/projectasap/asap-sketch-ingest:${{ github.ref_name }}
-          docker push ghcr.io/projectasap/asap-sketch-ingest:latest
+          docker tag asap-summary-ingest:local ghcr.io/projectasap/asap-summary-ingest:${{ github.ref_name }}
+          docker tag asap-summary-ingest:local ghcr.io/projectasap/asap-summary-ingest:latest
+          docker push ghcr.io/projectasap/asap-summary-ingest:${{ github.ref_name }}
+          docker push ghcr.io/projectasap/asap-summary-ingest:latest
 
       # --- Prometheus Client (Python, depends on base) ---
       - name: Build prometheus-client image
