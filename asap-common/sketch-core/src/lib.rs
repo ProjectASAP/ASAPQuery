@@ -1,5 +1,16 @@
+// Force legacy sketch implementations during tests so that tests that mutate the
+// matrix directly or rely on legacy behavior pass.
+#[cfg(test)]
+#[ctor::ctor]
+fn init_sketch_legacy_for_tests() {
+    crate::config::force_legacy_mode_for_tests();
+}
+
+pub mod config;
 pub mod count_min;
+pub mod count_min_sketchlib;
 pub mod count_min_with_heap;
+pub mod count_min_with_heap_sketchlib;
 pub mod delta_set_aggregator;
 pub mod hydra_kll;
 pub mod kll;
