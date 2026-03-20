@@ -1,0 +1,22 @@
+# Two different query strings that produce the same aggregation config
+# rate and increase both map to MultipleIncrease with same window params
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+  - id: 2
+    queries:
+      - "increase(http_requests_total[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "http_requests_total"
+    labels: ["instance", "job", "method", "status"]
+aggregate_cleanup:
+  policy: "read_based"

@@ -1,0 +1,80 @@
+# ASAP Inference Config for ClickBench Hits Dataset
+tables:
+  - name: hits
+    time_column: EventTime
+    metadata_columns: [RegionID, OS, UserAgent, TraficSourceID]
+    value_columns: [ResolutionWidth]
+
+cleanup_policy:
+  name: read_based
+
+# Only quantile queries enabled (T5, T6)
+queries:
+  # # Spatial queries (1s window, partial labels)
+  # - aggregations:
+  #     - aggregation_id: 1
+  #       read_count_threshold: 1
+  #   query: |
+  #     SELECT SUM(ResolutionWidth) FROM hits
+  #     WHERE EventTime BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+  #     GROUP BY RegionID
+
+  # - aggregations:
+  #     - aggregation_id: 2
+  #       read_count_threshold: 1
+  #   query: |
+  #     SELECT AVG(ResolutionWidth) FROM hits
+  #     WHERE EventTime BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+  #     GROUP BY RegionID, OS
+
+  # - aggregations:
+  #     - aggregation_id: 3
+  #       read_count_threshold: 1
+  #   query: |
+  #     SELECT MAX(ResolutionWidth) FROM hits
+  #     WHERE EventTime BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+  #     GROUP BY RegionID, OS, UserAgent
+
+  # # Temporal queries (10s window, all labels) - SUM
+  # - aggregations:
+  #     - aggregation_id: 10
+  #       read_count_threshold: 1
+  #   query: |
+  #     SELECT SUM(ResolutionWidth) FROM hits
+  #     WHERE EventTime BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+  #     GROUP BY RegionID, OS, UserAgent, TraficSourceID
+
+  # # Temporal queries (10s window, all labels) - AVG
+  # - aggregations:
+  #     - aggregation_id: 11
+  #       read_count_threshold: 1
+  #   query: |
+  #     SELECT AVG(ResolutionWidth) FROM hits
+  #     WHERE EventTime BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+  #     GROUP BY RegionID, OS, UserAgent, TraficSourceID
+
+  # Temporal queries (10s window, all labels) - QUANTILE
+  - aggregations:
+      - aggregation_id: 12
+        read_count_threshold: 999999
+    query: |
+      SELECT QUANTILE(0.95, ResolutionWidth) FROM hits
+      WHERE EventTime BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+      GROUP BY RegionID, OS, UserAgent, TraficSourceID
+
+  # # SpatioTemporal queries (10s window, partial labels)
+  # - aggregations:
+  #     - aggregation_id: 20
+  #       read_count_threshold: 1
+  #   query: |
+  #     SELECT SUM(ResolutionWidth) FROM hits
+  #     WHERE EventTime BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+  #     GROUP BY RegionID
+
+  # - aggregations:
+  #     - aggregation_id: 21
+  #       read_count_threshold: 1
+  #   query: |
+  #     SELECT AVG(ResolutionWidth) FROM hits
+  #     WHERE EventTime BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+  #     GROUP BY RegionID, OS
