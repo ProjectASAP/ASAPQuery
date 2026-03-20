@@ -11,8 +11,10 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
     metrics_service_server::MetricsService, ExportMetricsServiceRequest,
     ExportMetricsServiceResponse,
 };
+use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValueVariant;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberValue;
 use prost::Message;
+use sketchlib_rust::proto::sketchlib::{sketch_envelope, SketchEnvelope};
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
@@ -111,6 +113,59 @@ pub struct MetricPoint {
     pub value: f64,
 }
 
+fn format_series_key(name: &str, labels: &HashMap<String, String>) -> String {
+    let mut pairs: Vec<_> = labels.iter().collect();
+    pairs.sort_by_key(|(k, _)| *k);
+    let labels_str = pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}{{{}}}", name, labels_str)
+}
+
+fn get_sketch_payload_from_attrs(
+    attrs: &[opentelemetry_proto::tonic::common::v1::KeyValue],
+) -> Option<(String, Vec<u8>)> {
+    for kv in attrs {
+        match kv.key.as_str() {
+            "kll.sketch_payload" | "cms.sketch_payload" | "hll.sketch_payload" | "sketch" => {
+                if let Some(value) = &kv.value {
+                    if let Some(AnyValueVariant::BytesValue(bytes)) = &value.value {
+                        return Some((kv.key.clone(), bytes.clone()));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn log_sketch_envelope_type(attr_name: &str, payload: &[u8], metric_name: &str) {
+    match SketchEnvelope::decode(payload) {
+        Ok(env) => {
+            let sketch_type = match env.sketch_state {
+                Some(sketch_envelope::SketchState::Kll(_)) => "KLL",
+                Some(sketch_envelope::SketchState::CountMin(_)) => "CountMin",
+                Some(sketch_envelope::SketchState::Ddsketch(_)) => "DDSketch",
+                Some(sketch_envelope::SketchState::Hll(_)) => "HLL",
+                _ => "Unknown",
+            };
+            debug!(
+                "OTLP Sketches: {} attribute decoded, sketch_type={}",
+                attr_name, sketch_type
+            );
+        }
+        Err(e) => {
+            debug!(
+                "OTLP Sketches: failed to decode {} for metric '{}': {}",
+                attr_name, metric_name, e
+            );
+        }
+    }
+}
+
 fn process_otlp_request(request: &ExportMetricsServiceRequest) {
     let resource_count = request.resource_metrics.len();
     let total_points = otlp_to_record_count(request);
@@ -119,7 +174,21 @@ fn process_otlp_request(request: &ExportMetricsServiceRequest) {
         resource_count, total_points
     );
 
-    let points = otlp_to_metric_points(request);
+    let (points, sketch_payloads) = otlp_to_metric_points_and_sketches(request);
+
+    for (metric_name, attr_name, payload) in sketch_payloads {
+        log_sketch_envelope_type(&attr_name, &payload, &metric_name);
+    }
+
+    let mut by_series: HashMap<String, usize> = HashMap::new();
+    for point in &points {
+        let key = format_series_key(&point.name, &point.labels);
+        *by_series.entry(key).or_insert(0) += 1;
+    }
+    for (series, count) in by_series {
+        debug!("OTLP Raw metrics: series {} count={}", series, count);
+    }
+
     if let Some(first) = points.first() {
         debug!(
             "OTLP parse example: {} {:?} @{}ns = {}",
@@ -178,8 +247,14 @@ fn otlp_to_record_count(request: &ExportMetricsServiceRequest) -> usize {
 }
 
 /// Parse OTLP request and convert to metric data points (name, labels, timestamp, value).
-fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoint> {
+/// Data points with sketch payloads in attributes are excluded from points and returned
+/// separately for Pathway 2 processing.
+fn otlp_to_metric_points_and_sketches(
+    request: &ExportMetricsServiceRequest,
+) -> (Vec<MetricPoint>, Vec<(String, String, Vec<u8>)>) {
     let mut points = Vec::new();
+    let mut sketch_payloads = Vec::new();
+
     for resource_metrics in &request.resource_metrics {
         let resource_attrs = resource_metrics
             .resource
@@ -209,6 +284,12 @@ fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoi
                 match &metric.data {
                     Some(Data::Gauge(g)) => {
                         for dp in &g.data_points {
+                            if let Some((attr_name, payload)) =
+                                get_sketch_payload_from_attrs(&dp.attributes)
+                            {
+                                sketch_payloads.push((metric.name.clone(), attr_name, payload));
+                                continue;
+                            }
                             let labels = merge_point_attributes(&base_labels, &dp.attributes);
                             let value = number_value_to_f64(&dp.value);
                             points.push(MetricPoint {
@@ -221,6 +302,12 @@ fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoi
                     }
                     Some(Data::Sum(s)) => {
                         for dp in &s.data_points {
+                            if let Some((attr_name, payload)) =
+                                get_sketch_payload_from_attrs(&dp.attributes)
+                            {
+                                sketch_payloads.push((metric.name.clone(), attr_name, payload));
+                                continue;
+                            }
                             let labels = merge_point_attributes(&base_labels, &dp.attributes);
                             let value = number_value_to_f64(&dp.value);
                             points.push(MetricPoint {
@@ -233,6 +320,12 @@ fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoi
                     }
                     Some(Data::Histogram(hist)) => {
                         for dp in &hist.data_points {
+                            if let Some((attr_name, payload)) =
+                                get_sketch_payload_from_attrs(&dp.attributes)
+                            {
+                                sketch_payloads.push((metric.name.clone(), attr_name, payload));
+                                continue;
+                            }
                             let labels = merge_point_attributes(&base_labels, &dp.attributes);
                             if let Some(sum) = dp.sum {
                                 points.push(MetricPoint {
@@ -252,6 +345,12 @@ fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoi
                     }
                     Some(Data::ExponentialHistogram(eh)) => {
                         for dp in &eh.data_points {
+                            if let Some((attr_name, payload)) =
+                                get_sketch_payload_from_attrs(&dp.attributes)
+                            {
+                                sketch_payloads.push((metric.name.clone(), attr_name, payload));
+                                continue;
+                            }
                             let labels = merge_point_attributes(&base_labels, &dp.attributes);
                             if let Some(sum) = dp.sum {
                                 points.push(MetricPoint {
@@ -271,6 +370,12 @@ fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoi
                     }
                     Some(Data::Summary(sm)) => {
                         for dp in &sm.data_points {
+                            if let Some((attr_name, payload)) =
+                                get_sketch_payload_from_attrs(&dp.attributes)
+                            {
+                                sketch_payloads.push((metric.name.clone(), attr_name, payload));
+                                continue;
+                            }
                             let labels = merge_point_attributes(&base_labels, &dp.attributes);
                             points.push(MetricPoint {
                                 name: format!("{}_sum", metric.name),
@@ -291,7 +396,7 @@ fn otlp_to_metric_points(request: &ExportMetricsServiceRequest) -> Vec<MetricPoi
             }
         }
     }
-    points
+    (points, sketch_payloads)
 }
 
 fn merge_point_attributes(
