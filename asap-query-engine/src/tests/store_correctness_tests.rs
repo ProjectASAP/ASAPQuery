@@ -171,7 +171,6 @@ fn label(strategy: LockStrategy) -> &'static str {
     }
 }
 
-
 // ── contract suite ────────────────────────────────────────────────────────────
 
 pub fn run_contract_suite(strategy: LockStrategy) {
