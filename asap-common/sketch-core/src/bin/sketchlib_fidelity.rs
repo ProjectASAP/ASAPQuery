@@ -99,11 +99,11 @@ fn rank_fraction(sorted: &[f64], x: f64) -> f64 {
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_IMPL_MODE)]
     cms_impl: ImplMode,
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_IMPL_MODE)]
     kll_impl: ImplMode,
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_IMPL_MODE)]
     cmwh_impl: ImplMode,
 }
 

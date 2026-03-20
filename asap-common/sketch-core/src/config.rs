@@ -9,18 +9,22 @@ pub enum ImplMode {
     Sketchlib,
 }
 
+/// Default backend when not explicitly configured (e.g. for binaries that don't pass CLI args).
+/// Single source of truth for sketch backend defaults.
+pub const DEFAULT_IMPL_MODE: ImplMode = ImplMode::Legacy;
+
 static COUNTMIN_MODE: OnceLock<ImplMode> = OnceLock::new();
 
 /// Returns true if Count-Min operations should use sketchlib-rust internally.
 pub fn use_sketchlib_for_count_min() -> bool {
-    *COUNTMIN_MODE.get_or_init(|| ImplMode::Sketchlib) == ImplMode::Sketchlib
+    *COUNTMIN_MODE.get_or_init(|| DEFAULT_IMPL_MODE) == ImplMode::Sketchlib
 }
 
 static KLL_MODE: OnceLock<ImplMode> = OnceLock::new();
 
 /// Returns true if KLL operations should use sketchlib-rust internally.
 pub fn use_sketchlib_for_kll() -> bool {
-    *KLL_MODE.get_or_init(|| ImplMode::Sketchlib) == ImplMode::Sketchlib
+    *KLL_MODE.get_or_init(|| DEFAULT_IMPL_MODE) == ImplMode::Sketchlib
 }
 
 static COUNTMIN_WITH_HEAP_MODE: OnceLock<ImplMode> = OnceLock::new();
@@ -28,7 +32,7 @@ static COUNTMIN_WITH_HEAP_MODE: OnceLock<ImplMode> = OnceLock::new();
 /// Returns true if Count-Min-With-Heap operations should use sketchlib-rust internally for the
 /// Count-Min portion.
 pub fn use_sketchlib_for_count_min_with_heap() -> bool {
-    *COUNTMIN_WITH_HEAP_MODE.get_or_init(|| ImplMode::Sketchlib) == ImplMode::Sketchlib
+    *COUNTMIN_WITH_HEAP_MODE.get_or_init(|| DEFAULT_IMPL_MODE) == ImplMode::Sketchlib
 }
 
 /// Set backend modes for all sketch types. Call once at process startup,
@@ -59,17 +63,17 @@ pub fn parse_mode(var: Result<String, std::env::VarError>) -> ImplMode {
             "sketchlib" => ImplMode::Sketchlib,
             other => {
                 eprintln!(
-                    "sketch-core: unrecognised IMPL value {other:?}, defaulting to Sketchlib"
+                    "sketch-core: unrecognised IMPL value {other:?}, defaulting to {DEFAULT_IMPL_MODE:?}"
                 );
-                ImplMode::Sketchlib
+                DEFAULT_IMPL_MODE
             }
         },
-        Err(std::env::VarError::NotPresent) => ImplMode::Sketchlib,
+        Err(std::env::VarError::NotPresent) => DEFAULT_IMPL_MODE,
         Err(std::env::VarError::NotUnicode(v)) => {
             eprintln!(
-                "sketch-core: IMPL env var has invalid UTF-8 ({v:?}), defaulting to Sketchlib"
+                "sketch-core: IMPL env var has invalid UTF-8 ({v:?}), defaulting to {DEFAULT_IMPL_MODE:?}"
             );
-            ImplMode::Sketchlib
+            DEFAULT_IMPL_MODE
         }
     }
 }
