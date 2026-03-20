@@ -16,7 +16,7 @@ That's it. GitHub Actions will build and push all images tagged as both `v0.2.0`
 | Image | Source |
 |---|---|
 | `ghcr.io/projectasap/asap-base` | `asap-common/installation/` |
-| `ghcr.io/projectasap/asap-planner` | `asap-planner/` |
+| `ghcr.io/projectasap/asap-planner-rs` | `asap-planner-rs/` |
 | `ghcr.io/projectasap/asap-sketch-ingest` | `asap-sketch-ingest/` |
 | `ghcr.io/projectasap/asap-query-engine` | `asap-query-engine/` |
 | `ghcr.io/projectasap/asap-prometheus-client` | `asap-tools/queriers/prometheus-client/` |
