@@ -9,6 +9,7 @@ serde.workspace = true
 rmp-serde = "1.1"
 xxhash-rust = { version = "0.8", features = ["xxh32"] }
 dsrs = { git = "https://github.com/ProjectASAP/datasketches-rs" }
+sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust" }
 clap = { version = "4.0", features = ["derive"] }
 
 [dev-dependencies]
