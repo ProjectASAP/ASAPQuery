@@ -1,3 +1,6 @@
+// Fidelity benchmarks comparing legacy vs sketchlib implementations across sketch types.
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use clap::Parser;
@@ -94,11 +97,11 @@ fn rmse_percentage(exact: &[f64], est: &[f64]) -> f64 {
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMS_IMPL)]
     cms_impl: ImplMode,
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_KLL_IMPL)]
     kll_impl: ImplMode,
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMWH_IMPL)]
     cmwh_impl: ImplMode,
 }
 
