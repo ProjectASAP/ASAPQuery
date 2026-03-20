@@ -75,15 +75,9 @@ pub use your_sketch_accumulator::*;
 
 ---
 
-## Step 4: asap-planner - Sketch Parameters (Optional)
+## Step 4: asap-planner-rs - Sketch Parameters (Optional)
 
-**File to modify**: `asap-planner/classes/StreamingAggregationConfig.py` or `asap-planner/utils/logics.py`
-
-**What to add**:
-- Custom sketch parameters (size, epsilon, etc.) in `get_sketch_parameters()` or similar
-- SLA-based parameter computation in `compute_sketch_parameters()` if needed
-
-**Usually**: asap-planner picks up sketch automatically from asap-common mapping.
+**Usually**: asap-planner-rs picks up sketch automatically from asap-common mapping. Custom sketch parameters (size, epsilon, etc.) can be added in the Rust source under `asap-planner-rs/src/`.
 
 ---
 
@@ -92,7 +86,7 @@ pub use your_sketch_accumulator::*;
 - [ ] `validate_udfs.py` passes (ArroyoSketch)
 - [ ] `cargo build --release` succeeds (asap-query-engine)
 - [ ] `cargo test` passes (asap-query-engine)
-- [ ] End-to-end: asap-planner → asap-sketch-ingest → Arroyo → Kafka → QueryEngine → Query result
+- [ ] End-to-end: asap-planner-rs → asap-sketch-ingest → Arroyo → Kafka → QueryEngine → Query result
 
 ---
 

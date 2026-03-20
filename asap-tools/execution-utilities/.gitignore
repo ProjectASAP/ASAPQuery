@@ -7,3 +7,6 @@
 
 clickhouse-benchmark-pipeline/benchmark_results/
 **/data/
+
+**/*.csv
+**/*.png

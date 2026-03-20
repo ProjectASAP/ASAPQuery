@@ -44,11 +44,11 @@ ASAPQuery uses **streaming sketches** to:
 
 ## Architecture
 
-ASAPQuery has four main components: the **asap-planner** generates sketch configurations from your query workload, **asap-sketch-ingest** deploys streaming pipelines in **Arroyo** that continuously build sketches from live Prometheus metrics, and **asap-query-engine** intercepts PromQL queries and serves them from those pre-computed sketches.
+ASAPQuery has four main components: the **asap-planner-rs** generates sketch configurations from your query workload, **asap-sketch-ingest** deploys streaming pipelines in **Arroyo** that continuously build sketches from live Prometheus metrics, and **asap-query-engine** intercepts PromQL queries and serves them from those pre-computed sketches.
 
 ### Components
 
-- **[asap-planner](asap-planner/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-sketch-ingest and asap-query-engine
+- **[asap-planner-rs](asap-planner-rs/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-sketch-ingest and asap-query-engine
 - **[asap-sketch-ingest](asap-sketch-ingest/)** - Deploys Arroyo streaming pipelines that continuously compute and publish sketches from live metrics
 - **[arroyo](https://github.com/ProjectASAP/arroyo)** - Fork of the [Arroyo](https://github.com/ArroyoSystems/arroyo) stream processing engine that runs the sketch-building SQL pipelines
 - **[asap-query-engine](asap-query-engine/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries
@@ -57,7 +57,7 @@ ASAPQuery has four main components: the **asap-planner** generates sketch config
 
 ```
 ├── asap-quickstart/         # Self-contained demo (start here!)
-├── asap-planner/            # Auto-configuration service
+├── asap-planner-rs/         # Auto-configuration service
 ├── asap-sketch-ingest/      # Arroyo pipeline deployer
 └── asap-query-engine/       # Query serving engine
 # Note: Arroyo fork lives at https://github.com/ProjectASAP/arroyo

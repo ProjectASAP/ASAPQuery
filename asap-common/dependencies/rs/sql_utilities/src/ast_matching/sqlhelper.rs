@@ -154,4 +154,53 @@ impl AggregationInfo {
     pub fn get_args(&self) -> &Vec<String> {
         &self.args
     }
+
+    /// Returns true if this aggregation matches the given template
+    /// (same function name, value column, and arguments).
+    pub fn matches_pattern(&self, other: &AggregationInfo) -> bool {
+        self.name == other.name
+            && self.value_column_name == other.value_column_name
+            && self.args == other.args
+    }
+}
+
+impl TimeInfo {
+    /// Returns true if this time info matches the given template.
+    ///
+    /// For "UNUSED" time columns (the outer level of a subquery which has no WHERE
+    /// time clause), only the column name is compared.
+    /// For real time columns, the column name and duration are compared but the
+    /// absolute start time is ignored — this allows NOW()-based templates to match
+    /// incoming queries that use absolute timestamps.
+    pub fn matches_pattern(&self, other: &TimeInfo) -> bool {
+        if self.time_col_name != other.time_col_name {
+            return false;
+        }
+        if self.time_col_name == "UNUSED" {
+            return true;
+        }
+        (self.duration - other.duration).abs() < f64::EPSILON
+    }
+}
+
+impl SQLQueryData {
+    /// Returns true if this query data structurally matches the given template.
+    ///
+    /// Templates in inference_config use NOW()-relative timestamps; actual incoming
+    /// queries use absolute timestamps. Only the duration is compared, not the
+    /// absolute start time. All other fields (metric, aggregation, labels, time
+    /// column name) must match exactly.
+    pub fn matches_sql_pattern(&self, template: &SQLQueryData) -> bool {
+        self.metric == template.metric
+            && self
+                .aggregation_info
+                .matches_pattern(&template.aggregation_info)
+            && self.labels == template.labels
+            && self.time_info.matches_pattern(&template.time_info)
+            && match (&self.subquery, &template.subquery) {
+                (None, None) => true,
+                (Some(sq), Some(tq)) => sq.matches_sql_pattern(tq),
+                _ => false,
+            }
+    }
 }

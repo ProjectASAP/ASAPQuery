@@ -122,8 +122,8 @@ git push --force-with-lease origin your-branch-name
 
 Key CI jobs to watch:
 - **Rust** — Cargo build and tests for `asap-query-engine` and `asap-common`
-- **Python** — Linting/type-checking for `asap-tools/queriers/prometheus-client` and `asap-planner`
-- **Docker** — Image builds for `asap-query-engine`, `asap-planner`, `asap-sketch-ingest`
+- **Python** — Linting/type-checking for `asap-tools/queriers/prometheus-client`
+- **Docker** — Image builds for `asap-query-engine`, `asap-planner-rs`, `asap-sketch-ingest`
 
 ---
 

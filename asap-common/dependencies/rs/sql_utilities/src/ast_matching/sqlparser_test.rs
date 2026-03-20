@@ -544,4 +544,99 @@ mod tests {
             Some(QueryError::SpatialDurationSmall),
         );
     }
+
+    // ── matches_sql_pattern tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_matches_now_vs_absolute_timestamp() {
+        // Same 10s window, same metric/agg/labels — should match
+        let template = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        assert!(incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_no_match_different_duration() {
+        let template = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -5, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        assert!(!incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_no_match_different_metric() {
+        let template = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT SUM(mb) FROM mem_usage WHERE ms BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        assert!(!incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_no_match_different_aggregation() {
+        let template = parse_sql_query(
+            "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        assert!(!incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_no_match_different_labels() {
+        let template = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1"
+        ).unwrap();
+        assert!(!incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_no_match_different_time_column() {
+        // cpu_usage uses "time", mem_usage uses "ms" — query same metric but wrong time col
+        let template = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        // Force a different time column by using mem_usage schema (col: ms) but same duration
+        let incoming = parse_sql_query(
+            "SELECT SUM(mb) FROM mem_usage WHERE ms BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        // Different metric AND time column — must not match
+        assert!(!incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_no_match_different_quantile_args() {
+        let template = parse_sql_query(
+            "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT QUANTILE(0.99, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        assert!(!incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_matches_subquery_now_vs_absolute() {
+        // Spatial-of-temporal: outer has no time clause (UNUSED), inner has time clause
+        let template = parse_sql_query(
+            "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4) GROUP BY L1"
+        ).unwrap();
+        assert!(incoming.matches_sql_pattern(&template));
+    }
 }

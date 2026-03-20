@@ -231,7 +231,8 @@ SETTINGS
     kafka_group_name = 'clickhouse_hits_consumer',
     kafka_format = 'JSONEachRow',
     kafka_num_consumers = 1,
-    kafka_max_block_size = 65536;
+    kafka_max_block_size = 65536,
+    date_time_input_format = 'best_effort';
 
 -- Create materialized view to move data from Kafka to MergeTree
 CREATE MATERIALIZED VIEW IF NOT EXISTS hits_mv TO hits AS
