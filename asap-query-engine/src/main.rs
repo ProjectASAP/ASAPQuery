@@ -111,15 +111,15 @@ struct Args {
     promsketch_config: Option<String>,
 
     /// Backend implementation for Count-Min Sketch (legacy | sketchlib)
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = config::DEFAULT_CMS_IMPL)]
     sketch_cms_impl: ImplMode,
 
     /// Backend implementation for KLL Sketch (legacy | sketchlib)
-    #[arg(long, value_enum, default_value = "legacy")]
+    #[arg(long, value_enum, default_value_t = config::DEFAULT_KLL_IMPL)]
     sketch_kll_impl: ImplMode,
 
     /// Backend implementation for Count-Min-With-Heap (legacy | sketchlib)
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = config::DEFAULT_CMWH_IMPL)]
     sketch_cmwh_impl: ImplMode,
 
     /// Enable OTLP metrics ingest (gRPC + HTTP)
