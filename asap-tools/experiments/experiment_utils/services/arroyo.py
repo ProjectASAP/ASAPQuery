@@ -105,7 +105,7 @@ class ArroyoService(BaseService):
         use_kafka_ingest: bool = False,
         enable_optimized_remote_write: bool = False,
         avoid_long_ssh: bool = False,
-        sketch_cms_impl: str = "legacy",
+        sketch_cms_impl: str = "sketchlib",
         sketch_kll_impl: str = "legacy",
         sketch_cmwh_impl: str = "legacy",
     ) -> str:
