@@ -6,7 +6,6 @@ on:
     paths:
       - 'asap-summary-ingest/**'
       - 'asap-tools/queriers/prometheus-client/**'
-      - 'asap-planner/**'
       - 'asap-tools/**'
       - 'asap-tools/data-sources/prometheus-exporters/**'
       - 'asap-tools/execution-utilities/**'
@@ -17,7 +16,6 @@ on:
     paths:
       - 'asap-summary-ingest/**'
       - 'asap-tools/queriers/prometheus-client/**'
-      - 'asap-planner/**'
       - 'asap-tools/**'
       - 'asap-tools/data-sources/prometheus-exporters/**'
       - 'asap-tools/execution-utilities/**'
@@ -35,7 +33,6 @@ jobs:
     outputs:
       summary_ingest: ${{ steps.filter.outputs.summary_ingest }}
       prometheus_client: ${{ steps.filter.outputs.prometheus_client }}
-      controller: ${{ steps.filter.outputs.controller }}
       utilities: ${{ steps.filter.outputs.utilities }}
       prometheus_exporters: ${{ steps.filter.outputs.prometheus_exporters }}
       execution_utilities: ${{ steps.filter.outputs.execution_utilities }}
@@ -50,9 +47,6 @@ jobs:
               - 'asap-common/dependencies/py/**'
             prometheus_client:
               - 'asap-tools/queriers/prometheus-client/**'
-              - 'asap-common/dependencies/py/**'
-            controller:
-              - 'asap-planner/**'
               - 'asap-common/dependencies/py/**'
             utilities:
               - 'asap-tools/**'
@@ -124,35 +118,6 @@ jobs:
     - name: Type check with mypy
       working-directory: asap-tools/queriers/prometheus-client
       run: mypy .
-
-  test-controller:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.controller == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install black==24.8.0 flake8==6.1.0
-        if [ -f asap-planner/requirements.txt ]; then pip install -r asap-planner/requirements.txt; fi
-    - name: Check formatting with Black
-      working-directory: asap-planner
-      run: black --check --diff .
-    - name: Lint with flake8
-      working-directory: asap-planner
-      run: |
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Exit-zero treats all errors as warnings
-        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
 
   test-utilities:
     needs: detect-changes

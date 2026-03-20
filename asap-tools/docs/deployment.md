@@ -64,7 +64,7 @@ The script executes these phases in order:
 - Builds and installs project-specific code:
   - asap-common (base Docker image)
   - asap-query-engine (Rust binary + Docker image)
-  - asap-planner (Docker image)
+  - asap-planner-rs (Rust binary + Docker image)
   - Arroyo (Node.js frontend + Rust binary + Docker image)
   - asap-summary-ingest (Python scripts)
   - asap-tools/queriers/prometheus-client, asap-tools/data-sources/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
@@ -76,7 +76,7 @@ The script executes these phases in order:
 ├── code/                           # All component source code
 │   ├── asap-tools/
 │   ├── asap-query-engine/
-│   ├── asap-planner/
+│   ├── asap-planner-rs/
 │   ├── asap-summary-ingest/
 │   ├── arroyo/
 │   ├── asap-common/
@@ -147,7 +147,7 @@ asap-tools
 asap-common
 sketchlib-rust
 asap-query-engine
-asap-planner
+asap-planner-rs
 asap-summary-ingest
 asap-quickstart
 asap-tools/data-sources/prometheus-exporters
@@ -261,12 +261,13 @@ docker build -t sketchdb-queryengine-rust:latest .  # Build Docker image
 ```
 **Deployment:** Can run as Docker container or bare-metal binary
 
-#### 3. asap-planner
-**What:** Service that generates sketch configurations based on query patterns
+#### 3. asap-planner-rs
+**What:** Rust-based service that generates sketch configurations based on query patterns
 **Build Process:**
 ```bash
-cd asap-planner
-docker build -t sketchdb-controller:latest .
+cd asap-planner-rs
+cargo build --release -p asap_planner
+docker build . -f Dockerfile -t sketchdb-controller:latest
 ```
 **Deployment:** Docker container only
 
