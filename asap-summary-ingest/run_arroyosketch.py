@@ -380,6 +380,16 @@ def delete_connection_table(args, table_name):
         )
 
 
+# Map UDF names to the sketch impl CLI arg. UDFs use same impl mode as QueryEngine.
+_UDF_IMPL_MODE_ARG = {
+    "countminsketch_count": "sketch_cms_impl",
+    "countminsketch_sum": "sketch_cms_impl",
+    "countminsketchwithheap_topk": "sketch_cmwh_impl",
+    "datasketcheskll_": "sketch_kll_impl",
+    "hydrakll_": "sketch_kll_impl",
+}
+
+
 def create_pipeline(
     args: argparse.Namespace,
     sql_queries: List[str],
@@ -444,7 +454,13 @@ def create_pipeline(
             regular_path = os.path.join(udf_dir, f"{udf_name}.rs")
 
             # Get parameters for this UDF
-            params = agg_function_params.get(udf_name, {})
+            params = dict(agg_function_params.get(udf_name, {}))
+
+            # Inject impl_mode from CLI so UDFs use same backend as QueryEngine
+            impl_arg = _UDF_IMPL_MODE_ARG.get(udf_name)
+            if impl_arg:
+                impl_val = getattr(args, impl_arg, "legacy")
+                params["impl_mode"] = impl_val.capitalize()  # "Legacy" or "Sketchlib"
 
             if len(params) > 0 and not os.path.exists(template_path):
                 raise ValueError(
@@ -1110,6 +1126,29 @@ if __name__ == "__main__":
         choices=["promql", "sql"],
         default="promql",
         help="Query language for schema interpretation (default: promql)",
+    )
+
+    # Sketch implementation mode - must match QueryEngine (--sketch-cms-impl etc.)
+    parser.add_argument(
+        "--sketch_cms_impl",
+        type=str,
+        choices=["legacy", "sketchlib"],
+        default="legacy",
+        help="Count-Min Sketch backend (legacy | sketchlib). Must match QueryEngine.",
+    )
+    parser.add_argument(
+        "--sketch_kll_impl",
+        type=str,
+        choices=["legacy", "sketchlib"],
+        default="legacy",
+        help="KLL Sketch backend (legacy | sketchlib). Must match QueryEngine.",
+    )
+    parser.add_argument(
+        "--sketch_cmwh_impl",
+        type=str,
+        choices=["legacy", "sketchlib"],
+        default="legacy",
+        help="Count-Min-With-Heap backend (legacy | sketchlib). Must match QueryEngine.",
     )
 
     args = parser.parse_args()
