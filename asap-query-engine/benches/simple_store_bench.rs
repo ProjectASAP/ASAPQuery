@@ -14,6 +14,10 @@
 //!
 //! where B = batch size, W = stored windows, k = result entries, A = agg IDs.
 //!
+//! Two accumulator types are benchmarked:
+//! - `sum`  — `SumAccumulator` (trivial f64, ~0 clone cost, baseline)
+//! - `kll`  — `DatasketchesKLLAccumulator` k=200 (~1 KB sketch, realistic clone cost)
+//!
 //! Run with:
 //!   cargo bench -p query_engine_rust --bench simple_store_bench
 //!
@@ -23,7 +27,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use promql_utilities::data_model::KeyByLabelNames;
 use query_engine_rust::{
     data_model::{CleanupPolicy, LockStrategy, StreamingConfig},
-    precompute_operators::SumAccumulator,
+    precompute_operators::{DatasketchesKLLAccumulator, SumAccumulator},
     AggregateCore, AggregationConfig, PrecomputedOutput, SimpleMapStore, Store,
 };
 use std::collections::HashMap;
@@ -70,7 +74,7 @@ fn make_store(config: Arc<StreamingConfig>, strategy: LockStrategy) -> SimpleMap
 
 /// Build a batch of `n` `(PrecomputedOutput, SumAccumulator)` pairs for
 /// `agg_id`, starting at `base_ts` with windows of `window_ms` milliseconds.
-fn make_batch(
+fn make_batch_sum(
     n: usize,
     agg_id: u64,
     base_ts: u64,
@@ -87,9 +91,38 @@ fn make_batch(
         .collect()
 }
 
-/// Pre-populate a store with `num_windows` entries for `agg_id = 1`.
-fn populate_store(store: &SimpleMapStore, num_windows: usize) {
-    let batch = make_batch(num_windows, 1, 1_000_000, 60_000);
+/// Build a batch of `n` `(PrecomputedOutput, DatasketchesKLLAccumulator)` pairs.
+/// Each sketch is updated with 20 values to give it a realistic memory footprint.
+fn make_batch_kll(
+    n: usize,
+    agg_id: u64,
+    base_ts: u64,
+    window_ms: u64,
+) -> Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> {
+    (0..n as u64)
+        .map(|i| {
+            let start = base_ts + i * window_ms;
+            let end = start + window_ms;
+            let output = PrecomputedOutput::new(start, end, None, agg_id);
+            let mut acc = DatasketchesKLLAccumulator::new(200);
+            for v in 0..20 {
+                acc._update(v as f64 * (i as f64 + 1.0));
+            }
+            let acc: Box<dyn AggregateCore> = Box::new(acc);
+            (output, acc)
+        })
+        .collect()
+}
+
+/// Pre-populate a store with `num_windows` SumAccumulator entries for `agg_id = 1`.
+fn populate_store_sum(store: &SimpleMapStore, num_windows: usize) {
+    let batch = make_batch_sum(num_windows, 1, 1_000_000, 60_000);
+    store.insert_precomputed_output_batch(batch).unwrap();
+}
+
+/// Pre-populate a store with `num_windows` KLL entries for `agg_id = 1`.
+fn populate_store_kll(store: &SimpleMapStore, num_windows: usize) {
+    let batch = make_batch_kll(num_windows, 1, 1_000_000, 60_000);
     store.insert_precomputed_output_batch(batch).unwrap();
 }
 
@@ -97,33 +130,48 @@ fn populate_store(store: &SimpleMapStore, num_windows: usize) {
 
 /// Measures how insert latency scales with the number of items in a batch.
 ///
-/// Both lock strategies are profiled. The expected complexity is O(B) in batch
-/// size B, so throughput (items/s) should remain roughly constant.
+/// Both lock strategies and both accumulator types are profiled. The expected
+/// complexity is O(B) in batch size B, so throughput (items/s) should remain
+/// roughly constant. KLL variant reveals sketch-construction overhead.
 fn bench_insert_batch_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert/batch_size");
     let streaming_config = make_streaming_config(1);
 
-    for &batch_size in &[10usize, 100, 500, 1_000, 5_000] {
+    for &batch_size in &[100usize, 1_000, 5_000, 10_000, 50_000] {
         group.throughput(Throughput::Elements(batch_size as u64));
 
-        for (label, strategy) in [
-            ("per_key", LockStrategy::PerKey),
-            ("global", LockStrategy::Global),
+        for (acc_label, make_batch) in [
+            (
+                "sum",
+                make_batch_sum
+                    as fn(usize, u64, u64, u64) -> Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
+            ),
+            ("kll", make_batch_kll),
         ] {
-            group.bench_with_input(BenchmarkId::new(label, batch_size), &batch_size, |b, &n| {
-                b.iter_batched(
-                    || {
-                        (
-                            make_store(streaming_config.clone(), strategy),
-                            make_batch(n, 1, 1_000_000, 60_000),
-                        )
+            for (lock_label, strategy) in [
+                ("per_key", LockStrategy::PerKey),
+                ("global", LockStrategy::Global),
+            ] {
+                let label = format!("{acc_label}/{lock_label}");
+                group.bench_with_input(
+                    BenchmarkId::new(label, batch_size),
+                    &batch_size,
+                    |b, &n| {
+                        b.iter_batched(
+                            || {
+                                (
+                                    make_store(streaming_config.clone(), strategy),
+                                    make_batch(n, 1, 1_000_000, 60_000),
+                                )
+                            },
+                            |(store, batch)| {
+                                store.insert_precomputed_output_batch(batch).unwrap();
+                            },
+                            criterion::BatchSize::SmallInput,
+                        );
                     },
-                    |(store, batch)| {
-                        store.insert_precomputed_output_batch(batch).unwrap();
-                    },
-                    criterion::BatchSize::SmallInput,
                 );
-            });
+            }
         }
     }
     group.finish();
@@ -134,13 +182,13 @@ fn bench_insert_batch_size(c: &mut Criterion) {
 /// Measures how insert latency scales with the number of distinct aggregation
 /// IDs in a batch (the outer DashMap dimension).
 ///
-/// The batch always has 200 items total; we vary how they are spread across
-/// aggregation IDs (1, 10, 50, 200). Expected complexity: O(A·lock_overhead).
+/// The batch always has 1 000 items total; we vary how they are spread across
+/// aggregation IDs (1, 10, 50, 200, 1 000). Expected: O(A·lock_overhead).
 fn bench_insert_num_agg_ids(c: &mut Criterion) {
     let mut group = c.benchmark_group("insert/num_agg_ids");
-    const TOTAL_ITEMS: usize = 200;
+    const TOTAL_ITEMS: usize = 1_000;
 
-    for &num_ids in &[1usize, 10, 50, 200] {
+    for &num_ids in &[1usize, 10, 50, 200, 1_000] {
         group.throughput(Throughput::Elements(TOTAL_ITEMS as u64));
 
         for (label, strategy) in [
@@ -157,7 +205,7 @@ fn bench_insert_num_agg_ids(c: &mut Criterion) {
                         let per_id = TOTAL_ITEMS / n;
                         let mut batch = Vec::with_capacity(TOTAL_ITEMS);
                         for agg_id in 1..=n as u64 {
-                            let mut sub = make_batch(per_id, agg_id, 1_000_000, 60_000);
+                            let mut sub = make_batch_sum(per_id, agg_id, 1_000_000, 60_000);
                             batch.append(&mut sub);
                         }
                         (store, batch)
@@ -179,32 +227,40 @@ fn bench_insert_num_agg_ids(c: &mut Criterion) {
 ///
 /// The query always covers the full time span, so all W windows are matched and
 /// sorted. Expected: O(W·log W + k) — sorting dominates for large W.
+/// The KLL variant reveals the additional cost of cloning large sketch objects
+/// during result collection.
 fn bench_query_range_store_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("query/range_store_size");
 
-    for &num_windows in &[100usize, 500, 1_000, 5_000] {
-        for (label, strategy) in [
-            ("per_key", LockStrategy::PerKey),
-            ("global", LockStrategy::Global),
+    for &num_windows in &[500usize, 1_000, 5_000, 10_000, 50_000] {
+        for (acc_label, populate) in [
+            ("sum", populate_store_sum as fn(&SimpleMapStore, usize)),
+            ("kll", populate_store_kll),
         ] {
-            let streaming_config = make_streaming_config(1);
-            let store = make_store(streaming_config, strategy);
-            populate_store(&store, num_windows);
+            for (lock_label, strategy) in [
+                ("per_key", LockStrategy::PerKey),
+                ("global", LockStrategy::Global),
+            ] {
+                let streaming_config = make_streaming_config(1);
+                let store = make_store(streaming_config, strategy);
+                populate(&store, num_windows);
 
-            let query_start = 1_000_000u64;
-            let query_end = query_start + num_windows as u64 * 60_000;
+                let query_start = 1_000_000u64;
+                let query_end = query_start + num_windows as u64 * 60_000;
+                let label = format!("{acc_label}/{lock_label}");
 
-            group.bench_with_input(
-                BenchmarkId::new(label, num_windows),
-                &num_windows,
-                |b, _| {
-                    b.iter(|| {
-                        store
-                            .query_precomputed_output("cpu_usage", 1, query_start, query_end)
-                            .unwrap()
-                    });
-                },
-            );
+                group.bench_with_input(
+                    BenchmarkId::new(label, num_windows),
+                    &num_windows,
+                    |b, _| {
+                        b.iter(|| {
+                            store
+                                .query_precomputed_output("cpu_usage", 1, query_start, query_end)
+                                .unwrap()
+                        });
+                    },
+                );
+            }
         }
     }
     group.finish();
@@ -219,14 +275,14 @@ fn bench_query_range_store_size(c: &mut Criterion) {
 fn bench_query_exact_store_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("query/exact_store_size");
 
-    for &num_windows in &[100usize, 500, 1_000, 5_000] {
+    for &num_windows in &[500usize, 1_000, 5_000, 10_000, 50_000] {
         for (label, strategy) in [
             ("per_key", LockStrategy::PerKey),
             ("global", LockStrategy::Global),
         ] {
             let streaming_config = make_streaming_config(1);
             let store = make_store(streaming_config, strategy);
-            populate_store(&store, num_windows);
+            populate_store_sum(&store, num_windows);
 
             // Target: the last inserted window (no warm-cache advantage).
             let exact_start = 1_000_000u64 + (num_windows as u64 - 1) * 60_000;
@@ -258,7 +314,7 @@ fn bench_query_exact_store_size(c: &mut Criterion) {
 fn bench_store_analyze(c: &mut Criterion) {
     let mut group = c.benchmark_group("store_analyze/num_agg_ids");
 
-    for &num_ids in &[10usize, 100, 500, 1_000] {
+    for &num_ids in &[10usize, 100, 500, 1_000, 5_000] {
         for (label, strategy) in [
             ("per_key", LockStrategy::PerKey),
             ("global", LockStrategy::Global),
@@ -294,7 +350,7 @@ fn bench_store_analyze(c: &mut Criterion) {
 /// but the absolute latency baseline differs.
 fn bench_concurrent_reads(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent_reads/thread_count");
-    let num_windows = 1_000usize;
+    let num_windows = 5_000usize;
     let query_start = 1_000_000u64;
     let query_end = query_start + num_windows as u64 * 60_000;
 
@@ -304,9 +360,9 @@ fn bench_concurrent_reads(c: &mut Criterion) {
     ] {
         let streaming_config = make_streaming_config(1);
         let store = Arc::new(make_store(streaming_config, strategy));
-        populate_store(&store, num_windows);
+        populate_store_sum(&store, num_windows);
 
-        for &num_threads in &[1usize, 2, 4, 8] {
+        for &num_threads in &[1usize, 2, 4, 8, 16] {
             group.bench_with_input(
                 BenchmarkId::new(label, num_threads),
                 &num_threads,
