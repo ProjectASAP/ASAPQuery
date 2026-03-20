@@ -27,12 +27,14 @@
 //! | `contract_per_key`    | `LockStrategy::PerKey` (reference impl) |
 //! | `contract_global`     | `LockStrategy::Global`      |
 
-use crate::data_model::{CleanupPolicy, KeyByLabelValues, LockStrategy, Measurement, SerializableToSink, StreamingConfig};
+use crate::data_model::{
+    CleanupPolicy, KeyByLabelValues, LockStrategy, Measurement, SerializableToSink, StreamingConfig,
+};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
     DeltaSetAggregatorAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator,
-    MinMaxAccumulator, MultipleMinMaxAccumulator, MultipleSumAccumulator,
-    SetAggregatorAccumulator, SumAccumulator,
+    MinMaxAccumulator, MultipleMinMaxAccumulator, MultipleSumAccumulator, SetAggregatorAccumulator,
+    SumAccumulator,
 };
 use crate::stores::{Store, TimestampedBucketsMap};
 use crate::{AggregateCore, AggregationConfig, PrecomputedOutput, SimpleMapStore};
@@ -91,7 +93,11 @@ fn make_store(
 
 /// Convenience: single agg_id=1, type "Sum", no cleanup.
 fn make_store_simple(strategy: LockStrategy) -> SimpleMapStore {
-    make_store(strategy, CleanupPolicy::NoCleanup, &[(1, "Sum", None, None)])
+    make_store(
+        strategy,
+        CleanupPolicy::NoCleanup,
+        &[(1, "Sum", None, None)],
+    )
 }
 
 // ── data helpers ──────────────────────────────────────────────────────────────
@@ -178,7 +184,8 @@ fn assert_clone_fidelity(
     let orig_json = original.serialize_to_json();
     let stored_json = from_store.serialize_to_json();
     assert_eq!(
-        orig_json, stored_json,
+        orig_json,
+        stored_json,
         "[{}] {type_name}: clone_boxed_core() must produce identical serialization",
         label(strategy)
     );
@@ -393,7 +400,8 @@ fn test_batch_insert_results_are_chronologically_ordered(strategy: LockStrategy)
         .map(|i| (i * 60_000, (i + 1) * 60_000))
         .collect();
     assert_eq!(
-        ts, expected,
+        ts,
+        expected,
         "[{}] range query results must be in chronological (ascending start) order",
         label(strategy)
     );
@@ -663,8 +671,20 @@ fn test_keyed_entries_grouped_by_key(strategy: LockStrategy) {
     let k2 = key(&["host2"]);
 
     // Same timestamp window, two different keys.
-    let (o1, a1) = keyed_entry(1, 1_000, 2_000, k1.clone(), Box::new(SumAccumulator::with_sum(10.0)));
-    let (o2, a2) = keyed_entry(1, 1_000, 2_000, k2.clone(), Box::new(SumAccumulator::with_sum(20.0)));
+    let (o1, a1) = keyed_entry(
+        1,
+        1_000,
+        2_000,
+        k1.clone(),
+        Box::new(SumAccumulator::with_sum(10.0)),
+    );
+    let (o2, a2) = keyed_entry(
+        1,
+        1_000,
+        2_000,
+        k2.clone(),
+        Box::new(SumAccumulator::with_sum(20.0)),
+    );
     store.insert_precomputed_output(o1, a1).unwrap();
     store.insert_precomputed_output(o2, a2).unwrap();
 
@@ -698,8 +718,13 @@ fn test_keyed_and_unkeyed_entries_coexist(strategy: LockStrategy) {
     let k = key(&["region", "us-east"]);
 
     let (o_none, a_none) = sum_entry(1, 1_000, 2_000, 1.0);
-    let (o_keyed, a_keyed) =
-        keyed_entry(1, 3_000, 4_000, k.clone(), Box::new(SumAccumulator::with_sum(2.0)));
+    let (o_keyed, a_keyed) = keyed_entry(
+        1,
+        3_000,
+        4_000,
+        k.clone(),
+        Box::new(SumAccumulator::with_sum(2.0)),
+    );
     store.insert_precomputed_output(o_none, a_none).unwrap();
     store.insert_precomputed_output(o_keyed, a_keyed).unwrap();
 
@@ -799,7 +824,8 @@ fn roundtrip<A: AggregateCore + 'static>(
     // instead, compare directly here using the captured JSON.
     let retrieved_json = retrieved.serialize_to_json();
     assert_eq!(
-        original_json, retrieved_json,
+        original_json,
+        retrieved_json,
         "[{}] clone_boxed_core must produce identical serialization",
         label(strategy)
     );
@@ -827,12 +853,7 @@ fn test_clone_fidelity_kll(strategy: LockStrategy) {
 }
 
 fn test_clone_fidelity_increase(strategy: LockStrategy) {
-    let acc = IncreaseAccumulator::new(
-        Measurement::new(1.0),
-        100,
-        Measurement::new(50.0),
-        500,
-    );
+    let acc = IncreaseAccumulator::new(Measurement::new(1.0), 100, Measurement::new(50.0), 500);
     roundtrip(strategy, acc);
 }
 
