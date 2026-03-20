@@ -1,7 +1,5 @@
 pub mod legacy;
 mod common;
-pub mod legacy_global;
-pub mod per_key_legacy;
 
 use crate::data_model::{
     AggregateCore, CleanupPolicy, LockStrategy, PrecomputedOutput, StreamingConfig,
