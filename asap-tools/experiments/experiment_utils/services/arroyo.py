@@ -169,8 +169,10 @@ class ArroyoService(BaseService):
             if enable_optimized_remote_write:
                 cmd += " --prometheus_remote_write_source optimized"
         # Sketch impl mode - must match QueryEngine
-        cmd += " --sketch_cms_impl {} --sketch_kll_impl {} --sketch_cmwh_impl {}".format(
-            sketch_cms_impl, sketch_kll_impl, sketch_cmwh_impl
+        cmd += (
+            " --sketch_cms_impl {} --sketch_kll_impl {} --sketch_cmwh_impl {}".format(
+                sketch_cms_impl, sketch_kll_impl, sketch_cmwh_impl
+            )
         )
         cmd_dir = os.path.join(
             constants.CLOUDLAB_HOME_DIR, "code", "asap-summary-ingest"
