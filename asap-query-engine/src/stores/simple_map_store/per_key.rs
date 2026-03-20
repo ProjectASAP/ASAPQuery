@@ -34,7 +34,7 @@ struct StoreKeyData {
     max_epochs: usize,
 
     /// Track how many times each timestamp range has been read.
-    /// Behind Mutex so queries can use a read lock on the outer RwLock.
+    /// Behind Mutex so range queries can use a read lock on the outer RwLock.
     read_counts: Mutex<HashMap<TimestampRange, u64>>,
 }
 
@@ -62,6 +62,7 @@ impl StoreKeyData {
 
     /// Seal the current epoch into a flat sorted Vec and open a fresh one.
     /// Drops the oldest sealed epoch (O(1)) if total exceeds max_epochs.
+    /// Uses the old epoch's entry count as a capacity hint for the new epoch (Opt 6).
     fn maybe_rotate_epoch(&mut self) {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
@@ -72,8 +73,9 @@ impl StoreKeyData {
             return;
         }
 
-        // Seal current epoch → flat sorted Vec, then open a fresh MutableEpoch.
-        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::new());
+        // Opt 6: pre-allocate new epoch with the old epoch's entry count as a hint.
+        let hint = self.current_epoch.len();
+        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
         let sealed = old.seal();
         self.sealed_epochs.insert(self.current_epoch_id, sealed);
         self.current_epoch_id += 1;
@@ -189,6 +191,14 @@ impl SimpleMapStorePerKey {
         let metric_key = metric.to_string();
         let inserted_delta = items.len() as u64;
 
+        // Opt 4: compute batch minimum timestamp before acquiring any lock.
+        // Collapses N per-item atomic fetch_min calls into one (Opt 4).
+        let batch_min_ts = items
+            .iter()
+            .map(|(o, _)| o.start_timestamp)
+            .min()
+            .unwrap_or(u64::MAX);
+
         // Measure lock acquisition time
         #[cfg(feature = "lock_profiling")]
         let lock_wait_start = Instant::now();
@@ -240,6 +250,15 @@ impl SimpleMapStorePerKey {
         // Create metric if needed (lock-free DashMap insert)
         self.metrics.entry(metric_key.clone()).or_insert(());
 
+        // Opt 4: one atomic earliest-ts update per batch using the pre-computed minimum.
+        // Replaces N per-item fetch_min calls with a single one.
+        self.earliest_timestamps
+            .entry(aggregation_id)
+            .and_modify(|earliest| {
+                earliest.fetch_min(batch_min_ts, Ordering::Relaxed);
+            })
+            .or_insert_with(|| AtomicU64::new(batch_min_ts));
+
         // Update insertion counter once per grouped batch (instead of once per item).
         let items_inserted_counter = self
             .items_inserted
@@ -263,14 +282,6 @@ impl SimpleMapStorePerKey {
         }
 
         for (output, precompute) in items {
-            // Update earliest timestamp (lock-free atomic operation)
-            self.earliest_timestamps
-                .entry(aggregation_id)
-                .and_modify(|earliest| {
-                    earliest.fetch_min(output.start_timestamp, Ordering::Relaxed);
-                })
-                .or_insert_with(|| AtomicU64::new(output.start_timestamp));
-
             // Intern the label key (Optimization 1)
             let timestamp_range = (output.start_timestamp, output.end_timestamp);
             let metric_id: MetricID = data.intern.intern(output.key);
@@ -420,7 +431,7 @@ impl Store for SimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let rwlock_wait_start = Instant::now();
 
-        // Acquire read lock (read_counts behind inner Mutex)
+        // Range queries use a read lock — no mutation of epoch data needed.
         let data = store_data_lock.read().map_err(|e| {
             format!(
                 "Failed to acquire read lock for query aggregation_id {}: {}",
@@ -562,10 +573,11 @@ impl Store for SimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let rwlock_wait_start = Instant::now();
 
-        // Acquire read lock (read_counts behind inner Mutex)
-        let data = store_data_lock.read().map_err(|e| {
+        // Opt 1: exact_query takes &mut self (lazy index build), so we need a write lock.
+        // Range queries still use a read lock — only exact queries pay the write-lock cost.
+        let mut data = store_data_lock.write().map_err(|e| {
             format!(
-                "Failed to acquire read lock for exact query aggregation_id {}: {}",
+                "Failed to acquire write lock for exact query aggregation_id {}: {}",
                 store_key, e
             )
         })?;
@@ -584,14 +596,25 @@ impl Store for SimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let lock_hold_start = Instant::now();
 
-        let mut results: TimestampedBucketsMap = HashMap::new();
         let timestamp_range = (exact_start, exact_end);
-        let mut found_match = false;
-        let mut total_entries = 0;
 
-        // Check current epoch first (it is the newest).
-        if let Some(entries) = data.current_epoch.exact_query(timestamp_range) {
-            found_match = true;
+        // Opt 1: exact_query on the mutable epoch builds the lazy offset index if absent,
+        // then looks up the window in O(m). Returns an owned Vec — the &mut borrow ends here.
+        let entries_opt: Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> = data
+            .current_epoch
+            .exact_query(timestamp_range)
+            .or_else(|| {
+                data.sealed_epochs
+                    .values()
+                    .rev()
+                    .find_map(|epoch| epoch.exact_query(timestamp_range))
+            });
+
+        let mut results: TimestampedBucketsMap = HashMap::new();
+        let mut total_entries = 0;
+        let found_match = entries_opt.is_some();
+
+        if let Some(entries) = entries_opt {
             for (metric_id, agg) in entries {
                 let label = data.intern.resolve(metric_id).clone();
                 results
@@ -599,22 +622,6 @@ impl Store for SimpleMapStorePerKey {
                     .or_default()
                     .push((timestamp_range, agg));
                 total_entries += 1;
-            }
-        } else {
-            // Search sealed epochs newest-first; stop at first match.
-            for epoch in data.sealed_epochs.values().rev() {
-                if let Some(entries) = epoch.exact_query(timestamp_range) {
-                    found_match = true;
-                    for (metric_id, agg) in entries {
-                        let label = data.intern.resolve(metric_id).clone();
-                        results
-                            .entry(label)
-                            .or_default()
-                            .push((timestamp_range, agg));
-                        total_entries += 1;
-                    }
-                    break;
-                }
             }
         }
 
@@ -633,7 +640,7 @@ impl Store for SimpleMapStorePerKey {
             );
         }
 
-        // Update read count (lock inner Mutex briefly)
+        // Update read count — write lock already held, no inner Mutex needed
         if found_match {
             let mut read_counts = data.read_counts.lock().unwrap();
             *read_counts.entry(timestamp_range).or_insert(0) += 1;

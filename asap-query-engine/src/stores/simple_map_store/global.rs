@@ -56,6 +56,7 @@ impl PerKeyState {
 
     /// Seal the current epoch into a flat sorted Vec and open a fresh one.
     /// Returns the unique windows of the dropped epoch for read_counts cleanup.
+    /// Uses the old epoch's entry count as a capacity hint for the new epoch (Opt 6).
     fn maybe_rotate_epoch(&mut self) -> Vec<TimestampRange> {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
@@ -66,8 +67,9 @@ impl PerKeyState {
             return Vec::new();
         }
 
-        // Seal current epoch → flat sorted Vec, then open a fresh MutableEpoch.
-        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::new());
+        // Opt 6: pre-allocate the new epoch with the old epoch's entry count as a hint.
+        let hint = self.current_epoch.len();
+        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
         let sealed = old.seal();
         self.sealed_epochs.insert(self.current_epoch_id, sealed);
         self.current_epoch_id += 1;
@@ -131,6 +133,15 @@ impl SimpleMapStoreGlobal {
     }
 }
 
+/// Extracted config fields needed inside the locked batch loop.
+/// Pre-computed outside the lock to avoid per-item config lookups (Opt 4).
+struct BatchConfig {
+    metric: String,
+    is_delta: bool,
+    num_aggregates_to_retain: Option<u64>,
+    read_count_threshold: Option<u64>,
+}
+
 #[async_trait::async_trait]
 impl Store for SimpleMapStoreGlobal {
     fn insert_precomputed_output(
@@ -148,25 +159,14 @@ impl Store for SimpleMapStoreGlobal {
         let batch_insert_start_time = Instant::now();
         let batch_size = outputs.len();
 
-        // Measure lock acquisition time
-        #[cfg(feature = "lock_profiling")]
-        let lock_wait_start = Instant::now();
-
-        // Single lock for entire batch (like Python version)
-        let mut data = self.lock.lock().unwrap();
-
-        #[cfg(feature = "lock_profiling")]
-        {
-            let lock_wait_duration = lock_wait_start.elapsed();
-            info!(
-                "🔒 Insert lock wait time: {:.2}ms (batch_size: {})",
-                lock_wait_duration.as_secs_f64() * 1000.0,
-                batch_size
-            );
-        }
-
-        #[cfg(feature = "lock_profiling")]
-        let lock_hold_start = Instant::now();
+        // Opt 4: Pre-group by aggregation_id and resolve config BEFORE acquiring the lock.
+        // Config lookups (streaming_config HashMap access) are moved out of the hot locked
+        // loop: each unique aggregation_id pays one lookup regardless of batch size.
+        // Also pre-compute batch_min_ts per group to collapse N earliest-ts updates into 1.
+        let mut grouped: HashMap<
+            StoreKey,
+            (BatchConfig, u64, Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>),
+        > = HashMap::new();
 
         for (output, precompute) in outputs {
             let aggregation_config = self
@@ -182,106 +182,146 @@ impl Store for SimpleMapStoreGlobal {
             }
             let aggregation_config = aggregation_config.unwrap();
 
-            let metric = aggregation_config.metric.clone();
-            let aggregation_id = output.aggregation_id;
-            let store_key = aggregation_id;
+            let store_key = output.aggregation_id;
+            let ts = output.start_timestamp;
 
-            // Create table if it doesn't exist
-            data.metrics.insert(metric.clone());
+            let entry = grouped.entry(store_key).or_insert_with(|| {
+                (
+                    BatchConfig {
+                        metric: aggregation_config.metric.clone(),
+                        is_delta: aggregation_config.aggregation_type == "DeltaSetAggregator",
+                        num_aggregates_to_retain: aggregation_config.num_aggregates_to_retain,
+                        read_count_threshold: aggregation_config.read_count_threshold,
+                    },
+                    u64::MAX,
+                    Vec::new(),
+                )
+            });
+            // Track batch minimum timestamp for earliest-ts update (Opt 4)
+            entry.1 = entry.1.min(ts);
+            entry.2.push((output, precompute));
+        }
 
-            // Update earliest timestamp tracking
-            if let Some(current_earliest) = data
+        // Measure lock acquisition time
+        #[cfg(feature = "lock_profiling")]
+        let lock_wait_start = Instant::now();
+
+        let mut data = self.lock.lock().unwrap();
+
+        #[cfg(feature = "lock_profiling")]
+        {
+            let lock_wait_duration = lock_wait_start.elapsed();
+            info!(
+                "🔒 Insert lock wait time: {:.2}ms (batch_size: {})",
+                lock_wait_duration.as_secs_f64() * 1000.0,
+                batch_size
+            );
+        }
+
+        #[cfg(feature = "lock_profiling")]
+        let lock_hold_start = Instant::now();
+
+        for (store_key, (cfg, batch_min_ts, items)) in grouped {
+            // Opt 4: one metrics insert per group (was one per item)
+            data.metrics.insert(cfg.metric.clone());
+
+            // Opt 4: one earliest-ts update per group using the pre-computed batch minimum
+            let entry = data
                 .earliest_timestamp_per_aggregation_id
-                .get_mut(&aggregation_id)
-            {
-                if output.start_timestamp < *current_earliest {
-                    *current_earliest = output.start_timestamp;
-                }
-            } else {
-                data.earliest_timestamp_per_aggregation_id
-                    .insert(aggregation_id, output.start_timestamp);
-            }
-
-            let timestamp_range = (output.start_timestamp, output.end_timestamp);
-
-            // Get or create PerKeyState
-            let per_key = data
-                .stores
                 .entry(store_key)
-                .or_insert_with(PerKeyState::new);
+                .or_insert(batch_min_ts);
+            *entry = (*entry).min(batch_min_ts);
 
-            // Configure epoch capacity on first insert (Optimization 2)
-            if aggregation_config.aggregation_type != "DeltaSetAggregator" {
-                per_key.configure_epochs(aggregation_config.num_aggregates_to_retain);
-            }
+            let batch_len = items.len() as u64;
 
-            // Intern the label key (Optimization 1)
-            let metric_id = per_key.intern.intern(output.key);
+            // Ensure PerKeyState exists and configure epoch capacity once per group (Opt 4).
+            // configure_epochs is a no-op after the first call, so calling it once here
+            // avoids the is_none() check on every inner iteration.
+            {
+                let per_key = data
+                    .stores
+                    .entry(store_key)
+                    .or_insert_with(PerKeyState::new);
+                if !cfg.is_delta {
+                    per_key.configure_epochs(cfg.num_aggregates_to_retain);
+                }
+            } // per_key borrow ends here
 
-            // Insert into current (mutable) epoch.
-            per_key
-                .current_epoch
-                .insert(metric_id, timestamp_range, Arc::from(precompute));
+            for (output, precompute) in items {
+                // Get per_key fresh each iteration so the borrow of data.stores ends before
+                // the cleanup branches borrow data.read_counts (different field — NLL splits
+                // them, but only if the per_key borrow scope is confined to each iteration).
+                let per_key = data.stores.get_mut(&store_key).unwrap();
 
-            // Apply retention policy if configured (but exclude DeltaSetAggregator)
-            if aggregation_config.aggregation_type != "DeltaSetAggregator" {
-                match self.cleanup_policy {
-                    CleanupPolicy::CircularBuffer => {
-                        // Seal current epoch and drop oldest if needed.
-                        let dropped_windows = per_key.maybe_rotate_epoch();
-                        if !dropped_windows.is_empty() {
-                            if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
+                // Intern the label key (Optimization 1)
+                let timestamp_range = (output.start_timestamp, output.end_timestamp);
+                let metric_id = per_key.intern.intern(output.key);
+
+                // Insert into current (mutable) epoch.
+                per_key
+                    .current_epoch
+                    .insert(metric_id, timestamp_range, Arc::from(precompute));
+
+                // Apply retention policy if configured (but exclude DeltaSetAggregator).
+                // per_key is last used above; NLL ends its borrow so data.read_counts can
+                // be accessed in the cleanup branches below.
+                if !cfg.is_delta {
+                    match self.cleanup_policy {
+                        CleanupPolicy::CircularBuffer => {
+                            let dropped_windows =
+                                data.stores.get_mut(&store_key).unwrap().maybe_rotate_epoch();
+                            if !dropped_windows.is_empty() {
+                                if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
+                                    for window in &dropped_windows {
+                                        rc_map.remove(window);
+                                    }
+                                }
                                 for window in &dropped_windows {
-                                    rc_map.remove(window);
-                                }
-                            }
-                            for window in &dropped_windows {
-                                debug!(
-                                    "Removed old aggregate for {} aggregation_id {} window {}-{} (epoch rotation)",
-                                    metric, aggregation_id, window.0, window.1
-                                );
-                            }
-                        }
-                    }
-                    CleanupPolicy::ReadBased => {
-                        if let Some(threshold) = aggregation_config.read_count_threshold {
-                            let rc_map = data.read_counts.entry(store_key).or_default();
-                            let windows_to_remove: Vec<TimestampRange> = rc_map
-                                .iter()
-                                .filter(|(_, &count)| count >= threshold)
-                                .map(|(range, _)| *range)
-                                .collect();
-
-                            if !windows_to_remove.is_empty() {
-                                for window in &windows_to_remove {
                                     debug!(
-                                        "Removed aggregate for {} aggregation_id {} window {}-{} (read_count >= threshold: {})",
-                                        metric, aggregation_id, window.0, window.1, threshold
+                                        "Removed old aggregate for {} aggregation_id {} window {}-{} (epoch rotation)",
+                                        cfg.metric, store_key, window.0, window.1
                                     );
-                                    rc_map.remove(window);
                                 }
-
-                                let per_key = data.stores.get_mut(&store_key).unwrap();
-                                per_key.current_epoch.remove_windows(&windows_to_remove);
-                                per_key.sealed_epochs.retain(|_, epoch| {
-                                    epoch.remove_windows(&windows_to_remove);
-                                    !epoch.is_empty()
-                                });
                             }
                         }
-                    }
-                    CleanupPolicy::NoCleanup => {
-                        // Do nothing
+                        CleanupPolicy::ReadBased => {
+                            if let Some(threshold) = cfg.read_count_threshold {
+                                let rc_map = data.read_counts.entry(store_key).or_default();
+                                let windows_to_remove: Vec<TimestampRange> = rc_map
+                                    .iter()
+                                    .filter(|(_, &count)| count >= threshold)
+                                    .map(|(range, _)| *range)
+                                    .collect();
+
+                                if !windows_to_remove.is_empty() {
+                                    for window in &windows_to_remove {
+                                        debug!(
+                                            "Removed aggregate for {} aggregation_id {} window {}-{} (read_count >= threshold: {})",
+                                            cfg.metric, store_key, window.0, window.1, threshold
+                                        );
+                                        rc_map.remove(window);
+                                    }
+
+                                    let per_key = data.stores.get_mut(&store_key).unwrap();
+                                    per_key.current_epoch.remove_windows(&windows_to_remove);
+                                    per_key.sealed_epochs.retain(|_, epoch| {
+                                        epoch.remove_windows(&windows_to_remove);
+                                        !epoch.is_empty()
+                                    });
+                                }
+                            }
+                        }
+                        CleanupPolicy::NoCleanup => {}
                     }
                 }
             }
 
-            // Update insertion count
-            let current_count = data.items_inserted.entry(metric.clone()).or_insert(0);
-            *current_count += 1;
-
-            if (*current_count).is_multiple_of(1000) {
-                debug!("Inserted {} items into {}", current_count, metric);
+            // Opt 4: one count update per group (was one per item)
+            let current_count = data.items_inserted.entry(cfg.metric.clone()).or_insert(0);
+            let old_count = *current_count;
+            *current_count += batch_len;
+            if *current_count / 1000 > old_count / 1000 {
+                debug!("Inserted {} items into {}", current_count, cfg.metric);
             }
         }
 
@@ -294,8 +334,6 @@ impl Store for SimpleMapStoreGlobal {
                 batch_size
             );
         }
-
-        // Lock will be dropped here when `data` goes out of scope
 
         let batch_insert_duration = batch_insert_start_time.elapsed();
         debug!(
@@ -435,8 +473,6 @@ impl Store for SimpleMapStoreGlobal {
             );
         }
 
-        // Lock will be dropped here when `data` goes out of scope
-
         Ok(results)
     }
 
@@ -478,47 +514,47 @@ impl Store for SimpleMapStoreGlobal {
         #[cfg(feature = "lock_profiling")]
         let lock_hold_start = Instant::now();
 
-        let mut results: TimestampedBucketsMap = HashMap::new();
         let timestamp_range = (exact_start, exact_end);
-        let mut found_match = false;
-        let mut total_entries = 0;
 
-        {
-            let per_key = match data.stores.get(&store_key) {
+        // Opt 1: exact_query now takes &mut self (lazy index build).
+        // Call it inside a scoped block so the &mut borrow on data.stores ends before we
+        // re-borrow data.stores immutably to resolve MetricIDs → labels.
+        let entries_opt: Option<Vec<_>> = {
+            let per_key = match data.stores.get_mut(&store_key) {
                 Some(pk) => pk,
                 None => {
                     debug!("Metric {} not found in store for exact query", metric);
                     return Ok(HashMap::new());
                 }
             };
+            // Check current epoch first (newest). exact_query returns an owned Vec so the
+            // &mut borrow of per_key ends immediately — no lifetime overlap with the
+            // sealed_epochs scan below.
+            per_key
+                .current_epoch
+                .exact_query(timestamp_range)
+                .or_else(|| {
+                    per_key
+                        .sealed_epochs
+                        .values()
+                        .rev()
+                        .find_map(|epoch| epoch.exact_query(timestamp_range))
+                })
+        }; // &mut borrow of data.stores ends here
 
-            // Check current epoch first (it is the newest).
-            if let Some(entries) = per_key.current_epoch.exact_query(timestamp_range) {
-                found_match = true;
-                for (metric_id, agg) in entries {
-                    let label = per_key.intern.resolve(metric_id).clone();
-                    results
-                        .entry(label)
-                        .or_default()
-                        .push((timestamp_range, agg));
-                    total_entries += 1;
-                }
-            } else {
-                // Search sealed epochs newest-first; stop at first match.
-                for epoch in per_key.sealed_epochs.values().rev() {
-                    if let Some(entries) = epoch.exact_query(timestamp_range) {
-                        found_match = true;
-                        for (metric_id, agg) in entries {
-                            let label = per_key.intern.resolve(metric_id).clone();
-                            results
-                                .entry(label)
-                                .or_default()
-                                .push((timestamp_range, agg));
-                            total_entries += 1;
-                        }
-                        break;
-                    }
-                }
+        let mut results: TimestampedBucketsMap = HashMap::new();
+        let mut total_entries = 0;
+        let found_match = entries_opt.is_some();
+
+        if let Some(entries) = entries_opt {
+            let per_key = data.stores.get(&store_key).unwrap();
+            for (metric_id, agg) in entries {
+                let label = per_key.intern.resolve(metric_id).clone();
+                results
+                    .entry(label)
+                    .or_default()
+                    .push((timestamp_range, agg));
+                total_entries += 1;
             }
         }
 
@@ -561,8 +597,6 @@ impl Store for SimpleMapStoreGlobal {
             query_duration.as_secs_f64() * 1000.0,
             !results.is_empty()
         );
-
-        // Lock will be dropped here when `data` goes out of scope
 
         Ok(results)
     }
