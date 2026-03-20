@@ -464,6 +464,18 @@ def create_pipeline(
                     template_source, udf_template.environment
                 )
 
+                # Per-UDF impl mode defaults (aligned with sketch-core config)
+                UDF_IMPL_DEFAULTS = {
+                    "countminsketch_count": "Sketchlib",
+                    "countminsketch_sum": "Sketchlib",
+                    "countminsketchwithheap_topk": "Sketchlib",
+                    "datasketcheskll_": "Sketchlib",
+                    "hydrakll_": "Sketchlib",
+                }
+                params.setdefault(
+                    "impl_mode", UDF_IMPL_DEFAULTS.get(udf_name, "Sketchlib")
+                )
+
                 # Handle config key mapping (K -> k for KLL)
                 if "K" in params and "k" in required_params:
                     params["k"] = params["K"]

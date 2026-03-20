@@ -1,4 +1,4 @@
-// rank_fraction used for KLL benchmarks (added in later PR)
+// Fidelity benchmarks comparing legacy vs sketchlib implementations across sketch types.
 #![allow(dead_code)]
 
 use clap::Parser;
@@ -145,11 +145,11 @@ fn run_countmin_once(seed: u64, p: &CmsParams) -> CmsResult {
 
 #[derive(Parser)]
 struct Args {
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMS_IMPL)]
     cms_impl: ImplMode,
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_KLL_IMPL)]
     kll_impl: ImplMode,
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMWH_IMPL)]
     cmwh_impl: ImplMode,
 }
 
