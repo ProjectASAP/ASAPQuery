@@ -172,24 +172,6 @@ fn label(strategy: LockStrategy) -> &'static str {
     }
 }
 
-/// Assert that two accumulators produce identical JSON after a store roundtrip.
-/// Uses `serialize_to_json()` which is available on all `AggregateCore` impls
-/// via the `SerializableToSink` supertrait.
-fn assert_clone_fidelity(
-    original: &dyn AggregateCore,
-    from_store: &dyn AggregateCore,
-    type_name: &str,
-    strategy: LockStrategy,
-) {
-    let orig_json = original.serialize_to_json();
-    let stored_json = from_store.serialize_to_json();
-    assert_eq!(
-        orig_json,
-        stored_json,
-        "[{}] {type_name}: clone_boxed_core() must produce identical serialization",
-        label(strategy)
-    );
-}
 
 // ── contract suite ────────────────────────────────────────────────────────────
 
