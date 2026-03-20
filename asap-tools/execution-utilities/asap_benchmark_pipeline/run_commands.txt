@@ -1,0 +1,77 @@
+# baseline mode
+
+cd ~/asap-internal/Utilities/installation/kafka
+./run.sh kafka/
+
+cd ~/asap-internal/Utilities/installation/clickhouse
+./run.sh clickhouse/
+
+curl -s "http://localhost:8123/" -d "TRUNCATE TABLE h2o_groupby"
+
+python3 run_benchmark.py --output asap_results.csv --load-data --mode baseline
+
+# asap mode
+
+Setup
+------
+
+1. Edit adapter config in ~/asap-internal/QueryEngineRust/src/main.rs to:
+
+let adapter_config = AdapterConfig::clickhouse_sql(
+    "http://localhost:8123".to_string(), // ClickHouse server URL
+    "default".to_string(),               // Database name
+    true,                                // Always forward (fallback for every query)
+);
+
+2. Compile the query engine:
+
+cd ~/asap-internal/QueryEngineRust
+cargo build --release
+
+Run
+------
+
+1. Launch Arroyo:
+
+cd ~/asap-internal/arroyo
+./target/release/arroyo --config ~/asap-internal/ArroyoSketch/config.yaml cluster \
+    > /tmp/arroyo.log 2>&1 &
+
+2. Submit pipeline:
+
+cd ~/asap-internal/ArroyoSketch
+python3 run_arroyosketch.py \
+    --source_type kafka \
+    --kafka_input_format json \
+    --input_kafka_topic h2o_groupby \
+    --output_format json \
+    --pipeline_name asap_h2o_pipeline \
+    --config_file_path ~/asap-internal/ExecutionUtilities/asap_query_latency/streaming_config.yaml \
+    --output_kafka_topic sketch_topic \
+    --output_dir ./outputs \
+    --parallelism 1 \
+    --query_language sql
+
+3. Wait until pipeline is running:
+
+(Optional) Check output on localhost:8000
+
+4. Load data through Kafka so Arroyo can build sketches:
+
+python3 run_benchmark.py --load-data --mode asap
+
+5. Start QueryEngine:
+
+cd ~/asap-internal/QueryEngineRust
+nohup ./target/release/query_engine_rust \
+    --kafka-topic sketch_topic --input-format json \
+    --config ~/asap-internal/ExecutionUtilities/asap_query_latency/inference_config.yaml \
+    --streaming-config ~/asap-internal/ExecutionUtilities/asap_query_latency/streaming_config.yaml \
+    --http-port 8088 --delete-existing-db --log-level info \
+    --output-dir ./output --streaming-engine arroyo \
+    --query-language SQL --lock-strategy per-key \
+    --prometheus-scrape-interval 1 > /tmp/query_engine.log 2>&1 &
+
+6. Run ASAP mode:
+
+python3 run_benchmark.py --mode asap --load-data --output asap_results_run1.csv
