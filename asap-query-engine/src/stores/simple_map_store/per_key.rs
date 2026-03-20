@@ -60,35 +60,63 @@ impl StoreKeyData {
         }
     }
 
-    /// Seal the current epoch into a flat sorted Vec and open a fresh one.
-    /// Drops the oldest sealed epoch (O(1)) if total exceeds max_epochs.
-    /// Uses the old epoch's entry count as a capacity hint for the new epoch (Opt 6).
+    /// Seal the current epoch when full, then evict the minimum number of oldest windows
+    /// to keep total distinct windows ≤ `epoch_capacity * max_epochs`.
+    ///
+    /// Matches legacy per-window eviction semantics: only the exact number of windows
+    /// needed to reach the retention limit are removed, which may be fewer than a full epoch.
     fn maybe_rotate_epoch(&mut self) {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
             _ => return, // unlimited
         };
+        let retention_limit = capacity * self.max_epochs;
 
-        if self.current_epoch.window_count() < capacity {
-            return;
+        // Step 1: seal current epoch if it has hit the window capacity threshold.
+        if self.current_epoch.window_count() >= capacity {
+            let hint = self.current_epoch.len();
+            let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
+            self.sealed_epochs.insert(self.current_epoch_id, old.seal());
+            self.current_epoch_id += 1;
         }
 
-        // Opt 6: pre-allocate new epoch with the old epoch's entry count as a hint.
-        let hint = self.current_epoch.len();
-        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
-        let sealed = old.seal();
-        self.sealed_epochs.insert(self.current_epoch_id, sealed);
-        self.current_epoch_id += 1;
+        // Step 2: evict oldest windows until total distinct windows ≤ retention_limit.
+        // Uses O(E) distinct_window_count() calls (E ≤ max_epochs, a small constant).
+        let total: usize = self.current_epoch.window_count()
+            + self
+                .sealed_epochs
+                .values()
+                .map(|e| e.distinct_window_count())
+                .sum::<usize>();
 
-        // Drop oldest sealed epoch if total epochs exceed the limit.
-        if 1 + self.sealed_epochs.len() > self.max_epochs {
-            if let Some((&oldest_id, _)) = self.sealed_epochs.iter().next() {
-                if let Some(oldest) = self.sealed_epochs.remove(&oldest_id) {
-                    let read_counts = self.read_counts.get_mut().unwrap();
-                    for window in oldest.unique_windows() {
-                        read_counts.remove(&window);
-                    }
+        if total <= retention_limit {
+            return;
+        }
+        let mut over = total - retention_limit;
+
+        while over > 0 {
+            let oldest_id = match self.sealed_epochs.keys().next().copied() {
+                Some(id) => id,
+                None => break,
+            };
+            let oldest_windows = self.sealed_epochs[&oldest_id].unique_windows();
+            let n_evict = over.min(oldest_windows.len());
+            let to_remove = oldest_windows[..n_evict].to_vec();
+            over -= n_evict;
+
+            {
+                let read_counts = self.read_counts.get_mut().unwrap();
+                for w in &to_remove {
+                    read_counts.remove(w);
                 }
+            }
+            if n_evict == oldest_windows.len() {
+                self.sealed_epochs.remove(&oldest_id);
+            } else {
+                self.sealed_epochs
+                    .get_mut(&oldest_id)
+                    .unwrap()
+                    .remove_windows(&to_remove);
             }
         }
     }

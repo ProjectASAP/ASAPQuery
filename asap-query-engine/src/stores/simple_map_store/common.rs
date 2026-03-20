@@ -172,10 +172,17 @@ impl MutableEpoch {
             .map(|((tr, mid), agg)| (tr, mid, agg))
             .collect();
         entries.sort_unstable_by_key(|(tr, metric_id, _)| (*tr, *metric_id));
+        // Count distinct windows in the sorted entries (consecutive dupes are adjacent).
+        let distinct_window_count = entries
+            .windows(2)
+            .filter(|w| w[0].0 != w[1].0)
+            .count()
+            + if entries.is_empty() { 0 } else { 1 };
         SealedEpoch {
             entries,
             min_start,
             max_end,
+            distinct_window_count,
         }
     }
 
@@ -277,11 +284,18 @@ pub struct SealedEpoch {
     /// Precomputed for O(1) epoch-skip check.
     pub min_start: Option<u64>,
     pub max_end: Option<u64>,
+    /// Number of distinct time windows in this epoch — O(1) read.
+    distinct_window_count: usize,
 }
 
 impl SealedEpoch {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// O(1) count of distinct time windows in this epoch.
+    pub fn distinct_window_count(&self) -> usize {
+        self.distinct_window_count
     }
 
     /// Returns `(min_start, max_end)`, or `None` if empty.
@@ -335,12 +349,23 @@ impl SealedEpoch {
         }
     }
 
-    /// Remove specific windows (ReadBased cleanup).  Rebuilds Vec in one pass.
+    /// Remove specific windows (ReadBased / CircularBuffer cleanup).  Rebuilds Vec in one pass.
+    /// Also updates `distinct_window_count`.
     pub fn remove_windows(&mut self, windows: &[TimestampRange]) {
         let window_set: HashSet<TimestampRange> = windows.iter().copied().collect();
         self.entries.retain(|(tr, _, _)| !window_set.contains(tr));
         self.min_start = self.entries.iter().map(|(tr, _, _)| tr.0).min();
         self.max_end = self.entries.iter().map(|(tr, _, _)| tr.1).max();
+        // Recount distinct windows (entries remain sorted; dedup in one pass).
+        let mut count = 0usize;
+        let mut last: Option<TimestampRange> = None;
+        for (tr, _, _) in &self.entries {
+            if last != Some(*tr) {
+                count += 1;
+                last = Some(*tr);
+            }
+        }
+        self.distinct_window_count = count;
     }
 
     /// Deduplicated windows (entries sorted, so consecutive dupes are adjacent).
