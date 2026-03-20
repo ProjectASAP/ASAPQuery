@@ -1,7 +1,3 @@
-// Configure sketch-core implementations during tests.
-// Use sketchlib-tests feature to choose backend: without it = Legacy, with it = Sketchlib.
-// A single `cargo test -p query_engine_rust` runs both: lib tests use Legacy, then
-// tests/test_both_backends.rs spawns the sketchlib run.
 #[cfg(test)]
 #[ctor::ctor]
 fn init_sketch_backend_for_tests() {

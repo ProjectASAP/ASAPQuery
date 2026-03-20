@@ -39,7 +39,6 @@ flate2 = "1.0"
 async-trait = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
 dsrs = { git = "https://github.com/ProjectASAP/datasketches-rs" }
-sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust" }
 base64 = "0.21"
 hex = "0.4"
 sqlparser = "0.59.0"
@@ -58,6 +57,15 @@ zstd = "0.13"
 reqwest = { version = "0.11", features = ["json"] }
 tracing-appender = "0.2"
 
+[dev-dependencies]
+ctor = "0.2"
+tempfile = "3.20.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "simple_store_bench"
+harness = false
+
 [features]
 #default = ["lock_profiling", "extra_debugging"]
 default = []
@@ -66,7 +74,3 @@ lock_profiling = []
 # Enable extra debugging output
 extra_debugging = []
 sketchlib-tests = []
-
-[dev-dependencies]
-ctor = "0.2"
-tempfile = "3.20.0"

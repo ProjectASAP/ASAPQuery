@@ -137,7 +137,7 @@ services:
       timeout: 5s
       retries: 5
     depends_on:
-      asap-sketch-ingest:
+      asap-summary-ingest:
         condition: service_completed_successfully
     restart: no
 
@@ -169,10 +169,10 @@ services:
   # INIT CONTAINERS
   #############################################################################
 
-  asap-planner:
-    image: ghcr.io/projectasap/asap-controller:v0.1.0
-    container_name: asap-planner
-    hostname: asap-planner
+  asap-planner-rs:
+    image: ghcr.io/projectasap/asap-planner-rs:v0.2.0
+    container_name: asap-planner-rs
+    hostname: asap-planner-rs
     networks:
       - asap-network
     command:
@@ -187,10 +187,10 @@ services:
       - asap-planner-output:/asap-planner-output
     restart: "no"
 
-  asap-sketch-ingest:
-    image: ghcr.io/projectasap/asap-arroyosketch:v0.1.0
-    container_name: asap-sketch-ingest
-    hostname: asap-sketch-ingest
+  asap-summary-ingest:
+    image: ghcr.io/projectasap/asap-summary-ingest:v0.2.0
+    container_name: asap-summary-ingest
+    hostname: asap-summary-ingest
     networks:
       - asap-network
     command:
@@ -203,14 +203,14 @@ services:
       - "--output_kafka_topic=flink_output"
       - "--output_format=json"
       - "--pipeline_name=asap-demo"
-      - "--output_dir=/asap-sketch-ingest-output"
+      - "--output_dir=/asap-summary-ingest-output"
       - "--arroyo_url=http://arroyo:5115/api/v1"
       - "--bootstrap_servers=kafka:9092"
     volumes:
       - asap-planner-output:/asap-planner-output:ro
-      - ./output/asap-sketch-ingest:/asap-sketch-ingest-output
+      - ./output/asap-summary-ingest:/asap-summary-ingest-output
     depends_on:
-      asap-planner:
+      asap-planner-rs:
         condition: service_completed_successfully
       arroyo:
         condition: service_healthy
@@ -221,7 +221,7 @@ services:
   #############################################################################
 
   queryengine:
-    image: ghcr.io/projectasap/asap-queryengine:v0.1.0
+    image: ghcr.io/projectasap/asap-query-engine:v0.2.0
     container_name: asap-queryengine
     hostname: queryengine
     networks:
@@ -251,7 +251,7 @@ services:
       - "--decompress-json"
       - "--forward-unsupported-queries"
     depends_on:
-      asap-sketch-ingest:
+      asap-summary-ingest:
         condition: service_completed_successfully
       kafka:
         condition: service_healthy
@@ -269,7 +269,7 @@ services:
 
   # Constant values - baseline for comparison
   fake-exporter-constant:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.1.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
     container_name: asap-fake-exporter-constant
     hostname: fake-exporter-constant
     networks:
@@ -291,7 +291,7 @@ services:
 
   # Linear increasing - tests trend preservation
   fake-exporter-linear-up:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.1.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
     container_name: asap-fake-exporter-linear-up
     hostname: fake-exporter-linear-up
     networks:
@@ -313,7 +313,7 @@ services:
 
   # Linear decreasing - tests trend preservation
   fake-exporter-linear-down:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.1.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
     container_name: asap-fake-exporter-linear-down
     hostname: fake-exporter-linear-down
     networks:
@@ -335,7 +335,7 @@ services:
 
   # Sine wave - tests periodicity preservation
   fake-exporter-sine:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.1.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
     container_name: asap-fake-exporter-sine
     hostname: fake-exporter-sine
     networks:
@@ -358,7 +358,7 @@ services:
 
   # Sine with noise - tests signal extraction / smoothing
   fake-exporter-sine-noise:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.1.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
     container_name: asap-fake-exporter-sine-noise
     hostname: fake-exporter-sine-noise
     networks:
@@ -380,7 +380,7 @@ services:
 
   # Step function - tests edge preservation
   fake-exporter-step:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.1.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
     container_name: asap-fake-exporter-step
     hostname: fake-exporter-step
     networks:
@@ -402,7 +402,7 @@ services:
 
   # Exponential growth - tests non-linear patterns
   fake-exporter-exp-up:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.1.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
     container_name: asap-fake-exporter-exp-up
     hostname: fake-exporter-exp-up
     networks:
