@@ -173,10 +173,7 @@ impl MutableEpoch {
             .collect();
         entries.sort_unstable_by_key(|(tr, metric_id, _)| (*tr, *metric_id));
         // Count distinct windows in the sorted entries (consecutive dupes are adjacent).
-        let distinct_window_count = entries
-            .windows(2)
-            .filter(|w| w[0].0 != w[1].0)
-            .count()
+        let distinct_window_count = entries.windows(2).filter(|w| w[0].0 != w[1].0).count()
             + if entries.is_empty() { 0 } else { 1 };
         SealedEpoch {
             entries,

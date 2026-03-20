@@ -628,10 +628,8 @@ impl Store for SimpleMapStorePerKey {
 
         // Opt 1: exact_query on the mutable epoch builds the lazy offset index if absent,
         // then looks up the window in O(m). Returns an owned Vec — the &mut borrow ends here.
-        let entries_opt: Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> = data
-            .current_epoch
-            .exact_query(timestamp_range)
-            .or_else(|| {
+        let entries_opt: Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> =
+            data.current_epoch.exact_query(timestamp_range).or_else(|| {
                 data.sealed_epochs
                     .values()
                     .rev()

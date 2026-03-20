@@ -188,7 +188,11 @@ impl Store for SimpleMapStoreGlobal {
         // Also pre-compute batch_min_ts per group to collapse N earliest-ts updates into 1.
         let mut grouped: HashMap<
             StoreKey,
-            (BatchConfig, u64, Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>),
+            (
+                BatchConfig,
+                u64,
+                Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
+            ),
         > = HashMap::new();
 
         for (output, precompute) in outputs {
@@ -291,8 +295,11 @@ impl Store for SimpleMapStoreGlobal {
                 if !cfg.is_delta {
                     match self.cleanup_policy {
                         CleanupPolicy::CircularBuffer => {
-                            let dropped_windows =
-                                data.stores.get_mut(&store_key).unwrap().maybe_rotate_epoch();
+                            let dropped_windows = data
+                                .stores
+                                .get_mut(&store_key)
+                                .unwrap()
+                                .maybe_rotate_epoch();
                             if !dropped_windows.is_empty() {
                                 if let Some(rc_map) = data.read_counts.get_mut(&store_key) {
                                     for window in &dropped_windows {
