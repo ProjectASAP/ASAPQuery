@@ -1,5 +1,3 @@
-// Force legacy sketch implementations during tests so that tests that mutate the
-// matrix directly or rely on legacy behavior pass.
 #[cfg(test)]
 #[ctor::ctor]
 fn init_sketch_legacy_for_tests() {

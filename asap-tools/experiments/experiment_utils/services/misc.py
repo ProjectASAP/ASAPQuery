@@ -236,7 +236,7 @@ class ControllerService(BaseService):
         controller_remote_output_dir: str,
         punting: bool,
     ) -> None:
-        cmd = "python3 main_controller.py --input_config {} --prometheus_scrape_interval {} --output_dir {} --streaming_engine {}".format(
+        cmd = "./target/release/asap-planner --input_config {} --prometheus_scrape_interval {} --output_dir {} --streaming_engine {}".format(
             controller_input_file,
             prometheus_scrape_interval,
             controller_remote_output_dir,
@@ -244,7 +244,7 @@ class ControllerService(BaseService):
         )
         if punting:
             cmd += " --enable-punting"
-        cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-planner")
+        cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-planner-rs")
         self.provider.execute_command(
             node_idx=self.node_offset,
             cmd=cmd,
@@ -263,7 +263,7 @@ class ControllerService(BaseService):
         punting: bool,
     ):
         controller_dir = os.path.join(
-            self.provider.get_home_dir(), "code", "asap-planner"
+            self.provider.get_home_dir(), "code", "asap-planner-rs"
         )
 
         template_path = os.path.join(controller_dir, "docker-compose.yml.j2")

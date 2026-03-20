@@ -20,7 +20,7 @@ static KLL_MODE: OnceLock<ImplMode> = OnceLock::new();
 
 /// Returns true if KLL operations should use sketchlib-rust internally.
 pub fn use_sketchlib_for_kll() -> bool {
-    *KLL_MODE.get_or_init(|| ImplMode::Sketchlib) == ImplMode::Sketchlib
+    *KLL_MODE.get_or_init(|| ImplMode::Legacy) == ImplMode::Sketchlib
 }
 
 static COUNTMIN_WITH_HEAP_MODE: OnceLock<ImplMode> = OnceLock::new();
@@ -58,18 +58,14 @@ pub fn parse_mode(var: Result<String, std::env::VarError>) -> ImplMode {
             "legacy" => ImplMode::Legacy,
             "sketchlib" => ImplMode::Sketchlib,
             other => {
-                eprintln!(
-                    "sketch-core: unrecognised IMPL value {other:?}, defaulting to Sketchlib"
-                );
-                ImplMode::Sketchlib
+                eprintln!("sketch-core: unrecognised IMPL value {other:?}, defaulting to Legacy");
+                ImplMode::Legacy
             }
         },
-        Err(std::env::VarError::NotPresent) => ImplMode::Sketchlib,
+        Err(std::env::VarError::NotPresent) => ImplMode::Legacy,
         Err(std::env::VarError::NotUnicode(v)) => {
-            eprintln!(
-                "sketch-core: IMPL env var has invalid UTF-8 ({v:?}), defaulting to Sketchlib"
-            );
-            ImplMode::Sketchlib
+            eprintln!("sketch-core: IMPL env var has invalid UTF-8 ({v:?}), defaulting to Legacy");
+            ImplMode::Legacy
         }
     }
 }

@@ -115,7 +115,7 @@ struct Args {
     sketch_cms_impl: ImplMode,
 
     /// Backend implementation for KLL Sketch (legacy | sketchlib)
-    #[arg(long, value_enum, default_value = "sketchlib")]
+    #[arg(long, value_enum, default_value = "legacy")]
     sketch_kll_impl: ImplMode,
 
     /// Backend implementation for Count-Min-With-Heap (legacy | sketchlib)
