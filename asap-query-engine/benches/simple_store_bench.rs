@@ -42,8 +42,8 @@ fn make_agg_config(agg_id: u64) -> AggregationConfig {
         KeyByLabelNames::empty(),
         KeyByLabelNames::empty(),
         "".to_string(),
-        60,              // tumbling_window_size (seconds)
-        "".to_string(),  // spatial_filter
+        60,             // tumbling_window_size (seconds)
+        "".to_string(), // spatial_filter
         "cpu_usage".to_string(),
         None, // num_aggregates_to_retain
         None, // read_count_threshold
@@ -110,24 +110,20 @@ fn bench_insert_batch_size(c: &mut Criterion) {
             ("per_key", LockStrategy::PerKey),
             ("global", LockStrategy::Global),
         ] {
-            group.bench_with_input(
-                BenchmarkId::new(label, batch_size),
-                &batch_size,
-                |b, &n| {
-                    b.iter_batched(
-                        || {
-                            (
-                                make_store(streaming_config.clone(), strategy),
-                                make_batch(n, 1, 1_000_000, 60_000),
-                            )
-                        },
-                        |(store, batch)| {
-                            store.insert_precomputed_output_batch(batch).unwrap();
-                        },
-                        criterion::BatchSize::SmallInput,
-                    );
-                },
-            );
+            group.bench_with_input(BenchmarkId::new(label, batch_size), &batch_size, |b, &n| {
+                b.iter_batched(
+                    || {
+                        (
+                            make_store(streaming_config.clone(), strategy),
+                            make_batch(n, 1, 1_000_000, 60_000),
+                        )
+                    },
+                    |(store, batch)| {
+                        store.insert_precomputed_output_batch(batch).unwrap();
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            });
         }
     }
     group.finish();
@@ -153,29 +149,25 @@ fn bench_insert_num_agg_ids(c: &mut Criterion) {
         ] {
             let streaming_config = make_streaming_config(num_ids as u64);
 
-            group.bench_with_input(
-                BenchmarkId::new(label, num_ids),
-                &num_ids,
-                |b, &n| {
-                    b.iter_batched(
-                        || {
-                            let store = make_store(streaming_config.clone(), strategy);
-                            // Spread TOTAL_ITEMS evenly across n aggregation IDs.
-                            let per_id = TOTAL_ITEMS / n;
-                            let mut batch = Vec::with_capacity(TOTAL_ITEMS);
-                            for agg_id in 1..=n as u64 {
-                                let mut sub = make_batch(per_id, agg_id, 1_000_000, 60_000);
-                                batch.append(&mut sub);
-                            }
-                            (store, batch)
-                        },
-                        |(store, batch)| {
-                            store.insert_precomputed_output_batch(batch).unwrap();
-                        },
-                        criterion::BatchSize::SmallInput,
-                    );
-                },
-            );
+            group.bench_with_input(BenchmarkId::new(label, num_ids), &num_ids, |b, &n| {
+                b.iter_batched(
+                    || {
+                        let store = make_store(streaming_config.clone(), strategy);
+                        // Spread TOTAL_ITEMS evenly across n aggregation IDs.
+                        let per_id = TOTAL_ITEMS / n;
+                        let mut batch = Vec::with_capacity(TOTAL_ITEMS);
+                        for agg_id in 1..=n as u64 {
+                            let mut sub = make_batch(per_id, agg_id, 1_000_000, 60_000);
+                            batch.append(&mut sub);
+                        }
+                        (store, batch)
+                    },
+                    |(store, batch)| {
+                        store.insert_precomputed_output_batch(batch).unwrap();
+                    },
+                    criterion::BatchSize::SmallInput,
+                );
+            });
         }
     }
     group.finish();
@@ -246,12 +238,7 @@ fn bench_query_exact_store_size(c: &mut Criterion) {
                 |b, _| {
                     b.iter(|| {
                         store
-                            .query_precomputed_output_exact(
-                                "cpu_usage",
-                                1,
-                                exact_start,
-                                exact_end,
-                            )
+                            .query_precomputed_output_exact("cpu_usage", 1, exact_start, exact_end)
                             .unwrap()
                     });
                 },
@@ -286,13 +273,9 @@ fn bench_store_analyze(c: &mut Criterion) {
                 store.insert_precomputed_output(output, acc).unwrap();
             }
 
-            group.bench_with_input(
-                BenchmarkId::new(label, num_ids),
-                &num_ids,
-                |b, _| {
-                    b.iter(|| store.get_earliest_timestamp_per_aggregation_id().unwrap());
-                },
-            );
+            group.bench_with_input(BenchmarkId::new(label, num_ids), &num_ids, |b, _| {
+                b.iter(|| store.get_earliest_timestamp_per_aggregation_id().unwrap());
+            });
         }
     }
     group.finish();
