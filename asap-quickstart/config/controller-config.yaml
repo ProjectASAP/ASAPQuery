@@ -1,4 +1,4 @@
-# SketchDB Configuration for Pattern-based Demo
+# ASAP Configuration for Pattern-based Demo
 # Uses deterministic time-based patterns for visual comparison
 
 query_groups:

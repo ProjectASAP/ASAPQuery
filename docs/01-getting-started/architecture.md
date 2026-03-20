@@ -186,7 +186,7 @@ graph LR
 | **asap-query-engine** | Answers PromQL queries using sketches | Rust | `asap-query-engine/` |
 | **Arroyo** | Stream processing for building sketches | Rust (forked) | [github.com/ProjectASAP/arroyo](https://github.com/ProjectASAP/arroyo) |
 | **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | `asap-sketch-ingest/` |
-| **asap-planner** | Auto-determines sketch parameters | Python | `asap-planner/` |
+| **asap-planner-rs** | Auto-determines sketch parameters | Rust | `asap-planner-rs/` |
 | **Kafka** | Message broker for sketch distribution | Apache Kafka | (external) |
 | **Prometheus** | Time-series database (existing) | Go | (external) |
 | **Exporters** | Generate synthetic metrics for testing | Rust/Python | `asap-tools/data-sources/prometheus-exporters/` |
@@ -228,7 +228,7 @@ graph LR
   - Serde for serialization
   - DataSketches (dsrs) for sketch algorithms
 
-- **Python** - asap-planner, asap-sketch-ingest, experiment framework
+- **Python** - asap-sketch-ingest, experiment framework
   - PyYAML for config parsing
   - Jinja2 for SQL templates
   - Requests for HTTP clients
@@ -264,7 +264,7 @@ ASAPQuery/
 │   ├── templates/            # Jinja2 SQL templates
 │   └── utils/                # Arroyo API client
 │
-├── asap-planner/             # Auto-configuration service
+├── asap-planner-rs/          # Auto-configuration service
 │   ├── main_controller.py    # Entry point
 │   ├── classes/              # Config data structures
 │   └── utils/                # Decision logic

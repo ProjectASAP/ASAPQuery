@@ -94,7 +94,7 @@ Kafka has three places where message size limits need to be configured (see [PR 
 2. **Kafka topic configuration** (`asap-tools/experiments/experiment_utils/services/kafka.py`):
    - Update `max.message.bytes` in the topic creation command
 
-3. **Arroyo connection profile** (`asap-sketch-ingest/templates/json/connection_profile.j2`):
+3. **Arroyo connection profile** (`asap-summary-ingest/templates/json/connection_profile.j2`):
    - Add connection properties with `message.max.bytes` and `batch.size`
 
 **Example values:**
