@@ -380,16 +380,6 @@ def delete_connection_table(args, table_name):
         )
 
 
-# Map UDF names to the sketch impl CLI arg. UDFs use same impl mode as QueryEngine.
-_UDF_IMPL_MODE_ARG = {
-    "countminsketch_count": "sketch_cms_impl",
-    "countminsketch_sum": "sketch_cms_impl",
-    "countminsketchwithheap_topk": "sketch_cmwh_impl",
-    "datasketcheskll_": "sketch_kll_impl",
-    "hydrakll_": "sketch_kll_impl",
-}
-
-
 def create_pipeline(
     args: argparse.Namespace,
     sql_queries: List[str],
@@ -453,14 +443,8 @@ def create_pipeline(
             template_path = os.path.join(udf_dir, f"{udf_name}.rs.j2")
             regular_path = os.path.join(udf_dir, f"{udf_name}.rs")
 
-            # Get parameters for this UDF
+            # Get parameters for this UDF (impl_mode injected in main() for sketch UDFs)
             params = dict(agg_function_params.get(udf_name, {}))
-
-            # Inject impl_mode from CLI so UDFs use same backend as QueryEngine
-            impl_arg = _UDF_IMPL_MODE_ARG.get(udf_name)
-            if impl_arg:
-                impl_val = getattr(args, impl_arg, "legacy")
-                params["impl_mode"] = impl_val.capitalize()  # "Legacy" or "Sketchlib"
 
             if len(params) > 0 and not os.path.exists(template_path):
                 raise ValueError(
@@ -478,18 +462,6 @@ def create_pipeline(
                 # Get all required template variables
                 required_params = jinja_utils.get_template_variables(
                     template_source, udf_template.environment
-                )
-
-                # Per-UDF impl mode defaults (aligned with sketch-core config)
-                UDF_IMPL_DEFAULTS = {
-                    "countminsketch_count": "Sketchlib",
-                    "countminsketch_sum": "Sketchlib",
-                    "countminsketchwithheap_topk": "Sketchlib",
-                    "datasketcheskll_": "Sketchlib",
-                    "hydrakll_": "Sketchlib",
-                }
-                params.setdefault(
-                    "impl_mode", UDF_IMPL_DEFAULTS.get(udf_name, "Sketchlib")
                 )
 
                 # Handle config key mapping (K -> k for KLL)
@@ -974,6 +946,20 @@ def main(args):
             filter_metric_name,
         )
 
+        parameters = dict(parameters)
+        if agg_function in ("countminsketch_count", "countminsketch_sum"):
+            parameters["impl_mode"] = getattr(
+                args, "sketch_cms_impl", "legacy"
+            ).capitalize()
+        elif agg_function == "countminsketchwithheap_topk":
+            parameters["impl_mode"] = getattr(
+                args, "sketch_cmwh_impl", "legacy"
+            ).capitalize()
+        elif agg_function in ("datasketcheskll_", "hydrakll_"):
+            parameters["impl_mode"] = getattr(
+                args, "sketch_kll_impl", "legacy"
+            ).capitalize()
+
         sql_queries.append(sql_query)
         # if not is_labels_accumulator:
         agg_functions_with_params.append((agg_function, parameters))
@@ -1133,7 +1119,7 @@ if __name__ == "__main__":
         "--sketch_cms_impl",
         type=str,
         choices=["legacy", "sketchlib"],
-        default="legacy",
+        default="sketchlib",
         help="Count-Min Sketch backend (legacy | sketchlib). Must match QueryEngine.",
     )
     parser.add_argument(
@@ -1147,7 +1133,7 @@ if __name__ == "__main__":
         "--sketch_cmwh_impl",
         type=str,
         choices=["legacy", "sketchlib"],
-        default="legacy",
+        default="sketchlib",
         help="Count-Min-With-Heap backend (legacy | sketchlib). Must match QueryEngine.",
     )
 
