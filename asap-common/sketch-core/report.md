@@ -1,26 +1,21 @@
-# Report
+# Sketchlib Fidelity Report
 
 Compares the **legacy** sketch implementations in `sketch-core` vs the new **sketchlib-rust** backends for:
 
 - `CountMinSketch`
 - `CountMinSketchWithHeap` (Count-Min portion)
-- `KllSketch`
-- `HydraKllSketch` (via `KllSketch`)
 
+## Fidelity harness
 
-
-
-### Fidelity harness
-
-The fidelity binary now selects backends via CLI flags instead of environment variables.
+The fidelity binary selects backends via CLI flags.
 
 | Goal                     | Command                                                                                                      |
 |--------------------------|--------------------------------------------------------------------------------------------------------------|
-| Default (all sketchlib)  | `cargo run -p sketch-core --bin sketchlib_fidelity`                                                          |
-| All legacy               | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl legacy --kll-impl legacy --cmwh-impl legacy` |
-| Legacy KLL only          | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl sketchlib --kll-impl legacy --cmwh-impl sketchlib` |
+| CMS + CMWH sketchlib     | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl sketchlib --cmwh-impl sketchlib`             |
+| CMS + CMWH legacy        | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl legacy --cmwh-impl legacy`                    |
+| CMS sketchlib, CMWH legacy | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl sketchlib --cmwh-impl legacy`               |
 
-### Unit tests
+## Unit tests
 
 Unit tests always run with **legacy** backends enabled (the test ctor calls
 `force_legacy_mode_for_tests()`), so you only need:
@@ -77,5 +72,3 @@ The heap is maintained by local updates; recall is measured against the **true**
 | 2048  | 200000 | 2000   | 20        | sketchlib-rust | 0.60         | 0.9982          | 0.021    | 0.067    |
 | 2048  | 200000 | 2000   | 50        | Legacy         | 0.40         | 0.9999983       | 5.60     | 16.49    |
 | 2048  | 200000 | 2000   | 50        | sketchlib-rust | 0.40         | 0.9999990       | 3.90     | 12.95    |
-
----
