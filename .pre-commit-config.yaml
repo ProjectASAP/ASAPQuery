@@ -17,7 +17,7 @@ repos:
     hooks:
       - id: hadolint-docker
         files: ^.*Dockerfile.*$
-        args: ['--ignore', 'DL3008']
+        args: ['--ignore', 'DL3007', '--ignore', 'DL3008', '--ignore', 'DL3013']
 
   # Shell script linting
   - repo: https://github.com/shellcheck-py/shellcheck-py

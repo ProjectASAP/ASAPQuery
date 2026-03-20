@@ -3,6 +3,7 @@ pub mod datafusion;
 pub mod elastic_forwarding_tests;
 pub mod prometheus_forwarding_tests;
 pub mod query_equivalence_tests;
+pub mod sql_pattern_matching_tests;
 pub mod trait_design_tests;
 
 #[cfg(test)]
