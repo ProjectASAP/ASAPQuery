@@ -50,21 +50,11 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
 
-    - name: Validate lockfile
-      run: |
-        cp Cargo.lock Cargo.lock.bak
-        cargo generate-lockfile
-        if ! diff -q Cargo.lock Cargo.lock.bak >/dev/null; then
-          echo "::error::Cargo.lock is out of sync. Run 'cargo update' or 'rm Cargo.lock && cargo build' locally and commit the updated Cargo.lock."
-          exit 1
-        fi
-        rm Cargo.lock.bak
-
     - name: Check formatting
       run: cargo fmt --all -- --check
 
     - name: Run clippy
-      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       env:
         RUSTC_WRAPPER: sccache
 
@@ -90,18 +80,8 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
 
-    - name: Validate lockfile
-      run: |
-        cp Cargo.lock Cargo.lock.bak
-        cargo generate-lockfile
-        if ! diff -q Cargo.lock Cargo.lock.bak >/dev/null; then
-          echo "::error::Cargo.lock is out of sync. Run 'cargo update' or 'rm Cargo.lock && cargo build' locally and commit the updated Cargo.lock."
-          exit 1
-        fi
-        rm Cargo.lock.bak
-
     - name: Run all workspace tests
-      run: cargo test --workspace
+      run: cargo test --workspace --locked
       env:
         RUSTC_WRAPPER: sccache
 
