@@ -6,8 +6,9 @@ use query_engine_rust::data_model::{
     AggregateCore, CleanupPolicy, KeyByLabelValues, LockStrategy, StreamingConfig,
 };
 use query_engine_rust::precompute_operators::{DatasketchesKLLAccumulator, SumAccumulator};
-use query_engine_rust::stores::simple_map_store::legacy_global::LegacySimpleMapStoreGlobal;
-use query_engine_rust::stores::simple_map_store::per_key_legacy::LegacySimpleMapStorePerKey;
+use query_engine_rust::stores::simple_map_store::legacy::{
+    LegacySimpleMapStoreGlobal, LegacySimpleMapStorePerKey,
+};
 use query_engine_rust::stores::Store;
 use query_engine_rust::{AggregationConfig, PrecomputedOutput, SimpleMapStore};
 use std::collections::HashMap;
