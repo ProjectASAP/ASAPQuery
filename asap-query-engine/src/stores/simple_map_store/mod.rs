@@ -1,5 +1,6 @@
 mod common;
 mod global;
+pub mod legacy_global;
 mod per_key;
 pub mod per_key_legacy;
 
