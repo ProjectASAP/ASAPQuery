@@ -54,36 +54,59 @@ impl PerKeyState {
         }
     }
 
-    /// Seal the current epoch into a flat sorted Vec and open a fresh one.
-    /// Returns the unique windows of the dropped epoch for read_counts cleanup.
-    /// Uses the old epoch's entry count as a capacity hint for the new epoch (Opt 6).
+    /// Seal the current epoch when full, then evict the minimum number of oldest windows
+    /// to keep total distinct windows ≤ `epoch_capacity * max_epochs`.
+    /// Returns the evicted windows so the caller can clean up `read_counts`.
     fn maybe_rotate_epoch(&mut self) -> Vec<TimestampRange> {
         let capacity = match self.epoch_capacity {
             Some(c) if c > 0 => c,
             _ => return Vec::new(), // unlimited
         };
+        let retention_limit = capacity * self.max_epochs;
 
-        if self.current_epoch.window_count() < capacity {
+        // Step 1: seal current epoch if it has hit the window capacity threshold.
+        if self.current_epoch.window_count() >= capacity {
+            let hint = self.current_epoch.len();
+            let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
+            self.sealed_epochs.insert(self.current_epoch_id, old.seal());
+            self.current_epoch_id += 1;
+        }
+
+        // Step 2: evict oldest windows until total distinct windows ≤ retention_limit.
+        let total: usize = self.current_epoch.window_count()
+            + self
+                .sealed_epochs
+                .values()
+                .map(|e| e.distinct_window_count())
+                .sum::<usize>();
+
+        if total <= retention_limit {
             return Vec::new();
         }
+        let mut over = total - retention_limit;
+        let mut evicted = Vec::new();
 
-        // Opt 6: pre-allocate the new epoch with the old epoch's entry count as a hint.
-        let hint = self.current_epoch.len();
-        let old = std::mem::replace(&mut self.current_epoch, MutableEpoch::with_capacity(hint));
-        let sealed = old.seal();
-        self.sealed_epochs.insert(self.current_epoch_id, sealed);
-        self.current_epoch_id += 1;
+        while over > 0 {
+            let oldest_id = match self.sealed_epochs.keys().next().copied() {
+                Some(id) => id,
+                None => break,
+            };
+            let oldest_windows = self.sealed_epochs[&oldest_id].unique_windows();
+            let n_evict = over.min(oldest_windows.len());
+            let to_remove = oldest_windows[..n_evict].to_vec();
+            over -= n_evict;
+            evicted.extend_from_slice(&to_remove);
 
-        // Drop oldest sealed epoch if total exceeds the limit.
-        if 1 + self.sealed_epochs.len() > self.max_epochs {
-            if let Some((&oldest_id, _)) = self.sealed_epochs.iter().next() {
-                if let Some(oldest) = self.sealed_epochs.remove(&oldest_id) {
-                    return oldest.unique_windows();
-                }
+            if n_evict == oldest_windows.len() {
+                self.sealed_epochs.remove(&oldest_id);
+            } else {
+                self.sealed_epochs
+                    .get_mut(&oldest_id)
+                    .unwrap()
+                    .remove_windows(&to_remove);
             }
         }
-
-        Vec::new()
+        evicted
     }
 }
 
