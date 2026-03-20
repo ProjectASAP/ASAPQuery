@@ -5,6 +5,8 @@ use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info};
 
+use sketch_core::config::{self, ImplMode};
+
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
@@ -108,6 +110,18 @@ struct Args {
     #[arg(long)]
     promsketch_config: Option<String>,
 
+    /// Backend implementation for Count-Min Sketch (legacy | sketchlib)
+    #[arg(long, value_enum, default_value_t = config::DEFAULT_IMPL_MODE)]
+    sketch_cms_impl: ImplMode,
+
+    /// Backend implementation for KLL Sketch (legacy | sketchlib)
+    #[arg(long, value_enum, default_value_t = config::DEFAULT_IMPL_MODE)]
+    sketch_kll_impl: ImplMode,
+
+    /// Backend implementation for Count-Min-With-Heap (legacy | sketchlib)
+    #[arg(long, value_enum, default_value_t = config::DEFAULT_IMPL_MODE)]
+    sketch_cmwh_impl: ImplMode,
+
     /// Enable OTLP metrics ingest (gRPC + HTTP)
     #[arg(long)]
     enable_otel_ingest: bool,
@@ -124,6 +138,14 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Configure sketch-core backends before any sketch operations.
+    config::configure(
+        args.sketch_cms_impl,
+        args.sketch_kll_impl,
+        args.sketch_cmwh_impl,
+    )
+    .expect("sketch backend already initialised");
 
     // Create output directory
     fs::create_dir_all(&args.output_dir)?;
