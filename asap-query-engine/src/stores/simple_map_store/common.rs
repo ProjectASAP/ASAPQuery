@@ -48,24 +48,42 @@ impl InternTable {
 
 /// Mutable (active) epoch: pure append-only insert, O(1) amortized.
 ///
-/// Raw entries are stored in insertion order — no sorting, no deduplication, no index
-/// maintenance during writes.  All ordering work is deferred to `seal()`, which is
-/// called at most once per epoch (at rotation time).  This matches VictoriaMetrics'
-/// rawRows → in-memory part pipeline.
+/// # Optimizations applied
 ///
-/// Queries on the active epoch do a bounded linear scan (epoch size ≤ epoch_capacity ×
-/// labels), which is acceptable because the vast majority of historical data lives in
-/// sealed (already-sorted) epochs.
+/// **Opt 5 — Columnar storage**: timestamps, MetricIDs, and aggregates are kept in three
+/// separate parallel arrays instead of one array of tuples.  The range-query hot loop only
+/// scans `windows_col` (contiguous u64 pairs) and does not touch aggregate pointers unless a
+/// window actually matches, cutting cache pressure significantly for sparse range queries.
+///
+/// **Opt 1 + 2 — Lazy offset index**: `window_to_ids` is built on the *first* `exact_query`
+/// after any write batch and stores u32 column offsets rather than Arc clones.  Any `insert`
+/// simply sets the field to `None` (one pointer-width write); there are no HashMap lookups,
+/// no `HashSet::insert` calls for the index, and no atomic refcount bumps on the hot insert
+/// path.  The index is rebuilt in O(M) on demand from `windows_col` alone.
+///
+/// **Opt 3 — Monotonic ingest fast path**: `last_window` tracks the most recently inserted
+/// window.  Consecutive inserts to the same window (multiple label combinations for one time
+/// bucket — the common case in ordered TSDB ingestion) skip the `windows_set` HashSet probe
+/// entirely.
+///
+/// **Opt 6 — Pre-allocated column buffers**: `with_capacity(n)` reserves space upfront using
+/// the previous epoch's entry count, avoiding Vec reallocation during the next epoch fill.
 pub struct MutableEpoch {
-    /// Append-only raw inserts.  Sorted only at seal() time.
-    pub raw: Vec<(TimestampRange, MetricID, Arc<dyn AggregateCore>)>,
-    /// Distinct windows for rotation threshold — O(1) insert, O(1) len.
-    windows: HashSet<TimestampRange>,
-    /// Exact-lookup index: window → (MetricID, Arc<Agg>) pairs.
-    /// Maintained O(1) on insert (Arc clone is a refcount bump, not a data copy).
-    /// Allows exact_query to return in O(m) without scanning raw.
-    #[allow(clippy::type_complexity)]
-    window_to_ids: HashMap<TimestampRange, Vec<(MetricID, Arc<dyn AggregateCore>)>>,
+    // Columnar storage: three parallel arrays (Opt 5)
+    windows_col: Vec<TimestampRange>,
+    metric_ids_col: Vec<MetricID>,
+    aggregates_col: Vec<Arc<dyn AggregateCore>>,
+
+    // Distinct-window count for epoch rotation threshold
+    windows_set: HashSet<TimestampRange>,
+
+    // Monotonic ingest fast path: skip HashSet probe for consecutive same-window inserts (Opt 3)
+    last_window: Option<TimestampRange>,
+
+    // Lazy offset index: built on first exact_query, invalidated on any insert (Opt 1 + 2).
+    // Stores column indices (u32) instead of Arc clones — zero atomic ops during insert.
+    window_to_ids: Option<HashMap<TimestampRange, Vec<u32>>>,
+
     /// Epoch time bounds for O(1) skip check, updated incrementally on insert.
     min_start: Option<u64>,
     max_end: Option<u64>,
@@ -73,21 +91,35 @@ pub struct MutableEpoch {
 
 impl MutableEpoch {
     pub fn new() -> Self {
+        Self::with_capacity(0)
+    }
+
+    /// Pre-allocate column buffers with a capacity hint (Opt 6).
+    /// Pass the previous epoch's `len()` to avoid reallocation during the next epoch fill.
+    pub fn with_capacity(cap: usize) -> Self {
         Self {
-            raw: Vec::new(),
-            windows: HashSet::new(),
-            window_to_ids: HashMap::new(),
+            windows_col: Vec::with_capacity(cap),
+            metric_ids_col: Vec::with_capacity(cap),
+            aggregates_col: Vec::with_capacity(cap),
+            windows_set: HashSet::new(),
+            last_window: None,
+            window_to_ids: None,
             min_start: None,
             max_end: None,
         }
     }
 
     pub fn window_count(&self) -> usize {
-        self.windows.len()
+        self.windows_set.len()
+    }
+
+    /// Total raw entries across all windows and labels.
+    pub fn len(&self) -> usize {
+        self.windows_col.len()
     }
 
     /// Returns `(min_start, max_end)` across all windows, or `None` if empty.
-    /// Used by callers for the epoch-skip check: `min_start > end || max_end < start`.
+    /// Used for the epoch-skip check: `min_start > end || max_end < start`.
     pub fn time_bounds(&self) -> Option<(u64, u64)> {
         match (self.min_start, self.max_end) {
             (Some(s), Some(e)) => Some((s, e)),
@@ -95,29 +127,50 @@ impl MutableEpoch {
         }
     }
 
-    /// O(1) amortized: Vec push + HashSet insert + HashMap entry + two scalar comparisons.
+    /// O(1) amortized insert: three column pushes + conditional HashSet insert + bounds update.
+    ///
+    /// No secondary-index maintenance and no Arc clone for any index.  The lazy `window_to_ids`
+    /// is invalidated by setting it to `None` — a single pointer-width write with no HashMap or
+    /// HashSet work.
     pub fn insert(
         &mut self,
         metric_id: MetricID,
         range: TimestampRange,
         agg: Arc<dyn AggregateCore>,
     ) {
-        self.window_to_ids
-            .entry(range)
-            .or_default()
-            .push((metric_id, Arc::clone(&agg)));
-        self.raw.push((range, metric_id, agg));
-        self.windows.insert(range);
+        // Opt 3: skip HashSet probe when the incoming window equals the last inserted window.
+        // Multiple label combinations arriving for the same time bucket (the common ordered-
+        // ingest pattern) cost zero HashSet operations after the first.
+        if self.last_window != Some(range) {
+            self.windows_set.insert(range);
+            self.last_window = Some(range);
+        }
+
+        // Opt 5: columnar append — no secondary index, no Arc clone
+        self.windows_col.push(range);
+        self.metric_ids_col.push(metric_id);
+        self.aggregates_col.push(agg);
+
+        // Opt 1: invalidate lazy index at zero cost
+        self.window_to_ids = None;
+
         self.min_start = Some(self.min_start.map_or(range.0, |m| m.min(range.0)));
         self.max_end = Some(self.max_end.map_or(range.1, |m| m.max(range.1)));
     }
 
     /// Consume this epoch and produce an immutable SealedEpoch by sorting in-place.
-    /// O(M log M) where M = number of raw entries — paid once at rotation, not at query time.
+    /// Zips the three columns into tuples and sorts — moves Arcs without cloning.
+    /// O(M log M) paid once at rotation time, not at query time.
     pub fn seal(self) -> SealedEpoch {
         let min_start = self.min_start;
         let max_end = self.max_end;
-        let mut entries = self.raw;
+        let mut entries: Vec<(TimestampRange, MetricID, Arc<dyn AggregateCore>)> = self
+            .windows_col
+            .into_iter()
+            .zip(self.metric_ids_col)
+            .zip(self.aggregates_col)
+            .map(|((tr, mid), agg)| (tr, mid, agg))
+            .collect();
         entries.sort_unstable_by_key(|(tr, metric_id, _)| (*tr, *metric_id));
         SealedEpoch {
             entries,
@@ -126,8 +179,10 @@ impl MutableEpoch {
         }
     }
 
-    /// Linear scan over raw entries for [start, end] — O(M) where M ≤ epoch_capacity × L.
-    /// Acceptable because: (a) the epoch is bounded, (b) most data is in sealed epochs.
+    /// Opt 5: scans only `windows_col` for time-range filtering — cache-friendly because
+    /// only contiguous TimestampRange values are touched in the hot loop.  Aggregate pointers
+    /// are chased only for entries that actually match the range.
+    /// O(M) where M ≤ epoch_capacity × labels_per_window.
     pub fn range_query_into(
         &self,
         start: u64,
@@ -135,43 +190,79 @@ impl MutableEpoch {
         out: &mut MetricBucketMap,
         matched_windows: &mut Vec<TimestampRange>,
     ) {
-        for (tr, metric_id, agg) in &self.raw {
+        for (i, &tr) in self.windows_col.iter().enumerate() {
             if tr.0 < start || tr.0 > end || tr.1 > end {
                 continue;
             }
-            out.entry(*metric_id)
+            let metric_id = self.metric_ids_col[i];
+            out.entry(metric_id)
                 .or_default()
-                .push((*tr, Arc::clone(agg)));
-            matched_windows.push(*tr);
+                .push((tr, Arc::clone(&self.aggregates_col[i])));
+            matched_windows.push(tr);
         }
     }
 
-    /// O(m) exact match via window_to_ids index — no raw scan needed.
-    /// m = number of (MetricID, agg) pairs stored for this window.
+    /// Opt 1 + 2: lazy exact match — O(m) after the index is built, O(M) to build once.
+    ///
+    /// The offset index (`HashMap<TimestampRange, Vec<u32>>`) is constructed from `windows_col`
+    /// on the first call after any write batch, then cached.  Building it scans `windows_col`
+    /// once with no Arc clones (only integer offsets are stored).  The index remains valid
+    /// until the next `insert`, which sets `window_to_ids = None`.
+    ///
+    /// Takes `&mut self` because building the index mutates `window_to_ids`.
+    /// Callers must hold exclusive (write) access to the containing epoch.
     pub fn exact_query(
-        &self,
+        &mut self,
         range: TimestampRange,
     ) -> Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> {
-        let entries = self.window_to_ids.get(&range)?;
+        if self.window_to_ids.is_none() {
+            let mut idx: HashMap<TimestampRange, Vec<u32>> =
+                HashMap::with_capacity(self.windows_set.len());
+            for (i, &tr) in self.windows_col.iter().enumerate() {
+                idx.entry(tr).or_default().push(i as u32);
+            }
+            self.window_to_ids = Some(idx);
+        }
+        let offsets = self.window_to_ids.as_ref().unwrap().get(&range)?;
         Some(
-            entries
+            offsets
                 .iter()
-                .map(|(metric_id, agg)| (*metric_id, Arc::clone(agg)))
+                .map(|&i| {
+                    let i = i as usize;
+                    (self.metric_ids_col[i], Arc::clone(&self.aggregates_col[i]))
+                })
                 .collect(),
         )
     }
 
     /// Remove specific windows (ReadBased cleanup).
+    /// Drains all three columns in lockstep — moves Arcs without cloning.
     pub fn remove_windows(&mut self, windows: &[TimestampRange]) {
         let window_set: HashSet<TimestampRange> = windows.iter().copied().collect();
-        self.raw.retain(|(tr, _, _)| !window_set.contains(tr));
-        self.windows.retain(|tr| !window_set.contains(tr));
-        for window in windows {
-            self.window_to_ids.remove(window);
+
+        let old_windows = std::mem::take(&mut self.windows_col);
+        let old_metrics = std::mem::take(&mut self.metric_ids_col);
+        let old_aggs = std::mem::take(&mut self.aggregates_col);
+
+        for ((tr, mid), agg) in old_windows.into_iter().zip(old_metrics).zip(old_aggs) {
+            if !window_set.contains(&tr) {
+                self.windows_col.push(tr);
+                self.metric_ids_col.push(mid);
+                self.aggregates_col.push(agg);
+            }
         }
-        // Recompute bounds (cleanup is rare, linear scan is fine).
-        self.min_start = self.raw.iter().map(|(tr, _, _)| tr.0).min();
-        self.max_end = self.raw.iter().map(|(tr, _, _)| tr.1).max();
+
+        for window in windows {
+            self.windows_set.remove(window);
+        }
+
+        // Invalidate lazy index and monotonic fast-path hint.
+        self.window_to_ids = None;
+        self.last_window = None;
+
+        // Recompute bounds (cleanup is rare; linear scan is fine).
+        self.min_start = self.windows_col.iter().map(|tr| tr.0).min();
+        self.max_end = self.windows_col.iter().map(|tr| tr.1).max();
     }
 }
 
