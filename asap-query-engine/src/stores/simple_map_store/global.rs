@@ -157,6 +157,15 @@ impl SimpleMapStoreGlobal {
 }
 
 /// Extracted config fields needed inside the locked batch loop.
+type GroupedBatch = HashMap<
+    StoreKey,
+    (
+        BatchConfig,
+        u64,
+        Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
+    ),
+>;
+
 /// Pre-computed outside the lock to avoid per-item config lookups (Opt 4).
 struct BatchConfig {
     metric: String,
@@ -186,14 +195,7 @@ impl Store for SimpleMapStoreGlobal {
         // Config lookups (streaming_config HashMap access) are moved out of the hot locked
         // loop: each unique aggregation_id pays one lookup regardless of batch size.
         // Also pre-compute batch_min_ts per group to collapse N earliest-ts updates into 1.
-        let mut grouped: HashMap<
-            StoreKey,
-            (
-                BatchConfig,
-                u64,
-                Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
-            ),
-        > = HashMap::new();
+        let mut grouped: GroupedBatch = HashMap::new();
 
         for (output, precompute) in outputs {
             let aggregation_config = self
