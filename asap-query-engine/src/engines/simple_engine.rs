@@ -1461,7 +1461,7 @@ impl SimpleEngine {
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
         let context = self.build_query_execution_context_elastic(query, time)?;
-        println!("Built execution context for ElasticSearch query {:?}", context);
+        debug!("Built execution context for ElasticSearch query {:?}", context);
         // Execute complete query pipeline
         let results = self
             .execute_query_pipeline(&context, false) // SQL: topk disabled
@@ -1610,7 +1610,8 @@ impl SimpleEngine {
                             .as_array()
                             .and_then(|arr| arr.first())
                             .and_then(|v| v.as_f64());
-                        query_kwargs.insert("quantile".to_string(), quantile?.to_string());
+                        // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
+                        query_kwargs.insert("quantile".to_string(), (quantile? / 100.0).to_string());
                     }
                 }
             }
