@@ -2,11 +2,9 @@
 use crate::engines::SimpleEngine;
 use promql_parser::label;
 use serde_json::{json, Value};
-use sketch_core::kll;
-use tracing_subscriber::registry::Data;
 use crate::QueryResult;
 
-use crate::data_model::{AggregateCore};
+use crate::data_model::{AggregateCore, KeyByLabelValues};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, DatasketchesKLLAccumulator, DeltaSetAggregatorAccumulator,
     SumAccumulator,
@@ -68,15 +66,14 @@ fn test_esdsl_simple_aggregation_quantile() {
     // Create data. Engine expects 1 second (1000 ms) intervals.
     let timestamps = vec![999_000, 1_000_000];
     let label_values = vec![
-        Some(vec!["host-a".to_string()]),
-        Some(vec!["host-b".to_string()]),
+        Some(Vec::new()) // No labels for this test
     ];
     let kll_data = create_kll_data_with_timestamps(&timestamps, label_values);
 
     let engine = create_engine_multi_timestamp(
         "http_requests",
         "DatasketchesKLLAccumulator",
-        vec!["host"], // No labels for this test
+        Vec::new(), // No labels for this test
         kll_data,
         &elastic_query.to_string(),
     );
@@ -84,6 +81,16 @@ fn test_esdsl_simple_aggregation_quantile() {
     let time = 1_000.0; // Arbitrary timestamp for testing
     let output = engine.handle_query_elastic(elastic_query.to_string(), time);
     if let Some((_, result)) = output {
+        match &result {
+            QueryResult::Vector(instant) => {
+                assert_eq!(instant.values.len(), 1);
+                let sample = &instant.values[0];
+                assert_eq!(sample.labels, KeyByLabelValues::new()); // No labels expected
+            }
+            _ => {
+                panic!("Expected Vector result");
+            }
+        }
         let result_json = serde_json::to_string(&result).unwrap();
         println!("Query Result: {result_json}");
     } else {
