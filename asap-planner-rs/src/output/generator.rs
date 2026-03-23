@@ -228,10 +228,6 @@ fn build_streaming_yaml(
                 },
             );
             map.insert(
-                YamlValue::String("tumblingWindowSize".to_string()),
-                YamlValue::Number(cfg.tumbling_window_size.into()),
-            );
-            map.insert(
                 YamlValue::String("value_column".to_string()),
                 match &cfg.value_column {
                     Some(v) => YamlValue::String(v.clone()),

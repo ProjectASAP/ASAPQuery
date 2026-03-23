@@ -46,14 +46,13 @@ fn make_agg_config(agg_id: u64) -> AggregationConfig {
         KeyByLabelNames::empty(),
         KeyByLabelNames::empty(),
         "".to_string(),
-        60,             // tumbling_window_size (seconds)
-        "".to_string(), // spatial_filter
+        60,                     // window_size (seconds)
+        60,                     // slide_interval (seconds)
+        "tumbling".to_string(), // window_type
+        "".to_string(),         // spatial_filter
         "cpu_usage".to_string(),
         None, // num_aggregates_to_retain
         None, // read_count_threshold
-        None, // window_size
-        None, // slide_interval
-        None, // window_type
         None, // table_name
         None, // value_column
     )

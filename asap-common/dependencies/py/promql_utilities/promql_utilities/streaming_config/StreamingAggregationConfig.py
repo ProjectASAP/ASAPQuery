@@ -26,13 +26,9 @@ class StreamingAggregationConfig:
     aggregationType: str
     aggregationSubType: str
 
-    # NEW fields for sliding window support (Issue #236)
     windowSize: int  # Window size in seconds (e.g., 900s for 15m)
     slideInterval: int  # Slide/hop interval in seconds (e.g., 30s)
     windowType: str  # "tumbling" or "sliding"
-
-    # DEPRECATED but kept for backward compatibility
-    tumblingWindowSize: int  # For reading old configs
 
     spatialFilter: str
     metric: str  # PromQL mode: metric name
@@ -64,18 +60,10 @@ class StreamingAggregationConfig:
         aggregation.aggregationType = aggregation_config["aggregationType"]
         aggregation.aggregationSubType = aggregation_config["aggregationSubType"]
 
-        # NEW: Handle new window fields with backward compatibility
         aggregation.windowType = aggregation_config.get("windowType", "tumbling")
-        aggregation.windowSize = aggregation_config.get(
-            "windowSize", aggregation_config.get("tumblingWindowSize")
-        )
+        aggregation.windowSize = aggregation_config["windowSize"]
         aggregation.slideInterval = aggregation_config.get(
-            "slideInterval", aggregation_config.get("tumblingWindowSize")
-        )
-
-        # Keep deprecated field for backward compatibility
-        aggregation.tumblingWindowSize = aggregation_config.get(
-            "tumblingWindowSize", aggregation.windowSize
+            "slideInterval", aggregation.windowSize
         )
 
         aggregation.spatialFilter = aggregation_config["spatialFilter"]
@@ -150,10 +138,9 @@ class StreamingAggregationConfig:
         keys = [
             self.aggregationType,
             self.aggregationSubType,
-            self.windowType,  # NEW: Include window type
-            self.windowSize,  # NEW: Include window size
-            self.slideInterval,  # NEW: Include slide interval
-            self.tumblingWindowSize,  # Keep for backward compatibility
+            self.windowType,
+            self.windowSize,
+            self.slideInterval,
             self.spatialFilter,
             self.metric,
             self.table_name,  # SQL mode: table name
