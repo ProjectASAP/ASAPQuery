@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{debug, error};
 
+const ELASTIC_FETCH_SIZE: u64 = 1000;
+
 /// Fallback client for Elasticsearch HTTP API
 pub struct ElasticHttpFallback {
     client: Client,
@@ -85,7 +87,7 @@ impl FallbackClient for ElasticHttpFallback {
                 // query is a raw SQL string, need to wrap it for the ES SQL endpoint
                 serde_json::json!({
                     "query": request.query.trim().trim_end_matches(';'),
-                    "fetch_size": 1000,
+                    "fetch_size": ELASTIC_FETCH_SIZE,
                 })
             }
             _ => {
