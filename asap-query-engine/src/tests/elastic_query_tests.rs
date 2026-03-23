@@ -1,6 +1,4 @@
 #[cfg(test)]
-use crate::engines::SimpleEngine;
-use promql_parser::label;
 use serde_json::{json, Value};
 use crate::QueryResult;
 
@@ -45,10 +43,10 @@ fn create_kll_data_with_timestamps(
 
 #[test]
 fn test_esdsl_simple_aggregation_quantile() {
-    // let _ = tracing_subscriber::fmt()
-    //     .with_max_level(tracing::Level::DEBUG)
-    //     .with_test_writer() // Routes output through the test runner's capture mechanism
-    //     .try_init();
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_test_writer() // Routes output through the test runner's capture mechanism
+        .try_init();
 
     // Elastic DSL query (batch filtered).
     let elastic_query = json!({
@@ -317,4 +315,68 @@ fn test_esdsl_unsupported_query() {
     let time = 1_000.0; // Arbitrary timestamp for testing
     let output = engine.handle_query_elastic(elastic_query.to_string(), time);
     assert!(output.is_none(), "Expected None for unsupported query, got Some({:?})", output);
+}
+
+#[test]
+fn test_esdsl_time_range_query() {
+    // let _ = tracing_subscriber::fmt()
+    //     .with_max_level(tracing::Level::DEBUG)
+    //     .with_test_writer() // Routes output through the test runner's capture mechanism
+    //     .try_init();
+
+    // Elastic DSL query (batch filtered).
+    let elastic_query = json!({
+        "size": 0,
+        "query": {
+            "range": {
+                "timestamp": {
+                    "gte": "now-1s",
+                    "lte": "now"
+                }
+            }
+        },
+        "aggs": {
+            "out": {
+                "percentiles": {
+                    "field": "http_requests",
+                    "percents": [90]
+                }
+            }
+        }
+    });
+
+    // Create data. Engine expects 1 second (1000 ms) intervals.
+    let timestamps = vec![998_000, 999_000, 1_000_000];
+    let label_values = vec![
+        Some(Vec::new()) // No labels for this test
+    ];
+    let kll_data = create_kll_data_with_timestamps(&timestamps, label_values);
+
+    let engine = create_engine_multi_timestamp(
+        "http_requests",
+        "DatasketchesKLLAccumulator",
+        Vec::new(), // No labels for this test
+        kll_data,
+        &elastic_query.to_string(),
+    );
+
+    let time = 1_000.0; // Arbitrary timestamp for testing
+    let output = engine.handle_query_elastic(elastic_query.to_string(), time);
+    if let Some((_, result)) = output {
+        match &result {
+            QueryResult::Vector(instant) => {
+                assert_eq!(instant.values.len(), 1);
+                let sample = &instant.values[0];
+                assert_eq!(sample.labels, KeyByLabelValues::new()); // No labels expected
+                assert_eq!(sample.value, 291.0); // 90th percentile of 200..300 as reported by KLL (skip first two KLL buckets which are outside the resolved time range)
+            }
+            _ => {
+                panic!("Expected Vector result");
+            }
+        }
+        let result_json = serde_json::to_string(&result).unwrap();
+        println!("Query Result: {result_json}");
+    } else {
+        panic!("Expected query result, got None");
+    }
 }

@@ -1538,10 +1538,25 @@ impl SimpleEngine {
         let spatial_filter = String::new(); // Placeholder - extract from query if applicable
 
         // TODO: Need way to parse ES DSL "date math".
-        let timestamps = QueryTimestamps {
+        let mut timestamps = QueryTimestamps {
             start_timestamp: 0, // Placeholder - determine based on query
             end_timestamp: query_time, // Placeholder - 1 hour before query_time
         };
+
+        let time_range = query_pattern.get_time_range();
+        time_range.map(|tr| {
+            if let Some(resolved_range) = tr.resolve_epoch_millis(query_time as i64) {
+                debug!(
+                    "Parsed time range from query: start={} end={}",
+                    resolved_range.gte_ms.unwrap_or(0),
+                    resolved_range.lte_ms.unwrap_or(0)
+                );
+                timestamps.start_timestamp = resolved_range.gte_ms.unwrap_or(0) as u64;
+                timestamps.end_timestamp = resolved_range.lte_ms.unwrap_or(query_time as i64) as u64;
+            } else {
+                debug!("Failed to resolve time range from query");
+            }
+        });
 
         let query_plan = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
