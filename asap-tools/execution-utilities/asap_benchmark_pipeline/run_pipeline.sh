@@ -347,6 +347,11 @@ case "$MODE" in
         ;;
     both)
         run_baseline "baseline_results.csv"
+        echo ""
+        echo "========================================"
+        echo "Cleaning up between runs..."
+        echo "========================================"
+        "$SCRIPT_DIR/cleanup.sh" --no-sudo
         run_asap "asap_results.csv"
         echo ""
         echo "========================================"

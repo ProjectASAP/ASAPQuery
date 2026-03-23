@@ -25,19 +25,26 @@ from kafka import KafkaProducer
 # Query extraction
 # ---------------------------------------------------------------------------
 
+
 def extract_queries_from_sql(sql_file: Path) -> List[Tuple[str, str]]:
     """Extract (query_id, sql) pairs from an annotated SQL file."""
     with open(sql_file) as f:
         content = f.read()
     pattern = r"-- ([A-Za-z0-9_]+):[^\n]*\n(SELECT[^;]+;)"
-    return [(qid, sql.strip()) for qid, sql in re.findall(pattern, content, re.DOTALL | re.IGNORECASE)]
+    return [
+        (qid, sql.strip())
+        for qid, sql in re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
+    ]
 
 
 # ---------------------------------------------------------------------------
 # Data loading — ClickHouse direct
 # ---------------------------------------------------------------------------
 
-def load_h2o_data_clickhouse(clickhouse_url: str, skip_table_init: bool = False, max_rows: int = 0):
+
+def load_h2o_data_clickhouse(
+    clickhouse_url: str, skip_table_init: bool = False, max_rows: int = 0
+):
     """Load H2O CSV into ClickHouse MergeTree (baseline path)."""
 
     if not skip_table_init:
@@ -110,6 +117,7 @@ def _flush_batch(clickhouse_url: str, rows: list):
 # Data loading — Kafka (for Arroyo sketch pipeline)
 # ---------------------------------------------------------------------------
 
+
 def produce_h2o_to_kafka(topic: str = "h2o_groupby", max_rows: int = 0):
     """Stream H2O CSV rows into Kafka with fixed 2024-01-01 message timestamps."""
     csv_path = _download_h2o_csv()
@@ -170,6 +178,7 @@ def _download_h2o_csv() -> str:
 # ---------------------------------------------------------------------------
 # Pipeline latency measurement
 # ---------------------------------------------------------------------------
+
 
 def measure_pipeline_latency(
     kafka_topic: str = "h2o_groupby",
@@ -258,13 +267,16 @@ def measure_pipeline_latency(
 
     latencies.sort()
     median = latencies[len(latencies) // 2]
-    print(f"\nPipeline latency (data→query): median={median:.2f}s across {len(latencies)} trials")
+    print(
+        f"\nPipeline latency (data→query): median={median:.2f}s across {len(latencies)} trials"
+    )
     return median * 1000  # return ms
 
 
 # ---------------------------------------------------------------------------
 # Benchmark runner
 # ---------------------------------------------------------------------------
+
 
 def run_query(
     query: str, endpoint_url: str, session: requests.Session, timeout: int = 30
@@ -314,7 +326,18 @@ def run_benchmark(
 
     with open(output_csv, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["query_id", "latency_ms", "serving_ms", "pipeline_ms", "result_rows", "result_preview", "error", "mode"])
+        writer.writerow(
+            [
+                "query_id",
+                "latency_ms",
+                "serving_ms",
+                "pipeline_ms",
+                "result_rows",
+                "result_preview",
+                "error",
+                "mode",
+            ]
+        )
 
         for query_id, sql in queries:
             print(f"Running {query_id}...", end=" ", flush=True)
@@ -322,7 +345,9 @@ def run_benchmark(
 
             if error:
                 print(f"ERROR {error}")
-                writer.writerow([query_id, serving_ms, serving_ms, 0, 0, "", error, mode])
+                writer.writerow(
+                    [query_id, serving_ms, serving_ms, 0, 0, "", error, mode]
+                )
                 plot_latencies.append(0.0)
             else:
                 total_ms = serving_ms + pipeline_overhead_ms
@@ -333,10 +358,23 @@ def run_benchmark(
                 total_latencies.append(total_ms)
                 plot_latencies.append(total_ms)
                 if pipeline_overhead_ms > 0:
-                    print(f"{total_ms:.2f}ms (serving={serving_ms:.2f}ms + pipeline={pipeline_overhead_ms:.2f}ms, {num_rows} rows)")
+                    print(
+                        f"{total_ms:.2f}ms (serving={serving_ms:.2f}ms + pipeline={pipeline_overhead_ms:.2f}ms, {num_rows} rows)"
+                    )
                 else:
                     print(f"{total_ms:.2f}ms ({num_rows} rows)")
-                writer.writerow([query_id, f"{total_ms:.2f}", f"{serving_ms:.2f}", f"{pipeline_overhead_ms:.2f}", num_rows, preview, "", mode])
+                writer.writerow(
+                    [
+                        query_id,
+                        f"{total_ms:.2f}",
+                        f"{serving_ms:.2f}",
+                        f"{pipeline_overhead_ms:.2f}",
+                        num_rows,
+                        preview,
+                        "",
+                        mode,
+                    ]
+                )
 
             time.sleep(0.1)
 
@@ -346,29 +384,42 @@ def run_benchmark(
         total_latencies.sort()
         serving_latencies.sort()
         n = len(total_latencies)
+
         def stats(arr):
-            return arr[0], sum(arr)/len(arr), arr[int(len(arr)*0.5)], arr[int(len(arr)*0.95)], arr[-1]
+            return (
+                arr[0],
+                sum(arr) / len(arr),
+                arr[int(len(arr) * 0.5)],
+                arr[int(len(arr) * 0.95)],
+                arr[-1],
+            )
 
         t_min, t_avg, t_p50, t_p95, t_max = stats(total_latencies)
         print(f"\nTotal latency summary ({n} successful queries):")
-        print(f"  min={t_min:.2f}ms  avg={t_avg:.2f}ms  p50={t_p50:.2f}ms  p95={t_p95:.2f}ms  max={t_max:.2f}ms")
+        print(
+            f"  min={t_min:.2f}ms  avg={t_avg:.2f}ms  p50={t_p50:.2f}ms  p95={t_p95:.2f}ms  max={t_max:.2f}ms"
+        )
         if pipeline_overhead_ms > 0:
             s_min, s_avg, s_p50, s_p95, s_max = stats(serving_latencies)
-            print(f"  (serving only: min={s_min:.2f}ms  avg={s_avg:.2f}ms  p50={s_p50:.2f}ms)")
+            print(
+                f"  (serving only: min={s_min:.2f}ms  avg={s_avg:.2f}ms  p50={s_p50:.2f}ms)"
+            )
             print(f"  (pipeline overhead: {pipeline_overhead_ms:.2f}ms per query)")
 
     if plot_latencies:
         plt.figure(figsize=(10, 6))
-        bar_color = '#1f77b4' if mode == 'baseline' else '#ff7f0e'
+        bar_color = "#1f77b4" if mode == "baseline" else "#ff7f0e"
         execution_order = list(range(1, len(plot_latencies) + 1))
-        plt.bar(execution_order, plot_latencies, color=bar_color, edgecolor='black')
-        plt.xlabel("Query Execution Order", fontsize=12, fontweight='bold')
-        plt.ylabel("Latency (ms)", fontsize=12, fontweight='bold')
+        plt.bar(execution_order, plot_latencies, color=bar_color, edgecolor="black")
+        plt.xlabel("Query Execution Order", fontsize=12, fontweight="bold")
+        plt.ylabel("Latency (ms)", fontsize=12, fontweight="bold")
         max_order = len(execution_order)
         tick_step = max(1, max_order // 20) * 5
         plt.xticks(range(0, max_order + 1, tick_step))
-        plt.title(f"Query Latency - {mode.upper()} Mode", fontsize=14, fontweight='bold')
-        plt.grid(axis='y', linestyle='--', alpha=0.7)
+        plt.title(
+            f"Query Latency - {mode.upper()} Mode", fontsize=14, fontweight="bold"
+        )
+        plt.grid(axis="y", linestyle="--", alpha=0.7)
         plt.tight_layout()
         plot_output = output_csv.with_suffix(".png")
         plt.savefig(plot_output)
@@ -380,8 +431,11 @@ def run_benchmark(
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main():
-    parser = argparse.ArgumentParser(description="Benchmark ASAP vs ClickHouse on H2O groupby data")
+    parser = argparse.ArgumentParser(
+        description="Benchmark ASAP vs ClickHouse on H2O groupby data"
+    )
     parser.add_argument("--mode", choices=["baseline", "asap"], default="asap")
     parser.add_argument("--load-data", action="store_true", help="Load H2O data")
     parser.add_argument("--clickhouse-url", default="http://localhost:8123")
@@ -391,13 +445,23 @@ def main():
     parser.add_argument("--filter", default=None, help="Comma-separated query IDs")
     parser.add_argument("--no-benchmark", action="store_true", help="Load data only")
     parser.add_argument("--skip-table-init", action="store_true")
-    parser.add_argument("--load-kafka", action="store_true", help="Stream data to Kafka (for Arroyo sketch pipeline)")
-    parser.add_argument("--max-rows", type=int, default=0, help="Max rows to load (0 = all)")
+    parser.add_argument(
+        "--load-kafka",
+        action="store_true",
+        help="Stream data to Kafka (for Arroyo sketch pipeline)",
+    )
+    parser.add_argument(
+        "--max-rows", type=int, default=0, help="Max rows to load (0 = all)"
+    )
 
     args = parser.parse_args()
 
     if args.load_data:
-        if not load_h2o_data_clickhouse(args.clickhouse_url, skip_table_init=args.skip_table_init, max_rows=args.max_rows):
+        if not load_h2o_data_clickhouse(
+            args.clickhouse_url,
+            skip_table_init=args.skip_table_init,
+            max_rows=args.max_rows,
+        ):
             print("Failed to load data")
             return 1
 
@@ -422,7 +486,14 @@ def main():
         print("\nMeasuring pipeline latency (data → Kafka → Arroyo → QE → query)...")
         pipeline_overhead_ms = measure_pipeline_latency(asap_url=args.asap_url)
 
-    run_benchmark(sql_file, endpoint, Path(args.output), args.mode, query_filter, pipeline_overhead_ms)
+    run_benchmark(
+        sql_file,
+        endpoint,
+        Path(args.output),
+        args.mode,
+        query_filter,
+        pipeline_overhead_ms,
+    )
     return 0
 
 
