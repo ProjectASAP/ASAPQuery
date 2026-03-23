@@ -3446,8 +3446,8 @@ dependencies = [
  "bincode",
  "chrono",
  "clap 4.5.60",
- "ctor",
  "criterion",
+ "ctor",
  "dashmap 5.5.3",
  "datafusion",
  "datafusion_summary_library",
@@ -3539,15 +3539,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
 dependencies = [
  "getrandom 0.2.17",
-]
-
-[[package]]
-name = "rand_core"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
-dependencies = [
- "getrandom 0.3.4",
 ]
 
 [[package]]
