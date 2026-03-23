@@ -9,7 +9,7 @@ use crate::stores::{Store, TimestampedBucketsMap};
 use core::panic;
 use promql_utilities::get_is_collapsable;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -32,9 +32,7 @@ use sqlparser::parser::Parser as parser;
 // SQL issue: refactor simpleengine to create matchresult similar to SQLquerydata
 
 use elastic_dsl_utilities::pattern::parse_and_classify;
-use elastic_dsl_utilities::types::{
-    EsDslQueryPattern, GroupBySpec, MetricAggType, MetricAggregation,
-};
+use elastic_dsl_utilities::types::{EsDslQueryPattern, GroupBySpec, MetricAggType};
 
 // Type alias for merged outputs (single aggregate per key after merging)
 type MergedOutputsMap = HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>;
@@ -1517,7 +1515,7 @@ impl SimpleEngine {
         // 1. Parse query DSL somehow. Elasticsearch DSL crate does not support deserializing, but maybe can use Opensearch instead?
         // 2. Determine whether query is supported using some AST representation or hardcoded pattern matching.
         let query_pattern: EsDslQueryPattern =
-            parse_and_classify(&query).unwrap_or_else(|_| EsDslQueryPattern::Unknown);
+            parse_and_classify(&query).unwrap_or(EsDslQueryPattern::Unknown);
         match query_pattern {
             EsDslQueryPattern::Unknown => {
                 debug!("Could not parse query into known pattern");
@@ -1564,7 +1562,7 @@ impl SimpleEngine {
             .unwrap_or_else(KeyByLabelNames::empty);
 
         Some(QueryExecutionContext {
-            metric: metric,
+            metric,
             metadata: query_metadata,
             store_plan: query_plan.clone(),
             agg_info: agg_info.clone(),
@@ -1592,9 +1590,7 @@ impl SimpleEngine {
         // By default, we only include grouping labels in the output for ES DSL.
         let mut query_output_labels = match query_pattern.get_groupby_spec() {
             Some(GroupBySpec::Terms { field }) => KeyByLabelNames::new(vec![field.clone()]),
-            Some(GroupBySpec::MultiTerms { fields }) => {
-                KeyByLabelNames::new(fields.iter().cloned().collect())
-            }
+            Some(GroupBySpec::MultiTerms { fields }) => KeyByLabelNames::new(fields.to_vec()),
             None => KeyByLabelNames::empty(),
         };
 
@@ -1616,23 +1612,19 @@ impl SimpleEngine {
         }
 
         let mut query_kwargs = HashMap::new(); // Placeholder - build based on query and statistic
-        match aggregation.agg_type {
-            MetricAggType::Percentiles => {
-                // Extract quantile value from aggregation parameters and add to query_kwargs
-                if let Some(params) = &aggregation.params {
-                    if let Some(percents) = params.get("percents") {
-                        // Get first value from percents array since we only support one quantile argument for now.
-                        let quantile = percents
-                            .as_array()
-                            .and_then(|arr| arr.first())
-                            .and_then(|v| v.as_f64());
-                        // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
-                        query_kwargs
-                            .insert("quantile".to_string(), (quantile? / 100.0).to_string());
-                    }
+        if aggregation.agg_type == MetricAggType::Percentiles {
+            // Extract quantile value from aggregation parameters and add to query_kwargs
+            if let Some(params) = &aggregation.params {
+                if let Some(percents) = params.get("percents") {
+                    // Get first value from percents array since we only support one quantile argument for now.
+                    let quantile = percents
+                        .as_array()
+                        .and_then(|arr| arr.first())
+                        .and_then(|v| v.as_f64());
+                    // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
+                    query_kwargs.insert("quantile".to_string(), (quantile? / 100.0).to_string());
                 }
             }
-            _ => {}
         }
 
         let metadata = QueryMetadata {

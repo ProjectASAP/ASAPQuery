@@ -6,13 +6,10 @@
 #[cfg(test)]
 mod tests {
     use crate::data_model::{AggregateCore, KeyByLabelValues};
-    use crate::precompute_operators::{
-        CountMinSketchAccumulator, DatasketchesKLLAccumulator, DeltaSetAggregatorAccumulator,
-        SumAccumulator,
-    };
+    use crate::precompute_operators::DatasketchesKLLAccumulator;
     use crate::tests::test_utilities::create_engine_multi_timestamp;
     use crate::QueryResult;
-    use serde_json::{json, Value};
+    use serde_json::json;
 
     fn create_kll_accumulator_with_values(values: &[f64]) -> DatasketchesKLLAccumulator {
         let mut kll = DatasketchesKLLAccumulator::new(200);
@@ -22,6 +19,7 @@ mod tests {
         kll
     }
 
+    #[allow(clippy::type_complexity)]
     fn create_kll_data_with_timestamps(
         timestamps: &[u64],
         label_values: Vec<Option<Vec<String>>>,
