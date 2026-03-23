@@ -1538,25 +1538,7 @@ impl SimpleEngine {
         let spatial_filter = String::new(); // Placeholder - extract from query if applicable
 
         // TODO: Need way to parse ES DSL "date math".
-        let mut timestamps = QueryTimestamps {
-            start_timestamp: 0, // Placeholder - determine based on query
-            end_timestamp: query_time, // Placeholder - 1 hour before query_time
-        };
-
-        let time_range = query_pattern.get_time_range();
-        time_range.map(|tr| {
-            if let Some(resolved_range) = tr.resolve_epoch_millis(query_time as i64) {
-                debug!(
-                    "Parsed time range from query: start={} end={}",
-                    resolved_range.gte_ms.unwrap_or(0),
-                    resolved_range.lte_ms.unwrap_or(0)
-                );
-                timestamps.start_timestamp = resolved_range.gte_ms.unwrap_or(0) as u64;
-                timestamps.end_timestamp = resolved_range.lte_ms.unwrap_or(query_time as i64) as u64;
-            } else {
-                debug!("Failed to resolve time range from query");
-            }
-        });
+        let timestamps = self.resolve_query_time_range_elastic(query_time, query_pattern);
 
         let query_plan = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
@@ -1600,28 +1582,17 @@ impl SimpleEngine {
 
         // Figure out aggregation type and what labels are included in output.
         // By default, we only include grouping labels in the output for ES DSL.
-        let aggregation: MetricAggregation; // Take first aggregation by default since current engine doesn't support multiple aggregations in a single query.
-        let mut query_output_labels = match query_pattern {
-            EsDslQueryPattern::SimpleAggregation { aggregations, .. } => {
-                aggregation = aggregations.first()?.clone();
-                KeyByLabelNames::empty()
+
+        // Take first aggregation by default since current engine doesn't support multiple aggregations in a single query.
+        let aggregation = query_pattern.get_metric_aggs()?.first()?.clone(); 
+
+        // By default, we only include grouping labels in the output for ES DSL.
+        let mut query_output_labels = match query_pattern.get_groupby_spec() {
+            Some(GroupBySpec::Terms { field }) => KeyByLabelNames::new(vec![field.clone()]),
+            Some(GroupBySpec::MultiTerms { fields }) => {
+                KeyByLabelNames::new(fields.iter().cloned().collect())
             }
-            EsDslQueryPattern::GroupByAggregation {
-                aggregations,
-                group_by,
-                ..
-            } => {
-                let labels: HashSet<String> = match group_by {
-                    GroupBySpec::Terms { field } => [field.clone()].into_iter().collect(),
-                    GroupBySpec::MultiTerms { fields } => fields.iter().cloned().collect(),
-                };
-                aggregation = aggregations.first()?.clone();
-                KeyByLabelNames::new(labels.into_iter().collect())
-            }
-            _ => {
-                debug!("Query pattern does not match known aggregation types for label extraction");
-                return None;
-            }
+            None => KeyByLabelNames::empty(),
         };
 
         let metric = aggregation.field.clone();
@@ -1666,6 +1637,35 @@ impl SimpleEngine {
             query_kwargs: query_kwargs.clone(),
         };
         Some((metric, metadata))
+    }
+
+    pub fn resolve_query_time_range_elastic(&self, query_time: u64, query_pattern: EsDslQueryPattern) -> QueryTimestamps {
+        // Resolves the actual start and end timestamps into milliseconds for an ElasticSearch query 
+        // based on the provided query_time and the time range specified in the ES DSL query pattern (if any). 
+        // If no time range is specified, default to entire history up to query_time.
+
+        let mut start_timestamp: u64 = 0;
+        let mut end_timestamp: u64 = query_time;
+
+        let time_range = query_pattern.get_time_range();
+        time_range.map(|tr| {
+            if let Some(resolved_range) = tr.resolve_epoch_millis(query_time as i64) {
+                debug!(
+                    "Parsed time range from query: start={} end={}",
+                    resolved_range.gte_ms.unwrap_or(0),
+                    resolved_range.lte_ms.unwrap_or(0)
+                );
+                start_timestamp = resolved_range.gte_ms.unwrap_or(0) as u64;
+                end_timestamp = resolved_range.lte_ms.unwrap_or(query_time as i64) as u64;
+            } else {
+                debug!("Failed to resolve time range from query");
+            }
+        });
+
+        QueryTimestamps {
+            start_timestamp,
+            end_timestamp,
+        }
     }
 
     // /// Try to extract sketch query components from a PromQL query string.
