@@ -80,11 +80,23 @@ impl FallbackClient for ElasticHttpFallback {
 
         debug!("Full forwarding URL: {}", full_url);
 
-        let query_body: Value = match serde_json::from_str(&request.query) {
-            Ok(json) => json,
-            Err(e) => {
-                error!("Failed to parse query as JSON: {}", e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        let query_body: Value = match self.language {
+            QueryLanguage::elastic_sql => {
+                // query is a raw SQL string, need to wrap it for the ES SQL endpoint
+                serde_json::json!({
+                    "query": request.query.trim().trim_end_matches(';'),
+                    "fetch_size": 1000,
+                })
+            }
+            _ => {
+                // query is already a JSON string (Query DSL)
+                match serde_json::from_str(&request.query) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!("Failed to parse query as JSON: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
             }
         };
 

@@ -17,7 +17,7 @@ pub enum SchemaConfig {
     PromQL(PromQLSchema),
     SQL(SQLSchema),
     ElasticQueryDSL,
-    ElasticSQL,
+    ElasticSQL(SQLSchema),
 }
 
 #[derive(Debug, Clone)]
@@ -33,7 +33,7 @@ impl InferenceConfig {
             QueryLanguage::promql => SchemaConfig::PromQL(PromQLSchema::new()),
             QueryLanguage::sql => SchemaConfig::SQL(SQLSchema::new(Vec::new())),
             QueryLanguage::elastic_querydsl => SchemaConfig::ElasticQueryDSL,
-            QueryLanguage::elastic_sql => SchemaConfig::ElasticSQL,
+            QueryLanguage::elastic_sql => SchemaConfig::ElasticSQL(SQLSchema::new(Vec::new())),
         };
         Self {
             schema,
@@ -61,7 +61,10 @@ impl InferenceConfig {
                 SchemaConfig::SQL(sql_schema)
             }
             QueryLanguage::elastic_querydsl => SchemaConfig::ElasticQueryDSL,
-            QueryLanguage::elastic_sql => SchemaConfig::ElasticSQL,
+            QueryLanguage::elastic_sql => {
+                let sql_schema = Self::parse_sql_schema(data)?;
+                SchemaConfig::SQL(sql_schema)
+            }
         };
 
         let cleanup_policy = Self::parse_cleanup_policy(data)?;
