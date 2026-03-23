@@ -21,7 +21,7 @@ pub enum MetricAggType {
 
 impl MetricAggType {
     /// Returns the JSON key name for this aggregation type.
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_json_str(&self) -> &'static str {
         match self {
             MetricAggType::Avg => "avg",
             MetricAggType::Min => "min",
@@ -32,7 +32,7 @@ impl MetricAggType {
     }
 
     /// Try to parse from a string key.
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_json_str(s: &str) -> Option<Self> {
         match s {
             "avg" => Some(MetricAggType::Avg),
             "min" => Some(MetricAggType::Min),
@@ -198,9 +198,6 @@ pub enum EsDslQueryPattern {
 }
 
 impl EsDslQueryPattern {
-    /// Classify the given ES DSL query into one of the above patterns, extracting
-    /// the relevant components for routing to sketch fast-paths.
-    
     pub fn get_time_range(&self) -> Option<&TimeRange> {
         match self {
             EsDslQueryPattern::SimpleAggregation { time_range, .. } => time_range.as_ref(),

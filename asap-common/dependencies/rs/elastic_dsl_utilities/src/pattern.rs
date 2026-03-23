@@ -1,9 +1,7 @@
 use serde_json::Value;
 
 use crate::{
-    parsing::{
-        extract_group_by_agg, extract_metric_aggs, extract_predicates_from_query,
-    },
+    parsing::{extract_group_by_agg, extract_metric_aggs, extract_predicates_from_query},
     types::EsDslQueryPattern,
 };
 
@@ -28,7 +26,6 @@ pub fn classify(value: &Value) -> EsDslQueryPattern {
         }
         _ => return EsDslQueryPattern::Unknown,
     }
-        
 
     let aggs = value.get("aggs").unwrap_or(&Value::Null);
     let query = value.get("query");
@@ -198,8 +195,20 @@ mod tests {
                 aggregations,
             } => {
                 assert_eq!(label_filters.len(), 2);
-                assert_eq!(label_filters[0], LabelFilter { field: "service".into(), value: "frontend".into() });
-                assert_eq!(label_filters[1], LabelFilter { field: "env".into(), value: "staging".into() });
+                assert_eq!(
+                    label_filters[0],
+                    LabelFilter {
+                        field: "service".into(),
+                        value: "frontend".into()
+                    }
+                );
+                assert_eq!(
+                    label_filters[1],
+                    LabelFilter {
+                        field: "env".into(),
+                        value: "staging".into()
+                    }
+                );
                 assert!(time_range.is_some());
                 assert_eq!(aggregations.len(), 1);
             }
@@ -257,7 +266,12 @@ mod tests {
                 aggregations,
             } => {
                 assert_eq!(grouped_result_name, "grouped_result");
-                assert_eq!(group_by, GroupBySpec::Terms { field: "service".into() });
+                assert_eq!(
+                    group_by,
+                    GroupBySpec::Terms {
+                        field: "service".into()
+                    }
+                );
                 assert_eq!(label_filters[0].field, "service");
                 assert_eq!(label_filters[0].value, "frontend");
                 assert_eq!(label_filters[1].field, "env");
@@ -312,7 +326,13 @@ mod tests {
                         fields: vec!["service".into(), "region".into()]
                     }
                 );
-                assert_eq!(label_filters[0], LabelFilter { field: "env".into(), value: "staging".into() });
+                assert_eq!(
+                    label_filters[0],
+                    LabelFilter {
+                        field: "env".into(),
+                        value: "staging".into()
+                    }
+                );
                 assert!(time_range.is_none());
                 assert_eq!(aggregations.len(), 1);
             }
@@ -370,7 +390,10 @@ mod tests {
     fn test_parse_and_classify_roundtrip() {
         let json = r#"{"size":0,"aggs":{"avg_cpu":{"avg":{"field":"cpu_usage"}}}}"#;
         let result = parse_and_classify(json).unwrap();
-        assert!(matches!(result, EsDslQueryPattern::SimpleAggregation { .. }));
+        assert!(matches!(
+            result,
+            EsDslQueryPattern::SimpleAggregation { .. }
+        ));
     }
 
     #[test]

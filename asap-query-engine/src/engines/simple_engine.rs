@@ -1488,7 +1488,10 @@ impl SimpleEngine {
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
         let context = self.build_query_execution_context_elastic(query, time)?;
-        debug!("Built execution context for ElasticSearch query {:?}", context);
+        debug!(
+            "Built execution context for ElasticSearch query {:?}",
+            context
+        );
         // Execute complete query pipeline
         let results = self
             .execute_query_pipeline(&context, false) // SQL: topk disabled
@@ -1584,7 +1587,7 @@ impl SimpleEngine {
         // By default, we only include grouping labels in the output for ES DSL.
 
         // Take first aggregation by default since current engine doesn't support multiple aggregations in a single query.
-        let aggregation = query_pattern.get_metric_aggs()?.first()?.clone(); 
+        let aggregation = query_pattern.get_metric_aggs()?.first()?.clone();
 
         // By default, we only include grouping labels in the output for ES DSL.
         let mut query_output_labels = match query_pattern.get_groupby_spec() {
@@ -1624,7 +1627,8 @@ impl SimpleEngine {
                             .and_then(|arr| arr.first())
                             .and_then(|v| v.as_f64());
                         // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
-                        query_kwargs.insert("quantile".to_string(), (quantile? / 100.0).to_string());
+                        query_kwargs
+                            .insert("quantile".to_string(), (quantile? / 100.0).to_string());
                     }
                 }
             }
@@ -1639,9 +1643,13 @@ impl SimpleEngine {
         Some((metric, metadata))
     }
 
-    pub fn resolve_query_time_range_elastic(&self, query_time: u64, query_pattern: EsDslQueryPattern) -> QueryTimestamps {
-        // Resolves the actual start and end timestamps into milliseconds for an ElasticSearch query 
-        // based on the provided query_time and the time range specified in the ES DSL query pattern (if any). 
+    pub fn resolve_query_time_range_elastic(
+        &self,
+        query_time: u64,
+        query_pattern: EsDslQueryPattern,
+    ) -> QueryTimestamps {
+        // Resolves the actual start and end timestamps into milliseconds for an ElasticSearch query
+        // based on the provided query_time and the time range specified in the ES DSL query pattern (if any).
         // If no time range is specified, default to entire history up to query_time.
 
         let mut start_timestamp: u64 = 0;

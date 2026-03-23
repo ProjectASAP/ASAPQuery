@@ -22,9 +22,11 @@ pub fn extract_metric_aggs(aggs: &Value) -> Option<Vec<MetricAggregation>> {
         let body_obj = agg_body.as_object()?;
         let mut found = None;
         for (key, inner) in body_obj {
-            if let Some(agg_type) = MetricAggType::from_str(key) {
+            if let Some(agg_type) = MetricAggType::from_json_str(key) {
                 let field = inner.get("field")?.as_str()?.to_owned();
-                let kwargs_map = inner.as_object()?.iter()
+                let kwargs_map = inner
+                    .as_object()?
+                    .iter()
                     .filter(|(k, _)| *k != "field")
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
@@ -165,7 +167,9 @@ pub fn extract_label_filters(query: &Value) -> Option<(Vec<LabelFilter>, Option<
 /// - `{"range": ...}` -> `(label_filters=[], time_range=Some(...))`
 /// - `{"bool": {"filter": ...}}` -> label filters + optional time range
 /// - `None`/`null` query is represented by caller as `(vec![], None)`.
-pub fn extract_predicates_from_query(query: &Value) -> Option<(Vec<LabelFilter>, Option<TimeRange>)> {
+pub fn extract_predicates_from_query(
+    query: &Value,
+) -> Option<(Vec<LabelFilter>, Option<TimeRange>)> {
     if query.is_null() {
         return Some((Vec::new(), None));
     }
@@ -211,9 +215,7 @@ pub fn extract_predicates_from_query(query: &Value) -> Option<(Vec<LabelFilter>,
 ///   }
 /// }
 /// ```
-pub fn extract_group_by_agg(
-    aggs: &Value,
-) -> Option<(String, GroupBySpec, Vec<MetricAggregation>)> {
+pub fn extract_group_by_agg(aggs: &Value) -> Option<(String, GroupBySpec, Vec<MetricAggregation>)> {
     let obj = aggs.as_object()?;
     // There must be exactly one top-level aggregation entry.
     if obj.len() != 1 {
@@ -262,15 +264,27 @@ mod tests {
         });
         let result = extract_metric_aggs(&aggs).unwrap();
         assert_eq!(result.len(), 3);
-        let avg = result.iter().find(|a| a.result_name == "avg_latency").unwrap();
+        let avg = result
+            .iter()
+            .find(|a| a.result_name == "avg_latency")
+            .unwrap();
         assert_eq!(avg.agg_type, MetricAggType::Avg);
         assert_eq!(avg.field, "latency_ms");
-        let p95 = result.iter().find(|a| a.result_name == "p95_latency").unwrap();
+        let p95 = result
+            .iter()
+            .find(|a| a.result_name == "p95_latency")
+            .unwrap();
         assert_eq!(p95.agg_type, MetricAggType::Percentiles);
         assert_eq!(p95.field, "latency_ms");
-        assert_eq!(p95.params.as_ref().unwrap().get("percents").unwrap(), &json!([95]));
+        assert_eq!(
+            p95.params.as_ref().unwrap().get("percents").unwrap(),
+            &json!([95])
+        );
 
-        let avg = result.iter().find(|a| a.result_name == "avg_latency").unwrap();
+        let avg = result
+            .iter()
+            .find(|a| a.result_name == "avg_latency")
+            .unwrap();
         assert!(avg.params.is_none());
     }
 
@@ -374,7 +388,12 @@ mod tests {
         });
         let (name, group_by, metric_aggs) = extract_group_by_agg(&aggs).unwrap();
         assert_eq!(name, "by_service");
-        assert_eq!(group_by, GroupBySpec::Terms { field: "service".to_string() });
+        assert_eq!(
+            group_by,
+            GroupBySpec::Terms {
+                field: "service".to_string()
+            }
+        );
         assert_eq!(metric_aggs.len(), 1);
         assert_eq!(metric_aggs[0].agg_type, MetricAggType::Avg);
     }
