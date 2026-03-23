@@ -383,7 +383,6 @@ mod tests {
 
         let sql_query = json!({
             "query": "SELECT status, COUNT(*) FROM logs GROUP BY status",
-            "fetch_size": 100,
             "time_zone": "UTC"
         });
 
@@ -392,8 +391,10 @@ mod tests {
 
         assert!(result.is_ok(), "SQL query with params should parse");
         let parsed = result.unwrap();
-        assert!(parsed.query.contains("fetch_size"));
-        assert!(parsed.query.contains("time_zone"));
+        assert!(
+            !parsed.query.contains("time_zone"),
+            "SQL adapter should extract only the query string, not extra params"
+        );
     }
 
     /// Test: Invalid JSON should return error
