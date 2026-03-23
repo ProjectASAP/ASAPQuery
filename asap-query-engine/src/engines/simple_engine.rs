@@ -1656,7 +1656,7 @@ impl SimpleEngine {
         let mut end_timestamp: u64 = query_time;
 
         let time_range = query_pattern.get_time_range();
-        time_range.map(|tr| {
+        if let Some(tr) = time_range {
             if let Some(resolved_range) = tr.resolve_epoch_millis(query_time as i64) {
                 debug!(
                     "Parsed time range from query: start={} end={}",
@@ -1668,7 +1668,7 @@ impl SimpleEngine {
             } else {
                 debug!("Failed to resolve time range from query");
             }
-        });
+        };
 
         QueryTimestamps {
             start_timestamp,
