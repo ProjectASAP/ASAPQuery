@@ -1,50 +1,64 @@
 #!/bin/bash
-
-# Full pipeline script: starts Kafka, ClickHouse, Arroyo, and QueryEngine,
-# then runs the benchmark.
+#
+# Full benchmark pipeline for H2O groupby: ASAP vs ClickHouse baseline.
 #
 # Usage:
-#   ASAP mode (full from scratch):
-#     ./run_pipeline.sh --mode asap --load-data --output asap_results_run1.csv
+#   # ASAP mode (full from scratch):
+#   ./run_pipeline.sh --mode asap --load-data --output asap_results.csv
 #
-#   ASAP mode (infra already running, data already loaded):
-#     ./run_pipeline.sh --mode asap --skip-infra --output asap_results_run2.csv
+#   # Baseline mode (full from scratch):
+#   ./run_pipeline.sh --mode baseline --load-data --output baseline_results.csv
 #
-#   Baseline mode (full from scratch):
-#     ./run_pipeline.sh --mode baseline --load-data --output baseline_results.csv
+#   # Both modes back-to-back:
+#   ./run_pipeline.sh --mode both --load-data
 #
-#   Baseline mode (ClickHouse already running):
-#     ./run_pipeline.sh --mode baseline --skip-infra --output baseline_results.csv
+#   # Skip infrastructure startup (already running):
+#   ./run_pipeline.sh --mode asap --skip-infra --output asap_results.csv
+#
+# Environment variables (override defaults):
+#   KAFKA_INSTALL_DIR   Path to kafka installation dir (contains run.sh + kafka/)
+#   CLICKHOUSE_INSTALL_DIR  Path to clickhouse installation dir
+#   ARROYO_BIN          Path to arroyo binary
+#   ARROYO_CONFIG       Path to arroyo config.yaml
+#   QE_BIN              Path to query_engine_rust binary
+#   ARROYOSKETCH_DIR    Path to asap-summary-ingest directory
 
 set -euo pipefail
 
 # ==========================================
-# 1. DYNAMIC PATH RESOLUTION
+# 1. PATH RESOLUTION
 # ==========================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
+TOOLS_DIR="$(cd "$SCRIPT_DIR/../.." &>/dev/null && pwd)"
+ROOT_DIR="$(cd "$TOOLS_DIR/.." &>/dev/null && pwd)"
 
-KAFKA_INSTALL_DIR="$ROOT_DIR/Utilities/installation/kafka"
-CLICKHOUSE_INSTALL_DIR="$ROOT_DIR/Utilities/installation/clickhouse"
+KAFKA_INSTALL_DIR="${KAFKA_INSTALL_DIR:-$TOOLS_DIR/installation/kafka}"
+CLICKHOUSE_INSTALL_DIR="${CLICKHOUSE_INSTALL_DIR:-$TOOLS_DIR/installation/clickhouse}"
 KAFKA_DIR="$KAFKA_INSTALL_DIR/kafka"
 CLICKHOUSE_DIR="$CLICKHOUSE_INSTALL_DIR/clickhouse"
+ARROYO_BIN="${ARROYO_BIN:-$ROOT_DIR/arroyo/target/release/arroyo}"
+ARROYO_CONFIG="${ARROYO_CONFIG:-$ROOT_DIR/asap-summary-ingest/config.yaml}"
+QE_BIN="${QE_BIN:-$ROOT_DIR/target/release/query_engine_rust}"
+ARROYOSKETCH_DIR="${ARROYOSKETCH_DIR:-$ROOT_DIR/asap-summary-ingest}"
 
 # ==========================================
 # 2. ARGUMENT PARSING
 # ==========================================
 MODE="asap"
 LOAD_DATA=0
-OUTPUT_FILE="asap_results_run1.csv"
+OUTPUT_FILE=""
 SKIP_INFRA=0
+MAX_ROWS=0
 
 print_usage() {
     echo "Usage: ./run_pipeline.sh [OPTIONS]"
     echo "Options:"
-    echo "  --mode [asap|baseline]   Execution mode (default: asap)"
-    echo "  --load-data              Stream H2O dataset into ClickHouse/Kafka"
-    echo "  --output [FILE]          Output CSV file (default: asap_results_run1.csv)"
-    echo "  --skip-infra             Skip starting Kafka/ClickHouse (assume already running)"
-    echo "  --help                   Show this message"
+    echo "  --mode [asap|baseline|both]  Execution mode (default: asap)"
+    echo "  --load-data                  Load H2O dataset"
+    echo "  --output [FILE]              Output CSV file"
+    echo "  --skip-infra                 Skip starting infrastructure"
+    echo "  --max-rows [N]               Max rows to load (0 = all)"
+    echo "  --help                       Show this message"
 }
 
 while [[ "$#" -gt 0 ]]; do
@@ -53,6 +67,7 @@ while [[ "$#" -gt 0 ]]; do
         --load-data)  LOAD_DATA=1 ;;
         --output)     OUTPUT_FILE="$2"; shift ;;
         --skip-infra) SKIP_INFRA=1 ;;
+        --max-rows)   MAX_ROWS="$2"; shift ;;
         --help)       print_usage; exit 0 ;;
         *) echo "Unknown parameter: $1"; print_usage; exit 1 ;;
     esac
@@ -63,19 +78,13 @@ done
 # 3. HELPER FUNCTIONS
 # ==========================================
 
-# Wait for a URL to return HTTP 200. Args: name url [max_seconds]
 wait_for_url() {
-    local name="$1"
-    local url="$2"
-    local max_seconds="${3:-120}"
-    local elapsed=0
+    local name="$1" url="$2" max_seconds="${3:-120}" elapsed=0
     echo "Waiting for $name..."
     while ! curl -sf "$url" >/dev/null 2>&1; do
-        sleep 2
-        elapsed=$((elapsed + 2))
+        sleep 2; elapsed=$((elapsed + 2))
         if [ "$elapsed" -ge "$max_seconds" ]; then
             echo "ERROR: $name did not become ready within ${max_seconds}s"
-            echo "Check logs for details"
             exit 1
         fi
     done
@@ -83,15 +92,12 @@ wait_for_url() {
 }
 
 wait_for_kafka() {
-    local max_seconds="${1:-120}"
-    local elapsed=0
+    local max_seconds="${1:-120}" elapsed=0
     echo "Waiting for Kafka..."
     while ! "$KAFKA_DIR/bin/kafka-topics.sh" --bootstrap-server localhost:9092 --list >/dev/null 2>&1; do
-        sleep 2
-        elapsed=$((elapsed + 2))
+        sleep 2; elapsed=$((elapsed + 2))
         if [ "$elapsed" -ge "$max_seconds" ]; then
             echo "ERROR: Kafka did not become ready within ${max_seconds}s"
-            echo "Check /tmp/kafka.log for details"
             exit 1
         fi
     done
@@ -99,10 +105,8 @@ wait_for_kafka() {
 }
 
 wait_for_arroyo_pipeline_running() {
-    local max_seconds="${1:-300}"
-    local elapsed=0
-    echo "Waiting for Arroyo pipeline 'asap_h2o_pipeline' to reach RUNNING state..."
-    echo "(This may take up to ${max_seconds}s while Arroyo compiles Rust UDFs)"
+    local max_seconds="${1:-300}" elapsed=0
+    echo "Waiting for Arroyo pipeline to reach RUNNING state..."
     while true; do
         state=$(curl -sf "http://localhost:5115/api/v1/pipelines" 2>/dev/null | \
             python3 -c "
@@ -111,9 +115,7 @@ try:
     data = json.load(sys.stdin)
     for p in data.get('data', []):
         if p.get('name') == 'asap_h2o_pipeline':
-            # Arroyo returns null/None for state when actively running
             state = p.get('state')
-            action = p.get('action', '')
             stop = p.get('stop', '')
             if state is None and stop == 'none':
                 print('running')
@@ -129,47 +131,18 @@ except Exception:
             echo "Pipeline is RUNNING"
             return 0
         fi
-
         echo "  Pipeline state: $state (elapsed: ${elapsed}s)"
-        sleep 5
-        elapsed=$((elapsed + 5))
-
+        sleep 5; elapsed=$((elapsed + 5))
         if [ "$elapsed" -ge "$max_seconds" ]; then
             echo "ERROR: Pipeline did not reach RUNNING state within ${max_seconds}s"
-            echo "Check /tmp/arroyo.log for details"
             exit 1
         fi
     done
 }
 
-wait_for_data_loaded() {
-    local min_rows="${1:-9000000}"
-    echo "Waiting for ClickHouse h2o_groupby to have at least $min_rows rows..."
-    while true; do
-        count=$(curl -sf "http://localhost:8123/" -d "SELECT count(*) FROM h2o_groupby" 2>/dev/null | tr -d '[:space:]' || echo "0")
-        if [ -n "$count" ] && [ "$count" -ge "$min_rows" ] 2>/dev/null; then
-            echo "Data ready: $count rows"
-            return 0
-        fi
-        echo "  Rows in h2o_groupby: ${count:-0}"
-        sleep 5
-    done
-}
-
-ensure_extracted() {
-    local zip_file="$1"
-    local target_dir="$2"
-    if [ ! -d "$target_dir" ]; then
-        echo "Extracting $(basename "$zip_file")..."
-        unzip -q "$zip_file" -d "$(dirname "$target_dir")"
-        echo "Extracted to $target_dir"
-    fi
-}
-
-# Start Kafka only if it isn't already responding
 start_kafka_if_needed() {
     if "$KAFKA_DIR/bin/kafka-topics.sh" --bootstrap-server localhost:9092 --list >/dev/null 2>&1; then
-        echo "Kafka already running, skipping start"
+        echo "Kafka already running"
         return 0
     fi
     echo "Starting Kafka..."
@@ -177,10 +150,9 @@ start_kafka_if_needed() {
     wait_for_kafka 120
 }
 
-# Start ClickHouse only if it isn't already responding
 start_clickhouse_if_needed() {
     if curl -sf "http://localhost:8123/ping" >/dev/null 2>&1; then
-        echo "ClickHouse already running, skipping start"
+        echo "ClickHouse already running"
         return 0
     fi
     echo "Starting ClickHouse..."
@@ -188,90 +160,118 @@ start_clickhouse_if_needed() {
     wait_for_url "ClickHouse" "http://localhost:8123/ping" 120
 }
 
-init_clickhouse_tables() {
-    echo "Initializing ClickHouse tables..."
-    python3 - <<'PYEOF'
-import requests
+purge_kafka_topic() {
+    local topic="$1" max_wait=30 elapsed=0
+    echo "Purging Kafka topic '$topic'..."
+    "$KAFKA_DIR/bin/kafka-topics.sh" --bootstrap-server localhost:9092 \
+        --delete --topic "$topic" 2>/dev/null || true
+    while "$KAFKA_DIR/bin/kafka-topics.sh" --bootstrap-server localhost:9092 \
+            --list 2>/dev/null | grep -qx "$topic"; do
+        sleep 1; elapsed=$((elapsed + 1))
+        if [ "$elapsed" -ge "$max_wait" ]; then
+            echo "  WARN: topic '$topic' still exists after ${max_wait}s"
+            break
+        fi
+    done
+    "$KAFKA_DIR/bin/kafka-topics.sh" --bootstrap-server localhost:9092 \
+        --create --topic "$topic" --partitions 1 --replication-factor 1 \
+        --config retention.ms=-1 \
+        2>/dev/null || true
+    echo "  '$topic' reset"
+}
 
-with open("h2o_init.sql") as f:
-    content = f.read()
+get_sketch_topic_offset() {
+    "$KAFKA_DIR/bin/kafka-get-offsets.sh" --bootstrap-server localhost:9092 \
+        --topic sketch_topic 2>/dev/null | cut -d: -f3 || echo "0"
+}
 
-statements = [s.strip() for s in content.split(";") if s.strip()]
-for sql in statements:
-    r = requests.post("http://localhost:8123/", data=sql)
-    if not r.ok:
-        print(f"  WARN: {r.text.strip()[:120]} | SQL: {sql[:60]}")
-    else:
-        print(f"  OK: {sql[:60]}")
-PYEOF
+wait_for_new_sketches() {
+    local initial_offset="$1" max_seconds="${2:-600}" elapsed=0
+    echo "Waiting for sketches (baseline offset: $initial_offset)..."
+    while true; do
+        current_offset=$(get_sketch_topic_offset)
+        if [ -n "$current_offset" ] && [ "$current_offset" -gt "$initial_offset" ] 2>/dev/null; then
+            echo "Sketches emitted (offset: $current_offset, +$((current_offset - initial_offset)) new)"
+            return 0
+        fi
+        echo "  sketch_topic offset: ${current_offset} (elapsed: ${elapsed}s) — sending flush nudge..."
+        FLUSH_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        echo "{\"timestamp\":\"${FLUSH_TS}\",\"id1\":\"flush\",\"id2\":\"flush\",\"id3\":\"flush\",\"id4\":0,\"id5\":0,\"id6\":0,\"v1\":0,\"v2\":0,\"v3\":0.0}" | \
+            "$KAFKA_DIR/bin/kafka-console-producer.sh" --bootstrap-server localhost:9092 --topic h2o_groupby \
+            >/dev/null 2>&1 || true
+        sleep 30; elapsed=$((elapsed + 30))
+        if [ "$elapsed" -ge "$max_seconds" ]; then
+            echo "ERROR: No sketches after ${max_seconds}s"
+            exit 1
+        fi
+    done
 }
 
 cleanup_background_jobs() {
-    echo "Cleaning up ASAP background processes..."
-    pkill -f "arroyo.*cluster" || true
-    pkill -f "query_engine_rust" || true
+    echo "Cleaning up background processes..."
+    pkill -f "arroyo.*cluster" 2>/dev/null || true
+    pkill -f "query_engine_rust" 2>/dev/null || true
     sleep 2
 }
 
 # ==========================================
 # 4. BASELINE MODE
 # ==========================================
-if [ "$MODE" = "baseline" ]; then
-    echo "RUNNING IN BASELINE MODE"
+run_baseline() {
+    local output="${1:-baseline_results.csv}"
+    echo "========================================"
+    echo "RUNNING BASELINE MODE"
+    echo "========================================"
 
     if [ "$SKIP_INFRA" -eq 0 ]; then
-        ensure_extracted "$KAFKA_INSTALL_DIR/kafka.zip" "$KAFKA_DIR"
-        ensure_extracted "$CLICKHOUSE_INSTALL_DIR/clickhouse.zip" "$CLICKHOUSE_DIR"
-        start_kafka_if_needed
         start_clickhouse_if_needed
     fi
 
     if [ "$LOAD_DATA" -eq 1 ]; then
         cd "$SCRIPT_DIR"
-        init_clickhouse_tables
+        python3 run_benchmark.py --mode baseline --load-data --no-benchmark --max-rows "$MAX_ROWS"
     fi
 
-    CMD="python3 run_benchmark.py --mode baseline --output $OUTPUT_FILE"
-    [ "$LOAD_DATA" -eq 1 ] && CMD="$CMD --load-data"
-
-    echo "Executing: $CMD"
-    eval "$CMD"
-    echo "Baseline run complete!"
+    cd "$SCRIPT_DIR"
+    python3 run_benchmark.py --mode baseline --output "$output"
+    echo "Baseline complete: $output"
+}
 
 # ==========================================
 # 5. ASAP MODE
 # ==========================================
-elif [ "$MODE" = "asap" ]; then
-    echo "RUNNING IN ASAP MODE"
+run_asap() {
+    local output="${1:-asap_results.csv}"
+    echo "========================================"
+    echo "RUNNING ASAP MODE"
+    echo "========================================"
 
-    # Clean up any stale processes from previous runs
     cleanup_background_jobs
 
     if [ "$SKIP_INFRA" -eq 0 ]; then
-        ensure_extracted "$KAFKA_INSTALL_DIR/kafka.zip" "$KAFKA_DIR"
-        ensure_extracted "$CLICKHOUSE_INSTALL_DIR/clickhouse.zip" "$CLICKHOUSE_DIR"
         start_kafka_if_needed
         start_clickhouse_if_needed
     fi
 
-    # Initialize ClickHouse tables only when loading fresh data
-    # (h2o_init.sql drops and recreates tables, which would wipe existing data)
+    # --- Purge Kafka topics for clean slate ---
+    purge_kafka_topic h2o_groupby
+    purge_kafka_topic sketch_topic
+
+    # --- Load data into ClickHouse (direct) for data presence ---
     if [ "$LOAD_DATA" -eq 1 ]; then
         cd "$SCRIPT_DIR"
-        init_clickhouse_tables
+        python3 run_benchmark.py --mode asap --load-data --no-benchmark --max-rows "$MAX_ROWS"
     fi
 
-    # Start Arroyo cluster
+    # --- Start Arroyo ---
     echo "Starting Arroyo cluster..."
-    cd "$ROOT_DIR/arroyo"
-    nohup ./target/release/arroyo --config "$ROOT_DIR/ArroyoSketch/config.yaml" cluster \
-        >/tmp/arroyo.log 2>&1 &
-
+    cd "$(dirname "$ARROYO_BIN")"
+    nohup "$ARROYO_BIN" --config "$ARROYO_CONFIG" cluster >/tmp/arroyo.log 2>&1 &
     wait_for_url "Arroyo API" "http://localhost:5115/api/v1/pipelines" 60
 
-    # Submit Arroyo pipeline
+    # --- Submit pipeline ---
     echo "Submitting Arroyo pipeline..."
-    cd "$ROOT_DIR/ArroyoSketch"
+    cd "$ARROYOSKETCH_DIR"
     python3 run_arroyosketch.py \
         --source_type kafka \
         --kafka_input_format json \
@@ -280,48 +280,37 @@ elif [ "$MODE" = "asap" ]; then
         --pipeline_name asap_h2o_pipeline \
         --config_file_path "$SCRIPT_DIR/streaming_config.yaml" \
         --output_kafka_topic sketch_topic \
-        --output_dir ./outputs \
+        --output_dir "$SCRIPT_DIR/outputs" \
         --parallelism 1 \
         --query_language sql
 
-    # Poll until pipeline is RUNNING (Arroyo compiles Rust UDFs, takes ~1-3 minutes)
     wait_for_arroyo_pipeline_running 300
 
-    # Wait for Arroyo's Kafka source worker to fully initialize and assign partitions.
-    # load_h2o_data re-runs h2o_init.sql (DROP/CREATE h2o_groupby_queue), which causes a
-    # brief Kafka metadata disruption. If this races with Arroyo's initial partition assignment,
-    # the worker sees 0 partitions and goes permanently idle. A short sleep avoids the race.
-    echo "Waiting 20s for Arroyo worker to initialize Kafka partition assignment..."
+    echo "Waiting 20s for Arroyo worker initialization..."
     sleep 20
 
-    # Load data through Kafka so Arroyo builds sketches AND MergeTree is populated
-    cd "$SCRIPT_DIR"
+    INITIAL_SKETCH_OFFSET=$(get_sketch_topic_offset)
+
+    # --- Stream data through Kafka for Arroyo ---
     if [ "$LOAD_DATA" -eq 1 ]; then
-        echo "Loading data through Kafka (ASAP mode)..."
-        python3 run_benchmark.py --mode asap --load-data
+        cd "$SCRIPT_DIR"
+        echo "Streaming data to Kafka for sketch generation..."
+        python3 run_benchmark.py --load-kafka --no-benchmark --max-rows "$MAX_ROWS"
 
-        # Wait for MergeTree to reflect the data (materialized view consumes from Kafka)
-        wait_for_data_loaded 9000000
-
-        # Send a flush record to advance Arroyo's watermark past the last window.
-        # This ensures the final 120s tumbling window is closed and its sketch is emitted.
-        echo "Sending watermark flush record to Kafka..."
-        FLUSH_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-        curl -sf "http://localhost:8123/?query=INSERT%20INTO%20h2o_groupby_queue%20FORMAT%20JSONEachRow" \
-            --data-raw "{\"timestamp\":\"${FLUSH_TS}\",\"id1\":\"flush\",\"id2\":\"flush\",\"id3\":\"flush\",\"id4\":0,\"id5\":0,\"id6\":0,\"v1\":0,\"v2\":0,\"v3\":0.0}" \
-            || echo "Warning: flush record insert failed (non-fatal)"
-
-        # Give Arroyo additional time to close and flush the final sketch windows
-        echo "Waiting 30s for Arroyo to flush all sketch windows..."
-        sleep 30
-    else
-        echo "Skipping data load (--load-data not provided)"
+        # Wait for sketches
+        wait_for_new_sketches "$INITIAL_SKETCH_OFFSET" 600
     fi
 
-    # Start QueryEngine
+    # --- Reset consumer group offsets ---
+    echo "Resetting query-engine-rust consumer group offsets..."
+    "$KAFKA_DIR/bin/kafka-consumer-groups.sh" --bootstrap-server localhost:9092 \
+        --group query-engine-rust --topic sketch_topic \
+        --reset-offsets --to-earliest --execute 2>/dev/null || true
+
+    # --- Start QueryEngine ---
     echo "Starting QueryEngine..."
-    cd "$ROOT_DIR/QueryEngineRust"
-    nohup ./target/release/query_engine_rust \
+    cd "$(dirname "$QE_BIN")"
+    nohup env TZ=UTC "$QE_BIN" \
         --kafka-topic sketch_topic \
         --input-format json \
         --config "$SCRIPT_DIR/inference_config.yaml" \
@@ -329,25 +318,45 @@ elif [ "$MODE" = "asap" ]; then
         --http-port 8088 \
         --delete-existing-db \
         --log-level info \
-        --output-dir ./output \
+        --output-dir "$SCRIPT_DIR/output" \
         --streaming-engine arroyo \
         --query-language SQL \
         --lock-strategy per-key \
         --prometheus-scrape-interval 1 >/tmp/query_engine.log 2>&1 &
 
-    # Poll until QueryEngine HTTP server is accepting connections
     wait_for_url "QueryEngine" "http://localhost:8088/clickhouse/query?query=SELECT+1" 60
 
-    # Run benchmark against the sketches built during the data load above.
-    # Uses asap_mode_queries.sql (default for asap mode) with QUANTILE(0.95, v1) and NOW()-based
-    # 600s windows that contain the recently-closed 120s tumbling sketch windows.
-    echo "Executing benchmark queries against existing sketches..."
+    echo "Waiting 60s for QueryEngine to ingest sketches..."
+    sleep 60
+
+    # --- Run benchmark ---
     cd "$SCRIPT_DIR"
-    python3 run_benchmark.py --mode asap --output "$OUTPUT_FILE"
+    python3 run_benchmark.py --mode asap --output "$output"
+    echo "ASAP complete: $output"
+}
 
-    echo "ASAP run complete! Results: $OUTPUT_FILE"
-
-else
-    echo "Invalid mode: $MODE. Use 'asap' or 'baseline'."
-    exit 1
-fi
+# ==========================================
+# 6. DISPATCH
+# ==========================================
+case "$MODE" in
+    baseline)
+        run_baseline "${OUTPUT_FILE:-baseline_results.csv}"
+        ;;
+    asap)
+        run_asap "${OUTPUT_FILE:-asap_results.csv}"
+        ;;
+    both)
+        run_baseline "baseline_results.csv"
+        run_asap "asap_results.csv"
+        echo ""
+        echo "========================================"
+        echo "Generating comparison plot..."
+        echo "========================================"
+        cd "$SCRIPT_DIR"
+        python3 plot_latency.py
+        ;;
+    *)
+        echo "Invalid mode: $MODE. Use 'asap', 'baseline', or 'both'."
+        exit 1
+        ;;
+esac

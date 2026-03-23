@@ -1,7 +1,7 @@
 tables:
   - name: h2o_groupby
     time_column: timestamp
-    metadata_columns: [id1, id2, id3]
+    metadata_columns: [id1, id2]
     value_columns: [v1]
 
 aggregations:
@@ -9,14 +9,14 @@ aggregations:
     aggregationType: DatasketchesKLL
     aggregationSubType: ''
     labels:
-      grouping: [id1, id2, id3]
+      grouping: [id1, id2]
       rollup: []
       aggregated: []
     table_name: h2o_groupby
     value_column: v1
     parameters:
       K: 200
-    tumblingWindowSize: 120
-    windowSize: 120
+    tumblingWindowSize: 10
+    windowSize: 10
     windowType: tumbling
     spatialFilter: ''
