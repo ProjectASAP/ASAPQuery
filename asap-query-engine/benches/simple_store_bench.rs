@@ -1,8 +1,9 @@
-//! Benchmarks for `SimpleMapStore` — insert, range query, exact query,
+//! Benchmarks for `LegacySimpleMapStore` — insert, range query, exact query,
 //! store-analyze, and concurrent reads.
 //!
-//! These benchmarks profile the existing (pre-PR-175) store implementation and
-//! provide concrete measurements of algorithm complexity for:
+//! These benchmarks profile the legacy store implementation
+//! (`LegacySimpleMapStoreGlobal` / `LegacySimpleMapStorePerKey`) and provide
+//! concrete measurements of algorithm complexity for:
 //!
 //! | Operation                          | Expected complexity      |
 //! |------------------------------------|--------------------------|
@@ -67,7 +68,7 @@ fn make_streaming_config(num_agg_ids: u64) -> Arc<StreamingConfig> {
     Arc::new(StreamingConfig::new(configs))
 }
 
-/// Build a `SimpleMapStore` with no cleanup policy.
+/// Build a `SimpleMapStore` (backed by legacy implementation) with no cleanup policy.
 fn make_store(config: Arc<StreamingConfig>, strategy: LockStrategy) -> SimpleMapStore {
     SimpleMapStore::new_with_strategy(config, CleanupPolicy::NoCleanup, strategy)
 }
