@@ -19,13 +19,9 @@ pub struct AggregationConfig {
     pub rollup_labels: KeyByLabelNames,
     pub original_yaml: String,
 
-    // NEW fields for sliding window support (Issue #236)
     pub window_size: u64,    // Window size in seconds (e.g., 900s for 15m)
     pub slide_interval: u64, // Slide/hop interval in seconds (e.g., 30s)
     pub window_type: String, // "tumbling" or "sliding"
-
-    // DEPRECATED but kept for backward compatibility
-    pub tumbling_window_size: u64,
 
     pub spatial_filter: String,
     pub spatial_filter_normalized: String,
@@ -51,26 +47,19 @@ impl AggregationConfig {
         aggregated_labels: KeyByLabelNames,
         rollup_labels: KeyByLabelNames,
         original_yaml: String,
-        tumbling_window_size: u64,
+        window_size: u64,
+        slide_interval: u64,
+        window_type: String,
         spatial_filter: String,
         metric: String,
         num_aggregates_to_retain: Option<u64>,
         read_count_threshold: Option<u64>,
-        // NEW parameters for sliding window support
-        window_size: Option<u64>,
-        slide_interval: Option<u64>,
-        window_type: Option<String>,
         // SQL-specific fields
         table_name: Option<String>,
         value_column: Option<String>,
     ) -> Self {
         // Generate normalized spatial filter (placeholder implementation)
         let spatial_filter_normalized = normalize_spatial_filter(&spatial_filter);
-
-        // Handle backward compatibility: if new fields not provided, use tumbling_window_size
-        let window_size = window_size.unwrap_or(tumbling_window_size);
-        let slide_interval = slide_interval.unwrap_or(tumbling_window_size);
-        let window_type = window_type.unwrap_or_else(|| "tumbling".to_string());
 
         Self {
             aggregation_id,
@@ -84,7 +73,6 @@ impl AggregationConfig {
             window_size,
             slide_interval,
             window_type,
-            tumbling_window_size,
             spatial_filter,
             spatial_filter_normalized,
             metric,
@@ -143,19 +131,18 @@ impl AggregationConfig {
         let aggregated_labels = KeyByLabelNames::deserialize_from_json(&data["aggregatedLabels"])?;
         let rollup_labels = KeyByLabelNames::deserialize_from_json(&data["rollupLabels"])?;
 
-        let tumbling_window_size = data["tumblingWindowSize"]
-            .as_u64()
-            .ok_or("Missing tumblingWindowSize")?;
+        let window_size = data["windowSize"].as_u64().ok_or("Missing windowSize")?;
 
-        // NEW: Handle new window fields with backward compatibility
         let window_type = data
             .get("windowType")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .unwrap_or("tumbling")
+            .to_string();
 
-        let window_size = data.get("windowSize").and_then(|v| v.as_u64());
-
-        let slide_interval = data.get("slideInterval").and_then(|v| v.as_u64());
+        let slide_interval = data
+            .get("slideInterval")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(window_size);
 
         let spatial_filter = data["spatialFilter"].as_str().unwrap_or("").to_string();
 
@@ -183,14 +170,13 @@ impl AggregationConfig {
             aggregated_labels,
             rollup_labels,
             original_yaml,
-            tumbling_window_size,
+            window_size,
+            slide_interval,
+            window_type,
             spatial_filter,
             metric,
             num_aggregates_to_retain,
             read_count_threshold,
-            window_size,
-            slide_interval,
-            window_type,
             table_name,
             value_column,
         ))
@@ -265,21 +251,20 @@ impl AggregationConfig {
             })
             .collect();
 
-        let tumbling_window_size = aggregation_data["tumblingWindowSize"]
+        let window_size = aggregation_data["windowSize"]
             .as_u64()
-            .ok_or_else(|| anyhow::anyhow!("Missing tumblingWindowSize"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing windowSize"))?;
 
-        // NEW: Handle new window fields with backward compatibility
         let window_type = aggregation_data
             .get("windowType")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let window_size = aggregation_data.get("windowSize").and_then(|v| v.as_u64());
+            .unwrap_or("tumbling")
+            .to_string();
 
         let slide_interval = aggregation_data
             .get("slideInterval")
-            .and_then(|v| v.as_u64());
+            .and_then(|v| v.as_u64())
+            .unwrap_or(window_size);
 
         let spatial_filter = aggregation_data["spatialFilter"]
             .as_str()
@@ -329,14 +314,13 @@ impl AggregationConfig {
             aggregated_labels,
             rollup_labels,
             String::new(), // original_yaml - empty as in Python
-            tumbling_window_size,
+            window_size,
+            slide_interval,
+            window_type,
             spatial_filter,
             metric,
             num_aggregates_to_retain,
             read_count_threshold,
-            window_size,
-            slide_interval,
-            window_type,
             table_name,
             value_column,
         ))
@@ -351,8 +335,6 @@ impl SerializableToSink for AggregationConfig {
             "aggregationSubType": self.aggregation_sub_type,
             "parameters": self.parameters,
             "originalYaml": self.original_yaml,
-            "tumblingWindowSize": self.tumbling_window_size,
-            // NEW: Include new window fields
             "windowSize": self.window_size,
             "slideInterval": self.slide_interval,
             "windowType": self.window_type,

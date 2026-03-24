@@ -96,15 +96,15 @@ CLICKHOUSE_BIN=$INSTALL_DIR/clickhouse bash scripts/init_clickhouse.sh
 ### Step 5 — Start Arroyo cluster
 
 ```bash
-~/ASAPQuery/asap-sketch-ingest/target/release/arroyo \
-    --config ~/ASAPQuery/asap-sketch-ingest/config.yaml cluster \
+~/ASAPQuery/asap-summary-ingest/target/release/arroyo \
+    --config ~/ASAPQuery/asap-summary-ingest/config.yaml cluster \
     > /tmp/arroyo.log 2>&1 &
 ```
 
 ### Step 6 — Create ArroyoSketch pipeline
 
 ```bash
-cd ~/ASAPQuery/asap-sketch-ingest
+cd ~/ASAPQuery/asap-summary-ingest
 python3 run_arroyosketch.py \
     --source_type kafka \
     --kafka_input_format json \
@@ -195,7 +195,7 @@ $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic hits
 $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --delete --topic sketch_topic
 
 # Delete old Arroyo pipeline
-cd ~/ASAPQuery/asap-sketch-ingest
+cd ~/ASAPQuery/asap-summary-ingest
 python3 delete_pipeline.py --all_pipelines
 
 # Clear ClickHouse table

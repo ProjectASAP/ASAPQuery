@@ -13,7 +13,7 @@ type StoreKey = u64; // aggregation_id
 type StoreValue = Vec<(Option<KeyByLabelValues>, Box<dyn AggregateCore>)>;
 
 /// In-memory storage implementation using single mutex (like Python version)
-pub struct SimpleMapStoreGlobal {
+pub struct LegacySimpleMapStoreGlobal {
     // Single global mutex protecting all data structures
     lock: Mutex<StoreData>,
 
@@ -41,7 +41,7 @@ struct StoreData {
     read_counts: HashMap<StoreKey, HashMap<TimestampRange, u64>>,
 }
 
-impl SimpleMapStoreGlobal {
+impl LegacySimpleMapStoreGlobal {
     pub fn new(streaming_config: Arc<StreamingConfig>, cleanup_policy: CleanupPolicy) -> Self {
         Self {
             lock: Mutex::new(StoreData {
@@ -196,7 +196,7 @@ impl SimpleMapStoreGlobal {
 }
 
 #[async_trait::async_trait]
-impl Store for SimpleMapStoreGlobal {
+impl Store for LegacySimpleMapStoreGlobal {
     fn insert_precomputed_output(
         &self,
         output: PrecomputedOutput,
@@ -543,7 +543,7 @@ impl Store for SimpleMapStoreGlobal {
 
     fn close(&self) -> StoreResult<()> {
         // For in-memory store, no cleanup needed
-        info!("SimpleMapStoreGlobal closed");
+        info!("LegacySimpleMapStoreGlobal closed");
         Ok(())
     }
 }

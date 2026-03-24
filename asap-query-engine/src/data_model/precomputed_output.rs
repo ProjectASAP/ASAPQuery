@@ -480,7 +480,7 @@ impl SerializableToSink for PrecomputedOutput {
 //         assert_eq!(config.aggregation_id, 1);
 //         assert_eq!(config.metric, "cpu_usage");
 //         assert_eq!(config.aggregation_type, "sum");
-//         assert_eq!(config.tumbling_window_size, 10);
+//         assert_eq!(config.window_size, 10);
 //     }
 
 //     #[test]

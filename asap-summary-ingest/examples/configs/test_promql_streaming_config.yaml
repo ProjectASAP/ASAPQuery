@@ -23,6 +23,5 @@ aggregations:
     K: 20
   slideInterval: 60
   spatialFilter: ''
-  tumblingWindowSize: 60
   windowSize: 60
   windowType: tumbling

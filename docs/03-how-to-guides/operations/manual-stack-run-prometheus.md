@@ -14,7 +14,7 @@ This guide covers running the ASAP stack manually with Prometheus for developmen
 
 ```
 ~/code/
-├── asap-sketch-ingest/     # Pipeline configuration scripts
+├── asap-summary-ingest/     # Pipeline configuration scripts
 │   ├── config.yaml         # Arroyo cluster config
 │   └── run_arroyosketch.py # Creates sources, sinks, and pipelines
 ├── asap-query-engine/      # Query interception layer
@@ -153,7 +153,7 @@ cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_export
 
 ```bash
 cd ~/code/arroyo
-./target/release/arroyo --config ~/code/asap-sketch-ingest/config.yaml cluster
+./target/release/arroyo --config ~/code/asap-summary-ingest/config.yaml cluster
 ```
 
 Arroyo API runs at `http://localhost:5115`. Verify with:
@@ -166,7 +166,7 @@ curl http://localhost:5115/api/v1/pipelines
 Run `run_arroyosketch.py` to create Arroyo sources, sinks, and pipeline:
 
 ```bash
-cd ~/code/asap-sketch-ingest
+cd ~/code/asap-summary-ingest
 python run_arroyosketch.py \
     --source_type prometheus_remote_write \
     --prometheus_bind_ip 0.0.0.0 \
