@@ -59,16 +59,15 @@ fn make_agg_config(
         KeyByLabelNames::empty(),
         KeyByLabelNames::empty(),
         "".to_string(),
-        60,
-        "".to_string(),
+        60,                     // window_size (seconds)
+        60,                     // slide_interval (seconds)
+        "tumbling".to_string(), // window_type
+        "".to_string(),         // spatial_filter
         "cpu_usage".to_string(),
         num_aggregates_to_retain,
         read_count_threshold,
-        None,
-        None,
-        None,
-        None,
-        None,
+        None, // table_name
+        None, // value_column
     )
 }
 

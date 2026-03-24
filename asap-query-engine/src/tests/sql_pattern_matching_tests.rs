@@ -64,7 +64,6 @@ mod tests {
             window_size: window_secs,
             slide_interval: window_secs,
             window_type: "tumbling".to_string(),
-            tumbling_window_size: window_secs,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: "cpu_usage".to_string(),
