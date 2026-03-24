@@ -1588,7 +1588,7 @@ impl SimpleEngine {
         let aggregation = query_pattern.get_metric_aggs()?.first()?.clone();
 
         // By default, we only include grouping labels in the output for ES DSL.
-        let mut query_output_labels = match query_pattern.get_groupby_spec() {
+        let query_output_labels = match query_pattern.get_groupby_spec() {
             Some(GroupBySpec::Terms { field }) => KeyByLabelNames::new(vec![field.clone()]),
             Some(GroupBySpec::MultiTerms { fields }) => KeyByLabelNames::new(fields.to_vec()),
             None => KeyByLabelNames::empty(),
@@ -1604,12 +1604,6 @@ impl SimpleEngine {
             MetricAggType::Min => Statistic::Min,
             MetricAggType::Max => Statistic::Max,
         };
-        // For topk queries, prepend "__name__" to query_output_labels
-        if statistic_to_compute == Statistic::Topk {
-            let mut new_labels = vec!["__name__".to_string()];
-            new_labels.extend(query_output_labels.labels);
-            query_output_labels = KeyByLabelNames::new(new_labels);
-        }
 
         let mut query_kwargs = HashMap::new(); // Placeholder - build based on query and statistic
         if aggregation.agg_type == MetricAggType::Percentiles {
