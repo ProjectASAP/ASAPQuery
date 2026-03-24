@@ -32,7 +32,7 @@ impl StoreKeyData {
 }
 
 /// In-memory storage implementation using per-key locks for concurrency
-pub struct SimpleMapStorePerKey {
+pub struct LegacySimpleMapStorePerKey {
     // Lock-free concurrent outer map - per aggregation_id
     store: DashMap<StoreKey, Arc<RwLock<StoreKeyData>>>,
 
@@ -48,7 +48,7 @@ pub struct SimpleMapStorePerKey {
     cleanup_policy: CleanupPolicy,
 }
 
-impl SimpleMapStorePerKey {
+impl LegacySimpleMapStorePerKey {
     pub fn new(streaming_config: Arc<StreamingConfig>, cleanup_policy: CleanupPolicy) -> Self {
         Self {
             store: DashMap::new(),
@@ -302,7 +302,7 @@ impl SimpleMapStorePerKey {
 }
 
 #[async_trait::async_trait]
-impl Store for SimpleMapStorePerKey {
+impl Store for LegacySimpleMapStorePerKey {
     fn insert_precomputed_output(
         &self,
         output: PrecomputedOutput,
@@ -632,7 +632,7 @@ impl Store for SimpleMapStorePerKey {
 
     fn close(&self) -> StoreResult<()> {
         // For in-memory store, no cleanup needed
-        info!("SimpleMapStorePerKey closed");
+        info!("LegacySimpleMapStorePerKey closed");
         Ok(())
     }
 }
