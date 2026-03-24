@@ -297,9 +297,7 @@ fn otlp_to_record_count(request: &ExportMetricsServiceRequest) -> usize {
 /// Parse OTLP request and convert to metric data points (name, labels, timestamp, value).
 /// Data points with sketch payloads in attributes are excluded from points and returned
 /// separately for Sketch Payload Flow processing.
-fn otlp_to_metric_points_and_sketches(
-    request: &ExportMetricsServiceRequest,
-) -> OtlpParseResult {
+fn otlp_to_metric_points_and_sketches(request: &ExportMetricsServiceRequest) -> OtlpParseResult {
     let mut points = Vec::new();
     let mut sketch_payloads = Vec::new();
     for resource_metrics in &request.resource_metrics {
