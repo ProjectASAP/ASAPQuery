@@ -452,7 +452,7 @@ impl Store for LegacySimpleMapStorePerKey {
                     results
                         .entry(key_opt.clone())
                         .or_default()
-                        .push((*timestamp_range, precompute.clone_boxed_core()));
+                        .push((*timestamp_range, precompute.clone_boxed_core().into()));
 
                     total_entries += 1;
                 }
@@ -572,7 +572,7 @@ impl Store for LegacySimpleMapStorePerKey {
                 results
                     .entry(key_opt.clone())
                     .or_default()
-                    .push((timestamp_range, precompute.clone_boxed_core()));
+                    .push((timestamp_range, precompute.clone_boxed_core().into()));
                 total_entries += 1;
             }
 
