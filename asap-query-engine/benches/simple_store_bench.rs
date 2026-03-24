@@ -42,24 +42,24 @@ use std::sync::{Arc, Barrier};
 enum StoreKind {
     LegacyPerKey,
     LegacyGlobal,
-    NewPerKey,
-    NewGlobal,
+    CurrentPerKey,
+    CurrentGlobal,
 }
 
 impl StoreKind {
     const ALL: [Self; 4] = [
         Self::LegacyPerKey,
         Self::LegacyGlobal,
-        Self::NewPerKey,
-        Self::NewGlobal,
+        Self::CurrentPerKey,
+        Self::CurrentGlobal,
     ];
 
     fn slug(self) -> &'static str {
         match self {
             Self::LegacyPerKey => "legacy/per_key",
             Self::LegacyGlobal => "legacy/global",
-            Self::NewPerKey => "new/per_key",
-            Self::NewGlobal => "new/global",
+            Self::CurrentPerKey => "current/per_key",
+            Self::CurrentGlobal => "current/global",
         }
     }
 
@@ -67,12 +67,12 @@ impl StoreKind {
         match self {
             Self::LegacyPerKey => Arc::new(LegacySimpleMapStorePerKey::new(config, cleanup_policy)),
             Self::LegacyGlobal => Arc::new(LegacySimpleMapStoreGlobal::new(config, cleanup_policy)),
-            Self::NewPerKey => Arc::new(SimpleMapStore::new_with_strategy(
+            Self::CurrentPerKey => Arc::new(SimpleMapStore::new_with_strategy(
                 config,
                 cleanup_policy,
                 LockStrategy::PerKey,
             )),
-            Self::NewGlobal => Arc::new(SimpleMapStore::new_with_strategy(
+            Self::CurrentGlobal => Arc::new(SimpleMapStore::new_with_strategy(
                 config,
                 cleanup_policy,
                 LockStrategy::Global,
