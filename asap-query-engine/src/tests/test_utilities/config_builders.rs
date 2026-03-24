@@ -307,7 +307,7 @@ mod tests {
             }
             SchemaConfig::SQL(_) => panic!("Expected PromQL schema"),
             SchemaConfig::ElasticQueryDSL => panic!("Expected PromQL schema"),
-            SchemaConfig::ElasticSQL => panic!("Expected PromQL schema"),
+            SchemaConfig::ElasticSQL(_) => panic!("Expected PromQL schema"),
         }
 
         // Verify query configs (2 queries: PromQL + SQL)
