@@ -70,3 +70,28 @@ pub struct HydraParams {
     pub col_num: u64,
     pub k: u64,
 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SQLControllerConfig {
+    pub query_groups: Vec<SQLQueryGroup>,
+    pub tables: Vec<TableDefinition>,
+    pub sketch_parameters: Option<SketchParameterOverrides>,
+    pub aggregate_cleanup: Option<AggregateCleanupConfig>,
+    pub data_ingestion_interval: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SQLQueryGroup {
+    pub id: Option<String>,
+    pub queries: Vec<String>,
+    pub repetition_delay: u64,
+    pub controller_options: ControllerOptions,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TableDefinition {
+    pub name: String,
+    pub time_column: String,
+    pub value_columns: Vec<String>,
+    pub metadata_columns: Vec<String>,
+}
