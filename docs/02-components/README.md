@@ -8,7 +8,7 @@ This document provides an overview of all ASAP components and links to detailed 
 |-----------|---------|------------|-------|
 | **asap-query-engine** | Answers PromQL queries using sketches | Rust | [Details](query-engine.md) · [Code](../../asap-query-engine/) · [Dev Docs](../../asap-query-engine/docs/README.md) |
 | **Arroyo** | Stream processing for building sketches | Rust (forked) | [Details](arroyo.md) · [Code](https://github.com/ProjectASAP/arroyo) |
-| **asap-sketch-ingest** | Configures Arroyo pipelines from config | Python | [Details](arroyosketch.md) · [Code](../../asap-sketch-ingest/) · [README](../../asap-sketch-ingest/README.md) |
+| **asap-summary-ingest** | Configures Arroyo pipelines from config | Python | [Details](arroyosketch.md) · [Code](../../asap-summary-ingest/) · [README](../../asap-summary-ingest/README.md) |
 | **asap-planner-rs-rs** | Auto-determines sketch parameters | Rust | [Details](controller.md) · [Code](../../asap-planner-rs-rs/) |
 | **Exporters** | Generate synthetic metrics for testing | Rust/Python | [Details](exporters.md) · [Code](../../asap-tools/data-sources/prometheus-exporters/) · [README](../../asap-tools/data-sources/prometheus-exporters/README.md) |
 | **asap-tools** | Experiment framework for CloudLab | Python | [Details](utilities.md) · [Code](../../asap-tools/) · [Docs](../../asap-tools/docs/architecture.md) |
@@ -20,7 +20,7 @@ graph TB
     subgraph "Configuration (Offline)"
         U[User] -->|edits| CC[controller-config.yaml]
         CC --> C[asap-planner-rs]
-        C -->|streaming_config.yaml| AS[asap-sketch-ingest]
+        C -->|streaming_config.yaml| AS[asap-summary-ingest]
         C -->|inference_config.yaml| Q
         AS -->|create pipelines| A
     end
@@ -78,7 +78,7 @@ These run once to set up the system:
   - Selects sketch algorithms
   - Generates configs for Arroyo and QueryEngine
 
-- **[asap-sketch-ingest](arroyosketch.md)** - Creates Arroyo pipelines
+- **[asap-summary-ingest](arroyosketch.md)** - Creates Arroyo pipelines
   - Reads streaming_config.yaml
   - Renders SQL templates
   - Creates pipelines via Arroyo API
@@ -112,7 +112,7 @@ Performance-critical components written in Rust:
 Configuration and orchestration in Python:
 
 - **asap-planner-rs** - Query analysis and config generation
-- **asap-sketch-ingest** - Pipeline configuration
+- **asap-summary-ingest** - Pipeline configuration
 - **asap-tools** - Experiment framework
 - **Python Exporters** - Simpler metric generators
 
@@ -127,15 +127,15 @@ asap-query-engine
 Arroyo
 ├── Prometheus (runtime) - Remote write source
 ├── Kafka (runtime) - Sketch output
-└── SQL pipelines (config) - From asap-sketch-ingest
+└── SQL pipelines (config) - From asap-summary-ingest
 
-asap-sketch-ingest
+asap-summary-ingest
 ├── Arroyo (runtime) - Creates pipelines via API
 └── streaming_config.yaml (config) - From asap-planner-rs
 
 asap-planner-rs
 ├── controller-config.yaml (input) - User-provided
-├── streaming_config.yaml (output) - For asap-sketch-ingest
+├── streaming_config.yaml (output) - For asap-summary-ingest
 └── inference_config.yaml (output) - For asap-query-engine
 
 Exporters
@@ -152,7 +152,7 @@ asap-tools
 
 - [asap-query-engine](query-engine.md) - Query processor deep dive
 - [Arroyo](arroyo.md) - Streaming engine + ASAP customizations
-- [asap-sketch-ingest](arroyosketch.md) - Pipeline configurator
+- [asap-summary-ingest](arroyosketch.md) - Pipeline configurator
 - [asap-planner-rs](controller.md) - Auto-configuration service
 - [Exporters](exporters.md) - Metric generators
 - [asap-tools](utilities.md) - Experiment framework
@@ -163,6 +163,6 @@ For implementation details, see READMEs co-located with code:
 
 - [asap-query-engine/docs/](../../asap-query-engine/docs/README.md) - Extensibility guides
 - [asap-planner-rs/README.md](../../asap-planner-rs/README.md) - asap-planner-rs internals
-- [asap-sketch-ingest/README.md](../../asap-sketch-ingest/README.md) - Pipeline config internals
+- [asap-summary-ingest/README.md](../../asap-summary-ingest/README.md) - Pipeline config internals
 - [asap-tools/data-sources/prometheus-exporters/README.md](../../asap-tools/data-sources/prometheus-exporters/README.md) - Exporter implementations
 - [asap-tools/docs/](../../asap-tools/docs/architecture.md) - Experiment framework architecture

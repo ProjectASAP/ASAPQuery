@@ -1,6 +1,6 @@
 # How to Add a New Sketch Algorithm
 
-Adding a new sketch requires changes to 3 components: asap-common (sketch selection logic), asap-sketch-ingest (UDF for building sketches), and asap-query-engine (deserialization and query logic).
+Adding a new sketch requires changes to 3 components: asap-common (sketch selection logic), asap-summary-ingest (UDF for building sketches), and asap-query-engine (deserialization and query logic).
 
 ## Step 1: asap-common - Define Sketch Mapping
 
@@ -14,9 +14,9 @@ Adding a new sketch requires changes to 3 components: asap-common (sketch select
 
 ---
 
-## Step 2: asap-sketch-ingest - Create Sketch UDF
+## Step 2: asap-summary-ingest - Create Sketch UDF
 
-**File to create**: `asap-sketch-ingest/templates/udfs/yoursketchname_[subop].rs.j2` (or `.rs` if no template vars)
+**File to create**: `asap-summary-ingest/templates/udfs/yoursketchname_[subop].rs.j2` (or `.rs` if no template vars)
 
 **What to implement**:
 - Rust UDF function using `#[udf]` macro
@@ -29,8 +29,8 @@ Adding a new sketch requires changes to 3 components: asap-common (sketch select
 **Validate**: Run `python validate_udfs.py` to check UDF compiles.
 
 **Reference examples**:
-- `asap-sketch-ingest/templates/udfs/datasketcheskll_.rs.j2`
-- `asap-sketch-ingest/templates/udfs/countminsketch_sum.rs.j2`
+- `asap-summary-ingest/templates/udfs/datasketcheskll_.rs.j2`
+- `asap-summary-ingest/templates/udfs/countminsketch_sum.rs.j2`
 
 ---
 
@@ -86,7 +86,7 @@ pub use your_sketch_accumulator::*;
 - [ ] `validate_udfs.py` passes (ArroyoSketch)
 - [ ] `cargo build --release` succeeds (asap-query-engine)
 - [ ] `cargo test` passes (asap-query-engine)
-- [ ] End-to-end: asap-planner-rs → asap-sketch-ingest → Arroyo → Kafka → QueryEngine → Query result
+- [ ] End-to-end: asap-planner-rs → asap-summary-ingest → Arroyo → Kafka → QueryEngine → Query result
 
 ---
 
@@ -95,7 +95,7 @@ pub use your_sketch_accumulator::*;
 | Component | Format | Example |
 |-----------|--------|---------|
 | asap-common mapping | PascalCase | `DatasketchesKLL` |
-| asap-sketch-ingest UDF filename | lowercase_subop | `datasketcheskll_.rs.j2` |
+| asap-summary-ingest UDF filename | lowercase_subop | `datasketcheskll_.rs.j2` |
 | QueryEngine accumulator | PascalCase + Accumulator | `DatasketchesKLLAccumulator` |
 | `get_accumulator_type()` return | Must match mapping | `"DatasketchesKLL"` |
 
