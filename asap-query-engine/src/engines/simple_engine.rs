@@ -1132,7 +1132,7 @@ impl SimpleEngine {
                 return None;
             }
             &SchemaConfig::ElasticQueryDSL => todo!(),
-            &SchemaConfig::ElasticSQL => todo!(),
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
         };
 
         let statements = parser::parse_sql(&GenericDialect {}, query.as_str()).unwrap();
@@ -1473,7 +1473,7 @@ impl SimpleEngine {
             QueryLanguage::promql => self.handle_query_promql(query, time),
             QueryLanguage::sql => self.handle_query_sql(query, time),
             QueryLanguage::elastic_querydsl => self.handle_query_elastic(),
-            QueryLanguage::elastic_sql => self.handle_query_elastic(),
+            QueryLanguage::elastic_sql => self.handle_query_sql(query, time),
         }
     }
 
@@ -1919,7 +1919,7 @@ impl SimpleEngine {
                 warn!("PromQL query requested but config has ElasticQueryDSL schema");
                 return None;
             }
-            &SchemaConfig::ElasticSQL => {
+            SchemaConfig::ElasticSQL(_) => {
                 warn!("PromQL query requested but config has ElasticSQL schema");
                 return None;
             }
