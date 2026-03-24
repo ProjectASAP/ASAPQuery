@@ -139,6 +139,9 @@ pub struct MetricPoint {
     pub value: f64,
 }
 
+type SketchPayload = (String, String, Vec<u8>);
+type OtlpParseResult = (Vec<MetricPoint>, Vec<SketchPayload>);
+
 fn format_series_key(name: &str, labels: &HashMap<String, String>) -> String {
     let mut pairs: Vec<_> = labels.iter().collect();
     pairs.sort_by_key(|(k, _)| *k);
@@ -296,7 +299,7 @@ fn otlp_to_record_count(request: &ExportMetricsServiceRequest) -> usize {
 /// separately for Sketch Payload Flow processing.
 fn otlp_to_metric_points_and_sketches(
     request: &ExportMetricsServiceRequest,
-) -> (Vec<MetricPoint>, Vec<(String, String, Vec<u8>)>) {
+) -> OtlpParseResult {
     let mut points = Vec::new();
     let mut sketch_payloads = Vec::new();
     for resource_metrics in &request.resource_metrics {
