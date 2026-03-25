@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, PrecomputedOutput};
 use crate::stores::Store;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tracing::debug_span;
 
 /// Trait for emitting completed window outputs.
@@ -61,6 +61,47 @@ impl OutputSink for RawPassthroughSink {
     }
 }
 
+/// A capturing sink for testing that stores all emitted outputs.
+pub struct CapturingOutputSink {
+    pub captured: Mutex<Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>>,
+}
+
+impl CapturingOutputSink {
+    pub fn new() -> Self {
+        Self {
+            captured: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn drain(&self) -> Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> {
+        self.captured.lock().unwrap().drain(..).collect()
+    }
+
+    pub fn len(&self) -> usize {
+        self.captured.lock().unwrap().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.captured.lock().unwrap().is_empty()
+    }
+}
+
+impl Default for CapturingOutputSink {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl OutputSink for CapturingOutputSink {
+    fn emit_batch(
+        &self,
+        outputs: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.captured.lock().unwrap().extend(outputs);
+        Ok(())
+    }
+}
+
 /// A no-op sink for testing that just counts emitted batches.
 pub struct NoopOutputSink {
     pub emit_count: std::sync::atomic::AtomicU64,
@@ -71,6 +112,12 @@ impl NoopOutputSink {
         Self {
             emit_count: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+}
+
+impl Default for NoopOutputSink {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

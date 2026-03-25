@@ -9,6 +9,7 @@ use sketch_core::config::{self, ImplMode};
 
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
+use query_engine_rust::precompute_engine::config::LateDataPolicy;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
     HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
@@ -301,6 +302,7 @@ async fn main() -> Result<()> {
             channel_buffer_size: args.precompute_channel_buffer_size,
             pass_raw_samples: false,
             raw_mode_aggregation_id: 0,
+            late_data_policy: LateDataPolicy::Drop,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
         let engine =

@@ -50,6 +50,12 @@ impl SumAccumulatorUpdater {
     }
 }
 
+impl Default for SumAccumulatorUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AccumulatorUpdater for SumAccumulatorUpdater {
     fn update_single(&mut self, value: f64, _timestamp_ms: i64) {
         self.acc.update(value);
@@ -143,6 +149,12 @@ pub struct IncreaseAccumulatorUpdater {
 impl IncreaseAccumulatorUpdater {
     pub fn new() -> Self {
         Self { acc: None }
+    }
+}
+
+impl Default for IncreaseAccumulatorUpdater {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -267,6 +279,12 @@ impl MultipleSumUpdater {
     }
 }
 
+impl Default for MultipleSumUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AccumulatorUpdater for MultipleSumUpdater {
     fn update_single(&mut self, _value: f64, _timestamp_ms: i64) {
         // Multiple-subpopulation — use update_keyed instead
@@ -364,6 +382,12 @@ impl MultipleIncreaseUpdater {
         Self {
             acc: MultipleIncreaseAccumulator::new(),
         }
+    }
+}
+
+impl Default for MultipleIncreaseUpdater {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -626,6 +650,15 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
                 .unwrap_or(200) as u16;
             Box::new(KllAccumulatorUpdater::new(k))
         }
+        "MultipleSum" | "multiple_sum" => Box::new(MultipleSumUpdater::new()),
+        "MultipleIncrease" | "multiple_increase" => Box::new(MultipleIncreaseUpdater::new()),
+        "MultipleMinMax" | "multiple_min_max" => Box::new(MultipleMinMaxUpdater::new(
+            if sub_type.eq_ignore_ascii_case("max") {
+                "max".to_string()
+            } else {
+                "min".to_string()
+            },
+        )),
         "Sum" | "sum" => Box::new(SumAccumulatorUpdater::new()),
         "Min" | "min" => Box::new(MinMaxAccumulatorUpdater::new("min".to_string())),
         "Max" | "max" => Box::new(MinMaxAccumulatorUpdater::new("max".to_string())),

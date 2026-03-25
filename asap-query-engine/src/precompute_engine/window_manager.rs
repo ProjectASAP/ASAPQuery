@@ -1,9 +1,13 @@
-/// Manages tumbling window boundaries and detects which windows have closed
-/// based on watermark advancement.
+/// Manages tumbling and sliding window boundaries and detects which windows
+/// have closed based on watermark advancement.
+///
+/// Tumbling windows are a special case where `slide_interval == window_size`.
+/// The same logic handles both — no separate code paths.
 pub struct WindowManager {
     /// Window size in milliseconds.
     window_size_ms: i64,
-    /// Slide interval in milliseconds (== window_size_ms for tumbling windows).
+    /// Slide interval in milliseconds. Equal to `window_size_ms` for tumbling
+    /// windows; strictly less than `window_size_ms` for sliding windows.
     slide_interval_ms: i64,
 }
 
