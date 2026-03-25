@@ -285,6 +285,128 @@ fn temporal_quantile() {
     assert_eq!(out.inference_cleanup_param(q), Some(1));
 }
 
+// ── Elastic SQL syntax variants ───────────────────────────────────────────────
+//
+// These three tests exercise syntactic forms used by Elastic:
+//   1. PERCENTILE(col, integer_percentile)  — integer 0–100, col-first arg order
+//   2. DATEADD('s', …)                      — quoted unit string
+//   3. CAST('…' AS DATETIME)                — absolute timestamp bounds
+//
+// All produce the same plan as temporal_quantile: DatasketchesKLL, no
+// DeltaSetAggregator, one streaming config, window = T = 300 s, cleanup = 1.
+
+/// PERCENTILE(col, 95) is the Elastic aggregation syntax.
+/// The parser normalises it to QUANTILE internally, so the plan is identical
+/// to temporal_quantile (DatasketchesKLL, grouping = [datacenter], rollup = [hostname, region]).
+#[test]
+fn temporal_quantile_percentile_syntax() {
+    let q = "SELECT PERCENTILE(cpu_usage, 95) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
+    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("DatasketchesKLL"));
+    assert!(!out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert_eq!(
+        out.aggregation_table_name("DatasketchesKLL"),
+        Some("metrics_table".to_string())
+    );
+    assert_eq!(
+        out.aggregation_value_column("DatasketchesKLL"),
+        Some("cpu_usage".to_string())
+    );
+    let mut rollup = out.aggregation_labels("DatasketchesKLL", "rollup");
+    rollup.sort();
+    assert_eq!(rollup, vec!["hostname".to_string(), "region".to_string()]);
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "grouping"),
+        vec!["datacenter".to_string()]
+    );
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "aggregated"),
+        Vec::<String>::new()
+    );
+    assert_eq!(out.inference_cleanup_param(q), Some(1));
+}
+
+/// DATEADD('s', …) — quoted unit string (Elastic style) vs unquoted `s`.
+/// The parser accepts both forms; the plan must be identical to temporal_quantile.
+#[test]
+fn temporal_quantile_quoted_dateadd_unit() {
+    let q = "SELECT PERCENTILE(cpu_usage, 95) FROM metrics_table WHERE time BETWEEN DATEADD('s', -300, NOW()) AND NOW() GROUP BY datacenter";
+    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("DatasketchesKLL"));
+    assert!(!out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert_eq!(
+        out.aggregation_table_name("DatasketchesKLL"),
+        Some("metrics_table".to_string())
+    );
+    assert_eq!(
+        out.aggregation_value_column("DatasketchesKLL"),
+        Some("cpu_usage".to_string())
+    );
+    let mut rollup = out.aggregation_labels("DatasketchesKLL", "rollup");
+    rollup.sort();
+    assert_eq!(rollup, vec!["hostname".to_string(), "region".to_string()]);
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "grouping"),
+        vec!["datacenter".to_string()]
+    );
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "aggregated"),
+        Vec::<String>::new()
+    );
+    assert_eq!(out.inference_cleanup_param(q), Some(1));
+}
+
+/// Full Elastic syntax: PERCENTILE(col, N) + DATEADD('s', …) + CAST('…' AS DATETIME).
+/// Absolute timestamp bounds replace NOW(); the 300 s range still yields cleanup = 1.
+#[test]
+fn temporal_quantile_cast_datetime_bounds() {
+    let q = "SELECT PERCENTILE(cpu_usage, 95) FROM metrics_table WHERE time BETWEEN DATEADD('s', -300, CAST('2024-01-01T00:05:00Z' AS DATETIME)) AND CAST('2024-01-01T00:05:00Z' AS DATETIME) GROUP BY datacenter";
+    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("DatasketchesKLL"));
+    assert!(!out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert_eq!(
+        out.aggregation_table_name("DatasketchesKLL"),
+        Some("metrics_table".to_string())
+    );
+    assert_eq!(
+        out.aggregation_value_column("DatasketchesKLL"),
+        Some("cpu_usage".to_string())
+    );
+    let mut rollup = out.aggregation_labels("DatasketchesKLL", "rollup");
+    rollup.sort();
+    assert_eq!(rollup, vec!["hostname".to_string(), "region".to_string()]);
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "grouping"),
+        vec!["datacenter".to_string()]
+    );
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "aggregated"),
+        Vec::<String>::new()
+    );
+    assert_eq!(out.inference_cleanup_param(q), Some(1));
+}
+
 // ── T-value variants for SUM (range = 300 s fixed) ───────────────────────────
 //
 // These three tests use the same query and differ only in repetition_delay (T).
