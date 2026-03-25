@@ -1,5 +1,6 @@
 use asap_planner::{Controller, RuntimeOptions, SQLController, SQLRuntimeOptions, StreamingEngine};
 use clap::Parser;
+use sketch_db_common::enums::QueryLanguage;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -27,7 +28,7 @@ struct Args {
     step: u64,
 
     #[arg(long = "query-language", value_enum, default_value = "promql")]
-    query_language: QueryLanguageArg,
+    query_language: QueryLanguage,
 
     #[arg(long = "data-ingestion-interval", required = false)]
     data_ingestion_interval: Option<u64>,
@@ -40,12 +41,6 @@ struct Args {
 enum EngineArg {
     Arroyo,
     Flink,
-}
-
-#[derive(clap::ValueEnum, Debug, Clone, Copy)]
-enum QueryLanguageArg {
-    Promql,
-    Sql,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -65,7 +60,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     match args.query_language {
-        QueryLanguageArg::Promql => {
+        QueryLanguage::promql => {
             let scrape_interval = args.prometheus_scrape_interval.ok_or_else(|| {
                 anyhow::anyhow!("--prometheus_scrape_interval is required for PromQL mode")
             })?;
@@ -79,7 +74,7 @@ fn main() -> anyhow::Result<()> {
             let controller = Controller::from_file(&args.input_config, opts)?;
             controller.generate_to_dir(&args.output_dir)?;
         }
-        QueryLanguageArg::Sql => {
+        QueryLanguage::sql | QueryLanguage::elastic_sql => {
             let interval = args.data_ingestion_interval.ok_or_else(|| {
                 anyhow::anyhow!("--data-ingestion-interval is required for SQL mode")
             })?;
@@ -90,6 +85,9 @@ fn main() -> anyhow::Result<()> {
             };
             SQLController::from_file(&args.input_config, opts)?
                 .generate_to_dir(&args.output_dir)?;
+        }
+        QueryLanguage::elastic_querydsl => {
+            anyhow::bail!("ElasticQueryDSL is not yet supported");
         }
     }
 
