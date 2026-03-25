@@ -38,6 +38,11 @@ jobs:
         toolchain: stable
         components: rustfmt, clippy
 
+    - name: Install protoc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
+
     - name: Run sccache-cache
       uses: mozilla-actions/sccache-action@v0.0.4
 
@@ -67,6 +72,11 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
       with:
         toolchain: stable
+
+    - name: Install protoc
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y protobuf-compiler
 
     - name: Run sccache-cache
       uses: mozilla-actions/sccache-action@v0.0.4
