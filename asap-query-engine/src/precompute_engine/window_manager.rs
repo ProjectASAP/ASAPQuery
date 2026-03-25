@@ -73,6 +73,20 @@ impl WindowManager {
         closed
     }
 
+    /// Return all window starts whose window `[start, start + window_size_ms)`
+    /// contains the given timestamp. For tumbling windows this returns exactly
+    /// one start; for sliding windows it returns `ceil(window_size / slide)`
+    /// starts.
+    pub fn window_starts_containing(&self, timestamp_ms: i64) -> Vec<i64> {
+        let mut starts = Vec::new();
+        let mut start = self.window_start_for(timestamp_ms);
+        while start + self.window_size_ms > timestamp_ms {
+            starts.push(start);
+            start -= self.slide_interval_ms;
+        }
+        starts
+    }
+
     /// Return the window `[start, end)` boundaries for a given window start.
     pub fn window_bounds(&self, window_start: i64) -> (i64, i64) {
         (window_start, window_start + self.window_size_ms)
@@ -150,5 +164,35 @@ mod tests {
         // Window [0, 30_000) closes at wm=30_000 (was open at 15_000)
         let closed = wm.closed_windows(15_000, 35_000);
         assert_eq!(closed, vec![0]);
+    }
+
+    #[test]
+    fn test_window_starts_containing_tumbling() {
+        // 60s tumbling windows — each sample belongs to exactly one window
+        let wm = WindowManager::new(60, 0);
+        let mut starts = wm.window_starts_containing(15_000);
+        starts.sort();
+        assert_eq!(starts, vec![0]);
+
+        let mut starts = wm.window_starts_containing(60_000);
+        starts.sort();
+        assert_eq!(starts, vec![60_000]);
+    }
+
+    #[test]
+    fn test_window_starts_containing_sliding() {
+        // 30s window, 10s slide — each sample belongs to 3 windows
+        let wm = WindowManager::new(30, 10);
+
+        // t=15_000 belongs to [0, 30_000), [10_000, 40_000)
+        // and [-10_000, 20_000) which starts negative — still returned
+        let mut starts = wm.window_starts_containing(15_000);
+        starts.sort();
+        assert_eq!(starts, vec![-10_000, 0, 10_000]);
+
+        // t=30_000 belongs to [10_000, 40_000), [20_000, 50_000), [30_000, 60_000)
+        let mut starts = wm.window_starts_containing(30_000);
+        starts.sort();
+        assert_eq!(starts, vec![10_000, 20_000, 30_000]);
     }
 }
