@@ -1,15 +1,15 @@
 use clap::Parser;
+use query_engine_rust::data_model::QueryLanguage;
 use query_engine_rust::data_model::{
     CleanupPolicy, InferenceConfig, LockStrategy, StreamingConfig,
 };
 use query_engine_rust::drivers::query::adapters::AdapterConfig;
 use query_engine_rust::engines::SimpleEngine;
-use query_engine_rust::precompute_engine::config::PrecomputeEngineConfig;
+use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::{RawPassthroughSink, StoreOutputSink};
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::{HttpServer, HttpServerConfig};
-use query_engine_rust::data_model::QueryLanguage;
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -61,6 +61,10 @@ struct Args {
     /// Aggregation ID to stamp on each raw-mode output
     #[arg(long, default_value_t = 0)]
     raw_mode_aggregation_id: u64,
+
+    /// Policy for handling late samples that arrive after their window has closed
+    #[arg(long, value_enum, default_value_t = LateDataPolicy::Drop)]
+    late_data_policy: LateDataPolicy,
 }
 
 #[tokio::main]
@@ -85,20 +89,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     // Create the store
-    let store: Arc<dyn query_engine_rust::stores::Store> = Arc::new(
-        SimpleMapStore::new_with_strategy(
+    let store: Arc<dyn query_engine_rust::stores::Store> =
+        Arc::new(SimpleMapStore::new_with_strategy(
             streaming_config.clone(),
             CleanupPolicy::CircularBuffer,
             args.lock_strategy,
-        ),
-    );
+        ));
 
     // Optionally start the query HTTP server
     if args.query_port > 0 {
-        let inference_config = InferenceConfig::new(
-            QueryLanguage::promql,
-            CleanupPolicy::CircularBuffer,
-        );
+        let inference_config =
+            InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::CircularBuffer);
         let query_engine = Arc::new(SimpleEngine::new(
             store.clone(),
             inference_config,
@@ -134,6 +135,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         channel_buffer_size: args.channel_buffer_size,
         pass_raw_samples: args.pass_raw_samples,
         raw_mode_aggregation_id: args.raw_mode_aggregation_id,
+        late_data_policy: args.late_data_policy,
     };
 
     // Create the output sink (writes directly to the store)

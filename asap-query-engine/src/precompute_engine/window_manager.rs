@@ -57,9 +57,8 @@ impl WindowManager {
         // A window is open if its end (start + window_size_ms) > previous_wm.
         // So the oldest open window start was: previous_wm - window_size_ms + 1,
         // aligned down to slide_interval.
-        let earliest_open_start = self.window_start_for(
-            (previous_wm - self.window_size_ms + 1).max(0),
-        );
+        let earliest_open_start =
+            self.window_start_for((previous_wm - self.window_size_ms + 1).max(0));
 
         let mut start = earliest_open_start;
         while start + self.window_size_ms <= current_wm {
@@ -90,6 +89,27 @@ impl WindowManager {
     /// Return the window `[start, end)` boundaries for a given window start.
     pub fn window_bounds(&self, window_start: i64) -> (i64, i64) {
         (window_start, window_start + self.window_size_ms)
+    }
+
+    /// Slide interval accessor.
+    pub fn slide_interval_ms(&self) -> i64 {
+        self.slide_interval_ms
+    }
+
+    /// Pane start for a timestamp. Panes are aligned to the slide_interval grid,
+    /// which is the same grid as `window_start_for`.
+    pub fn pane_start_for(&self, timestamp_ms: i64) -> i64 {
+        self.window_start_for(timestamp_ms)
+    }
+
+    /// All pane starts composing a window, in ascending order.
+    /// A window `[ws, ws + window_size)` is composed of
+    /// `window_size / slide_interval` consecutive panes.
+    pub fn panes_for_window(&self, window_start: i64) -> Vec<i64> {
+        let num_panes = self.window_size_ms / self.slide_interval_ms;
+        (0..num_panes)
+            .map(|i| window_start + i * self.slide_interval_ms)
+            .collect()
     }
 }
 
@@ -194,5 +214,80 @@ mod tests {
         let mut starts = wm.window_starts_containing(30_000);
         starts.sort();
         assert_eq!(starts, vec![10_000, 20_000, 30_000]);
+    }
+
+    // --- Pane method tests ---
+
+    #[test]
+    fn test_pane_start_for_equals_window_start_for() {
+        // Pane start and window start use the same slide-aligned grid
+        let wm = WindowManager::new(30, 10);
+        for ts in [0, 5_000, 9_999, 10_000, 15_000, 25_000, 30_000] {
+            assert_eq!(wm.pane_start_for(ts), wm.window_start_for(ts));
+        }
+    }
+
+    #[test]
+    fn test_panes_for_window_sliding() {
+        // 30s window, 10s slide → 3 panes per window
+        let wm = WindowManager::new(30, 10);
+
+        assert_eq!(wm.panes_for_window(0), vec![0, 10_000, 20_000]);
+        assert_eq!(
+            wm.panes_for_window(10_000),
+            vec![10_000, 20_000, 30_000]
+        );
+        assert_eq!(
+            wm.panes_for_window(20_000),
+            vec![20_000, 30_000, 40_000]
+        );
+    }
+
+    #[test]
+    fn test_panes_for_window_tumbling_degeneration() {
+        // 60s tumbling window → 1 pane per window (no merges needed)
+        let wm = WindowManager::new(60, 0);
+
+        assert_eq!(wm.panes_for_window(0), vec![0]);
+        assert_eq!(wm.panes_for_window(60_000), vec![60_000]);
+    }
+
+    #[test]
+    fn test_slide_interval_ms_accessor() {
+        let wm_tumbling = WindowManager::new(60, 0);
+        assert_eq!(wm_tumbling.slide_interval_ms(), 60_000);
+
+        let wm_sliding = WindowManager::new(30, 10);
+        assert_eq!(wm_sliding.slide_interval_ms(), 10_000);
+    }
+
+    #[test]
+    fn test_panes_for_window_count() {
+        // W = window_size / slide_interval
+        let wm = WindowManager::new(30, 10);
+        assert_eq!(wm.panes_for_window(0).len(), 3); // 30/10 = 3
+
+        let wm2 = WindowManager::new(50, 10);
+        assert_eq!(wm2.panes_for_window(0).len(), 5); // 50/10 = 5
+
+        let wm3 = WindowManager::new(60, 0);
+        assert_eq!(wm3.panes_for_window(0).len(), 1); // tumbling = 1
+    }
+
+    #[test]
+    fn test_consecutive_windows_share_panes() {
+        // 30s window, 10s slide — consecutive windows share W-1 = 2 panes
+        let wm = WindowManager::new(30, 10);
+
+        let panes_a = wm.panes_for_window(0);    // [0, 10_000, 20_000]
+        let panes_b = wm.panes_for_window(10_000); // [10_000, 20_000, 30_000]
+
+        // Shared panes: 10_000 and 20_000
+        let shared: Vec<i64> = panes_a
+            .iter()
+            .filter(|p| panes_b.contains(p))
+            .copied()
+            .collect();
+        assert_eq!(shared, vec![10_000, 20_000]);
     }
 }

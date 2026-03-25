@@ -1,5 +1,14 @@
 use serde::{Deserialize, Serialize};
 
+/// Policy for handling late samples that arrive after their window has closed.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, clap::ValueEnum)]
+pub enum LateDataPolicy {
+    /// Drop late samples that arrive after their window has closed.
+    Drop,
+    /// Forward late samples to the store to be merged with existing window data.
+    ForwardToStore,
+}
+
 /// Configuration for the precompute engine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrecomputeEngineConfig {
@@ -21,6 +30,8 @@ pub struct PrecomputeEngineConfig {
     pub pass_raw_samples: bool,
     /// Aggregation ID to stamp on each raw-mode output.
     pub raw_mode_aggregation_id: u64,
+    /// Policy for handling late samples that arrive after their window has closed.
+    pub late_data_policy: LateDataPolicy,
 }
 
 impl Default for PrecomputeEngineConfig {
@@ -34,6 +45,7 @@ impl Default for PrecomputeEngineConfig {
             channel_buffer_size: 10_000,
             pass_raw_samples: false,
             raw_mode_aggregation_id: 0,
+            late_data_policy: LateDataPolicy::Drop,
         }
     }
 }
@@ -53,5 +65,6 @@ mod tests {
         assert_eq!(config.channel_buffer_size, 10_000);
         assert!(!config.pass_raw_samples);
         assert_eq!(config.raw_mode_aggregation_id, 0);
+        assert_eq!(config.late_data_policy, LateDataPolicy::Drop);
     }
 }
