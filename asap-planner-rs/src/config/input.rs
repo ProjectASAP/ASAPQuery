@@ -77,7 +77,6 @@ pub struct SQLControllerConfig {
     pub tables: Vec<TableDefinition>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
     pub aggregate_cleanup: Option<AggregateCleanupConfig>,
-    pub data_ingestion_interval: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

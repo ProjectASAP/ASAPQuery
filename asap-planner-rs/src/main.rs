@@ -29,6 +29,9 @@ struct Args {
     #[arg(long = "query-language", value_enum, default_value = "promql")]
     query_language: QueryLanguageArg,
 
+    #[arg(long = "data-ingestion-interval", required = false)]
+    data_ingestion_interval: Option<u64>,
+
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 }
@@ -77,9 +80,13 @@ fn main() -> anyhow::Result<()> {
             controller.generate_to_dir(&args.output_dir)?;
         }
         QueryLanguageArg::Sql => {
+            let interval = args.data_ingestion_interval.ok_or_else(|| {
+                anyhow::anyhow!("--data-ingestion-interval is required for SQL mode")
+            })?;
             let opts = SQLRuntimeOptions {
                 streaming_engine: engine,
                 query_evaluation_time: None,
+                data_ingestion_interval: interval,
             };
             SQLController::from_file(&args.input_config, opts)?
                 .generate_to_dir(&args.output_dir)?;

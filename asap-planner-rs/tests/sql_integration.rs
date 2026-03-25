@@ -7,6 +7,7 @@ fn sql_opts() -> SQLRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
         // Fixed evaluation time so NOW()-relative timestamps are deterministic.
         query_evaluation_time: Some(1_000_000.0),
+        data_ingestion_interval: 15,
     }
 }
 
@@ -20,7 +21,6 @@ fn sql_opts() -> SQLRuntimeOptions {
 fn one_query_config(query: &str, t_repeat: u64) -> String {
     format!(
         r#"
-data_ingestion_interval: 15
 tables:
   - name: metrics_table
     time_column: time
@@ -371,7 +371,6 @@ fn temporal_sum_t600() {
 #[test]
 fn two_queries_min_and_max_produce_separate_streaming_configs() {
     let yaml = r#"
-data_ingestion_interval: 15
 tables:
   - name: metrics_table
     time_column: time
@@ -413,7 +412,6 @@ aggregate_cleanup:
 #[test]
 fn two_queries_different_value_columns_produce_four_configs() {
     let yaml = r#"
-data_ingestion_interval: 15
 tables:
   - name: metrics_table
     time_column: time
@@ -448,7 +446,6 @@ fn identical_queries_across_groups_return_duplicate_error() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
     let yaml = format!(
         r#"
-data_ingestion_interval: 15
 tables:
   - name: metrics_table
     time_column: time
@@ -486,7 +483,6 @@ aggregate_cleanup:
 #[test]
 fn two_queries_different_windows_are_deduped() {
     let yaml = r#"
-data_ingestion_interval: 15
 tables:
   - name: metrics_table
     time_column: time
@@ -579,7 +575,6 @@ fn duplicate_queries_in_same_group_return_error() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
     let yaml = format!(
         r#"
-data_ingestion_interval: 15
 tables:
   - name: metrics_table
     time_column: time
@@ -611,7 +606,6 @@ fn unknown_cleanup_policy_returns_planner_error() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
     let yaml = format!(
         r#"
-data_ingestion_interval: 15
 tables:
   - name: metrics_table
     time_column: time

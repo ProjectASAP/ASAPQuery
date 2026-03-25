@@ -15,6 +15,7 @@ use crate::StreamingEngine;
 pub struct SQLRuntimeOptions {
     pub streaming_engine: StreamingEngine,
     pub query_evaluation_time: Option<f64>,
+    pub data_ingestion_interval: u64,
 }
 
 pub fn generate_sql_plan(
@@ -37,10 +38,10 @@ pub fn generate_sql_plan(
 
     // Validate T % data_ingestion_interval == 0
     for qg in &config.query_groups {
-        if qg.repetition_delay % config.data_ingestion_interval != 0 {
+        if qg.repetition_delay % opts.data_ingestion_interval != 0 {
             return Err(ControllerError::PlannerError(format!(
                 "repetition_delay {} is not a multiple of data_ingestion_interval {}",
-                qg.repetition_delay, config.data_ingestion_interval
+                qg.repetition_delay, opts.data_ingestion_interval
             )));
         }
     }
@@ -65,7 +66,7 @@ pub fn generate_sql_plan(
             let processor = SQLSingleQueryProcessor::new(
                 query_string.clone(),
                 qg.repetition_delay,
-                config.data_ingestion_interval,
+                opts.data_ingestion_interval,
                 config.tables.clone(),
                 opts.streaming_engine,
                 config.sketch_parameters.clone(),
