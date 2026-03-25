@@ -1,0 +1,27 @@
+tables:
+- name: metrics_table
+  time_column: time
+  value_columns:
+    - cpu_usage
+    - memory_usage
+  metadata_columns:
+    - hostname
+    - datacenter
+aggregations:
+  - aggregationId: 1
+    table_name: metrics_table
+    value_column: cpu_usage
+    aggregationSubType: ''
+    aggregationType: DatasketchesKLL
+    labels:
+      grouping:
+        - datacenter
+      aggregated: []
+      rollup:
+        - hostname
+    parameters:
+      K: 20
+    slideInterval: 1
+    spatialFilter: ''
+    windowSize: 1
+    windowType: tumbling

@@ -509,6 +509,10 @@ struct Args {
     #[arg(long, env = "CLICKBENCH_FILE", help = "Path to hits.json or hits.json.gz (clickbench mode)")]
     input_file: Option<String>,
 
+    #[arg(long, env = "USE_EVENT_TIME_TIMESTAMP", default_value = "false",
+        help = "Set Kafka message timestamp to EventTime value (enables event-time windowing in Arroyo)")]
+    use_event_time_timestamp: bool,
+
     #[arg(long, env = "INPUT_FILE", help = "Path to input file (h2o/general usage)")]
     general_input_file: Option<PathBuf>,
 
@@ -624,79 +628,101 @@ async fn run_clickbench_mode(args: &Args, producer: &FutureProducer) -> Result<(
         Box::new(BufReader::new(file))
     };
 
-    let mut total_sent: u64 = 0;
     let total_limit = args.total_records.unwrap_or(0);
-    let mut batch: Vec<(String, String)> = Vec::with_capacity(args.batch_size); // (key, payload)
-
-    // ClickBench dataset has ~100M rows
     let total_rows = if total_limit > 0 { total_limit } else { 99_997_497 };
+
+    // Phase 1: Read and transform all records into memory
+    println!("Phase 1: Reading and transforming records...");
     let pb = ProgressBar::new(total_rows);
     pb.set_style(ProgressStyle::default_bar()
         .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {per_sec} ETA: {eta}")?
         .progress_chars("#>-"));
 
+    let mut records: Vec<(i64, String)> = Vec::new(); // (kafka_ts_ms, payload)
+    let mut read_count: u64 = 0;
+
     for line_result in reader.lines() {
         let line = match line_result {
             Ok(l) => l,
-            Err(e) => {
-                eprintln!("Warning: Error reading line: {}", e);
-                continue;
-            }
+            Err(e) => { eprintln!("Warning: Error reading line: {}", e); continue; }
+        };
+        let line = line.trim();
+        if line.is_empty() { continue; }
+
+        // Parse and transform the JSON line to match Arroyo's schema
+        let mut record: serde_json::Value = match serde_json::from_str(&line) {
+            Ok(v) => v,
+            Err(e) => { eprintln!("Warning: Failed to parse JSON line: {}", e); continue; }
         };
 
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
+        // Fix EventTime: "2013-07-14 20:38:47" -> "2013-07-14T20:38:47Z" (RFC3339)
+        // Capture as Unix ms for Kafka message timestamp (used for event-time windowing in Arroyo)
+        let mut kafka_ts_ms: i64 = 0;
+        if let Some(event_time) = record.get_mut("EventTime") {
+            if let Some(s) = event_time.as_str() {
+                let fixed = s.replacen(' ', "T", 1) + "Z";
+                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&fixed) {
+                    kafka_ts_ms = dt.timestamp_millis();
+                }
+                *event_time = serde_json::Value::String(fixed);
+            }
         }
 
-        let key = (total_sent + batch.len() as u64).to_string();
-        batch.push((key, line.to_string()));
-
-        if batch.len() >= args.batch_size {
-            let futures: Vec<_> = batch
-                .iter()
-                .map(|(key, payload)| {
-                    producer.send(
-                        FutureRecord::to(&args.kafka_topic.as_ref().unwrap())
-                            .payload(payload)
-                            .key(key),
-                        Duration::from_secs(5),
-                    )
-                })
-                .collect();
-
-            let results = join_all(futures).await;
-            for result in results {
-                if let Err((err, _)) = result {
-                    eprintln!("Failed to send message to Kafka: {}", err);
+        // Stringify integer metadata columns to match Arroyo schema (String types)
+        for field in &["OS", "RegionID", "UserAgent", "TraficSourceID"] {
+            if let Some(val) = record.get_mut(*field) {
+                if val.is_number() {
+                    *val = serde_json::Value::String(val.to_string());
                 }
             }
+        }
 
-            total_sent += batch.len() as u64;
-            pb.set_position(total_sent);
-            batch.clear();
+        records.push((kafka_ts_ms, serde_json::to_string(&record)?));
+        read_count += 1;
+        pb.set_position(read_count);
 
-            if total_limit > 0 && total_sent >= total_limit {
-                break;
-            }
-
-            if args.frequency > 0 {
-                sleep(Duration::from_secs(args.frequency)).await;
-            }
+        if total_limit > 0 && read_count >= total_limit {
+            break;
         }
     }
+    pb.finish_with_message(format!("Read {} records", read_count));
 
-    // Send remaining records
-    if !batch.is_empty() && (total_limit == 0 || total_sent < total_limit) {
-        let futures: Vec<_> = batch
-            .iter()
-            .map(|(key, payload)| {
-                producer.send(
-                    FutureRecord::to(&args.kafka_topic.as_ref().unwrap())
-                        .payload(payload)
-                        .key(key),
-                    Duration::from_secs(5),
-                )
+    // Phase 2: Sort by EventTime so Kafka message timestamps are monotonically increasing.
+    // This is required for Arroyo's event-time watermark to advance correctly.
+    // Without sorting, out-of-order timestamps cause the watermark to race ahead,
+    // treating most records as late data and dropping them.
+    if args.use_event_time_timestamp {
+        println!("Phase 2: Sorting {} records by EventTime for event-time windowing...", records.len());
+        records.sort_unstable_by_key(|(ts, _)| *ts);
+        println!("Sort complete.");
+    }
+
+    // Phase 3: Send to Kafka in batches
+    println!("Phase 3: Sending to Kafka...");
+    let pb2 = ProgressBar::new(records.len() as u64);
+    pb2.set_style(ProgressStyle::default_bar()
+        .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({percent}%) {per_sec} ETA: {eta}")?
+        .progress_chars("#>-"));
+
+    let mut total_sent: u64 = 0;
+
+    for chunk in records.chunks(args.batch_size) {
+        // Build batch with owned keys to satisfy FutureRecord lifetime requirements
+        let batch: Vec<(String, &str, i64)> = chunk.iter().enumerate()
+            .map(|(i, (ts_ms, payload))| ((total_sent + i as u64).to_string(), payload.as_str(), *ts_ms))
+            .collect();
+
+        let futures: Vec<_> = batch.iter()
+            .map(|(key, payload, ts_ms)| {
+                let record = FutureRecord::to(args.kafka_topic.as_deref().unwrap())
+                    .payload(*payload)
+                    .key(key.as_str());
+                let record = if args.use_event_time_timestamp && *ts_ms > 0 {
+                    record.timestamp(*ts_ms)
+                } else {
+                    record
+                };
+                producer.send(record, Duration::from_secs(5))
             })
             .collect();
 
@@ -706,11 +732,16 @@ async fn run_clickbench_mode(args: &Args, producer: &FutureProducer) -> Result<(
                 eprintln!("Failed to send message to Kafka: {}", err);
             }
         }
-        total_sent += batch.len() as u64;
-        pb.set_position(total_sent);
+
+        total_sent += chunk.len() as u64;
+        pb2.set_position(total_sent);
+
+        if args.frequency > 0 {
+            sleep(Duration::from_secs(args.frequency)).await;
+        }
     }
 
-    pb.finish_with_message(format!("Done! Sent {} records", total_sent));
+    pb2.finish_with_message(format!("Done! Sent {} records", total_sent));
     Ok(())
 }
 
@@ -857,49 +888,60 @@ async fn run_h2o_elasticsearch_mode(args: &Args) -> Result<(), Box<dyn std::erro
         .status_code()
         .is_success();
 
-    if !index_exists {
-        println!("Creating index: {}", args.elastic_index);
-        let create_response = client
+    if index_exists {
+        println!("Deleting existing index: {}", args.elastic_index);
+        let delete_response = client
             .indices()
-            .create(elasticsearch::indices::IndicesCreateParts::Index(
-                &args.elastic_index,
-            ))
-            .body(json!({
-                "settings": {
-                    "number_of_shards": 1,
-                    "number_of_replicas": 0,
-                    "refresh_interval": "30s"
-                },
-                "mappings": {
-                    "properties": {
-                        "timestamp": {"type": "date", "format": "epoch_millis"},
-                        "id1": {"type": "keyword"},
-                        "id2": {"type": "keyword"},
-                        "id3": {"type": "keyword"},
-                        "id4": {"type": "long"},
-                        "id5": {"type": "long"},
-                        "id6": {"type": "long"},
-                        "v1": {"type": "long"},
-                        "v2": {"type": "long"},
-                        "v3": {"type": "double"}
-                    }
-                }
-            }))
+            .delete(elasticsearch::indices::IndicesDeleteParts::Index(&[
+                &args.elastic_index
+            ]))
             .send()
             .await?;
 
-        if !create_response.status_code().is_success() {
-            let error_text = create_response.text().await?;
-            eprintln!("Failed to create index. Error response: {}", error_text);
-            return Err("Failed to create index".into());
+        if !delete_response.status_code().is_success() {
+            let error_text = delete_response.text().await?;
+            eprintln!("Failed to delete index. Error response: {}", error_text);
+            return Err("Failed to delete index".into());
         }
-        println!("Index created successfully");
-    } else {
-        println!(
-            "Index {} already exists, skipping creation",
-            args.elastic_index
-        );
+        println!("Index deleted successfully");
     }
+
+    println!("Creating index: {}", args.elastic_index);
+    let create_response = client
+        .indices()
+        .create(elasticsearch::indices::IndicesCreateParts::Index(
+            &args.elastic_index,
+        ))
+        .body(json!({
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s"
+            },
+            "mappings": {
+                "properties": {
+                    "timestamp": {"type": "date", "format": "epoch_millis"},
+                    "id1": {"type": "keyword"},
+                    "id2": {"type": "keyword"},
+                    "id3": {"type": "keyword"},
+                    "id4": {"type": "long"},
+                    "id5": {"type": "long"},
+                    "id6": {"type": "long"},
+                    "v1": {"type": "long"},
+                    "v2": {"type": "long"},
+                    "v3": {"type": "double"}
+                }
+            }
+        }))
+        .send()
+        .await?;
+
+    if !create_response.status_code().is_success() {
+        let error_text = create_response.text().await?;
+        eprintln!("Failed to create index. Error response: {}", error_text);
+        return Err("Failed to create index".into());
+    }
+    println!("Index created successfully");
 
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
@@ -929,7 +971,7 @@ async fn run_h2o_elasticsearch_mode(args: &Args) -> Result<(), Box<dyn std::erro
 
         // Create document with timestamp
         let doc = H2oEsDoc {
-            timestamp: base_timestamp + (row_num * 1000), // Increment by 1 second per row
+            timestamp: base_timestamp + (row_num * 10), // Increment by 10 ms per row
             id1: cols[0].to_string(),
             id2: cols[1].to_string(),
             id3: cols[2].to_string(),

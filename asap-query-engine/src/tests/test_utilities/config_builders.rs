@@ -100,7 +100,6 @@ impl TestConfigBuilder {
             window_size: window_seconds,
             slide_interval: window_seconds,
             window_type: window_type.to_string(),
-            tumbling_window_size: window_seconds,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -138,7 +137,6 @@ impl TestConfigBuilder {
             window_size: self.scrape_interval,
             slide_interval: self.scrape_interval,
             window_type: "tumbling".to_string(),
-            tumbling_window_size: self.scrape_interval,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -182,7 +180,6 @@ impl TestConfigBuilder {
             window_size: window_seconds,
             slide_interval: window_seconds,
             window_type: "tumbling".to_string(),
-            tumbling_window_size: window_seconds,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -310,7 +307,7 @@ mod tests {
             }
             SchemaConfig::SQL(_) => panic!("Expected PromQL schema"),
             SchemaConfig::ElasticQueryDSL => panic!("Expected PromQL schema"),
-            SchemaConfig::ElasticSQL => panic!("Expected PromQL schema"),
+            SchemaConfig::ElasticSQL(_) => panic!("Expected PromQL schema"),
         }
 
         // Verify query configs (2 queries: PromQL + SQL)

@@ -1,3 +1,16 @@
+#[cfg(test)]
+#[ctor::ctor]
+fn init_sketch_backend_for_tests() {
+    #[cfg(feature = "sketchlib-tests")]
+    let _ = sketch_core::config::configure(
+        sketch_core::config::ImplMode::Sketchlib,
+        sketch_core::config::ImplMode::Sketchlib,
+        sketch_core::config::ImplMode::Sketchlib,
+    );
+    #[cfg(not(feature = "sketchlib-tests"))]
+    sketch_core::config::force_legacy_mode_for_tests();
+}
+
 pub mod data_model;
 pub mod drivers;
 pub mod engines;

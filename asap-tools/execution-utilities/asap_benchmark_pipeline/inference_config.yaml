@@ -1,0 +1,17 @@
+tables:
+  - name: h2o_groupby
+    time_column: timestamp
+    metadata_columns: [id1, id2]
+    value_columns: [v1]
+
+cleanup_policy:
+  name: read_based
+
+queries:
+- aggregations:
+  - aggregation_id: 12
+    read_count_threshold: 999999
+  query: |-
+    SELECT QUANTILE(0.95, v1) FROM h2o_groupby
+    WHERE timestamp BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+    GROUP BY id1, id2;

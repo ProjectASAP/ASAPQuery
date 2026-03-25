@@ -1,0 +1,135 @@
+# ASAP Streaming Config for ClickBench Hits Dataset
+# Defines sketch aggregations for Arroyo to compute
+
+tables:
+  - name: hits
+    time_column: EventTime
+    metadata_columns: [RegionID, OS, UserAgent, TraficSourceID]
+    value_columns: [ResolutionWidth]
+
+# Only quantile aggregation enabled (for T5, T6)
+aggregations:
+  # # Spatial queries (1s window, partial labels)
+  # - aggregationId: 1
+  #   aggregationType: Sum
+  #   aggregationSubType: ''
+  #   labels:
+  #     grouping: [RegionID]
+  #     rollup: [OS, UserAgent, TraficSourceID]
+  #     aggregated: []
+  #   table_name: hits
+  #   value_column: ResolutionWidth
+  #   parameters: {}
+  #   windowSize: 1
+  #   windowSize: 1
+  #   windowType: tumbling
+  #   spatialFilter: ''
+
+  # - aggregationId: 2
+  #   aggregationType: Avg
+  #   aggregationSubType: ''
+  #   labels:
+  #     grouping: [RegionID, OS]
+  #     rollup: [UserAgent, TraficSourceID]
+  #     aggregated: []
+  #   table_name: hits
+  #   value_column: ResolutionWidth
+  #   parameters: {}
+  #   windowSize: 1
+  #   windowSize: 1
+  #   windowType: tumbling
+  #   spatialFilter: ''
+
+  # - aggregationId: 3
+  #   aggregationType: Max
+  #   aggregationSubType: ''
+  #   labels:
+  #     grouping: [RegionID, OS, UserAgent]
+  #     rollup: [TraficSourceID]
+  #     aggregated: []
+  #   table_name: hits
+  #   value_column: ResolutionWidth
+  #   parameters: {}
+  #   windowSize: 1
+  #   windowSize: 1
+  #   windowType: tumbling
+  #   spatialFilter: ''
+
+  # # Temporal queries (10s window, all labels) - SUM
+  # - aggregationId: 10
+  #   aggregationType: Sum
+  #   aggregationSubType: ''
+  #   labels:
+  #     grouping: [RegionID, OS, UserAgent, TraficSourceID]
+  #     rollup: []
+  #     aggregated: []
+  #   table_name: hits
+  #   value_column: ResolutionWidth
+  #   parameters: {}
+  #   windowSize: 1
+  #   windowSize: 10
+  #   windowType: tumbling
+  #   spatialFilter: ''
+
+  # # Temporal queries (10s window, all labels) - AVG
+  # - aggregationId: 11
+  #   aggregationType: Avg
+  #   aggregationSubType: ''
+  #   labels:
+  #     grouping: [RegionID, OS, UserAgent, TraficSourceID]
+  #     rollup: []
+  #     aggregated: []
+  #   table_name: hits
+  #   value_column: ResolutionWidth
+  #   parameters: {}
+  #   windowSize: 1
+  #   windowSize: 10
+  #   windowType: tumbling
+  #   spatialFilter: ''
+
+  # Temporal queries (10s window, all labels) - QUANTILE (DatasketchesKLL)
+  - aggregationId: 12
+    aggregationType: DatasketchesKLL
+    aggregationSubType: ''
+    labels:
+      grouping: [RegionID, OS, UserAgent, TraficSourceID]
+      rollup: []
+      aggregated: []
+    table_name: hits
+    value_column: ResolutionWidth
+    parameters:
+      K: 200
+    windowSize: 10
+    windowType: tumbling
+    spatialFilter: ''
+
+  # # SpatioTemporal queries (10s window, partial labels)
+  # - aggregationId: 20
+  #   aggregationType: Sum
+  #   aggregationSubType: ''
+  #   labels:
+  #     grouping: [RegionID]
+  #     rollup: [OS, UserAgent, TraficSourceID]
+  #     aggregated: []
+  #   table_name: hits
+  #   value_column: ResolutionWidth
+  #   parameters: {}
+  #   windowSize: 1
+  #   windowSize: 10
+  #   windowType: tumbling
+  #   spatialFilter: ''
+
+  # - aggregationId: 21
+  #   aggregationType: Avg
+  #   aggregationSubType: ''
+  #   labels:
+  #     grouping: [RegionID, OS]
+  #     rollup: [UserAgent, TraficSourceID]
+  #     aggregated: []
+  #   table_name: hits
+  #   value_column: ResolutionWidth
+  #   parameters: {}
+  #   windowSize: 1
+  #   windowSize: 10
+  #   windowType: tumbling
+  #   spatialFilter: ''

@@ -25,7 +25,7 @@ use promql_utilities::query_logics::parsing::{
 
 use sql_utilities::ast_matching::QueryType;
 use sql_utilities::ast_matching::{SQLPatternMatcher, SQLPatternParser, SQLQuery};
-use sql_utilities::sqlhelper::AggregationInfo;
+use sql_utilities::sqlhelper::{AggregationInfo, SQLQueryData};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
 
@@ -292,6 +292,33 @@ impl SimpleEngine {
             .find(|config| config.query == query)
     }
 
+    /// Finds the query configuration for a SQL query using structural pattern matching.
+    ///
+    /// Unlike `find_query_config` (which does exact string comparison), this method parses
+    /// each template in query_configs and compares it structurally against the incoming
+    /// query_data — ignoring absolute timestamps and comparing only metric, aggregation,
+    /// labels, time column name, and duration.
+    fn find_query_config_sql(&self, query_data: &SQLQueryData) -> Option<&QueryConfig> {
+        let schema = match &self.inference_config.schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema,
+            _ => return None,
+        };
+
+        self.inference_config.query_configs.iter().find(|config| {
+            let template_statements =
+                match parser::parse_sql(&GenericDialect {}, config.query.as_str()) {
+                    Ok(stmts) => stmts,
+                    Err(_) => return false,
+                };
+            let template_data =
+                match SQLPatternParser::new(schema, 0.0).parse_query(&template_statements) {
+                    Some(data) => data,
+                    None => return false,
+                };
+            query_data.matches_sql_pattern(&template_data)
+        })
+    }
+
     /// Validates and potentially aligns end timestamp based on query pattern
     fn validate_and_align_end_timestamp(
         &self,
@@ -525,17 +552,17 @@ impl SimpleEngine {
             }
             "SetAggregator" => {
                 // Latest window only
-                let tumbling_window_size = self
+                let window_size = self
                     .streaming_config
                     .get_aggregation_config(agg_info.aggregation_id_for_key)
-                    .map(|config| config.tumbling_window_size * 1000)
+                    .map(|config| config.window_size * 1000)
                     .ok_or_else(|| {
                         format!(
-                            "Failed to get tumbling window size for aggregation {}",
+                            "Failed to get window size for aggregation {}",
                             agg_info.aggregation_id_for_key
                         )
                     })?;
-                (end_timestamp - tumbling_window_size, end_timestamp)
+                (end_timestamp - window_size, end_timestamp)
             }
             other => {
                 return Err(format!("Unsupported key aggregation type: {}", other));
@@ -1105,7 +1132,7 @@ impl SimpleEngine {
                 return None;
             }
             &SchemaConfig::ElasticQueryDSL => todo!(),
-            &SchemaConfig::ElasticSQL => todo!(),
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
         };
 
         let statements = parser::parse_sql(&GenericDialect {}, query.as_str()).unwrap();
@@ -1134,7 +1161,7 @@ impl SimpleEngine {
             let query_time = Self::convert_query_time_to_data_time(
                 query_data.time_info.get_start() + query_data.time_info.get_duration(),
             );
-            return self.build_spatiotemporal_context(&match_result, query_time, &query);
+            return self.build_spatiotemporal_context(&match_result, query_time, &query_data);
         }
 
         let query_pattern_type = match &match_result.query_type[..] {
@@ -1156,7 +1183,7 @@ impl SimpleEngine {
             _ => panic!("Unsupported query type found"),
         };
 
-        let query_config = self.find_query_config(&query)?;
+        let query_config = self.find_query_config_sql(&query_data)?;
 
         // For nested queries (spatial of temporal), the outer query has no time clause,
         // so we need to use the inner (temporal) query's time_info to compute query_time
@@ -1341,9 +1368,9 @@ impl SimpleEngine {
         &self,
         match_result: &SQLQuery,
         query_time: u64,
-        query: &str,
+        query_data: &SQLQueryData,
     ) -> Option<QueryExecutionContext> {
-        let query_config = self.find_query_config(query)?;
+        let query_config = self.find_query_config_sql(query_data)?;
 
         // Output labels are the GROUP BY columns (subset of all labels)
         let query_output_labels = KeyByLabelNames::new(
@@ -1446,7 +1473,7 @@ impl SimpleEngine {
             QueryLanguage::promql => self.handle_query_promql(query, time),
             QueryLanguage::sql => self.handle_query_sql(query, time),
             QueryLanguage::elastic_querydsl => self.handle_query_elastic(),
-            QueryLanguage::elastic_sql => self.handle_query_elastic(),
+            QueryLanguage::elastic_sql => self.handle_query_sql(query, time),
         }
     }
 
@@ -1892,7 +1919,7 @@ impl SimpleEngine {
                 warn!("PromQL query requested but config has ElasticQueryDSL schema");
                 return None;
             }
-            &SchemaConfig::ElasticSQL => {
+            SchemaConfig::ElasticSQL(_) => {
                 warn!("PromQL query requested but config has ElasticSQL schema");
                 return None;
             }
@@ -2480,11 +2507,11 @@ impl SimpleEngine {
         let end_ms = Self::convert_query_time_to_data_time(end);
         let step_ms = (step * 1000.0) as u64;
 
-        // Get tumbling window size
+        // Get window size
         let tumbling_window_ms = self
             .streaming_config
             .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(|config| config.tumbling_window_size * 1000)?;
+            .map(|config| config.window_size * 1000)?;
 
         // Validate parameters
         self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
