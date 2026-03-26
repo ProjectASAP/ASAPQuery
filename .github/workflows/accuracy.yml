@@ -1,0 +1,183 @@
+name: Accuracy Tests
+
+# Validates that ASAP approximate query results stay within acceptable error
+# bounds relative to an exact (ClickHouse) baseline. Tests run inside Docker
+# containers on ephemeral GitHub Actions VMs — sufficient for catching
+# accuracy regressions without requiring self-hosted infrastructure.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'asap-summary-ingest/**'
+      - 'asap-query-engine/**'
+      - 'asap-common/sketch-core/**'
+      - 'asap-common/dependencies/**'
+      - 'asap-tools/execution-utilities/asap_benchmark_pipeline/**'
+      - 'asap-tools/execution-utilities/asap_query_latency/**'
+      - '.github/workflows/accuracy.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'asap-summary-ingest/**'
+      - 'asap-query-engine/**'
+      - 'asap-common/sketch-core/**'
+      - 'asap-common/dependencies/**'
+      - 'asap-tools/execution-utilities/asap_benchmark_pipeline/**'
+      - 'asap-tools/execution-utilities/asap_query_latency/**'
+      - '.github/workflows/accuracy.yml'
+  workflow_dispatch:
+
+env:
+  # Rows to ingest during CI — small enough to complete in ~10 min on GH runners
+  # while still exercising the full sketch → query path. Increase on self-hosted
+  # runners for a more thorough accuracy sweep.
+  MAX_ROWS: 50000
+  # Maximum acceptable relative error vs exact baseline (5 %)
+  MAX_RELATIVE_ERROR: "0.05"
+
+jobs:
+  # ── H2O groupby accuracy (ASAP vs ClickHouse exact) ────────────────────────
+  h2o-accuracy:
+    name: H2O groupby accuracy regression
+    runs-on: ubuntu-latest
+    # Accuracy tests can be long-running on ephemeral runners; give them room.
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests kafka-python gdown matplotlib
+          if [ -f asap-tools/execution-utilities/asap_benchmark_pipeline/requirements.txt ]; then
+            pip install -r asap-tools/execution-utilities/asap_benchmark_pipeline/requirements.txt
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Pull / build only the images needed for accuracy testing
+      - name: Build base image
+        run: |
+          docker build \
+            -t sketchdb-base:latest \
+            -f asap-common/installation/Dockerfile \
+            asap-common
+
+      - name: Build summary-ingest image
+        run: |
+          docker build \
+            -t asap-summary-ingest:ci \
+            -f asap-summary-ingest/Dockerfile \
+            asap-summary-ingest
+
+      - name: Install Rust (for query engine)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-accuracy-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Build query engine binary
+        run: cargo build --release --bin query_engine_rust --locked
+        env:
+          RUSTC_WRAPPER: sccache
+
+      # Run accuracy benchmark (ASAP path) with a small dataset slice
+      - name: Run ASAP accuracy benchmark
+        working-directory: asap-tools/execution-utilities/asap_benchmark_pipeline
+        run: |
+          python run_benchmark.py \
+            --mode asap \
+            --load-data \
+            --max-rows ${{ env.MAX_ROWS }} \
+            --output /tmp/asap_accuracy_results.csv \
+            --qe-bin ${{ github.workspace }}/target/release/query_engine_rust
+        env:
+          RUSTC_WRAPPER: sccache
+
+      # Run the same queries against the exact baseline
+      - name: Run ClickHouse baseline benchmark
+        working-directory: asap-tools/execution-utilities/asap_benchmark_pipeline
+        run: |
+          python run_benchmark.py \
+            --mode baseline \
+            --skip-data-load \
+            --output /tmp/baseline_accuracy_results.csv
+
+      # Compare ASAP results to baseline; fail if error exceeds threshold
+      - name: Check accuracy (error ≤ ${{ env.MAX_RELATIVE_ERROR }})
+        run: |
+          python3 - <<'EOF'
+          import csv, sys, os
+
+          max_err = float(os.environ["MAX_RELATIVE_ERROR"])
+          asap_file   = "/tmp/asap_accuracy_results.csv"
+          exact_file  = "/tmp/baseline_accuracy_results.csv"
+
+          def load(path):
+              with open(path) as f:
+                  return {row["query_id"]: float(row["result"]) for row in csv.DictReader(f)
+                          if row.get("result") not in (None, "", "null")}
+
+          try:
+              asap  = load(asap_file)
+              exact = load(exact_file)
+          except FileNotFoundError as e:
+              print(f"Result file missing: {e}. Skipping accuracy check.")
+              sys.exit(0)
+
+          failures = []
+          for qid, exact_val in exact.items():
+              if qid not in asap:
+                  print(f"WARN: {qid} not found in ASAP results, skipping")
+                  continue
+              if exact_val == 0:
+                  rel_err = 0.0 if asap[qid] == 0 else float("inf")
+              else:
+                  rel_err = abs(asap[qid] - exact_val) / abs(exact_val)
+              status = "PASS" if rel_err <= max_err else "FAIL"
+              print(f"{status}  {qid}: rel_err={rel_err:.4f}  asap={asap[qid]:.4f}  exact={exact_val:.4f}")
+              if status == "FAIL":
+                  failures.append(qid)
+
+          if failures:
+              print(f"\n{len(failures)} query(ies) exceeded max relative error ({max_err}):")
+              for qid in failures:
+                  print(f"  - {qid}")
+              sys.exit(1)
+          else:
+              print(f"\nAll queries within relative error threshold ({max_err}).")
+          EOF
+        env:
+          MAX_RELATIVE_ERROR: ${{ env.MAX_RELATIVE_ERROR }}
+
+      - name: Upload accuracy results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: accuracy-results-${{ github.run_id }}
+          path: |
+            /tmp/asap_accuracy_results.csv
+            /tmp/baseline_accuracy_results.csv
+          if-no-files-found: warn

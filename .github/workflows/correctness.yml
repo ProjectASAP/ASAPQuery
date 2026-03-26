@@ -1,0 +1,168 @@
+name: Correctness Tests
+
+# Verifies cross-language parity between Python and Rust implementations of
+# PromQL pattern matching and sketch serialisation. Ephemeral GitHub Actions
+# VMs are well-suited for these deterministic correctness checks.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'asap-common/tests/**'
+      - 'asap-common/dependencies/**'
+      - 'asap-common/sketch-core/**'
+      - '.github/workflows/correctness.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'asap-common/tests/**'
+      - 'asap-common/dependencies/**'
+      - 'asap-common/sketch-core/**'
+      - '.github/workflows/correctness.yml'
+  workflow_dispatch:
+
+jobs:
+  # ── 1. Cross-language token matching (Python vs Rust) ──────────────────────
+  cross-language-token-matching:
+    name: Cross-language PromQL token matching
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f asap-common/dependencies/py/requirements.txt ]; then
+            pip install -r asap-common/dependencies/py/requirements.txt
+          fi
+          pip install -e asap-common/dependencies/py/ 2>/dev/null || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-correctness-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Run master test runner (Python + Rust + comparison)
+        working-directory: asap-common/tests/compare_matched_tokens
+        run: python utilities/master_test_runner.py
+        env:
+          RUSTC_WRAPPER: sccache
+
+      - name: Upload test artefacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cross-language-token-results
+          path: |
+            asap-common/tests/compare_matched_tokens/python_tests/python_test_results.json
+            asap-common/tests/compare_matched_tokens/rust_tests/rust_test_results.json
+            asap-common/tests/compare_matched_tokens/comparison_tests/comparison_report.json
+            asap-common/tests/compare_matched_tokens/test_summary.json
+          if-no-files-found: warn
+
+  # ── 2. Cross-language serialised pattern comparison ────────────────────────
+  cross-language-pattern-serialisation:
+    name: Cross-language pattern serialisation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f asap-common/dependencies/py/requirements.txt ]; then
+            pip install -r asap-common/dependencies/py/requirements.txt
+          fi
+          pip install -e asap-common/dependencies/py/ 2>/dev/null || true
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-correctness-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Generate Python patterns
+        working-directory: asap-common/tests/compare_patterns
+        run: python python_generate_patterns.py
+
+      - name: Build and run Rust pattern generator
+        working-directory: asap-common/tests/compare_patterns
+        run: cargo run --release
+        env:
+          RUSTC_WRAPPER: sccache
+
+      - name: Compare serialised patterns
+        working-directory: asap-common/tests/compare_patterns
+        run: python compare_serialized_patterns.py
+
+  # ── 3. Rust pattern-matching unit tests ────────────────────────────────────
+  rust-pattern-matching:
+    name: Rust pattern matching unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install protoc
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y protobuf-compiler
+
+      - name: Run sccache
+        uses: mozilla-actions/sccache-action@v0.0.4
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-correctness-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
+
+      - name: Run Rust pattern matching tests
+        working-directory: asap-common/tests/rust_pattern_matching
+        run: cargo test --release
+        env:
+          RUSTC_WRAPPER: sccache
