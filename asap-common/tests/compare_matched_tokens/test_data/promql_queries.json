@@ -1,0 +1,228 @@
+{
+  "test_cases": [
+    {
+      "id": "temporal_rate_basic",
+      "description": "Basic rate function over a time range",
+      "query": "rate(http_requests_total{job=\"api\"}[5m])",
+      "expected_pattern_type": "ONLY_TEMPORAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "http_requests_total",
+          "labels": {"job": "api"},
+          "at_modifier": null
+        },
+        "function": {
+          "name": "rate"
+        },
+        "range_vector": {
+          "range": "5m"
+        }
+      }
+    },
+    {
+      "id": "temporal_increase_basic",
+      "description": "Increase function over a time range",
+      "query": "increase(http_requests_total[1h])",
+      "expected_pattern_type": "ONLY_TEMPORAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "http_requests_total",
+          "labels": {},
+          "at_modifier": null
+        },
+        "function": {
+          "name": "increase"
+        },
+        "range_vector": {
+          "range": "1h"
+        }
+      }
+    },
+    {
+      "id": "temporal_quantile_over_time",
+      "description": "Quantile over time function",
+      "query": "quantile_over_time(0.95, cpu_usage{instance=\"host1\"}[10m])",
+      "expected_pattern_type": "ONLY_TEMPORAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "cpu_usage",
+          "labels": {"instance": "host1"},
+          "at_modifier": null
+        },
+        "function": {
+          "name": "quantile_over_time"
+        },
+        "range_vector": {
+          "range": "10m"
+        }
+      }
+    },
+    {
+      "id": "temporal_avg_over_time",
+      "description": "Average over time function",
+      "query": "avg_over_time(memory_bytes[30m])",
+      "expected_pattern_type": "ONLY_TEMPORAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "memory_bytes",
+          "labels": {},
+          "at_modifier": null
+        },
+        "function": {
+          "name": "avg_over_time"
+        },
+        "range_vector": {
+          "range": "30m"
+        }
+      }
+    },
+    {
+      "id": "spatial_sum_aggregation",
+      "description": "Sum aggregation across all series",
+      "query": "sum(http_requests_total{job=\"api\"})",
+      "expected_pattern_type": "ONLY_SPATIAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "http_requests_total",
+          "labels": {"job": "api"},
+          "at_modifier": null
+        },
+        "aggregation": {
+          "op": "sum",
+          "modifier": null
+        }
+      }
+    },
+    {
+      "id": "spatial_avg_aggregation",
+      "description": "Average aggregation by label",
+      "query": "avg by (instance) (cpu_usage)",
+      "expected_pattern_type": "ONLY_SPATIAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "cpu_usage",
+          "labels": {},
+          "at_modifier": null
+        },
+        "aggregation": {
+          "op": "avg",
+          "modifier": null
+        }
+      }
+    },
+    {
+      "id": "spatial_count_aggregation",
+      "description": "Count aggregation",
+      "query": "count(up{job=\"node\"})",
+      "expected_pattern_type": "ONLY_SPATIAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "up",
+          "labels": {"job": "node"},
+          "at_modifier": null
+        },
+        "aggregation": {
+          "op": "count",
+          "modifier": null
+        }
+      }
+    },
+    {
+      "id": "combined_sum_of_rate",
+      "description": "Sum aggregation of rate (temporal + spatial)",
+      "query": "sum(rate(http_requests_total{job=\"api\"}[5m]))",
+      "expected_pattern_type": "ONE_TEMPORAL_ONE_SPATIAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "http_requests_total",
+          "labels": {"job": "api"},
+          "at_modifier": null
+        },
+        "function": {
+          "name": "rate"
+        },
+        "aggregation": {
+          "op": "sum",
+          "modifier": null
+        },
+        "range_vector": {
+          "range": "5m"
+        }
+      }
+    },
+    {
+      "id": "combined_avg_of_quantile_over_time",
+      "description": "Avg aggregation of quantile_over_time (temporal + spatial)",
+      "query": "avg(quantile_over_time(0.99, response_time_seconds[15m]))",
+      "expected_pattern_type": "ONE_TEMPORAL_ONE_SPATIAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "response_time_seconds",
+          "labels": {},
+          "at_modifier": null
+        },
+        "function": {
+          "name": "quantile_over_time"
+        },
+        "aggregation": {
+          "op": "avg",
+          "modifier": null
+        },
+        "range_vector": {
+          "range": "15m"
+        }
+      }
+    },
+    {
+      "id": "combined_sum_of_avg_over_time",
+      "description": "Sum aggregation of avg_over_time",
+      "query": "sum by (job) (avg_over_time(memory_bytes{env=\"prod\"}[1h]))",
+      "expected_pattern_type": "ONE_TEMPORAL_ONE_SPATIAL",
+      "expected_tokens": {
+        "metric": {
+          "name": "memory_bytes",
+          "labels": {"env": "prod"},
+          "at_modifier": null
+        },
+        "function": {
+          "name": "avg_over_time"
+        },
+        "aggregation": {
+          "op": "sum",
+          "modifier": null
+        },
+        "range_vector": {
+          "range": "1h"
+        }
+      }
+    }
+  ],
+  "pattern_builder_tests": [
+    {
+      "id": "builder_metric_no_labels",
+      "description": "Build a simple metric selector with no labels",
+      "builder_call": "metric",
+      "parameters": {
+        "collect_as": "metric"
+      },
+      "expected_pattern": {
+        "type": "metric",
+        "collect_as": "metric"
+      }
+    },
+    {
+      "id": "builder_function_rate",
+      "description": "Build a rate function pattern",
+      "builder_call": "function",
+      "parameters": {
+        "names": ["rate", "increase"],
+        "collect_as": "function"
+      },
+      "expected_pattern": {
+        "type": "function",
+        "names": ["rate", "increase"],
+        "collect_as": "function"
+      }
+    }
+  ]
+}
