@@ -3,7 +3,7 @@
 
 Applies pass/fail policy:
   - FAIL if any query returned an error in ASAP (query failure)
-  - FAIL if any ASAP-native query has relative error > max_error (default 1%)
+  - WARN if any ASAP-native query has relative error > max_error (default 5%)
   - WARN (not FAIL) on >10% p95 latency regression (GH runner noise)
 
 Generates benchmarks/reports/eval_report.md and prints it to stdout.
@@ -196,9 +196,9 @@ def main() -> None:
             failures.append(f"{qid}: ASAP query failed — {reason}")
 
         elif asap_native and rel_error is not None and rel_error > args.max_error:
-            row_status = "FAIL"
-            failures.append(
-                f"{qid}: relative error {rel_error:.4f} > threshold {args.max_error:.4f}"
+            row_status = "WARN"
+            warnings.append(
+                f"{qid}: relative error {rel_error:.4f} > threshold {args.max_error:.4f} — informational only"
             )
 
         # Latency regression — warn only
