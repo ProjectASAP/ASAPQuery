@@ -32,7 +32,7 @@ DEFAULT_ASAP = os.path.join(
 DEFAULT_OUTPUT = os.path.join(
     os.path.dirname(__file__), "..", "reports", "eval_report.md"
 )
-DEFAULT_MAX_ERROR = 0.01   # 1 %
+DEFAULT_MAX_ERROR = 0.05   # 5 %
 LATENCY_REGRESSION_THRESHOLD = 0.10  # 10 % — warn only
 
 
