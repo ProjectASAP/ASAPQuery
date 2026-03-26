@@ -81,7 +81,7 @@ pub struct SQLControllerConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SQLQueryGroup {
-    pub id: Option<String>,
+    pub id: Option<u32>,
     pub queries: Vec<String>,
     pub repetition_delay: u64,
     pub controller_options: ControllerOptions,

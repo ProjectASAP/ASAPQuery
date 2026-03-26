@@ -1,12 +1,13 @@
 use indexmap::IndexMap;
 use serde_yaml::Value as YamlValue;
+use sketch_db_common::enums::CleanupPolicy;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::input::SQLControllerConfig;
 use crate::error::ControllerError;
 use crate::output::generator::{
-    key_by_labels_to_yaml, params_to_yaml, parse_cleanup_policy, GeneratorOutput,
+    build_aggregation_entry, build_queries_yaml, parse_cleanup_policy, GeneratorOutput,
 };
 use crate::planner::single_query::IntermediateAggConfig;
 use crate::planner::sql_single_query::SQLSingleQueryProcessor;
@@ -110,93 +111,8 @@ pub fn generate_sql_plan(
     })
 }
 
-fn build_sql_streaming_yaml(
-    config: &SQLControllerConfig,
-    dedup_map: &IndexMap<String, IntermediateAggConfig>,
-    id_map: &HashMap<String, u32>,
-) -> Result<YamlValue, ControllerError> {
-    let aggregations: Vec<YamlValue> = dedup_map
-        .iter()
-        .map(|(key, cfg)| {
-            let id = id_map[key];
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                YamlValue::String("aggregationId".to_string()),
-                YamlValue::Number(id.into()),
-            );
-            map.insert(
-                YamlValue::String("aggregationSubType".to_string()),
-                YamlValue::String(cfg.aggregation_sub_type.clone()),
-            );
-            map.insert(
-                YamlValue::String("aggregationType".to_string()),
-                YamlValue::String(cfg.aggregation_type.clone()),
-            );
-
-            // labels
-            let mut labels_map = serde_yaml::Mapping::new();
-            labels_map.insert(
-                YamlValue::String("aggregated".to_string()),
-                key_by_labels_to_yaml(&cfg.aggregated_labels),
-            );
-            labels_map.insert(
-                YamlValue::String("grouping".to_string()),
-                key_by_labels_to_yaml(&cfg.grouping_labels),
-            );
-            labels_map.insert(
-                YamlValue::String("rollup".to_string()),
-                key_by_labels_to_yaml(&cfg.rollup_labels),
-            );
-            map.insert(
-                YamlValue::String("labels".to_string()),
-                YamlValue::Mapping(labels_map),
-            );
-
-            map.insert(
-                YamlValue::String("metric".to_string()),
-                YamlValue::String(cfg.metric.clone()),
-            );
-            map.insert(
-                YamlValue::String("parameters".to_string()),
-                params_to_yaml(&cfg.parameters),
-            );
-            map.insert(
-                YamlValue::String("slideInterval".to_string()),
-                YamlValue::Number(cfg.slide_interval.into()),
-            );
-            map.insert(
-                YamlValue::String("spatialFilter".to_string()),
-                YamlValue::String(cfg.spatial_filter.clone()),
-            );
-            map.insert(
-                YamlValue::String("table_name".to_string()),
-                match &cfg.table_name {
-                    Some(t) => YamlValue::String(t.clone()),
-                    None => YamlValue::Null,
-                },
-            );
-            map.insert(
-                YamlValue::String("value_column".to_string()),
-                match &cfg.value_column {
-                    Some(v) => YamlValue::String(v.clone()),
-                    None => YamlValue::Null,
-                },
-            );
-            map.insert(
-                YamlValue::String("windowSize".to_string()),
-                YamlValue::Number(cfg.window_size.into()),
-            );
-            map.insert(
-                YamlValue::String("windowType".to_string()),
-                YamlValue::String(cfg.window_type.clone()),
-            );
-
-            YamlValue::Mapping(map)
-        })
-        .collect();
-
-    // Build tables section
-    let tables_seq: Vec<YamlValue> = config
+fn build_tables_yaml(config: &SQLControllerConfig) -> Vec<YamlValue> {
+    config
         .tables
         .iter()
         .map(|t| {
@@ -229,6 +145,17 @@ fn build_sql_streaming_yaml(
             );
             YamlValue::Mapping(map)
         })
+        .collect()
+}
+
+fn build_sql_streaming_yaml(
+    config: &SQLControllerConfig,
+    dedup_map: &IndexMap<String, IntermediateAggConfig>,
+    id_map: &HashMap<String, u32>,
+) -> Result<YamlValue, ControllerError> {
+    let aggregations: Vec<YamlValue> = dedup_map
+        .iter()
+        .map(|(key, cfg)| build_aggregation_entry(id_map[key], cfg))
         .collect();
 
     let mut root = serde_yaml::Mapping::new();
@@ -238,7 +165,7 @@ fn build_sql_streaming_yaml(
     );
     root.insert(
         YamlValue::String("tables".to_string()),
-        YamlValue::Sequence(tables_seq),
+        YamlValue::Sequence(build_tables_yaml(config)),
     );
 
     Ok(YamlValue::Mapping(root))
@@ -246,7 +173,7 @@ fn build_sql_streaming_yaml(
 
 fn build_sql_inference_yaml(
     config: &SQLControllerConfig,
-    cleanup_policy: sketch_db_common::enums::CleanupPolicy,
+    cleanup_policy: CleanupPolicy,
     cleanup_policy_str: &str,
     query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
     id_map: &HashMap<String, u32>,
@@ -257,88 +184,6 @@ fn build_sql_inference_yaml(
         YamlValue::String(cleanup_policy_str.to_string()),
     );
 
-    let queries: Vec<YamlValue> = query_keys_map
-        .iter()
-        .map(|(query_str, keys)| {
-            let aggregations: Vec<YamlValue> = keys
-                .iter()
-                .map(|(key, cleanup_param)| {
-                    let agg_id = id_map[key];
-                    let mut agg_map = serde_yaml::Mapping::new();
-                    agg_map.insert(
-                        YamlValue::String("aggregation_id".to_string()),
-                        YamlValue::Number(agg_id.into()),
-                    );
-                    if let Some(param) = cleanup_param {
-                        match cleanup_policy {
-                            sketch_db_common::enums::CleanupPolicy::CircularBuffer => {
-                                agg_map.insert(
-                                    YamlValue::String("num_aggregates_to_retain".to_string()),
-                                    YamlValue::Number((*param).into()),
-                                );
-                            }
-                            sketch_db_common::enums::CleanupPolicy::ReadBased => {
-                                agg_map.insert(
-                                    YamlValue::String("read_count_threshold".to_string()),
-                                    YamlValue::Number((*param).into()),
-                                );
-                            }
-                            sketch_db_common::enums::CleanupPolicy::NoCleanup => {}
-                        }
-                    }
-                    YamlValue::Mapping(agg_map)
-                })
-                .collect();
-
-            let mut q_map = serde_yaml::Mapping::new();
-            q_map.insert(
-                YamlValue::String("aggregations".to_string()),
-                YamlValue::Sequence(aggregations),
-            );
-            q_map.insert(
-                YamlValue::String("query".to_string()),
-                YamlValue::String(query_str.clone()),
-            );
-            YamlValue::Mapping(q_map)
-        })
-        .collect();
-
-    // Build tables section
-    let tables_seq: Vec<YamlValue> = config
-        .tables
-        .iter()
-        .map(|t| {
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                YamlValue::String("name".to_string()),
-                YamlValue::String(t.name.clone()),
-            );
-            map.insert(
-                YamlValue::String("time_column".to_string()),
-                YamlValue::String(t.time_column.clone()),
-            );
-            map.insert(
-                YamlValue::String("value_columns".to_string()),
-                YamlValue::Sequence(
-                    t.value_columns
-                        .iter()
-                        .map(|c| YamlValue::String(c.clone()))
-                        .collect(),
-                ),
-            );
-            map.insert(
-                YamlValue::String("metadata_columns".to_string()),
-                YamlValue::Sequence(
-                    t.metadata_columns
-                        .iter()
-                        .map(|c| YamlValue::String(c.clone()))
-                        .collect(),
-                ),
-            );
-            YamlValue::Mapping(map)
-        })
-        .collect();
-
     let mut root = serde_yaml::Mapping::new();
     root.insert(
         YamlValue::String("cleanup_policy".to_string()),
@@ -346,11 +191,11 @@ fn build_sql_inference_yaml(
     );
     root.insert(
         YamlValue::String("queries".to_string()),
-        YamlValue::Sequence(queries),
+        YamlValue::Sequence(build_queries_yaml(cleanup_policy, query_keys_map, id_map)),
     );
     root.insert(
         YamlValue::String("tables".to_string()),
-        YamlValue::Sequence(tables_seq),
+        YamlValue::Sequence(build_tables_yaml(config)),
     );
 
     Ok(YamlValue::Mapping(root))

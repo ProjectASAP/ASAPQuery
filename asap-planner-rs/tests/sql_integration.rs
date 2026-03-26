@@ -27,7 +27,7 @@ tables:
     value_columns: [cpu_usage]
     metadata_columns: [hostname, datacenter, region]
 query_groups:
-  - id: "1"
+  - id: 1
     repetition_delay: {t_repeat}
     controller_options:
       accuracy_sla: 0.95
@@ -499,7 +499,7 @@ tables:
     value_columns: [cpu_usage]
     metadata_columns: [hostname, datacenter, region]
 query_groups:
-  - id: "1"
+  - id: 1
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -507,7 +507,7 @@ query_groups:
     queries:
       - >-
         SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
-  - id: "2"
+  - id: 2
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -540,7 +540,7 @@ tables:
     value_columns: [cpu_usage, memory_usage]
     metadata_columns: [hostname, datacenter, region]
 query_groups:
-  - id: "1"
+  - id: 1
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -574,7 +574,7 @@ tables:
     value_columns: [cpu_usage]
     metadata_columns: [hostname, datacenter, region]
 query_groups:
-  - id: "1"
+  - id: 1
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -582,7 +582,7 @@ query_groups:
     queries:
       - >-
         {q}
-  - id: "2"
+  - id: 2
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -611,7 +611,7 @@ tables:
     value_columns: [cpu_usage]
     metadata_columns: [hostname, datacenter, region]
 query_groups:
-  - id: "1"
+  - id: 1
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -619,7 +619,7 @@ query_groups:
     queries:
       - >-
         SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
-  - id: "2"
+  - id: 2
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -703,7 +703,7 @@ tables:
     value_columns: [cpu_usage]
     metadata_columns: [hostname, datacenter, region]
 query_groups:
-  - id: "1"
+  - id: 1
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95
@@ -734,7 +734,7 @@ tables:
     value_columns: [cpu_usage]
     metadata_columns: [hostname, datacenter, region]
 query_groups:
-  - id: "1"
+  - id: 1
     repetition_delay: 300
     controller_options:
       accuracy_sla: 0.95

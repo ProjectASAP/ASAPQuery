@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::Statistic;
-use serde_json::Value;
+use promql_utilities::query_logics::enums::{QueryTreatmentType, Statistic};
 use sketch_db_common::enums::CleanupPolicy;
 use sql_utilities::ast_matching::sqlhelper::Table;
 use sql_utilities::ast_matching::sqlpattern_matcher::{QueryType, SQLPatternMatcher};
@@ -14,18 +13,10 @@ use sqlparser::parser::Parser as SqlParser;
 use crate::config::input::{SketchParameterOverrides, TableDefinition};
 use crate::error::ControllerError;
 use crate::planner::logics::{
-    get_sql_cleanup_param, set_subpopulation_labels, IntermediateWindowConfig,
+    build_sketch_parameters, get_sql_cleanup_param, IntermediateWindowConfig,
 };
-use crate::planner::single_query::IntermediateAggConfig;
+use crate::planner::single_query::{build_agg_configs_for_statistics, IntermediateAggConfig};
 use crate::StreamingEngine;
-
-// Default sketch parameters (mirrored from logics.rs)
-const DEFAULT_CMS_DEPTH: u64 = 3;
-const DEFAULT_CMS_WIDTH: u64 = 1024;
-const DEFAULT_KLL_K: u64 = 20;
-const DEFAULT_HYDRA_ROW: u64 = 3;
-const DEFAULT_HYDRA_COL: u64 = 1024;
-const DEFAULT_HYDRA_K: u64 = 20;
 
 pub struct SQLSingleQueryProcessor {
     query_string: String,
@@ -90,23 +81,18 @@ impl SQLSingleQueryProcessor {
 
         let n = sql_query.query_data.len();
 
+        if n != 1 {
+            return Err(ControllerError::SqlParse(format!(
+                "Nested SQL queries (n={}) are not supported",
+                n
+            )));
+        }
+
         // Determine fields from query vecs
-        let (agg_info, query_type, labels, table_name) = if n == 1 {
-            (
-                &sql_query.query_data[0].aggregation_info,
-                &sql_query.query_type[0],
-                &sql_query.query_data[0].labels,
-                &sql_query.query_data[0].metric,
-            )
-        } else {
-            // N=2: [Spatial, TemporalX]
-            (
-                &sql_query.query_data[1].aggregation_info,
-                &sql_query.query_type[1],
-                &sql_query.query_data[0].labels,
-                &sql_query.query_data[1].metric,
-            )
-        };
+        let agg_info = &sql_query.query_data[0].aggregation_info;
+        let query_type = &sql_query.query_type[0];
+        let labels = &sql_query.query_data[0].labels;
+        let table_name = &sql_query.query_data[0].metric;
 
         let value_column = agg_info.get_value_column_name().to_string();
 
@@ -121,85 +107,33 @@ impl SQLSingleQueryProcessor {
         let spatial_output = KeyByLabelNames::new(labels.iter().cloned().collect::<Vec<_>>());
         let rollup = all_metadata.difference(&spatial_output);
 
-        let mut configs: Vec<IntermediateAggConfig> = Vec::new();
+        let treatment_type = get_sql_treatment_type(agg_info.get_name());
+        let statistics = get_sql_statistics(agg_info.get_name())?;
 
-        // For each (agg_type, sub_type) pair
-        for (agg_type, agg_sub_type) in sql_agg_to_operators(agg_info.get_name())? {
-            let mut grouping = KeyByLabelNames::empty();
-            let mut aggregated = KeyByLabelNames::empty();
-
-            if agg_type == "DeltaSetAggregator" {
-                // Should not happen since we inject DeltaSet separately
-                grouping = spatial_output.clone();
-                aggregated = KeyByLabelNames::empty();
-            } else {
-                let statistic = sql_agg_name_to_statistic(agg_info.get_name(), &agg_sub_type);
-                set_subpopulation_labels(
-                    statistic,
-                    &agg_type,
-                    &spatial_output,
-                    &mut rollup.clone(),
-                    &mut grouping,
-                    &mut aggregated,
-                );
-            }
-
-            // If CountMinSketch, prepend a DeltaSetAggregator
-            if agg_type == "CountMinSketch" {
-                let delta_params = get_sql_precompute_operator_parameters(
-                    "DeltaSetAggregator",
+        let configs = build_agg_configs_for_statistics(
+            &statistics,
+            treatment_type,
+            &spatial_output,
+            &rollup,
+            &window_cfg,
+            table_name,
+            Some(table_name),
+            Some(&value_column),
+            "",
+            |agg_type, agg_sub_type| {
+                build_sketch_parameters(
+                    agg_type,
+                    agg_sub_type,
+                    None,
                     self.sketch_parameters.as_ref(),
                 )
-                .map_err(ControllerError::PlannerError)?;
+            },
+        )
+        .map_err(ControllerError::SqlParse)?;
 
-                configs.push(IntermediateAggConfig {
-                    aggregation_type: "DeltaSetAggregator".to_string(),
-                    aggregation_sub_type: String::new(),
-                    window_type: window_cfg.window_type.clone(),
-                    window_size: window_cfg.window_size,
-                    slide_interval: window_cfg.slide_interval,
-                    spatial_filter: String::new(),
-                    metric: table_name.clone(),
-                    table_name: Some(table_name.clone()),
-                    value_column: Some(value_column.clone()),
-                    parameters: delta_params,
-                    rollup_labels: rollup.clone(),
-                    grouping_labels: spatial_output.clone(),
-                    aggregated_labels: KeyByLabelNames::empty(),
-                });
-            }
-
-            let parameters =
-                get_sql_precompute_operator_parameters(&agg_type, self.sketch_parameters.as_ref())
-                    .map_err(ControllerError::PlannerError)?;
-
-            configs.push(IntermediateAggConfig {
-                aggregation_type: agg_type,
-                aggregation_sub_type: agg_sub_type,
-                window_type: window_cfg.window_type.clone(),
-                window_size: window_cfg.window_size,
-                slide_interval: window_cfg.slide_interval,
-                spatial_filter: String::new(),
-                metric: table_name.clone(),
-                table_name: Some(table_name.clone()),
-                value_column: Some(value_column.clone()),
-                parameters,
-                rollup_labels: rollup.clone(),
-                grouping_labels: grouping,
-                aggregated_labels: aggregated,
-            });
-        }
-
-        // Compute t_lookback
         let t_lookback = match query_type {
             QueryType::Spatial => self.data_ingestion_interval,
-            _ => {
-                if n == 1 {
-                    sql_query.query_data[0].time_info.get_duration() as u64
-                } else {
-                    sql_query.query_data[1].time_info.get_duration() as u64
-                }
-            }
+            _ => sql_query.query_data[0].time_info.get_duration() as u64,
         };
 
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {
@@ -230,39 +164,25 @@ fn build_sql_schema(tables: &[TableDefinition]) -> SQLSchema {
     SQLSchema::new(table_vec)
 }
 
-fn sql_agg_to_operators(name: &str) -> Result<Vec<(String, String)>, ControllerError> {
+fn get_sql_treatment_type(name: &str) -> QueryTreatmentType {
     match name.to_uppercase().as_str() {
-        "QUANTILE" => Ok(vec![("DatasketchesKLL".into(), "".into())]),
-        "SUM" => Ok(vec![("CountMinSketch".into(), "sum".into())]),
-        "COUNT" => Ok(vec![("CountMinSketch".into(), "count".into())]),
-        "AVG" => Ok(vec![
-            ("CountMinSketch".into(), "sum".into()),
-            ("CountMinSketch".into(), "count".into()),
-        ]),
-        "MIN" => Ok(vec![("MultipleMinMax".into(), "min".into())]),
-        "MAX" => Ok(vec![("MultipleMinMax".into(), "max".into())]),
+        "MIN" | "MAX" => QueryTreatmentType::Exact,
+        _ => QueryTreatmentType::Approximate,
+    }
+}
+
+fn get_sql_statistics(name: &str) -> Result<Vec<Statistic>, ControllerError> {
+    match name.to_uppercase().as_str() {
+        "QUANTILE" => Ok(vec![Statistic::Quantile]),
+        "SUM" => Ok(vec![Statistic::Sum]),
+        "COUNT" => Ok(vec![Statistic::Count]),
+        "AVG" => Ok(vec![Statistic::Sum, Statistic::Count]),
+        "MIN" => Ok(vec![Statistic::Min]),
+        "MAX" => Ok(vec![Statistic::Max]),
         other => Err(ControllerError::SqlParse(format!(
             "Unsupported aggregation: {}",
             other
         ))),
-    }
-}
-
-fn sql_agg_name_to_statistic(name: &str, sub_type: &str) -> Statistic {
-    match name.to_uppercase().as_str() {
-        "QUANTILE" => Statistic::Quantile,
-        "SUM" => Statistic::Sum,
-        "COUNT" => Statistic::Count,
-        "AVG" => {
-            if sub_type == "sum" {
-                Statistic::Sum
-            } else {
-                Statistic::Count
-            }
-        }
-        "MIN" => Statistic::Min,
-        "MAX" => Statistic::Max,
-        _ => Statistic::Sum,
     }
 }
 
@@ -279,63 +199,6 @@ fn compute_sql_window(
         window_size,
         slide_interval: window_size,
         window_type: "tumbling".to_string(),
-    }
-}
-
-fn get_sql_precompute_operator_parameters(
-    aggregation_type: &str,
-    sketch_params: Option<&SketchParameterOverrides>,
-) -> Result<HashMap<String, Value>, String> {
-    match aggregation_type {
-        "Increase" | "MinMax" | "Sum" | "MultipleIncrease" | "MultipleMinMax" | "MultipleSum"
-        | "DeltaSetAggregator" | "SetAggregator" => Ok(HashMap::new()),
-
-        "CountMinSketch" => {
-            let depth = sketch_params
-                .and_then(|p| p.count_min_sketch.as_ref())
-                .map(|p| p.depth)
-                .unwrap_or(DEFAULT_CMS_DEPTH);
-            let width = sketch_params
-                .and_then(|p| p.count_min_sketch.as_ref())
-                .map(|p| p.width)
-                .unwrap_or(DEFAULT_CMS_WIDTH);
-            let mut m = HashMap::new();
-            m.insert("depth".to_string(), Value::Number(depth.into()));
-            m.insert("width".to_string(), Value::Number(width.into()));
-            Ok(m)
-        }
-
-        "DatasketchesKLL" => {
-            let k = sketch_params
-                .and_then(|p| p.datasketches_kll.as_ref())
-                .map(|p| p.k)
-                .unwrap_or(DEFAULT_KLL_K);
-            let mut m = HashMap::new();
-            m.insert("K".to_string(), Value::Number(k.into()));
-            Ok(m)
-        }
-
-        "HydraKLL" => {
-            let row_num = sketch_params
-                .and_then(|p| p.hydra_kll.as_ref())
-                .map(|p| p.row_num)
-                .unwrap_or(DEFAULT_HYDRA_ROW);
-            let col_num = sketch_params
-                .and_then(|p| p.hydra_kll.as_ref())
-                .map(|p| p.col_num)
-                .unwrap_or(DEFAULT_HYDRA_COL);
-            let k = sketch_params
-                .and_then(|p| p.hydra_kll.as_ref())
-                .map(|p| p.k)
-                .unwrap_or(DEFAULT_HYDRA_K);
-            let mut m = HashMap::new();
-            m.insert("row_num".to_string(), Value::Number(row_num.into()));
-            m.insert("col_num".to_string(), Value::Number(col_num.into()));
-            m.insert("k".to_string(), Value::Number(k.into()));
-            Ok(m)
-        }
-
-        other => Err(format!("Aggregation type {} not supported", other)),
     }
 }
 
