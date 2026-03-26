@@ -1,0 +1,26 @@
+# CI override: replaces pulled images with locally-built versions for the
+# three ASAP-owned services. Intended for use as a Compose override:
+#
+#   docker compose \
+#     -f asap-quickstart/docker-compose.yml \
+#     -f benchmarks/docker-compose.yml \
+#     up -d --build
+
+services:
+  asap-planner-rs:
+    image: asap-planner-rs:ci
+    build:
+      context: .
+      dockerfile: asap-planner-rs/Dockerfile
+
+  asap-summary-ingest:
+    image: asap-summary-ingest:ci
+    build:
+      context: .
+      dockerfile: asap-summary-ingest/Dockerfile
+
+  queryengine:
+    image: asap-query-engine:ci
+    build:
+      context: .
+      dockerfile: asap-query-engine/Dockerfile

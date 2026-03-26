@@ -1,0 +1,98 @@
+name: PR Evaluation
+
+# NOTE: GitHub-hosted runners are noisy. Latency numbers are indicative only.
+# For precise benchmarks, register a self-hosted runner once asap-tools infra
+# is decoupled from Cloudlab. See PDF eval guide Phase 3.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'asap-query-engine/**'
+      - 'asap-planner-rs/**'
+      - 'asap-summary-ingest/**'
+      - 'asap-quickstart/**'
+      - '.github/workflows/eval-pr.yml'
+      - 'benchmarks/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  eval:
+    name: Full-stack PR evaluation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and start full stack
+        env:
+          COMPOSE_DOCKER_CLI_BUILD: "1"
+          DOCKER_BUILDKIT: "1"
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            up -d --build 2>&1
+
+      - name: Show running containers
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            ps
+
+      - name: Wait for all services to be healthy
+        run: bash benchmarks/scripts/wait_for_stack.sh
+
+      - name: Wait for pipeline and data ingestion
+        run: bash benchmarks/scripts/ingest_wait.sh
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Run baseline queries (Prometheus)
+        run: python benchmarks/scripts/run_baseline.py
+
+      - name: Run ASAP queries (query engine)
+        run: python benchmarks/scripts/run_asap.py
+
+      - name: Compare results and evaluate
+        run: python benchmarks/scripts/compare.py
+
+      - name: Upload evaluation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports-${{ github.run_id }}
+          path: benchmarks/reports/
+
+      - name: Print docker logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            logs --no-color
+
+      - name: Teardown stack
+        if: always()
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            down -v
