@@ -8,7 +8,7 @@ set -euo pipefail
 ARROYO_URL="http://localhost:5115/api/v1/pipelines"
 QE_URL="http://localhost:8088/api/v1/query"
 PIPELINE_NAME="asap-demo"
-MAX_PIPELINE_WAIT=300   # seconds
+MAX_PIPELINE_WAIT=600   # seconds — Arroyo must compile Rust UDFs; allow extra time
 ACCUMULATE_SLEEP=90     # seconds after pipeline is running
 SLEEP=5
 
@@ -19,26 +19,45 @@ while true; do
   state=$(curl -sf --max-time 10 "${ARROYO_URL}" 2>/dev/null \
     | python3 -c "
 import sys, json
-data = json.load(sys.stdin)
-pipelines = data if isinstance(data, list) else data.get('data', [])
-for p in pipelines:
-    name = p.get('name', '') or p.get('id', '')
-    if '${PIPELINE_NAME}' in str(name):
-        print(p.get('state', p.get('status', '')))
-        break
+try:
+    data = json.load(sys.stdin)
+    # 'data' key may be null when no pipelines exist; use 'or []' to handle that
+    pipelines = data if isinstance(data, list) else (data.get('data') or [])
+    for p in pipelines:
+        name = str(p.get('name') or p.get('id') or '')
+        # Normalise hyphens/underscores so 'asap-demo' matches 'asap_demo'
+        if '${PIPELINE_NAME}'.replace('-', '_') in name.replace('-', '_'):
+            state = p.get('state')
+            stop  = p.get('stop', '')
+            # Arroyo signals a running pipeline via state=null and stop='none'
+            if state is None and stop == 'none':
+                print('Running')
+            elif state is not None:
+                print(str(state))
+            else:
+                print('stopped')
+            break
+    else:
+        # No matching pipeline found yet — print nothing so caller retries
+        pass
+except Exception:
+    pass
 " 2>/dev/null || true)
 
-  if [ "${state}" = "Running" ] || [ "${state}" = "RUNNING" ]; then
+  if [ "${state}" = "Running" ] || [ "${state}" = "RUNNING" ] || [ "${state}" = "running" ]; then
     echo "[ingest_wait] Pipeline '${PIPELINE_NAME}' is RUNNING (${elapsed}s elapsed)"
     break
   fi
 
   if [ "${elapsed}" -ge "${MAX_PIPELINE_WAIT}" ]; then
-    echo "[ingest_wait] ERROR: Pipeline '${PIPELINE_NAME}' did not reach RUNNING within ${MAX_PIPELINE_WAIT}s (last state: '${state}')" >&2
+    echo "[ingest_wait] ERROR: Pipeline '${PIPELINE_NAME}' did not reach RUNNING within ${MAX_PIPELINE_WAIT}s (last state: '${state:-unknown}')" >&2
+    # Dump pipeline list for diagnosis
+    echo "[ingest_wait] Current Arroyo pipeline list:" >&2
+    curl -sf --max-time 10 "${ARROYO_URL}" 2>/dev/null | python3 -m json.tool 2>/dev/null >&2 || true
     exit 1
   fi
 
-  echo "[ingest_wait] Pipeline state: '${state:-unknown}' — retrying in ${SLEEP}s (${elapsed}s elapsed) ..."
+  echo "[ingest_wait] Pipeline state: '${state:-not found}' — retrying in ${SLEEP}s (${elapsed}s elapsed) ..."
   sleep "${SLEEP}"
   elapsed=$(( elapsed + SLEEP ))
 done
