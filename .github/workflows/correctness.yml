@@ -40,7 +40,7 @@ jobs:
           if [ -f asap-common/dependencies/py/requirements.txt ]; then
             pip install -r asap-common/dependencies/py/requirements.txt
           fi
-          pip install -e asap-common/dependencies/py/ 2>/dev/null || true
+          pip install -e asap-common/dependencies/py/promql_utilities/
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -98,7 +98,7 @@ jobs:
           if [ -f asap-common/dependencies/py/requirements.txt ]; then
             pip install -r asap-common/dependencies/py/requirements.txt
           fi
-          pip install -e asap-common/dependencies/py/ 2>/dev/null || true
+          pip install -e asap-common/dependencies/py/promql_utilities/
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable

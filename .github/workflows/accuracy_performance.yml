@@ -104,7 +104,6 @@ jobs:
       - name: Pull and start full stack
         run: |
           docker compose \
-            --project-directory . \
             -f asap-quickstart/docker-compose.yml \
             -f benchmarks/docker-compose.yml \
             up -d
@@ -112,7 +111,6 @@ jobs:
       - name: Show running containers
         run: |
           docker compose \
-            --project-directory . \
             -f asap-quickstart/docker-compose.yml \
             -f benchmarks/docker-compose.yml \
             ps
@@ -151,7 +149,6 @@ jobs:
         if: failure()
         run: |
           docker compose \
-            --project-directory . \
             -f asap-quickstart/docker-compose.yml \
             -f benchmarks/docker-compose.yml \
             logs --no-color
@@ -160,7 +157,6 @@ jobs:
         if: always()
         run: |
           docker compose \
-            --project-directory . \
             -f asap-quickstart/docker-compose.yml \
             -f benchmarks/docker-compose.yml \
             down -v

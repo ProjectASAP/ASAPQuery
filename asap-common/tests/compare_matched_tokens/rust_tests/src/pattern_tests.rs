@@ -44,15 +44,20 @@ impl PatternTester {
 
         // ONE_TEMPORAL_ONE_SPATIAL patterns
         let combined_patterns = vec![
-            // Sum of rate pattern
+            // Aggregation of single-arg temporal functions
             PromQLPattern::new(
                 Self::build_one_temporal_one_spatial_pattern(),
+                // Some("ONE_TEMPORAL_ONE_SPATIAL".to_string()),
+            ),
+            // Aggregation of quantile_over_time (2-arg)
+            PromQLPattern::new(
+                Self::build_combined_quantile_pattern(),
                 // Some("ONE_TEMPORAL_ONE_SPATIAL".to_string()),
             ),
         ];
 
         // Insert in order from simple to complex to avoid panics
-        patterns.insert("ONLY_VECTOR".to_string(), spatial_patterns.clone());
+        // ONLY_VECTOR is derived via disambiguation in test_query, not a separate entry
         patterns.insert("ONLY_SPATIAL".to_string(), spatial_patterns);
         patterns.insert("ONLY_TEMPORAL".to_string(), temporal_patterns);
         patterns.insert("ONE_TEMPORAL_ONE_SPATIAL".to_string(), combined_patterns);
@@ -261,7 +266,20 @@ impl PatternTester {
 
         let args: Vec<Option<HashMap<String, Value>>> = vec![ms];
 
-        PromQLPatternBuilder::function(vec!["rate", "increase"], args, Some("function"), None)
+        PromQLPatternBuilder::function(
+            vec![
+                "rate",
+                "increase",
+                "avg_over_time",
+                "sum_over_time",
+                "count_over_time",
+                "min_over_time",
+                "max_over_time",
+            ],
+            args,
+            Some("function"),
+            None,
+        )
     }
 
     fn build_quantile_over_time_pattern() -> Option<HashMap<String, Value>> {
@@ -308,7 +326,6 @@ impl PatternTester {
 
         let func = PromQLPatternBuilder::function(
             vec![
-                "quantile_over_time",
                 "sum_over_time",
                 "count_over_time",
                 "avg_over_time",
@@ -322,6 +339,30 @@ impl PatternTester {
             None,
         );
 
+        PromQLPatternBuilder::aggregation(
+            vec!["sum", "count", "avg", "quantile", "min", "max"],
+            func,
+            None,
+            None,
+            None,
+            Some("aggregation"),
+        )
+    }
+
+    fn build_combined_quantile_pattern() -> Option<HashMap<String, Value>> {
+        let num = PromQLPatternBuilder::number(None, None);
+        let ms = PromQLPatternBuilder::matrix_selector(
+            PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+            None,
+            Some("range_vector"),
+        );
+        let func_args: Vec<Option<HashMap<String, Value>>> = vec![num, ms];
+        let func = PromQLPatternBuilder::function(
+            vec!["quantile_over_time"],
+            func_args,
+            Some("function"),
+            None,
+        );
         PromQLPatternBuilder::aggregation(
             vec!["sum", "count", "avg", "quantile", "min", "max"],
             func,
