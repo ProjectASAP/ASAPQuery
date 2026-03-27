@@ -19,22 +19,11 @@ impl PatternTester {
             // Rate pattern
             PromQLPattern::new(
                 Self::build_rate_pattern(),
-                vec![
-                    "metric".to_string(),
-                    "function".to_string(),
-                    "range_vector".to_string(),
-                ],
                 // Some("ONLY_TEMPORAL".to_string()),
             ),
             // Quantile over time pattern
             PromQLPattern::new(
                 Self::build_quantile_over_time_pattern(),
-                vec![
-                    "metric".to_string(),
-                    "function".to_string(),
-                    "range_vector".to_string(),
-                    "function_args".to_string(),
-                ],
                 // Some("ONLY_TEMPORAL".to_string()),
             ),
         ];
@@ -44,13 +33,11 @@ impl PatternTester {
             // Sum aggregation pattern
             PromQLPattern::new(
                 Self::build_sum_pattern(),
-                vec!["metric".to_string(), "aggregation".to_string()],
                 // Some("ONLY_SPATIAL".to_string()),
             ),
             // Simple metric pattern
             PromQLPattern::new(
                 Self::build_metric_pattern(),
-                vec!["metric".to_string()],
                 // Some("ONLY_SPATIAL".to_string()),
             ),
         ];
@@ -60,12 +47,6 @@ impl PatternTester {
             // Sum of rate pattern
             PromQLPattern::new(
                 Self::build_one_temporal_one_spatial_pattern(),
-                vec![
-                    "metric".to_string(),
-                    "function".to_string(),
-                    "aggregation".to_string(),
-                    "range_vector".to_string(),
-                ],
                 // Some("ONE_TEMPORAL_ONE_SPATIAL".to_string()),
             ),
         ];
