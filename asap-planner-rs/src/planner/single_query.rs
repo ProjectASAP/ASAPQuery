@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use crate::config::input::SketchParameterOverrides;
 use crate::error::ControllerError;
 use crate::planner::logics::{
-    get_cleanup_param, get_precompute_operator_parameters, set_subpopulation_labels,
+    build_sketch_parameters_from_promql, get_cleanup_param, set_subpopulation_labels,
     set_window_parameters, IntermediateWindowConfig,
 };
 use crate::planner::patterns::build_patterns;
@@ -224,13 +224,7 @@ impl SingleQueryProcessor {
 
         let statistics = get_statistics_to_compute(pattern_type, &match_result);
 
-        let mut configs: Vec<IntermediateAggConfig> = Vec::new();
-
-        // Shared window config (same for all statistics in this query)
         let mut window_cfg = IntermediateWindowConfig::default();
-
-        // We use the first aggregation_type to set window parameters
-        // (window params don't depend on aggregation_type since sliding is disabled)
         set_window_parameters(
             pattern_type,
             self.t_repeat,
@@ -240,72 +234,29 @@ impl SingleQueryProcessor {
             &mut window_cfg,
         );
 
-        for statistic in statistics {
-            let (aggregation_type, aggregation_sub_type) =
-                map_statistic_to_precompute_operator(statistic, treatment_type)
-                    .map_err(ControllerError::PlannerError)?;
+        let (rollup, subpopulation_labels) =
+            get_label_routing(pattern_type, &match_result, &all_labels);
 
-            // Compute labels
-            let (rollup_labels, grouping_labels, aggregated_labels) = compute_labels(
-                pattern_type,
-                statistic,
-                &aggregation_type,
-                &match_result,
-                &all_labels,
-            );
-
-            // Main config
-            let parameters = get_precompute_operator_parameters(
-                &aggregation_type,
-                &aggregation_sub_type,
-                &match_result,
-                self.sketch_parameters.as_ref(),
-            )
-            .map_err(ControllerError::PlannerError)?;
-
-            // DeltaSetAggregator pairing (hardcoded TODO)
-            if matches!(aggregation_type.as_str(), "CountMinSketch" | "HydraKLL") {
-                let delta_params = get_precompute_operator_parameters(
-                    "DeltaSetAggregator",
-                    "",
+        let configs = build_agg_configs_for_statistics(
+            &statistics,
+            treatment_type,
+            &subpopulation_labels,
+            &rollup,
+            &window_cfg,
+            &metric,
+            None,
+            None,
+            &spatial_filter,
+            |agg_type, agg_sub_type| {
+                build_sketch_parameters_from_promql(
+                    agg_type,
+                    agg_sub_type,
                     &match_result,
                     self.sketch_parameters.as_ref(),
                 )
-                .map_err(ControllerError::PlannerError)?;
-
-                configs.push(IntermediateAggConfig {
-                    aggregation_type: "DeltaSetAggregator".to_string(),
-                    aggregation_sub_type: String::new(),
-                    window_type: window_cfg.window_type.clone(),
-                    window_size: window_cfg.window_size,
-                    slide_interval: window_cfg.slide_interval,
-                    spatial_filter: spatial_filter.clone(),
-                    metric: metric.clone(),
-                    table_name: None,
-                    value_column: None,
-                    parameters: delta_params,
-                    rollup_labels: rollup_labels.clone(),
-                    grouping_labels: grouping_labels.clone(),
-                    aggregated_labels: aggregated_labels.clone(),
-                });
-            }
-
-            configs.push(IntermediateAggConfig {
-                aggregation_type,
-                aggregation_sub_type,
-                window_type: window_cfg.window_type.clone(),
-                window_size: window_cfg.window_size,
-                slide_interval: window_cfg.slide_interval,
-                spatial_filter: spatial_filter.clone(),
-                metric: metric.clone(),
-                table_name: None,
-                value_column: None,
-                parameters,
-                rollup_labels,
-                grouping_labels,
-                aggregated_labels,
-            });
-        }
+            },
+        )
+        .map_err(ControllerError::PlannerError)?;
 
         // Calculate cleanup param
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {
@@ -329,29 +280,16 @@ impl SingleQueryProcessor {
     }
 }
 
-fn compute_labels(
+/// Returns `(rollup, subpopulation_labels)` for a given PromQL pattern type.
+/// These are constant across all statistics in a query, so they are computed
+/// once before the per-statistic loop.
+fn get_label_routing(
     pattern_type: QueryPatternType,
-    statistic: Statistic,
-    aggregation_type: &str,
     match_result: &PromQLMatchResult,
     all_labels: &KeyByLabelNames,
-) -> (KeyByLabelNames, KeyByLabelNames, KeyByLabelNames) {
-    let mut rollup;
-    let mut grouping = KeyByLabelNames::empty();
-    let mut aggregated = KeyByLabelNames::empty();
-
+) -> (KeyByLabelNames, KeyByLabelNames) {
     match pattern_type {
-        QueryPatternType::OnlyTemporal => {
-            rollup = KeyByLabelNames::empty();
-            set_subpopulation_labels(
-                statistic,
-                aggregation_type,
-                all_labels,
-                &mut rollup,
-                &mut grouping,
-                &mut aggregated,
-            );
-        }
+        QueryPatternType::OnlyTemporal => (KeyByLabelNames::empty(), all_labels.clone()),
         QueryPatternType::OnlySpatial => {
             // Match Python: if no by/without modifier, spatial_output = [] (rollup gets all labels).
             // promql_utilities::get_spatial_aggregation_output_labels has a topk patch that returns
@@ -367,47 +305,95 @@ fn compute_labels(
             } else {
                 KeyByLabelNames::empty()
             };
-            rollup = all_labels.difference(&spatial_output);
-            set_subpopulation_labels(
-                statistic,
-                aggregation_type,
-                &spatial_output,
-                &mut rollup,
-                &mut grouping,
-                &mut aggregated,
-            );
+            (all_labels.difference(&spatial_output), spatial_output)
         }
         QueryPatternType::OneTemporalOneSpatial => {
             let fn_name = match_result.get_function_name().unwrap_or_default();
             let agg_op = match_result.get_aggregation_op().unwrap_or_default();
-            let collapsable = get_is_collapsable(&fn_name, &agg_op);
-            if !collapsable {
-                rollup = KeyByLabelNames::empty();
-                set_subpopulation_labels(
-                    statistic,
-                    aggregation_type,
-                    all_labels,
-                    &mut rollup,
-                    &mut grouping,
-                    &mut aggregated,
-                );
+            if !get_is_collapsable(&fn_name, &agg_op) {
+                (KeyByLabelNames::empty(), all_labels.clone())
             } else {
                 let spatial_output =
                     get_spatial_aggregation_output_labels(match_result, all_labels);
-                rollup = all_labels.difference(&spatial_output);
-                set_subpopulation_labels(
-                    statistic,
-                    aggregation_type,
-                    &spatial_output,
-                    &mut rollup,
-                    &mut grouping,
-                    &mut aggregated,
-                );
+                (all_labels.difference(&spatial_output), spatial_output)
             }
         }
     }
+}
 
-    (rollup, grouping, aggregated)
+/// Shared per-statistic config builder used by both PromQL and SQL paths.
+///
+/// `get_params(agg_type, agg_sub_type)` is a closure supplied by the caller
+/// that resolves sketch parameters; it is the only thing that differs between
+/// the two paths.
+#[allow(clippy::too_many_arguments)]
+pub fn build_agg_configs_for_statistics(
+    statistics: &[Statistic],
+    treatment_type: QueryTreatmentType,
+    subpopulation_labels: &KeyByLabelNames,
+    rollup: &KeyByLabelNames,
+    window_cfg: &IntermediateWindowConfig,
+    metric: &str,
+    table_name: Option<&str>,
+    value_column: Option<&str>,
+    spatial_filter: &str,
+    get_params: impl Fn(&str, &str) -> Result<HashMap<String, Value>, String>,
+) -> Result<Vec<IntermediateAggConfig>, String> {
+    let mut configs = Vec::new();
+
+    for statistic in statistics.iter().copied() {
+        let (agg_type, agg_sub_type) =
+            map_statistic_to_precompute_operator(statistic, treatment_type)?;
+
+        let mut grouping = KeyByLabelNames::empty();
+        let mut aggregated = KeyByLabelNames::empty();
+        set_subpopulation_labels(
+            statistic,
+            &agg_type,
+            subpopulation_labels,
+            &mut rollup.clone(),
+            &mut grouping,
+            &mut aggregated,
+        );
+
+        if matches!(agg_type.as_str(), "CountMinSketch" | "HydraKLL") {
+            let delta_params = get_params("DeltaSetAggregator", "")?;
+            configs.push(IntermediateAggConfig {
+                aggregation_type: "DeltaSetAggregator".to_string(),
+                aggregation_sub_type: String::new(),
+                window_type: window_cfg.window_type.clone(),
+                window_size: window_cfg.window_size,
+                slide_interval: window_cfg.slide_interval,
+                spatial_filter: spatial_filter.to_string(),
+                metric: metric.to_string(),
+                table_name: table_name.map(str::to_string),
+                value_column: value_column.map(str::to_string),
+                parameters: delta_params,
+                rollup_labels: rollup.clone(),
+                grouping_labels: grouping.clone(),
+                aggregated_labels: aggregated.clone(),
+            });
+        }
+
+        let parameters = get_params(&agg_type, &agg_sub_type)?;
+        configs.push(IntermediateAggConfig {
+            aggregation_type: agg_type,
+            aggregation_sub_type: agg_sub_type,
+            window_type: window_cfg.window_type.clone(),
+            window_size: window_cfg.window_size,
+            slide_interval: window_cfg.slide_interval,
+            spatial_filter: spatial_filter.to_string(),
+            metric: metric.to_string(),
+            table_name: table_name.map(str::to_string),
+            value_column: value_column.map(str::to_string),
+            parameters,
+            rollup_labels: rollup.clone(),
+            grouping_labels: grouping,
+            aggregated_labels: aggregated,
+        });
+    }
+
+    Ok(configs)
 }
 
 #[cfg(test)]
