@@ -14,6 +14,7 @@ fn init_sketch_backend_for_tests() {
 pub mod data_model;
 pub mod drivers;
 pub mod engines;
+pub mod precompute_engine;
 pub mod precompute_operators;
 pub mod stores;
 
@@ -41,6 +42,10 @@ pub use drivers::{
     HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
     OtlpReceiverConfig,
 };
+
+pub use precompute_engine::config::PrecomputeEngineConfig;
+pub use precompute_engine::output_sink::StoreOutputSink;
+pub use precompute_engine::PrecomputeEngine;
 
 pub use utils::{normalize_spatial_filter, read_inference_config, read_streaming_config};
 
