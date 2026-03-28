@@ -1,4 +1,4 @@
-FROM sketchdb-base:latest
+FROM ghcr.io/projectasap/asap-base:latest
 
 LABEL maintainer="SketchDB Team"
 LABEL description="ArroyoSketch pipeline configuration service"
