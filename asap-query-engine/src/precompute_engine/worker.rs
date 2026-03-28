@@ -50,6 +50,7 @@ pub struct Worker {
 }
 
 impl Worker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         receiver: mpsc::Receiver<WorkerMessage>,
@@ -483,8 +484,6 @@ mod tests {
 
     #[test]
     fn test_extract_key_from_series() {
-        use serde_json::json;
-
         let config = AggregationConfig::new(
             1,
             "SingleSubpopulation".to_string(),
