@@ -297,8 +297,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Send a few raw samples — no need to advance watermark.
     println!("\n=== Sending raw-mode samples ===");
-    let raw_timestamps = vec![100_000i64, 101_000, 102_000];
-    let raw_values = vec![42.0f64, 43.0, 44.0];
+    let raw_timestamps = [100_000i64, 101_000, 102_000];
+    let raw_values = [42.0f64, 43.0, 44.0];
     for (&ts, &val) in raw_timestamps.iter().zip(raw_values.iter()) {
         let body = build_remote_write_body(vec![make_sample("fake_metric", "groupA", ts, val)]);
         let resp = client
