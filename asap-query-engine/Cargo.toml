@@ -56,6 +56,7 @@ lazy_static = "1.4"
 zstd = "0.13"
 reqwest = { version = "0.11", features = ["json"] }
 tracing-appender = "0.2"
+elastic_dsl_utilities.workspace = true
 sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust", rev = "440427438fdaf3ac2298b53ee148f9e12a64ffcc" }
 
 [dev-dependencies]
