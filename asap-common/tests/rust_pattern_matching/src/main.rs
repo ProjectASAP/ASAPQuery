@@ -10,11 +10,6 @@ fn temporal_pattern(
 ) -> PromQLPattern {
     PromQLPattern::new(
         blocks[pattern_type].clone(),
-        vec![
-            "metric".to_string(),
-            "function".to_string(),
-            "range_vector".to_string(),
-        ],
     )
 }
 
@@ -24,7 +19,6 @@ fn spatial_pattern(
 ) -> PromQLPattern {
     PromQLPattern::new(
         blocks[pattern_type].clone(),
-        vec!["metric".to_string(), "aggregation".to_string()],
     )
 }
 
@@ -39,12 +33,6 @@ fn spatial_of_temporal_pattern(temporal_block: &Option<HashMap<String, Value>>) 
     );
     PromQLPattern::new(
         pattern,
-        vec![
-            "metric".to_string(),
-            "function".to_string(),
-            "range_vector".to_string(),
-            "aggregation".to_string(),
-        ],
     )
 }
 
