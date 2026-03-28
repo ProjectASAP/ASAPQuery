@@ -1,5 +1,6 @@
-use asap_planner::{Controller, RuntimeOptions, StreamingEngine};
+use asap_planner::{Controller, RuntimeOptions, SQLController, SQLRuntimeOptions, StreamingEngine};
 use clap::Parser;
+use sketch_db_common::enums::QueryLanguage;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
@@ -11,8 +12,8 @@ struct Args {
     #[arg(long = "output_dir")]
     output_dir: PathBuf,
 
-    #[arg(long = "prometheus_scrape_interval")]
-    prometheus_scrape_interval: u64,
+    #[arg(long = "prometheus_scrape_interval", required = false)]
+    prometheus_scrape_interval: Option<u64>,
 
     #[arg(long = "streaming_engine", value_enum)]
     streaming_engine: EngineArg,
@@ -25,6 +26,12 @@ struct Args {
 
     #[arg(long = "step", default_value = "0")]
     step: u64,
+
+    #[arg(long = "query-language", value_enum, default_value = "promql")]
+    query_language: QueryLanguage,
+
+    #[arg(long = "data-ingestion-interval", required = false)]
+    data_ingestion_interval: Option<u64>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -52,16 +59,37 @@ fn main() -> anyhow::Result<()> {
         EngineArg::Flink => StreamingEngine::Flink,
     };
 
-    let opts = RuntimeOptions {
-        prometheus_scrape_interval: args.prometheus_scrape_interval,
-        streaming_engine: engine,
-        enable_punting: args.enable_punting,
-        range_duration: args.range_duration,
-        step: args.step,
-    };
-
-    let controller = Controller::from_file(&args.input_config, opts)?;
-    controller.generate_to_dir(&args.output_dir)?;
+    match args.query_language {
+        QueryLanguage::promql => {
+            let scrape_interval = args.prometheus_scrape_interval.ok_or_else(|| {
+                anyhow::anyhow!("--prometheus_scrape_interval is required for PromQL mode")
+            })?;
+            let opts = RuntimeOptions {
+                prometheus_scrape_interval: scrape_interval,
+                streaming_engine: engine,
+                enable_punting: args.enable_punting,
+                range_duration: args.range_duration,
+                step: args.step,
+            };
+            let controller = Controller::from_file(&args.input_config, opts)?;
+            controller.generate_to_dir(&args.output_dir)?;
+        }
+        QueryLanguage::sql | QueryLanguage::elastic_sql => {
+            let interval = args.data_ingestion_interval.ok_or_else(|| {
+                anyhow::anyhow!("--data-ingestion-interval is required for SQL mode")
+            })?;
+            let opts = SQLRuntimeOptions {
+                streaming_engine: engine,
+                query_evaluation_time: None,
+                data_ingestion_interval: interval,
+            };
+            SQLController::from_file(&args.input_config, opts)?
+                .generate_to_dir(&args.output_dir)?;
+        }
+        QueryLanguage::elastic_querydsl => {
+            anyhow::bail!("ElasticQueryDSL is not yet supported");
+        }
+    }
 
     println!("Generated configs in {}", args.output_dir.display());
     Ok(())
