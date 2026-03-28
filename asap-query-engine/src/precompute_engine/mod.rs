@@ -15,9 +15,9 @@ use crate::precompute_engine::worker::Worker;
 use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
-use std::time::Instant;
 use tracing::{debug_span, info, warn, Instrument};
 
 /// Shared state for the ingest HTTP handler.
@@ -67,10 +67,8 @@ impl PrecomputeEngine {
         let router = SeriesRouter::new(senders);
 
         // Build aggregation config map from streaming config
-        let agg_configs: HashMap<u64, _> = self
-            .streaming_config
-            .get_all_aggregation_configs()
-            .clone();
+        let agg_configs: HashMap<u64, _> =
+            self.streaming_config.get_all_aggregation_configs().clone();
 
         // Spawn workers
         let mut worker_handles = Vec::with_capacity(num_workers);
@@ -138,10 +136,7 @@ impl PrecomputeEngine {
 }
 
 /// Axum handler for Prometheus remote write.
-async fn handle_ingest(
-    State(state): State<Arc<IngestState>>,
-    body: Bytes,
-) -> StatusCode {
+async fn handle_ingest(State(state): State<Arc<IngestState>>, body: Bytes) -> StatusCode {
     let ingest_span = debug_span!("ingest", body_len = body.len());
     let ingest_received_at = Instant::now();
 
@@ -174,7 +169,11 @@ async fn handle_ingest(
 
         // Route each series batch to the correct worker
         for (series_key, batch) in by_series {
-            if let Err(e) = state.router.route(series_key, batch, ingest_received_at).await {
+            if let Err(e) = state
+                .router
+                .route(series_key, batch, ingest_received_at)
+                .await
+            {
                 warn!("Routing error for {}: {}", series_key, e);
                 return StatusCode::INTERNAL_SERVER_ERROR;
             }

@@ -1,8 +1,8 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, DatasketchesKLLAccumulator, HydraKllSketchAccumulator,
-    IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator,
-    MultipleMinMaxAccumulator, MultipleSumAccumulator, SumAccumulator,
+    IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
+    MultipleSumAccumulator, SumAccumulator,
 };
 use sketch_db_common::aggregation_config::AggregationConfig;
 
@@ -156,12 +156,7 @@ impl AccumulatorUpdater for IncreaseAccumulatorUpdater {
 
     fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
         let acc = self.acc.take().unwrap_or_else(|| {
-            IncreaseAccumulator::new(
-                Measurement::new(0.0),
-                0,
-                Measurement::new(0.0),
-                0,
-            )
+            IncreaseAccumulator::new(Measurement::new(0.0), 0, Measurement::new(0.0), 0)
         });
         let result = Box::new(acc);
         self.reset();
@@ -420,10 +415,10 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
         let key_str = key_values.join(";");
         let key_bytes = key_str.as_bytes();
 
-        for i in 0..self.acc.row_num {
+        for i in 0..self.acc.inner.row_num {
             let hash_value = xxhash_rust::xxh32::xxh32(key_bytes, i as u32);
-            let col_index = (hash_value as usize) % self.acc.col_num;
-            self.acc.sketch[i][col_index] += value;
+            let col_index = (hash_value as usize) % self.acc.inner.col_num;
+            self.acc.inner.sketch[i][col_index] += value;
         }
     }
 
@@ -494,8 +489,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 
     fn memory_usage_bytes(&self) -> usize {
         // Rough estimate: each cell is a KLL sketch
-        std::mem::size_of::<HydraKllSketchAccumulator>()
-            + self.row_num * self.col_num * 4096
+        std::mem::size_of::<HydraKllSketchAccumulator>() + self.row_num * self.col_num * 4096
     }
 }
 
@@ -504,9 +498,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 // ---------------------------------------------------------------------------
 
 /// Create an appropriate `AccumulatorUpdater` from an `AggregationConfig`.
-pub fn create_accumulator_updater(
-    config: &AggregationConfig,
-) -> Box<dyn AccumulatorUpdater> {
+pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn AccumulatorUpdater> {
     let agg_type = config.aggregation_type.as_str();
     let sub_type = config.aggregation_sub_type.as_str();
 

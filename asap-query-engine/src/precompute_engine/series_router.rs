@@ -88,9 +88,8 @@ mod tests {
     #[test]
     fn test_consistent_routing() {
         // Build a router with dummy senders (we only test the hash logic)
-        let (senders, _receivers): (Vec<_>, Vec<_>) = (0..4)
-            .map(|_| mpsc::channel::<WorkerMessage>(10))
-            .unzip();
+        let (senders, _receivers): (Vec<_>, Vec<_>) =
+            (0..4).map(|_| mpsc::channel::<WorkerMessage>(10)).unzip();
 
         let router = SeriesRouter::new(senders);
 

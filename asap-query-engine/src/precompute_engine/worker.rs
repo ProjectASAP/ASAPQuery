@@ -1,5 +1,7 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
-use crate::precompute_engine::accumulator_factory::{create_accumulator_updater, AccumulatorUpdater};
+use crate::precompute_engine::accumulator_factory::{
+    create_accumulator_updater, AccumulatorUpdater,
+};
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_buffer::SeriesBuffer;
 use crate::precompute_engine::series_router::WorkerMessage;
@@ -144,10 +146,7 @@ impl Worker {
             let aggregations = matching
                 .into_iter()
                 .map(|(_, config)| AggregationState {
-                    window_manager: WindowManager::new(
-                        config.window_size,
-                        config.slide_interval,
-                    ),
+                    window_manager: WindowManager::new(config.window_size, config.slide_interval),
                     config: config.clone(),
                     active_windows: HashMap::new(),
                 })
@@ -239,8 +238,7 @@ impl Worker {
             // Emit closed windows
             for window_start in &closed {
                 if let Some(mut updater) = agg_state.active_windows.remove(window_start) {
-                    let (_, window_end) =
-                        agg_state.window_manager.window_bounds(*window_start);
+                    let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
 
                     let key = if updater.is_keyed() {
                         Some(extract_key_from_series(series_key, &agg_state.config))
@@ -287,12 +285,8 @@ impl Worker {
             Vec::with_capacity(samples.len());
 
         for (ts, val) in samples {
-            let output = PrecomputedOutput::new(
-                ts as u64,
-                ts as u64,
-                None,
-                self.raw_mode_aggregation_id,
-            );
+            let output =
+                PrecomputedOutput::new(ts as u64, ts as u64, None, self.raw_mode_aggregation_id);
             let accumulator = SumAccumulator::with_sum(val);
             emit_batch.push((output, Box::new(accumulator)));
         }
@@ -329,14 +323,10 @@ impl Worker {
 
                 for window_start in &closed {
                     if let Some(mut updater) = agg_state.active_windows.remove(window_start) {
-                        let (_, window_end) =
-                            agg_state.window_manager.window_bounds(*window_start);
+                        let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
 
                         let key = if updater.is_keyed() {
-                            Some(extract_key_from_series(
-                                series_key,
-                                &agg_state.config,
-                            ))
+                            Some(extract_key_from_series(series_key, &agg_state.config))
                         } else {
                             None
                         };
@@ -382,10 +372,7 @@ pub fn extract_metric_name(series_key: &str) -> &str {
 /// aggregation config's `grouping_labels`.
 ///
 /// The series key format is: `metric_name{label1="val1",label2="val2",...}`
-pub fn extract_key_from_series(
-    series_key: &str,
-    config: &AggregationConfig,
-) -> KeyByLabelValues {
+pub fn extract_key_from_series(series_key: &str, config: &AggregationConfig) -> KeyByLabelValues {
     let labels = parse_labels_from_series_key(series_key);
     let mut values = Vec::new();
 
@@ -477,8 +464,7 @@ mod tests {
 
     #[test]
     fn test_parse_labels() {
-        let labels =
-            parse_labels_from_series_key("metric{method=\"GET\",status=\"200\"}");
+        let labels = parse_labels_from_series_key("metric{method=\"GET\",status=\"200\"}");
         assert_eq!(labels.get("method"), Some(&"GET"));
         assert_eq!(labels.get("status"), Some(&"200"));
     }
@@ -512,13 +498,12 @@ mod tests {
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             String::new(),
             60,
+            30,
+            "tumbling".to_string(),
             "http_requests_total".to_string(),
             "http_requests_total".to_string(),
-            None,
-            None,
             Some(60),
             Some(0),
-            None,
             None,
             None,
         );
@@ -527,9 +512,6 @@ mod tests {
             "http_requests_total{method=\"GET\",status=\"200\"}",
             &config,
         );
-        assert_eq!(
-            key.labels,
-            vec!["GET".to_string(), "200".to_string()]
-        );
+        assert_eq!(key.labels, vec!["GET".to_string(), "200".to_string()]);
     }
 }

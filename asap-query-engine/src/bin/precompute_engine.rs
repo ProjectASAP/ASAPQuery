@@ -1,4 +1,5 @@
 use clap::Parser;
+use query_engine_rust::data_model::QueryLanguage;
 use query_engine_rust::data_model::{
     CleanupPolicy, InferenceConfig, LockStrategy, StreamingConfig,
 };
@@ -9,7 +10,6 @@ use query_engine_rust::precompute_engine::output_sink::{RawPassthroughSink, Stor
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::{HttpServer, HttpServerConfig};
-use query_engine_rust::data_model::QueryLanguage;
 use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -85,20 +85,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
 
     // Create the store
-    let store: Arc<dyn query_engine_rust::stores::Store> = Arc::new(
-        SimpleMapStore::new_with_strategy(
+    let store: Arc<dyn query_engine_rust::stores::Store> =
+        Arc::new(SimpleMapStore::new_with_strategy(
             streaming_config.clone(),
             CleanupPolicy::CircularBuffer,
             args.lock_strategy,
-        ),
-    );
+        ));
 
     // Optionally start the query HTTP server
     if args.query_port > 0 {
-        let inference_config = InferenceConfig::new(
-            QueryLanguage::promql,
-            CleanupPolicy::CircularBuffer,
-        );
+        let inference_config =
+            InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::CircularBuffer);
         let query_engine = Arc::new(SimpleEngine::new(
             store.clone(),
             inference_config,
