@@ -8,6 +8,11 @@ LABEL description="QueryEngine Rust service for SketchDB"
 
 WORKDIR /code
 
+# Required by prost-build dependencies (e.g., sketchlib-rust) during cargo build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy the asap-common directory
 COPY asap-common ./asap-common
 

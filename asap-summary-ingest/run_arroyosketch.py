@@ -443,8 +443,8 @@ def create_pipeline(
             template_path = os.path.join(udf_dir, f"{udf_name}.rs.j2")
             regular_path = os.path.join(udf_dir, f"{udf_name}.rs")
 
-            # Get parameters for this UDF
-            params = agg_function_params.get(udf_name, {})
+            # Get parameters for this UDF (impl_mode injected in main() for sketch UDFs)
+            params = dict(agg_function_params.get(udf_name, {}))
 
             if len(params) > 0 and not os.path.exists(template_path):
                 raise ValueError(
@@ -943,6 +943,20 @@ def main(args):
             filter_metric_name,
         )
 
+        parameters = dict(parameters)
+        if agg_function in ("countminsketch_count", "countminsketch_sum"):
+            parameters["impl_mode"] = getattr(
+                args, "sketch_cms_impl", "legacy"
+            ).capitalize()
+        elif agg_function == "countminsketchwithheap_topk":
+            parameters["impl_mode"] = getattr(
+                args, "sketch_cmwh_impl", "legacy"
+            ).capitalize()
+        elif agg_function in ("datasketcheskll_", "hydrakll_"):
+            parameters["impl_mode"] = getattr(
+                args, "sketch_kll_impl", "legacy"
+            ).capitalize()
+
         sql_queries.append(sql_query)
         # if not is_labels_accumulator:
         agg_functions_with_params.append((agg_function, parameters))
@@ -1095,6 +1109,29 @@ if __name__ == "__main__":
         choices=["promql", "sql"],
         default="promql",
         help="Query language for schema interpretation (default: promql)",
+    )
+
+    # Sketch implementation mode - must match QueryEngine (--sketch-cms-impl etc.)
+    parser.add_argument(
+        "--sketch_cms_impl",
+        type=str,
+        choices=["legacy", "sketchlib"],
+        default="sketchlib",
+        help="Count-Min Sketch backend (legacy | sketchlib). Must match QueryEngine.",
+    )
+    parser.add_argument(
+        "--sketch_kll_impl",
+        type=str,
+        choices=["legacy", "sketchlib"],
+        default="legacy",
+        help="KLL Sketch backend (legacy | sketchlib). Must match QueryEngine.",
+    )
+    parser.add_argument(
+        "--sketch_cmwh_impl",
+        type=str,
+        choices=["legacy", "sketchlib"],
+        default="legacy",
+        help="Count-Min-With-Heap backend (legacy | sketchlib). Must match QueryEngine.",
     )
 
     args = parser.parse_args()
