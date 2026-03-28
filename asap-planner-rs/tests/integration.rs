@@ -305,12 +305,12 @@ fn malformed_yaml_returns_parse_error() {
 
 // --- Overlapping window tests ---
 // Queries where range vector > t_repeat: e.g. [5m] repeated every 60s.
-// Windows are always tumbling (sliding disabled); the planner emits tumblingWindowSize=t_repeat
+// Windows are always tumbling (sliding disabled); the planner emits windowSize=t_repeat
 // and the cleanup param tells the query engine how many windows to retain to cover the range.
 
 #[test]
 fn temporal_overlapping_window_size_equals_t_repeat() {
-    // [5m] range repeated every 60s → tumblingWindowSize = 60, not 300
+    // [5m] range repeated every 60s → windowSize = 60, not 300
     let c = Controller::from_file(
         Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
         arroyo_opts(),

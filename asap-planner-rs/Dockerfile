@@ -5,6 +5,11 @@ LABEL description="ASAP Planner (Rust) for SketchDB"
 
 WORKDIR /code
 
+# Required by prost-build dependencies during cargo build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY asap-common ./asap-common
 COPY Cargo.toml ./
 COPY Cargo.lock ./

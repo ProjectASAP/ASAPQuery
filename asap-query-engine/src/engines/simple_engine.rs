@@ -552,17 +552,17 @@ impl SimpleEngine {
             }
             "SetAggregator" => {
                 // Latest window only
-                let tumbling_window_size = self
+                let window_size = self
                     .streaming_config
                     .get_aggregation_config(agg_info.aggregation_id_for_key)
-                    .map(|config| config.tumbling_window_size * 1000)
+                    .map(|config| config.window_size * 1000)
                     .ok_or_else(|| {
                         format!(
-                            "Failed to get tumbling window size for aggregation {}",
+                            "Failed to get window size for aggregation {}",
                             agg_info.aggregation_id_for_key
                         )
                     })?;
-                (end_timestamp - tumbling_window_size, end_timestamp)
+                (end_timestamp - window_size, end_timestamp)
             }
             other => {
                 return Err(format!("Unsupported key aggregation type: {}", other));
@@ -743,7 +743,7 @@ impl SimpleEngine {
                     }
                     // Extract bucket from timestamped tuple
                     let (_, bucket) = timestamped_buckets.into_iter().next().unwrap();
-                    (key, bucket)
+                    (key, bucket.as_ref().clone_boxed_core())
                 })
                 .collect()
         } else {
@@ -1132,7 +1132,7 @@ impl SimpleEngine {
                 return None;
             }
             &SchemaConfig::ElasticQueryDSL => todo!(),
-            &SchemaConfig::ElasticSQL => todo!(),
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
         };
 
         let statements = parser::parse_sql(&GenericDialect {}, query.as_str()).unwrap();
@@ -1473,7 +1473,7 @@ impl SimpleEngine {
             QueryLanguage::promql => self.handle_query_promql(query, time),
             QueryLanguage::sql => self.handle_query_sql(query, time),
             QueryLanguage::elastic_querydsl => self.handle_query_elastic(),
-            QueryLanguage::elastic_sql => self.handle_query_elastic(),
+            QueryLanguage::elastic_sql => self.handle_query_sql(query, time),
         }
     }
 
@@ -1919,7 +1919,7 @@ impl SimpleEngine {
                 warn!("PromQL query requested but config has ElasticQueryDSL schema");
                 return None;
             }
-            &SchemaConfig::ElasticSQL => {
+            SchemaConfig::ElasticSQL(_) => {
                 warn!("PromQL query requested but config has ElasticSQL schema");
                 return None;
             }
@@ -2507,11 +2507,11 @@ impl SimpleEngine {
         let end_ms = Self::convert_query_time_to_data_time(end);
         let step_ms = (step * 1000.0) as u64;
 
-        // Get tumbling window size
+        // Get window size
         let tumbling_window_ms = self
             .streaming_config
             .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(|config| config.tumbling_window_size * 1000)?;
+            .map(|config| config.window_size * 1000)?;
 
         // Validate parameters
         self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
@@ -2811,9 +2811,9 @@ impl SimpleEngine {
             };
 
             // Build lookup: bucket_start_timestamp -> bucket for O(1) access
-            let bucket_map: HashMap<u64, &Box<dyn AggregateCore>> = timestamped_buckets
+            let bucket_map: HashMap<u64, &dyn AggregateCore> = timestamped_buckets
                 .iter()
-                .map(|((start, _), bucket)| (*start, bucket))
+                .map(|((start, _), bucket)| (*start, bucket.as_ref()))
                 .collect();
 
             debug!(

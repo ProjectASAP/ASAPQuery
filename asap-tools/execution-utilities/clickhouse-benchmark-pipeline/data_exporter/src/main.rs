@@ -888,49 +888,60 @@ async fn run_h2o_elasticsearch_mode(args: &Args) -> Result<(), Box<dyn std::erro
         .status_code()
         .is_success();
 
-    if !index_exists {
-        println!("Creating index: {}", args.elastic_index);
-        let create_response = client
+    if index_exists {
+        println!("Deleting existing index: {}", args.elastic_index);
+        let delete_response = client
             .indices()
-            .create(elasticsearch::indices::IndicesCreateParts::Index(
-                &args.elastic_index,
-            ))
-            .body(json!({
-                "settings": {
-                    "number_of_shards": 1,
-                    "number_of_replicas": 0,
-                    "refresh_interval": "30s"
-                },
-                "mappings": {
-                    "properties": {
-                        "timestamp": {"type": "date", "format": "epoch_millis"},
-                        "id1": {"type": "keyword"},
-                        "id2": {"type": "keyword"},
-                        "id3": {"type": "keyword"},
-                        "id4": {"type": "long"},
-                        "id5": {"type": "long"},
-                        "id6": {"type": "long"},
-                        "v1": {"type": "long"},
-                        "v2": {"type": "long"},
-                        "v3": {"type": "double"}
-                    }
-                }
-            }))
+            .delete(elasticsearch::indices::IndicesDeleteParts::Index(&[
+                &args.elastic_index
+            ]))
             .send()
             .await?;
 
-        if !create_response.status_code().is_success() {
-            let error_text = create_response.text().await?;
-            eprintln!("Failed to create index. Error response: {}", error_text);
-            return Err("Failed to create index".into());
+        if !delete_response.status_code().is_success() {
+            let error_text = delete_response.text().await?;
+            eprintln!("Failed to delete index. Error response: {}", error_text);
+            return Err("Failed to delete index".into());
         }
-        println!("Index created successfully");
-    } else {
-        println!(
-            "Index {} already exists, skipping creation",
-            args.elastic_index
-        );
+        println!("Index deleted successfully");
     }
+
+    println!("Creating index: {}", args.elastic_index);
+    let create_response = client
+        .indices()
+        .create(elasticsearch::indices::IndicesCreateParts::Index(
+            &args.elastic_index,
+        ))
+        .body(json!({
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s"
+            },
+            "mappings": {
+                "properties": {
+                    "timestamp": {"type": "date", "format": "epoch_millis"},
+                    "id1": {"type": "keyword"},
+                    "id2": {"type": "keyword"},
+                    "id3": {"type": "keyword"},
+                    "id4": {"type": "long"},
+                    "id5": {"type": "long"},
+                    "id6": {"type": "long"},
+                    "v1": {"type": "long"},
+                    "v2": {"type": "long"},
+                    "v3": {"type": "double"}
+                }
+            }
+        }))
+        .send()
+        .await?;
+
+    if !create_response.status_code().is_success() {
+        let error_text = create_response.text().await?;
+        eprintln!("Failed to create index. Error response: {}", error_text);
+        return Err("Failed to create index".into());
+    }
+    println!("Index created successfully");
 
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
@@ -960,7 +971,7 @@ async fn run_h2o_elasticsearch_mode(args: &Args) -> Result<(), Box<dyn std::erro
 
         // Create document with timestamp
         let doc = H2oEsDoc {
-            timestamp: base_timestamp + (row_num * 1000), // Increment by 1 second per row
+            timestamp: base_timestamp + (row_num * 10), // Increment by 10 ms per row
             id1: cols[0].to_string(),
             id2: cols[1].to_string(),
             id3: cols[2].to_string(),

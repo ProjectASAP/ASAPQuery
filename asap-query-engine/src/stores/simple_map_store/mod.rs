@@ -1,5 +1,7 @@
-mod global;
-mod per_key;
+mod common;
+pub mod global;
+pub mod legacy;
+pub mod per_key;
 
 use crate::data_model::{
     AggregateCore, CleanupPolicy, LockStrategy, PrecomputedOutput, StreamingConfig,
@@ -8,13 +10,13 @@ use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub use global::SimpleMapStoreGlobal;
-pub use per_key::SimpleMapStorePerKey;
+pub use legacy::LegacySimpleMapStoreGlobal;
+pub use legacy::LegacySimpleMapStorePerKey;
 
 /// Enum wrapper that dispatches to either global or per-key lock implementation
 pub enum SimpleMapStore {
-    Global(SimpleMapStoreGlobal),
-    PerKey(SimpleMapStorePerKey),
+    Global(LegacySimpleMapStoreGlobal),
+    PerKey(LegacySimpleMapStorePerKey),
 }
 
 impl SimpleMapStore {
@@ -30,12 +32,14 @@ impl SimpleMapStore {
         lock_strategy: LockStrategy,
     ) -> Self {
         match lock_strategy {
-            LockStrategy::Global => {
-                SimpleMapStore::Global(SimpleMapStoreGlobal::new(streaming_config, cleanup_policy))
-            }
-            LockStrategy::PerKey => {
-                SimpleMapStore::PerKey(SimpleMapStorePerKey::new(streaming_config, cleanup_policy))
-            }
+            LockStrategy::Global => SimpleMapStore::Global(LegacySimpleMapStoreGlobal::new(
+                streaming_config,
+                cleanup_policy,
+            )),
+            LockStrategy::PerKey => SimpleMapStore::PerKey(LegacySimpleMapStorePerKey::new(
+                streaming_config,
+                cleanup_policy,
+            )),
         }
     }
 }

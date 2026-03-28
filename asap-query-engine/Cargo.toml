@@ -38,7 +38,7 @@ urlencoding = "2.1"
 flate2 = "1.0"
 async-trait = "0.1"
 xxhash-rust = { version = "0.8", features = ["xxh32", "xxh64"] }
-dsrs = { git = "https://github.com/ProjectASAP/datasketches-rs" }
+dsrs = { git = "https://github.com/ProjectASAP/datasketches-rs", rev = "d748ec75c80fff21f7b24897244dd1c895df2e9a" }
 base64 = "0.21"
 hex = "0.4"
 sqlparser = "0.59.0"
@@ -56,6 +56,7 @@ lazy_static = "1.4"
 zstd = "0.13"
 reqwest = { version = "0.11", features = ["json"] }
 tracing-appender = "0.2"
+sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust", rev = "440427438fdaf3ac2298b53ee148f9e12a64ffcc" }
 
 [dev-dependencies]
 ctor = "0.2"

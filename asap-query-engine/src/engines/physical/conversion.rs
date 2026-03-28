@@ -173,7 +173,7 @@ mod tests {
     use crate::precompute_operators::SumAccumulator;
     use crate::stores::traits::TimestampedBucket;
 
-    fn make_bucket(acc: Box<dyn crate::AggregateCore>) -> TimestampedBucket {
+    fn make_bucket(acc: Arc<dyn crate::AggregateCore>) -> TimestampedBucket {
         ((0, 0), acc)
     }
 
@@ -184,13 +184,13 @@ mod tests {
         let key1 = KeyByLabelValues {
             labels: vec!["host-a".to_string()],
         };
-        let acc1 = Box::new(SumAccumulator::with_sum(100.0));
+        let acc1 = Arc::new(SumAccumulator::with_sum(100.0)) as Arc<dyn crate::AggregateCore>;
         store_result.insert(Some(key1), vec![make_bucket(acc1)]);
 
         let key2 = KeyByLabelValues {
             labels: vec!["host-b".to_string()],
         };
-        let acc2 = Box::new(SumAccumulator::with_sum(200.0));
+        let acc2 = Arc::new(SumAccumulator::with_sum(200.0)) as Arc<dyn crate::AggregateCore>;
         store_result.insert(Some(key2), vec![make_bucket(acc2)]);
 
         let label_names = vec!["host".to_string()];
@@ -207,7 +207,7 @@ mod tests {
         let key1 = KeyByLabelValues {
             labels: vec!["host-a".to_string(), "region-1".to_string()],
         };
-        let acc1 = Box::new(SumAccumulator::with_sum(100.0));
+        let acc1 = Arc::new(SumAccumulator::with_sum(100.0)) as Arc<dyn crate::AggregateCore>;
         store_result.insert(Some(key1), vec![make_bucket(acc1)]);
 
         let label_names = vec!["host".to_string(), "region".to_string()];
@@ -221,7 +221,7 @@ mod tests {
     fn test_store_result_to_record_batch_no_key() {
         let mut store_result: TimestampedBucketsMap = HashMap::new();
 
-        let acc = Box::new(SumAccumulator::with_sum(500.0));
+        let acc = Arc::new(SumAccumulator::with_sum(500.0)) as Arc<dyn crate::AggregateCore>;
         store_result.insert(None, vec![make_bucket(acc)]);
 
         let label_names: Vec<String> = vec![];
@@ -293,7 +293,9 @@ mod tests {
         };
         store_result.insert(
             Some(key),
-            vec![make_bucket(Box::new(SumAccumulator::with_sum(1.0)))],
+            vec![make_bucket(
+                Arc::new(SumAccumulator::with_sum(1.0)) as Arc<dyn crate::AggregateCore>
+            )],
         );
         let label_names: Vec<String> = vec!["l1", "l2", "l3", "l4", "l5"]
             .into_iter()
@@ -312,7 +314,9 @@ mod tests {
         };
         store_result.insert(
             Some(key),
-            vec![make_bucket(Box::new(SumAccumulator::with_sum(42.0)))],
+            vec![make_bucket(
+                Arc::new(SumAccumulator::with_sum(42.0)) as Arc<dyn crate::AggregateCore>
+            )],
         );
         let label_names = vec!["host".to_string(), "region".to_string()];
         let batch = store_result_to_record_batch(&store_result, &label_names).unwrap();
@@ -345,15 +349,15 @@ mod tests {
             vec![
                 (
                     (100, 200),
-                    Box::new(SumAccumulator::with_sum(10.0)) as Box<dyn crate::AggregateCore>,
+                    Arc::new(SumAccumulator::with_sum(10.0)) as Arc<dyn crate::AggregateCore>,
                 ),
                 (
                     (200, 300),
-                    Box::new(SumAccumulator::with_sum(20.0)) as Box<dyn crate::AggregateCore>,
+                    Arc::new(SumAccumulator::with_sum(20.0)) as Arc<dyn crate::AggregateCore>,
                 ),
                 (
                     (300, 400),
-                    Box::new(SumAccumulator::with_sum(30.0)) as Box<dyn crate::AggregateCore>,
+                    Arc::new(SumAccumulator::with_sum(30.0)) as Arc<dyn crate::AggregateCore>,
                 ),
             ],
         );
@@ -426,13 +430,19 @@ mod tests {
         store_result.insert(
             Some(key1),
             vec![
-                make_bucket(Box::new(SumAccumulator::with_sum(1.0))),
-                make_bucket(Box::new(SumAccumulator::with_sum(2.0))),
+                make_bucket(
+                    Arc::new(SumAccumulator::with_sum(1.0)) as Arc<dyn crate::AggregateCore>
+                ),
+                make_bucket(
+                    Arc::new(SumAccumulator::with_sum(2.0)) as Arc<dyn crate::AggregateCore>
+                ),
             ],
         );
         store_result.insert(
             Some(key2),
-            vec![make_bucket(Box::new(SumAccumulator::with_sum(3.0)))],
+            vec![make_bucket(
+                Arc::new(SumAccumulator::with_sum(3.0)) as Arc<dyn crate::AggregateCore>
+            )],
         );
         assert_eq!(count_store_result_rows(&store_result), 3);
 

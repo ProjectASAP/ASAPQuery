@@ -153,7 +153,7 @@ class TestStreamingAggregationConfigSQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -176,7 +176,7 @@ class TestStreamingAggregationConfigSQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -197,7 +197,7 @@ class TestStreamingAggregationConfigSQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -230,7 +230,7 @@ class TestStreamingAggregationConfigSQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -255,7 +255,7 @@ class TestStreamingAggregationConfigSQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -290,7 +290,7 @@ class TestStreamingAggregationConfigSQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -325,7 +325,7 @@ class TestStreamingAggregationConfigSQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -351,7 +351,7 @@ class TestStreamingAggregationConfigPromQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -373,7 +373,7 @@ class TestStreamingAggregationConfigPromQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -396,7 +396,7 @@ class TestStreamingAggregationConfigPromQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
@@ -420,7 +420,7 @@ class TestStreamingAggregationConfigPromQL:
             },
             "parameters": {},
             "spatialFilter": "",
-            "tumblingWindowSize": 10,
+            "windowSize": 10,
         }
 
         agg_config = StreamingAggregationConfig.from_dict(config_dict)
