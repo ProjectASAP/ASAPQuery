@@ -1,0 +1,162 @@
+name: PR Evaluation
+
+# NOTE: GitHub-hosted runners are noisy. Latency numbers are indicative only.
+# For precise benchmarks, register a self-hosted runner once asap-tools infra
+# is decoupled from Cloudlab. See PDF eval guide Phase 3.
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'asap-query-engine/**'
+      - 'asap-planner-rs/**'
+      - 'asap-summary-ingest/**'
+      - 'asap-quickstart/**'
+      - '.github/workflows/accuracy_performance.yml'
+      - 'benchmarks/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+  pull-requests: write
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: build images once from branch code and push with a SHA-based tag.
+  # All downstream jobs pull these images instead of rebuilding.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build CI images
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.value }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tag
+        id: tag
+        run: echo "value=sha-$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+
+      - name: Build and push asap-planner-rs
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: asap-planner-rs/Dockerfile
+          push: true
+          tags: ghcr.io/projectasap/asap-planner-rs:${{ steps.tag.outputs.value }}
+          cache-from: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache
+          cache-to: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache,mode=max
+
+      - name: Build and push asap-summary-ingest
+        uses: docker/build-push-action@v6
+        with:
+          context: asap-summary-ingest
+          file: asap-summary-ingest/Dockerfile
+          push: true
+          tags: ghcr.io/projectasap/asap-summary-ingest:${{ steps.tag.outputs.value }}
+
+      - name: Build and push asap-query-engine
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: asap-query-engine/Dockerfile
+          push: true
+          tags: ghcr.io/projectasap/asap-query-engine:${{ steps.tag.outputs.value }}
+          cache-from: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache
+          cache-to: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Job 2: pull the images built above, deploy the full stack, and evaluate.
+  # ---------------------------------------------------------------------------
+  eval:
+    name: Full-stack PR evaluation
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ASAP_IMAGE_TAG: ${{ needs.build.outputs.image-tag }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull and start full stack
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            up -d
+
+      - name: Show running containers
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            ps
+
+      - name: Wait for all services to be healthy
+        run: bash benchmarks/scripts/wait_for_stack.sh
+
+      - name: Wait for pipeline and data ingestion
+        run: bash benchmarks/scripts/ingest_wait.sh
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Run baseline queries (Prometheus)
+        run: python benchmarks/scripts/run_baseline.py
+
+      - name: Run ASAP queries (query engine)
+        run: python benchmarks/scripts/run_asap.py
+
+      - name: Compare results and evaluate
+        run: python benchmarks/scripts/compare.py
+
+      - name: Upload evaluation reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-reports-${{ github.run_id }}
+          path: benchmarks/reports/
+
+      - name: Print docker logs on failure
+        if: failure()
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            logs --no-color
+
+      - name: Teardown stack
+        if: always()
+        run: |
+          docker compose \
+            -f asap-quickstart/docker-compose.yml \
+            -f benchmarks/docker-compose.yml \
+            down -v
