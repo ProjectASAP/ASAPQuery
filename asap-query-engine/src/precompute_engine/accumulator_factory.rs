@@ -402,24 +402,7 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
     }
 
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, _timestamp_ms: i64) {
-        // CMS._update is private, so we access the sketch directly
-        // We replicate the hash logic from CountMinSketchAccumulator._update
-        let key_json = key.serialize_to_json();
-        let key_values: Vec<String> = if let Some(obj) = key_json.as_object() {
-            obj.values()
-                .map(|v| v.as_str().unwrap_or("").to_string())
-                .collect()
-        } else {
-            vec!["".to_string()]
-        };
-        let key_str = key_values.join(";");
-        let key_bytes = key_str.as_bytes();
-
-        for i in 0..self.acc.inner.row_num {
-            let hash_value = xxhash_rust::xxh32::xxh32(key_bytes, i as u32);
-            let col_index = (hash_value as usize) % self.acc.inner.col_num;
-            self.acc.inner.sketch[i][col_index] += value;
-        }
+        self.acc.inner.update(&key.to_semicolon_str(), value);
     }
 
     fn take_accumulator(&mut self) -> Box<dyn AggregateCore> {
