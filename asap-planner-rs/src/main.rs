@@ -6,8 +6,17 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "asap-planner", about = "ASAP Query Planner")]
 struct Args {
-    #[arg(long = "input_config")]
-    input_config: PathBuf,
+    /// Path to a hand-authored YAML workload config. Mutually exclusive with --query-log.
+    #[arg(long = "input_config", conflicts_with = "query_log")]
+    input_config: Option<PathBuf>,
+
+    /// Path to a Prometheus query log file (newline-delimited JSON). Mutually exclusive with --input_config.
+    #[arg(long = "query-log", conflicts_with = "input_config")]
+    query_log: Option<PathBuf>,
+
+    /// Path to a metrics config YAML (required when using --query-log).
+    #[arg(long = "metrics-config", requires = "query_log")]
+    metrics_config: Option<PathBuf>,
 
     #[arg(long = "output_dir")]
     output_dir: PathBuf,
@@ -71,20 +80,33 @@ fn main() -> anyhow::Result<()> {
                 range_duration: args.range_duration,
                 step: args.step,
             };
-            let controller = Controller::from_file(&args.input_config, opts)?;
+            let controller = match (args.input_config, args.query_log) {
+                (Some(config_path), None) => Controller::from_file(&config_path, opts)?,
+                (None, Some(log_path)) => {
+                    let metrics_path = args
+                        .metrics_config
+                        .expect("--metrics-config is required when using --query-log");
+                    Controller::from_query_log(&log_path, &metrics_path, opts)?
+                }
+                _ => anyhow::bail!(
+                    "exactly one of --input_config or --query-log must be provided for PromQL mode"
+                ),
+            };
             controller.generate_to_dir(&args.output_dir)?;
         }
         QueryLanguage::sql | QueryLanguage::elastic_sql => {
             let interval = args.data_ingestion_interval.ok_or_else(|| {
                 anyhow::anyhow!("--data-ingestion-interval is required for SQL mode")
             })?;
+            let config_path = args
+                .input_config
+                .ok_or_else(|| anyhow::anyhow!("--input_config is required for SQL mode"))?;
             let opts = SQLRuntimeOptions {
                 streaming_engine: engine,
                 query_evaluation_time: None,
                 data_ingestion_interval: interval,
             };
-            SQLController::from_file(&args.input_config, opts)?
-                .generate_to_dir(&args.output_dir)?;
+            SQLController::from_file(&config_path, opts)?.generate_to_dir(&args.output_dir)?;
         }
         QueryLanguage::elastic_querydsl => {
             anyhow::bail!("ElasticQueryDSL is not yet supported");

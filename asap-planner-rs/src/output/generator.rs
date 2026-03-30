@@ -57,8 +57,8 @@ pub fn generate_plan(
                 metric_schema.clone(),
                 opts.streaming_engine,
                 controller_config.sketch_parameters.clone(),
-                opts.range_duration,
-                opts.step,
+                qg.range_duration.unwrap_or(opts.range_duration),
+                qg.step.unwrap_or(opts.step),
                 cleanup_policy,
             );
 
@@ -73,14 +73,25 @@ pub fn generate_plan(
             }
 
             if should_process {
-                let (configs, cleanup_param) = processor.get_streaming_aggregation_configs()?;
-                let mut keys_for_query = Vec::new();
-                for config in configs {
-                    let key = config.identifying_key();
-                    keys_for_query.push((key.clone(), cleanup_param));
-                    dedup_map.entry(key).or_insert(config);
+                match processor.get_streaming_aggregation_configs() {
+                    Ok((configs, cleanup_param)) => {
+                        let mut keys_for_query = Vec::new();
+                        for config in configs {
+                            let key = config.identifying_key();
+                            keys_for_query.push((key.clone(), cleanup_param));
+                            dedup_map.entry(key).or_insert(config);
+                        }
+                        query_keys_map.insert(query_string.clone(), keys_for_query);
+                    }
+                    Err(ControllerError::UnknownMetric(ref metric)) => {
+                        tracing::warn!(
+                            query = %query_string,
+                            metric = %metric,
+                            "skipping query referencing unknown metric"
+                        );
+                    }
+                    Err(e) => return Err(e),
                 }
-                query_keys_map.insert(query_string.clone(), keys_for_query);
             }
         }
     }

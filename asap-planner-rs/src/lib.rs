@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod output;
 pub mod planner;
+pub mod query_log;
 
 use serde_yaml::Value as YamlValue;
 use std::path::Path;
@@ -285,6 +286,30 @@ impl Controller {
 
     pub fn from_yaml(yaml: &str, opts: RuntimeOptions) -> Result<Self, ControllerError> {
         let config: ControllerConfig = serde_yaml::from_str(yaml)?;
+        Ok(Self {
+            config,
+            options: opts,
+        })
+    }
+
+    /// Build a `Controller` from a Prometheus query log file and a metrics config YAML.
+    ///
+    /// - `log_path`: newline-delimited JSON query log (Prometheus `--query.log-file` output)
+    /// - `metrics_path`: YAML file with a `metrics:` section listing metric names and labels
+    pub fn from_query_log(
+        log_path: &Path,
+        metrics_path: &Path,
+        opts: RuntimeOptions,
+    ) -> Result<Self, ControllerError> {
+        let entries = query_log::parse_log_file(log_path)?;
+        let (instants, ranges) =
+            query_log::infer_queries(&entries, opts.prometheus_scrape_interval);
+
+        let metrics_yaml = std::fs::read_to_string(metrics_path)?;
+        let metrics_config: query_log::MetricsConfig = serde_yaml::from_str(&metrics_yaml)?;
+
+        let config = query_log::to_controller_config(instants, ranges, metrics_config.metrics);
+
         Ok(Self {
             config,
             options: opts,
