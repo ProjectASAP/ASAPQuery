@@ -8,4 +8,5 @@ dependencies/py/promql_utilities/promql_utilities.egg-info/
 dependencies/rs/**/target/
 
 tests/**/*.json
+!tests/**/test_data/*.json
 tests/**/target/
