@@ -37,6 +37,7 @@ Task-oriented guides for common operations:
 
 ### Operations Tasks
 - [Manual Stack Run for Prometheus](03-how-to-guides/operations/manual-stack-run-prometheus.md) - Run ASAP components manually to accelerate Prometheus
+- [Bootstrap Config from Query Log](03-how-to-guides/operations/bootstrap-config-from-query-log.md) - Auto-generate sketch configs from Prometheus query traffic
 - [Manual Stack Run for Clickhouse](03-how-to-guides/operations/manual-stack-run-clickhouse.md) - Run ASAP components manually to accelerate Clickhouse
 - [Deploy to CloudLab](03-how-to-guides/operations/deploy-cloudlab.md) - Deployment guide
 - [Troubleshooting](03-how-to-guides/operations/troubleshooting.md) - Common issues & solutions

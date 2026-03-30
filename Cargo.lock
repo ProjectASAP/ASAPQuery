@@ -381,6 +381,7 @@ name = "asap_planner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "clap 4.6.0",
  "indexmap 2.13.0",
  "pretty_assertions",

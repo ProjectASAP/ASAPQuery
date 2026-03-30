@@ -1,0 +1,5 @@
+{"params":{"end":"2025-12-02T19:00:00.000Z","query":"rate(http_requests_total[5m])","start":"2025-12-02T18:00:00.000Z","step":30},"ts":"2025-12-02T18:00:00.001Z"}
+{"params":{"end":"2025-12-02T19:01:00.000Z","query":"rate(http_requests_total[5m])","start":"2025-12-02T18:01:00.000Z","step":30},"ts":"2025-12-02T18:01:00.001Z"}
+{"params":{"end":"2025-12-02T19:02:00.000Z","query":"rate(http_requests_total[5m])","start":"2025-12-02T18:02:00.000Z","step":30},"ts":"2025-12-02T18:02:00.001Z"}
+{"params":{"end":"2025-12-02T19:03:00.000Z","query":"rate(http_requests_total[5m])","start":"2025-12-02T18:03:00.000Z","step":30},"ts":"2025-12-02T18:03:00.001Z"}
+{"params":{"end":"2025-12-02T19:04:00.000Z","query":"rate(http_requests_total[5m])","start":"2025-12-02T18:04:00.000Z","step":30},"ts":"2025-12-02T18:04:00.001Z"}
