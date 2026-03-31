@@ -363,6 +363,73 @@ fn temporal_overlapping_cleanup_param_equals_range_over_repeat() {
     );
 }
 
+// --- Binary arithmetic tests ---
+
+#[test]
+fn binary_arithmetic_produces_two_leaf_configs() {
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/binary_arithmetic.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    // Two arms → two streaming aggregation configs
+    assert_eq!(out.streaming_aggregation_count(), 2);
+    // Two separate query_config entries (one per arm)
+    assert_eq!(out.inference_query_count(), 2);
+}
+
+#[test]
+fn binary_arithmetic_deduplicates_shared_arm() {
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/binary_arithmetic_dedup.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    // errors_total arm is shared — only 2 streaming configs total (not 3)
+    assert_eq!(out.streaming_aggregation_count(), 2);
+    // 2 query_config entries: rate(errors_total[5m]) and rate(requests_total[5m])
+    assert_eq!(out.inference_query_count(), 2);
+}
+
+#[test]
+fn nested_binary_arithmetic_produces_three_leaf_configs() {
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/binary_arithmetic_nested.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.streaming_aggregation_count(), 3);
+    assert_eq!(out.inference_query_count(), 3);
+}
+
+#[test]
+fn binary_arithmetic_scalar_constant_produces_one_leaf_config() {
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/binary_arithmetic_scalar.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    // Only the vector arm needs a streaming config; 100 is a literal
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+}
+
+#[test]
+fn binary_arithmetic_with_non_acceleratable_arm_produces_no_configs() {
+    let c = Controller::from_file(
+        Path::new("tests/comparison/test_data/configs/binary_arithmetic_non_acceleratable.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.streaming_aggregation_count(), 0);
+    assert_eq!(out.inference_query_count(), 0);
+}
+
 #[test]
 fn temporal_overlapping_rate_increase_deduped() {
     // rate and increase produce identical MultipleIncrease configs → 1 streaming entry shared,
