@@ -1130,7 +1130,7 @@ if __name__ == "__main__":
         "--sketch_cmwh_impl",
         type=str,
         choices=["legacy", "sketchlib"],
-        default="legacy",
+        default="sketchlib",
         help="Count-Min-With-Heap backend (legacy | sketchlib). Must match QueryEngine.",
     )
 

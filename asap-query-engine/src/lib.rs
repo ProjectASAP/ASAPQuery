@@ -5,7 +5,7 @@ fn init_sketch_backend_for_tests() {
     let _ = sketch_core::config::configure(
         sketch_core::config::ImplMode::Sketchlib,
         sketch_core::config::ImplMode::Legacy,
-        sketch_core::config::ImplMode::Legacy,
+        sketch_core::config::ImplMode::Sketchlib,
     );
     #[cfg(not(feature = "sketchlib-tests"))]
     sketch_core::config::force_legacy_mode_for_tests();
