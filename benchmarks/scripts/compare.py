@@ -169,7 +169,7 @@ def main() -> None:
         b = baseline_results.get(qid, {})
         a = asap_results.get(qid, {})
 
-        asap_native = a.get("asap_native", False)
+        approximate = a.get("approximate", False)
         asap_status = a.get("status", "missing")
         asap_error = a.get("error")
 
@@ -195,7 +195,7 @@ def main() -> None:
             reason = asap_error or "query not present in ASAP results"
             failures.append(f"{qid}: ASAP query failed — {reason}")
 
-        elif asap_native and rel_error is not None and rel_error > args.max_error:
+        elif approximate and rel_error is not None and rel_error > args.max_error:
             row_status = "WARN"
             warnings.append(
                 f"{qid}: relative error {rel_error:.4f} > threshold {args.max_error:.4f} — informational only"
@@ -218,7 +218,7 @@ def main() -> None:
         rows.append(
             {
                 "id": qid,
-                "asap_native": asap_native,
+                "approximate": approximate,
                 "b_p95": b_p95,
                 "a_p95": a_p95,
                 "rel_error": rel_error,
@@ -247,7 +247,7 @@ def main() -> None:
     )
     lines.append("|-------|:-----------:|:-----------------:|:-------------:|:---------:|:------:|")
     for row in rows:
-        native_mark = "yes" if row["asap_native"] else "no"
+        native_mark = "yes" if row["approximate"] else "no"
         b_p95_s = f"{row['b_p95']:.1f}" if row["b_p95"] == row["b_p95"] else "n/a"
         a_p95_s = f"{row['a_p95']:.1f}" if row["a_p95"] == row["a_p95"] else "n/a"
         if row["rel_error"] is None:

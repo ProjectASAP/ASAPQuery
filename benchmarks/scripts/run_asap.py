@@ -62,13 +62,13 @@ def main() -> None:
     for q in suite["queries"]:
         qid = q["id"]
         expr = q["expr"]
-        asap_native = q.get("asap_native", False)
+        approximate = q.get("approximate", False)
         latencies = []
         last_data = []
         last_error = None
         last_status = "success"
 
-        print(f"[asap] Running query '{qid}' (native={asap_native}): {expr}")
+        print(f"[asap] Running query '{qid}' (approximate={approximate}): {expr}")
         for run in range(1, RUNS_PER_QUERY + 1):
             try:
                 payload, lat = query_asap(args.asap_url, expr, now)
@@ -91,7 +91,7 @@ def main() -> None:
 
         results[qid] = {
             "status": last_status,
-            "asap_native": asap_native,
+            "approximate": approximate,
             "latencies_ms": latencies,
             "data": last_data,
             "error": last_error,
