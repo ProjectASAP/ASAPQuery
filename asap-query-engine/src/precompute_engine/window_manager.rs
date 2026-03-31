@@ -233,14 +233,8 @@ mod tests {
         let wm = WindowManager::new(30, 10);
 
         assert_eq!(wm.panes_for_window(0), vec![0, 10_000, 20_000]);
-        assert_eq!(
-            wm.panes_for_window(10_000),
-            vec![10_000, 20_000, 30_000]
-        );
-        assert_eq!(
-            wm.panes_for_window(20_000),
-            vec![20_000, 30_000, 40_000]
-        );
+        assert_eq!(wm.panes_for_window(10_000), vec![10_000, 20_000, 30_000]);
+        assert_eq!(wm.panes_for_window(20_000), vec![20_000, 30_000, 40_000]);
     }
 
     #[test]
@@ -279,7 +273,7 @@ mod tests {
         // 30s window, 10s slide — consecutive windows share W-1 = 2 panes
         let wm = WindowManager::new(30, 10);
 
-        let panes_a = wm.panes_for_window(0);    // [0, 10_000, 20_000]
+        let panes_a = wm.panes_for_window(0); // [0, 10_000, 20_000]
         let panes_b = wm.panes_for_window(10_000); // [10_000, 20_000, 30_000]
 
         // Shared panes: 10_000 and 20_000
