@@ -68,6 +68,7 @@ jobs:
           file: asap-summary-ingest/Dockerfile
           push: true
           tags: ghcr.io/projectasap/asap-summary-ingest:${{ steps.tag.outputs.value }}
+          build-args: BASE_IMAGE=ghcr.io/projectasap/asap-base:latest
 
       - name: Build and push asap-query-engine
         uses: docker/build-push-action@v6
