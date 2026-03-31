@@ -226,10 +226,12 @@ fn main() {
         .expect("sketch backend already initialised");
 
     let seed = 0xC0FFEE_u64;
-    let mode = if matches!(args.cms_impl, ImplMode::Legacy)
-        || matches!(args.kll_impl, ImplMode::Legacy)
-        || matches!(args.cmwh_impl, ImplMode::Legacy)
-    {
+    let cms_mode = if matches!(args.cms_impl, ImplMode::Legacy) {
+        "Legacy"
+    } else {
+        "sketchlib-rust"
+    };
+    let cmwh_mode = if matches!(args.cmwh_impl, ImplMode::Legacy) {
         "Legacy"
     } else {
         "sketchlib-rust"
@@ -263,7 +265,7 @@ fn main() {
         },
     ];
 
-    println!("## CountMinSketch ({mode})");
+    println!("## CountMinSketch ({cms_mode})");
     println!("| depth | width | n_updates | domain | Pearson corr | MAPE (%) | RMSE (%) |");
     println!("|-------|-------|------------|--------|--------------|----------|----------|");
     for p in &cms_param_sets {
@@ -299,7 +301,7 @@ fn main() {
         },
     ];
 
-    println!("\n## CountMinSketchWithHeap ({mode})");
+    println!("\n## CountMinSketchWithHeap ({cmwh_mode})");
     println!("| depth | width | n | domain | heap_size | Top-k recall | Pearson (top-k) | MAPE (%) | RMSE (%) |");
     println!("|-------|-------|-----|--------|-----------|--------------|-----------------|----------|----------|");
     for p in &cmwh_param_sets {
