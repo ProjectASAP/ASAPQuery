@@ -1,15 +1,10 @@
 import os
 import json
 import argparse
-from typing import Any, Dict, List
+from typing import List
 
 import utils.http_utils as http_utils
 import utils.jinja_utils as jinja_utils
-
-# Non-numeric Jinja vars used by sketch UDF templates (validate_udfs otherwise uses 100).
-_UDF_TEMPLATE_DEFAULTS: Dict[str, Any] = {
-    "impl_mode": "Sketchlib",
-}
 
 
 def main(args):
@@ -58,10 +53,7 @@ def main(args):
             template_vars = jinja_utils.get_template_variables(
                 template_source, udf_template.environment
             )
-            params = {
-                var_name: _UDF_TEMPLATE_DEFAULTS.get(var_name, 100)
-                for var_name in template_vars
-            }
+            params = {var_name: 100 for var_name in template_vars}
 
             udf_body = udf_template.render(**params)
         elif os.path.exists(regular_path):

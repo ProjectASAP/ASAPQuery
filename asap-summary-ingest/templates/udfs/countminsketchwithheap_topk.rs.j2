@@ -27,7 +27,7 @@ enum ImplMode {
     Sketchlib,
 }
 
-const IMPL_MODE: ImplMode = ImplMode::{{ impl_mode | default("Sketchlib") }};
+const IMPL_MODE: ImplMode = ImplMode::Sketchlib;
 
 fn use_sketchlib_for_cmwh() -> bool {
     matches!(IMPL_MODE, ImplMode::Sketchlib)
