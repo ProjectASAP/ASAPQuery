@@ -61,13 +61,11 @@ fn set_tumbling_window_parameters(
             config.window_size = effective_repeat;
             config.slide_interval = effective_repeat;
             config.window_type = "tumbling".to_string();
-            config.tumbling_window_size = effective_repeat;
         }
         QueryPatternType::OnlySpatial => {
             config.window_size = prometheus_scrape_interval;
             config.slide_interval = prometheus_scrape_interval;
             config.window_type = "tumbling".to_string();
-            config.tumbling_window_size = prometheus_scrape_interval;
         }
     }
 }
@@ -78,7 +76,6 @@ pub struct IntermediateWindowConfig {
     pub window_size: u64,
     pub slide_interval: u64,
     pub window_type: String,
-    pub tumbling_window_size: u64,
 }
 
 pub fn get_precompute_operator_parameters(

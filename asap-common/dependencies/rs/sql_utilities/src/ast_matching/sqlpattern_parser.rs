@@ -336,6 +336,16 @@ impl SQLPatternParser {
             Expr::Function(func) if func.name.to_string().to_uppercase() == "DATEADD" => {
                 self.parse_dateadd(func)
             }
+
+            // Elastic semantics requires CAST() for datetime strings.
+            Expr::Cast { expr, .. } => match expr.as_ref() {
+                Expr::Value(ValueWithSpan {
+                    value: SingleQuotedString(datetime_str),
+                    ..
+                }) => Self::get_timestamp_from_datetime_str(datetime_str),
+                _ => None,
+            },
+
             _ => {
                 panic!("invalid time syntax {:?}", highlow);
             }
@@ -362,8 +372,8 @@ impl SQLPatternParser {
                     _ => return None,
                 };
 
-                let start = self.get_timestamp_from_between_highlow(low.as_ref())?;
-                let end = self.get_timestamp_from_between_highlow(high.as_ref())?;
+                let start = self.get_timestamp_from_between_highlow(low)?;
+                let end = self.get_timestamp_from_between_highlow(high)?;
 
                 let duration = end - start;
 
@@ -388,6 +398,10 @@ impl SQLPatternParser {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
                 ident.value.to_lowercase()
             }
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(ValueWithSpan {
+                value: SingleQuotedString(s),
+                ..
+            }))) => s.to_lowercase(),
             _ => return None,
         };
 
@@ -429,6 +443,20 @@ impl SQLPatternParser {
                 value: SingleQuotedString(datetime_str),
                 span: _,
             }))) => parse_datetime(datetime_str).ok()?.timestamp().as_second() as f64,
+
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Cast { expr, .. })) => {
+                match expr.as_ref() {
+                    Expr::Value(ValueWithSpan {
+                        value: SingleQuotedString(datetime_str),
+                        ..
+                    }) => parse_datetime(datetime_str).ok()?.timestamp().as_second() as f64,
+                    _ => {
+                        println!("Unsupported CAST expression in DATEADD");
+                        return None;
+                    }
+                }
+            }
+
             _ => {
                 println!("time upper bound not calculating from present");
                 return None;

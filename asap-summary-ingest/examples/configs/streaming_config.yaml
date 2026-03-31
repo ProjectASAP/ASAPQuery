@@ -16,7 +16,7 @@ aggregations:
   metric: fake_metric_total
   parameters: {}
   spatialFilter: ''
-  tumblingWindowSize: 10
+  windowSize: 10
 # - aggregationId: 2
 #   aggregationSubType: ''
 #   aggregationType: MultipleIncrease
@@ -32,7 +32,7 @@ aggregations:
 #   metric: fake_metric_total
 #   parameters: {}
 #   spatialFilter: ''
-#   tumblingWindowSize: 10
+#   windowSize: 10
 # - aggregationId: 3
 #   aggregationSubType: sum
 #   aggregationType: MultipleSum
@@ -48,7 +48,7 @@ aggregations:
 #   metric: fake_metric_total
 #   parameters: {}
 #   spatialFilter: ''
-#   tumblingWindowSize: 10
+#   windowSize: 10
 - aggregationId: 4
   aggregationSubType: sum
   aggregationType: MultipleSum
@@ -64,7 +64,7 @@ aggregations:
   metric: fake_metric_total
   parameters: {}
   spatialFilter: ''
-  tumblingWindowSize: 10
+  windowSize: 10
 metrics:
   fake_metric_total:
   - instance

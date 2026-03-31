@@ -77,7 +77,7 @@ impl PlannerOutput {
             if let Some(YamlValue::Sequence(aggs)) = root.get("aggregations") {
                 return aggs.iter().all(|agg| {
                     if let YamlValue::Mapping(m) = agg {
-                        if let Some(val) = m.get("tumblingWindowSize") {
+                        if let Some(val) = m.get("windowSize") {
                             let size = match val {
                                 YamlValue::Number(n) => n.as_u64().unwrap_or(0),
                                 _ => 0,

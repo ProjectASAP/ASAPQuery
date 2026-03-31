@@ -14,7 +14,7 @@ This guide covers running the ASAP stack manually with Clickhouse for developmen
 
 ```
 ~/code/
-├── asap-sketch-ingest/     # Pipeline configuration scripts
+├── asap-summary-ingest/     # Pipeline configuration scripts
 │   ├── config.yaml         # Arroyo cluster config
 │   └── run_arroyosketch.py # Creates sources, sinks, and pipelines
 ├── asap-query-engine/      # Query interception layer
@@ -230,7 +230,7 @@ Then create the tables as shown in the Baseline section (step 4).
 
 ```bash
 cd ~/code/arroyo
-./target/release/arroyo --config ~/code/asap-sketch-ingest/config.yaml cluster
+./target/release/arroyo --config ~/code/asap-summary-ingest/config.yaml cluster
 ```
 
 Arroyo API runs at `http://localhost:5115`. Verify with:
@@ -243,7 +243,7 @@ curl http://localhost:5115/api/v1/pipelines
 Run `run_arroyosketch.py` to create Arroyo sources, sinks, and pipeline. For Clickhouse, always use Kafka source:
 
 ```bash
-cd ~/code/asap-sketch-ingest
+cd ~/code/asap-summary-ingest
 python run_arroyosketch.py \
     --source_type kafka \
     --kafka_input_format json \

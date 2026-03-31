@@ -8,6 +8,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use tracing::{debug, error};
 
+const ELASTIC_FETCH_SIZE: u64 = 1000;
+
 /// Fallback client for Elasticsearch HTTP API
 pub struct ElasticHttpFallback {
     client: Client,
@@ -80,11 +82,23 @@ impl FallbackClient for ElasticHttpFallback {
 
         debug!("Full forwarding URL: {}", full_url);
 
-        let query_body: Value = match serde_json::from_str(&request.query) {
-            Ok(json) => json,
-            Err(e) => {
-                error!("Failed to parse query as JSON: {}", e);
-                return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        let query_body: Value = match self.language {
+            QueryLanguage::elastic_sql => {
+                // query is a raw SQL string, need to wrap it for the ES SQL endpoint
+                serde_json::json!({
+                    "query": request.query.trim().trim_end_matches(';'),
+                    "fetch_size": ELASTIC_FETCH_SIZE,
+                })
+            }
+            _ => {
+                // query is already a JSON string (Query DSL)
+                match serde_json::from_str(&request.query) {
+                    Ok(json) => json,
+                    Err(e) => {
+                        error!("Failed to parse query as JSON: {}", e);
+                        return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                    }
+                }
             }
         };
 
