@@ -353,7 +353,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
     let batch_body = build_remote_write_body(batch_timeseries);
-    println!("  Payload size: {} bytes (snappy-compressed)", batch_body.len());
+    println!(
+        "  Payload size: {} bytes (snappy-compressed)",
+        batch_body.len()
+    );
 
     let t0 = std::time::Instant::now();
     let resp = client
@@ -374,12 +377,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
 
     // Verify samples landed in the store
-    let batch_results = store.query_precomputed_output(
-        "fake_metric",
-        raw_agg_id,
-        200_000,
-        210_000,
-    )?;
+    let batch_results =
+        store.query_precomputed_output("fake_metric", raw_agg_id, 200_000, 210_000)?;
     let batch_buckets: usize = batch_results.values().map(|v| v.len()).sum();
     println!("  Stored {batch_buckets} buckets from batch (expected 1000)");
     assert!(
@@ -438,12 +437,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let drain_deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut tp_buckets: usize;
     loop {
-        let tp_results = store.query_precomputed_output(
-            "fake_metric",
-            raw_agg_id,
-            300_000,
-            max_ts,
-        )?;
+        let tp_results =
+            store.query_precomputed_output("fake_metric", raw_agg_id, 300_000, max_ts)?;
         tp_buckets = tp_results.values().map(|v| v.len()).sum();
         if tp_buckets as u64 >= total_samples || std::time::Instant::now() > drain_deadline {
             break;
