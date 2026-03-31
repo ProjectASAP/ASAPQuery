@@ -16,6 +16,36 @@ engine**. The engine runs as a separate binary, accepts Prometheus remote write
 traffic, partitions incoming series across workers, computes windowed
 accumulators, and stores the results for later query-time retrieval.
 
+### Why not ArroyoSketch?
+
+The existing precompute path — **ArroyoSketch** (`asap-summary-ingest/run_arroyosketch.py`)
+— already performs windowed sketch aggregation, but it does so through an
+entirely separate operational stack:
+
+| Dimension | ArroyoSketch | Precompute Engine (this PR) |
+|---|---|---|
+| **Runtime** | External Arroyo cluster (separate process, separate binary) | In-process Rust binary alongside the query engine |
+| **Orchestration language** | Python (Jinja2 SQL templates deployed via REST API to Arroyo) | Native Rust, driven directly by `StreamingConfig` |
+| **Ingest transport** | Kafka topic or Prometheus remote write → Arroyo pipeline | Prometheus remote write directly to the engine |
+| **Output transport** | Kafka topic → consumed by a separate pipeline stage | Direct write to the store already read by the query engine |
+| **Operational dependencies** | Arroyo cluster + Kafka brokers must be running and healthy | None beyond the query engine process itself |
+| **Configuration coupling** | Arroyo pipeline SQL is rendered from `streaming_config.yaml` by a Python script; any config change requires re-deploying pipelines via the Arroyo REST API | Engine reads `StreamingConfig` directly at startup; same structs used throughout `asap-query-engine` |
+| **Failure boundary** | Arroyo crash or Kafka lag is invisible to the query engine until queries begin returning stale results | Precompute workers and query engine share the same process and store; failures surface immediately |
+
+In short, ArroyoSketch trades simplicity for power: it is a general-purpose
+streaming SQL engine that can express complex multi-stage pipelines, but it
+requires standing up and operating Arroyo and Kafka as separate infrastructure.
+That operational overhead is the main barrier to running the precompute path in
+development, in CI, or in environments where Kafka is not already present.
+
+This PR replaces the ingest-and-aggregate role of ArroyoSketch with a
+self-contained Rust implementation that has no external service dependencies,
+shares the same store and configuration types as the rest of `asap-query-engine`,
+and can be validated end to end in a single process. ArroyoSketch remains useful
+as a production deployment option when Arroyo and Kafka are already available,
+but the precompute engine is the path forward for native integration within the
+Rust codebase.
+
 This PR is primarily about establishing the end-to-end execution path and the
 core abstractions:
 
