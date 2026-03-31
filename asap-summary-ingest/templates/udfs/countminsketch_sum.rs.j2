@@ -23,7 +23,8 @@ enum ImplMode {
     Sketchlib,
 }
 
-const IMPL_MODE: ImplMode = ImplMode::Sketchlib;
+{% set _impl_mode = impl_mode | default("Sketchlib") %}
+const IMPL_MODE: ImplMode = ImplMode::{% if _impl_mode == "Legacy" or _impl_mode == "Sketchlib" %}{{ _impl_mode }}{% else %}Sketchlib{% endif %};
 
 fn use_sketchlib_for_cms() -> bool {
     matches!(IMPL_MODE, ImplMode::Sketchlib)

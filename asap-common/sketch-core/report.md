@@ -1,21 +1,15 @@
 # Sketchlib Fidelity Report
 
-Compares the **legacy** sketch implementations in `sketch-core` vs the new **sketchlib-rust** backends for:
-
-- `CountMinSketch`
-- `CountMinSketchWithHeap` (Count-Min portion)
+Compares the **legacy** Count-Min Sketch implementation in `sketch-core` vs the new **sketchlib-rust** backend.
 
 ## Fidelity harness
 
 The fidelity binary selects backends via CLI flags.
 
-| Goal                     | Command                                                                                                      |
-|--------------------------|--------------------------------------------------------------------------------------------------------------|
-| CMS + CMWH sketchlib     | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl sketchlib --cmwh-impl sketchlib`             |
-| CMS + CMWH legacy        | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl legacy --cmwh-impl legacy`                    |
-| CMS sketchlib, CMWH legacy | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl sketchlib --cmwh-impl legacy`               |
-
-Section titles in the binary reflect **per-sketch** mode (`--cms-impl` for CountMinSketch, `--cmwh-impl` for CountMinSketchWithHeap); `kll_impl` does not affect these tables.
+| Goal        | Command                                                       |
+|-------------|---------------------------------------------------------------|
+| CMS sketchlib | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl sketchlib` |
+| CMS legacy   | `cargo run -p sketch-core --bin sketchlib_fidelity -- --cms-impl legacy` |
 
 ## Unit tests
 

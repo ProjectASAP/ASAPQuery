@@ -57,8 +57,8 @@ pub fn generate_plan(
                 metric_schema.clone(),
                 opts.streaming_engine,
                 controller_config.sketch_parameters.clone(),
-                opts.range_duration,
-                opts.step,
+                qg.range_duration.unwrap_or(opts.range_duration),
+                qg.step.unwrap_or(opts.step),
                 cleanup_policy,
             );
 
@@ -73,14 +73,25 @@ pub fn generate_plan(
             }
 
             if should_process {
-                let (configs, cleanup_param) = processor.get_streaming_aggregation_configs()?;
-                let mut keys_for_query = Vec::new();
-                for config in configs {
-                    let key = config.identifying_key();
-                    keys_for_query.push((key.clone(), cleanup_param));
-                    dedup_map.entry(key).or_insert(config);
+                match processor.get_streaming_aggregation_configs() {
+                    Ok((configs, cleanup_param)) => {
+                        let mut keys_for_query = Vec::new();
+                        for config in configs {
+                            let key = config.identifying_key();
+                            keys_for_query.push((key.clone(), cleanup_param));
+                            dedup_map.entry(key).or_insert(config);
+                        }
+                        query_keys_map.insert(query_string.clone(), keys_for_query);
+                    }
+                    Err(ControllerError::UnknownMetric(ref metric)) => {
+                        tracing::warn!(
+                            query = %query_string,
+                            metric = %metric,
+                            "skipping query referencing unknown metric"
+                        );
+                    }
+                    Err(e) => return Err(e),
                 }
-                query_keys_map.insert(query_string.clone(), keys_for_query);
             }
         }
     }
@@ -112,7 +123,7 @@ pub fn generate_plan(
     })
 }
 
-fn parse_cleanup_policy(s: &str) -> Result<CleanupPolicy, ControllerError> {
+pub fn parse_cleanup_policy(s: &str) -> Result<CleanupPolicy, ControllerError> {
     match s {
         "circular_buffer" => Ok(CleanupPolicy::CircularBuffer),
         "read_based" => Ok(CleanupPolicy::ReadBased),
@@ -124,7 +135,7 @@ fn parse_cleanup_policy(s: &str) -> Result<CleanupPolicy, ControllerError> {
     }
 }
 
-fn key_by_labels_to_yaml(labels: &KeyByLabelNames) -> YamlValue {
+pub fn key_by_labels_to_yaml(labels: &KeyByLabelNames) -> YamlValue {
     YamlValue::Sequence(
         labels
             .labels
@@ -134,155 +145,87 @@ fn key_by_labels_to_yaml(labels: &KeyByLabelNames) -> YamlValue {
     )
 }
 
-fn params_to_yaml(params: &HashMap<String, JsonValue>) -> YamlValue {
-    if params.is_empty() {
-        return YamlValue::Mapping(serde_yaml::Mapping::new());
-    }
+pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValue {
     let mut map = serde_yaml::Mapping::new();
-    // Sort for determinism
-    let mut sorted: Vec<_> = params.iter().collect();
-    sorted.sort_by_key(|(k, _)| k.as_str());
-    for (k, v) in sorted {
-        let yaml_val = match v {
-            JsonValue::Number(n) => {
-                if let Some(i) = n.as_u64() {
-                    YamlValue::Number(serde_yaml::Number::from(i))
-                } else if let Some(f) = n.as_f64() {
-                    YamlValue::Number(serde_yaml::Number::from(f))
-                } else {
-                    YamlValue::String(n.to_string())
-                }
-            }
-            JsonValue::String(s) => YamlValue::String(s.clone()),
-            JsonValue::Bool(b) => YamlValue::Bool(*b),
-            other => YamlValue::String(other.to_string()),
-        };
-        map.insert(YamlValue::String(k.clone()), yaml_val);
-    }
+    map.insert(
+        YamlValue::String("aggregationId".to_string()),
+        YamlValue::Number(id.into()),
+    );
+    map.insert(
+        YamlValue::String("aggregationSubType".to_string()),
+        YamlValue::String(cfg.aggregation_sub_type.clone()),
+    );
+    map.insert(
+        YamlValue::String("aggregationType".to_string()),
+        YamlValue::String(cfg.aggregation_type.clone()),
+    );
+
+    let mut labels_map = serde_yaml::Mapping::new();
+    labels_map.insert(
+        YamlValue::String("aggregated".to_string()),
+        key_by_labels_to_yaml(&cfg.aggregated_labels),
+    );
+    labels_map.insert(
+        YamlValue::String("grouping".to_string()),
+        key_by_labels_to_yaml(&cfg.grouping_labels),
+    );
+    labels_map.insert(
+        YamlValue::String("rollup".to_string()),
+        key_by_labels_to_yaml(&cfg.rollup_labels),
+    );
+    map.insert(
+        YamlValue::String("labels".to_string()),
+        YamlValue::Mapping(labels_map),
+    );
+
+    map.insert(
+        YamlValue::String("metric".to_string()),
+        YamlValue::String(cfg.metric.clone()),
+    );
+    map.insert(
+        YamlValue::String("parameters".to_string()),
+        params_to_yaml(&cfg.parameters),
+    );
+    map.insert(
+        YamlValue::String("slideInterval".to_string()),
+        YamlValue::Number(cfg.slide_interval.into()),
+    );
+    map.insert(
+        YamlValue::String("spatialFilter".to_string()),
+        YamlValue::String(cfg.spatial_filter.clone()),
+    );
+    map.insert(
+        YamlValue::String("table_name".to_string()),
+        match &cfg.table_name {
+            Some(t) => YamlValue::String(t.clone()),
+            None => YamlValue::Null,
+        },
+    );
+    map.insert(
+        YamlValue::String("value_column".to_string()),
+        match &cfg.value_column {
+            Some(v) => YamlValue::String(v.clone()),
+            None => YamlValue::Null,
+        },
+    );
+    map.insert(
+        YamlValue::String("windowSize".to_string()),
+        YamlValue::Number(cfg.window_size.into()),
+    );
+    map.insert(
+        YamlValue::String("windowType".to_string()),
+        YamlValue::String(cfg.window_type.clone()),
+    );
+
     YamlValue::Mapping(map)
 }
 
-fn build_streaming_yaml(
-    dedup_map: &IndexMap<String, IntermediateAggConfig>,
-    id_map: &HashMap<String, u32>,
-    metric_schema: &sketch_db_common::PromQLSchema,
-) -> Result<YamlValue, ControllerError> {
-    let aggregations: Vec<YamlValue> = dedup_map
-        .iter()
-        .map(|(key, cfg)| {
-            let id = id_map[key];
-            let mut map = serde_yaml::Mapping::new();
-            map.insert(
-                YamlValue::String("aggregationId".to_string()),
-                YamlValue::Number(id.into()),
-            );
-            map.insert(
-                YamlValue::String("aggregationSubType".to_string()),
-                YamlValue::String(cfg.aggregation_sub_type.clone()),
-            );
-            map.insert(
-                YamlValue::String("aggregationType".to_string()),
-                YamlValue::String(cfg.aggregation_type.clone()),
-            );
-
-            // labels
-            let mut labels_map = serde_yaml::Mapping::new();
-            labels_map.insert(
-                YamlValue::String("aggregated".to_string()),
-                key_by_labels_to_yaml(&cfg.aggregated_labels),
-            );
-            labels_map.insert(
-                YamlValue::String("grouping".to_string()),
-                key_by_labels_to_yaml(&cfg.grouping_labels),
-            );
-            labels_map.insert(
-                YamlValue::String("rollup".to_string()),
-                key_by_labels_to_yaml(&cfg.rollup_labels),
-            );
-            map.insert(
-                YamlValue::String("labels".to_string()),
-                YamlValue::Mapping(labels_map),
-            );
-
-            map.insert(
-                YamlValue::String("metric".to_string()),
-                YamlValue::String(cfg.metric.clone()),
-            );
-            map.insert(
-                YamlValue::String("parameters".to_string()),
-                params_to_yaml(&cfg.parameters),
-            );
-            map.insert(
-                YamlValue::String("slideInterval".to_string()),
-                YamlValue::Number(cfg.slide_interval.into()),
-            );
-            map.insert(
-                YamlValue::String("spatialFilter".to_string()),
-                YamlValue::String(cfg.spatial_filter.clone()),
-            );
-            map.insert(
-                YamlValue::String("table_name".to_string()),
-                match &cfg.table_name {
-                    Some(t) => YamlValue::String(t.clone()),
-                    None => YamlValue::Null,
-                },
-            );
-            map.insert(
-                YamlValue::String("value_column".to_string()),
-                match &cfg.value_column {
-                    Some(v) => YamlValue::String(v.clone()),
-                    None => YamlValue::Null,
-                },
-            );
-            map.insert(
-                YamlValue::String("windowSize".to_string()),
-                YamlValue::Number(cfg.window_size.into()),
-            );
-            map.insert(
-                YamlValue::String("windowType".to_string()),
-                YamlValue::String(cfg.window_type.clone()),
-            );
-
-            YamlValue::Mapping(map)
-        })
-        .collect();
-
-    // Build metrics section
-    let mut metrics_map = serde_yaml::Mapping::new();
-    for (metric_name, labels) in &metric_schema.config {
-        metrics_map.insert(
-            YamlValue::String(metric_name.clone()),
-            key_by_labels_to_yaml(labels),
-        );
-    }
-
-    let mut root = serde_yaml::Mapping::new();
-    root.insert(
-        YamlValue::String("aggregations".to_string()),
-        YamlValue::Sequence(aggregations),
-    );
-    root.insert(
-        YamlValue::String("metrics".to_string()),
-        YamlValue::Mapping(metrics_map),
-    );
-
-    Ok(YamlValue::Mapping(root))
-}
-
-fn build_inference_yaml(
+pub fn build_queries_yaml(
     cleanup_policy: CleanupPolicy,
-    cleanup_policy_str: &str,
     query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
     id_map: &HashMap<String, u32>,
-    metric_schema: &sketch_db_common::PromQLSchema,
-) -> Result<YamlValue, ControllerError> {
-    let mut cleanup_map = serde_yaml::Mapping::new();
-    cleanup_map.insert(
-        YamlValue::String("name".to_string()),
-        YamlValue::String(cleanup_policy_str.to_string()),
-    );
-
-    let queries: Vec<YamlValue> = query_keys_map
+) -> Vec<YamlValue> {
+    query_keys_map
         .iter()
         .map(|(query_str, keys)| {
             let aggregations: Vec<YamlValue> = keys
@@ -326,7 +269,83 @@ fn build_inference_yaml(
             );
             YamlValue::Mapping(q_map)
         })
+        .collect()
+}
+
+pub fn params_to_yaml(params: &HashMap<String, JsonValue>) -> YamlValue {
+    if params.is_empty() {
+        return YamlValue::Mapping(serde_yaml::Mapping::new());
+    }
+    let mut map = serde_yaml::Mapping::new();
+    // Sort for determinism
+    let mut sorted: Vec<_> = params.iter().collect();
+    sorted.sort_by_key(|(k, _)| k.as_str());
+    for (k, v) in sorted {
+        let yaml_val = match v {
+            JsonValue::Number(n) => {
+                if let Some(i) = n.as_u64() {
+                    YamlValue::Number(serde_yaml::Number::from(i))
+                } else if let Some(f) = n.as_f64() {
+                    YamlValue::Number(serde_yaml::Number::from(f))
+                } else {
+                    YamlValue::String(n.to_string())
+                }
+            }
+            JsonValue::String(s) => YamlValue::String(s.clone()),
+            JsonValue::Bool(b) => YamlValue::Bool(*b),
+            other => YamlValue::String(other.to_string()),
+        };
+        map.insert(YamlValue::String(k.clone()), yaml_val);
+    }
+    YamlValue::Mapping(map)
+}
+
+fn build_streaming_yaml(
+    dedup_map: &IndexMap<String, IntermediateAggConfig>,
+    id_map: &HashMap<String, u32>,
+    metric_schema: &sketch_db_common::PromQLSchema,
+) -> Result<YamlValue, ControllerError> {
+    let aggregations: Vec<YamlValue> = dedup_map
+        .iter()
+        .map(|(key, cfg)| build_aggregation_entry(id_map[key], cfg))
         .collect();
+
+    // Build metrics section
+    let mut metrics_map = serde_yaml::Mapping::new();
+    for (metric_name, labels) in &metric_schema.config {
+        metrics_map.insert(
+            YamlValue::String(metric_name.clone()),
+            key_by_labels_to_yaml(labels),
+        );
+    }
+
+    let mut root = serde_yaml::Mapping::new();
+    root.insert(
+        YamlValue::String("aggregations".to_string()),
+        YamlValue::Sequence(aggregations),
+    );
+    root.insert(
+        YamlValue::String("metrics".to_string()),
+        YamlValue::Mapping(metrics_map),
+    );
+
+    Ok(YamlValue::Mapping(root))
+}
+
+fn build_inference_yaml(
+    cleanup_policy: CleanupPolicy,
+    cleanup_policy_str: &str,
+    query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
+    id_map: &HashMap<String, u32>,
+    metric_schema: &sketch_db_common::PromQLSchema,
+) -> Result<YamlValue, ControllerError> {
+    let mut cleanup_map = serde_yaml::Mapping::new();
+    cleanup_map.insert(
+        YamlValue::String("name".to_string()),
+        YamlValue::String(cleanup_policy_str.to_string()),
+    );
+
+    let queries = build_queries_yaml(cleanup_policy, query_keys_map, id_map);
 
     // Build metrics section
     let mut metrics_map = serde_yaml::Mapping::new();
