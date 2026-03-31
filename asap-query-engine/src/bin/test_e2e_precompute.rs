@@ -347,7 +347,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for series_idx in 0..10 {
         let label_val = format!("batch_{series_idx}");
         for t in 0..100 {
-            let ts = 200_000 + (series_idx as i64) * 1000 + t; // unique ts per sample
+            let ts = 200_000 + series_idx * 1000 + t; // unique ts per sample
             let val = (series_idx * 100 + t) as f64;
             batch_timeseries.push(make_sample("fake_metric", &label_val, ts, val));
         }
