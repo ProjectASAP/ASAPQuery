@@ -1,6 +1,73 @@
 use asap_planner::{Controller, ControllerError, RuntimeOptions, StreamingEngine};
 use std::path::Path;
 
+// ─── query_log integration tests ─────────────────────────────────────────────
+
+#[test]
+fn query_log_instant_produces_valid_configs() {
+    let c = Controller::from_query_log(
+        Path::new("tests/comparison/test_data/query_logs/instant_only.log"),
+        Path::new("tests/comparison/test_data/metrics/http_requests.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert!(out.streaming_aggregation_count() > 0);
+    assert!(out.inference_query_count() > 0);
+}
+
+#[test]
+fn query_log_range_produces_valid_configs() {
+    let c = Controller::from_query_log(
+        Path::new("tests/comparison/test_data/query_logs/range_only.log"),
+        Path::new("tests/comparison/test_data/metrics/http_requests.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    // range_only.log has step=30, so effective window size must be ≤ 30
+    assert!(out.all_tumbling_window_sizes_leq(30));
+}
+
+#[test]
+fn query_log_single_occurrence_excluded() {
+    let c = Controller::from_query_log(
+        Path::new("tests/comparison/test_data/query_logs/single_occurrence.log"),
+        Path::new("tests/comparison/test_data/metrics/http_requests.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.inference_query_count(), 0);
+}
+
+#[test]
+fn query_log_malformed_lines_skipped() {
+    // with_malformed.log has 5 valid entries for rate() interspersed with bad lines
+    let c = Controller::from_query_log(
+        Path::new("tests/comparison/test_data/query_logs/with_malformed.log"),
+        Path::new("tests/comparison/test_data/metrics/http_requests.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert!(out.inference_query_count() > 0);
+}
+
+#[test]
+fn query_log_output_files_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let c = Controller::from_query_log(
+        Path::new("tests/comparison/test_data/query_logs/instant_only.log"),
+        Path::new("tests/comparison/test_data/metrics/http_requests.yaml"),
+        arroyo_opts(),
+    )
+    .unwrap();
+    c.generate_to_dir(dir.path()).unwrap();
+    assert!(dir.path().join("streaming_config.yaml").exists());
+    assert!(dir.path().join("inference_config.yaml").exists());
+}
+
 fn arroyo_opts() -> RuntimeOptions {
     RuntimeOptions {
         prometheus_scrape_interval: 15,
@@ -276,7 +343,8 @@ metrics:
 }
 
 #[test]
-fn query_referencing_unknown_metric_returns_error() {
+fn query_referencing_unknown_metric_is_skipped_with_warning() {
+    // Unknown metric no longer aborts the run; the query is silently skipped.
     let yaml = r#"
 query_groups:
   - id: 1
@@ -291,10 +359,9 @@ metrics:
     labels: ["instance"]
 "#;
     let c = Controller::from_yaml(yaml, arroyo_opts()).unwrap();
-    assert!(matches!(
-        c.generate(),
-        Err(ControllerError::UnknownMetric(_))
-    ));
+    let out = c.generate().unwrap();
+    assert_eq!(out.inference_query_count(), 0);
+    assert_eq!(out.streaming_aggregation_count(), 0);
 }
 
 #[test]
