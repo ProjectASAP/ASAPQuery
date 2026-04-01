@@ -61,13 +61,11 @@ fn set_tumbling_window_parameters(
             config.window_size = effective_repeat;
             config.slide_interval = effective_repeat;
             config.window_type = "tumbling".to_string();
-            config.tumbling_window_size = effective_repeat;
         }
         QueryPatternType::OnlySpatial => {
             config.window_size = prometheus_scrape_interval;
             config.slide_interval = prometheus_scrape_interval;
             config.window_type = "tumbling".to_string();
-            config.tumbling_window_size = prometheus_scrape_interval;
         }
     }
 }
@@ -78,13 +76,17 @@ pub struct IntermediateWindowConfig {
     pub window_size: u64,
     pub slide_interval: u64,
     pub window_type: String,
-    pub tumbling_window_size: u64,
 }
 
-pub fn get_precompute_operator_parameters(
+/// Shared sketch parameter builder used by both PromQL and SQL paths.
+///
+/// `topk_k` is only required for `CountMinSketchWithHeap`: PromQL supplies it
+/// from the `topk(k, …)` query argument; SQL passes `None` (SQL never produces
+/// this operator today, so the `None` branch is unreachable in practice).
+pub fn build_sketch_parameters(
     aggregation_type: &str,
     aggregation_sub_type: &str,
-    match_result: &PromQLMatchResult,
+    topk_k: Option<u64>,
     sketch_params: Option<&SketchParameterOverrides>,
 ) -> Result<HashMap<String, serde_json::Value>, String> {
     match aggregation_type {
@@ -113,16 +115,8 @@ pub fn get_precompute_operator_parameters(
                     aggregation_sub_type
                 ));
             }
-            // Get k from aggregation param
-            let k: u64 = match_result
-                .tokens
-                .get("aggregation")
-                .and_then(|t| t.aggregation.as_ref())
-                .and_then(|a| a.param.as_ref())
-                .and_then(|p| p.parse::<f64>().ok())
-                .map(|f| f as u64)
-                .ok_or_else(|| "topk query missing required 'k' parameter".to_string())?;
-
+            let k = topk_k
+                .ok_or_else(|| "CountMinSketchWithHeap requires a topk k value".to_string())?;
             let depth = sketch_params
                 .and_then(|p| p.count_min_sketch_with_heap.as_ref())
                 .map(|p| p.depth)
@@ -135,7 +129,6 @@ pub fn get_precompute_operator_parameters(
                 .and_then(|p| p.count_min_sketch_with_heap.as_ref())
                 .and_then(|p| p.heap_multiplier)
                 .unwrap_or(DEFAULT_CMS_HEAP_MULT);
-
             let mut m = HashMap::new();
             m.insert("depth".to_string(), serde_json::Value::Number(depth.into()));
             m.insert("width".to_string(), serde_json::Value::Number(width.into()));
@@ -184,6 +177,35 @@ pub fn get_precompute_operator_parameters(
 
         other => Err(format!("Aggregation type {} not supported", other)),
     }
+}
+
+/// PromQL wrapper: extracts the topk `k` from the match result when needed,
+/// then delegates to `build_sketch_parameters`.
+pub fn build_sketch_parameters_from_promql(
+    aggregation_type: &str,
+    aggregation_sub_type: &str,
+    match_result: &PromQLMatchResult,
+    sketch_params: Option<&SketchParameterOverrides>,
+) -> Result<HashMap<String, serde_json::Value>, String> {
+    let topk_k = if aggregation_type == "CountMinSketchWithHeap" {
+        let k: u64 = match_result
+            .tokens
+            .get("aggregation")
+            .and_then(|t| t.aggregation.as_ref())
+            .and_then(|a| a.param.as_ref())
+            .and_then(|p| p.parse::<f64>().ok())
+            .map(|f| f as u64)
+            .ok_or_else(|| "topk query missing required 'k' parameter".to_string())?;
+        Some(k)
+    } else {
+        None
+    };
+    build_sketch_parameters(
+        aggregation_type,
+        aggregation_sub_type,
+        topk_k,
+        sketch_params,
+    )
 }
 
 pub fn get_cleanup_param(
@@ -266,6 +288,22 @@ pub fn set_subpopulation_labels(
     } else {
         *grouping_labels = subpopulation_labels.clone();
         *aggregated_labels = KeyByLabelNames::empty();
+    }
+}
+
+/// SQL cleanup param — SQL queries are always instant (no range_duration/step).
+pub fn get_sql_cleanup_param(
+    cleanup_policy: CleanupPolicy,
+    t_lookback: u64,
+    t_repeat: u64,
+) -> Result<u64, String> {
+    match cleanup_policy {
+        CleanupPolicy::CircularBuffer | CleanupPolicy::ReadBased => {
+            Ok(t_lookback.div_ceil(t_repeat))
+        }
+        CleanupPolicy::NoCleanup => {
+            Err("NoCleanup policy should not call get_sql_cleanup_param".to_string())
+        }
     }
 }
 

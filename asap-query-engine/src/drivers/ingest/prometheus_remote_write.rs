@@ -1,5 +1,6 @@
+use prost::Message;
+
 // use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
-// use prost::Message;
 // use std::sync::Arc;
 // use tokio::net::TcpListener;
 // use tracing::{debug, error, info, warn};
@@ -7,137 +8,137 @@
 // // use crate::stores::promsketch_store::metrics as ps_metrics;
 // // use crate::stores::promsketch_store::PromSketchStore;
 
-// // ---------------------------------------------------------------------------
-// // Protobuf message types (Prometheus remote write wire format)
-// // ---------------------------------------------------------------------------
-// // These mirror the upstream proto definitions in prometheus/prompb but are
-// // defined inline via prost derive macros so we don't need a .proto file or
-// // build script.
+// ---------------------------------------------------------------------------
+// Protobuf message types (Prometheus remote write wire format)
+// ---------------------------------------------------------------------------
+// These mirror the upstream proto definitions in prometheus/prompb but are
+// defined inline via prost derive macros so we don't need a .proto file or
+// build script.
 
-// #[derive(Clone, PartialEq, Message)]
-// pub struct WriteRequest {
-//     #[prost(message, repeated, tag = "1")]
-//     pub timeseries: Vec<TimeSeries>,
-// }
+#[derive(Clone, PartialEq, Message)]
+pub struct WriteRequest {
+    #[prost(message, repeated, tag = "1")]
+    pub timeseries: Vec<TimeSeries>,
+}
 
-// #[derive(Clone, PartialEq, Message)]
-// pub struct TimeSeries {
-//     #[prost(message, repeated, tag = "1")]
-//     pub labels: Vec<Label>,
-//     #[prost(message, repeated, tag = "2")]
-//     pub samples: Vec<Sample>,
-// }
+#[derive(Clone, PartialEq, Message)]
+pub struct TimeSeries {
+    #[prost(message, repeated, tag = "1")]
+    pub labels: Vec<Label>,
+    #[prost(message, repeated, tag = "2")]
+    pub samples: Vec<Sample>,
+}
 
-// #[derive(Clone, PartialEq, Message)]
-// pub struct Label {
-//     #[prost(string, tag = "1")]
-//     pub name: String,
-//     #[prost(string, tag = "2")]
-//     pub value: String,
-// }
+#[derive(Clone, PartialEq, Message)]
+pub struct Label {
+    #[prost(string, tag = "1")]
+    pub name: String,
+    #[prost(string, tag = "2")]
+    pub value: String,
+}
 
-// #[derive(Clone, PartialEq, Message)]
-// pub struct Sample {
-//     #[prost(double, tag = "1")]
-//     pub value: f64,
-//     #[prost(int64, tag = "2")]
-//     pub timestamp: i64,
-// }
+#[derive(Clone, PartialEq, Message)]
+pub struct Sample {
+    #[prost(double, tag = "1")]
+    pub value: f64,
+    #[prost(int64, tag = "2")]
+    pub timestamp: i64,
+}
 
-// // ---------------------------------------------------------------------------
-// // Label helpers
-// // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Label helpers
+// ---------------------------------------------------------------------------
 
-// /// Convert a slice of Prometheus [`Label`] pairs into the canonical
-// /// `metric_name{key1="val1",key2="val2"}` string format.
-// ///
-// /// The `__name__` label becomes the metric name prefix; the remaining labels
-// /// are sorted alphabetically by name.
-// pub fn labels_to_string(labels: &[Label]) -> String {
-//     let mut name: Option<&str> = None;
-//     let mut rest: Vec<(&str, &str)> = Vec::new();
+/// Convert a slice of Prometheus [`Label`] pairs into the canonical
+/// `metric_name{key1="val1",key2="val2"}` string format.
+///
+/// The `__name__` label becomes the metric name prefix; the remaining labels
+/// are sorted alphabetically by name.
+pub fn labels_to_string(labels: &[Label]) -> String {
+    let mut name: Option<&str> = None;
+    let mut rest: Vec<(&str, &str)> = Vec::new();
 
-//     for l in labels {
-//         if l.name == "__name__" {
-//             name = Some(&l.value);
-//         } else {
-//             rest.push((&l.name, &l.value));
-//         }
-//     }
+    for l in labels {
+        if l.name == "__name__" {
+            name = Some(&l.value);
+        } else {
+            rest.push((&l.name, &l.value));
+        }
+    }
 
-//     rest.sort_by(|a, b| a.0.cmp(b.0));
+    rest.sort_by(|a, b| a.0.cmp(b.0));
 
-//     let metric = name.unwrap_or("");
+    let metric = name.unwrap_or("");
 
-//     if rest.is_empty() {
-//         return metric.to_string();
-//     }
+    if rest.is_empty() {
+        return metric.to_string();
+    }
 
-//     let mut out = String::with_capacity(metric.len() + 2 + rest.len() * 16);
-//     out.push_str(metric);
-//     out.push('{');
-//     for (i, (k, v)) in rest.iter().enumerate() {
-//         if i > 0 {
-//             out.push(',');
-//         }
-//         out.push_str(k);
-//         out.push_str("=\"");
-//         out.push_str(v);
-//         out.push('"');
-//     }
-//     out.push('}');
-//     out
-// }
+    let mut out = String::with_capacity(metric.len() + 2 + rest.len() * 16);
+    out.push_str(metric);
+    out.push('{');
+    for (i, (k, v)) in rest.iter().enumerate() {
+        if i > 0 {
+            out.push(',');
+        }
+        out.push_str(k);
+        out.push_str("=\"");
+        out.push_str(v);
+        out.push('"');
+    }
+    out.push('}');
+    out
+}
 
-// // ---------------------------------------------------------------------------
-// // Decoded sample — the output of this driver
-// // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Decoded sample — the output of this driver
+// ---------------------------------------------------------------------------
 
-// /// A single decoded sample ready for downstream consumption.
-// #[derive(Debug, Clone)]
-// pub struct DecodedSample {
-//     pub labels: String,
-//     pub timestamp_ms: i64,
-//     pub value: f64,
-// }
+/// A single decoded sample ready for downstream consumption.
+#[derive(Debug, Clone)]
+pub struct DecodedSample {
+    pub labels: String,
+    pub timestamp_ms: i64,
+    pub value: f64,
+}
 
-// // ---------------------------------------------------------------------------
-// // Decode helpers
-// // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Decode helpers
+// ---------------------------------------------------------------------------
 
-// /// Snappy-decompress and protobuf-decode a raw Prometheus remote write body
-// /// into a flat list of [`DecodedSample`]s.
-// pub fn decode_prometheus_remote_write(
-//     body: &[u8],
-// ) -> Result<Vec<DecodedSample>, PrometheusRemoteWriteError> {
-//     let decompressed = snap::raw::Decoder::new()
-//         .decompress_vec(body)
-//         .map_err(|e| PrometheusRemoteWriteError::SnappyDecompress(e.to_string()))?;
+/// Snappy-decompress and protobuf-decode a raw Prometheus remote write body
+/// into a flat list of [`DecodedSample`]s.
+pub fn decode_prometheus_remote_write(
+    body: &[u8],
+) -> Result<Vec<DecodedSample>, PrometheusRemoteWriteError> {
+    let decompressed = snap::raw::Decoder::new()
+        .decompress_vec(body)
+        .map_err(|e| PrometheusRemoteWriteError::SnappyDecompress(e.to_string()))?;
 
-//     let write_req = WriteRequest::decode(decompressed.as_slice())
-//         .map_err(|e| PrometheusRemoteWriteError::ProtobufDecode(e.to_string()))?;
+    let write_req = WriteRequest::decode(decompressed.as_slice())
+        .map_err(|e| PrometheusRemoteWriteError::ProtobufDecode(e.to_string()))?;
 
-//     let mut samples = Vec::new();
-//     for ts in &write_req.timeseries {
-//         let labels_str = labels_to_string(&ts.labels);
-//         for s in &ts.samples {
-//             samples.push(DecodedSample {
-//                 labels: labels_str.clone(),
-//                 timestamp_ms: s.timestamp,
-//                 value: s.value,
-//             });
-//         }
-//     }
-//     Ok(samples)
-// }
+    let mut samples = Vec::new();
+    for ts in &write_req.timeseries {
+        let labels_str = labels_to_string(&ts.labels);
+        for s in &ts.samples {
+            samples.push(DecodedSample {
+                labels: labels_str.clone(),
+                timestamp_ms: s.timestamp,
+                value: s.value,
+            });
+        }
+    }
+    Ok(samples)
+}
 
-// #[derive(Debug, thiserror::Error)]
-// pub enum PrometheusRemoteWriteError {
-//     #[error("snappy decompression failed: {0}")]
-//     SnappyDecompress(String),
-//     #[error("protobuf decode failed: {0}")]
-//     ProtobufDecode(String),
-// }
+#[derive(Debug, thiserror::Error)]
+pub enum PrometheusRemoteWriteError {
+    #[error("snappy decompression failed: {0}")]
+    SnappyDecompress(String),
+    #[error("protobuf decode failed: {0}")]
+    ProtobufDecode(String),
+}
 
 // // ---------------------------------------------------------------------------
 // // Config

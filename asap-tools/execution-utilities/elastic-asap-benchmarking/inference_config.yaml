@@ -1,0 +1,20 @@
+# ASAP Inference Config for ClickBench Hits Dataset
+tables:
+  - name: h2o_benchmark
+    time_column: timestamp
+    metadata_columns: [id1, id2, id3, id4, id5, id6]
+    value_columns: [v1, v2, v3]
+
+cleanup_policy:
+  name: read_based
+
+# Only quantile queries enabled (T5, T6)
+queries:
+  # Temporal queries (600s window, all labels) - QUANTILE
+  - aggregations:
+      - aggregation_id: 12
+        read_count_threshold: 999999
+    query: |
+      SELECT PERCENTILE(v3, 95) FROM h2o_benchmark
+      WHERE timestamp BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+      GROUP BY id1, id2

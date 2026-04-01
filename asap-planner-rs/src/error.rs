@@ -14,4 +14,8 @@ pub enum ControllerError {
     PlannerError(String),
     #[error("Unknown metric: {0}")]
     UnknownMetric(String),
+    #[error("SQL parse error: {0}")]
+    SqlParse(String),
+    #[error("Unknown table: {0}")]
+    UnknownTable(String),
 }

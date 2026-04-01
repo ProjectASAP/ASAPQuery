@@ -607,12 +607,9 @@ def get_sql_query(
     filter_metric_name: str = None,
 ) -> Tuple[str, str, dict]:
 
-    # NEW: Support both tumbling and sliding windows (Issue #236)
     window_type = streaming_aggregation_config.windowType
-    window_interval = "{} seconds".format(
-        streaming_aggregation_config.tumblingWindowSize
-    )
     window_size = "{} seconds".format(streaming_aggregation_config.windowSize)
+    window_interval = window_size
     slide_interval = "{} seconds".format(streaming_aggregation_config.slideInterval)
 
     logger.info(
@@ -954,10 +951,6 @@ def main(args):
         elif agg_function == "countminsketchwithheap_topk":
             parameters["impl_mode"] = getattr(
                 args, "sketch_cmwh_impl", "legacy"
-            ).capitalize()
-        elif agg_function in ("datasketcheskll_", "hydrakll_"):
-            parameters["impl_mode"] = getattr(
-                args, "sketch_kll_impl", "legacy"
             ).capitalize()
 
         sql_queries.append(sql_query)

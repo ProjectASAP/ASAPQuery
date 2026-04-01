@@ -25,7 +25,6 @@ fn main() {
     let pattern_1 = PromQLPatternBuilder::function(vec!["rate", "increase"], func_args1, Some("function"), None);
     let pattern1 = PromQLPattern::new(
         pattern_1,
-        vec!["metric".to_string(), "function".to_string(), "range_vector".to_string()],
     );
     if let Some(ast) = pattern1.ast_pattern {
         only_temporal_patterns.push(serde_json::Value::Object(ast.into_iter().collect()));
@@ -44,7 +43,6 @@ fn main() {
     let pattern_2 = PromQLPatternBuilder::function(vec!["quantile_over_time"], func_args2, Some("function"), Some("function_args"));
     let pattern2 = PromQLPattern::new(
         pattern_2,
-        vec!["metric".to_string(), "function".to_string(), "range_vector".to_string(), "function_args".to_string()],
     );
     if let Some(ast) = pattern2.ast_pattern {
         only_temporal_patterns.push(serde_json::Value::Object(ast.into_iter().collect()));
@@ -66,7 +64,6 @@ fn main() {
     );
     let pattern3 = PromQLPattern::new(
         pattern_3,
-        vec!["metric".to_string(), "aggregation".to_string()],
     );
     if let Some(ast) = pattern3.ast_pattern {
         only_spatial_patterns.push(serde_json::Value::Object(ast.into_iter().collect()));
@@ -76,7 +73,6 @@ fn main() {
     let pattern_4 = PromQLPatternBuilder::metric(None, None, None, Some("metric"));
     let pattern4 = PromQLPattern::new(
         pattern_4,
-        vec!["metric".to_string()],
     );
     if let Some(ast) = pattern4.ast_pattern {
         only_spatial_patterns.push(serde_json::Value::Object(ast.into_iter().collect()));
@@ -108,7 +104,6 @@ fn main() {
     );
     let pattern5 = PromQLPattern::new(
         pattern_5,
-        vec!["metric".to_string(), "range_vector".to_string(), "function".to_string(), "function_args".to_string(), "aggregation".to_string()],
     );
     if let Some(ast) = pattern5.ast_pattern {
         one_temporal_one_spatial_patterns.push(serde_json::Value::Object(ast.into_iter().collect()));
@@ -137,7 +132,6 @@ fn main() {
     );
     let pattern6 = PromQLPattern::new(
         pattern_6,
-        vec!["metric".to_string(), "range_vector".to_string(), "function".to_string(), "aggregation".to_string()],
     );
     if let Some(ast) = pattern6.ast_pattern {
         one_temporal_one_spatial_patterns.push(serde_json::Value::Object(ast.into_iter().collect()));

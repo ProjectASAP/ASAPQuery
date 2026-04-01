@@ -1,8 +1,9 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 /// A bucket with its timestamp range: ((start_timestamp, end_timestamp), aggregate)
-pub type TimestampedBucket = ((u64, u64), Box<dyn AggregateCore>);
+pub type TimestampedBucket = ((u64, u64), Arc<dyn AggregateCore>);
 
 /// Map from key to timestamped buckets (sparse - only contains buckets that exist)
 pub type TimestampedBucketsMap = HashMap<Option<KeyByLabelValues>, Vec<TimestampedBucket>>;

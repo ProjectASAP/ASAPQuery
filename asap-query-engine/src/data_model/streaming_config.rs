@@ -72,7 +72,7 @@ impl StreamingConfig {
                 SchemaConfig::PromQL(_) => QueryLanguage::promql,
                 SchemaConfig::SQL(_) => QueryLanguage::sql,
                 SchemaConfig::ElasticQueryDSL => QueryLanguage::elastic_querydsl,
-                SchemaConfig::ElasticSQL => QueryLanguage::elastic_sql,
+                SchemaConfig::ElasticSQL(_) => QueryLanguage::elastic_sql,
             })
             .unwrap_or(QueryLanguage::promql); // Default to promql if no inference_config
 

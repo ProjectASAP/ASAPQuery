@@ -2,13 +2,16 @@ pub mod config;
 pub mod error;
 pub mod output;
 pub mod planner;
+pub mod query_log;
 
 use serde_yaml::Value as YamlValue;
 use std::path::Path;
 
 pub use config::input::ControllerConfig;
+pub use config::input::SQLControllerConfig;
 pub use error::ControllerError;
 pub use output::generator::{GeneratorOutput, PuntedQuery};
+pub use output::sql_generator::SQLRuntimeOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamingEngine {
@@ -77,7 +80,7 @@ impl PlannerOutput {
             if let Some(YamlValue::Sequence(aggs)) = root.get("aggregations") {
                 return aggs.iter().all(|agg| {
                     if let YamlValue::Mapping(m) = agg {
-                        if let Some(val) = m.get("tumblingWindowSize") {
+                        if let Some(val) = m.get("windowSize") {
                             let size = match val {
                                 YamlValue::Number(n) => n.as_u64().unwrap_or(0),
                                 _ => 0,
@@ -162,6 +165,117 @@ impl PlannerOutput {
     pub fn to_inference_yaml_string(&self) -> Result<String, anyhow::Error> {
         Ok(serde_yaml::to_string(&self.inference_yaml)?)
     }
+
+    /// Returns the table_name field of the first aggregation matching agg_type.
+    pub fn aggregation_table_name(&self, agg_type: &str) -> Option<String> {
+        if let YamlValue::Mapping(root) = &self.streaming_yaml {
+            if let Some(YamlValue::Sequence(aggs)) = root.get("aggregations") {
+                for agg in aggs {
+                    if let YamlValue::Mapping(m) = agg {
+                        if let Some(YamlValue::String(t)) = m.get("aggregationType") {
+                            if t == agg_type {
+                                if let Some(YamlValue::String(name)) = m.get("table_name") {
+                                    return Some(name.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns the value_column field of the first aggregation matching agg_type.
+    pub fn aggregation_value_column(&self, agg_type: &str) -> Option<String> {
+        if let YamlValue::Mapping(root) = &self.streaming_yaml {
+            if let Some(YamlValue::Sequence(aggs)) = root.get("aggregations") {
+                for agg in aggs {
+                    if let YamlValue::Mapping(m) = agg {
+                        if let Some(YamlValue::String(t)) = m.get("aggregationType") {
+                            if t == agg_type {
+                                if let Some(YamlValue::String(col)) = m.get("value_column") {
+                                    return Some(col.clone());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns true if any aggregation has the matching type AND sub_type.
+    pub fn has_aggregation_type_and_sub_type(&self, agg_type: &str, sub_type: &str) -> bool {
+        if let YamlValue::Mapping(root) = &self.streaming_yaml {
+            if let Some(YamlValue::Sequence(aggs)) = root.get("aggregations") {
+                return aggs.iter().any(|agg| {
+                    if let YamlValue::Mapping(m) = agg {
+                        let type_matches = m.get("aggregationType").and_then(|v| {
+                            if let YamlValue::String(s) = v {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        }) == Some(agg_type);
+                        let sub_matches = m.get("aggregationSubType").and_then(|v| {
+                            if let YamlValue::String(s) = v {
+                                Some(s.as_str())
+                            } else {
+                                None
+                            }
+                        }) == Some(sub_type);
+                        type_matches && sub_matches
+                    } else {
+                        false
+                    }
+                });
+            }
+        }
+        false
+    }
+}
+
+pub struct SQLController {
+    config: SQLControllerConfig,
+    options: SQLRuntimeOptions,
+}
+
+impl SQLController {
+    pub fn from_file(path: &Path, opts: SQLRuntimeOptions) -> Result<Self, ControllerError> {
+        let yaml_str = std::fs::read_to_string(path)?;
+        Self::from_yaml(&yaml_str, opts)
+    }
+
+    pub fn from_yaml(yaml: &str, opts: SQLRuntimeOptions) -> Result<Self, ControllerError> {
+        let config: SQLControllerConfig = serde_yaml::from_str(yaml)?;
+        Ok(Self {
+            config,
+            options: opts,
+        })
+    }
+
+    pub fn generate(&self) -> Result<PlannerOutput, ControllerError> {
+        let output = output::sql_generator::generate_sql_plan(&self.config, &self.options)?;
+        Ok(PlannerOutput {
+            punted_queries: output.punted_queries,
+            streaming_yaml: output.streaming_yaml,
+            inference_yaml: output.inference_yaml,
+            aggregation_count: output.aggregation_count,
+            query_count: output.query_count,
+        })
+    }
+
+    pub fn generate_to_dir(&self, dir: &Path) -> Result<PlannerOutput, ControllerError> {
+        let output = self.generate()?;
+        std::fs::create_dir_all(dir)?;
+        let streaming_str = serde_yaml::to_string(&output.streaming_yaml)?;
+        let inference_str = serde_yaml::to_string(&output.inference_yaml)?;
+        std::fs::write(dir.join("streaming_config.yaml"), streaming_str)?;
+        std::fs::write(dir.join("inference_config.yaml"), inference_str)?;
+        Ok(output)
+    }
 }
 
 impl Controller {
@@ -172,6 +286,30 @@ impl Controller {
 
     pub fn from_yaml(yaml: &str, opts: RuntimeOptions) -> Result<Self, ControllerError> {
         let config: ControllerConfig = serde_yaml::from_str(yaml)?;
+        Ok(Self {
+            config,
+            options: opts,
+        })
+    }
+
+    /// Build a `Controller` from a Prometheus query log file and a metrics config YAML.
+    ///
+    /// - `log_path`: newline-delimited JSON query log (Prometheus `--query.log-file` output)
+    /// - `metrics_path`: YAML file with a `metrics:` section listing metric names and labels
+    pub fn from_query_log(
+        log_path: &Path,
+        metrics_path: &Path,
+        opts: RuntimeOptions,
+    ) -> Result<Self, ControllerError> {
+        let entries = query_log::parse_log_file(log_path)?;
+        let (instants, ranges) =
+            query_log::infer_queries(&entries, opts.prometheus_scrape_interval);
+
+        let metrics_yaml = std::fs::read_to_string(metrics_path)?;
+        let metrics_config: query_log::MetricsConfig = serde_yaml::from_str(&metrics_yaml)?;
+
+        let config = query_log::to_controller_config(instants, ranges, metrics_config.metrics);
+
         Ok(Self {
             config,
             options: opts,
