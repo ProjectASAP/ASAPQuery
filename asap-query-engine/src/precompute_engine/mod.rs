@@ -167,16 +167,20 @@ async fn handle_ingest(State(state): State<Arc<IngestState>>, body: Bytes) -> St
                 .push((s.timestamp_ms, s.value));
         }
 
-        // Route each series batch to the correct worker
-        for (series_key, batch) in by_series {
-            if let Err(e) = state
-                .router
-                .route(series_key, batch, ingest_received_at)
-                .await
-            {
-                warn!("Routing error for {}: {}", series_key, e);
-                return StatusCode::INTERNAL_SERVER_ERROR;
-            }
+        // Convert to owned keys for batch routing
+        let by_series_owned: HashMap<String, Vec<(i64, f64)>> = by_series
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+
+        // Route all series to workers concurrently
+        if let Err(e) = state
+            .router
+            .route_batch(by_series_owned, ingest_received_at)
+            .await
+        {
+            warn!("Batch routing error: {}", e);
+            return StatusCode::INTERNAL_SERVER_ERROR;
         }
 
         StatusCode::NO_CONTENT

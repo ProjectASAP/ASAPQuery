@@ -1,3 +1,5 @@
+use futures::future::try_join_all;
+use std::collections::HashMap;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
@@ -49,6 +51,50 @@ impl SeriesRouter {
             })
             .await
             .map_err(|e| format!("Failed to send to worker {}: {}", worker_idx, e))?;
+        Ok(())
+    }
+
+    /// Route a pre-grouped batch of series to workers concurrently.
+    ///
+    /// Groups messages by target worker, then sends to each worker in parallel
+    /// (messages within a single worker are sent sequentially to preserve ordering).
+    pub async fn route_batch(
+        &self,
+        by_series: HashMap<String, Vec<(i64, f64)>>,
+        ingest_received_at: Instant,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Group messages by target worker index
+        let mut per_worker: HashMap<usize, Vec<WorkerMessage>> = HashMap::new();
+        for (series_key, samples) in by_series {
+            let worker_idx = self.worker_for(&series_key);
+            per_worker
+                .entry(worker_idx)
+                .or_default()
+                .push(WorkerMessage::Samples {
+                    series_key,
+                    samples,
+                    ingest_received_at,
+                });
+        }
+
+        // Send to each worker concurrently
+        try_join_all(per_worker.into_iter().map(|(worker_idx, messages)| {
+            let sender = &self.senders[worker_idx];
+            async move {
+                for msg in messages {
+                    sender
+                        .send(msg)
+                        .await
+                        .map_err(|e| format!("Failed to send to worker {}: {}", worker_idx, e))?;
+                }
+                Ok::<(), String>(())
+            }
+        }))
+        .await
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+            Box::new(std::io::Error::other(e))
+        })?;
+
         Ok(())
     }
 
