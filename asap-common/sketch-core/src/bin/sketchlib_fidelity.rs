@@ -1,9 +1,12 @@
 // Fidelity benchmarks comparing legacy vs sketchlib implementations across sketch types.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use clap::Parser;
 use sketch_core::config::{self, ImplMode};
 use sketch_core::count_min::CountMinSketch;
+use sketch_core::count_min_with_heap::CountMinSketchWithHeap;
 
 #[derive(Clone)]
 struct Lcg64 {
@@ -143,6 +146,70 @@ fn run_countmin_once(seed: u64, p: &CmsParams) -> CmsResult {
     }
 }
 
+// --- CountMinSketchWithHeap ---
+
+struct CmwhParams {
+    depth: usize,
+    width: usize,
+    n: usize,
+    domain: usize,
+    heap_size: usize,
+}
+
+struct CmwhResult {
+    topk_recall: f64,
+    pearson: f64,
+    mape: f64,
+    rmse: f64,
+}
+
+fn run_countmin_with_heap_once(seed: u64, p: &CmwhParams) -> CmwhResult {
+    let mut rng = Lcg64::new(seed ^ 0xA5A5_A5A5);
+    let mut exact: Vec<f64> = vec![0.0; p.domain];
+    let mut cms = CountMinSketchWithHeap::new(p.depth, p.width, p.heap_size);
+
+    for _ in 0..p.n {
+        let r = rng.next_u64();
+        let key_id = if (r & 0xFF) < 200 {
+            (r as usize) % 20
+        } else {
+            (r as usize) % p.domain
+        };
+        let key = format!("k{key_id}");
+        cms.update(&key, 1.0);
+        exact[key_id] += 1.0;
+    }
+
+    let mut exact_pairs: Vec<(usize, f64)> = exact.iter().copied().enumerate().collect();
+    exact_pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    exact_pairs.truncate(p.heap_size);
+
+    let exact_top: HashMap<String, f64> = exact_pairs
+        .into_iter()
+        .map(|(k, v)| (format!("k{k}"), v))
+        .collect();
+
+    let mut est_vals = Vec::with_capacity(exact_top.len());
+    let mut exact_vals = Vec::with_capacity(exact_top.len());
+    let mut hit = 0usize;
+    for item in cms.topk_heap_items() {
+        if exact_top.contains_key(&item.key) {
+            hit += 1;
+        }
+    }
+    for (k, v) in &exact_top {
+        exact_vals.push(*v);
+        est_vals.push(cms.query_key(k));
+    }
+
+    CmwhResult {
+        topk_recall: (hit as f64) / (p.heap_size as f64),
+        pearson: pearson_corr(&exact_vals, &est_vals),
+        mape: mape(&exact_vals, &est_vals),
+        rmse: rmse_percentage(&exact_vals, &est_vals),
+    }
+}
+
 #[derive(Parser)]
 struct Args {
     #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMS_IMPL)]
@@ -159,10 +226,12 @@ fn main() {
         .expect("sketch backend already initialised");
 
     let seed = 0xC0FFEE_u64;
-    let mode = if matches!(args.cms_impl, ImplMode::Legacy)
-        || matches!(args.kll_impl, ImplMode::Legacy)
-        || matches!(args.cmwh_impl, ImplMode::Legacy)
-    {
+    let cms_mode = if matches!(args.cms_impl, ImplMode::Legacy) {
+        "Legacy"
+    } else {
+        "sketchlib-rust"
+    };
+    let cmwh_mode = if matches!(args.cmwh_impl, ImplMode::Legacy) {
         "Legacy"
     } else {
         "sketchlib-rust"
@@ -196,7 +265,7 @@ fn main() {
         },
     ];
 
-    println!("## CountMinSketch ({mode})");
+    println!("## CountMinSketch ({cms_mode})");
     println!("| depth | width | n_updates | domain | Pearson corr | MAPE (%) | RMSE (%) |");
     println!("|-------|-------|------------|--------|--------------|----------|----------|");
     for p in &cms_param_sets {
@@ -204,6 +273,42 @@ fn main() {
         println!(
             "| {} | {} | {} | {} | {:.10} | {:.6} | {:.6} |",
             p.depth, p.width, p.n, p.domain, r.pearson, r.mape, r.rmse
+        );
+    }
+
+    // CountMinSketchWithHeap
+    let cmwh_param_sets: Vec<CmwhParams> = vec![
+        CmwhParams {
+            depth: 3,
+            width: 1024,
+            n: 100_000,
+            domain: 1000,
+            heap_size: 10,
+        },
+        CmwhParams {
+            depth: 5,
+            width: 2048,
+            n: 200_000,
+            domain: 2000,
+            heap_size: 20,
+        },
+        CmwhParams {
+            depth: 5,
+            width: 2048,
+            n: 200_000,
+            domain: 2000,
+            heap_size: 50,
+        },
+    ];
+
+    println!("\n## CountMinSketchWithHeap ({cmwh_mode})");
+    println!("| depth | width | n | domain | heap_size | Top-k recall | Pearson (top-k) | MAPE (%) | RMSE (%) |");
+    println!("|-------|-------|-----|--------|-----------|--------------|-----------------|----------|----------|");
+    for p in &cmwh_param_sets {
+        let r = run_countmin_with_heap_once(seed, p);
+        println!(
+            "| {} | {} | {} | {} | {} | {:.4} | {:.10} | {:.6} | {:.6} |",
+            p.depth, p.width, p.n, p.domain, p.heap_size, r.topk_recall, r.pearson, r.mape, r.rmse
         );
     }
 }

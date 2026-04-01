@@ -15,7 +15,7 @@ pub const DEFAULT_IMPL_MODE: ImplMode = ImplMode::Legacy;
 /// Per-backend defaults. Used when configure() has not been called.
 pub const DEFAULT_CMS_IMPL: ImplMode = ImplMode::Sketchlib;
 pub const DEFAULT_KLL_IMPL: ImplMode = ImplMode::Legacy;
-pub const DEFAULT_CMWH_IMPL: ImplMode = ImplMode::Legacy;
+pub const DEFAULT_CMWH_IMPL: ImplMode = ImplMode::Sketchlib;
 
 static COUNTMIN_MODE: OnceLock<ImplMode> = OnceLock::new();
 
