@@ -12,4 +12,5 @@ pub mod count_min_with_heap_sketchlib;
 pub mod delta_set_aggregator;
 pub mod hydra_kll;
 pub mod kll;
+pub mod kll_sketchlib;
 pub mod set_aggregator;
