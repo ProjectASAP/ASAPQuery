@@ -260,6 +260,222 @@ pub fn create_engine_dual_input(
     )
 }
 
+/// Creates a SimpleEngine with two independent metrics, each with their own
+/// aggregation config and query_config.
+///
+/// agg_id=1 → metric_a, agg_id=2 → metric_b.
+/// Both are registered as separate query_configs in the inference config.
+#[allow(clippy::too_many_arguments)]
+pub fn create_engine_two_metrics(
+    metric_a: &str,
+    aggregation_type_a: &str,
+    grouping_labels_a: Vec<&str>,
+    data_a: AccumulatorData,
+    query_a: &str,
+    metric_b: &str,
+    aggregation_type_b: &str,
+    grouping_labels_b: Vec<&str>,
+    data_b: AccumulatorData,
+    query_b: &str,
+) -> SimpleEngine {
+    let labels_a: Vec<String> = grouping_labels_a.iter().map(|s| s.to_string()).collect();
+    let labels_b: Vec<String> = grouping_labels_b.iter().map(|s| s.to_string()).collect();
+
+    let mut aggregation_configs = HashMap::new();
+
+    let agg_config_a = AggregationConfig {
+        aggregation_id: 1,
+        aggregation_type: aggregation_type_a.to_string(),
+        aggregation_sub_type: String::new(),
+        parameters: HashMap::new(),
+        grouping_labels: KeyByLabelNames::new(labels_a.clone()),
+        aggregated_labels: KeyByLabelNames::empty(),
+        rollup_labels: KeyByLabelNames::empty(),
+        original_yaml: String::new(),
+        window_size: 1,
+        slide_interval: 1,
+        window_type: "tumbling".to_string(),
+        spatial_filter: String::new(),
+        spatial_filter_normalized: String::new(),
+        metric: metric_a.to_string(),
+        num_aggregates_to_retain: None,
+        read_count_threshold: None,
+        table_name: None,
+        value_column: None,
+    };
+    aggregation_configs.insert(1u64, agg_config_a);
+
+    let agg_config_b = AggregationConfig {
+        aggregation_id: 2,
+        aggregation_type: aggregation_type_b.to_string(),
+        aggregation_sub_type: String::new(),
+        parameters: HashMap::new(),
+        grouping_labels: KeyByLabelNames::new(labels_b.clone()),
+        aggregated_labels: KeyByLabelNames::empty(),
+        rollup_labels: KeyByLabelNames::empty(),
+        original_yaml: String::new(),
+        window_size: 1,
+        slide_interval: 1,
+        window_type: "tumbling".to_string(),
+        spatial_filter: String::new(),
+        spatial_filter_normalized: String::new(),
+        metric: metric_b.to_string(),
+        num_aggregates_to_retain: None,
+        read_count_threshold: None,
+        table_name: None,
+        value_column: None,
+    };
+    aggregation_configs.insert(2u64, agg_config_b);
+
+    let streaming_config = Arc::new(StreamingConfig {
+        aggregation_configs,
+    });
+
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+
+    let timestamp = 1_000_000_u64;
+    for (label_values_opt, acc) in data_a {
+        let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
+        let output = PrecomputedOutput::new(timestamp, timestamp, key, 1);
+        store.insert_precomputed_output(output, acc).unwrap();
+    }
+    for (label_values_opt, acc) in data_b {
+        let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
+        let output = PrecomputedOutput::new(timestamp, timestamp, key, 2);
+        store.insert_precomputed_output(output, acc).unwrap();
+    }
+
+    // Schema includes both metrics
+    let promql_schema = PromQLSchema::new()
+        .add_metric(metric_a.to_string(), KeyByLabelNames::new(labels_a))
+        .add_metric(metric_b.to_string(), KeyByLabelNames::new(labels_b));
+
+    let query_config_a =
+        QueryConfig::new(query_a.to_string()).add_aggregation(AggregationReference::new(1, None));
+    let query_config_b =
+        QueryConfig::new(query_b.to_string()).add_aggregation(AggregationReference::new(2, None));
+
+    let inference_config = InferenceConfig {
+        schema: SchemaConfig::PromQL(promql_schema),
+        query_configs: vec![query_config_a, query_config_b],
+        cleanup_policy: CleanupPolicy::NoCleanup,
+    };
+
+    SimpleEngine::new(
+        store,
+        inference_config,
+        streaming_config,
+        1,
+        QueryLanguage::promql,
+    )
+}
+
+/// Creates a SimpleEngine with three independent metrics, each with their own
+/// aggregation config and query_config.
+///
+/// agg_id=1 → metric_a, agg_id=2 → metric_b, agg_id=3 → metric_c.
+#[allow(clippy::too_many_arguments)]
+pub fn create_engine_three_metrics(
+    metric_a: &str,
+    aggregation_type_a: &str,
+    grouping_labels_a: Vec<&str>,
+    data_a: AccumulatorData,
+    query_a: &str,
+    metric_b: &str,
+    aggregation_type_b: &str,
+    grouping_labels_b: Vec<&str>,
+    data_b: AccumulatorData,
+    query_b: &str,
+    metric_c: &str,
+    aggregation_type_c: &str,
+    grouping_labels_c: Vec<&str>,
+    data_c: AccumulatorData,
+    query_c: &str,
+) -> SimpleEngine {
+    let labels_a: Vec<String> = grouping_labels_a.iter().map(|s| s.to_string()).collect();
+    let labels_b: Vec<String> = grouping_labels_b.iter().map(|s| s.to_string()).collect();
+    let labels_c: Vec<String> = grouping_labels_c.iter().map(|s| s.to_string()).collect();
+
+    let mut aggregation_configs = HashMap::new();
+
+    for (id, agg_type, labels, metric) in [
+        (1u64, aggregation_type_a, &labels_a, metric_a),
+        (2u64, aggregation_type_b, &labels_b, metric_b),
+        (3u64, aggregation_type_c, &labels_c, metric_c),
+    ] {
+        aggregation_configs.insert(
+            id,
+            AggregationConfig {
+                aggregation_id: id,
+                aggregation_type: agg_type.to_string(),
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(labels.clone()),
+                aggregated_labels: KeyByLabelNames::empty(),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size: 1,
+                slide_interval: 1,
+                window_type: "tumbling".to_string(),
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: metric.to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+    }
+
+    let streaming_config = Arc::new(StreamingConfig {
+        aggregation_configs,
+    });
+
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+
+    let timestamp = 1_000_000_u64;
+    for (agg_id, data) in [(1u64, data_a), (2u64, data_b), (3u64, data_c)] {
+        for (label_values_opt, acc) in data {
+            let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
+            let output = PrecomputedOutput::new(timestamp, timestamp, key, agg_id);
+            store.insert_precomputed_output(output, acc).unwrap();
+        }
+    }
+
+    let promql_schema = PromQLSchema::new()
+        .add_metric(metric_a.to_string(), KeyByLabelNames::new(labels_a))
+        .add_metric(metric_b.to_string(), KeyByLabelNames::new(labels_b))
+        .add_metric(metric_c.to_string(), KeyByLabelNames::new(labels_c));
+
+    let inference_config = InferenceConfig {
+        schema: SchemaConfig::PromQL(promql_schema),
+        query_configs: vec![
+            QueryConfig::new(query_a.to_string())
+                .add_aggregation(AggregationReference::new(1, None)),
+            QueryConfig::new(query_b.to_string())
+                .add_aggregation(AggregationReference::new(2, None)),
+            QueryConfig::new(query_c.to_string())
+                .add_aggregation(AggregationReference::new(3, None)),
+        ],
+        cleanup_policy: CleanupPolicy::NoCleanup,
+    };
+
+    SimpleEngine::new(
+        store,
+        inference_config,
+        streaming_config,
+        1,
+        QueryLanguage::promql,
+    )
+}
+
 /// Creates a single-pop engine with data at multiple timestamps for testing merge.
 #[allow(clippy::type_complexity)]
 pub fn create_engine_multi_timestamp(
