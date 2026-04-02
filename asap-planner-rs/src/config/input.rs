@@ -1,9 +1,9 @@
 use serde::Deserialize;
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControllerConfig {
     pub query_groups: Vec<QueryGroup>,
-    pub metrics: Vec<MetricDefinition>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
     pub aggregate_cleanup: Option<AggregateCleanupConfig>,
 }
