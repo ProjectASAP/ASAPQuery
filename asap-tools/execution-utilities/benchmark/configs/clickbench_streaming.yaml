@@ -1,0 +1,26 @@
+# ASAP Streaming Config for ClickBench Hits Dataset
+# Defines sketch aggregations for Arroyo to compute
+# Source: asap_query_latency/streaming_config.yaml
+
+tables:
+  - name: hits
+    time_column: EventTime
+    metadata_columns: [RegionID, OS, UserAgent, TraficSourceID]
+    value_columns: [ResolutionWidth]
+
+aggregations:
+  # Temporal queries (10s window, all labels) - QUANTILE (DatasketchesKLL)
+  - aggregationId: 12
+    aggregationType: DatasketchesKLL
+    aggregationSubType: ''
+    labels:
+      grouping: [RegionID, OS, UserAgent, TraficSourceID]
+      rollup: []
+      aggregated: []
+    table_name: hits
+    value_column: ResolutionWidth
+    parameters:
+      K: 200
+    windowSize: 10
+    windowType: tumbling
+    spatialFilter: ''
