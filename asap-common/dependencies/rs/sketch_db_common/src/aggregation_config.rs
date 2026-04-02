@@ -34,6 +34,17 @@ pub struct AggregationConfig {
     pub value_column: Option<String>, // SQL mode: which value column to aggregate
 }
 
+/// Aggregation IDs and types for both the key and value dimensions of a query.
+/// For single-population queries, key and value share the same ID and type.
+/// For multi-population queries (e.g. Topk), they differ.
+#[derive(Debug, Clone)]
+pub struct AggregationIdInfo {
+    pub aggregation_id_for_key: u64,
+    pub aggregation_id_for_value: u64,
+    pub aggregation_type_for_key: String,
+    pub aggregation_type_for_value: String,
+}
+
 // TODO: need to implement deserialization methods
 
 impl AggregationConfig {
