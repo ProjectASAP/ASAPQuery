@@ -1287,6 +1287,196 @@ impl SimpleEngine {
         Some((output_labels, QueryResult::vector(results, query_time)))
     }
 
+    /// Applies a PromQL binary arithmetic operator to two f64 values.
+    fn apply_range_binary_op(
+        op: &promql_parser::parser::token::TokenType,
+        lhs: f64,
+        rhs: f64,
+    ) -> f64 {
+        use promql_parser::parser::token::{T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
+        let id = op.id();
+        if id == T_ADD {
+            lhs + rhs
+        } else if id == T_SUB {
+            lhs - rhs
+        } else if id == T_MUL {
+            lhs * rhs
+        } else if id == T_DIV {
+            lhs / rhs
+        } else if id == T_MOD {
+            lhs % rhs
+        } else if id == T_POW {
+            lhs.powf(rhs)
+        } else {
+            f64::NAN
+        }
+    }
+
+    /// Recursively builds a range execution context for one arm of a binary arithmetic expression.
+    fn build_arm_range_context(
+        &self,
+        arm_ast: &promql_parser::parser::Expr,
+        start: f64,
+        end: f64,
+        step: f64,
+    ) -> Option<(RangeQueryExecutionContext, Vec<String>)> {
+        use promql_parser::parser::Expr;
+
+        match arm_ast {
+            Expr::NumberLiteral(_) => None, // caller handles scalars
+            Expr::Paren(paren) => self.build_arm_range_context(&paren.expr, start, end, step),
+            other => {
+                let config = self.find_query_config_promql_structural(other)?;
+                let base_context =
+                    self.build_query_execution_context_from_ast(other, config, end)?;
+                let label_names = base_context.metadata.query_output_labels.labels.clone();
+
+                let start_ms = Self::convert_query_time_to_data_time(start);
+                let end_ms = Self::convert_query_time_to_data_time(end);
+                let step_ms = (step * 1000.0) as u64;
+
+                let tumbling_window_ms = self
+                    .streaming_config
+                    .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
+                    .map(|c| c.window_size * 1000)?;
+
+                self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
+                    .map_err(|e| {
+                        warn!("Range arm query validation failed: {}", e);
+                        e
+                    })
+                    .ok()?;
+
+                let lookback_ms = base_context.store_plan.values_query.end_timestamp
+                    - base_context.store_plan.values_query.start_timestamp;
+
+                let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
+                let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
+
+                let mut extended_store_plan = base_context.store_plan.clone();
+                extended_store_plan.values_query.start_timestamp =
+                    start_ms.saturating_sub(lookback_ms);
+                extended_store_plan.values_query.end_timestamp = end_ms;
+                extended_store_plan.values_query.is_exact_query = false;
+
+                let range_context = RangeQueryExecutionContext {
+                    base: QueryExecutionContext {
+                        store_plan: extended_store_plan,
+                        ..base_context
+                    },
+                    range_params: RangeQueryParams {
+                        start: start_ms,
+                        end: end_ms,
+                        step: step_ms,
+                    },
+                    buckets_per_step,
+                    lookback_bucket_count,
+                    tumbling_window_ms,
+                };
+
+                Some((range_context, label_names))
+            }
+        }
+    }
+
+    /// Handles a binary arithmetic PromQL expression for range queries.
+    ///
+    /// Evaluates each arm independently over the full range, then joins the
+    /// resulting series by label key and applies the arithmetic operator
+    /// sample-by-sample at matching timestamps.
+    fn handle_binary_expr_range_promql(
+        &self,
+        ast: &promql_parser::parser::Expr,
+        start: f64,
+        end: f64,
+        step: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        use promql_parser::parser::Expr;
+
+        let binary = match ast {
+            Expr::Binary(b) => b,
+            _ => return None,
+        };
+
+        let lhs = binary.lhs.as_ref();
+        let rhs = binary.rhs.as_ref();
+        let op = &binary.op;
+
+        // Scalar on right: evaluate vector arm, apply scalar per sample
+        if let Expr::NumberLiteral(nl) = rhs {
+            let (lhs_ctx, lhs_labels) = self.build_arm_range_context(lhs, start, end, step)?;
+            let lhs_results = self.execute_range_query_pipeline(&lhs_ctx).ok()?;
+            let scalar = nl.val;
+            let combined: Vec<RangeVectorElement> = lhs_results
+                .into_iter()
+                .map(|mut elem| {
+                    for s in &mut elem.samples {
+                        s.value = Self::apply_range_binary_op(op, s.value, scalar);
+                    }
+                    elem
+                })
+                .collect();
+            let output_labels = KeyByLabelNames::new(lhs_labels);
+            return Some((output_labels, QueryResult::matrix(combined)));
+        }
+
+        // Scalar on left: evaluate vector arm, apply scalar per sample
+        if let Expr::NumberLiteral(nl) = lhs {
+            let (rhs_ctx, rhs_labels) = self.build_arm_range_context(rhs, start, end, step)?;
+            let rhs_results = self.execute_range_query_pipeline(&rhs_ctx).ok()?;
+            let scalar = nl.val;
+            let combined: Vec<RangeVectorElement> = rhs_results
+                .into_iter()
+                .map(|mut elem| {
+                    for s in &mut elem.samples {
+                        s.value = Self::apply_range_binary_op(op, scalar, s.value);
+                    }
+                    elem
+                })
+                .collect();
+            let output_labels = KeyByLabelNames::new(rhs_labels);
+            return Some((output_labels, QueryResult::matrix(combined)));
+        }
+
+        // Vector-vector: evaluate both arms, join by label key, apply op per matching timestamp
+        let (lhs_ctx, lhs_labels) = self.build_arm_range_context(lhs, start, end, step)?;
+        let (rhs_ctx, _) = self.build_arm_range_context(rhs, start, end, step)?;
+        let lhs_results = self.execute_range_query_pipeline(&lhs_ctx).ok()?;
+        let rhs_results = self.execute_range_query_pipeline(&rhs_ctx).ok()?;
+
+        // Build lookup: label_key -> {timestamp -> value} for rhs
+        let mut rhs_map: HashMap<KeyByLabelValues, HashMap<u64, f64>> = HashMap::new();
+        for elem in rhs_results {
+            let ts_map: HashMap<u64, f64> = elem
+                .samples
+                .iter()
+                .map(|s| (s.timestamp, s.value))
+                .collect();
+            rhs_map.insert(elem.labels, ts_map);
+        }
+
+        let mut combined: Vec<RangeVectorElement> = Vec::new();
+        for lhs_elem in lhs_results {
+            if let Some(rhs_ts_map) = rhs_map.get(&lhs_elem.labels) {
+                let mut new_elem = RangeVectorElement::new(lhs_elem.labels.clone());
+                for s in &lhs_elem.samples {
+                    if let Some(&rhs_val) = rhs_ts_map.get(&s.timestamp) {
+                        new_elem.add_sample(
+                            s.timestamp,
+                            Self::apply_range_binary_op(op, s.value, rhs_val),
+                        );
+                    }
+                }
+                if !new_elem.samples.is_empty() {
+                    combined.push(new_elem);
+                }
+            }
+        }
+
+        let output_labels = KeyByLabelNames::new(lhs_labels);
+        Some((output_labels, QueryResult::matrix(combined)))
+    }
+
     /// Formats unformatted results into final InstantVectorElement format
     /// For topk queries (when enabled), sorts by value and prepends metric name to keys
     fn format_final_results(
@@ -3178,6 +3368,19 @@ impl SimpleEngine {
             "Handling range query: {} from {} to {} step {}",
             query, start, end, step
         );
+
+        // Check for binary arithmetic before attempting single-query dispatch.
+        if let Ok(ast) = promql_parser::parser::parse(&query) {
+            if matches!(&ast, promql_parser::parser::Expr::Binary(_)) {
+                let result = self.handle_binary_expr_range_promql(&ast, start, end, step);
+                let total_duration = query_start_time.elapsed();
+                debug!(
+                    "Binary arithmetic range query handling took: {:.2}ms",
+                    total_duration.as_secs_f64() * 1000.0
+                );
+                return result;
+            }
+        }
 
         let context = self.build_range_query_execution_context_promql(query, start, end, step)?;
 
