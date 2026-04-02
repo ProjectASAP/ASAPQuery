@@ -2,6 +2,7 @@ pub mod config;
 pub mod error;
 pub mod output;
 pub mod planner;
+pub mod prometheus_client;
 pub mod query_log;
 
 use serde_yaml::Value as YamlValue;
@@ -12,6 +13,8 @@ pub use config::input::SQLControllerConfig;
 pub use error::ControllerError;
 pub use output::generator::{GeneratorOutput, PuntedQuery};
 pub use output::sql_generator::SQLRuntimeOptions;
+pub use prometheus_client::build_schema_from_prometheus;
+pub use sketch_db_common::PromQLSchema;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamingEngine {
@@ -30,6 +33,7 @@ pub struct RuntimeOptions {
 
 pub struct Controller {
     config: ControllerConfig,
+    schema: PromQLSchema,
     options: RuntimeOptions,
 }
 
@@ -279,45 +283,110 @@ impl SQLController {
 }
 
 impl Controller {
-    pub fn from_file(path: &Path, opts: RuntimeOptions) -> Result<Self, ControllerError> {
+    /// Build a `Controller` from a config file, fetching metric labels from Prometheus.
+    ///
+    /// `prometheus_url` is queried via `GET /api/v1/series?match[]=<metric>` for each metric
+    /// name found in the config's PromQL queries.
+    pub fn from_file(
+        path: &Path,
+        opts: RuntimeOptions,
+        prometheus_url: &str,
+    ) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
-        Self::from_yaml(&yaml_str, opts)
-    }
-
-    pub fn from_yaml(yaml: &str, opts: RuntimeOptions) -> Result<Self, ControllerError> {
-        let config: ControllerConfig = serde_yaml::from_str(yaml)?;
+        let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        let all_queries: Vec<String> = config
+            .query_groups
+            .iter()
+            .flat_map(|qg| qg.queries.clone())
+            .collect();
+        let schema = prometheus_client::build_schema_from_prometheus(prometheus_url, &all_queries)?;
         Ok(Self {
             config,
+            schema,
             options: opts,
         })
     }
 
-    /// Build a `Controller` from a Prometheus query log file and a metrics config YAML.
+    /// Build a `Controller` from a config file with a caller-supplied `PromQLSchema`.
+    ///
+    /// Use this when the schema is available without querying Prometheus (e.g. in tests
+    /// or when the schema is constructed in-process by the caller).
+    pub fn from_file_with_schema(
+        path: &Path,
+        schema: PromQLSchema,
+        opts: RuntimeOptions,
+    ) -> Result<Self, ControllerError> {
+        let yaml_str = std::fs::read_to_string(path)?;
+        let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        Ok(Self {
+            config,
+            schema,
+            options: opts,
+        })
+    }
+
+    /// Build a `Controller` from a YAML string with a caller-supplied `PromQLSchema`.
+    pub fn from_yaml_with_schema(
+        yaml: &str,
+        schema: PromQLSchema,
+        opts: RuntimeOptions,
+    ) -> Result<Self, ControllerError> {
+        let config: ControllerConfig = serde_yaml::from_str(yaml)?;
+        Ok(Self {
+            config,
+            schema,
+            options: opts,
+        })
+    }
+
+    /// Build a `Controller` from a Prometheus query log file, fetching metric labels from
+    /// Prometheus.
     ///
     /// - `log_path`: newline-delimited JSON query log (Prometheus `--query.log-file` output)
-    /// - `metrics_path`: YAML file with a `metrics:` section listing metric names and labels
+    /// - `prometheus_url`: base URL queried for label discovery
     pub fn from_query_log(
         log_path: &Path,
-        metrics_path: &Path,
+        opts: RuntimeOptions,
+        prometheus_url: &str,
+    ) -> Result<Self, ControllerError> {
+        let entries = query_log::parse_log_file(log_path)?;
+        let (instants, ranges) =
+            query_log::infer_queries(&entries, opts.prometheus_scrape_interval);
+        let config = query_log::to_controller_config(instants, ranges);
+        let all_queries: Vec<String> = config
+            .query_groups
+            .iter()
+            .flat_map(|qg| qg.queries.clone())
+            .collect();
+        let schema = prometheus_client::build_schema_from_prometheus(prometheus_url, &all_queries)?;
+        Ok(Self {
+            config,
+            schema,
+            options: opts,
+        })
+    }
+
+    /// Build a `Controller` from a Prometheus query log file with a caller-supplied `PromQLSchema`.
+    ///
+    /// Use this when the schema is available without querying Prometheus (e.g. in tests).
+    pub fn from_query_log_with_schema(
+        log_path: &Path,
+        schema: PromQLSchema,
         opts: RuntimeOptions,
     ) -> Result<Self, ControllerError> {
         let entries = query_log::parse_log_file(log_path)?;
         let (instants, ranges) =
             query_log::infer_queries(&entries, opts.prometheus_scrape_interval);
-
-        let metrics_yaml = std::fs::read_to_string(metrics_path)?;
-        let metrics_config: query_log::MetricsConfig = serde_yaml::from_str(&metrics_yaml)?;
-
-        let config = query_log::to_controller_config(instants, ranges, metrics_config.metrics);
-
+        let config = query_log::to_controller_config(instants, ranges);
         Ok(Self {
             config,
+            schema,
             options: opts,
         })
     }
 
     pub fn generate(&self) -> Result<PlannerOutput, ControllerError> {
-        let output = output::generator::generate_plan(&self.config, &self.options)?;
+        let output = output::generator::generate_plan(&self.config, &self.schema, &self.options)?;
         Ok(PlannerOutput {
             punted_queries: output.punted_queries,
             streaming_yaml: output.streaming_yaml,

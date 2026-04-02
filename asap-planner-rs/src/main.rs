@@ -14,15 +14,16 @@ struct Args {
     #[arg(long = "query-log", conflicts_with = "input_config")]
     query_log: Option<PathBuf>,
 
-    /// Path to a metrics config YAML (required when using --query-log).
-    #[arg(long = "metrics-config", requires = "query_log")]
-    metrics_config: Option<PathBuf>,
-
     #[arg(long = "output_dir")]
     output_dir: PathBuf,
 
     #[arg(long = "prometheus_scrape_interval", required = false)]
     prometheus_scrape_interval: Option<u64>,
+
+    /// Base URL of the Prometheus instance used to auto-infer metric label sets.
+    /// Required for PromQL mode. Example: http://localhost:9090
+    #[arg(long = "prometheus-url", required = false)]
+    prometheus_url: Option<String>,
 
     #[arg(long = "streaming_engine", value_enum)]
     streaming_engine: EngineArg,
@@ -73,6 +74,9 @@ fn main() -> anyhow::Result<()> {
             let scrape_interval = args.prometheus_scrape_interval.ok_or_else(|| {
                 anyhow::anyhow!("--prometheus_scrape_interval is required for PromQL mode")
             })?;
+            let prometheus_url = args
+                .prometheus_url
+                .ok_or_else(|| anyhow::anyhow!("--prometheus-url is required for PromQL mode"))?;
             let opts = RuntimeOptions {
                 prometheus_scrape_interval: scrape_interval,
                 streaming_engine: engine,
@@ -81,12 +85,11 @@ fn main() -> anyhow::Result<()> {
                 step: args.step,
             };
             let controller = match (args.input_config, args.query_log) {
-                (Some(config_path), None) => Controller::from_file(&config_path, opts)?,
+                (Some(config_path), None) => {
+                    Controller::from_file(&config_path, opts, &prometheus_url)?
+                }
                 (None, Some(log_path)) => {
-                    let metrics_path = args
-                        .metrics_config
-                        .expect("--metrics-config is required when using --query-log");
-                    Controller::from_query_log(&log_path, &metrics_path, opts)?
+                    Controller::from_query_log(&log_path, opts, &prometheus_url)?
                 }
                 _ => anyhow::bail!(
                     "exactly one of --input_config or --query-log must be provided for PromQL mode"

@@ -7,8 +7,5 @@ query_groups:
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0
-metrics:
-  - metric: "http_requests_total"
-    labels: ["instance", "job", "method", "status"]
 aggregate_cleanup:
   policy: "read_based"
