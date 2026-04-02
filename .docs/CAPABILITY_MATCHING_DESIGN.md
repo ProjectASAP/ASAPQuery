@@ -2,13 +2,13 @@
 
 ## Problem Statement
 
-The query engine previously routed every incoming query to a sketch aggregation by matching the
-query string against a pre-configured `query_configs` table in `InferenceConfig`. This meant:
+Currntly, when query engine gets a query, it does an exact string match of that query against the inference config to find what aggregation ID to use. This results in 2 problems:
+1. It also requires the inference config to exactly specify each and every query that can be supported.
+2. This does NOT handle ad-hoc queries for which we may still have a sketch that is computed.
 
-- Every distinct query string needed its own config entry, even when the same sketch could answer
-  multiple queries (e.g. `quantile(0.5, metric[5m])` and `quantile(0.9, metric[5m])` both need a
-  KLL sketch, but each required a separate config row).
-- The system could not answer any query it had not been explicitly pre-configured for.
+For instance, even when the same sketch can answer both `quantile(0.5, metric[5m])` and `quantile(0.9, metric[5m])`, we need 2 entries in inference config`.
+
+Moreover, if we now get `quantile(0.6, metric[5m])` or `quantile(0.5, metric[10m])`, those queries get punted even if we can support them.
 
 The goal: let the engine understand what a query *needs* and find an existing aggregation that can
 *provide* it, without requiring a one-to-one mapping in config.
@@ -29,6 +29,8 @@ Before designing anything, the existing query routing path was traced:
 The key insight: **all capability information lives in `AggregationConfig` inside `StreamingConfig`**.
 The `QueryConfig` table is just indirection that requires manual pre-population. The fix is to
 skip it and match against `AggregationConfig` directly when no pre-configured entry exists.
+
+So the logic now is (a) define what the query needs (QueryRequirements), (b) match QueryRequirements against all the available aggregation_ids to see if there is a match. There is no explicit CapabilityProvidedBySketch data structure
 
 ---
 
