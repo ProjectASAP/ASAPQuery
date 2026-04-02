@@ -1,0 +1,5 @@
+requests>=2.28
+gdown>=4.7
+pyyaml>=6.0
+matplotlib>=3.7
+numpy>=1.24
