@@ -3,6 +3,7 @@ use std::collections::HashMap;
 
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
+use tracing::{debug, warn};
 
 use crate::aggregation_config::{AggregationConfig, AggregationIdInfo};
 use crate::query_requirements::QueryRequirements;
@@ -131,6 +132,15 @@ pub fn find_compatible_aggregation(
         return None;
     }
 
+    debug!(
+        metric = %requirements.metric,
+        statistics = ?requirements.statistics,
+        data_range_ms = ?requirements.data_range_ms,
+        grouping_labels = ?requirements.grouping_labels.labels,
+        "capability matching: searching {} aggregation config(s)",
+        configs.len(),
+    );
+
     // For each statistic, collect configs that pass all filters, sorted by priority.
     let mut per_stat_candidates: Vec<Vec<&AggregationConfig>> = Vec::new();
 
@@ -141,7 +151,7 @@ pub fn find_compatible_aggregation(
         let mut candidates: Vec<&AggregationConfig> = configs
             .values()
             .filter(|c| {
-                c.metric == requirements.metric
+                let ok = c.metric == requirements.metric
                     && types.contains(&c.aggregation_type.as_str())
                     && sub_type.is_none_or(|st| c.aggregation_sub_type == st)
                     && window_compatible(c, requirements.data_range_ms)
@@ -149,15 +159,41 @@ pub fn find_compatible_aggregation(
                     && spatial_filter_compatible(
                         &c.spatial_filter_normalized,
                         &requirements.spatial_filter_normalized,
-                    )
+                    );
+                if !ok {
+                    debug!(
+                        agg_id = c.aggregation_id,
+                        agg_type = %c.aggregation_type,
+                        metric = %c.metric,
+                        window_size_s = c.window_size,
+                        "capability matching: rejected config for {:?}",
+                        stat,
+                    );
+                }
+                ok
             })
             .collect();
 
         candidates.sort_by(|a, b| aggregation_priority(a, b));
 
         if candidates.is_empty() {
+            warn!(
+                metric = %requirements.metric,
+                statistic = ?stat,
+                "capability matching: no compatible aggregation found for statistic",
+            );
             return None;
         }
+
+        debug!(
+            statistic = ?stat,
+            num_candidates = candidates.len(),
+            chosen_agg_id = candidates[0].aggregation_id,
+            chosen_agg_type = %candidates[0].aggregation_type,
+            chosen_window_size_s = candidates[0].window_size,
+            "capability matching: found candidates, chose best",
+        );
+
         per_stat_candidates.push(candidates);
     }
 
@@ -166,11 +202,17 @@ pub fn find_compatible_aggregation(
 
     // For multi-statistic requirements, the remaining statistics must be served by a
     // config that agrees on window_size and grouping_labels with the chosen value agg.
-    for candidates in per_stat_candidates.iter().skip(1) {
+    for (i, candidates) in per_stat_candidates.iter().enumerate().skip(1) {
         let found = candidates.iter().any(|c| {
             c.window_size == value_agg.window_size && c.grouping_labels == value_agg.grouping_labels
         });
         if !found {
+            warn!(
+                metric = %requirements.metric,
+                statistic = ?requirements.statistics[i],
+                required_window_size_s = value_agg.window_size,
+                "capability matching: no matching window/labels for multi-statistic requirement",
+            );
             return None;
         }
     }
@@ -178,12 +220,29 @@ pub fn find_compatible_aggregation(
     // If value type is multi-population, find the paired key aggregation.
     let key_agg: &AggregationConfig = if is_multi_population_value_type(&value_agg.aggregation_type)
     {
-        configs
+        let ka = configs
             .values()
-            .find(|c| c.metric == requirements.metric && is_key_agg_type(&c.aggregation_type))?
+            .find(|c| c.metric == requirements.metric && is_key_agg_type(&c.aggregation_type));
+        if ka.is_none() {
+            warn!(
+                metric = %requirements.metric,
+                value_agg_type = %value_agg.aggregation_type,
+                "capability matching: multi-population value agg requires a key agg (SetAggregator/DeltaSetAggregator) but none found",
+            );
+        }
+        ka?
     } else {
         value_agg
     };
+
+    debug!(
+        metric = %requirements.metric,
+        value_agg_id = value_agg.aggregation_id,
+        value_agg_type = %value_agg.aggregation_type,
+        key_agg_id = key_agg.aggregation_id,
+        key_agg_type = %key_agg.aggregation_type,
+        "capability matching: resolved",
+    );
 
     Some(AggregationIdInfo {
         aggregation_id_for_value: value_agg.aggregation_id,
