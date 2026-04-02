@@ -7,6 +7,8 @@ use clap::Parser;
 use sketch_core::config::{self, ImplMode};
 use sketch_core::count_min::CountMinSketch;
 use sketch_core::count_min_with_heap::CountMinSketchWithHeap;
+use sketch_core::hydra_kll::HydraKllSketch;
+use sketch_core::kll::KllSketch;
 
 #[derive(Clone)]
 struct Lcg64 {
@@ -91,6 +93,16 @@ fn rmse_percentage(exact: &[f64], est: &[f64]) -> f64 {
         return if exact == est { 0.0 } else { f64::INFINITY };
     }
     (sum_sq / denom).sqrt() * 100.0
+}
+
+#[derive(Parser)]
+struct Args {
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMS_IMPL)]
+    cms_impl: ImplMode,
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_KLL_IMPL)]
+    kll_impl: ImplMode,
+    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMWH_IMPL)]
+    cmwh_impl: ImplMode,
 }
 
 fn rank_fraction(sorted: &[f64], x: f64) -> f64 {
@@ -210,14 +222,110 @@ fn run_countmin_with_heap_once(seed: u64, p: &CmwhParams) -> CmwhResult {
     }
 }
 
-#[derive(Parser)]
-struct Args {
-    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMS_IMPL)]
-    cms_impl: ImplMode,
-    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_KLL_IMPL)]
-    kll_impl: ImplMode,
-    #[arg(long, value_enum, default_value_t = sketch_core::config::DEFAULT_CMWH_IMPL)]
-    cmwh_impl: ImplMode,
+// --- KllSketch ---
+
+struct KllParams {
+    k: u16,
+    n: usize,
+}
+
+struct KllResult {
+    rank_err_50: f64,
+    rank_err_90: f64,
+    rank_err_99: f64,
+}
+
+fn run_kll_once(seed: u64, p: &KllParams) -> KllResult {
+    let mut rng = Lcg64::new(seed ^ 0x1234_5678);
+    let mut values: Vec<f64> = Vec::with_capacity(p.n);
+    let mut sk = KllSketch::new(p.k);
+
+    for _ in 0..p.n {
+        let v = rng.next_f64_0_1() * 1_000_000.0;
+        values.push(v);
+        sk.update(v);
+    }
+
+    values.sort_by(f64::total_cmp);
+    let qs = [0.5, 0.9, 0.99];
+    let rank_err = |q: f64| (rank_fraction(&values, sk.get_quantile(q)) - q).abs();
+
+    KllResult {
+        rank_err_50: rank_err(qs[0]),
+        rank_err_90: rank_err(qs[1]),
+        rank_err_99: rank_err(qs[2]),
+    }
+}
+
+// --- HydraKllSketch ---
+
+struct HydraKllParams {
+    rows: usize,
+    cols: usize,
+    k: u16,
+    n: usize,
+    domain: usize,
+    eval_keys: usize,
+}
+
+struct HydraKllResult {
+    mean_50: f64,
+    max_50: f64,
+    mean_90: f64,
+    max_90: f64,
+}
+
+fn run_hydra_kll_once(seed: u64, p: &HydraKllParams) -> HydraKllResult {
+    let mut rng = Lcg64::new(seed ^ 0xDEAD_BEEF);
+    let mut hydra = HydraKllSketch::new(p.rows, p.cols, p.k);
+    let mut exact: HashMap<String, Vec<f64>> = HashMap::new();
+
+    for _ in 0..p.n {
+        let r = rng.next_u64();
+        let key_id = if (r & 0xFF) < 200 {
+            (r as usize) % 20
+        } else {
+            (r as usize) % p.domain
+        };
+        let key = format!("k{key_id}");
+        let v = rng.next_f64_0_1() * 1_000_000.0;
+        hydra.update(&key, v);
+        exact.entry(key).or_default().push(v);
+    }
+
+    let mut keys: Vec<String> = exact.keys().cloned().collect();
+    keys.sort();
+    keys.truncate(p.eval_keys);
+
+    let mut mean_50 = 0.0f64;
+    let mut max_50 = 0.0f64;
+    let mut mean_90 = 0.0f64;
+    let mut max_90 = 0.0f64;
+    let nk = keys.len() as f64;
+    for key in &keys {
+        let mut vals = exact.get(key).cloned().unwrap_or_default();
+        vals.sort_by(f64::total_cmp);
+        for (q, mean_ref, max_ref) in [
+            (0.5, &mut mean_50, &mut max_50),
+            (0.9, &mut mean_90, &mut max_90),
+        ] {
+            let est = hydra.query(key, q);
+            let err = (rank_fraction(&vals, est) - q).abs();
+            *mean_ref += err;
+            if err > *max_ref {
+                *max_ref = err;
+            }
+        }
+    }
+    mean_50 /= nk;
+    mean_90 /= nk;
+
+    HydraKllResult {
+        mean_50,
+        max_50,
+        mean_90,
+        max_90,
+    }
 }
 
 fn main() {
@@ -232,6 +340,11 @@ fn main() {
         "sketchlib-rust"
     };
     let cmwh_mode = if matches!(args.cmwh_impl, ImplMode::Legacy) {
+        "Legacy"
+    } else {
+        "sketchlib-rust"
+    };
+    let kll_mode = if matches!(args.kll_impl, ImplMode::Legacy) {
         "Legacy"
     } else {
         "sketchlib-rust"
@@ -309,6 +422,75 @@ fn main() {
         println!(
             "| {} | {} | {} | {} | {} | {:.4} | {:.10} | {:.6} | {:.6} |",
             p.depth, p.width, p.n, p.domain, p.heap_size, r.topk_recall, r.pearson, r.mape, r.rmse
+        );
+    }
+    // KllSketch
+    let kll_param_sets: Vec<KllParams> = vec![
+        KllParams { k: 20, n: 200_000 },
+        KllParams { k: 50, n: 200_000 },
+        KllParams { k: 200, n: 200_000 },
+        KllParams { k: 20, n: 50_000 },
+    ];
+
+    println!("\n## KllSketch ({kll_mode})");
+    println!(
+        "| k | n_updates | q=0.5 abs_rank_error | q=0.9 abs_rank_error | q=0.99 abs_rank_error |"
+    );
+    println!(
+        "|---|-----------|----------------------|----------------------|-----------------------|"
+    );
+    for p in &kll_param_sets {
+        let r = run_kll_once(seed, p);
+        println!(
+            "| {} | {} | {:.6} | {:.6} | {:.6} |",
+            p.k, p.n, r.rank_err_50, r.rank_err_90, r.rank_err_99
+        );
+    }
+
+    // HydraKllSketch
+    let hydra_param_sets: Vec<HydraKllParams> = vec![
+        HydraKllParams {
+            rows: 2,
+            cols: 64,
+            k: 20,
+            n: 200_000,
+            domain: 200,
+            eval_keys: 50,
+        },
+        HydraKllParams {
+            rows: 3,
+            cols: 128,
+            k: 20,
+            n: 200_000,
+            domain: 200,
+            eval_keys: 50,
+        },
+        HydraKllParams {
+            rows: 3,
+            cols: 128,
+            k: 50,
+            n: 200_000,
+            domain: 200,
+            eval_keys: 50,
+        },
+        HydraKllParams {
+            rows: 3,
+            cols: 128,
+            k: 20,
+            n: 100_000,
+            domain: 100,
+            eval_keys: 50,
+        },
+    ];
+
+    println!("\n## HydraKllSketch ({kll_mode})");
+    println!("| rows | cols | k | n | domain | q=0.5 mean/max | q=0.9 mean/max |");
+    println!("|------|------|---|-----|--------|----------------|----------------|");
+    for p in &hydra_param_sets {
+        let r = run_hydra_kll_once(seed, p);
+        println!(
+            "| {} | {} | {} | {} | {} | {:.5} / {:.5} | {:.5} / {:.5} |",
+            p.rows, p.cols, p.k, p.n, p.domain, r.mean_50, r.max_50, r.mean_90, r.max_90
         );
     }
 }
