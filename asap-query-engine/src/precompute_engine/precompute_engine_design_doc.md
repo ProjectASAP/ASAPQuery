@@ -2,422 +2,568 @@
 
 ## 1. Overview
 
-### Why this PR is needed
+The Precompute Engine is a real-time streaming aggregation system that sits between
+metric producers and ASAP storage and query engine. It accepts raw
+time-series samples via multiple ingestion connectors (Prometheus remote write
+and VictoriaMetrics remote write), buffers them, computes windowed aggregations
+(sketches), and writes the results to a store for fast query-time retrieval.
 
-ASAPQuery already has a query path over precomputed summaries, but before this PR
-there was no standalone runtime inside `asap-query-engine` that could continuously:
-
-- accept raw metric samples,
-- turn them into windowed precomputed outputs, and
-- write those outputs into the same store that the query engine reads.
-
-PR #228 fills that gap by introducing a first working version of a **precompute
-engine**. The engine runs as a separate binary, accepts Prometheus remote write
-traffic, partitions incoming series across workers, computes windowed
-accumulators, and stores the results for later query-time retrieval.
-
-### Why not ArroyoSketch?
-
-The existing precompute path — **ArroyoSketch** (`asap-summary-ingest/run_arroyosketch.py`)
-— already performs windowed sketch aggregation, but it does so through an
-entirely separate operational stack:
-
-| Dimension | ArroyoSketch | Precompute Engine (this PR) |
-|---|---|---|
-| **Runtime** | External Arroyo cluster (separate process, separate binary) | In-process Rust binary alongside the query engine |
-| **Orchestration language** | Python (Jinja2 SQL templates deployed via REST API to Arroyo) | Native Rust, driven directly by `StreamingConfig` |
-| **Ingest transport** | Kafka topic or Prometheus remote write → Arroyo pipeline | Prometheus remote write directly to the engine |
-| **Output transport** | Kafka topic → consumed by a separate pipeline stage | Direct write to the store already read by the query engine |
-| **Operational dependencies** | Arroyo cluster + Kafka brokers must be running and healthy | None beyond the query engine process itself |
-| **Configuration coupling** | Arroyo pipeline SQL is rendered from `streaming_config.yaml` by a Python script; any config change requires re-deploying pipelines via the Arroyo REST API | Engine reads `StreamingConfig` directly at startup; same structs used throughout `asap-query-engine` |
-| **Failure boundary** | Arroyo crash or Kafka lag is invisible to the query engine until queries begin returning stale results | Precompute workers and query engine share the same process and store; failures surface immediately |
-
-In short, ArroyoSketch trades simplicity for power: it is a general-purpose
-streaming SQL engine that can express complex multi-stage pipelines, but it
-requires standing up and operating Arroyo and Kafka as separate infrastructure.
-That operational overhead is the main barrier to running the precompute path in
-development, in CI, or in environments where Kafka is not already present.
-
-This PR replaces the ingest-and-aggregate role of ArroyoSketch with a
-self-contained Rust implementation that has no external service dependencies,
-shares the same store and configuration types as the rest of `asap-query-engine`,
-and can be validated end to end in a single process. ArroyoSketch remains useful
-as a production deployment option when Arroyo and Kafka are already available,
-but the precompute engine is the path forward for native integration within the
-Rust codebase.
-
-This PR is primarily about establishing the end-to-end execution path and the
-core abstractions:
-
-- ingest endpoint,
-- worker sharding model,
-- window management,
-- accumulator construction and update,
-- output sink abstraction, and
-- integration with the existing store and query engine.
-
-### Requirements
-
-The implementation in this PR is driven by the following requirements:
-
-1. ASAPQuery needs a native precompute path inside the Rust query engine codebase.
-2. The system must ingest a high volume of time-series samples without forcing
-   cross-worker coordination on every sample.
-3. Samples for the same series must be processed consistently by the same worker
-   so per-series state can stay local.
-4. The engine must support windowed precomputation for the aggregation
-   configurations already defined in `StreamingConfig`.
-5. The output must be written in the same `PrecomputedOutput` form already
-   consumed by the store and query engine.
-6. The design must stay simple enough to validate correctness end to end before
-   adding more advanced features such as richer late-data policies or multi-stage
-   aggregation.
-
-### Scope of this PR
-
-This PR delivers a pragmatic v1:
-
-- single-process, multi-worker execution,
-- Prometheus remote write ingest,
-- store-backed output,
-- watermark-based window closing,
-- bounded per-series buffering,
-- best-effort handling of out-of-order data via a lateness threshold,
-- optional raw passthrough mode.
-
-It does **not** try to solve every future concern yet. In particular, it does
-not add multi-stage aggregation, explicit late-data re-emission policies,
-cross-worker merge coordination, or pane-based sliding-window optimization.
+**Key properties:**
+- Single-machine, multi-threaded architecture (all workers run as async tasks within one process)
+- Watermark-based windowed aggregation (tumbling and sliding windows)
+- Shared-nothing worker design: series are hash-partitioned across threads with no cross-worker coordination
+- Pluggable accumulator types (Sum, Min/Max, Increase, KLL, CMS, HydraKLL)
+- Configurable late-data handling (Drop or ForwardToStore)
+- Optional raw passthrough mode for bypassing aggregation
 
 ## 2. Architecture
 
-### High-level data flow
-
-```text
-Prometheus Remote Write
-        |
-        v
-POST /api/v1/write (Axum)
-        |
-        v
-decode_prometheus_remote_write()
-        |
-        v
-group samples by series key
-        |
-        v
-SeriesRouter (xxhash(series_key) % num_workers)
-        |
-        +-------------------+-------------------+-------------------+
-        |                   |                   |                   |
-        v                   v                   v                   v
-    Worker 0            Worker 1            Worker 2          Worker N-1
-        |                   |                   |                   |
-        |  per-series buffer + per-aggregation active windows       |
-        +-------------------+-------------------+-------------------+
-                                |
-                                v
-                        OutputSink::emit_batch()
-                                |
-                                v
-                               Store
-                                |
-                                v
-                           Query Engine
+```
+         Prometheus Remote Write       VictoriaMetrics Remote Write
+          (Snappy + Protobuf)             (Zstd + Protobuf)
+                  |                              |
+                  v                              v
+         POST /api/v1/write           POST /api/v1/import
+                  \                            /
+                   \                          /
+                    Axum HTTP Server (:9090)
+                            |
+                  route_decoded_samples()
+                   (group by series key)
+                            |
+                     SeriesRouter (hash)
+                   /        |        \
+              Worker 0   Worker 1   Worker 2  ...  Worker N-1
+              (shard 0)  (shard 1)  (shard 2)      (shard N-1)
+                 |           |           |              |
+                 +---------- + --------- + ----------- +
+                             |
+                      OutputSink.emit_batch()
+                             |
+                          Store
+                   (SimpleMapStore / PerKey)
+                             |
+                      Query Engine
+                   (PromQL / SQL / etc.)
 ```
 
-### Main components
+A periodic **flush timer** broadcasts `Flush` messages to all workers so that
+windows that would otherwise remain open (no new samples arriving) are closed
+and emitted.
 
-#### `PrecomputeEngine` (`mod.rs`)
+## 3. Components
 
-`PrecomputeEngine` is the top-level orchestrator. It:
+### 3.1 PrecomputeEngine (`mod.rs`)
 
-- loads aggregation configs from `StreamingConfig`,
-- creates one bounded MPSC channel per worker,
-- builds a `SeriesRouter`,
-- spawns worker tasks,
-- starts the ingest HTTP server, and
-- starts a periodic flush loop.
+Top-level orchestrator. On `run()`:
 
-The engine keeps the worker model intentionally simple: workers are symmetric,
-and routing is deterministic.
+1. Creates one `mpsc::channel<WorkerMessage>` per worker.
+2. Constructs a `SeriesRouter` with the sender halves.
+3. Spawns `Worker` tasks, each owning its receiver.
+4. Spawns a flush timer that calls `router.broadcast_flush()` every
+   `flush_interval_ms`.
+5. Starts the Axum HTTP server with routes for each ingest connector and blocks until shutdown.
 
-#### `SeriesRouter` (`series_router.rs`)
+```rust
+pub struct PrecomputeEngine {
+    config: PrecomputeEngineConfig,
+    streaming_config: Arc<StreamingConfig>,
+    output_sink: Arc<dyn OutputSink>,
+}
+```
 
-The router computes:
+### 3.2 Configuration (`config.rs`)
 
-```text
+```rust
+pub struct PrecomputeEngineConfig {
+    pub num_workers: usize,              // default: 4
+    pub ingest_port: u16,                // default: 9090
+    pub allowed_lateness_ms: i64,        // default: 5,000
+    pub max_buffer_per_series: usize,    // default: 10,000
+    pub flush_interval_ms: u64,          // default: 1,000
+    pub channel_buffer_size: usize,      // default: 10,000
+    pub pass_raw_samples: bool,          // default: false
+    pub raw_mode_aggregation_id: u64,    // default: 0
+    pub late_data_policy: LateDataPolicy, // default: Drop
+}
+
+pub enum LateDataPolicy {
+    Drop,            // Silently discard late samples for closed windows
+    ForwardToStore,  // Emit a mini-accumulator for query-time merge
+}
+```
+
+### 3.3 SeriesRouter (`series_router.rs`)
+
+Deterministic hash-based routing using XXHash64:
+
+```
 worker_idx = xxhash64(series_key) % num_workers
 ```
 
-This guarantees that all samples for one exact series key go to the same worker.
-That is the main design decision that keeps worker-local state lock-free.
+All samples for a given series always land on the same worker, so per-series
+state (buffer, watermark, active windows) needs no synchronization.
 
-#### `Worker` (`worker.rs`)
-
-Each worker owns a shard of the series space. For each series it stores:
-
-- a `SeriesBuffer`,
-- the previous watermark seen for that series,
-- one `AggregationState` per matching aggregation config.
-
-Each `AggregationState` contains:
-
-- the copied `AggregationConfig`,
-- a `WindowManager`,
-- a map of active window accumulators.
-
-Workers receive `Samples`, `Flush`, and `Shutdown` messages. On samples, the
-worker inserts data into the series buffer, applies lateness filtering, updates
-active window accumulators, detects newly closed windows, and emits completed
-accumulators to the sink.
-
-#### `SeriesBuffer` (`series_buffer.rs`)
-
-The buffer stores timestamped samples per series in timestamp order and tracks a
-monotonic watermark. It is bounded by `max_buffer_per_series`, which prevents a
-single hot or stalled series from growing unbounded in memory.
-
-#### `WindowManager` (`window_manager.rs`)
-
-`WindowManager` encapsulates window boundary logic:
-
-- map a timestamp to an aligned window start,
-- decide which windows became closed after watermark advancement,
-- return `[window_start, window_end)` bounds.
-
-The current implementation supports both tumbling and slide-aligned window
-closure logic. Window close is driven by event-time watermark progression, not
-wall-clock time.
-
-#### `AccumulatorUpdater` factory (`accumulator_factory.rs`)
-
-Workers do not hardcode sketch logic. Instead, they construct accumulator
-updaters from the aggregation config. This keeps the precompute engine generic
-across supported aggregation types and lets it emit the same accumulator objects
-already used elsewhere in ASAPQuery.
-
-#### `OutputSink` (`output_sink.rs`)
-
-`OutputSink` separates computation from persistence. This PR ships three useful
-implementations:
-
-- `StoreOutputSink` for normal precompute writes,
-- `RawPassthroughSink` for writing raw samples as `SumAccumulator`s,
-- `NoopOutputSink` for tests.
-
-### Execution model
-
-The execution model is:
-
-1. Decode one remote-write request.
-2. Group samples by exact series key.
-3. Route each grouped batch to one worker.
-4. Process series state only on that worker.
-5. Emit completed windows in batches to the sink.
-
-This design avoids per-sample cross-worker synchronization and keeps the first
-version operationally understandable.
-
-## 3. Key Features Derived From the Requirements
-
-### Deterministic per-series routing
-
-Requirement: samples for one series must share local state.
-
-Derived feature: the hash-based router always sends the same series key to the
-same worker. This means:
-
-- no shared mutable state across workers for a given series,
-- no locking around per-series accumulators,
-- predictable ownership of series-local watermarks and buffers.
-
-### Config-driven aggregation matching
-
-Requirement: reuse aggregation definitions already present in the system.
-
-Derived feature: each worker matches a series against the loaded
-`AggregationConfig`s and creates aggregation state only for the configs relevant
-to that series. The engine therefore stays driven by `StreamingConfig` instead
-of inventing a separate configuration model.
-
-### Windowed precomputation with watermark closure
-
-Requirement: emit queryable precomputed windows rather than raw streams only.
-
-Derived feature: each aggregation uses a `WindowManager` to:
-
-- align samples to windows,
-- detect when watermark movement closes a window,
-- emit `PrecomputedOutput` records with exact window bounds.
-
-This gives the query engine stable window ranges to read later.
-
-### Bounded memory for series-local state
-
-Requirement: the engine must remain safe under continuous ingestion.
-
-Derived feature: each series uses a bounded `SeriesBuffer`, and each worker uses
-bounded channels from the router. This does not solve every overload scenario,
-but it prevents the obvious unbounded growth cases in the v1 design.
-
-### Optional raw passthrough mode
-
-Requirement: support bring-up, debugging, and staged rollout.
-
-Derived feature: when `pass_raw_samples=true`, the worker bypasses windowed
-aggregation and emits one `SumAccumulator` per sample. This is useful for
-testing the ingest-to-store plumbing independently from sketch behavior.
-
-### Direct integration with the existing store and query engine
-
-Requirement: the precompute path must fit ASAPQuery's existing runtime.
-
-Derived feature: the standalone `precompute_engine` binary can be launched with:
-
-- a `StreamingConfig`,
-- a store implementation,
-- an optional query HTTP server in the same process.
-
-That makes the PR immediately testable end to end.
-
-## 4. System Implementation Corner Cases
-
-### Late and out-of-order samples
-
-The current policy is intentionally simple:
-
-- if `timestamp < watermark - allowed_lateness_ms`, the sample is dropped;
-- otherwise it is accepted.
-
-This means the PR chooses predictability over replay complexity. There is no
-secondary path yet for re-opening or patching already emitted windows.
-
-### Idle series and flush behavior
-
-The engine has a periodic flush loop, but the current implementation does **not**
-advance watermarks on its own. As a result, a flush only emits windows that have
-become closable due to prior event-time progress. If a series stops receiving
-samples before a later sample advances the watermark, the worker does not invent
-time progress just because wall-clock time passed.
-
-This is an important behavior boundary for this PR.
-
-### Sliding-window semantics in v1
-
-`WindowManager` understands slide intervals, and tests cover slide-aligned
-window closing. However, this PR keeps the worker update path simple: samples
-are placed into the accumulator keyed by `window_start_for(ts)`, and the design
-does not yet implement the more advanced pane-sharing or multi-window fan-out
-approach described in earlier discussion branches.
-
-So the current PR establishes the reusable windowing abstraction first, while
-leaving richer sliding-window execution strategies for follow-up work.
-
-### Cross-series aggregation across workers
-
-Routing is based on the full series key, not on the final grouping key. That
-keeps ingestion simple, but it also means different source series that
-contribute to the same logical grouped result may be processed on different
-workers. This PR does not introduce a second-tier reduce stage; it relies on the
-existing downstream model of storing precomputed outputs and reading them later.
-
-### Series-key parsing assumptions
-
-Grouping-label extraction currently parses series keys in the expected Prometheus
-text form:
-
-```text
-metric_name{label1="value1",label2="value2"}
+**Message types:**
+```rust
+enum WorkerMessage {
+    Samples { series_key: String, samples: Vec<(i64, f64)>, ingest_received_at: Instant },
+    Flush,
+    Shutdown,
+}
 ```
 
-Missing grouping labels are converted to empty strings. This keeps the worker
-path robust, but it is worth documenting because output keys depend on this
-parsing behavior.
+`route_batch()` groups messages by target worker and sends them in parallel for
+throughput while preserving per-worker ordering.
 
-### Raw mode loses label-group semantics
+### 3.4 Worker (`worker.rs`)
 
-In raw passthrough mode, the engine emits one point output per sample with
-`key=None`. That is acceptable for the intended debugging and plumbing use case,
-but it is deliberately not equivalent to fully configured grouped aggregation.
+Each worker owns an isolated shard of the series space.
 
-## 5. Examples
-
-### Example 1: basic tumbling-window flow
-
-Assume:
-
-- metric: `fake_metric`
-- window size: 60 seconds
-- slide interval: 0 (tumbling)
-- one sample arrives at `t=12_000 ms`
-
-The worker computes:
-
-- `window_start = 0`
-- `window_end = 60_000`
-
-The sample updates the active accumulator for window `[0, 60_000)`. Once the
-watermark later reaches at least `60_000`, the worker emits:
-
-- `PrecomputedOutput(start=0, end=60_000, aggregation_id=...)`
-- the finished accumulator for that window
-
-### Example 2: out-of-order sample handling
-
-Assume:
-
-- current series watermark is `100_000 ms`
-- `allowed_lateness_ms = 5_000`
-
-Then:
-
-- sample at `97_000 ms` is accepted,
-- sample at `94_999 ms` is dropped.
-
-This keeps the lateness rule easy to reason about.
-
-### Example 3: deterministic sharding
-
-Assume two incoming series:
-
-- `cpu_usage{host="a",job="node"}`
-- `cpu_usage{host="b",job="node"}`
-
-The router hashes each full series key independently. Each series is assigned to
-one worker, and every later batch for that same series goes back to that same
-worker. The benefit is that each worker can maintain series-local state without
-coordination.
-
-### Example 4: raw passthrough mode
-
-If `pass_raw_samples=true` and a sample arrives:
-
-```text
-series_key = fake_metric{instance="i1"}
-timestamp  = 25_000
-value      = 42.0
+```rust
+struct Worker {
+    id: usize,
+    receiver: mpsc::Receiver<WorkerMessage>,
+    output_sink: Arc<dyn OutputSink>,
+    series_map: HashMap<String, SeriesState>,
+    agg_configs: HashMap<u64, AggregationConfig>,
+    max_buffer_per_series: usize,
+    allowed_lateness_ms: i64,
+    pass_raw_samples: bool,
+    raw_mode_aggregation_id: u64,
+    late_data_policy: LateDataPolicy,
+}
 ```
 
-The worker emits one point output immediately:
+**Per-series state:**
+```rust
+struct SeriesState {
+    buffer: SeriesBuffer,                      // sorted sample buffer
+    previous_watermark_ms: i64,                // last-seen watermark
+    aggregations: Vec<AggregationState>,       // one per matching config
+}
 
-- `PrecomputedOutput(start=25_000, end=25_000, key=None, aggregation_id=raw_mode_aggregation_id)`
-- `SumAccumulator::with_sum(42.0)`
+struct AggregationState {
+    config: AggregationConfig,
+    window_manager: WindowManager,
+    active_panes: BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
+}
+```
 
-This mode is useful when validating the ingest path independently from
-windowed aggregation correctness.
+#### Pane-Based Sliding Window Optimization
 
-## 6. Summary
+The worker uses **pane-based incremental computation** to reduce per-sample
+work for sliding windows. The timeline is divided into non-overlapping **panes**
+of size `slide_interval`. Each window is composed of `W = window_size /
+slide_interval` consecutive panes. Consecutive windows share W-1 panes.
 
-PR #228 introduces the first integrated precompute engine inside
-`asap-query-engine`. The design deliberately favors a clear and testable v1:
+```
+Panes:     [0,10)  [10,20)  [20,30)  [30,40)  [40,50)
+Window A:  [───────── 0,30 ─────────)
+Window B:          [───────── 10,40 ─────────)
+Window C:                  [───────── 20,50 ─────────)
+```
 
-- one process,
-- deterministic worker sharding,
-- config-driven accumulator creation,
-- watermark-based window emission,
-- direct store integration.
+**Why panes instead of subtraction?** Only Sum is invertible. MinMax, Increase,
+KLL, CMS, HydraKLL are all non-invertible. Pane+merge works universally because
+all accumulator types implement `AggregateCore::merge_with()`.
 
-That foundation is the reason this PR is needed. It creates the runtime path
-that later PRs can extend with more sophisticated window execution, richer late
-data handling, and more advanced cross-worker aggregation strategies.
+**Performance comparison** (N samples per window, W = window_size / slide_interval):
+
+| | Per-window approach | Pane-based |
+|--|---------|------------|
+| Per-sample accumulator updates | N × W | N × 1 |
+| Per-window-close merges | 0 | W - 1 |
+| Per-window-close clones | 0 | W - 2 (shared panes) |
+
+Net win when N >> W (typical: thousands of samples per window, W = 3-5).
+For tumbling windows (W=1), panes degenerate to 1 pane = 1 window with
+zero merges — identical behavior to the non-pane approach.
+
+**Key methods:**
+
+| Method | Description |
+|--------|-------------|
+| `pane_start_for(ts)` | Align timestamp to slide grid (same as `window_start_for`) |
+| `panes_for_window(ws)` | All pane starts composing window `[ws, ws+size)` |
+| `snapshot_accumulator()` | Non-destructive read of a pane's accumulator (for shared panes) |
+
+**Pane eviction:** When window `[S, S+W)` closes, pane `[S, S+slide)` is the
+oldest pane and is not needed by any later window (next window starts at
+`S+slide`). It is destructively consumed via `take_accumulator()` and removed
+from `active_panes`. Remaining panes are read non-destructively via
+`snapshot_accumulator()`.
+
+#### Processing pipeline (`process_samples`)
+
+```
+1. Match series to AggregationConfigs (by metric name / spatial_filter)
+2. Insert samples into SeriesBuffer, update watermark
+3. Drop samples beyond allowed_lateness_ms behind watermark
+4. For each sample × each aggregation:
+   a. Compute pane_start = pane_start_for(ts)
+   b. If pane was evicted (late data for closed window):
+      → late_data_policy == Drop:           skip
+      → late_data_policy == ForwardToStore:  create mini-accumulator, emit
+   c. Else: get-or-create pane in active_panes, feed value (1 update per sample)
+5. Detect newly closed windows via closed_windows(prev_wm, current_wm)
+6. For each closed window:
+   a. Get pane starts via panes_for_window(window_start)
+   b. Oldest pane: take_accumulator() + remove from active_panes (destructive)
+   c. Remaining panes: snapshot_accumulator() (non-destructive, shared)
+   d. Merge all pane accumulators via AggregateCore::merge_with()
+   e. Emit merged result as PrecomputedOutput + AggregateCore
+7. Emit batch to OutputSink
+8. Update previous_watermark_ms
+```
+
+#### Raw mode
+
+When `pass_raw_samples = true`, the entire aggregation pipeline is bypassed.
+Each sample is emitted as a `SumAccumulator::with_sum(value)` with point-window
+bounds `[ts, ts]` and the configured `raw_mode_aggregation_id`.
+
+### 3.5 SeriesBuffer (`series_buffer.rs`)
+
+Per-series in-memory buffer backed by `BTreeMap<i64, f64>`.
+
+```rust
+struct SeriesBuffer {
+    samples: BTreeMap<i64, f64>,   // timestamp_ms → value
+    watermark_ms: i64,              // max timestamp ever seen (monotonic)
+    max_buffer_size: usize,
+}
+```
+
+- Samples are automatically sorted by timestamp.
+- Watermark only advances forward (monotonic).
+- When the buffer exceeds `max_buffer_size`, the oldest samples are evicted.
+- Supports range reads (`read_range`) and destructive drains (`drain_up_to`).
+
+### 3.6 WindowManager (`window_manager.rs`)
+
+Handles both tumbling and sliding window semantics.
+
+```rust
+struct WindowManager {
+    window_size_ms: i64,       // e.g. 60_000
+    slide_interval_ms: i64,    // == window_size for tumbling; < window_size for sliding
+}
+```
+
+**Key methods:**
+
+| Method | Description |
+|--------|-------------|
+| `window_start_for(ts)` | Align timestamp down to nearest slide boundary |
+| `window_starts_containing(ts)` | All windows whose `[start, start+size)` includes `ts`. Tumbling → 1 window; sliding → `ceil(size/slide)` windows |
+| `closed_windows(prev_wm, curr_wm)` | Windows that transitioned open→closed as the watermark advanced |
+| `window_bounds(start)` | Returns `(start, start + window_size_ms)` |
+| `pane_start_for(ts)` | Pane start for a timestamp (same slide-aligned grid as `window_start_for`) |
+| `panes_for_window(ws)` | All pane starts composing window `[ws, ws+size)`, in ascending order |
+| `slide_interval_ms()` | Slide interval accessor |
+
+**Window closure rule:** a window `[S, S + size)` closes when `watermark >= S + size`.
+Once closed, a window never reopens.
+
+#### Sliding window mechanics
+
+Tumbling windows are a special case of sliding windows where
+`slide_interval == window_size`. The same code handles both — no separate paths.
+
+**`window_start_for(ts)`** aligns a timestamp to the slide grid:
+```rust
+let n = timestamp_ms.div_euclid(slide_interval_ms);
+n * slide_interval_ms
+```
+
+**`window_starts_containing(ts)`** returns all windows whose `[start, start+size)`
+contains the timestamp, by walking backwards from the aligned start:
+```rust
+let mut start = window_start_for(timestamp_ms);
+while start + window_size_ms > timestamp_ms {
+    starts.push(start);
+    start -= slide_interval_ms;
+}
+```
+
+For tumbling windows this always yields exactly 1 result. For sliding windows,
+each sample belongs to `ceil(window_size / slide_interval)` overlapping windows.
+
+**Example** (30s window, 10s slide):
+```
+t=15s → belongs to windows [0, 30s), [10s, 40s), [-10s, 20s)   (3 windows)
+t=35s → belongs to windows [30s, 60s), [20s, 50s), [10s, 40s)  (3 windows)
+```
+
+**`closed_windows(prev_wm, curr_wm)`** finds windows that transitioned open→closed
+as the watermark advanced. It scans forward from the earliest possibly-open window
+start, collecting those where `start + size <= curr_wm` (now closed) AND
+`start + size > prev_wm` (was still open before).
+
+The worker calls `window_starts_containing(ts)` for each incoming sample and feeds
+the value into the accumulator for every matching window. When
+`closed_windows()` fires, each closed window's accumulator is extracted and
+emitted independently.
+
+### 3.7 AccumulatorUpdater (`accumulator_factory.rs`)
+
+Trait-based interface for feeding samples into sketch accumulators:
+
+```rust
+trait AccumulatorUpdater: Send {
+    fn update_single(&mut self, value: f64, timestamp_ms: i64);
+    fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, timestamp_ms: i64);
+    fn take_accumulator(&mut self) -> Box<dyn AggregateCore>;
+    fn snapshot_accumulator(&self) -> Box<dyn AggregateCore>;  // non-destructive clone
+    fn reset(&mut self);
+    fn is_keyed(&self) -> bool;
+    fn memory_usage_bytes(&self) -> usize;
+}
+```
+
+`snapshot_accumulator()` returns a clone of the current state without resetting.
+Used by pane-based sliding windows to read shared panes that are still needed
+by future windows.
+
+The factory function `create_accumulator_updater(config)` dispatches on
+`(aggregation_type, aggregation_sub_type)`:
+
+| Type | Sub-type | Updater |
+|------|----------|---------|
+| SingleSubpopulation | Sum | SumAccumulatorUpdater |
+| SingleSubpopulation | Min/Max | MinMaxAccumulatorUpdater |
+| SingleSubpopulation | Increase | IncreaseAccumulatorUpdater |
+| SingleSubpopulation | KLL | KllAccumulatorUpdater |
+| MultipleSubpopulation | Sum | MultipleSumUpdater |
+| MultipleSubpopulation | Min/Max | MultipleMinMaxUpdater |
+| MultipleSubpopulation | Increase | MultipleIncreaseUpdater |
+| MultipleSubpopulation | CMS | CmsAccumulatorUpdater |
+| MultipleSubpopulation | HydraKLL | HydraKllAccumulatorUpdater |
+
+### 3.8 OutputSink (`output_sink.rs`)
+
+```rust
+trait OutputSink: Send + Sync {
+    fn emit_batch(
+        &self,
+        outputs: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+```
+
+**Implementations:**
+- `StoreOutputSink` — calls `store.insert_precomputed_output_batch()`
+- `RawPassthroughSink` — same interface, used for raw mode
+- `NoopOutputSink` — testing helper that counts emitted items
+
+## 4. Data Model
+
+### PrecomputedOutput
+
+```rust
+pub struct PrecomputedOutput {
+    pub start_timestamp: u64,              // window start (ms)
+    pub end_timestamp: u64,                // window end (ms)
+    pub key: Option<KeyByLabelValues>,     // grouping key (e.g. method="GET")
+    pub aggregation_id: u64,
+}
+```
+
+### KeyByLabelValues
+
+Ordered vector of label values matching the `grouping_labels` in the aggregation
+config. Serialized as semicolon-delimited strings for hashing/storage.
+
+### AggregationConfig
+
+Loaded from `streaming_config.yaml`:
+
+```rust
+pub struct AggregationConfig {
+    pub aggregation_id: u64,
+    pub aggregation_type: String,        // "SingleSubpopulation" | "MultipleSubpopulation"
+    pub aggregation_sub_type: String,    // "Sum" | "Min" | "Max" | "Increase" | "KLL" | ...
+    pub parameters: HashMap<String, Value>,
+    pub grouping_labels: KeyByLabelNames,
+    pub window_size: u64,                // seconds
+    pub slide_interval: u64,             // seconds (0 = tumbling)
+    pub metric: String,
+    pub spatial_filter: String,
+    pub num_aggregates_to_retain: Option<u64>,
+    // ...
+}
+```
+
+## 5. Store Integration
+
+### Write path
+
+`OutputSink.emit_batch()` → `Store.insert_precomputed_output_batch()`
+
+Because the precompute engine runs in the same process as the store, the write
+path involves **zero serialization and zero network hops**. Closed window
+accumulators flow from worker to store entirely as in-memory trait objects:
+
+```
+Worker: updater.take_accumulator()     → Box<dyn AggregateCore>  (in-memory)
+   ↓  (direct function call, no IPC)
+OutputSink: store.insert_precomputed_output_batch(outputs)  (pass-through)
+   ↓  (direct function call, same process)
+SimpleMapStore: HashMap entry insert   → Box<dyn AggregateCore>  (stored as-is)
+```
+
+No serialization, deserialization, compression, or network transfer occurs
+between the worker extracting an accumulator and the store persisting it.
+The only network hops in the system are at the edges: HTTP ingest (in) and
+HTTP query (out). Serialization of accumulators only happens on the read path
+when query results are returned to clients.
+
+This is in contrast to the external Kafka ingest path, where precomputes from
+Arroyo/Flink arrive hex-encoded + gzip-compressed + MessagePack-serialized and
+require multiple deserialization steps.
+
+The `SimpleMapStore` (PerKey variant) uses:
+```
+DashMap<aggregation_id, Arc<RwLock<StoreKeyData>>>
+```
+where:
+```rust
+struct StoreKeyData {
+    time_map: HashMap<(u64, u64), Vec<(Option<KeyByLabelValues>, Box<dyn AggregateCore>)>>,
+    read_counts: HashMap<(u64, u64), u64>,
+}
+```
+
+Multiple entries per `(start_ts, end_ts)` are allowed — they are appended, not
+overwritten. This is what makes `ForwardToStore` late-data policy work: the late
+mini-accumulator is stored alongside the original window accumulator.
+
+### Read path / query-time merge
+
+At query time, `PrecomputedSummaryReadExec` reads sparse buckets from the store.
+`SummaryMergeMultipleExec` groups by label key and merges via
+`accumulator.merge_with()`.
+
+The `NaiveMerger` re-merges all accumulators in the window on each slide.
+The store's existing multi-entry-per-window design means late data is
+automatically combined with original window data at query time.
+
+### Cleanup policies
+
+| Policy | Behavior |
+|--------|----------|
+| CircularBuffer | Keep N most recent windows (4x `num_aggregates_to_retain`) |
+| ReadBased | Remove after `read_count >= threshold` |
+| NoCleanup | Retain forever |
+
+## 6. Late Data Handling
+
+Two checks determine whether a sample is "late":
+
+1. **Watermark check** (sample-level): `ts < watermark - allowed_lateness_ms` →
+   sample is dropped entirely before reaching any aggregation logic.
+
+2. **Window closure check** (window-level): the sample passes the watermark check
+   but targets a window that is already closed
+   (`window not in active_windows && watermark >= window_end`).
+
+For case 2, the `LateDataPolicy` controls behavior:
+
+- **Drop**: log at debug level and skip. No ghost accumulator is created
+  (fixing the original bug where `or_insert_with` would create orphaned entries).
+
+- **ForwardToStore**: create a fresh `AccumulatorUpdater`, feed the single
+  late sample, wrap as `PrecomputedOutput`, and push into the same `emit_batch`
+  as normal closed-window outputs. The store appends it alongside the original
+  window data, and query-time merge combines them.
+
+## 7. Concurrency Model
+
+The current implementation is **single-machine, multi-threaded**. All components
+(HTTP server, workers, store) run within a single OS process as Tokio async
+tasks on a shared thread pool. There is no distributed coordination, no
+cross-machine communication, and no external dependency beyond the store.
+
+- **Ingest HTTP handlers**: Per-connector Axum async handlers (Prometheus, VictoriaMetrics) with shared format-agnostic routing logic.
+- **SeriesRouter**: Lock-free hash routing. No shared mutable state.
+- **Workers**: Each worker is a single Tokio task that owns its `series_map`
+  exclusively. No locks needed within a worker — thread safety comes from
+  the hash-partitioning guarantee that each series is assigned to exactly one
+  worker.
+- **OutputSink / Store**: Thread-safe (`Arc<dyn OutputSink>`, DashMap-backed store).
+  Workers emit concurrently; the PerKey store uses per-aggregation_id RwLocks
+  to minimize contention.
+- **Flush timer**: Separate Tokio task, communicates via the same MPSC channels.
+
+Scaling beyond a single machine would require partitioning the series space
+across multiple engine instances (e.g. via consistent hashing at the load
+balancer level), each running this same single-process architecture
+independently.
+
+## 8. Performance Characteristics
+
+**Ingest path (per batch):**
+- Sample insert: O(log B) per sample (BTreeMap, B = buffer size)
+- Pane routing: O(A) per sample (A = matching aggregations; each sample
+  touches exactly 1 pane per aggregation, regardless of window overlap)
+- Accumulator update: O(1) for Sum/MinMax, O(log k) for KLL
+- Window close: O(W-1) merges per closed window (W = window_size / slide_interval)
+
+**Memory:**
+- O(S × N) buffered samples (S = max per series, N = active series)
+- O(A × W_open) active pane accumulators (fewer than window accumulators
+  since panes are shared across overlapping windows)
+
+**Throughput:**
+- Workers process in parallel with no cross-shard coordination.
+- E2E test demonstrates ~10M samples/sec sustained throughput with raw mode.
+
+## 9. CLI Usage
+
+### Standalone binary
+
+```bash
+cargo run --bin precompute_engine -- \
+  --streaming-config streaming_config.yaml \
+  --ingest-port 9090 \
+  --num-workers 4 \
+  --allowed-lateness-ms 5000 \
+  --max-buffer-per-series 10000 \
+  --flush-interval-ms 1000 \
+  --channel-buffer-size 10000 \
+  --query-port 8080 \
+  --lock-strategy per-key \
+  --late-data-policy drop
+```
+
+### Embedded in main binary
+
+The precompute engine is also embedded in the main `query_engine_rust` binary,
+enabled via `--enable-prometheus-remote-write`. In this mode it shares the
+store with the Kafka consumer path.
+
+## 10. Testing
+
+- **Unit tests**: `worker.rs` (metric/label extraction), `window_manager.rs`
+  (tumbling/sliding arithmetic), `series_buffer.rs` (ordering, watermark),
+  `accumulator_factory.rs` (updater creation), `series_router.rs` (hashing),
+  `config.rs` (defaults).
+- **E2E test** (`bin/test_e2e_precompute.rs`): Starts engine + store + query
+  server in-process, sends remote-write samples, queries via PromQL HTTP,
+  validates results. Includes batch latency and throughput benchmarks.
+
+## 11. File Map
+
+| File | Purpose |
+|------|---------|
+| `precompute_engine/mod.rs` | Orchestrator, HTTP ingest handler |
+| `precompute_engine/config.rs` | `PrecomputeEngineConfig`, `LateDataPolicy` |
+| `precompute_engine/worker.rs` | Per-shard processing, aggregation, window management |
+| `precompute_engine/series_router.rs` | Hash-based series → worker routing |
+| `precompute_engine/series_buffer.rs` | Per-series BTreeMap sample buffer |
+| `precompute_engine/window_manager.rs` | Tumbling/sliding window logic |
+| `precompute_engine/accumulator_factory.rs` | `AccumulatorUpdater` trait + factory |
+| `precompute_engine/output_sink.rs` | `OutputSink` trait + Store/Noop impls |
+| `bin/precompute_engine.rs` | Standalone CLI binary |
+| `bin/test_e2e_precompute.rs` | End-to-end integration test |
