@@ -575,7 +575,6 @@ mod tests {
     use serde_json::json;
     use std::io::Write;
 
-
     #[test]
     fn test_extract_metric_name() {
         assert_eq!(
@@ -670,8 +669,8 @@ mod tests {
             rx,
             sink,
             agg_configs,
-            10_000,  // max_buffer_per_series
-            0,       // allowed_lateness_ms
+            10_000, // max_buffer_per_series
+            0,      // allowed_lateness_ms
             pass_raw,
             raw_agg_id,
             late_policy,
@@ -1096,10 +1095,10 @@ mod tests {
             rx,
             sink.clone(),
             agg_configs,
-            10_000,  // max_buffer_per_series
-            0,       // allowed_lateness_ms
-            false,   // pass_raw_samples
-            0,       // raw_mode_aggregation_id
+            10_000, // max_buffer_per_series
+            0,      // allowed_lateness_ms
+            false,  // pass_raw_samples
+            0,      // raw_mode_aggregation_id
             LateDataPolicy::Drop,
         );
 
@@ -1139,9 +1138,9 @@ mod tests {
             sink.clone(),
             agg_configs,
             10_000,  // max_buffer_per_series
-            15_000,  // allowed_lateness_ms
-            false,   // pass_raw_samples
-            0,       // raw_mode_aggregation_id
+            15_000, // allowed_lateness_ms
+            false,  // pass_raw_samples
+            0,      // raw_mode_aggregation_id
             LateDataPolicy::ForwardToStore,
         );
 
@@ -1256,7 +1255,6 @@ aggregations:
             sum_acc.sum
         );
     }
-
 
     #[test]
     fn test_extract_key_from_series() {
