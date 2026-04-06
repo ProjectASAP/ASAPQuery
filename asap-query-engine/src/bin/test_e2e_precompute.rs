@@ -594,6 +594,7 @@ fn make_sum_agg_config(
         None,
         None,
         None,
+        None,
     )
 }
 
