@@ -1,0 +1,15 @@
+query_groups:
+  - id: 1
+    queries:
+      - "foo(errors_total[5m]) / rate(requests_total[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "errors_total"
+    labels: ["instance"]
+  - metric: "requests_total"
+    labels: ["instance"]
+aggregate_cleanup:
+  policy: "read_based"

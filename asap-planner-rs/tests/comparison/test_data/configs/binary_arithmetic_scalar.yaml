@@ -1,0 +1,13 @@
+query_groups:
+  - id: 1
+    queries:
+      - "rate(errors_total[5m]) * 100"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "errors_total"
+    labels: ["instance", "job"]
+aggregate_cleanup:
+  policy: "read_based"
