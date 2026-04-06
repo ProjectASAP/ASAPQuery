@@ -1064,10 +1064,7 @@ mod tests {
             Some(KeyByLabelValues::new_with_labels(vec![String::new()]))
         );
         assert_eq!(handcrafted_acc.inner.k, arroyo_acc.inner.k);
-        assert_eq!(
-            handcrafted_acc.inner.count(),
-            arroyo_acc.inner.count()
-        );
+        assert_eq!(handcrafted_acc.inner.count(), arroyo_acc.inner.count());
 
         for quantile in [0.0, 0.5, 1.0] {
             assert_eq!(
