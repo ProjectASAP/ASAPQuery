@@ -1137,7 +1137,7 @@ mod tests {
             rx,
             sink.clone(),
             agg_configs,
-            10_000,  // max_buffer_per_series
+            10_000, // max_buffer_per_series
             15_000, // allowed_lateness_ms
             false,  // pass_raw_samples
             0,      // raw_mode_aggregation_id
