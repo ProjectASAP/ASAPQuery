@@ -222,7 +222,6 @@ from `active_panes`. Remaining panes are read non-destructively via
 When `pass_raw_samples = true`, the entire aggregation pipeline is bypassed.
 Each sample is emitted as a `SumAccumulator::with_sum(value)` with point-window
 bounds `[ts, ts]` and the configured `raw_mode_aggregation_id`.
-
 ### 3.5 SeriesBuffer (`series_buffer.rs`)
 
 Per-series in-memory buffer backed by `BTreeMap<i64, f64>`.
@@ -305,7 +304,6 @@ The worker calls `window_starts_containing(ts)` for each incoming sample and fee
 the value into the accumulator for every matching window. When
 `closed_windows()` fires, each closed window's accumulator is extracted and
 emitted independently.
-
 ### 3.7 AccumulatorUpdater (`accumulator_factory.rs`)
 
 Trait-based interface for feeding samples into sketch accumulators:
