@@ -117,7 +117,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Start query server
     let query_engine = Arc::new(SimpleEngine::new(
         store.clone(),
-        None, // no PromSketchStore for precompute E2E test
         inference_config,
         streaming_config.clone(),
         SCRAPE_INTERVAL,
@@ -588,13 +587,11 @@ fn make_sum_agg_config(
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         String::new(),
         window_size_secs,
+        slide_interval_secs,
+        window_type.to_string(),
         "bench_metric".to_string(),
         "bench_metric".to_string(),
         None,
-        None,
-        Some(window_size_secs),
-        Some(slide_interval_secs),
-        Some(window_type.to_string()),
         None,
         None,
     )
