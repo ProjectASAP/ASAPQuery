@@ -1065,8 +1065,8 @@ mod tests {
         );
         assert_eq!(handcrafted_acc.inner.k, arroyo_acc.inner.k);
         assert_eq!(
-            handcrafted_acc.inner.sketch.get_n(),
-            arroyo_acc.inner.sketch.get_n()
+            handcrafted_acc.inner.count(),
+            arroyo_acc.inner.count()
         );
 
         for quantile in [0.0, 0.5, 1.0] {
