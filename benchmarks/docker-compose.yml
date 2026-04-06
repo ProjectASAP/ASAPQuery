@@ -1,0 +1,20 @@
+# CI image override: replaces quickstart's pinned release images with images
+# built from the current branch. Intended for use as a Compose override:
+#
+#   ASAP_IMAGE_TAG=sha-<short-sha> docker compose \
+#     --project-directory . \
+#     -f asap-quickstart/docker-compose.yml \
+#     -f benchmarks/docker-compose.yml \
+#     up -d
+#
+# ASAP_IMAGE_TAG is set automatically by the 'build' job in accuracy_performance.yml.
+
+services:
+  asap-planner-rs:
+    image: ghcr.io/projectasap/asap-planner-rs:${ASAP_IMAGE_TAG}
+
+  asap-summary-ingest:
+    image: ghcr.io/projectasap/asap-summary-ingest:${ASAP_IMAGE_TAG}
+
+  queryengine:
+    image: ghcr.io/projectasap/asap-query-engine:${ASAP_IMAGE_TAG}

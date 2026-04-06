@@ -106,8 +106,8 @@ class ArroyoService(BaseService):
         enable_optimized_remote_write: bool = False,
         avoid_long_ssh: bool = False,
         sketch_cms_impl: str = "sketchlib",
-        sketch_kll_impl: str = "legacy",
-        sketch_cmwh_impl: str = "legacy",
+        sketch_kll_impl: str = "sketchlib",
+        sketch_cmwh_impl: str = "sketchlib",
     ) -> str:
         """
         Run ArroyoSketch pipeline.

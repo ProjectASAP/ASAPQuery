@@ -952,10 +952,6 @@ def main(args):
             parameters["impl_mode"] = getattr(
                 args, "sketch_cmwh_impl", "legacy"
             ).capitalize()
-        elif agg_function in ("datasketcheskll_", "hydrakll_"):
-            parameters["impl_mode"] = getattr(
-                args, "sketch_kll_impl", "legacy"
-            ).capitalize()
 
         sql_queries.append(sql_query)
         # if not is_labels_accumulator:
@@ -1123,14 +1119,14 @@ if __name__ == "__main__":
         "--sketch_kll_impl",
         type=str,
         choices=["legacy", "sketchlib"],
-        default="legacy",
+        default="sketchlib",
         help="KLL Sketch backend (legacy | sketchlib). Must match QueryEngine.",
     )
     parser.add_argument(
         "--sketch_cmwh_impl",
         type=str,
         choices=["legacy", "sketchlib"],
-        default="legacy",
+        default="sketchlib",
         help="Count-Min-With-Heap backend (legacy | sketchlib). Must match QueryEngine.",
     )
 

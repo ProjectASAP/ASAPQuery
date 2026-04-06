@@ -1,3 +1,6 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Build](https://github.com/ProjectASAP/ASAPQuery/actions/workflows/rust.yml/badge.svg)](https://github.com/ProjectASAP/ASAPQuery/actions/workflows/rust.yml)
+
 # ASAPQuery
 
 **ASAPQuery** is a drop-in query accelerator for queries in various languages like PromQL and SQL. ASAPQuery delivers:
