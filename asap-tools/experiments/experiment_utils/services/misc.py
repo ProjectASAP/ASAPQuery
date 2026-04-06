@@ -198,6 +198,7 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
+        prometheus_url: str,
         **kwargs,
     ) -> None:
         """
@@ -209,6 +210,7 @@ class ControllerService(BaseService):
             streaming_engine: Type of streaming engine
             controller_remote_output_dir: Controller output directory
             punting: Enable query punting based on performance heuristics
+            prometheus_url: Base URL of the Prometheus instance for metric label inference
             **kwargs: Additional configuration
         """
         if self.use_container:
@@ -218,6 +220,7 @@ class ControllerService(BaseService):
                 streaming_engine,
                 controller_remote_output_dir,
                 punting,
+                prometheus_url,
             )
         else:
             return self._start_bare_metal(
@@ -226,6 +229,7 @@ class ControllerService(BaseService):
                 streaming_engine,
                 controller_remote_output_dir,
                 punting,
+                prometheus_url,
             )
 
     def _start_bare_metal(
@@ -235,12 +239,14 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
+        prometheus_url: str,
     ) -> None:
-        cmd = "./target/release/asap-planner --input_config {} --prometheus_scrape_interval {} --output_dir {} --streaming_engine {}".format(
+        cmd = "./target/release/asap-planner --input_config {} --prometheus_scrape_interval {} --output_dir {} --streaming_engine {} --prometheus-url {}".format(
             controller_input_file,
             prometheus_scrape_interval,
             controller_remote_output_dir,
             streaming_engine,
+            prometheus_url,
         )
         if punting:
             cmd += " --enable-punting"
@@ -261,6 +267,7 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
+        prometheus_url: str,
     ):
         controller_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-planner-rs"
@@ -288,6 +295,7 @@ class ControllerService(BaseService):
         generate_cmd += f" --controller-output-dir {controller_remote_output_dir}"
         generate_cmd += f" --prometheus-scrape-interval {prometheus_scrape_interval}"
         generate_cmd += f" --streaming-engine {streaming_engine}"
+        generate_cmd += f" --prometheus-url {prometheus_url}"
         if punting:
             generate_cmd += " --punting"
 

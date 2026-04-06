@@ -9,7 +9,8 @@ services:
       "--input_config", "/app/input/config.yaml",
       "--output_dir", "/app/output",
       "--prometheus_scrape_interval", "{{ prometheus_scrape_interval }}",
-      "--streaming_engine", "{{ streaming_engine }}"{% if punting %},
+      "--streaming_engine", "{{ streaming_engine }}",
+      "--prometheus-url", "{{ prometheus_url }}"{% if punting %},
       "--enable-punting"{% endif %}
     ]
     restart: no

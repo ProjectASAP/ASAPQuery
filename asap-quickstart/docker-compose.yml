@@ -136,9 +136,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    depends_on:
-      asap-summary-ingest:
-        condition: service_completed_successfully
     restart: no
 
   grafana:
@@ -179,12 +176,16 @@ services:
       - "--input_config=/config/controller-config.yaml"
       - "--output_dir=/asap-planner-output"
       - "--prometheus_scrape_interval=1"
+      - "--prometheus-url=http://prometheus:9090"
       - "--streaming_engine=arroyo"
       - "--range-duration=300"
       - "--step=10"
     volumes:
       - ./config/controller-config.yaml:/config/controller-config.yaml:ro
       - asap-planner-output:/asap-planner-output
+    depends_on:
+      prometheus:
+        condition: service_healthy
     restart: "no"
 
   asap-summary-ingest:
@@ -347,7 +348,6 @@ services:
       - "--valuescale=1000"
       - "--dataset=sine"
       - "--num-labels=3"
-      - "--num-values-per-label=30,30,30"
       - "--num-values-per-label=30,30,30"
       - "--metric-type=gauge"
       - "--metric-name=sensor_reading"
