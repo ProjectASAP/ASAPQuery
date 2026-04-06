@@ -408,7 +408,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Pre-build all request bodies in parallel using rayon-style chunking via tokio tasks.
     // Each task builds its share of requests, then we flatten the results.
     let num_build_tasks = num_concurrent_senders;
-    let requests_per_task = (num_requests as usize + num_build_tasks - 1) / num_build_tasks;
+    let requests_per_task = (num_requests as usize).div_ceil(num_build_tasks);
     let mut build_handles = Vec::with_capacity(num_build_tasks);
     for task_idx in 0..num_build_tasks {
         let start = task_idx * requests_per_task;
@@ -599,6 +599,7 @@ fn make_sum_agg_config(
 }
 
 /// Run a single windowed benchmark and return the results.
+#[allow(clippy::too_many_arguments)]
 async fn run_single_bench(
     client: &reqwest::Client,
     label: &str,
