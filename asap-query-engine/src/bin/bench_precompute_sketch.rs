@@ -141,6 +141,7 @@ fn make_kll_streaming_config(
         None,
         None,
         None,
+        None,
     );
 
     let mut agg_map = HashMap::new();
