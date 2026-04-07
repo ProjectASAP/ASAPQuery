@@ -92,6 +92,14 @@ compatibility rules:
   exactly one range per timestamp; you can't merge overlapping windows).
 - **Spatial-only** (`data_range_ms = None`): any window is compatible.
 
+`QueryRequirements` intentionally does **not** carry start/end timestamps. Capability matching is
+about whether a config can serve a query's *shape* (how much historical data it needs), not *when*
+that data was recorded. The actual timestamps are computed separately in
+`calculate_query_timestamps_promql` / `calculate_query_timestamps_sql` and placed into
+`StoreQueryParams` after the aggregation has been selected. This keeps the two concerns — "can
+this config serve this query type?" and "fetch this time window from the store" — cleanly
+separated.
+
 ### Q9: Where does the capability matching logic live?
 **Decision**: `sketch_db_common` (the shared crate). Rationale: this logic is pure — it takes a
 map of `AggregationConfig` values and a `QueryRequirements` and produces an `AggregationIdInfo`.
@@ -113,6 +121,40 @@ common function, so call sites inside the engine don't need to reach into common
 aggregation must have the same `window_size` and `grouping_labels`. This is the simpler, safer
 choice — mixing aggregations with different windows or label granularities would produce
 semantically incorrect results.
+
+---
+
+## Known Limitations
+
+### Cleanup policy is not considered
+`CleanupPolicy` (`CircularBuffer`, `ReadBased`, `NoCleanup`) and `num_aggregates_to_retain` live
+on `InferenceConfig` / `AggregationReference` — not on `AggregationConfig`. Capability matching
+only inspects `AggregationConfig`, so it has no visibility into how many historical windows a given
+aggregation is actually retaining.
+
+**Practical consequence**: if a `CircularBuffer` aggregation retains only N windows but a query
+needs more, capability matching will still route to it. The failure surfaces at query execution
+time (the store returns insufficient data), not at routing time.
+
+The `query_configs` path handles this correctly because `num_aggregates_to_retain` is set
+explicitly per query via `AggregationReference`, giving operators direct control. Capability
+matching has no equivalent mechanism today.
+
+**Future mitigation**: add `data_range_ms` coverage check — verify that the store actually holds
+at least `ceil(data_range_ms / window_size_ms)` recent windows for the selected aggregation before
+committing to it.
+
+### Label compatibility is strictly exact
+A config grouped by `{job, instance}` does **not** match a query grouping by `{job}` only, even
+though label collapsing is mathematically valid for simple accumulators. This is conservative: for
+sketch types (KLL, CountMin) label collapsing is not well-defined. See the TODO comment in
+`labels_compatible` in `capability_matching.rs` for the planned relaxation.
+
+### No structured rejection reasons
+When no match is found, `find_compatible_aggregation` returns `None` without explaining which
+candidates were considered and why each was rejected. Debug-level logs record per-candidate
+rejections, but there is no structured error type. This makes diagnosing misconfigurations harder
+— see "Rich rejection errors" in the Rejected section below.
 
 ---
 
