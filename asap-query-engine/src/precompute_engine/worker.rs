@@ -666,10 +666,7 @@ mod tests {
     fn arc_configs(
         configs: HashMap<u64, AggregationConfig>,
     ) -> HashMap<u64, Arc<AggregationConfig>> {
-        configs
-            .into_iter()
-            .map(|(k, v)| (k, Arc::new(v)))
-            .collect()
+        configs.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
     }
 
     // -----------------------------------------------------------------------
@@ -679,8 +676,7 @@ mod tests {
     #[test]
     fn test_raw_mode_forwarding() {
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(HashMap::new(), sink.clone(), true, 99, LateDataPolicy::Drop);
+        let mut worker = make_worker(HashMap::new(), sink.clone(), true, 99, LateDataPolicy::Drop);
 
         let samples = vec![(1000_i64, 1.5_f64), (2000, 2.5), (3000, 7.0)];
         worker
@@ -717,8 +713,13 @@ mod tests {
         agg_configs.insert(1, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(arc_configs(agg_configs), sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
 
         // Samples in window [0, 10000ms): sum should be 1+2+3=6.
         // Send one at a time so the watermark advances incrementally —
@@ -776,8 +777,13 @@ mod tests {
         agg_configs.insert(2, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(arc_configs(agg_configs), sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
 
         // Sample at t=15000ms → goes to pane 10000ms
         // previous_wm == i64::MIN → no windows close
@@ -844,8 +850,13 @@ mod tests {
         agg_configs.insert(3, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker =
-            make_worker(arc_configs(agg_configs), sink.clone(), false, 0, LateDataPolicy::Drop);
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
 
         // Feed two series in the same window [0, 10000ms)
         worker

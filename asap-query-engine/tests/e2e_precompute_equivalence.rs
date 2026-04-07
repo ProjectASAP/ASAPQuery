@@ -10,8 +10,8 @@
 use flate2::{write::GzEncoder, Compression};
 use prost::Message;
 use serde_json::json;
-use sketch_db_common::aggregation_config::AggregationConfig;
 use sketch_core::kll::KllSketch;
+use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -64,7 +64,12 @@ fn make_agg_config(
     )
 }
 
-fn make_timeseries(metric: &str, extra_labels: Vec<(&str, &str)>, ts_ms: i64, value: f64) -> TimeSeries {
+fn make_timeseries(
+    metric: &str,
+    extra_labels: Vec<(&str, &str)>,
+    ts_ms: i64,
+    value: f64,
+) -> TimeSeries {
     let mut labels = vec![Label {
         name: "__name__".into(),
         value: metric.into(),
@@ -141,7 +146,15 @@ async fn e2e_kll_output_matches_arroyo() {
     let window_secs = 10u64;
     let k = 20u16;
 
-    let mut kll_config = make_agg_config(agg_id, "latency", "DatasketchesKLL", "", window_secs, 0, vec![]);
+    let mut kll_config = make_agg_config(
+        agg_id,
+        "latency",
+        "DatasketchesKLL",
+        "",
+        window_secs,
+        0,
+        vec![],
+    );
     kll_config
         .parameters
         .insert("K".to_string(), serde_json::Value::from(k as u64));
@@ -164,11 +177,21 @@ async fn e2e_kll_output_matches_arroyo() {
     // Three samples inside window [0ms, 10_000ms)
     for (i, &v) in values.iter().enumerate() {
         let ts_ms = (i as i64 + 1) * 1_000;
-        send_remote_write(&client, port, vec![make_timeseries("latency", vec![], ts_ms, v)]).await;
+        send_remote_write(
+            &client,
+            port,
+            vec![make_timeseries("latency", vec![], ts_ms, v)],
+        )
+        .await;
     }
 
     // Advance watermark past window end to trigger close
-    send_remote_write(&client, port, vec![make_timeseries("latency", vec![], 15_000, 0.0)]).await;
+    send_remote_write(
+        &client,
+        port,
+        vec![make_timeseries("latency", vec![], 15_000, 0.0)],
+    )
+    .await;
 
     // Wait for flush
     tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
@@ -188,7 +211,8 @@ async fn e2e_kll_output_matches_arroyo() {
         .expect("captured accumulator should be DatasketchesKLLAccumulator");
 
     // Build the ArroYo-format equivalent and deserialize it
-    let arroyo_bytes = KllSketch::aggregate_kll(k, &values).expect("KllSketch::aggregate_kll failed");
+    let arroyo_bytes =
+        KllSketch::aggregate_kll(k, &values).expect("KllSketch::aggregate_kll failed");
     let arroyo_json = json!({
         "aggregation_id": agg_id,
         "window": { "start": "1970-01-01T00:00:00", "end": "1970-01-01T00:00:10" },
@@ -210,7 +234,10 @@ async fn e2e_kll_output_matches_arroyo() {
     assert_eq!(handcrafted_output.end_timestamp, window_secs * 1_000);
 
     // Sketch contents
-    assert_eq!(handcrafted_acc.inner.k, arroyo_acc.inner.k, "KLL k mismatch");
+    assert_eq!(
+        handcrafted_acc.inner.k, arroyo_acc.inner.k,
+        "KLL k mismatch"
+    );
     assert_eq!(
         handcrafted_acc.inner.sketch.get_n(),
         arroyo_acc.inner.sketch.get_n(),
@@ -236,7 +263,15 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     let agg_id = 2u64;
     let window_secs = 10u64;
 
-    let config = make_agg_config(agg_id, "cpu", "MultipleSum", "sum", window_secs, 0, vec!["host"]);
+    let config = make_agg_config(
+        agg_id,
+        "cpu",
+        "MultipleSum",
+        "sum",
+        window_secs,
+        0,
+        vec!["host"],
+    );
     let mut agg_map = HashMap::new();
     agg_map.insert(agg_id, config);
     let streaming_config = Arc::new(StreamingConfig::new(agg_map.clone()));
@@ -310,8 +345,7 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
 
     // Accumulator contents
     assert_eq!(
-        handcrafted_acc.sums,
-        arroyo_acc.sums,
+        handcrafted_acc.sums, arroyo_acc.sums,
         "MultipleSum sums map mismatch"
     );
 }

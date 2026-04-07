@@ -755,7 +755,10 @@ mod tests {
         assert!(!config_is_keyed(&make_config("Increase", "")));
 
         // Keyed types
-        assert!(config_is_keyed(&make_config("MultipleSubpopulation", "Sum")));
+        assert!(config_is_keyed(&make_config(
+            "MultipleSubpopulation",
+            "Sum"
+        )));
         assert!(config_is_keyed(&make_config("MultipleSum", "")));
         assert!(config_is_keyed(&make_config("MultipleIncrease", "")));
         assert!(config_is_keyed(&make_config("MultipleMinMax", "")));

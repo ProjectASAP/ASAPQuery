@@ -1,6 +1,8 @@
 use clap::Parser;
 use prost::Message;
-use query_engine_rust::data_model::{AggregateCore, CleanupPolicy, LockStrategy, PrecomputedOutput, StreamingConfig};
+use query_engine_rust::data_model::{
+    AggregateCore, CleanupPolicy, LockStrategy, PrecomputedOutput, StreamingConfig,
+};
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
     Label, Sample, TimeSeries, WriteRequest,
 };
@@ -114,7 +116,11 @@ fn make_timeseries(metric: &str, label_0: &str, samples: Vec<Sample>) -> TimeSer
     }
 }
 
-fn make_kll_streaming_config(aggregation_id: u64, window_size_secs: u64, k: u16) -> Arc<StreamingConfig> {
+fn make_kll_streaming_config(
+    aggregation_id: u64,
+    window_size_secs: u64,
+    k: u16,
+) -> Arc<StreamingConfig> {
     let mut params = HashMap::new();
     params.insert("K".to_string(), serde_json::Value::from(k as u64));
 
@@ -293,11 +299,8 @@ async fn run_latency_benchmark(
             window_start_ms,
             window_size_ms,
         );
-        let watermark_body = build_watermark_body(
-            metric,
-            args.num_series,
-            window_start_ms + window_size_ms,
-        );
+        let watermark_body =
+            build_watermark_body(metric, args.num_series, window_start_ms + window_size_ms);
 
         let t0 = Instant::now();
         post_body(client, args.latency_port, batch_body).await?;
@@ -320,7 +323,10 @@ async fn run_latency_benchmark(
         0,
         ((args.latency_repetitions as u64) + 10) * args.window_size_secs * 1000,
     )?;
-    let stored_windows: usize = latency_store_results.values().map(|buckets| buckets.len()).sum();
+    let stored_windows: usize = latency_store_results
+        .values()
+        .map(|buckets| buckets.len())
+        .sum();
 
     println!("\n=== DatasketchesKLL latency benchmark ===");
     println!(
@@ -411,12 +417,8 @@ async fn run_throughput_benchmark(
     post_body(client, args.throughput_port, final_watermark).await?;
     let send_elapsed = throughput_start.elapsed();
 
-    let wait_elapsed = wait_for_emitted_outputs(
-        &sink,
-        expected_outputs,
-        Duration::from_secs(60),
-    )
-    .await?;
+    let wait_elapsed =
+        wait_for_emitted_outputs(&sink, expected_outputs, Duration::from_secs(60)).await?;
     let total_elapsed = throughput_start.elapsed();
 
     let store_results = store.query_precomputed_output(
