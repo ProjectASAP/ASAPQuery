@@ -145,7 +145,7 @@ This file defines which components get synced to CloudLab. Each component must b
 ```bash
 asap-tools
 asap-common
-sketchlib-rust
+asap_sketchlib
 asap-query-engine
 asap-planner-rs
 asap-summary-ingest

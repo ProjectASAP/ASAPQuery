@@ -16,7 +16,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
 use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValueVariant;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberValue;
 use prost::Message;
-use sketchlib_rust::proto::sketchlib::{sketch_envelope, SketchEnvelope};
+use asap_sketchlib::proto::sketchlib::{sketch_envelope, SketchEnvelope};
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 

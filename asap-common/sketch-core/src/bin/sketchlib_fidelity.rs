@@ -337,17 +337,17 @@ fn main() {
     let cms_mode = if matches!(args.cms_impl, ImplMode::Legacy) {
         "Legacy"
     } else {
-        "sketchlib-rust"
+        "asap_sketchlib"
     };
     let cmwh_mode = if matches!(args.cmwh_impl, ImplMode::Legacy) {
         "Legacy"
     } else {
-        "sketchlib-rust"
+        "asap_sketchlib"
     };
     let kll_mode = if matches!(args.kll_impl, ImplMode::Legacy) {
         "Legacy"
     } else {
-        "sketchlib-rust"
+        "asap_sketchlib"
     };
 
     // CountMinSketch: multiple (depth, width, n, domain)

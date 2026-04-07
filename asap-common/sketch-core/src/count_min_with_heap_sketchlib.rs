@@ -1,10 +1,10 @@
-//! Sketchlib-rust CMSHeap integration for CountMinSketchWithHeap.
+//! asap_sketchlib CMSHeap integration for CountMinSketchWithHeap.
 //!
-//! Uses CMSHeap (CountMin + HHHeap) from sketchlib-rust instead of CountMin + local heap,
+//! Uses CMSHeap (CountMin + HHHeap) from asap_sketchlib instead of CountMin + local heap,
 //! providing automatic top-k tracking during insert and merge.
 
-use sketchlib_rust::RegularPath;
-use sketchlib_rust::{CMSHeap, SketchInput, Vector2D};
+use asap_sketchlib::RegularPath;
+use asap_sketchlib::{CMSHeap, SketchInput, Vector2D};
 
 /// Wire-format heap item (key, value) to avoid circular dependency with count_min_with_heap.
 pub struct WireHeapItem {
@@ -12,7 +12,7 @@ pub struct WireHeapItem {
     pub value: f64,
 }
 
-/// Concrete Count-Min-with-Heap type from sketchlib-rust (CMS + HHHeap).
+/// Concrete Count-Min-with-Heap type from asap_sketchlib (CMS + HHHeap).
 pub type SketchlibCMSHeap = CMSHeap<Vector2D<i64>, RegularPath>;
 
 /// Creates a fresh CMSHeap with the given dimensions and heap capacity.
@@ -81,7 +81,7 @@ pub fn heap_to_wire(cms_heap: &SketchlibCMSHeap) -> Vec<WireHeapItem> {
         .iter()
         .map(|hh_item| {
             let key = match &hh_item.key {
-                sketchlib_rust::HeapItem::String(s) => s.clone(),
+                asap_sketchlib::HeapItem::String(s) => s.clone(),
                 other => format!("{:?}", other),
             };
             WireHeapItem {
