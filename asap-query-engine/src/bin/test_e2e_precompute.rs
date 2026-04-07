@@ -566,6 +566,17 @@ struct BenchResult {
     batch_latency_ms: f64,
 }
 
+struct BenchRunConfig {
+    label: String,
+    port: u16,
+    streaming_config: Arc<StreamingConfig>,
+    num_workers: usize,
+    num_concurrent_senders: usize,
+    num_requests: u64,
+    samples_per_request: u64,
+    num_series: u64,
+}
+
 /// Build an AggregationConfig for Sum with specified window parameters.
 fn make_sum_agg_config(
     agg_id: u64,
@@ -599,18 +610,20 @@ fn make_sum_agg_config(
 }
 
 /// Run a single windowed benchmark and return the results.
-#[allow(clippy::too_many_arguments)]
 async fn run_single_bench(
     client: &reqwest::Client,
-    label: &str,
-    port: u16,
-    streaming_config: Arc<StreamingConfig>,
-    num_workers: usize,
-    num_concurrent_senders: usize,
-    num_requests: u64,
-    samples_per_request: u64,
-    num_series: u64,
+    config: BenchRunConfig,
 ) -> Result<BenchResult, Box<dyn std::error::Error + Send + Sync>> {
+    let BenchRunConfig {
+        label,
+        port,
+        streaming_config,
+        num_workers,
+        num_concurrent_senders,
+        num_requests,
+        samples_per_request,
+        num_series,
+    } = config;
     let total_samples = num_requests * samples_per_request;
 
     let noop_sink = Arc::new(NoopOutputSink::new());
@@ -728,7 +741,7 @@ async fn run_single_bench(
     println!("    Batch latency: {batch_latency_ms:.1}ms");
 
     Ok(BenchResult {
-        label: label.to_string(),
+        label,
         send_throughput,
         e2e_throughput,
         batch_latency_ms,
@@ -760,14 +773,16 @@ async fn run_windowed_benchmarks(
 
         let r = run_single_bench(
             client,
-            label,
-            port,
-            sc,
-            4,
-            4, // concurrent senders to saturate workers
-            num_requests,
-            samples_per_request,
-            num_series,
+            BenchRunConfig {
+                label: label.to_string(),
+                port,
+                streaming_config: sc,
+                num_workers: 4,
+                num_concurrent_senders: 4, // concurrent senders to saturate workers
+                num_requests,
+                samples_per_request,
+                num_series,
+            },
         )
         .await?;
         results.push(r);
@@ -802,14 +817,16 @@ async fn run_scalability_benchmark(
 
         let r = run_single_bench(
             client,
-            &label,
-            port,
-            sc,
-            num_workers,
-            num_workers, // concurrent senders match worker count
-            num_requests,
-            samples_per_request,
-            num_series,
+            BenchRunConfig {
+                label,
+                port,
+                streaming_config: sc,
+                num_workers,
+                num_concurrent_senders: num_workers, // concurrent senders match worker count
+                num_requests,
+                samples_per_request,
+                num_series,
+            },
         )
         .await?;
         results.push(r);

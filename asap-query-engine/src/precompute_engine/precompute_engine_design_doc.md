@@ -116,6 +116,39 @@ enum WorkerMessage {
 `route_batch()` groups messages by target worker and sends them in parallel for
 throughput while preserving per-worker ordering.
 
+#### Load balancing trade-offs and alternatives
+
+The current hash-mod scheme is correct and low-overhead but has four distinct failure modes. Each has a corresponding mitigation strategy.
+
+**Problem 1: hash skew — uneven series count per worker**
+
+With a good hash and N workers the variance in series count is O(√(S/N)), which is negligible at large S. Virtual nodes (each physical worker owns K hash ring slots) reduce variance further at zero runtime cost but are rarely necessary with xxhash64 in practice.
+
+**Problem 2: hot series — a few series dominate sample volume**
+
+The hash does not know about per-series sample rates. If one metric is scraped at 1 s while others are at 60 s, the owning worker handles 60× more samples.
+
+*Mitigation — weight-aware initial placement:* on first sight of a series, assign it to the least-loaded worker (by current sample rate) and record the assignment in a small routing table that replaces the hash lookup. The assignment remains stable (one series = one worker always), so no cross-worker state is needed. The routing table fits in memory for millions of series. Works well when series rates are observable at assignment time (e.g. from Prometheus service discovery).
+
+**Problem 3: GROUP BY fan-in — cross-worker store entries require query-time merge**
+
+Because routing is by full series key, two series that share a `grouping_labels` value but differ in rolled-up labels land on different workers and emit independent accumulators for the same `(agg_id, key, window)` tuple (see §4). The store must append multiple entries and the query engine merges them.
+
+*Mitigation A — route by grouping key:* use `xxhash64(grouping_key)` instead of the full series key. All series rolling up into the same GROUP BY bucket land on one worker, which merges them before emitting. The store gets exactly one entry per `(agg_id, key, window)` and no query-time fan-in is needed. Trade-offs: routing requires knowing the config's `grouping_labels` at ingest time; creates a new hot-key risk when one grouping value covers far more series than others; a series matched by multiple configs with different grouping keys would need to be sent to multiple workers.
+
+*Mitigation B — two-phase aggregation:* keep routing by series key (local aggregation as now) but emit partial accumulators to a second tier of reduce-workers routed by grouping key. Reduce-workers merge partials and write a single entry to the store. Eliminates query-time fan-in without the hot-key risk. Adds one extra hop of latency and requires coordinating two flush cycles.
+
+**Problem 4: static assignment — series stuck on overloaded workers**
+
+Hash-based assignment is fixed for the lifetime of the process. A series that begins emitting at 100× its original rate stays on the same worker forever.
+
+*Mitigation — state migration at window boundaries:* when a series has no open panes (i.e. `active_panes` is empty after a window close), its state can be serialized, sent to a new worker, and the routing table updated atomically. The empty-panes condition occurs naturally at every tumbling window boundary, or periodically for sliding windows after all panes are evicted. Operationally complex but sound — no split-window state is possible if migration is gated on the empty-panes condition.
+
+**Practical signal: channel backpressure**
+
+Before investing in any of the above, add observability to the bounded MPSC channels — if a worker's channel is frequently near capacity, that is the primary signal that routing is imbalanced. Exposing `channel.capacity()` (remaining slots) per worker as a metric is cheap and pinpoints which worker is the bottleneck, providing the data needed to choose between the mitigations above.
+
+
 ### 3.4 Worker (`worker.rs`)
 
 Each worker owns an isolated shard of the series space.
@@ -149,6 +182,49 @@ struct AggregationState {
     active_panes: BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
 }
 ```
+
+#### Accumulator lifecycle and ownership
+
+Accumulators are not pre-assigned — they are created **lazily** at three nested levels:
+
+**1. At engine startup** (`engine.rs`): every worker receives a full copy of all `AggregationConfig`s. All workers are symmetric; none is pre-assigned to any series or config.
+
+```rust
+let agg_configs = streaming_config.get_all_aggregation_configs().clone();
+for (id, rx) in receivers {
+    Worker::new(id, rx, sink.clone(), agg_configs.clone(), ...)
+}
+```
+
+**2. On first sample for a series** (`get_or_create_series_state`): the worker calls `matching_agg_configs(series_key)` to filter the config map by metric name, then creates one `AggregationState` per match (a `WindowManager` + empty pane map). No accumulators exist yet.
+
+```rust
+let aggregations = matching_agg_configs(series_key).map(|(_, config)| AggregationState {
+    window_manager: WindowManager::new(config.window_size, config.slide_interval),
+    config: config.clone(),
+    active_panes: BTreeMap::new(),   // ← empty; no memory allocated for sketches yet
+}).collect();
+```
+
+**3. On first sample in a pane** (`process_samples`): the accumulator is created the moment a sample falls into a pane that does not yet exist in `active_panes`.
+
+```rust
+let updater = agg_state.active_panes
+    .entry(pane_start)
+    .or_insert_with(|| create_accumulator_updater(&agg_state.config));
+```
+
+**Ownership hierarchy:**
+
+```
+Worker
+└── series_map[series_key]           one entry per series this worker owns
+    └── aggregations[i]              one AggregationState per matching config
+        └── active_panes[pane_start] one AccumulatorUpdater per open pane
+            └── Box<dyn AggregateCore>   the actual sketch / sum / minmax / etc.
+```
+
+Because `xxhash64(series_key) % N` is deterministic, a series always lands on the same worker. Its accumulators live in exactly one worker with no sharing and no locking. Workers that never receive a series never allocate any state for it.
 
 #### Pane-Based Sliding Window Optimization
 
@@ -353,9 +429,83 @@ trait OutputSink: Send + Sync {
 **Implementations:**
 - `StoreOutputSink` — calls `store.insert_precomputed_output_batch()`
 - `RawPassthroughSink` — same interface, used for raw mode
-- `NoopOutputSink` — testing helper that counts emitted items
+- `NoopOutputSink` — testing helper that counts emitted items via `AtomicU64`
+- `CapturingOutputSink` — testing helper that stores all emitted `(PrecomputedOutput, Box<dyn AggregateCore>)` pairs in a `Mutex<Vec<...>>`, with `drain()` and `len()` for assertions
 
-## 4. Data Model
+## 4. Cross-Series (GROUP BY) Aggregation
+
+### Label dimension roles
+
+`AggregationConfig` has three label dimension fields that control the spatial aggregation shape:
+
+| Field | Role |
+|---|---|
+| `grouping_labels` | Labels preserved in `PrecomputedOutput.key`; form the GROUP BY key visible at query time |
+| `aggregated_labels` | Internal sub-keys for MultipleSubpopulation sketches (e.g. CMS, HydraKLL) |
+| `rollup_labels` | Dropped entirely at ingest; not recoverable at query time |
+
+A config with `grouping_labels: [job]` and `rollup_labels: [instance]` means: "aggregate across all instances, keep one output series per job value." Multiple input series (`metric{job=j1,instance=h1}`, `metric{job=j1,instance=h2}`, ...) all contribute to the same logical output key `(job=j1)`.
+
+### Cross-worker fan-in
+
+Because routing is by full series key (`xxhash64(series_key) % N`), two series that share a `grouping_labels` value but differ in rolled-up labels typically land on different workers:
+
+```
+metric{job=j1, instance=h1} → Worker 0 → pane accumulator with key (job=j1)
+metric{job=j1, instance=h2} → Worker 3 → pane accumulator with key (job=j1)
+```
+
+Each worker independently closes its window and emits a separate `PrecomputedOutput` with key `(job=j1)` for the same window `[0, 60s)`. The store **appends** rather than overwrites on the same `(aggregation_id, key, window)` tuple:
+
+```
+store[(agg_id, key=(j1), [0,60s))] → [acc_worker0, acc_worker3]
+```
+
+Query-time `SummaryMergeMultipleExec` merges all entries for the same key and window via `AggregateCore::merge_with()`. No ingest-time cross-worker coordination is needed.
+
+### Eventual consistency
+
+Workers have independent watermarks. For a standard Prometheus scrape (all instances delivered in one HTTP batch via `route_batch()`), all workers receive their samples in the same round-trip and close the window on the same flush cycle. The incompleteness window — time between the first and last worker emitting for the same cross-series window — is typically milliseconds (bounded by Tokio task scheduling jitter).
+
+For staggered multi-source producers arriving at different times, the incompleteness window is bounded by the spread of producer arrival times. In both cases the result is **eventually consistent**: once all contributing workers have emitted, the store holds a complete set of accumulators and queries return the correct merged value.
+
+This deferred-merge design is intentional — it preserves the shared-nothing worker architecture with zero ingest-time cross-worker coordination. The store's append-multiple-per-window design and the query-time merge handle the fan-in correctly for both cross-series aggregation and `ForwardToStore` late data.
+
+### Sliding windows with cross-worker GROUP BY
+
+The pane-sharing optimization is an **intra-worker** implementation detail. From the store and query engine's perspective, each worker always emits a complete, self-consistent accumulator for each closed window — tumbling or sliding makes no difference to the cross-worker fan-in.
+
+**Within a single worker** (e.g. Worker 0, series `{job=j1, instance=h1}`, 30s/10s sliding):
+
+```
+Window [0, 30s)  — panes [0, 10s, 20s]
+  pane 0:   take (evict — no future window needs it)
+  pane 10s: snapshot (shared with [10s, 40s))
+  pane 20s: snapshot (shared with [10s, 40s) and [20s, 50s))
+  → emit: acc_w0, key=(j1), window=[0,30s), sum = v_0 + v_10 + v_20
+
+Window [10s, 40s)  — panes [10s, 20s, 30s]
+  pane 10s: take (evict — snapshot for [0,30s) already completed)
+  pane 20s: snapshot
+  pane 30s: snapshot (or take, depending on future windows)
+  → emit: acc_w0, key=(j1), window=[10s,40s), sum = v_10 + v_20 + v_30
+```
+
+Worker 3 (series `{job=j1, instance=h2}`) performs the same steps independently — its own pane `BTreeMap`, its own snapshots, its own emits.
+
+**What the store sees:**
+
+```
+store[(agg_id, key=(j1), [0,  30s))] → [acc_w0, acc_w3]
+store[(agg_id, key=(j1), [10s,40s))] → [acc_w0, acc_w3]
+store[(agg_id, key=(j1), [20s,50s))] → [acc_w0, acc_w3]
+```
+
+Each entry is a complete accumulator from one worker for one window. Query-time merge combines them identically to the tumbling case.
+
+The pane snapshot/take logic reduces memory and CPU inside each worker (avoiding re-accumulation of shared panes), but what exits the worker is always one standalone `Box<dyn AggregateCore>` per window. Consecutive sliding windows `[0,30s)` and `[10s,40s)` share panes *inside* the worker but have independent store entries — their cross-worker merges at query time are completely unrelated.
+
+## 5. Data Model
 
 ### PrecomputedOutput
 
@@ -393,7 +543,7 @@ pub struct AggregationConfig {
 }
 ```
 
-## 5. Store Integration
+## 6. Store Integration
 
 ### Write path
 
@@ -455,7 +605,7 @@ automatically combined with original window data at query time.
 | ReadBased | Remove after `read_count >= threshold` |
 | NoCleanup | Retain forever |
 
-## 6. Late Data Handling
+## 7. Late Data Handling
 
 Two checks determine whether a sample is "late":
 
@@ -476,7 +626,7 @@ For case 2, the `LateDataPolicy` controls behavior:
   as normal closed-window outputs. The store appends it alongside the original
   window data, and query-time merge combines them.
 
-## 7. Concurrency Model
+## 8. Concurrency Model
 
 The current implementation is **single-machine, multi-threaded**. All components
 (HTTP server, workers, store) run within a single OS process as Tokio async
@@ -499,7 +649,7 @@ across multiple engine instances (e.g. via consistent hashing at the load
 balancer level), each running this same single-process architecture
 independently.
 
-## 8. Performance Characteristics
+## 9. Performance Characteristics
 
 **Ingest path (per batch):**
 - Sample insert: O(log B) per sample (BTreeMap, B = buffer size)
@@ -513,11 +663,14 @@ independently.
 - O(A × W_open) active pane accumulators (fewer than window accumulators
   since panes are shared across overlapping windows)
 
-**Throughput:**
+**Throughput (measured, 2x Xeon E5-2630 v3, 32 logical CPUs, 125 GiB RAM):**
+- Raw mode, `NoopOutputSink`, 16 workers: **~8.9M samples/sec** flush throughput; near-linear scaling (19x at 16 workers vs 16x ideal).
+- Windowed aggregation (Sum, W=1-6), 4 workers: **~660K samples/sec** E2E; throughput is nearly identical across W=1 and W=6, confirming the pane-based optimization.
 - Workers process in parallel with no cross-shard coordination.
-- E2E test demonstrates ~10M samples/sec sustained throughput with raw mode.
 
-## 9. CLI Usage
+**Benchmark caveat -- `workers = senders` coupling:** The raw-mode scalability benchmark uses one concurrent HTTP sender per worker. The 1-worker baseline is bottlenecked by a single sender (one CPU for Snappy compression, one in-flight HTTP connection); at 16 workers, 16 senders parallelize compression across cores and pipeline connections. The apparent super-linear speedup (9.37x at 8 workers, 19.13x at 16 workers) reflects sender-side parallelism as much as engine-side scaling. A clean engine-scaling measurement would fix sender count and vary only worker count.
+
+## 10. CLI Usage
 
 ### Standalone binary
 
@@ -541,17 +694,66 @@ The precompute engine is also embedded in the main `query_engine_rust` binary,
 enabled via `--enable-prometheus-remote-write`. In this mode it shares the
 store with the Kafka consumer path.
 
-## 10. Testing
+## 11. Testing
 
-- **Unit tests**: `worker.rs` (metric/label extraction), `window_manager.rs`
-  (tumbling/sliding arithmetic), `series_buffer.rs` (ordering, watermark),
-  `accumulator_factory.rs` (updater creation), `series_router.rs` (hashing),
-  `config.rs` (defaults).
+- **Unit tests -- `worker.rs` (correctness, via `CapturingOutputSink`):**
+
+  | Test | What it verifies |
+  |---|---|
+  | `test_raw_mode_forwarding` | 3 samples -> 3 emits; `start == end == ts`, `SumAccumulator.sum == value` |
+  | `test_tumbling_window_correctness` | Samples at t=1s/5s/9s; window [0,10s) closes on t=10s; `sum=6` |
+  | `test_sliding_window_pane_sharing` | Sample at t=15s in 30s/10s window -> 2 emits for [0,30s) and [10s,40s), both `sum=42` via shared pane snapshot/take |
+  | `test_groupby_separate_emits_per_series` | Two series (`host=A`, `host=B`) on same worker -> 2 independent `MultipleSumAccumulator` emits (no ingest-time cross-series merge) |
+  | `test_late_data_drop` | Sample behind `watermark - allowed_lateness_ms` with `Drop` policy -> 0 emits |
+  | `test_late_data_forward_to_store` | Late sample for evicted pane with `ForwardToStore` -> 1 emit as mini-accumulator with correct window bounds and sum |
+
+- **Unit tests -- other modules**: `window_manager.rs` (tumbling/sliding arithmetic, pane enumeration, closure detection), `series_buffer.rs` (ordering, watermark), `accumulator_factory.rs` (updater creation and reset), `series_router.rs` (consistent hash routing), `config.rs` (defaults).
+
 - **E2E test** (`bin/test_e2e_precompute.rs`): Starts engine + store + query
-  server in-process, sends remote-write samples, queries via PromQL HTTP,
-  validates results. Includes batch latency and throughput benchmarks.
+  server in-process, sends remote-write samples over HTTP, queries via PromQL HTTP,
+  validates aggregated results. Includes batch latency benchmark, windowed throughput
+  benchmark (W=1/3/6), and worker scalability benchmark (1-16 workers).
 
-## 11. File Map
+## 12. Known Data Loss Cases and Fault Tolerance TODOs
+
+The engine is currently in-memory and single-process with no persistence of in-flight window state. The following cases result in data loss:
+
+| # | Case | When it occurs | Mitigation status |
+|---|---|---|---|
+| 1 | **Explicit late drop** | `LateDataPolicy::Drop` + `ts < watermark - allowed_lateness_ms` | Intended; use `ForwardToStore` to avoid |
+| 2 | **Intra-batch lateness** | Within a single `process_samples` call, `current_wm` is set to the batch's max timestamp before pane routing; with `allowed_lateness_ms=0` every sample below the batch max is dropped | Set `allowed_lateness_ms` >= max timestamp spread within a producer batch |
+| 3 | **Evicted pane + Drop** | Sample passes watermark check but its pane was already evicted (window closed); `Drop` policy discards it | Use `ForwardToStore` |
+| 4 | **No matching config** | `matching_agg_configs` returns empty -- metric name in the series key does not match any config's `metric` or `spatial_filter`; worker silently returns `Ok(())` | No warning is logged. TODO: emit a metric or log at warn level for unmatched series |
+| 5 | **Open panes on shutdown** | `flush_all` only emits windows already closed by the watermark; panes that are still open at shutdown are discarded | TODO (see below) |
+| 6 | **Worker panic** | Tokio task dies; all series owned by that worker lose their pane state; subsequent sends log a warning and drop | TODO (see below) |
+
+### TODO: open-pane flush on shutdown
+
+`flush_all` currently only closes windows whose `end <= watermark`. On graceful shutdown it should optionally force-close all open panes by advancing each series watermark to `i64::MAX` (or to `current_wm + window_size_ms`) before the final flush. This would emit partial windows with whatever samples have accumulated, allowing downstream consumers to decide whether to use them.
+
+This behaviour should be opt-in (a `force_flush_on_shutdown: bool` config flag) because partial windows can be misleading for consumers that expect complete windows.
+
+### TODO: warn on unmatched series
+
+Case 4 is silent and hard to diagnose. The fix is a single warn-level log (rate-limited per series key) in `get_or_create_series_state` when `aggregations.is_empty()`, plus a Prometheus counter `precompute_unmatched_series_total`.
+
+### TODO: worker restart on panic
+
+Currently a panicked worker is never restarted. The engine should catch task failures (via `JoinHandle`) in the main `run()` loop and respawn the worker with a fresh receiver, re-routing future series to surviving workers (or to the replacement) in the meantime. In-flight pane state for the crashed worker is still lost -- full recovery would require the WAL approach below.
+
+### TODO: write-ahead log (WAL) for pane state
+
+Cases 5 and 6 both stem from the same root cause: pane accumulators exist only in memory. A WAL would persist each pane update (series key, aggregation id, pane start, serialized accumulator delta) to disk or an external log (e.g. Kafka) before acknowledging the ingest HTTP request. On restart, the worker replays the WAL to reconstruct open panes before resuming normal processing.
+
+Trade-offs:
+- Serialization cost: accumulators must be serializable (all current types are, via `rmp-serde`)
+- WAL volume: one entry per sample per matching aggregation config -- potentially high; batching per pane per flush interval reduces this significantly
+- Recovery time: proportional to WAL size since last checkpoint
+- Complexity: requires a checkpoint mechanism to bound recovery time and WAL size
+
+A lighter alternative: **periodic pane snapshots** written to disk at each flush interval. On restart, replay only samples received since the last snapshot. This bounds recovery time to `flush_interval_ms` worth of samples at the cost of snapshot I/O every flush cycle.
+
+## 13. File Map
 
 | File | Purpose |
 |------|---------|
@@ -562,6 +764,6 @@ store with the Kafka consumer path.
 | `precompute_engine/series_buffer.rs` | Per-series BTreeMap sample buffer |
 | `precompute_engine/window_manager.rs` | Tumbling/sliding window logic |
 | `precompute_engine/accumulator_factory.rs` | `AccumulatorUpdater` trait + factory |
-| `precompute_engine/output_sink.rs` | `OutputSink` trait + Store/Noop impls |
+| `precompute_engine/output_sink.rs` | `OutputSink` trait + `StoreOutputSink`, `NoopOutputSink`, `CapturingOutputSink` (testing) |
 | `bin/precompute_engine.rs` | Standalone CLI binary |
 | `bin/test_e2e_precompute.rs` | End-to-end integration test |

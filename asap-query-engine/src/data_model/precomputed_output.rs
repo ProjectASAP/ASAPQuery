@@ -385,7 +385,7 @@ impl PrecomputedOutput {
                 Ok(Box::new(accumulator))
             }
             "MultipleSum" => {
-                let accumulator = MultipleSumAccumulator::deserialize_from_bytes(buffer)
+                let accumulator = MultipleSumAccumulator::deserialize_from_bytes_arroyo(buffer)
                     .map_err(|e| format!("Failed to deserialize MultipleSumAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
