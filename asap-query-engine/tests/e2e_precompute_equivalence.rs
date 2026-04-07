@@ -239,8 +239,8 @@ async fn e2e_kll_output_matches_arroyo() {
         "KLL k mismatch"
     );
     assert_eq!(
-        handcrafted_acc.inner.sketch.get_n(),
-        arroyo_acc.inner.sketch.get_n(),
+        handcrafted_acc.inner.count(),
+        arroyo_acc.inner.count(),
         "KLL sample count mismatch"
     );
     for q in [0.0f64, 0.25, 0.5, 0.75, 1.0] {

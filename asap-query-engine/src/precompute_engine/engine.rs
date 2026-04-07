@@ -5,7 +5,7 @@ use crate::precompute_engine::ingest_handler::{
 };
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
-use crate::precompute_engine::worker::Worker;
+use crate::precompute_engine::worker::{Worker, WorkerRuntimeConfig};
 use axum::{routing::post, Router};
 use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
@@ -71,11 +71,13 @@ impl PrecomputeEngine {
                 rx,
                 self.output_sink.clone(),
                 agg_configs.clone(),
-                self.config.max_buffer_per_series,
-                self.config.allowed_lateness_ms,
-                self.config.pass_raw_samples,
-                self.config.raw_mode_aggregation_id,
-                self.config.late_data_policy,
+                WorkerRuntimeConfig {
+                    max_buffer_per_series: self.config.max_buffer_per_series,
+                    allowed_lateness_ms: self.config.allowed_lateness_ms,
+                    pass_raw_samples: self.config.pass_raw_samples,
+                    raw_mode_aggregation_id: self.config.raw_mode_aggregation_id,
+                    late_data_policy: self.config.late_data_policy,
+                },
             );
             let handle = tokio::spawn(async move {
                 worker.run().await;

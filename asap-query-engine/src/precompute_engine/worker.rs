@@ -37,6 +37,15 @@ struct SeriesState {
     aggregations: Vec<AggregationState>,
 }
 
+/// Runtime configuration for a Worker, grouping non-structural parameters.
+pub struct WorkerRuntimeConfig {
+    pub max_buffer_per_series: usize,
+    pub allowed_lateness_ms: i64,
+    pub pass_raw_samples: bool,
+    pub raw_mode_aggregation_id: u64,
+    pub late_data_policy: LateDataPolicy,
+}
+
 /// Worker that processes samples for a shard of the series space.
 pub struct Worker {
     id: usize,
@@ -59,7 +68,6 @@ pub struct Worker {
 }
 
 impl Worker {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         receiver: mpsc::Receiver<WorkerMessage>,
@@ -67,6 +75,13 @@ impl Worker {
         agg_configs: HashMap<u64, Arc<AggregationConfig>>,
         runtime_config: WorkerRuntimeConfig,
     ) -> Self {
+        let WorkerRuntimeConfig {
+            max_buffer_per_series,
+            allowed_lateness_ms,
+            pass_raw_samples,
+            raw_mode_aggregation_id,
+            late_data_policy,
+        } = runtime_config;
         Self {
             id,
             receiver,
@@ -654,11 +669,13 @@ mod tests {
             rx,
             sink,
             agg_configs,
-            10_000, // max_buffer_per_series
-            0,      // allowed_lateness_ms
-            pass_raw,
-            raw_agg_id,
-            late_policy,
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: pass_raw,
+                raw_mode_aggregation_id: raw_agg_id,
+                late_data_policy: late_policy,
+            },
         )
     }
 
