@@ -364,10 +364,14 @@ def main(cfg: DictConfig):
             kafka_service.delete_topics()
             kafka_service.create_topics()
 
-        if config.check_exporter_and_queries_exist(
-            "fake_exporter", cfg.experiment_params
+        if (
+            config.check_exporter_and_queries_exist(
+                "fake_exporter", cfg.experiment_params
+            )
+            and experiment_mode != constants.SKETCHDB_EXPERIMENT_NAME
         ):
             # this DOES NOT block
+            # (SKETCHDB mode already started the exporter early for label discovery)
             exporter_service.start(
                 config=exporter_config["exporter_list"]["fake_exporter"],
                 experiment_output_dir=experiment_output_dir,
@@ -495,9 +499,12 @@ def main(cfg: DictConfig):
         system_exporters_service.start(cfg.experiment_params)
 
         # Start Prometheus service based on deployment mode
+        # (SKETCHDB mode already started Prometheus early for label discovery)
         monitoring = cfg.experiment_params.monitoring
 
-        if monitoring.deployment_mode == "containerized":
+        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            pass  # already started before the controller
+        elif monitoring.deployment_mode == "containerized":
             # Containerized deployment (DockerPrometheusService or DockerVictoriaMetricsService)
             assert isinstance(
                 prometheus_service,
