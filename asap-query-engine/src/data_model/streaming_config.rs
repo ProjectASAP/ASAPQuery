@@ -7,9 +7,11 @@ use std::fs::File;
 use std::io::BufReader;
 use std::ops::Index;
 
-use crate::data_model::aggregation_config::AggregationConfig;
+use crate::data_model::aggregation_config::{AggregationConfig, AggregationIdInfo};
 use crate::data_model::enums::QueryLanguage;
 use crate::data_model::inference_config::{InferenceConfig, SchemaConfig};
+use sketch_db_common::capability_matching::find_compatible_aggregation as common_find_compatible;
+use sketch_db_common::query_requirements::QueryRequirements;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamingConfig {
@@ -96,6 +98,17 @@ impl StreamingConfig {
         }
 
         Ok(Self::new(aggregation_configs))
+    }
+}
+
+impl StreamingConfig {
+    /// Find a compatible aggregation for the given requirements using capability-based matching.
+    /// Delegates to `sketch_db_common::find_compatible_aggregation`.
+    pub fn find_compatible_aggregation(
+        &self,
+        requirements: &QueryRequirements,
+    ) -> Option<AggregationIdInfo> {
+        common_find_compatible(&self.aggregation_configs, requirements)
     }
 }
 

@@ -353,9 +353,8 @@ pub fn build_scalar_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::simple_engine::{
-        AggregationIdInfo, QueryMetadata, StoreQueryParams, StoreQueryPlan,
-    };
+    use crate::data_model::AggregationIdInfo;
+    use crate::engines::simple_engine::{QueryMetadata, StoreQueryParams, StoreQueryPlan};
     use promql_utilities::data_model::KeyByLabelNames;
 
     use std::collections::HashMap;

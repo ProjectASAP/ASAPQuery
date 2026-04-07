@@ -1,3 +1,4 @@
+pub mod capability_matching_tests;
 pub mod clickhouse_forwarding_tests;
 pub mod datafusion;
 pub mod elastic_dsl_query_tests;

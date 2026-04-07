@@ -15,8 +15,9 @@ use datafusion::logical_expr::LogicalPlan;
 use datafusion_summary_library::{PrecomputedSummaryRead, SummaryInfer, SummaryMergeMultiple};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
+use query_engine_rust::data_model::AggregationIdInfo;
 use query_engine_rust::engines::simple_engine::{
-    AggregationIdInfo, QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
+    QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
 };
 use std::collections::HashMap;
 
