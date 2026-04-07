@@ -1,4 +1,4 @@
-use sketchlib_rust::{EHSketchList, SketchInput, UniformSampling};
+use asap_sketchlib::{EHSketchList, SketchInput, UniformSampling};
 
 use super::series::PromSketchMemSeries;
 
@@ -86,7 +86,7 @@ fn eval_kll_quantile(
 
 /// Evaluate sampling-based functions (avg, count, sum, sum2, stddev, stdvar).
 ///
-/// Since sketchlib-rust's `UniformSampling` exposes `samples()` and `total_seen()`
+/// Since asap_sketchlib's `UniformSampling` exposes `samples()` and `total_seen()`
 /// but not dedicated query methods like the Go version, we compute statistics
 /// from the raw merged samples.
 fn eval_sampling_stat(

@@ -5,9 +5,10 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::data_model::AggregationIdInfo;
     use crate::engines::logical::plan_builder::{build_binary_vector_plan, build_scalar_plan};
     use crate::engines::simple_engine::{
-        AggregationIdInfo, QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
+        QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
     };
     use datafusion::logical_expr::LogicalPlan;
     use promql_parser::parser::token::{TokenType, T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};

@@ -1,5 +1,6 @@
 use crate::data_model::{
-    InferenceConfig, KeyByLabelValues, QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig,
+    AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryConfig, QueryLanguage, SchemaConfig,
+    StreamingConfig,
 };
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
 // use crate::stores::promsketch_store::{
@@ -22,6 +23,8 @@ use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
 use promql_utilities::query_logics::parsing::{
     get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
 };
+use sketch_db_common::query_requirements::QueryRequirements;
+use sketch_db_common::utils::normalize_spatial_filter;
 
 use sql_utilities::ast_matching::QueryType;
 use sql_utilities::ast_matching::{SQLPatternMatcher, SQLPatternParser, SQLQuery};
@@ -36,16 +39,6 @@ use elastic_dsl_utilities::types::{EsDslQueryPattern, GroupBySpec, MetricAggType
 
 // Type alias for merged outputs (single aggregate per key after merging)
 type MergedOutputsMap = HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>;
-
-/// Information about bucket timeline for a single key (used for gap detection)
-/// Aggregation IDs and types for key and value
-#[derive(Debug, Clone)]
-pub struct AggregationIdInfo {
-    pub aggregation_id_for_key: u64,
-    pub aggregation_id_for_value: u64,
-    pub aggregation_type_for_key: String,
-    pub aggregation_type_for_value: String,
-}
 
 /// Metadata extracted from a query, independent of query language
 #[derive(Debug, Clone)]
@@ -1531,6 +1524,98 @@ impl SimpleEngine {
         }
     }
 
+    /// Extract QueryRequirements from a parsed PromQL match result.
+    /// Used as the fallback path when no query_configs entry is found.
+    fn build_query_requirements_promql(
+        &self,
+        match_result: &PromQLMatchResult,
+        query_pattern_type: QueryPatternType,
+    ) -> QueryRequirements {
+        let (metric, spatial_filter) = get_metric_and_spatial_filter(match_result);
+
+        let statistics = get_statistics_to_compute(query_pattern_type, match_result);
+
+        let data_range_ms = match query_pattern_type {
+            QueryPatternType::OnlySpatial => None,
+            _ => match_result
+                .get_range_duration()
+                .map(|d| d.num_seconds() as u64 * 1000),
+        };
+
+        let all_labels = match &self.inference_config.schema {
+            SchemaConfig::PromQL(schema) => schema
+                .get_labels(&metric)
+                .cloned()
+                .unwrap_or_else(KeyByLabelNames::empty),
+            _ => KeyByLabelNames::empty(),
+        };
+
+        let grouping_labels = match query_pattern_type {
+            QueryPatternType::OnlyTemporal => all_labels,
+            QueryPatternType::OnlySpatial | QueryPatternType::OneTemporalOneSpatial => {
+                get_spatial_aggregation_output_labels(match_result, &all_labels)
+            }
+        };
+
+        QueryRequirements {
+            metric,
+            statistics,
+            data_range_ms,
+            grouping_labels,
+            spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
+        }
+    }
+
+    /// Extract QueryRequirements from a parsed SQL match result.
+    /// Used as the fallback path when no query_configs entry is found.
+    fn build_query_requirements_sql(
+        &self,
+        match_result: &SQLQuery,
+        query_pattern_type: QueryPatternType,
+    ) -> QueryRequirements {
+        let query_data = &match_result.query_data[0];
+        let metric = query_data.metric.clone();
+
+        let statistic_name = match query_pattern_type {
+            QueryPatternType::OneTemporalOneSpatial => match_result.query_data[1]
+                .aggregation_info
+                .get_name()
+                .to_lowercase(),
+            _ => query_data.aggregation_info.get_name().to_lowercase(),
+        };
+
+        let statistics: Vec<Statistic> = if statistic_name == "avg" {
+            vec![Statistic::Sum, Statistic::Count]
+        } else if let Ok(stat) = statistic_name.parse::<Statistic>() {
+            vec![stat]
+        } else {
+            vec![]
+        };
+
+        let data_range_ms = match query_pattern_type {
+            QueryPatternType::OnlySpatial => None,
+            QueryPatternType::OnlyTemporal => {
+                let scrape_intervals = query_data.time_info.clone().get_duration() as u64;
+                Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
+            }
+            QueryPatternType::OneTemporalOneSpatial => {
+                let scrape_intervals =
+                    match_result.query_data[1].time_info.clone().get_duration() as u64;
+                Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
+            }
+        };
+
+        let grouping_labels = KeyByLabelNames::new(query_data.labels.clone().into_iter().collect());
+
+        QueryRequirements {
+            metric,
+            statistics,
+            data_range_ms,
+            grouping_labels,
+            spatial_filter_normalized: normalize_spatial_filter(""),
+        }
+    }
+
     fn get_aggregation_id_info(&self, query_config: &QueryConfig) -> AggregationIdInfo {
         let query_config_aggregations = &query_config.aggregations;
         let mut aggregation_id_for_key: Option<u64> = None;
@@ -1680,8 +1765,6 @@ impl SimpleEngine {
             _ => panic!("Unsupported query type found"),
         };
 
-        let query_config = self.find_query_config_sql(&query_data)?;
-
         // For nested queries (spatial of temporal), the outer query has no time clause,
         // so we need to use the inner (temporal) query's time_info to compute query_time
         let query_time = match query_pattern_type {
@@ -1775,10 +1858,11 @@ impl SimpleEngine {
         };
 
         if statistics_to_compute.len() != 1 {
-            panic!(
+            warn!(
                 "Expected exactly one statistic to compute, found {}",
                 statistics_to_compute.len()
             );
+            return None;
         }
         let statistic_to_compute = statistics_to_compute.first().unwrap();
 
@@ -1801,9 +1885,17 @@ impl SimpleEngine {
         let timestamps =
             self.calculate_query_timestamps_sql(query_time, query_pattern_type, &match_result);
 
-        // Precomputed output
-
-        let agg_info = self.get_aggregation_id_info(query_config);
+        // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
+        let agg_info: AggregationIdInfo = if let Some(config) =
+            self.find_query_config_sql(&query_data)
+        {
+            self.get_aggregation_id_info(config)
+        } else {
+            warn!("No query_config entry for SQL query. Attempting capability-based matching.");
+            let requirements = self.build_query_requirements_sql(&match_result, query_pattern_type);
+            self.streaming_config
+                .find_compatible_aggregation(&requirements)?
+        };
 
         let metric = &match_result.query_data[0].metric;
 
@@ -1867,8 +1959,6 @@ impl SimpleEngine {
         query_time: u64,
         query_data: &SQLQueryData,
     ) -> Option<QueryExecutionContext> {
-        let query_config = self.find_query_config_sql(query_data)?;
-
         // Output labels are the GROUP BY columns (subset of all labels)
         let query_output_labels = KeyByLabelNames::new(
             match_result.query_data[0]
@@ -1893,10 +1983,11 @@ impl SimpleEngine {
         };
 
         if statistics_to_compute.len() != 1 {
-            panic!(
+            warn!(
                 "Expected exactly one statistic to compute, found {}",
                 statistics_to_compute.len()
             );
+            return None;
         }
         let statistic_to_compute = statistics_to_compute.first().unwrap();
 
@@ -1926,7 +2017,20 @@ impl SimpleEngine {
             end_timestamp,
         };
 
-        let agg_info = self.get_aggregation_id_info(query_config);
+        // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
+        let agg_info: AggregationIdInfo = if let Some(config) =
+            self.find_query_config_sql(query_data)
+        {
+            self.get_aggregation_id_info(config)
+        } else {
+            warn!(
+                    "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
+                );
+            let requirements =
+                self.build_query_requirements_sql(match_result, QueryPatternType::OnlyTemporal);
+            self.streaming_config
+                .find_compatible_aggregation(&requirements)?
+        };
         let metric = &match_result.query_data[0].metric;
 
         let query_plan = self
@@ -2522,17 +2626,6 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<QueryExecutionContext> {
-        // Track query configuration processing latency
-        let config_start_time = Instant::now();
-
-        let query_config = self.find_query_config(&query)?;
-
-        let config_duration = config_start_time.elapsed();
-        debug!(
-            "[LATENCY] Query configuration processing: {:.2}ms",
-            config_duration.as_secs_f64() * 1000.0
-        );
-
         let query_time = Self::convert_query_time_to_data_time(time);
 
         // Parse PromQL AST using promql-parser crate
@@ -2613,16 +2706,13 @@ impl SimpleEngine {
                 return None;
             }
         };
-        let all_labels = promql_schema
-            .get_labels(&metric)
-            .cloned()
-            .unwrap_or_else(|| {
-                warn!(
-                    "No metric configuration found for '{}', using empty labels",
-                    metric
-                );
-                panic!("No metric configuration found");
-            });
+        let all_labels = match promql_schema.get_labels(&metric).cloned() {
+            Some(labels) => labels,
+            None => {
+                warn!("No metric configuration found for '{}'", metric);
+                return None;
+            }
+        };
 
         // Determine query output labels based on pattern type
         // TODO: should we be returning this and using it to convert to final HTTP response?
@@ -2654,10 +2744,11 @@ impl SimpleEngine {
         // Extract statistics to compute using AST-based approach
         let statistics_to_compute = get_statistics_to_compute(query_pattern_type, &match_result);
         if statistics_to_compute.len() != 1 {
-            panic!(
+            warn!(
                 "Expected exactly one statistic to compute, found {}",
                 statistics_to_compute.len()
             );
+            return None;
         }
         let statistic_to_compute = statistics_to_compute.first().unwrap();
 
@@ -2689,16 +2780,19 @@ impl SimpleEngine {
             query_kwargs: query_kwargs.clone(),
         };
 
-        // Track aggregation configuration processing latency
-        let agg_config_start_time = Instant::now();
-
-        let agg_info = self.get_aggregation_id_info(query_config);
-
-        let agg_config_duration = agg_config_start_time.elapsed();
-        debug!(
-            "[LATENCY] Aggregation configuration processing: {:.2}ms",
-            agg_config_duration.as_secs_f64() * 1000.0
-        );
+        // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
+        let agg_info: AggregationIdInfo = if let Some(config) = self.find_query_config(&query) {
+            self.get_aggregation_id_info(config)
+        } else {
+            warn!(
+                "No query_config entry for PromQL query '{}'. Attempting capability-based matching.",
+                query
+            );
+            let requirements =
+                self.build_query_requirements_promql(&match_result, query_pattern_type);
+            self.streaming_config
+                .find_compatible_aggregation(&requirements)?
+        };
 
         // Create query plan (determines window type and calculates timestamps)
         let query_plan = self

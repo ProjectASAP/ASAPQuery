@@ -3,7 +3,7 @@
 rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 twox-hash = "2.1.0"
-sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust", rev = "440427438fdaf3ac2298b53ee148f9e12a64ffcc" }
+asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib" }
 */
 
 use arroyo_udf_plugin::udf;
@@ -11,7 +11,7 @@ use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use twox_hash::XxHash32;
 
-use sketchlib_rust::{CountMin as SketchlibCountMin, RegularPath, SketchInput, Vector2D};
+use asap_sketchlib::{CountMin as SketchlibCountMin, RegularPath, SketchInput, Vector2D};
 
 // Count-Min Sketch parameters
 const DEPTH: usize = {{ depth }}; // Number of hash functions
@@ -62,7 +62,7 @@ impl CountMinSketch {
 #[udf]
 fn countminsketch_count(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
     if use_sketchlib_for_cms() {
-        // sketchlib-rust backed implementation: integer counters + internal hashing.
+        // asap_sketchlib backed implementation: integer counters + internal hashing.
         let mut inner = SketchlibCms::with_dimensions(DEPTH, WIDTH);
 
         for &key in keys.iter() {

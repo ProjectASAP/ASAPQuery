@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 pub enum ImplMode {
     /// Use the original hand-written implementations.
     Legacy,
-    /// Use sketchlib-rust backed implementations.
+    /// Use asap_sketchlib backed implementations.
     Sketchlib,
 }
 
@@ -19,21 +19,21 @@ pub const DEFAULT_CMWH_IMPL: ImplMode = ImplMode::Sketchlib;
 
 static COUNTMIN_MODE: OnceLock<ImplMode> = OnceLock::new();
 
-/// Returns true if Count-Min operations should use sketchlib-rust internally.
+/// Returns true if Count-Min operations should use asap_sketchlib internally.
 pub fn use_sketchlib_for_count_min() -> bool {
     *COUNTMIN_MODE.get_or_init(|| DEFAULT_CMS_IMPL) == ImplMode::Sketchlib
 }
 
 static KLL_MODE: OnceLock<ImplMode> = OnceLock::new();
 
-/// Returns true if KLL operations should use sketchlib-rust internally.
+/// Returns true if KLL operations should use asap_sketchlib internally.
 pub fn use_sketchlib_for_kll() -> bool {
     *KLL_MODE.get_or_init(|| DEFAULT_KLL_IMPL) == ImplMode::Sketchlib
 }
 
 static COUNTMIN_WITH_HEAP_MODE: OnceLock<ImplMode> = OnceLock::new();
 
-/// Returns true if Count-Min-With-Heap operations should use sketchlib-rust internally for the
+/// Returns true if Count-Min-With-Heap operations should use asap_sketchlib internally for the
 /// Count-Min portion.
 pub fn use_sketchlib_for_count_min_with_heap() -> bool {
     *COUNTMIN_WITH_HEAP_MODE.get_or_init(|| DEFAULT_CMWH_IMPL) == ImplMode::Sketchlib

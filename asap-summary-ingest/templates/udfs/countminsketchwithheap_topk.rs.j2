@@ -3,7 +3,7 @@
 rmp-serde = "1.1"
 serde = { version = "1.0", features = ["derive"] }
 twox-hash = "2.1.0"
-sketchlib-rust = { git = "https://github.com/ProjectASAP/sketchlib-rust", rev = "440427438fdaf3ac2298b53ee148f9e12a64ffcc" }
+asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib" }
 */
 
 use std::cmp::Ordering;
@@ -14,7 +14,7 @@ use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use twox_hash::XxHash32;
 
-use sketchlib_rust::{CountMin as SketchlibCountMin, RegularPath, SketchInput, Vector2D};
+use asap_sketchlib::{CountMin as SketchlibCountMin, RegularPath, SketchInput, Vector2D};
 
 // Count-Min Sketch with Heap parameters
 const DEPTH: usize = {{ depth }}; // Number of hash functions
@@ -114,7 +114,7 @@ impl PartialOrd for HeapItem {
 struct CountMinSketchWithHeap {
     // Legacy wire-format matrix representation.
     sketch: CountMinSketch,
-    // Optional sketchlib-rust Count-Min used when ARROYO_SKETCH_CMWH_IMPL selects sketchlib mode.
+    // Optional asap_sketchlib Count-Min used when ARROYO_SKETCH_CMWH_IMPL selects sketchlib mode.
     sketchlib: Option<SketchlibCms>,
     topk_heap: BinaryHeap<HeapItem>, // Maintain as heap during processing
     heap_size: usize,

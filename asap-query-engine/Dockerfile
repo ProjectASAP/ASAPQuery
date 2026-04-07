@@ -8,7 +8,7 @@ LABEL description="QueryEngine Rust service for SketchDB"
 
 WORKDIR /code
 
-# Required by prost-build dependencies (e.g., sketchlib-rust) during cargo build
+# Required by prost-build dependencies (e.g., asap_sketchlib) during cargo build
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
