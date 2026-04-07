@@ -5,8 +5,9 @@ use crate::precompute_engine::ingest_handler::{
 };
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
-use crate::precompute_engine::worker::Worker;
+use crate::precompute_engine::worker::{Worker, WorkerRuntimeConfig};
 use axum::{routing::post, Router};
+use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -53,9 +54,14 @@ impl PrecomputeEngine {
         // Build the router
         let router = SeriesRouter::new(senders);
 
-        // Build aggregation config map from streaming config
-        let agg_configs: HashMap<u64, _> =
-            self.streaming_config.get_all_aggregation_configs().clone();
+        // Build aggregation config map from streaming config, wrapping each config
+        // in Arc so all workers share one copy per aggregation (no N×M deep clones).
+        let agg_configs: HashMap<u64, Arc<AggregationConfig>> = self
+            .streaming_config
+            .get_all_aggregation_configs()
+            .iter()
+            .map(|(&id, cfg)| (id, Arc::new(cfg.clone())))
+            .collect();
 
         // Spawn workers
         let mut worker_handles = Vec::with_capacity(num_workers);
@@ -65,11 +71,13 @@ impl PrecomputeEngine {
                 rx,
                 self.output_sink.clone(),
                 agg_configs.clone(),
-                self.config.max_buffer_per_series,
-                self.config.allowed_lateness_ms,
-                self.config.pass_raw_samples,
-                self.config.raw_mode_aggregation_id,
-                self.config.late_data_policy,
+                WorkerRuntimeConfig {
+                    max_buffer_per_series: self.config.max_buffer_per_series,
+                    allowed_lateness_ms: self.config.allowed_lateness_ms,
+                    pass_raw_samples: self.config.pass_raw_samples,
+                    raw_mode_aggregation_id: self.config.raw_mode_aggregation_id,
+                    late_data_policy: self.config.late_data_policy,
+                },
             );
             let handle = tokio::spawn(async move {
                 worker.run().await;
