@@ -6,10 +6,15 @@
 use arrow::datatypes::{DataType, Field};
 use datafusion::common::{DFSchema, DFSchemaRef};
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::{Extension, LogicalPlan};
+use datafusion::logical_expr::{
+    binary_expr, Expr as DFExpr, Extension, JoinType, LogicalPlan, LogicalPlanBuilder, Operator,
+    SubqueryAlias,
+};
+use datafusion::prelude::{col, lit};
 use datafusion_summary_library::{
     InferOperation, PrecomputedSummaryRead, SketchType, SummaryInfer, SummaryMergeMultiple,
 };
+use promql_parser::parser::token::{self, T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
 use promql_utilities::query_logics::enums::Statistic;
 use std::sync::Arc;
 
@@ -240,6 +245,109 @@ impl QueryExecutionContext {
             ))),
         }
     }
+}
+
+// ============================================================================
+// Binary arithmetic plan builders (standalone functions, not on impl block)
+// ============================================================================
+
+/// Map a PromQL `TokenType` to the corresponding DataFusion `Operator`.
+/// Returns an error for non-arithmetic operators.
+pub fn token_type_to_df_operator(op: &token::TokenType) -> Result<Operator, DataFusionError> {
+    match op.id() {
+        id if id == T_ADD => Ok(Operator::Plus),
+        id if id == T_SUB => Ok(Operator::Minus),
+        id if id == T_MUL => Ok(Operator::Multiply),
+        id if id == T_DIV => Ok(Operator::Divide),
+        id if id == T_MOD => Ok(Operator::Modulo),
+        id if id == T_POW => Ok(Operator::BitwiseXor), // Note: bitwise XOR used as proxy for ^
+        _ => Err(DataFusionError::Plan(format!(
+            "Unsupported binary operator for arithmetic plan: {}",
+            op
+        ))),
+    }
+}
+
+/// Builds a DataFusion logical plan for a vector op vector binary expression:
+///
+/// ```text
+/// Projection(lhs.label1 AS label1, ..., lhs.value OP rhs.value AS value)
+///   └── Join(inner, on = label_columns)
+///         ├── SubqueryAlias("lhs") └── lhs_plan
+///         └── SubqueryAlias("rhs") └── rhs_plan
+/// ```
+///
+/// The `label_columns` are the label names shared by both sides; the join is
+/// an inner join on those columns.
+pub fn build_binary_vector_plan(
+    lhs_plan: LogicalPlan,
+    rhs_plan: LogicalPlan,
+    op: &token::TokenType,
+    label_columns: Vec<String>,
+) -> Result<LogicalPlan, DataFusionError> {
+    let df_op = token_type_to_df_operator(op)?;
+
+    // Wrap each side in a SubqueryAlias so columns are qualified (lhs.x, rhs.x)
+    let lhs_aliased = SubqueryAlias::try_new(Arc::new(lhs_plan), "lhs")?;
+    let rhs_aliased = SubqueryAlias::try_new(Arc::new(rhs_plan), "rhs")?;
+
+    // Build the join keys: qualified column names for each label column.
+    // The `join` function expects Vec<impl Into<Column>> (i.e. qualified col names).
+    let join_keys_left: Vec<String> = label_columns.iter().map(|c| format!("lhs.{}", c)).collect();
+    let join_keys_right: Vec<String> = label_columns.iter().map(|c| format!("rhs.{}", c)).collect();
+
+    let joined_plan = LogicalPlanBuilder::from(LogicalPlan::SubqueryAlias(lhs_aliased))
+        .join(
+            LogicalPlan::SubqueryAlias(rhs_aliased),
+            JoinType::Inner,
+            (join_keys_left, join_keys_right),
+            None,
+        )?
+        .build()?;
+
+    // Projection: pass through label columns from lhs, compute value = lhs.value OP rhs.value
+    let mut proj_exprs: Vec<DFExpr> = label_columns
+        .iter()
+        .map(|c| col(format!("lhs.{}", c)).alias(c.as_str()))
+        .collect();
+    let value_expr = binary_expr(col("lhs.value"), df_op, col("rhs.value")).alias("value");
+    proj_exprs.push(value_expr);
+
+    LogicalPlanBuilder::from(joined_plan)
+        .project(proj_exprs)?
+        .build()
+}
+
+/// Builds a DataFusion logical plan for a scalar op vector (or vector op scalar) expression:
+///
+/// ```text
+/// Projection(label1, ..., scalar OP value AS value)
+///   └── vector_plan
+/// ```
+///
+/// If `scalar_on_left` is true the expression is `scalar OP value`;
+/// otherwise it is `value OP scalar`.
+pub fn build_scalar_plan(
+    vector_plan: LogicalPlan,
+    scalar: f64,
+    op: &token::TokenType,
+    scalar_on_left: bool,
+    label_columns: Vec<String>,
+) -> Result<LogicalPlan, DataFusionError> {
+    let df_op = token_type_to_df_operator(op)?;
+
+    let value_expr = if scalar_on_left {
+        binary_expr(lit(scalar), df_op, col("value")).alias("value")
+    } else {
+        binary_expr(col("value"), df_op, lit(scalar)).alias("value")
+    };
+
+    let mut proj_exprs: Vec<DFExpr> = label_columns.iter().map(|c| col(c.as_str())).collect();
+    proj_exprs.push(value_expr);
+
+    LogicalPlanBuilder::from(vector_plan)
+        .project(proj_exprs)?
+        .build()
 }
 
 #[cfg(test)]

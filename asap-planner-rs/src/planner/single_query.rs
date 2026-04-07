@@ -21,6 +21,37 @@ use crate::planner::logics::{
 use crate::planner::patterns::build_patterns;
 use crate::StreamingEngine;
 
+/// Represents one arm of a binary arithmetic expression in the planner.
+#[derive(Debug, Clone)]
+pub enum BinaryArm {
+    /// A PromQL query expression that may be acceleratable.
+    Query(String),
+    /// A scalar literal (e.g. `100` in `rate(x[5m]) * 100`).
+    Scalar(f64),
+}
+
+/// Convert an AST expression to a `BinaryArm`. Scalar literals become
+/// `BinaryArm::Scalar`; everything else is serialized to a query string.
+/// Outer parentheses are stripped so nested binary arms can be re-parsed
+/// as `Binary` expressions (not `Paren`).
+fn expr_to_binary_arm(expr: &promql_parser::parser::Expr) -> BinaryArm {
+    let inner = strip_parens(expr);
+    if let promql_parser::parser::Expr::NumberLiteral(nl) = inner {
+        BinaryArm::Scalar(nl.val)
+    } else {
+        BinaryArm::Query(format!("{}", inner))
+    }
+}
+
+/// Recursively remove outer `Paren` wrappers from an expression.
+fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::Expr {
+    if let promql_parser::parser::Expr::Paren(paren) = expr {
+        strip_parens(&paren.expr)
+    } else {
+        expr
+    }
+}
+
 /// Internal representation of an aggregation config before IDs are assigned
 #[derive(Debug, Clone)]
 pub struct IntermediateAggConfig {
@@ -159,6 +190,38 @@ impl SingleQueryProcessor {
                 }
             }
         }
+    }
+
+    /// Returns `Some((lhs, rhs))` if this query is a binary arithmetic expression.
+    /// Each arm is either a query string (`BinaryArm::Query`) or a scalar literal
+    /// (`BinaryArm::Scalar`). Returns `None` if the query is not a binary expression
+    /// or cannot be parsed.
+    pub fn get_binary_arm_queries(&self) -> Option<(BinaryArm, BinaryArm)> {
+        let ast = promql_parser::parser::parse(&self.query).ok()?;
+        if let promql_parser::parser::Expr::Binary(binary) = ast {
+            let lhs = expr_to_binary_arm(binary.lhs.as_ref());
+            let rhs = expr_to_binary_arm(binary.rhs.as_ref());
+            // Only handle arithmetic operators (not comparison or set operators)
+            if !binary.op.is_comparison_operator() && !binary.op.is_set_operator() {
+                return Some((lhs, rhs));
+            }
+        }
+        None
+    }
+
+    /// Create a new processor for an arm query, reusing all parameters from this processor.
+    pub fn make_arm_processor(&self, arm_query: String) -> Self {
+        SingleQueryProcessor::new(
+            arm_query,
+            self.t_repeat,
+            self.prometheus_scrape_interval,
+            self.metric_schema.clone(),
+            self.streaming_engine,
+            self.sketch_parameters.clone(),
+            self.range_duration,
+            self.step,
+            self.cleanup_policy,
+        )
     }
 
     /// Check if query should be processed (supported pattern)

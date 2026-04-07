@@ -1,0 +1,17 @@
+query_groups:
+  - id: 1
+    queries:
+      - "(rate(a_total[5m]) + rate(b_total[5m])) / rate(c_total[5m])"
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+metrics:
+  - metric: "a_total"
+    labels: ["instance"]
+  - metric: "b_total"
+    labels: ["instance"]
+  - metric: "c_total"
+    labels: ["instance"]
+aggregate_cleanup:
+  policy: "read_based"

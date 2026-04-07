@@ -1,0 +1,52 @@
+name: asapquery-quickstart
+
+# Development override: builds all ASAP services from local source instead of
+# pulling pre-built images from ghcr.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+#
+# External users who just want the quickstart should use docker-compose.yml directly.
+
+services:
+  asap-planner-rs:
+    build:
+      context: ..
+      dockerfile: asap-planner-rs/Dockerfile
+
+  asap-summary-ingest:
+    build:
+      context: ../asap-summary-ingest
+
+  queryengine:
+    build:
+      context: ..
+      dockerfile: asap-query-engine/Dockerfile
+
+  fake-exporter-constant:
+    build:
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+
+  fake-exporter-linear-up:
+    build:
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+
+  fake-exporter-linear-down:
+    build:
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+
+  fake-exporter-sine:
+    build:
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+
+  fake-exporter-sine-noise:
+    build:
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+
+  fake-exporter-step:
+    build:
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+
+  fake-exporter-exp-up:
+    build:
+      context: ../asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
