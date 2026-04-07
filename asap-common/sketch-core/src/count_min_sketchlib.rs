@@ -1,6 +1,6 @@
-use sketchlib_rust::{CountMin, RegularPath, SketchInput, Vector2D};
+use asap_sketchlib::{CountMin, RegularPath, SketchInput, Vector2D};
 
-/// Concrete Count-Min type from sketchlib-rust when sketchlib backend is enabled.
+/// Concrete Count-Min type from asap_sketchlib when sketchlib backend is enabled.
 /// Uses f64 counters (Vector2D<f64>) for weighted updates without integer rounding.
 pub type SketchlibCms = CountMin<Vector2D<f64>, RegularPath>;
 

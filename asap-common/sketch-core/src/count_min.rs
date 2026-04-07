@@ -32,7 +32,7 @@ struct WireFormat {
 pub enum CountMinBackend {
     /// Original hand-written matrix implementation.
     Legacy(Vec<Vec<f64>>),
-    /// sketchlib-rust backed implementation.
+    /// asap_sketchlib backed implementation.
     Sketchlib(SketchlibCms),
 }
 

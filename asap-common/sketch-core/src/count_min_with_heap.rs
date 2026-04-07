@@ -58,7 +58,7 @@ pub enum CountMinWithHeapBackend {
         sketch: Vec<Vec<f64>>,
         heap: Vec<HeapItem>,
     },
-    /// sketchlib-rust CMSHeap implementation.
+    /// asap_sketchlib CMSHeap implementation.
     Sketchlib(SketchlibCMSHeap),
 }
 

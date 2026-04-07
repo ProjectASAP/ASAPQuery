@@ -1,6 +1,6 @@
-use sketchlib_rust::{SketchInput, KLL};
+use asap_sketchlib::{SketchInput, KLL};
 
-/// Concrete KLL type from sketchlib-rust when sketchlib backend is enabled.
+/// Concrete KLL type from asap_sketchlib when sketchlib backend is enabled.
 pub type SketchlibKll = KLL;
 
 /// Creates a fresh sketchlib KLL sketch with the requested accuracy parameter `k`.

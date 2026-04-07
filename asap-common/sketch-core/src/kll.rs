@@ -33,7 +33,7 @@ pub struct KllSketchData {
 pub enum KllBackend {
     /// dsrs (DataSketches) implementation.
     Legacy(KllDoubleSketch),
-    /// sketchlib-rust backed implementation.
+    /// asap_sketchlib backed implementation.
     Sketchlib(SketchlibKll),
 }
 
