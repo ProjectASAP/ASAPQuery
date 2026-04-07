@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 
+use asap_sketchlib::proto::sketchlib::{sketch_envelope, SketchEnvelope};
 use axum::{body::Bytes, extract::State, routing::post, Json, Router};
 use flate2::read::GzDecoder;
 use opentelemetry_proto::tonic::collector::metrics::v1::{
@@ -16,7 +17,6 @@ use opentelemetry_proto::tonic::collector::metrics::v1::{
 use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValueVariant;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberValue;
 use prost::Message;
-use asap_sketchlib::proto::sketchlib::{sketch_envelope, SketchEnvelope};
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
