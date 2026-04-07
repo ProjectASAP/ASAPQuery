@@ -8,8 +8,11 @@ use sketch_db_common::enums::CleanupPolicy;
 
 use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
-use crate::planner::single_query::{IntermediateAggConfig, SingleQueryProcessor};
+use crate::planner::single_query::{BinaryArm, IntermediateAggConfig, SingleQueryProcessor};
 use crate::RuntimeOptions;
+
+/// `(query_string, Vec<(identifying_key, cleanup_param)>)` pairs produced by binary leaf decomposition.
+type LeafEntries = Vec<(String, Vec<(String, Option<u64>)>)>;
 
 /// Run the full planning pipeline and produce YAML outputs
 pub fn generate_plan(
@@ -92,6 +95,14 @@ pub fn generate_plan(
                     }
                     Err(e) => return Err(e),
                 }
+            } else if let Some(arm_entries) =
+                collect_binary_leaf_entries(&processor, &mut dedup_map)?
+            {
+                // Binary arithmetic: register each leaf arm in dedup_map and query_keys_map
+                for (arm_query, keys_for_arm) in arm_entries {
+                    // Use `entry` so a standalone query that duplicates an arm wins
+                    query_keys_map.entry(arm_query).or_insert(keys_for_arm);
+                }
             }
         }
     }
@@ -121,6 +132,62 @@ pub fn generate_plan(
         aggregation_count: dedup_map.len(),
         query_count: query_keys_map.len(),
     })
+}
+
+/// Recursively collect (arm_query_string, Vec<(dedup_key, cleanup_param)>) pairs
+/// from a binary arithmetic expression, registering new configs in `dedup_map`.
+///
+/// Returns `Some(Vec<...>)` when every leaf arm is acceleratable.
+/// Returns `None` if any arm is unsupported (caller should skip the query).
+/// Returns `Err` only on internal planner errors.
+fn collect_binary_leaf_entries(
+    processor: &SingleQueryProcessor,
+    dedup_map: &mut IndexMap<String, IntermediateAggConfig>,
+) -> Result<Option<LeafEntries>, ControllerError> {
+    let arms = match processor.get_binary_arm_queries() {
+        Some(arms) => arms,
+        None => return Ok(None), // not a binary expression
+    };
+
+    let mut all_entries: LeafEntries = Vec::new();
+
+    for arm in [arms.0, arms.1] {
+        match arm {
+            BinaryArm::Scalar(_) => {
+                // Scalar literals need no aggregation config — skip silently.
+            }
+            BinaryArm::Query(arm_query) => {
+                let arm_processor = processor.make_arm_processor(arm_query.clone());
+
+                if arm_processor.is_supported() {
+                    // Leaf arm: gather its streaming aggregation configs.
+                    let (configs, cleanup_param) =
+                        arm_processor.get_streaming_aggregation_configs()?;
+                    let mut keys_for_arm = Vec::new();
+                    for config in configs {
+                        let key = config.identifying_key();
+                        keys_for_arm.push((key.clone(), cleanup_param));
+                        dedup_map.entry(key).or_insert(config);
+                    }
+                    all_entries.push((arm_query, keys_for_arm));
+                } else {
+                    // The arm might itself be a binary expression — recurse.
+                    match collect_binary_leaf_entries(&arm_processor, dedup_map)? {
+                        Some(sub_entries) => {
+                            all_entries.extend(sub_entries);
+                        }
+                        None => {
+                            // Arm is neither a supported leaf nor a binary expression.
+                            // This entire query cannot be accelerated.
+                            return Ok(None);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Some(all_entries))
 }
 
 pub fn parse_cleanup_policy(s: &str) -> Result<CleanupPolicy, ControllerError> {

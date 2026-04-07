@@ -1,0 +1,18 @@
+{
+  "queries": [
+    {"id": "avg_all", "expr": "avg(sensor_reading)", "approximate": false},
+    {"id": "sum_all", "expr": "sum(sensor_reading)", "approximate": false},
+    {"id": "max_all", "expr": "max(sensor_reading)", "approximate": false},
+    {"id": "min_all", "expr": "min(sensor_reading)", "approximate": false},
+    {"id": "q50_all", "expr": "quantile(0.50, sensor_reading)", "approximate": true},
+    {"id": "q90_all", "expr": "quantile(0.90, sensor_reading)", "approximate": true},
+    {"id": "q95_all", "expr": "quantile(0.95, sensor_reading)", "approximate": true},
+    {"id": "q99_all", "expr": "quantile(0.99, sensor_reading)", "approximate": true},
+    {"id": "q95_by_pattern", "expr": "quantile by (pattern) (0.95, sensor_reading)", "approximate": true},
+    {"id": "q99_by_pattern", "expr": "quantile by (pattern) (0.99, sensor_reading)", "approximate": true},
+    {"id": "q50_by_pattern", "expr": "quantile by (pattern) (0.50, sensor_reading)", "approximate": true},
+    {"id": "avg_by_pattern", "expr": "avg by (pattern) (sensor_reading)", "approximate": false},
+    {"id": "sum_by_region", "expr": "sum by (region) (sensor_reading)", "approximate": false},
+    {"id": "max_by_service", "expr": "max by (service) (sensor_reading)", "approximate": false}
+  ]
+}

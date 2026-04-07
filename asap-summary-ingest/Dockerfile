@@ -1,4 +1,5 @@
-FROM sketchdb-base:latest
+ARG BASE_IMAGE=sketchdb-base:latest
+FROM ${BASE_IMAGE}
 
 LABEL maintainer="SketchDB Team"
 LABEL description="ArroyoSketch pipeline configuration service"
