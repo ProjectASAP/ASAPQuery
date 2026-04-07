@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use promql_parser::parser::Expr;
 use promql_utilities::data_model::KeyByLabelNames;
 use sketch_db_common::PromQLSchema;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::error::ControllerError;
 
@@ -137,12 +137,14 @@ pub fn build_schema_from_prometheus(
     queries: &[String],
 ) -> Result<PromQLSchema, ControllerError> {
     let metric_names = extract_metric_names(queries);
+    debug!("Inferred metric names from queries: {:?}", metric_names);
     let mut schema = PromQLSchema::new();
 
-    for metric_name in metric_names {
-        match fetch_labels_for_metric(prometheus_url, &metric_name)? {
+    for metric_name in &metric_names {
+        match fetch_labels_for_metric(prometheus_url, metric_name)? {
             Some(labels) => {
-                schema = schema.add_metric(metric_name, KeyByLabelNames::new(labels));
+                debug!("Inferred labels for metric '{}': {:?}", metric_name, labels);
+                schema = schema.add_metric(metric_name.clone(), KeyByLabelNames::new(labels));
             }
             None => {
                 // Warning already emitted inside fetch_labels_for_metric.

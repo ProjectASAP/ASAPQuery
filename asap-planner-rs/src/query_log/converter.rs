@@ -39,5 +39,6 @@ pub fn to_controller_config(
         aggregate_cleanup: Some(AggregateCleanupConfig {
             policy: Some("read_based".to_string()),
         }),
+        metrics: None,
     }
 }

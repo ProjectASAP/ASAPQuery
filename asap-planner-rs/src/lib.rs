@@ -5,8 +5,10 @@ pub mod planner;
 pub mod prometheus_client;
 pub mod query_log;
 
+use promql_utilities::data_model::KeyByLabelNames;
 use serde_yaml::Value as YamlValue;
 use std::path::Path;
+use tracing::debug;
 
 pub use config::input::ControllerConfig;
 pub use config::input::SQLControllerConfig;
@@ -299,7 +301,24 @@ impl Controller {
             .iter()
             .flat_map(|qg| qg.queries.clone())
             .collect();
-        let schema = prometheus_client::build_schema_from_prometheus(prometheus_url, &all_queries)?;
+        let mut schema =
+            prometheus_client::build_schema_from_prometheus(prometheus_url, &all_queries)?;
+        // For any metric that Prometheus had no series for, fall back to the
+        // `metrics` hint in the config file (if present).
+        if let Some(metric_hints) = &config.metrics {
+            for hint in metric_hints {
+                if !schema.config.contains_key(&hint.metric) {
+                    debug!(
+                        "Prometheus had no series for '{}'; falling back to config-file hint with labels {:?}",
+                        hint.metric, hint.labels
+                    );
+                    schema = schema.add_metric(
+                        hint.metric.clone(),
+                        KeyByLabelNames::new(hint.labels.clone()),
+                    );
+                }
+            }
+        }
         Ok(Self {
             config,
             schema,

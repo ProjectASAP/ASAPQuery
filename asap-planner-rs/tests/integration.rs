@@ -27,6 +27,36 @@ fn http_requests_schema() -> PromQLSchema {
     )
 }
 
+/// Schema for binary arithmetic tests: errors_total and requests_total.
+fn binary_arithmetic_schema() -> PromQLSchema {
+    PromQLSchema::new()
+        .add_metric(
+            "errors_total".to_string(),
+            KeyByLabelNames::new(vec!["instance".to_string(), "job".to_string()]),
+        )
+        .add_metric(
+            "requests_total".to_string(),
+            KeyByLabelNames::new(vec!["instance".to_string(), "job".to_string()]),
+        )
+}
+
+/// Schema for nested binary arithmetic test: a_total, b_total, c_total.
+fn nested_binary_arithmetic_schema() -> PromQLSchema {
+    PromQLSchema::new()
+        .add_metric(
+            "a_total".to_string(),
+            KeyByLabelNames::new(vec!["instance".to_string(), "job".to_string()]),
+        )
+        .add_metric(
+            "b_total".to_string(),
+            KeyByLabelNames::new(vec!["instance".to_string(), "job".to_string()]),
+        )
+        .add_metric(
+            "c_total".to_string(),
+            KeyByLabelNames::new(vec!["instance".to_string(), "job".to_string()]),
+        )
+}
+
 // ─── query_log integration tests ─────────────────────────────────────────────
 
 #[test]
@@ -390,9 +420,9 @@ fn malformed_yaml_returns_parse_error() {
 }
 
 #[test]
-fn stale_metrics_field_in_yaml_returns_parse_error() {
-    // Configs that still contain a top-level `metrics:` key must fail loudly
-    // (deny_unknown_fields is set on ControllerConfig).
+fn metrics_field_in_yaml_is_accepted_as_hint() {
+    // The `metrics` section is a backwards-compatible label hint used as a
+    // fallback when Prometheus has no series for a metric. It must parse cleanly.
     let yaml = r#"
 query_groups:
   - id: 1
@@ -404,7 +434,7 @@ metrics:
     labels: ["instance"]
 "#;
     let result = Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts());
-    assert!(matches!(result, Err(ControllerError::YamlParse(_))));
+    assert!(result.is_ok());
 }
 
 // --- Overlapping window tests ---
@@ -474,8 +504,9 @@ fn temporal_overlapping_cleanup_param_equals_range_over_repeat() {
 
 #[test]
 fn binary_arithmetic_produces_two_leaf_configs() {
-    let c = Controller::from_file(
+    let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic.yaml"),
+        binary_arithmetic_schema(),
         arroyo_opts(),
     )
     .unwrap();
@@ -488,8 +519,9 @@ fn binary_arithmetic_produces_two_leaf_configs() {
 
 #[test]
 fn binary_arithmetic_deduplicates_shared_arm() {
-    let c = Controller::from_file(
+    let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_dedup.yaml"),
+        binary_arithmetic_schema(),
         arroyo_opts(),
     )
     .unwrap();
@@ -502,8 +534,9 @@ fn binary_arithmetic_deduplicates_shared_arm() {
 
 #[test]
 fn nested_binary_arithmetic_produces_three_leaf_configs() {
-    let c = Controller::from_file(
+    let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_nested.yaml"),
+        nested_binary_arithmetic_schema(),
         arroyo_opts(),
     )
     .unwrap();
@@ -514,8 +547,9 @@ fn nested_binary_arithmetic_produces_three_leaf_configs() {
 
 #[test]
 fn binary_arithmetic_scalar_constant_produces_one_leaf_config() {
-    let c = Controller::from_file(
+    let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_scalar.yaml"),
+        binary_arithmetic_schema(),
         arroyo_opts(),
     )
     .unwrap();
@@ -527,8 +561,9 @@ fn binary_arithmetic_scalar_constant_produces_one_leaf_config() {
 
 #[test]
 fn binary_arithmetic_with_non_acceleratable_arm_produces_no_configs() {
-    let c = Controller::from_file(
+    let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_non_acceleratable.yaml"),
+        binary_arithmetic_schema(),
         arroyo_opts(),
     )
     .unwrap();

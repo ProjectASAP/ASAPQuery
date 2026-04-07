@@ -6,6 +6,10 @@ pub struct ControllerConfig {
     pub query_groups: Vec<QueryGroup>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
     pub aggregate_cleanup: Option<AggregateCleanupConfig>,
+    /// Optional hint: per-metric label sets used as a fallback when Prometheus
+    /// returns no series for a metric. Prometheus-inferred labels take priority.
+    #[serde(default)]
+    pub metrics: Option<Vec<MetricDefinition>>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
