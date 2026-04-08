@@ -1,4 +1,4 @@
-use sketchlib_rust::{EHSketchList, SketchInput, UniformSampling};
+use asap_sketchlib::{EHSketchList, SketchInput, UniformSampling};
 
 use super::series::PromSketchMemSeries;
 

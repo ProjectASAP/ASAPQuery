@@ -1,4 +1,4 @@
-use sketchlib_rust::{
+use asap_sketchlib::{
     EHSketchList, EHUnivOptimized, ExponentialHistogram, SketchInput, UniformSampling, KLL,
 };
 

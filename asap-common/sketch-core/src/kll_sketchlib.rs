@@ -1,4 +1,4 @@
-use sketchlib_rust::{SketchInput, KLL};
+use asap_sketchlib::{SketchInput, KLL};
 
 /// Concrete KLL type from sketchlib-rust when sketchlib backend is enabled.
 pub type SketchlibKll = KLL;
