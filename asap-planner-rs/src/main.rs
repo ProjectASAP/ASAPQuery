@@ -1,6 +1,5 @@
 use asap_planner::{Controller, RuntimeOptions, SQLController, SQLRuntimeOptions, StreamingEngine};
 use clap::Parser;
-use promql_utilities::data_model::KeyByLabelNames;
 use sketch_db_common::enums::QueryLanguage;
 use std::path::PathBuf;
 
@@ -57,19 +56,6 @@ enum EngineArg {
     Precompute,
 }
 
-/// Build a `PromQLSchema` from the `metrics` hints in a controller config file.
-fn schema_from_config_file(path: &PathBuf) -> anyhow::Result<asap_planner::PromQLSchema> {
-    let yaml_str = std::fs::read_to_string(path)?;
-    let config: asap_planner::ControllerConfig = serde_yaml::from_str(&yaml_str)?;
-    let mut schema = asap_planner::PromQLSchema::new();
-    if let Some(metrics) = &config.metrics {
-        for m in metrics {
-            schema = schema.add_metric(m.metric.clone(), KeyByLabelNames::new(m.labels.clone()));
-        }
-    }
-    Ok(schema)
-}
-
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
@@ -104,7 +90,9 @@ fn main() -> anyhow::Result<()> {
                     Controller::from_file(&config_path, opts, &url)?
                 }
                 (Some(config_path), None, None) => {
-                    let schema = schema_from_config_file(&config_path)?;
+                    let yaml_str = std::fs::read_to_string(&config_path)?;
+                    let config: asap_planner::ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+                    let schema = config.schema_from_hints();
                     Controller::from_file_with_schema(&config_path, schema, opts)?
                 }
                 (None, Some(log_path), Some(url)) => {

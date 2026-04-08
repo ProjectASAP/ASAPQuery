@@ -1,4 +1,6 @@
+use promql_utilities::data_model::KeyByLabelNames;
 use serde::Deserialize;
+use sketch_db_common::PromQLSchema;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -10,6 +12,21 @@ pub struct ControllerConfig {
     /// returns no series for a metric. Prometheus-inferred labels take priority.
     #[serde(default)]
     pub metrics: Option<Vec<MetricDefinition>>,
+}
+
+impl ControllerConfig {
+    /// Build a `PromQLSchema` from the `metrics` hints in this config.
+    /// Returns an empty schema if no hints are present.
+    pub fn schema_from_hints(&self) -> PromQLSchema {
+        let mut schema = PromQLSchema::new();
+        if let Some(metrics) = &self.metrics {
+            for m in metrics {
+                schema =
+                    schema.add_metric(m.metric.clone(), KeyByLabelNames::new(m.labels.clone()));
+            }
+        }
+        schema
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

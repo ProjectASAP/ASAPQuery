@@ -1,6 +1,5 @@
 use anyhow::Result;
-use asap_planner::{Controller, ControllerConfig, PlannerOutput, PromQLSchema, RuntimeOptions};
-use promql_utilities::data_model::KeyByLabelNames;
+use asap_planner::{Controller, ControllerConfig, PlannerOutput, RuntimeOptions};
 use sketch_db_common::enums::QueryLanguage;
 use sketch_db_common::inference_config::InferenceConfig;
 use sketch_db_common::streaming_config::StreamingConfig;
@@ -37,13 +36,7 @@ impl PlannerClient for LocalPlannerClient {
         let query_language = self.query_language;
 
         let output: PlannerOutput = tokio::task::spawn_blocking(move || {
-            let mut schema = PromQLSchema::new();
-            if let Some(metrics) = &config.metrics {
-                for m in metrics {
-                    schema =
-                        schema.add_metric(m.metric.clone(), KeyByLabelNames::new(m.labels.clone()));
-                }
-            }
+            let schema = config.schema_from_hints();
             let controller = Controller::new(config, schema, opts);
             controller.generate()
         })
@@ -91,17 +84,6 @@ mod tests {
         }
     }
 
-    fn sample_schema(config: &ControllerConfig) -> PromQLSchema {
-        let mut schema = PromQLSchema::new();
-        if let Some(metrics) = &config.metrics {
-            for m in metrics {
-                schema =
-                    schema.add_metric(m.metric.clone(), KeyByLabelNames::new(m.labels.clone()));
-            }
-        }
-        schema
-    }
-
     fn sample_runtime_options() -> RuntimeOptions {
         RuntimeOptions {
             prometheus_scrape_interval: 15,
@@ -115,7 +97,7 @@ mod tests {
     #[test]
     fn test_controller_new_generate() {
         let config = sample_controller_config();
-        let schema = sample_schema(&config);
+        let schema = config.schema_from_hints();
         let opts = sample_runtime_options();
         let controller = Controller::new(config, schema, opts);
         let output = controller.generate().expect("generate should succeed");
@@ -127,7 +109,7 @@ mod tests {
     #[test]
     fn test_planner_output_struct_accessors() {
         let config = sample_controller_config();
-        let schema = sample_schema(&config);
+        let schema = config.schema_from_hints();
         let opts = sample_runtime_options();
         let controller = Controller::new(config, schema, opts);
         let output = controller.generate().expect("generate should succeed");
