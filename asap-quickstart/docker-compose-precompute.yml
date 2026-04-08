@@ -100,7 +100,7 @@ services:
   #############################################################################
 
   queryengine:
-    image: ghcr.io/projectasap/asap-query-engine:v0.2.0
+    image: ghcr.io/projectasap/asap-query-engine:v0.2.0-precompute
     container_name: asap-queryengine
     hostname: queryengine
     networks:
