@@ -9,6 +9,9 @@ remote_write:
   - url: http://arroyo:9091/receive
     queue_config:
       batch_send_deadline: 1s
+      # Drop samples older than 5 minutes before enqueuing — prevents WAL replay
+      # on restart from flooding Arroyo with historical data.
+      sample_age_limit: 5m
     write_relabel_configs:
       - source_labels: [__name__]
         regex: sensor_reading
