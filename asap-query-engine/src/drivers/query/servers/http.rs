@@ -16,6 +16,7 @@ use tracing::{debug, info};
 
 use crate::drivers::query::adapters::{create_http_adapter, AdapterConfig, HttpProtocolAdapter};
 use crate::engines::SimpleEngine;
+use crate::query_tracker::QueryTracker;
 use crate::stores::Store;
 
 #[derive(Debug, Clone)]
@@ -30,6 +31,7 @@ pub struct HttpServer {
     config: HttpServerConfig,
     query_engine: Arc<SimpleEngine>,
     store: Arc<dyn Store>,
+    query_tracker: Option<Arc<QueryTracker>>,
 }
 
 #[derive(Clone)]
@@ -37,6 +39,7 @@ struct AppState {
     config: HttpServerConfig,
     query_engine: Arc<SimpleEngine>,
     store: Arc<dyn Store>,
+    query_tracker: Option<Arc<QueryTracker>>,
     adapter: Arc<dyn HttpProtocolAdapter>,
     fallback: Option<Arc<dyn crate::drivers::query::fallback::FallbackClient>>,
 }
@@ -46,11 +49,13 @@ impl HttpServer {
         config: HttpServerConfig,
         query_engine: Arc<SimpleEngine>,
         store: Arc<dyn Store>,
+        query_tracker: Option<Arc<QueryTracker>>,
     ) -> Self {
         Self {
             config,
             query_engine,
             store,
+            query_tracker,
         }
     }
 
@@ -71,6 +76,7 @@ impl HttpServer {
             config: self.config.clone(),
             query_engine: self.query_engine,
             store: self.store,
+            query_tracker: self.query_tracker,
             adapter: adapter.clone(),
             fallback: self.config.adapter_config.fallback.clone(),
         };
@@ -108,6 +114,7 @@ impl HttpServer {
             config: self.config.clone(),
             query_engine: self.query_engine.clone(),
             store: self.store.clone(),
+            query_tracker: self.query_tracker.clone(),
             adapter: adapter.clone(),
             fallback: self.config.adapter_config.fallback.clone(),
         };
@@ -169,6 +176,11 @@ async fn process_query_request(
                 Err(status) => status.into_response(),
             };
         }
+    }
+
+    // Record query for passive auto-discovery (if tracker is enabled)
+    if let Some(tracker) = &state.query_tracker {
+        tracker.record_instant(&parsed_request.query, parsed_request.time);
     }
 
     // Step 2: Execute query with engine (using parsed request)
@@ -448,6 +460,16 @@ async fn process_range_query_request(
         };
     }
 
+    // Record query for passive auto-discovery (if tracker is enabled)
+    if let Some(tracker) = &state.query_tracker {
+        tracker.record_range(
+            &parsed_request.query,
+            parsed_request.start,
+            parsed_request.end,
+            parsed_request.step,
+        );
+    }
+
     // Execute range query with engine
     let query_start_time = Instant::now();
     debug!(
@@ -611,7 +633,7 @@ mod tests {
             crate::data_model::QueryLanguage::promql,
         ));
 
-        let server = HttpServer::new(config, query_engine, store);
+        let server = HttpServer::new(config, query_engine, store, None);
         server
             .start_test_server()
             .await

@@ -137,7 +137,7 @@ async fn setup_test_server(elasticsearch_port: u16, index: &str) -> (HttpServer,
         QueryLanguage::elastic_querydsl,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let actual_port = server
         .start_test_server()
         .await
@@ -173,7 +173,7 @@ async fn setup_test_server_sql(elasticsearch_port: u16, index: &str) -> (HttpSer
         QueryLanguage::elastic_sql,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let actual_port = server
         .start_test_server()
         .await
@@ -408,7 +408,7 @@ async fn test_forwarding_disabled() {
         QueryLanguage::elastic_querydsl,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let server_port = server
         .start_test_server()
         .await
@@ -576,7 +576,7 @@ async fn test_sql_forwarding_disabled() {
         QueryLanguage::elastic_sql,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let server_port = server
         .start_test_server()
         .await

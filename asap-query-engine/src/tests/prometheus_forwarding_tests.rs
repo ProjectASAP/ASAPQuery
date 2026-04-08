@@ -88,7 +88,7 @@ async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
         crate::data_model::QueryLanguage::promql,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let actual_port = server
         .start_test_server()
         .await
@@ -182,7 +182,7 @@ async fn test_forwarding_disabled() {
         crate::data_model::QueryLanguage::promql,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let server_port = server
         .start_test_server()
         .await
@@ -238,7 +238,7 @@ async fn test_prometheus_server_unreachable() {
         crate::data_model::QueryLanguage::promql,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let server_port = server
         .start_test_server()
         .await

@@ -17,6 +17,7 @@ pub mod engines;
 pub mod planner_client;
 pub mod precompute_engine;
 pub mod precompute_operators;
+pub mod query_tracker;
 pub mod stores;
 
 #[cfg(test)]
@@ -47,6 +48,8 @@ pub use drivers::{
 pub use precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 pub use precompute_engine::output_sink::StoreOutputSink;
 pub use precompute_engine::PrecomputeEngine;
+
+pub use query_tracker::{QueryTracker, QueryTrackerConfig};
 
 pub use utils::{normalize_spatial_filter, read_inference_config, read_streaming_config};
 

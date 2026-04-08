@@ -69,7 +69,7 @@ async fn setup_test_server(clickhouse_port: u16, database: &str) -> (HttpServer,
         QueryLanguage::sql,
     ));
 
-    let server = HttpServer::new(config, query_engine, store);
+    let server = HttpServer::new(config, query_engine, store, None);
     let actual_port = server
         .start_test_server()
         .await
