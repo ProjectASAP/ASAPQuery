@@ -10,6 +10,7 @@ promql_utilities.workspace = true
 sql_utilities.workspace = true
 sketch_db_common.workspace = true
 datafusion_summary_library.workspace = true
+asap_planner.workspace = true
 
 # Shared external (workspace)
 serde.workspace = true

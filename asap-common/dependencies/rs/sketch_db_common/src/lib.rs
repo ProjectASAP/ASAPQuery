@@ -6,6 +6,7 @@ pub mod inference_config;
 pub mod promql_schema;
 pub mod query_config;
 pub mod query_requirements;
+pub mod streaming_config;
 pub mod traits;
 pub mod utils;
 
@@ -17,3 +18,4 @@ pub use inference_config::*;
 pub use promql_schema::*;
 pub use query_config::*;
 pub use query_requirements::*;
+pub use streaming_config::*;

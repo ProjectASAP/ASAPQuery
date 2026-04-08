@@ -7,6 +7,9 @@ pub mod query_log;
 
 use promql_utilities::data_model::KeyByLabelNames;
 use serde_yaml::Value as YamlValue;
+use sketch_db_common::enums::QueryLanguage;
+use sketch_db_common::inference_config::InferenceConfig;
+use sketch_db_common::streaming_config::StreamingConfig;
 use std::path::Path;
 use tracing::debug;
 
@@ -22,6 +25,7 @@ pub use sketch_db_common::PromQLSchema;
 pub enum StreamingEngine {
     Arroyo,
     Flink,
+    Precompute,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +176,21 @@ impl PlannerOutput {
         Ok(serde_yaml::to_string(&self.inference_yaml)?)
     }
 
+    pub fn to_streaming_config(
+        &self,
+        query_language: QueryLanguage,
+    ) -> Result<StreamingConfig, anyhow::Error> {
+        let inference_config = self.to_inference_config(query_language)?;
+        StreamingConfig::from_yaml_data(&self.streaming_yaml, Some(&inference_config))
+    }
+
+    pub fn to_inference_config(
+        &self,
+        query_language: QueryLanguage,
+    ) -> Result<InferenceConfig, anyhow::Error> {
+        InferenceConfig::from_yaml_data(&self.inference_yaml, query_language)
+    }
+
     /// Returns the table_name field of the first aggregation matching agg_type.
     pub fn aggregation_table_name(&self, agg_type: &str) -> Option<String> {
         if let YamlValue::Mapping(root) = &self.streaming_yaml {
@@ -249,6 +268,10 @@ pub struct SQLController {
 }
 
 impl SQLController {
+    pub fn new(config: SQLControllerConfig, options: SQLRuntimeOptions) -> Self {
+        Self { config, options }
+    }
+
     pub fn from_file(path: &Path, opts: SQLRuntimeOptions) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
         Self::from_yaml(&yaml_str, opts)
@@ -285,6 +308,14 @@ impl SQLController {
 }
 
 impl Controller {
+    pub fn new(config: ControllerConfig, schema: PromQLSchema, options: RuntimeOptions) -> Self {
+        Self {
+            config,
+            schema,
+            options,
+        }
+    }
+
     /// Build a `Controller` from a config file, fetching metric labels from Prometheus.
     ///
     /// `prometheus_url` is queried via `GET /api/v1/series?match[]=<metric>` for each metric
