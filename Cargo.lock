@@ -3585,6 +3585,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "arrow",
+ "asap_planner",
  "asap_sketchlib",
  "async-trait",
  "axum",
