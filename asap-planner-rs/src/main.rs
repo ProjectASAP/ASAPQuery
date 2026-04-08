@@ -21,7 +21,9 @@ struct Args {
     prometheus_scrape_interval: Option<u64>,
 
     /// Base URL of the Prometheus instance used to auto-infer metric label sets.
-    /// Required for PromQL mode. Example: http://localhost:9090
+    /// Optional: when provided, the planner queries Prometheus for label discovery.
+    /// When absent, labels are taken from the `metrics` hint in the config file.
+    /// Example: http://localhost:9090
     #[arg(long = "prometheus-url", required = false)]
     prometheus_url: Option<String>,
 
@@ -76,9 +78,6 @@ fn main() -> anyhow::Result<()> {
             let scrape_interval = args.prometheus_scrape_interval.ok_or_else(|| {
                 anyhow::anyhow!("--prometheus_scrape_interval is required for PromQL mode")
             })?;
-            let prometheus_url = args
-                .prometheus_url
-                .ok_or_else(|| anyhow::anyhow!("--prometheus-url is required for PromQL mode"))?;
             let opts = RuntimeOptions {
                 prometheus_scrape_interval: scrape_interval,
                 streaming_engine: engine,
@@ -86,13 +85,23 @@ fn main() -> anyhow::Result<()> {
                 range_duration: args.range_duration,
                 step: args.step,
             };
-            let controller = match (args.input_config, args.query_log) {
-                (Some(config_path), None) => {
-                    Controller::from_file(&config_path, opts, &prometheus_url)?
+            let controller = match (args.input_config, args.query_log, args.prometheus_url) {
+                (Some(config_path), None, Some(url)) => {
+                    Controller::from_file(&config_path, opts, &url)?
                 }
-                (None, Some(log_path)) => {
-                    Controller::from_query_log(&log_path, opts, &prometheus_url)?
+                (Some(config_path), None, None) => Controller::from_file_with_schema(
+                    &config_path,
+                    asap_planner::PromQLSchema::new(),
+                    opts,
+                )?,
+                (None, Some(log_path), Some(url)) => {
+                    Controller::from_query_log(&log_path, opts, &url)?
                 }
+                (None, Some(log_path), None) => Controller::from_query_log_with_schema(
+                    &log_path,
+                    asap_planner::PromQLSchema::new(),
+                    opts,
+                )?,
                 _ => anyhow::bail!(
                     "exactly one of --input_config or --query-log must be provided for PromQL mode"
                 ),

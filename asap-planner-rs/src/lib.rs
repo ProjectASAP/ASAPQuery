@@ -363,11 +363,27 @@ impl Controller {
     /// or when the schema is constructed in-process by the caller).
     pub fn from_file_with_schema(
         path: &Path,
-        schema: PromQLSchema,
+        mut schema: PromQLSchema,
         opts: RuntimeOptions,
     ) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
         let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        // Fill in any metrics missing from the caller-supplied schema using the
+        // config-file `metrics` hint (if present).
+        if let Some(metric_hints) = &config.metrics {
+            for hint in metric_hints {
+                if !schema.config.contains_key(&hint.metric) {
+                    debug!(
+                        "Schema missing '{}'; falling back to config-file hint with labels {:?}",
+                        hint.metric, hint.labels
+                    );
+                    schema = schema.add_metric(
+                        hint.metric.clone(),
+                        KeyByLabelNames::new(hint.labels.clone()),
+                    );
+                }
+            }
+        }
         Ok(Self {
             config,
             schema,

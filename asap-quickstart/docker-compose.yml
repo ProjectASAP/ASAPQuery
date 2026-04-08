@@ -137,6 +137,9 @@ services:
       timeout: 5s
       retries: 10
       start_period: 3m
+    depends_on:
+      asap-summary-ingest:
+        condition: service_completed_successfully
     restart: no
 
   grafana:
@@ -177,7 +180,6 @@ services:
       - "--input_config=/config/controller-config.yaml"
       - "--output_dir=/asap-planner-output"
       - "--prometheus_scrape_interval=1"
-      - "--prometheus-url=http://prometheus:9090"
       - "--streaming_engine=arroyo"
       - "--range-duration=300"
       - "--step=10"
@@ -185,9 +187,6 @@ services:
     volumes:
       - ./config/controller-config.yaml:/config/controller-config.yaml:ro
       - asap-planner-output:/asap-planner-output
-    depends_on:
-      prometheus:
-        condition: service_healthy
     restart: "no"
 
   asap-summary-ingest:
