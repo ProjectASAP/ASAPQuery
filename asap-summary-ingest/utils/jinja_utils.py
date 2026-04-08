@@ -1,4 +1,4 @@
-from jinja2 import Environment, FileSystemLoader, nodes
+from jinja2 import Environment, FileSystemLoader, meta
 
 
 def load_template(template_dir, template_name):
@@ -23,5 +23,4 @@ def get_template_variables(template_source, environment=None):
         environment = Environment()
 
     ast = environment.parse(template_source)
-    template_vars = ast.find_all(nodes.Name)
-    return {var.name for var in template_vars if var.ctx == "load"}
+    return meta.find_undeclared_variables(ast)

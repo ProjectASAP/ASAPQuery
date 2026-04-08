@@ -952,6 +952,10 @@ def main(args):
             parameters["impl_mode"] = getattr(
                 args, "sketch_cmwh_impl", "legacy"
             ).capitalize()
+        elif agg_function in ("datasketcheskll_", "hydrakll_"):
+            parameters["impl_mode"] = getattr(
+                args, "sketch_kll_impl", "sketchlib"
+            ).capitalize()
 
         sql_queries.append(sql_query)
         # if not is_labels_accumulator:
