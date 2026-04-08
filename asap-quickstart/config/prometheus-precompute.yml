@@ -1,17 +1,15 @@
 # Prometheus configuration for pattern-based fake exporters demo
+# Uses the hand-crafted precompute engine (instead of Arroyo) for sketch building
 
 global:
   scrape_interval: 1s
   evaluation_interval: 1s
 
-# Remote write configuration to send metrics to Arroyo for sketch building
+# Remote write configuration to send metrics to the precompute engine for sketch building
 remote_write:
-  - url: http://arroyo:9091/receive
+  - url: http://queryengine:9091/api/v1/write
     queue_config:
       batch_send_deadline: 1s
-      # Drop samples older than 5 minutes before enqueuing — prevents WAL replay
-      # on restart from flooding Arroyo with historical data.
-      sample_age_limit: 5m
     write_relabel_configs:
       - source_labels: [__name__]
         regex: sensor_reading
