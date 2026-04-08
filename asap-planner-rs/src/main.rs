@@ -50,6 +50,7 @@ struct Args {
 enum EngineArg {
     Arroyo,
     Flink,
+    Precompute,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -66,6 +67,7 @@ fn main() -> anyhow::Result<()> {
     let engine = match args.streaming_engine {
         EngineArg::Arroyo => StreamingEngine::Arroyo,
         EngineArg::Flink => StreamingEngine::Flink,
+        EngineArg::Precompute => StreamingEngine::Precompute,
     };
 
     match args.query_language {
