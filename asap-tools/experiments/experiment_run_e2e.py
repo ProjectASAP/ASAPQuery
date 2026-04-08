@@ -318,12 +318,40 @@ def main(cfg: DictConfig):
 
         # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
         if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            # The controller queries Prometheus to auto-infer metric labels, so
+            # exporters and Prometheus must be up and have at least one scrape
+            # worth of data before the controller runs.
+            if config.check_exporter_and_queries_exist(
+                "fake_exporter", cfg.experiment_params
+            ):
+                exporter_service.start(
+                    config=exporter_config["exporter_list"]["fake_exporter"],
+                    experiment_output_dir=experiment_output_dir,
+                    local_experiment_dir=local_experiment_dir,
+                )
+            prometheus_service.start(
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                experiment_mode=experiment_mode,
+            )
+            # Wait for two scrape intervals so Prometheus has series to return.
+            label_discovery_wait = prometheus_scrape_interval * 2
+            print(
+                f"Waiting {label_discovery_wait}s for Prometheus to scrape initial data "
+                f"before running controller label inference..."
+            )
+            time.sleep(label_discovery_wait)
+
+            prometheus_url = (
+                f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
+            )
             controller_service.start(
                 controller_input_file=controller_client_config,
                 prometheus_scrape_interval=prometheus_scrape_interval,
                 streaming_engine=args.streaming_engine,
                 controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
                 punting=args.controller_punting,
+                prometheus_url=prometheus_url,
             )
             sync.rsync_controller_config_remote_to_local(
                 provider,
@@ -336,10 +364,14 @@ def main(cfg: DictConfig):
             kafka_service.delete_topics()
             kafka_service.create_topics()
 
-        if config.check_exporter_and_queries_exist(
-            "fake_exporter", cfg.experiment_params
+        if (
+            config.check_exporter_and_queries_exist(
+                "fake_exporter", cfg.experiment_params
+            )
+            and experiment_mode != constants.SKETCHDB_EXPERIMENT_NAME
         ):
             # this DOES NOT block
+            # (SKETCHDB mode already started the exporter early for label discovery)
             exporter_service.start(
                 config=exporter_config["exporter_list"]["fake_exporter"],
                 experiment_output_dir=experiment_output_dir,
@@ -467,9 +499,12 @@ def main(cfg: DictConfig):
         system_exporters_service.start(cfg.experiment_params)
 
         # Start Prometheus service based on deployment mode
+        # (SKETCHDB mode already started Prometheus early for label discovery)
         monitoring = cfg.experiment_params.monitoring
 
-        if monitoring.deployment_mode == "containerized":
+        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            pass  # already started before the controller
+        elif monitoring.deployment_mode == "containerized":
             # Containerized deployment (DockerPrometheusService or DockerVictoriaMetricsService)
             assert isinstance(
                 prometheus_service,
