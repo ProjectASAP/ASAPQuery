@@ -1,8 +1,11 @@
 use anyhow::Result;
-use asap_planner::{Controller, ControllerConfig, PlannerOutput, RuntimeOptions};
+use asap_planner::{
+    build_schema_from_prometheus, Controller, ControllerConfig, PlannerOutput, RuntimeOptions,
+};
 use sketch_db_common::enums::QueryLanguage;
 use sketch_db_common::inference_config::InferenceConfig;
 use sketch_db_common::streaming_config::StreamingConfig;
+use tracing::warn;
 
 pub struct PlannerResult {
     pub streaming_config: StreamingConfig,
@@ -18,13 +21,19 @@ pub trait PlannerClient: Send + Sync {
 pub struct LocalPlannerClient {
     runtime_options: RuntimeOptions,
     query_language: QueryLanguage,
+    prometheus_url: String,
 }
 
 impl LocalPlannerClient {
-    pub fn new(runtime_options: RuntimeOptions, query_language: QueryLanguage) -> Self {
+    pub fn new(
+        runtime_options: RuntimeOptions,
+        query_language: QueryLanguage,
+        prometheus_url: String,
+    ) -> Self {
         Self {
             runtime_options,
             query_language,
+            prometheus_url,
         }
     }
 }
@@ -34,9 +43,35 @@ impl PlannerClient for LocalPlannerClient {
     async fn plan(&self, config: ControllerConfig) -> Result<PlannerResult> {
         let opts = self.runtime_options.clone();
         let query_language = self.query_language;
+        let prometheus_url = self.prometheus_url.clone();
 
         let output: PlannerOutput = tokio::task::spawn_blocking(move || {
-            let schema = config.schema_from_hints();
+            let all_queries: Vec<String> = config
+                .query_groups
+                .iter()
+                .flat_map(|qg| qg.queries.clone())
+                .collect();
+            let mut schema = match build_schema_from_prometheus(&prometheus_url, &all_queries) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(
+                        "Prometheus metric discovery failed, falling back to config hints: {}",
+                        e
+                    );
+                    config.schema_from_hints()
+                }
+            };
+            // Fall back to config-file hints for metrics not found in Prometheus.
+            if let Some(metric_hints) = &config.metrics {
+                for hint in metric_hints {
+                    if !schema.config.contains_key(&hint.metric) {
+                        schema = schema.add_metric(
+                            hint.metric.clone(),
+                            promql_utilities::data_model::KeyByLabelNames::new(hint.labels.clone()),
+                        );
+                    }
+                }
+            }
             let controller = Controller::new(config, schema, opts);
             controller.generate()
         })
@@ -127,7 +162,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_planner_client() {
-        let client = LocalPlannerClient::new(sample_runtime_options(), QueryLanguage::promql);
+        // Use a dummy URL; the test config has metric hints so Prometheus discovery
+        // failures are tolerated via the fallback path.
+        let client = LocalPlannerClient::new(
+            sample_runtime_options(),
+            QueryLanguage::promql,
+            "http://localhost:9090".to_string(),
+        );
         let config = sample_controller_config();
 
         let result = client.plan(config).await.expect("plan should succeed");

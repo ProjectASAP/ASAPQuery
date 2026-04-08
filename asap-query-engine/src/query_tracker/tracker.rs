@@ -106,8 +106,7 @@ impl QueryTracker {
             return;
         }
 
-        // Build ControllerConfig. Metrics are empty for now (issue #250).
-        let controller_config = to_controller_config(instants, ranges, vec![]);
+        let controller_config = to_controller_config(instants, ranges);
 
         info!(
             "query_tracker: calling planner with {} query groups",

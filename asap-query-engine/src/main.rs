@@ -368,6 +368,7 @@ async fn main() -> Result<()> {
         let planner_client = Arc::new(LocalPlannerClient::new(
             runtime_options,
             args.query_language,
+            args.prometheus_server.clone(),
         ));
         let tracker = Arc::new(query_engine_rust::QueryTracker::new(tracker_config));
         let _tracker_handle = tracker.start_background_loop(planner_client);
