@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use std::thread;
+use std::time::Duration;
 
 use promql_parser::parser::Expr;
 use promql_utilities::data_model::KeyByLabelNames;
@@ -6,6 +8,11 @@ use sketch_db_common::PromQLSchema;
 use tracing::{debug, warn};
 
 use crate::error::ControllerError;
+
+/// Number of times to retry a Prometheus request on 503 (service not yet ready).
+const MAX_RETRIES: u32 = 15;
+/// Delay between retries.
+const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// Walk a PromQL AST and collect all metric names referenced by VectorSelectors.
 fn collect_metric_names(expr: &Expr, names: &mut HashSet<String>) {
@@ -69,65 +76,86 @@ fn fetch_labels_for_metric(
 ) -> Result<Option<Vec<String>>, ControllerError> {
     let url = format!("{}/api/v1/series", prometheus_url.trim_end_matches('/'));
     let client = reqwest::blocking::Client::new();
-    let response = client
-        .get(&url)
-        .query(&[("match[]", metric_name)])
-        .send()
-        .map_err(|e| {
+
+    for attempt in 1..=MAX_RETRIES {
+        let response = client
+            .get(&url)
+            .query(&[("match[]", metric_name)])
+            .send()
+            .map_err(|e| {
+                ControllerError::PrometheusClient(format!(
+                    "HTTP request failed for metric '{}': {}",
+                    metric_name, e
+                ))
+            })?;
+
+        let status = response.status();
+
+        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            warn!(
+                "Prometheus returned 503 for metric '{}' (attempt {}/{}); retrying in {}s",
+                metric_name,
+                attempt,
+                MAX_RETRIES,
+                RETRY_DELAY.as_secs(),
+            );
+            thread::sleep(RETRY_DELAY);
+            continue;
+        }
+
+        if !status.is_success() {
+            return Err(ControllerError::PrometheusClient(format!(
+                "Prometheus returned HTTP {} for metric '{}'",
+                status, metric_name
+            )));
+        }
+
+        let body: serde_json::Value = response.json().map_err(|e| {
             ControllerError::PrometheusClient(format!(
-                "HTTP request failed for metric '{}': {}",
+                "Failed to parse Prometheus response for metric '{}': {}",
                 metric_name, e
             ))
         })?;
 
-    if !response.status().is_success() {
-        return Err(ControllerError::PrometheusClient(format!(
-            "Prometheus returned HTTP {} for metric '{}'",
-            response.status(),
-            metric_name
-        )));
-    }
+        let data = match body.get("data").and_then(|d| d.as_array()) {
+            Some(arr) => arr,
+            None => {
+                warn!(
+                    "Prometheus returned no 'data' array for metric '{}'; skipping",
+                    metric_name
+                );
+                return Ok(None);
+            }
+        };
 
-    let body: serde_json::Value = response.json().map_err(|e| {
-        ControllerError::PrometheusClient(format!(
-            "Failed to parse Prometheus response for metric '{}': {}",
-            metric_name, e
-        ))
-    })?;
-
-    let data = match body.get("data").and_then(|d| d.as_array()) {
-        Some(arr) => arr,
-        None => {
+        if data.is_empty() {
             warn!(
-                "Prometheus returned no 'data' array for metric '{}'; skipping",
+                "Prometheus returned no series for metric '{}' in the last 5 minutes; skipping",
                 metric_name
             );
             return Ok(None);
         }
-    };
 
-    if data.is_empty() {
-        warn!(
-            "Prometheus returned no series for metric '{}' in the last 5 minutes; skipping",
-            metric_name
-        );
-        return Ok(None);
-    }
-
-    // Collect all unique label key names across all returned series,
-    // filtering out internal __*__ labels.
-    let mut label_keys: HashSet<String> = HashSet::new();
-    for series in data {
-        if let Some(labels) = series.as_object() {
-            for key in labels.keys() {
-                if !key.starts_with("__") {
-                    label_keys.insert(key.clone());
+        // Collect all unique label key names across all returned series,
+        // filtering out internal __*__ labels.
+        let mut label_keys: HashSet<String> = HashSet::new();
+        for series in data {
+            if let Some(labels) = series.as_object() {
+                for key in labels.keys() {
+                    if !key.starts_with("__") {
+                        label_keys.insert(key.clone());
+                    }
                 }
             }
         }
+
+        return Ok(Some(label_keys.into_iter().collect()));
     }
 
-    Ok(Some(label_keys.into_iter().collect()))
+    Err(ControllerError::PrometheusClient(format!(
+        "Prometheus returned 503 for metric '{}' after {} attempts; giving up",
+        metric_name, MAX_RETRIES
+    )))
 }
 
 /// Build a `PromQLSchema` by querying Prometheus for each metric name found in the given
