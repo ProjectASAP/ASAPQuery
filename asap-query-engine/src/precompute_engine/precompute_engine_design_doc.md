@@ -505,6 +505,360 @@ Each entry is a complete accumulator from one worker for one window. Query-time 
 
 The pane snapshot/take logic reduces memory and CPU inside each worker (avoiding re-accumulation of shared panes), but what exits the worker is always one standalone `Box<dyn AggregateCore>` per window. Consecutive sliding windows `[0,30s)` and `[10s,40s)` share panes *inside* the worker but have independent store entries — their cross-worker merges at query time are completely unrelated.
 
+### Optional second-tier merge workers for cross-worker accumulator reduction
+
+The current design relies on **query-time merge** for cross-worker fan-in. That
+is sufficient for eventual consistency, but it leaves two important gaps:
+
+1. **Query latency / repeated work** — queries must repeatedly merge
+   per-worker fragments for the same `(aggregation_id, key, window)` tuple.
+2. **No canonical reduced output** — the store holds worker-local fragments
+   rather than a single merged accumulator for each logical output window.
+
+This affects **all mergeable accumulators**, not just sliding-window sketches:
+
+- tumbling-window group-by aggregates spread across workers
+- sliding-window exact outputs
+- keyed sketches such as CMS / HydraKLL
+- late-data mini-accumulators emitted via `ForwardToStore`
+
+Sliding windows are the strongest motivation because exact reads benefit most
+from canonical pre-merged output, but the same second-tier reduction design can
+be used for any accumulator type that implements `AggregateCore::merge_with()`.
+
+To close those gaps without giving up shared-nothing ingest, add an optional
+**second tier of merge workers** between the first-tier workers and the final
+store.
+
+#### Goal
+
+Produce **one canonical accumulator per logical output window**:
+
+```
+(aggregation_id, grouping_key, window_start, window_end) -> merged accumulator
+```
+
+so that:
+
+- the store can hold one merged output per `(aggregation_id, key, window)`
+- query-time merge is reduced or eliminated for merge-tier-enabled aggregations
+- distributed output matches the semantics of a single logical aggregation over
+  the full input stream
+
+For sliding windows, this gives semantic equivalence to a single logical
+`HOP(slide, size)` aggregation over the distributed input stream. For tumbling
+windows and other mergeable accumulators, it gives the same result the query
+engine would otherwise have to reconstruct on read.
+
+#### High-level architecture
+
+```
+Remote write
+  -> SeriesRouter
+  -> First-tier workers (per-series pane accumulation)
+  -> MergeRouter
+  -> Merge workers (per-window fan-in, all keys co-located)
+  -> FinalOutputSink
+  -> Store
+```
+
+The first tier is unchanged: it still owns all per-series pane state and emits
+one standalone accumulator per closed window. The new part is that these emits
+go to the `MergeRouter` instead of directly to the final store.
+
+#### Routing key for the merge tier
+
+All messages — both `PartialWindowAggregate` and `WindowCompletion` — are
+routed by the **window identity alone**, without the grouping key:
+
+```
+merge_key = hash(aggregation_id, window_start_ms, window_end_ms)
+```
+
+This ensures that:
+
+1. All partials for any key within the same window land on the same merge
+   worker, so the merge worker can finalize all keys for a window in one pass.
+2. `WindowCompletion` messages (which carry no key) route to exactly the same
+   merge worker as the partials they complete, through the same MPSC channel.
+   This preserves FIFO ordering: all `PartialWindowAggregate` messages from a
+   first-tier worker for a given window are enqueued before its
+   `WindowCompletion` for that window.
+
+Routing by `(agg_id, key, window)` is explicitly avoided. It would put partials
+for different keys on different merge workers, requiring `WindowCompletion` to be
+broadcast to every merge worker — an O(M) fanout for M merge workers per
+completion. Window-level routing eliminates that broadcast entirely.
+
+#### Messages emitted by first-tier workers
+
+Each first-tier worker emits two message types per closed window per
+aggregation, always in this order within the same MPSC channel to the merge
+worker:
+
+1. Zero or more `PartialWindowAggregate` (one per series that had data in this
+   window), followed immediately by:
+2. Exactly one `WindowCompletion`
+
+```rust
+/// Partial result from one first-tier worker for one closed window.
+/// Zero or more of these arrive before the WindowCompletion for the same
+/// (aggregation_id, window_start_ms, window_end_ms, source_worker_id).
+struct PartialWindowAggregate {
+    aggregation_id: u64,
+    key: Option<KeyByLabelValues>,   // grouping key extracted from the series
+    window_start_ms: u64,
+    window_end_ms: u64,
+    source_worker_id: usize,
+    accumulator: Box<dyn AggregateCore>,
+}
+
+/// Signals that source_worker_id will send no more on-time PartialWindowAggregates
+/// for (aggregation_id, window_start_ms, window_end_ms).
+/// One per (aggregation_id, window, source_worker_id) — no key field.
+struct WindowCompletion {
+    aggregation_id: u64,
+    window_start_ms: u64,
+    window_end_ms: u64,
+    source_worker_id: usize,
+    worker_watermark_ms: i64,   // the worker's watermark at the time of completion
+}
+```
+
+`WindowCompletion` carries no `key` field. It is a window-level signal, not a
+key-level signal. The merge worker infers which keys exist from the partials it
+has received; it finalizes all observed keys once all sources have completed the
+window.
+
+Because both message types are enqueued into the **same MPSC channel** from a
+given first-tier worker to its target merge worker, the merge worker always
+observes partials before the completion for the same
+`(aggregation_id, window, source)` triple. No additional ordering guarantee is
+needed.
+
+#### First-tier worker watermark for WindowCompletion
+
+`WindowCompletion` must be emitted by **every** first-tier worker for every
+window of every aggregation it is configured for — including workers that
+received no data for that aggregation or window.
+
+A worker may have no matching series for an aggregation (its `series_map` has
+no entry for any series matching that config). In that case it will never
+receive samples for that aggregation and its per-series watermarks will never
+advance. Without an explicit mechanism, it would never emit `WindowCompletion`,
+causing the merge worker to deadlock waiting for N completions.
+
+**Fix: per-worker global watermark, advanced by the flush timer.**
+
+Each first-tier worker maintains a `per_agg_watermark: HashMap<u64, i64>` —
+one entry per aggregation config it knows about, initialized to `i64::MIN`.
+
+The watermark for aggregation `agg_id` is updated by two sources:
+
+1. **Data arrival**: when any series matching `agg_id` closes a window, the
+   worker updates `per_agg_watermark[agg_id]` to the maximum watermark seen
+   across all its matching series.
+
+2. **Flush timer**: on each `WorkerMessage::Flush`, for every aggregation config
+   the worker is configured with, the worker advances `per_agg_watermark[agg_id]`
+   to at least `now_ms - allowed_lateness_ms` (wall-clock derived floor). This
+   ensures forward progress even when no data arrives for a given aggregation.
+
+After updating `per_agg_watermark[agg_id]`, the worker calls
+`window_manager.closed_windows(previous_agg_wm, new_agg_wm)` and emits a
+`WindowCompletion` for each newly closed window — even if no partials were
+emitted for that window from this worker.
+
+This guarantees that every merge worker eventually receives exactly N
+`WindowCompletion` messages per `(aggregation_id, window)` — one from each of
+the N first-tier workers — and can finalize without deadlock.
+
+#### Late data and `ForwardToStore`
+
+When `LateDataPolicy::ForwardToStore` is active and a late sample falls into an
+already-closed (and potentially already-merged) window, the first-tier worker
+emits a `PartialWindowAggregate` for that window as it does today.
+
+The merge tier treats these late partials as **store appends**, not as
+corrections to a finalized canonical entry. The canonical merged output written
+at finalization time remains unchanged. The store accumulates the late partial
+alongside it, and query-time `SummaryMergeMultipleExec` merges them on read.
+
+This is consistent with the existing `ForwardToStore` semantics and avoids the
+need to read-modify-write a finalized store entry. The benefit of the merge tier
+(one canonical output per window) applies only to on-time data; late corrections
+fall back to the same append + query-time-merge path as the non-merge-tier
+design.
+
+#### Merge-worker state
+
+Each merge worker maintains two separate tables, separating window-level
+completion tracking from key-level partial accumulation:
+
+```rust
+struct MergeWorkerState {
+    /// Per-window: which first-tier workers have sent WindowCompletion.
+    /// Key: (aggregation_id, window_start_ms, window_end_ms)
+    window_completions: HashMap<(u64, u64, u64), HashSet<usize>>,
+
+    /// Per (aggregation_id, key, window): partial accumulators received so far.
+    /// Key: (aggregation_id, key, window_start_ms, window_end_ms)
+    pending_partials: HashMap<(u64, Option<KeyByLabelValues>, u64, u64), Vec<Box<dyn AggregateCore>>>,
+}
+```
+
+Separating these two maps is necessary because:
+
+- `window_completions` is indexed by window only (no key) — matching
+  `WindowCompletion`'s key-less definition.
+- `pending_partials` is indexed by `(agg_id, key, window)` — matching the
+  per-key partials arriving from first-tier workers.
+
+Applying a single key-less `WindowCompletion` to the per-key `pending_partials`
+map requires only a lookup in `window_completions` followed by iteration over
+all `pending_partials` entries sharing the same `(agg_id, window)` — done once
+at finalization, not per-completion.
+
+#### Merge-tier watermark and pending state eviction
+
+The merge tier tracks a **merge watermark** per aggregation:
+
+```rust
+merge_watermark: HashMap<u64, i64>  // aggregation_id -> min watermark across sources
+```
+
+Each `WindowCompletion` carries `worker_watermark_ms`. The merge worker updates:
+
+```rust
+merge_watermark[agg_id] = min over all sources of their latest watermark_ms
+```
+
+Any pending window with `window_end_ms <= merge_watermark[agg_id]` that has
+also received all N completions is eligible for finalization and eviction. Any
+pending window older than `merge_watermark[agg_id] - eviction_grace_period_ms`
+is force-finalized with whatever partials have arrived, even if not all N
+completions have been received (handles stuck or lagging first-tier workers).
+
+This bounds the size of `window_completions` and `pending_partials` in
+proportion to `eviction_grace_period_ms / slide_interval_ms`, regardless of
+workload.
+
+#### Completion protocol
+
+A merge worker finalizes all keys for a window when:
+
+```text
+window_completions[(agg_id, window_start, window_end)].len() == num_first_tier_workers
+```
+
+Steps:
+1. Check `window_completions` for the window just completed.
+2. If all N sources have completed, collect all `pending_partials` entries
+   matching `(agg_id, *, window_start, window_end)` — iterate over keys
+   observed for that window.
+3. For each observed key, merge its partial accumulators and write one
+   canonical `PrecomputedOutput` to the final store.
+4. Remove the window from both `window_completions` and all matching entries
+   in `pending_partials`.
+
+If a `WindowCompletion` arrives for a window that has no partials in
+`pending_partials` (i.e., no series on any first-tier worker matched this
+aggregation for this window), the merge worker simply records the completion.
+Once all N completions arrive, there is nothing to finalize and the window is
+evicted immediately.
+
+#### Finalization
+
+When a window is complete, the merge worker:
+
+1. Iterates all keys observed for `(agg_id, window)` in `pending_partials`.
+2. For each key, folds its `Vec<Box<dyn AggregateCore>>` with
+   `AggregateCore::merge_with()`.
+3. Writes one canonical `PrecomputedOutput` per key to the final store.
+4. Removes all entries for this window from both state maps.
+
+This produces the canonical shape expected by merge-tier-enabled reads:
+
+```
+store[(agg_id, key=(j1), [0,30s))]  -> [merged_acc]
+store[(agg_id, key=(j1), [10s,40s))] -> [merged_acc]
+```
+
+and for tumbling windows:
+
+```
+store[(agg_id, key=(j1), [0,60s))] -> [merged_acc]
+```
+
+#### Query-path simplification
+
+With the merge tier enabled for an aggregation:
+
+- **Instant sliding queries** become exact reads with no cross-worker merge.
+- **Range sliding queries** iterate exact sliding windows and read one merged
+  accumulator per key/window.
+- **Tumbling queries** read already-merged buckets instead of merging
+  per-worker fragments on demand.
+- **General aggregate queries** over Sum, Min/Max, KLL, CMS, HydraKLL, etc. can
+  all consume canonical outputs if their aggregation id is merge-tier-enabled.
+
+This removes the current ambiguity where the store can return multiple exact
+matches for one logical output window and the query layer must decide whether
+to merge or pick one. Late corrections (via `ForwardToStore`) continue to use
+query-time merge for their incremental updates.
+
+#### Why a separate merge worker is preferable to routing by grouping key
+
+Compared with "route all contributing series for a grouping key to the same
+worker", the merge-tier approach:
+
+- preserves per-series ownership in the first tier
+- avoids hot-spotting first-tier workers on popular grouping keys
+- keeps pane state local to the ingest worker that already owns the series
+- allows the merge tier to scale independently of ingest
+
+Compared with routing the merge tier by `(agg_id, key, window)`, window-level
+routing:
+
+- avoids broadcasting `WindowCompletion` to every merge worker (O(M) fanout)
+- keeps all keys for a window co-located, enabling one-pass finalization
+- uses the same MPSC channel for partials and completions, giving free
+  ordering guarantees between them
+
+The cost is that all keys for a window go to the same merge worker, which
+limits key-level parallelism within a window. In practice, the number of
+distinct keys per window is bounded and this is not a bottleneck.
+
+#### Failure and persistence considerations
+
+This design introduces **merge-tier in-flight state** in addition to the
+existing pane state in first-tier workers. To make the whole system robust, the
+same durability story must cover both tiers:
+
+- first-tier WAL / pane snapshots protect open panes
+- merge-tier WAL / partial-window snapshots protect unfinalized merge state
+
+Without persistence, a merge-worker crash loses pending cross-worker fan-in even
+if the first-tier workers are healthy. The merge-tier watermark and
+force-eviction after `eviction_grace_period_ms` bound the exposure window.
+
+#### Rollout strategy
+
+The cleanest migration path is:
+
+1. Keep the current store-append + query-time-merge model as the default.
+2. Add `per_agg_watermark` tracking and flush-timer-driven `WindowCompletion`
+   emission to first-tier workers (required for correctness before any merge
+   worker is deployed).
+3. Add an optional `MergeWorkerOutputSink` controlled by a per-aggregation flag.
+4. Enable the merge tier first for **sliding-window aggregations** where the
+   benefit is largest.
+5. Expand to tumbling windows and other high-fan-in accumulators once stable.
+
+Step 2 must precede step 3: first-tier workers must emit `WindowCompletion` for
+all aggregations via the flush timer before any merge worker is deployed,
+otherwise merge workers deadlock on their first window.
+
 ## 5. Data Model
 
 ### PrecomputedOutput
