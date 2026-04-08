@@ -1,0 +1,146 @@
+{
+    "name": "h2o_file_h2o_groupby",
+    "connector": "single_file_custom",
+    "tableType": "source",
+    "config": {
+        "path": "/users/kavyab/ASAPQuery/asap-tools/execution-utilities/benchmark/data/h2o_file.parquet",
+        "file_format": "parquet",
+        "timestamp_field": "timestamp",
+        "ts_format": "unix_millis"
+    },
+    "schema": {
+        "format": {
+            "parquet": {}
+        },
+        "badData": {
+            "fail": {}
+        },
+        "framing": null,
+        "structName": null,
+        "fields": [
+            {
+                "fieldName": "timestamp",
+                "fieldType": {
+                    "type": {
+                        "primitive": "UnixMillis"
+                    },
+                    "sqlName": "TIMESTAMP"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "v1",
+                "fieldType": {
+                    "type": {
+                        "primitive": "F64"
+                    },
+                    "sqlName": "DOUBLE"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "v2",
+                "fieldType": {
+                    "type": {
+                        "primitive": "F64"
+                    },
+                    "sqlName": "DOUBLE"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "v3",
+                "fieldType": {
+                    "type": {
+                        "primitive": "F64"
+                    },
+                    "sqlName": "DOUBLE"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            
+            {
+                "fieldName": "id1",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "id2",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "id3",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "id4",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "id5",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            },
+            
+            {
+                "fieldName": "id6",
+                "fieldType": {
+                    "type": {
+                        "primitive": "String"
+                    },
+                    "sqlName": "TEXT"
+                },
+                "nullable": false,
+                "metadataKey": null
+            }
+            
+        ],
+        "inferred": true,
+        "primaryKeys": []
+    }
+}

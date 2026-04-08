@@ -1,0 +1,15 @@
+{
+    "name": "h2o_pipeline",
+    "query": "INSERT INTO\n    sketch_topic_table\nSELECT\n    gzip_compress(datasketcheskll_(\"v3\")) as precompute,\n    12 as aggregation_id,\n    concat_ws(';', \"id1\", \"id2\") as key,\n    TUMBLE(INTERVAL '10 seconds') as window\nFROM\n    h2o_file_h2o_groupby\nGROUP BY\n    window, key\n;",
+    "udfs": [
+  {
+    "definition": "/*\n[dependencies]\nsketchlib-rust = { git = \"https://github.com/ProjectASAP/sketchlib-rust\" }\narroyo-udf-plugin = \"0.1\"\nrmp-serde = \"1.1\"\nserde = { version = \"1.0\", features = [\"derive\"] }\n*/\n\nuse arroyo_udf_plugin::udf;\nuse serde::{Deserialize, Serialize};\nuse sketchlib_rust::{KLL, SketchInput};\n\nconst DEFAULT_K: u16 = 200;\n\n#[derive(Serialize, Deserialize)]\nstruct KllSketchData {\n    k: u16,\n    sketch_bytes: Vec\u003cu8\u003e,\n}\n\n#[udf]\nfn datasketcheskll_(values: Vec\u003cf64\u003e) -\u003e Option\u003cVec\u003cu8\u003e\u003e {\n    let mut sketch = KLL::init_kll(DEFAULT_K as i32);\n    for \u0026value in \u0026values {\n        let _ = sketch.update(\u0026SketchInput::F64(value));\n    }\n    let sketch_bytes = sketch.serialize_to_bytes().ok()?;\n    let serialized = KllSketchData {\n        k: DEFAULT_K,\n        sketch_bytes,\n    };\n    let mut buf = Vec::new();\n    rmp_serde::encode::write(\u0026mut buf, \u0026serialized).ok()?;\n    Some(buf)\n}",
+    "language": "rust"
+  },
+  {
+    "definition": "/*\n[dependencies]\nflate2 = \"1.1.1\"\n*/\n\nuse arroyo_udf_plugin::udf;\nuse std::io::Write;\nuse flate2::{Compression, write::GzEncoder};\n\n#[udf]\nfn gzip_compress(data: \u0026[u8]) -\u003e Option\u003cVec\u003cu8\u003e\u003e {\n    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());\n\n\tencoder.write_all(\u0026data).ok()?;\n    encoder.finish().ok()\n}\n",
+    "language": "rust"
+  }
+],
+    "parallelism": 1
+}

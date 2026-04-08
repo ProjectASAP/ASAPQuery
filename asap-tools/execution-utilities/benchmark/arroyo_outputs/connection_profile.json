@@ -1,0 +1,14 @@
+{
+    "name": "default-kafka-profile",
+    "connector": "kafka",
+    "config": {
+        "authentication": {},
+        "bootstrapServers": "localhost:9092",
+        "name": "default-kafka-profile",
+        "schemaRegistryEnum": {},
+        "connectionProperties": {
+            "message.max.bytes": "20971520",
+            "batch.size": "20971520"
+        }
+    }
+}

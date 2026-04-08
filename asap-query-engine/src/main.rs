@@ -329,8 +329,9 @@ async fn main() -> Result<()> {
     //);
 
     // Original Prometheus config (commented out temporarily):
-    let adapter_config = AdapterConfig::prometheus_promql(
+    let adapter_config = AdapterConfig::elastic_sql(
         args.prometheus_server.clone(),
+        "".to_string(),
         args.forward_unsupported_queries,
     );
 
