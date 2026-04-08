@@ -20,13 +20,13 @@ use query_engine_rust::{
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Kafka topic to consume from
+    /// Kafka topic to consume from (required when streaming-engine=arroyo)
     #[arg(long)]
-    kafka_topic: String,
+    kafka_topic: Option<String>,
 
-    /// Input format for Kafka messages
+    /// Input format for Kafka messages (required when streaming-engine=arroyo)
     #[arg(long, value_enum)]
-    input_format: InputFormat,
+    input_format: Option<InputFormat>,
 
     /// Configuration file path
     #[arg(long)]
@@ -37,7 +37,7 @@ struct Args {
     streaming_config: String,
 
     /// Streaming engine to use
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value = "arroyo")]
     streaming_engine: StreamingEngine,
 
     /// Prometheus scrape interval in seconds
@@ -241,41 +241,54 @@ async fn main() -> Result<()> {
         args.query_language,
     ));
 
-    // Setup Kafka consumer (equivalent to Python's kafka_thread)
-    let kafka_config = KafkaConsumerConfig {
-        broker: args.kafka_broker.clone(),
-        topic: args.kafka_topic.clone(),
-        group_id: "query-engine-rust".to_string(),
-        auto_offset_reset: "beginning".to_string(),
-        input_format: args.input_format,
-        decompress_json: args.decompress_json,
-        batch_size: 1000,
-        poll_timeout_ms: 1000,
-        streaming_engine: args.streaming_engine.clone(),
-        dump_precomputes: args.dump_precomputes,
-        dump_output_dir: if args.dump_precomputes {
-            Some(args.output_dir.clone())
-        } else {
-            None
-        },
-    };
+    // Setup Kafka consumer (only when not using precompute engine as the streaming backend)
+    let kafka_handle = if args.streaming_engine == StreamingEngine::Precompute {
+        info!("Using precompute engine as streaming backend — skipping Kafka consumer");
+        None
+    } else {
+        let kafka_topic = args.kafka_topic.clone().unwrap_or_else(|| {
+            error!("--kafka-topic is required when --streaming-engine is not precompute");
+            std::process::exit(1);
+        });
+        let input_format = args.input_format.unwrap_or_else(|| {
+            error!("--input-format is required when --streaming-engine is not precompute");
+            std::process::exit(1);
+        });
+        let kafka_config = KafkaConsumerConfig {
+            broker: args.kafka_broker.clone(),
+            topic: kafka_topic.clone(),
+            group_id: "query-engine-rust".to_string(),
+            auto_offset_reset: "beginning".to_string(),
+            input_format,
+            decompress_json: args.decompress_json,
+            batch_size: 1000,
+            poll_timeout_ms: 1000,
+            streaming_engine: args.streaming_engine.clone(),
+            dump_precomputes: args.dump_precomputes,
+            dump_output_dir: if args.dump_precomputes {
+                Some(args.output_dir.clone())
+            } else {
+                None
+            },
+        };
 
-    let store_for_kafka = store.clone();
-    let kafka_consumer_result =
-        KafkaConsumer::new(kafka_config, store_for_kafka, streaming_config.clone());
-    let kafka_handle = match kafka_consumer_result {
-        Ok(mut consumer) => {
-            info!("Starting Kafka consumer for topic: {}", args.kafka_topic);
-            Some(tokio::spawn(async move {
-                if let Err(e) = consumer.run().await {
-                    error!("Kafka consumer error: {}", e);
-                }
-            }))
-        }
-        Err(e) => {
-            error!("Failed to create Kafka consumer: {}", e);
-            info!("Continuing without Kafka consumer");
-            None
+        let store_for_kafka = store.clone();
+        let kafka_consumer_result =
+            KafkaConsumer::new(kafka_config, store_for_kafka, streaming_config.clone());
+        match kafka_consumer_result {
+            Ok(mut consumer) => {
+                info!("Starting Kafka consumer for topic: {}", kafka_topic);
+                Some(tokio::spawn(async move {
+                    if let Err(e) = consumer.run().await {
+                        error!("Kafka consumer error: {}", e);
+                    }
+                }))
+            }
+            Err(e) => {
+                error!("Failed to create Kafka consumer: {}", e);
+                info!("Continuing without Kafka consumer");
+                None
+            }
         }
     };
 
@@ -300,7 +313,10 @@ async fn main() -> Result<()> {
     };
 
     // Setup precompute engine (replaces standalone Prometheus remote write server)
-    let precompute_handle = if args.enable_prometheus_remote_write {
+    // Automatically enable when using precompute streaming engine
+    let enable_precompute = args.enable_prometheus_remote_write
+        || args.streaming_engine == StreamingEngine::Precompute;
+    let precompute_handle = if enable_precompute {
         let precompute_config = PrecomputeEngineConfig {
             num_workers: args.precompute_num_workers,
             ingest_port: args.prometheus_remote_write_port,

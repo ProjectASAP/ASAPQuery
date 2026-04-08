@@ -4,9 +4,10 @@ pub enum InputFormat {
     Byte,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
 pub enum StreamingEngine {
     Arroyo,
+    Precompute,
 }
 
 pub use asap_types::enums::{CleanupPolicy, QueryLanguage};
