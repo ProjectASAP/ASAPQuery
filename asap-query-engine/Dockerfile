@@ -41,9 +41,10 @@ RUN cargo build --release && rm -rf src/
 
 # Copy source code
 COPY asap-query-engine/src ./src
+COPY asap-planner-rs/src /code/asap-planner-rs/src
 
 # Build the actual application
-RUN touch src/main.rs && cargo build --release
+RUN touch src/main.rs && touch /code/asap-planner-rs/src/lib.rs && cargo build --release
 
 # Runtime stage with Ubuntu 24.04 (has newer glibc/libstdc++)
 FROM ubuntu:24.04
