@@ -14,15 +14,18 @@ struct Args {
     #[arg(long = "query-log", conflicts_with = "input_config")]
     query_log: Option<PathBuf>,
 
-    /// Path to a metrics config YAML (required when using --query-log).
-    #[arg(long = "metrics-config", requires = "query_log")]
-    metrics_config: Option<PathBuf>,
-
     #[arg(long = "output_dir")]
     output_dir: PathBuf,
 
     #[arg(long = "prometheus_scrape_interval", required = false)]
     prometheus_scrape_interval: Option<u64>,
+
+    /// Base URL of the Prometheus instance used to auto-infer metric label sets.
+    /// Optional: when provided, the planner queries Prometheus for label discovery.
+    /// When absent, labels are taken from the `metrics` hint in the config file.
+    /// Example: http://localhost:9090
+    #[arg(long = "prometheus-url", required = false)]
+    prometheus_url: Option<String>,
 
     #[arg(long = "streaming_engine", value_enum)]
     streaming_engine: EngineArg,
@@ -82,13 +85,24 @@ fn main() -> anyhow::Result<()> {
                 range_duration: args.range_duration,
                 step: args.step,
             };
-            let controller = match (args.input_config, args.query_log) {
-                (Some(config_path), None) => Controller::from_file(&config_path, opts)?,
-                (None, Some(log_path)) => {
-                    let metrics_path = args
-                        .metrics_config
-                        .expect("--metrics-config is required when using --query-log");
-                    Controller::from_query_log(&log_path, &metrics_path, opts)?
+            let controller = match (args.input_config, args.query_log, args.prometheus_url) {
+                (Some(config_path), None, Some(url)) => {
+                    Controller::from_file(&config_path, opts, &url)?
+                }
+                (Some(config_path), None, None) => {
+                    let yaml_str = std::fs::read_to_string(&config_path)?;
+                    let config: asap_planner::ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+                    let schema = config.schema_from_hints();
+                    Controller::from_file_with_schema(&config_path, schema, opts)?
+                }
+                (None, Some(log_path), Some(url)) => {
+                    Controller::from_query_log(&log_path, opts, &url)?
+                }
+                (None, Some(_log_path), None) => {
+                    anyhow::bail!(
+                        "--prometheus-url is required when using --query-log \
+                         (query logs have no metrics hint to fall back on)"
+                    )
                 }
                 _ => anyhow::bail!(
                     "exactly one of --input_config or --query-log must be provided for PromQL mode"

@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use promql_utilities::data_model::KeyByLabelNames;
 use sketch_db_common::enums::CleanupPolicy;
+use sketch_db_common::PromQLSchema;
 
 use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
@@ -17,14 +18,10 @@ type LeafEntries = Vec<(String, Vec<(String, Option<u64>)>)>;
 /// Run the full planning pipeline and produce YAML outputs
 pub fn generate_plan(
     controller_config: &ControllerConfig,
+    schema: &PromQLSchema,
     opts: &RuntimeOptions,
 ) -> Result<GeneratorOutput, ControllerError> {
-    // Build metric schema
-    let mut metric_schema = sketch_db_common::PromQLSchema::new();
-    for md in &controller_config.metrics {
-        metric_schema =
-            metric_schema.add_metric(md.metric.clone(), KeyByLabelNames::new(md.labels.clone()));
-    }
+    let metric_schema = schema.clone();
 
     // Determine cleanup policy
     let cleanup_policy_str = controller_config

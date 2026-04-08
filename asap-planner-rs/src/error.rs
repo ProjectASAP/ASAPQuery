@@ -18,4 +18,6 @@ pub enum ControllerError {
     SqlParse(String),
     #[error("Unknown table: {0}")]
     UnknownTable(String),
+    #[error("Prometheus client error: {0}")]
+    PrometheusClient(String),
 }

@@ -18,6 +18,7 @@ def generate_compose_file(
     prometheus_scrape_interval: int,
     streaming_engine: str,
     punting: bool,
+    prometheus_url: str,
 ):
     """Generate docker-compose.yml from template with provided variables."""
 
@@ -41,6 +42,7 @@ def generate_compose_file(
         "prometheus_scrape_interval": prometheus_scrape_interval,
         "streaming_engine": streaming_engine,
         "punting": punting,
+        "prometheus_url": prometheus_url,
     }
 
     # Render the template
@@ -117,6 +119,11 @@ def main():
         action="store_true",
         help="Enable query punting based on performance heuristics",
     )
+    parser.add_argument(
+        "--prometheus-url",
+        required=True,
+        help="Base URL of the Prometheus instance for metric label inference (e.g. http://localhost:9090)",
+    )
 
     args = parser.parse_args()
 
@@ -130,6 +137,7 @@ def main():
         prometheus_scrape_interval=args.prometheus_scrape_interval,
         streaming_engine=args.streaming_engine,
         punting=args.punting,
+        prometheus_url=args.prometheus_url,
     )
 
 

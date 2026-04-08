@@ -36,7 +36,8 @@ impl PlannerClient for LocalPlannerClient {
         let query_language = self.query_language;
 
         let output: PlannerOutput = tokio::task::spawn_blocking(move || {
-            let controller = Controller::new(config, opts);
+            let schema = config.schema_from_hints();
+            let controller = Controller::new(config, schema, opts);
             controller.generate()
         })
         .await??;
@@ -74,10 +75,10 @@ mod tests {
                 step: None,
                 range_duration: None,
             }],
-            metrics: vec![MetricDefinition {
+            metrics: Some(vec![MetricDefinition {
                 metric: "http_requests_total".to_string(),
                 labels: vec!["method".to_string(), "status".to_string()],
-            }],
+            }]),
             sketch_parameters: None,
             aggregate_cleanup: None,
         }
@@ -96,8 +97,9 @@ mod tests {
     #[test]
     fn test_controller_new_generate() {
         let config = sample_controller_config();
+        let schema = config.schema_from_hints();
         let opts = sample_runtime_options();
-        let controller = Controller::new(config, opts);
+        let controller = Controller::new(config, schema, opts);
         let output = controller.generate().expect("generate should succeed");
 
         assert!(output.streaming_aggregation_count() > 0);
@@ -107,8 +109,9 @@ mod tests {
     #[test]
     fn test_planner_output_struct_accessors() {
         let config = sample_controller_config();
+        let schema = config.schema_from_hints();
         let opts = sample_runtime_options();
-        let controller = Controller::new(config, opts);
+        let controller = Controller::new(config, schema, opts);
         let output = controller.generate().expect("generate should succeed");
 
         let inference = output
