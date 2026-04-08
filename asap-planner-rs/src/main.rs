@@ -1,5 +1,6 @@
 use asap_planner::{Controller, RuntimeOptions, SQLController, SQLRuntimeOptions, StreamingEngine};
 use clap::Parser;
+use promql_utilities::data_model::KeyByLabelNames;
 use sketch_db_common::enums::QueryLanguage;
 use std::path::PathBuf;
 
@@ -56,6 +57,19 @@ enum EngineArg {
     Precompute,
 }
 
+/// Build a `PromQLSchema` from the `metrics` hints in a controller config file.
+fn schema_from_config_file(path: &PathBuf) -> anyhow::Result<asap_planner::PromQLSchema> {
+    let yaml_str = std::fs::read_to_string(path)?;
+    let config: asap_planner::ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+    let mut schema = asap_planner::PromQLSchema::new();
+    if let Some(metrics) = &config.metrics {
+        for m in metrics {
+            schema = schema.add_metric(m.metric.clone(), KeyByLabelNames::new(m.labels.clone()));
+        }
+    }
+    Ok(schema)
+}
+
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
@@ -89,19 +103,19 @@ fn main() -> anyhow::Result<()> {
                 (Some(config_path), None, Some(url)) => {
                     Controller::from_file(&config_path, opts, &url)?
                 }
-                (Some(config_path), None, None) => Controller::from_file_with_schema(
-                    &config_path,
-                    asap_planner::PromQLSchema::new(),
-                    opts,
-                )?,
+                (Some(config_path), None, None) => {
+                    let schema = schema_from_config_file(&config_path)?;
+                    Controller::from_file_with_schema(&config_path, schema, opts)?
+                }
                 (None, Some(log_path), Some(url)) => {
                     Controller::from_query_log(&log_path, opts, &url)?
                 }
-                (None, Some(log_path), None) => Controller::from_query_log_with_schema(
-                    &log_path,
-                    asap_planner::PromQLSchema::new(),
-                    opts,
-                )?,
+                (None, Some(_log_path), None) => {
+                    anyhow::bail!(
+                        "--prometheus-url is required when using --query-log \
+                         (query logs have no metrics hint to fall back on)"
+                    )
+                }
                 _ => anyhow::bail!(
                     "exactly one of --input_config or --query-log must be provided for PromQL mode"
                 ),
