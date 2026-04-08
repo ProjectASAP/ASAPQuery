@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
-Generate paired ASAP and ClickHouse SQL query files for benchmarking.
+Generate a SQL query file for benchmarking ASAP and ClickHouse.
 
-Each query targets a fixed time window (window-end timestamp) and matches the
+Each query uses database-style quantile(q)(col) syntax, compatible with both
+QueryEngineRust and ClickHouse. Queries target fixed time windows and match the
 annotation format `-- T{NNN}: description` expected by run_benchmark.py.
 
 Output:
-  {prefix}_asap.sql        QUANTILE(q, col) syntax for QueryEngineRust
-  {prefix}_clickhouse.sql  quantile(q)(col) syntax for ClickHouse baseline
+  {prefix}.sql             quantile(q)(col) database-style syntax, compatible with both
+                           QueryEngineRust and ClickHouse baseline
 
 Usage:
-    # Auto-detect timestamps from data file
+    # Auto-detect timestamps from data file → ./queries/clickbench.sql
     python generate_queries.py \\
         --table-name hits \\
         --ts-column EventTime \\
@@ -23,7 +24,7 @@ Usage:
         --data-file-format json.gz \\
         --output-prefix ./queries/clickbench
 
-    # Explicit timestamp file (one ISO timestamp per line)
+    # Explicit timestamp file (one ISO timestamp per line) → ./queries/h2o.sql
     python generate_queries.py \\
         --table-name h2o_groupby \\
         --ts-column timestamp \\
@@ -98,11 +99,10 @@ def _read_timestamps_from_json(
     return timestamps
 
 
-def _read_timestamps_from_csv(
-    file_path: str, ts_column: str
-) -> List[datetime]:
+def _read_timestamps_from_csv(file_path: str, ts_column: str) -> List[datetime]:
     """Read up to SAMPLE_SIZE timestamps from a CSV file."""
     import csv
+
     timestamps = []
     with open(file_path, "r", newline="") as f:
         reader = csv.DictReader(f)
@@ -121,9 +121,7 @@ def _read_timestamps_from_csv(
     return timestamps
 
 
-def detect_timestamps(
-    data_file: str, data_file_format: str, ts_column: str
-) -> tuple:
+def detect_timestamps(data_file: str, data_file_format: str, ts_column: str) -> tuple:
     """Return (min_ts, max_ts) from a sample of the data file."""
     fmt = data_file_format.lower()
     if fmt in ("json.gz", "jsonl.gz"):
@@ -199,7 +197,7 @@ def format_ts(ts: datetime, ts_format: str) -> str:
         return ts.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def generate_sql_files(
+def generate_sql_file(
     table_name: str,
     ts_column: str,
     value_column: str,
@@ -211,10 +209,9 @@ def generate_sql_files(
     window_form: str,
     output_prefix: str,
 ):
-    """Write the paired ASAP and ClickHouse SQL files."""
+    """Write a single SQL file compatible with both ASAP and ClickHouse."""
     group_by_clause = ", ".join(group_by_columns)
-    asap_lines = []
-    ch_lines = []
+    lines = []
 
     for i, end_ts in enumerate(window_ends):
         end_str = format_ts(end_ts, ts_format)
@@ -224,42 +221,23 @@ def generate_sql_files(
         desc = f"quantile window ending at {end_str}"
 
         if window_form == "dateadd":
-            where_clause = (
-                f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{end_str}') AND '{end_str}'"
-            )
+            where_clause = f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{end_str}') AND '{end_str}'"
         else:
-            where_clause = (
-                f"{ts_column} BETWEEN '{start_str}' AND '{end_str}'"
-            )
+            where_clause = f"{ts_column} BETWEEN '{start_str}' AND '{end_str}'"
 
-        asap_sql = (
-            f"-- {label}: {desc}\n"
-            f"SELECT QUANTILE({quantile}, {value_column}) FROM {table_name} "
-            f"WHERE {where_clause} GROUP BY {group_by_clause};"
-        )
-        ch_sql = (
+        lines.append(
             f"-- {label}: {desc}\n"
             f"SELECT quantile({quantile})({value_column}) FROM {table_name} "
             f"WHERE {where_clause} GROUP BY {group_by_clause};"
         )
 
-        asap_lines.append(asap_sql)
-        ch_lines.append(ch_sql)
+    sql_file = f"{output_prefix}.sql"
+    Path(sql_file).parent.mkdir(parents=True, exist_ok=True)
 
-    asap_file = f"{output_prefix}_asap.sql"
-    ch_file = f"{output_prefix}_clickhouse.sql"
+    with open(sql_file, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
-    Path(asap_file).parent.mkdir(parents=True, exist_ok=True)
-
-    with open(asap_file, "w") as f:
-        f.write("\n".join(asap_lines) + "\n")
-
-    with open(ch_file, "w") as f:
-        f.write("\n".join(ch_lines) + "\n")
-
-    print(f"Generated {len(window_ends)} queries:")
-    print(f"  ASAP:       {asap_file}")
-    print(f"  ClickHouse: {ch_file}")
+    print(f"Generated {len(window_ends)} queries → {sql_file}")
 
 
 def main():
@@ -271,7 +249,9 @@ def main():
     # Table/column config
     parser.add_argument("--table-name", required=True)
     parser.add_argument("--ts-column", required=True, help="Timestamp column name")
-    parser.add_argument("--value-column", required=True, help="Column to compute quantile on")
+    parser.add_argument(
+        "--value-column", required=True, help="Column to compute quantile on"
+    )
     parser.add_argument(
         "--group-by-columns",
         required=True,
@@ -279,7 +259,9 @@ def main():
     )
     # Query parameters
     parser.add_argument("--quantile", type=float, default=0.95)
-    parser.add_argument("--window-size", type=int, default=10, help="Window size in seconds")
+    parser.add_argument(
+        "--window-size", type=int, default=10, help="Window size in seconds"
+    )
     parser.add_argument("--num-queries", type=int, default=50)
     parser.add_argument(
         "--ts-format",
@@ -296,7 +278,7 @@ def main():
     parser.add_argument(
         "--output-prefix",
         required=True,
-        help="Output file prefix (e.g. ./queries/clickbench → clickbench_asap.sql + clickbench_clickhouse.sql)",
+        help="Output file prefix (e.g. ./queries/clickbench → clickbench.sql)",
     )
     # Timestamp sources (mutually exclusive)
     ts_group = parser.add_mutually_exclusive_group(required=True)
@@ -372,7 +354,7 @@ def main():
             f"(stride={stride}s, window={args.window_size}s)"
         )
 
-    generate_sql_files(
+    generate_sql_file(
         table_name=args.table_name,
         ts_column=args.ts_column,
         value_column=args.value_column,

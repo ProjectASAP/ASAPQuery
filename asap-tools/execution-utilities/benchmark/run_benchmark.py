@@ -92,13 +92,19 @@ def run_query(
         latency_ms = (time.time() - start) * 1000
 
         if debug:
-            source = "OK" if response.status_code == 200 else f"HTTP {response.status_code}"
+            source = (
+                "OK" if response.status_code == 200 else f"HTTP {response.status_code}"
+            )
             print(f"    [{source}] {latency_ms:.2f}ms")
 
         if response.status_code == 200:
             return latency_ms, response.text.strip(), None
         else:
-            return latency_ms, None, f"HTTP {response.status_code}: {response.text[:200]}"
+            return (
+                latency_ms,
+                None,
+                f"HTTP {response.status_code}: {response.text[:200]}",
+            )
     except requests.Timeout:
         return timeout * 1000.0, None, "Timeout"
     except Exception as e:
@@ -176,7 +182,15 @@ def run_benchmark(
     with open(output_csv, "w", newline="") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(
-            ["query_id", "query_pattern", "latency_ms", "result_rows", "result_full", "error", "mode"]
+            [
+                "query_id",
+                "query_pattern",
+                "latency_ms",
+                "result_rows",
+                "result_full",
+                "error",
+                "mode",
+            ]
         )
 
         for query_id, sql in queries:
@@ -187,7 +201,9 @@ def run_benchmark(
             trial_latencies = []
             last_result, last_error = None, None
             for _ in range(repeat):
-                lat, result, error = run_query(sql, endpoint_url, session, timeout, debug)
+                lat, result, error = run_query(
+                    sql, endpoint_url, session, timeout, debug
+                )
                 trial_latencies.append(lat)
                 last_result, last_error = result, error
                 if error:
@@ -197,7 +213,9 @@ def run_benchmark(
 
             if last_error:
                 print(f"ERROR {last_error}")
-                writer.writerow([query_id, pattern, f"{latency_ms:.2f}", 0, "", last_error, mode])
+                writer.writerow(
+                    [query_id, pattern, f"{latency_ms:.2f}", 0, "", last_error, mode]
+                )
                 plot_latencies.append(0.0)
             else:
                 result_lines = last_result.strip().split("\n") if last_result else []
@@ -207,13 +225,21 @@ def run_benchmark(
                 plot_latencies.append(latency_ms)
                 print(f"{latency_ms:.2f}ms ({num_rows} rows)")
                 writer.writerow(
-                    [query_id, pattern, f"{latency_ms:.2f}", num_rows, preview, "", mode]
+                    [
+                        query_id,
+                        pattern,
+                        f"{latency_ms:.2f}",
+                        num_rows,
+                        preview,
+                        "",
+                        mode,
+                    ]
                 )
 
             time.sleep(0.1)
 
     print(f"\nResults saved to {output_csv}")
-    _latency_summary(latencies_ok, f"Latency summary")
+    _latency_summary(latencies_ok, "Latency summary")
 
     if not no_plot and plot_latencies:
         _plot_single(plot_latencies, mode, output_csv.with_suffix(".png"))
@@ -240,6 +266,7 @@ def _plot_comparison(asap_csv: Path, baseline_csv: Path, out_path: Path):
 
     Adapted from asap_query_latency/plot_latency.py.
     """
+
     def _load(path):
         rows = {}
         with open(path) as f:
@@ -371,20 +398,7 @@ def main():
         action="store_true",
         help="Do not generate any plots",
     )
-    # Ignored flag for backward compatibility
-    parser.add_argument(
-        "--measure-pipeline-overhead",
-        action="store_true",
-        help="(No-op) Pipeline overhead measurement is not applicable with file source",
-    )
-
     args = parser.parse_args()
-
-    if args.measure_pipeline_overhead:
-        print(
-            "WARNING: --measure-pipeline-overhead is not applicable when using "
-            "file source (no Kafka ingest). Ignoring."
-        )
 
     # Validate required SQL files
     if args.mode in ("asap", "both") and not args.asap_sql_file:
@@ -394,7 +408,9 @@ def main():
 
     output_dir = Path(args.output_dir)
     prefix = args.output_prefix
-    query_filter = [q.strip() for q in args.query_filter.split(",")] if args.query_filter else None
+    query_filter = (
+        [q.strip() for q in args.query_filter.split(",")] if args.query_filter else None
+    )
 
     asap_csv = output_dir / f"{prefix}_asap.csv"
     baseline_csv = output_dir / f"{prefix}_baseline.csv"

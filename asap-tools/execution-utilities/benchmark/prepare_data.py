@@ -27,8 +27,7 @@ Usage:
 import argparse
 import gzip
 import json
-import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Synthetic timestamp base for H2O (2024-01-01T00:00:00Z)
@@ -100,7 +99,9 @@ def prepare_clickbench(input_path: str, output_path: str, max_rows: int = 0):
 
     print(f"Done. {len(records):,} records written.")
     if records:
-        print(f"  Time range: {records[0][CB_TIMESTAMP_FIELD]} – {records[-1][CB_TIMESTAMP_FIELD]}")
+        print(
+            f"  Time range: {records[0][CB_TIMESTAMP_FIELD]} – {records[-1][CB_TIMESTAMP_FIELD]}"
+        )
 
 
 def prepare_h2o(input_path: str, output_path: str, max_rows: int = 0):
@@ -113,8 +114,7 @@ def prepare_h2o(input_path: str, output_path: str, max_rows: int = 0):
     print(f"Reading {input_path}...")
     count = 0
 
-    with open(input_path, "r", encoding="utf-8") as fin, \
-         open(output_path, "w") as fout:
+    with open(input_path, "r", encoding="utf-8") as fin, open(output_path, "w") as fout:
 
         header = fin.readline().strip()
         cols = header.split(",")
@@ -148,8 +148,12 @@ def prepare_h2o(input_path: str, output_path: str, max_rows: int = 0):
             count += 1
 
     print(f"\nDone. {count:,} records written to {output_path}.")
-    first_ts = datetime.fromtimestamp(H2O_BASE_EPOCH, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    last_ts = datetime.fromtimestamp(H2O_BASE_EPOCH + count // H2O_ROWS_PER_SECOND, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    first_ts = datetime.fromtimestamp(H2O_BASE_EPOCH, tz=timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    last_ts = datetime.fromtimestamp(
+        H2O_BASE_EPOCH + count // H2O_ROWS_PER_SECOND, tz=timezone.utc
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
     print(f"  Time range: {first_ts} – {last_ts}")
 
 
@@ -166,7 +170,9 @@ def main():
         help="Dataset type to prepare",
     )
     parser.add_argument("--input", required=True, help="Path to raw input file")
-    parser.add_argument("--output", required=True, help="Path to write prepared JSON file")
+    parser.add_argument(
+        "--output", required=True, help="Path to write prepared JSON file"
+    )
     parser.add_argument(
         "--max-rows",
         type=int,

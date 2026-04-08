@@ -29,10 +29,8 @@ Usage:
 import argparse
 import gzip
 import os
-import subprocess
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
 
 import requests
 
@@ -77,11 +75,7 @@ def load_clickbench(
     skip_if_loaded: bool = False,
     max_rows: int = 0,
 ):
-    """Load hits.json.gz into ClickHouse.
-
-    Uses `zcat | clickhouse-client INSERT` for gzip-compressed JSON.
-    Adapted from asap_query_latency/run_benchmark.py:load_clickbench_data().
-    """
+    """Load hits.json.gz into ClickHouse via HTTP INSERT."""
     if not skip_table_init and init_sql_file:
         run_init_sql(clickhouse_url, init_sql_file)
 
@@ -96,21 +90,18 @@ def load_clickbench(
         return False
 
     print(f"Loading ClickBench data from {file_path}...")
-    if max_rows > 0:
-        # Pipe through head to limit rows
-        cmd = (
-            f"zcat {file_path} | head -n {max_rows} | "
-            f"clickhouse-client --query='INSERT INTO hits FORMAT JSONEachRow'"
-        )
-    else:
-        cmd = (
-            f"zcat {file_path} | "
-            f"clickhouse-client --query='INSERT INTO hits FORMAT JSONEachRow'"
-        )
 
-    result = subprocess.run(cmd, shell=True)
-    if result.returncode != 0:
-        print("ERROR: ClickHouse insert failed")
+    def _row_stream():
+        with gzip.open(file_path, "rt") as f:
+            for i, line in enumerate(f):
+                if max_rows > 0 and i >= max_rows:
+                    break
+                yield line.encode()
+
+    url = clickhouse_url.rstrip("/") + "/?query=INSERT+INTO+hits+FORMAT+JSONEachRow"
+    r = requests.post(url, data=_row_stream(), stream=True)
+    if not r.ok:
+        print(f"ERROR: ClickHouse insert failed: {r.text[:200]}")
         return False
 
     count = check_row_count(clickhouse_url, "hits")
@@ -218,30 +209,41 @@ def load_custom(
         return False
 
     path_lower = file_path.lower()
+    url = (
+        clickhouse_url.rstrip("/")
+        + f"/?query=INSERT+INTO+{table_name}+FORMAT+JSONEachRow"
+    )
+
+    def _stream_gzip():
+        with gzip.open(file_path, "rt") as f:
+            for i, line in enumerate(f):
+                if max_rows > 0 and i >= max_rows:
+                    break
+                yield line.encode()
+
+    def _stream_plain():
+        with open(file_path, "r") as f:
+            for i, line in enumerate(f):
+                if max_rows > 0 and i >= max_rows:
+                    break
+                yield line.encode()
+
     if path_lower.endswith(".json.gz") or path_lower.endswith(".jsonl.gz"):
-        head_cmd = f"| head -n {max_rows}" if max_rows > 0 else ""
-        cmd = (
-            f"zcat {file_path} {head_cmd} | "
-            f"clickhouse-client --query='INSERT INTO {table_name} FORMAT JSONEachRow'"
-        )
         print(f"Loading {file_path} into ClickHouse ({table_name})...")
-        result = subprocess.run(cmd, shell=True)
-        if result.returncode != 0:
-            print("ERROR: ClickHouse insert failed")
+        r = requests.post(url, data=_stream_gzip(), stream=True)
+        if not r.ok:
+            print(f"ERROR: ClickHouse insert failed: {r.text[:200]}")
             return False
     elif path_lower.endswith(".json") or path_lower.endswith(".jsonl"):
-        head_cmd = f"head -n {max_rows} {file_path} | " if max_rows > 0 else ""
-        cmd = (
-            f"{head_cmd}clickhouse-client --query='INSERT INTO {table_name} FORMAT JSONEachRow' "
-            f"< {file_path}"
-        )
         print(f"Loading {file_path} into ClickHouse ({table_name})...")
-        result = subprocess.run(cmd, shell=True)
-        if result.returncode != 0:
-            print("ERROR: ClickHouse insert failed")
+        r = requests.post(url, data=_stream_plain(), stream=True)
+        if not r.ok:
+            print(f"ERROR: ClickHouse insert failed: {r.text[:200]}")
             return False
     else:
-        print(f"ERROR: Unsupported file format for {file_path}. Use --dataset h2o for CSV.")
+        print(
+            f"ERROR: Unsupported file format for {file_path}. Use --dataset h2o for CSV."
+        )
         return False
 
     count = check_row_count(clickhouse_url, table_name)

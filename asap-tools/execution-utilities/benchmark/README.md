@@ -19,10 +19,6 @@ data_file → export_to_database.py  run_benchmark.py → results/
           ClickHouse :8123 (baseline)
 ```
 
-**Key difference from the old pipeline:** Arroyo reads directly from a local
-file (`single_file_custom` connector) rather than from a Kafka input topic.
-Kafka is still required for the **sketch output** topic (`sketch_topic`).
-
 ---
 
 ## Prerequisites
@@ -31,8 +27,8 @@ Kafka is still required for the **sketch output** topic (`sketch_topic`).
 export INSTALL_DIR=/scratch/sketch_db_for_prometheus
 pip3 install --user -r requirements.txt
 
-# Build binaries (one-time)
-cd ~/ASAPQuery/asap-query-engine && cargo build --release
+# Build binaries (one-time) — workspace target is at ~/ASAPQuery/target/release/
+cd ~/ASAPQuery && cargo build --release
 ```
 
 ---
@@ -60,6 +56,7 @@ The Arroyo file source requires RFC3339 timestamps and string metadata columns.
 This step converts the raw ClickBench JSON:
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python prepare_data.py \
     --dataset clickbench \
     --input ./data/hits.json.gz \
@@ -74,17 +71,19 @@ This produces `hits_arroyo.json` with:
 
 ### Step 3 — Start infrastructure
 
+Skip any service that is already running.
+
 ```bash
-# Kafka
+# Kafka — skip if `kafka-topics.sh --list` succeeds
 ~/ASAPQuery/asap-tools/installation/kafka/run.sh $INSTALL_DIR/kafka
 
-# Create sketch output topic
+# Create sketch output topic — skip if sketch_topic already exists
 KAFKA=$INSTALL_DIR/kafka/bin
 $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --create \
     --topic sketch_topic --partitions 1 --replication-factor 1 \
     --config max.message.bytes=20971520
 
-# ClickHouse
+# ClickHouse — skip if port 8123 is already listening
 ~/ASAPQuery/asap-tools/installation/clickhouse/run.sh $INSTALL_DIR
 ```
 
@@ -99,9 +98,9 @@ $KAFKA/kafka-topics.sh --bootstrap-server localhost:9092 --create \
 ### Step 5 — Launch Arroyo sketch pipeline (file source)
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python export_to_arroyo.py \
     --streaming-config ./configs/clickbench_streaming.yaml \
-    --source-type file \
     --input-file ./data/hits_arroyo.json \
     --file-format json \
     --ts-format rfc3339 \
@@ -113,13 +112,13 @@ python export_to_arroyo.py \
 ### Step 6 — Start QueryEngineRust
 
 ```bash
-cd ~/ASAPQuery/asap-query-engine
+cd ~/ASAPQuery
 nohup ./target/release/query_engine_rust \
     --kafka-topic sketch_topic --input-format json \
     --config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/clickbench_inference.yaml \
     --streaming-config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/clickbench_streaming.yaml \
     --http-port 8088 --delete-existing-db --log-level DEBUG \
-    --output-dir ./output --streaming-engine arroyo \
+    --output-dir ./asap-query-engine/output --streaming-engine arroyo \
     --query-language SQL --lock-strategy per-key \
     --prometheus-scrape-interval 1 > /tmp/query_engine.log 2>&1 &
 ```
@@ -140,6 +139,7 @@ Verify: `$INSTALL_DIR/clickhouse client --query "SELECT count(*) FROM hits"`
 ### Step 8 — Generate SQL query files
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python generate_queries.py \
     --table-name hits \
     --ts-column EventTime \
@@ -155,15 +155,16 @@ python generate_queries.py \
     --output-prefix ./queries/clickbench
 ```
 
-This writes `queries/clickbench_asap.sql` and `queries/clickbench_clickhouse.sql`.
+This writes `queries/clickbench.sql`.
 
 ### Step 9 — Run benchmark
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python run_benchmark.py \
     --mode both \
-    --asap-sql-file ./queries/clickbench_asap.sql \
-    --baseline-sql-file ./queries/clickbench_clickhouse.sql \
+    --asap-sql-file ./queries/clickbench.sql \
+    --baseline-sql-file ./queries/clickbench.sql \
     --output-dir ./results \
     --output-prefix clickbench
 ```
@@ -178,12 +179,14 @@ Results: `results/clickbench_asap.csv`, `results/clickbench_baseline.csv`,
 ### Step 1 — Download dataset
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python download_dataset.py --dataset h2o --output-dir ./data
 ```
 
 ### Step 2 — Prepare data for Arroyo file source
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python prepare_data.py \
     --dataset h2o \
     --input ./data/G1_1e7_1e2_0_0.csv \
@@ -196,9 +199,9 @@ python prepare_data.py \
 ### Step 5 — Launch Arroyo sketch pipeline
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python export_to_arroyo.py \
     --streaming-config ./configs/h2o_streaming.yaml \
-    --source-type file \
     --input-file ./data/h2o_arroyo.json \
     --file-format json \
     --ts-format rfc3339 \
@@ -210,13 +213,13 @@ python export_to_arroyo.py \
 ### Step 6 — Start QueryEngineRust
 
 ```bash
-cd ~/ASAPQuery/asap-query-engine
+cd ~/ASAPQuery
 nohup ./target/release/query_engine_rust \
     --kafka-topic sketch_topic --input-format json \
     --config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/h2o_inference.yaml \
     --streaming-config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/h2o_streaming.yaml \
     --http-port 8088 --delete-existing-db --log-level DEBUG \
-    --output-dir ./output --streaming-engine arroyo \
+    --output-dir ./asap-query-engine/output --streaming-engine arroyo \
     --query-language SQL --lock-strategy per-key \
     --prometheus-scrape-interval 1 > /tmp/query_engine.log 2>&1 &
 ```
@@ -224,6 +227,7 @@ nohup ./target/release/query_engine_rust \
 ### Step 7 — Load data into ClickHouse (baseline)
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python export_to_database.py \
     --dataset h2o \
     --file-path ./data/G1_1e7_1e2_0_0.csv \
@@ -234,6 +238,7 @@ python export_to_database.py \
 ### Step 8 — Generate SQL query files
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python generate_queries.py \
     --table-name h2o_groupby \
     --ts-column timestamp \
@@ -251,10 +256,11 @@ python generate_queries.py \
 ### Step 9 — Run benchmark
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
 python run_benchmark.py \
     --mode both \
-    --asap-sql-file ./queries/h2o_asap.sql \
-    --baseline-sql-file ./queries/h2o_clickhouse.sql \
+    --asap-sql-file ./queries/h2o.sql \
+    --baseline-sql-file ./queries/h2o.sql \
     --output-dir ./results \
     --output-prefix h2o
 ```
@@ -264,6 +270,8 @@ python run_benchmark.py \
 ## Custom Dataset
 
 ```bash
+cd ~/ASAPQuery/asap-tools/execution-utilities/benchmark
+
 # 1. Download (any HTTP URL)
 python download_dataset.py --dataset custom \
     --custom-url https://example.com/mydata.json.gz \
@@ -274,7 +282,6 @@ python download_dataset.py --dataset custom \
 # 3. Export to Arroyo
 python export_to_arroyo.py \
     --streaming-config ./configs/my_streaming.yaml \
-    --source-type file \
     --input-file ./data/mydata.json \
     --file-format json \
     --ts-format rfc3339 \
@@ -303,8 +310,8 @@ python generate_queries.py \
 # 6. Run benchmark
 python run_benchmark.py \
     --mode both \
-    --asap-sql-file ./queries/my_dataset_asap.sql \
-    --baseline-sql-file ./queries/my_dataset_clickhouse.sql \
+    --asap-sql-file ./queries/my_dataset.sql \
+    --baseline-sql-file ./queries/my_dataset.sql \
     --output-dir ./results
 ```
 
@@ -337,8 +344,8 @@ $INSTALL_DIR/clickhouse client --query "TRUNCATE TABLE hits"
 |------|---------|
 | `download_dataset.py` | Download ClickBench, H2O, or custom datasets |
 | `prepare_data.py` | Convert raw data to Arroyo file source format (RFC3339, string columns) |
-| `export_to_arroyo.py` | Launch Arroyo sketch pipeline (file or kafka source) |
+| `export_to_arroyo.py` | Launch Arroyo sketch pipeline from a local file source |
 | `export_to_database.py` | Load data into ClickHouse for baseline |
-| `generate_queries.py` | Generate paired ASAP + ClickHouse SQL query files |
+| `generate_queries.py` | Generate a single SQL query file (database-style, compatible with both ASAP and ClickHouse) |
 | `run_benchmark.py` | Run queries and produce CSV results + plots |
 | `configs/` | Dataset-specific streaming/inference YAML and ClickHouse init SQL |

@@ -74,7 +74,11 @@ def download_clickbench(output_path: str, force: bool = False) -> str:
 
 def download_h2o(output_path: str, force: bool = False) -> str:
     """Download H2O groupby CSV (~300 MB) from Google Drive via gdown."""
-    if not force and os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024 * 1024:
+    if (
+        not force
+        and os.path.exists(output_path)
+        and os.path.getsize(output_path) > 100 * 1024 * 1024
+    ):
         print(f"Using existing file: {output_path}")
         return output_path
 
@@ -83,6 +87,7 @@ def download_h2o(output_path: str, force: bool = False) -> str:
     except ImportError:
         print("Installing gdown...")
         import subprocess
+
         subprocess.check_call([sys.executable, "-m", "pip", "install", "gdown"])
         import gdown
 
