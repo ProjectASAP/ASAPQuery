@@ -2,8 +2,8 @@ use crate::drivers::ingest::prometheus_remote_write::decode_prometheus_remote_wr
 use crate::drivers::ingest::victoriametrics_remote_write::decode_victoriametrics_remote_write;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
 use crate::precompute_engine::worker::{extract_metric_name, parse_labels_from_series_key};
+use asap_types::aggregation_config::AggregationConfig;
 use axum::{body::Bytes, extract::State, http::StatusCode};
-use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;

@@ -7,6 +7,7 @@
 //! Usage:
 //!   cargo run --release --bin e2e_quickstart_resource_test
 
+use asap_types::aggregation_config::AggregationConfig;
 use prost::Message;
 use query_engine_rust::data_model::{CleanupPolicy, LockStrategy, StreamingConfig};
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
@@ -16,7 +17,6 @@ use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEng
 use query_engine_rust::precompute_engine::output_sink::StoreOutputSink;
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::{SimpleMapStore, Store};
-use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
