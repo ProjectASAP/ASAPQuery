@@ -103,12 +103,14 @@ async fn route_decoded_samples(
 
     let messages: Vec<WorkerMessage> = by_group
         .into_iter()
-        .map(|((agg_id, group_key), samples)| WorkerMessage::GroupSamples {
-            agg_id,
-            group_key,
-            samples,
-            ingest_received_at,
-        })
+        .map(
+            |((agg_id, group_key), samples)| WorkerMessage::GroupSamples {
+                agg_id,
+                group_key,
+                samples,
+                ingest_received_at,
+            },
+        )
         .collect();
 
     if let Err(e) = state

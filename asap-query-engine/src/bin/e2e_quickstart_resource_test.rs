@@ -124,20 +124,17 @@ fn make_kll_streaming_config() -> Arc<StreamingConfig> {
     params.insert("K".to_string(), serde_json::Value::from(200u64));
 
     // Grouping by pattern (spatial key), rolling up region/service/host/instance/job
-    let grouping =
-        promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
-            "pattern".to_string(),
-        ]);
-    let rollup =
-        promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
-            "instance".to_string(),
-            "job".to_string(),
-            "region".to_string(),
-            "service".to_string(),
-            "host".to_string(),
-        ]);
-    let aggregated =
-        promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]);
+    let grouping = promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+        "pattern".to_string(),
+    ]);
+    let rollup = promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+        "instance".to_string(),
+        "job".to_string(),
+        "region".to_string(),
+        "service".to_string(),
+        "host".to_string(),
+    ]);
+    let aggregated = promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]);
 
     let agg_config = AggregationConfig::new(
         1,
@@ -172,11 +169,23 @@ fn read_proc_status() -> (u64, u64, u64) {
     let mut vm_size = 0u64;
     for line in status.lines() {
         if line.starts_with("VmRSS:") {
-            vm_rss = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            vm_rss = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
         } else if line.starts_with("VmPeak:") {
-            vm_peak = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            vm_peak = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
         } else if line.starts_with("VmSize:") {
-            vm_size = line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+            vm_size = line
+                .split_whitespace()
+                .nth(1)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0);
         }
     }
     (vm_rss, vm_peak, vm_size)
@@ -239,7 +248,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     println!("=== Precompute Engine E2E Resource Test ===");
     println!("  Patterns: {} ({:?})", PATTERNS.len(), PATTERNS);
-    println!("  Series per pattern: {} ({}×{}×{})", series_per_pattern, NUM_REGIONS, NUM_SERVICES, NUM_HOSTS);
+    println!(
+        "  Series per pattern: {} ({}×{}×{})",
+        series_per_pattern, NUM_REGIONS, NUM_SERVICES, NUM_HOSTS
+    );
     println!("  Total series: {}", total_series);
     println!("  Workers: {}", NUM_WORKERS);
     println!("  Duration: {}s", DURATION_SECS);
@@ -248,7 +260,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let (rss_before, _, _) = read_proc_status();
     let (cpu_user_before, cpu_sys_before) = read_proc_cpu_time();
-    println!("Before ingestion: VmRSS = {} KB ({:.1} MB)", rss_before, rss_before as f64 / 1024.0);
+    println!(
+        "Before ingestion: VmRSS = {} KB ({:.1} MB)",
+        rss_before,
+        rss_before as f64 / 1024.0
+    );
 
     let client = reqwest::Client::builder()
         .pool_max_idle_per_host(8)
@@ -283,7 +299,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             / (series_per_pattern as f64);
                         let value = pattern_value(pattern, t_secs, base);
                         all_timeseries.push(make_sensor_reading(
-                            pattern, &region, &service, &host, &instance, timestamp_ms, value,
+                            pattern,
+                            &region,
+                            &service,
+                            &host,
+                            &instance,
+                            timestamp_ms,
+                            value,
                         ));
                     }
                 }
@@ -320,7 +342,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if tick % 2 == 0 || !all_ok {
             println!(
                 "  tick={} t={}ms samples={} send_time={:.0}ms ok={}",
-                tick, timestamp_ms, total_series, send_time.as_secs_f64() * 1000.0, all_ok
+                tick,
+                timestamp_ms,
+                total_series,
+                send_time.as_secs_f64() * 1000.0,
+                all_ok
             );
         }
 
@@ -355,9 +381,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     );
     println!();
     println!("  --- Memory ---");
-    println!("  VmRSS (current):    {} KB ({:.1} MB)", rss_after, rss_after as f64 / 1024.0);
-    println!("  VmPeak:             {} KB ({:.1} MB)", vm_peak, vm_peak as f64 / 1024.0);
-    println!("  VmSize:             {} KB ({:.1} MB)", vm_size, vm_size as f64 / 1024.0);
+    println!(
+        "  VmRSS (current):    {} KB ({:.1} MB)",
+        rss_after,
+        rss_after as f64 / 1024.0
+    );
+    println!(
+        "  VmPeak:             {} KB ({:.1} MB)",
+        vm_peak,
+        vm_peak as f64 / 1024.0
+    );
+    println!(
+        "  VmSize:             {} KB ({:.1} MB)",
+        vm_size,
+        vm_size as f64 / 1024.0
+    );
     println!(
         "  RSS delta:          {} KB ({:.1} MB)",
         rss_after.saturating_sub(rss_before),

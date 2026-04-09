@@ -179,7 +179,11 @@ impl SimpleMapStoreGlobal {
             total_time_map_entries += time_map_len;
 
             let num_aggregate_objects = per_key.current_epoch.len()
-                + per_key.sealed_epochs.values().map(|e| e.entries.len()).sum::<usize>();
+                + per_key
+                    .sealed_epochs
+                    .values()
+                    .map(|e| e.entries.len())
+                    .sum::<usize>();
 
             per_aggregation.push(AggregationDiagnostic {
                 aggregation_id: agg_id,

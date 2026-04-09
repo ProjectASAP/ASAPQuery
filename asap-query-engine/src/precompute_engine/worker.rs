@@ -125,9 +125,7 @@ impl Worker {
                         sample_count,
                     )
                     .entered();
-                    if let Err(e) =
-                        self.process_group_samples(agg_id, &group_key, samples)
-                    {
+                    if let Err(e) = self.process_group_samples(agg_id, &group_key, samples) {
                         warn!(
                             "Worker {} error processing group ({}, {}): {}",
                             self.id, agg_id, group_key, e
@@ -224,10 +222,17 @@ impl Worker {
             );
             return Ok(());
         }
-        let state = self.group_states.get_mut(&(agg_id, group_key.to_string())).unwrap();
+        let state = self
+            .group_states
+            .get_mut(&(agg_id, group_key.to_string()))
+            .unwrap();
 
         // Find the max timestamp in this batch to advance the watermark
-        let batch_max_ts = samples.iter().map(|(_, ts, _)| *ts).max().unwrap_or(i64::MIN);
+        let batch_max_ts = samples
+            .iter()
+            .map(|(_, ts, _)| *ts)
+            .max()
+            .unwrap_or(i64::MIN);
         let previous_wm = state.previous_watermark_ms;
         let current_wm = if batch_max_ts > previous_wm {
             batch_max_ts
@@ -295,16 +300,13 @@ impl Worker {
         }
 
         // Check for closed windows
-        let closed = state
-            .window_manager
-            .closed_windows(previous_wm, current_wm);
+        let closed = state.window_manager.closed_windows(previous_wm, current_wm);
 
         for window_start in &closed {
             let (_, window_end) = state.window_manager.window_bounds(*window_start);
             let pane_starts = state.window_manager.panes_for_window(*window_start);
 
-            if let Some(accumulator) =
-                merge_panes_for_window(&mut state.active_panes, &pane_starts)
+            if let Some(accumulator) = merge_panes_for_window(&mut state.active_panes, &pane_starts)
             {
                 let key = build_group_key_label_values(group_key);
                 let output = PrecomputedOutput::new(
@@ -695,7 +697,16 @@ mod tests {
         slide_secs: u64,
         grouping: Vec<&str>,
     ) -> AggregationConfig {
-        make_agg_config_full(id, metric, agg_type, agg_sub_type, window_secs, slide_secs, grouping, vec![])
+        make_agg_config_full(
+            id,
+            metric,
+            agg_type,
+            agg_sub_type,
+            window_secs,
+            slide_secs,
+            grouping,
+            vec![],
+        )
     }
 
     fn make_agg_config_full(
@@ -772,10 +783,7 @@ mod tests {
     }
 
     /// Helper to make GroupSamples from simple (ts, val) pairs for a single series.
-    fn group_samples(
-        series_key: &str,
-        samples: Vec<(i64, f64)>,
-    ) -> Vec<(String, i64, f64)> {
+    fn group_samples(series_key: &str, samples: Vec<(i64, f64)>) -> Vec<(String, i64, f64)> {
         samples
             .into_iter()
             .map(|(ts, val)| (series_key.to_string(), ts, val))
@@ -936,7 +944,15 @@ mod tests {
 
     #[test]
     fn test_different_groups_separate_outputs() {
-        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec!["pattern"]);
+        let config = make_agg_config(
+            1,
+            "cpu",
+            "SingleSubpopulation",
+            "Sum",
+            10,
+            0,
+            vec!["pattern"],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(1, config);
 
@@ -951,19 +967,35 @@ mod tests {
 
         // Group "constant" gets samples
         worker
-            .process_group_samples(1, "constant", group_samples("cpu{pattern=\"constant\"}", vec![(1000, 5.0)]))
+            .process_group_samples(
+                1,
+                "constant",
+                group_samples("cpu{pattern=\"constant\"}", vec![(1000, 5.0)]),
+            )
             .unwrap();
         // Group "sine" gets samples
         worker
-            .process_group_samples(1, "sine", group_samples("cpu{pattern=\"sine\"}", vec![(2000, 7.0)]))
+            .process_group_samples(
+                1,
+                "sine",
+                group_samples("cpu{pattern=\"sine\"}", vec![(2000, 7.0)]),
+            )
             .unwrap();
 
         // Close both groups' windows
         worker
-            .process_group_samples(1, "constant", group_samples("cpu{pattern=\"constant\"}", vec![(10000, 0.0)]))
+            .process_group_samples(
+                1,
+                "constant",
+                group_samples("cpu{pattern=\"constant\"}", vec![(10000, 0.0)]),
+            )
             .unwrap();
         worker
-            .process_group_samples(1, "sine", group_samples("cpu{pattern=\"sine\"}", vec![(10000, 0.0)]))
+            .process_group_samples(
+                1,
+                "sine",
+                group_samples("cpu{pattern=\"sine\"}", vec![(10000, 0.0)]),
+            )
             .unwrap();
 
         let captured = sink.drain();
@@ -985,8 +1017,11 @@ mod tests {
 
     #[test]
     fn test_kll_group_by_merges_series() {
-        let mut config = make_agg_config(1, "latency", "DatasketchesKLL", "", 10, 0, vec!["pattern"]);
-        config.parameters.insert("K".to_string(), serde_json::Value::from(20_u64));
+        let mut config =
+            make_agg_config(1, "latency", "DatasketchesKLL", "", 10, 0, vec!["pattern"]);
+        config
+            .parameters
+            .insert("K".to_string(), serde_json::Value::from(20_u64));
         let mut agg_configs = HashMap::new();
         agg_configs.insert(1, config);
 
@@ -1005,16 +1040,35 @@ mod tests {
                 1,
                 "constant",
                 vec![
-                    ("latency{pattern=\"constant\",host=\"a\"}".to_string(), 1000, 10.0),
-                    ("latency{pattern=\"constant\",host=\"b\"}".to_string(), 2000, 20.0),
-                    ("latency{pattern=\"constant\",host=\"c\"}".to_string(), 3000, 30.0),
+                    (
+                        "latency{pattern=\"constant\",host=\"a\"}".to_string(),
+                        1000,
+                        10.0,
+                    ),
+                    (
+                        "latency{pattern=\"constant\",host=\"b\"}".to_string(),
+                        2000,
+                        20.0,
+                    ),
+                    (
+                        "latency{pattern=\"constant\",host=\"c\"}".to_string(),
+                        3000,
+                        30.0,
+                    ),
                 ],
             )
             .unwrap();
 
         // Close the window
         worker
-            .process_group_samples(1, "constant", group_samples("latency{pattern=\"constant\",host=\"a\"}", vec![(10000, 0.0)]))
+            .process_group_samples(
+                1,
+                "constant",
+                group_samples(
+                    "latency{pattern=\"constant\",host=\"a\"}",
+                    vec![(10000, 0.0)],
+                ),
+            )
             .unwrap();
 
         let captured = sink.drain();
@@ -1026,7 +1080,11 @@ mod tests {
             .as_any()
             .downcast_ref::<DatasketchesKLLAccumulator>()
             .expect("should be KLL");
-        assert_eq!(kll.inner.count(), 3, "KLL should contain all 3 series' samples");
+        assert_eq!(
+            kll.inner.count(),
+            3,
+            "KLL should contain all 3 series' samples"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1102,8 +1160,8 @@ mod tests {
             "Sum",
             10,
             0,
-            vec![],          // grouping: empty — one output group
-            vec!["host"],    // aggregated: host is the key INSIDE the sketch
+            vec![],       // grouping: empty — one output group
+            vec!["host"], // aggregated: host is the key INSIDE the sketch
         );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(3, config);
@@ -1136,7 +1194,11 @@ mod tests {
             .unwrap();
 
         let captured = sink.drain();
-        assert_eq!(captured.len(), 1, "one group → one output (both hosts inside)");
+        assert_eq!(
+            captured.len(),
+            1,
+            "one group → one output (both hosts inside)"
+        );
 
         let (_output, acc) = &captured[0];
         let ms_acc = acc
@@ -1261,7 +1323,8 @@ mod tests {
     #[test]
     fn test_arroyosketch_multiple_sum_matches_handcrafted_precompute_output() {
         // Like planner output: grouping=[], aggregated=[host]
-        let config = make_agg_config_full(11, "cpu", "MultipleSum", "sum", 10, 0, vec![], vec!["host"]);
+        let config =
+            make_agg_config_full(11, "cpu", "MultipleSum", "sum", 10, 0, vec![], vec!["host"]);
         let mut agg_configs = HashMap::new();
         agg_configs.insert(11, config.clone());
 
@@ -1286,7 +1349,11 @@ mod tests {
             .process_group_samples(11, "", group_samples("cpu{host=\"A\"}", vec![(9_000, 3.0)]))
             .unwrap();
         worker
-            .process_group_samples(11, "", group_samples("cpu{host=\"A\"}", vec![(10_000, 0.0)]))
+            .process_group_samples(
+                11,
+                "",
+                group_samples("cpu{host=\"A\"}", vec![(10_000, 0.0)]),
+            )
             .unwrap();
 
         let captured = sink.drain();
@@ -1556,10 +1623,7 @@ aggregations:
         assert_eq!(key.labels, vec!["constant".to_string()]);
 
         let key = build_group_key_label_values("us-east;svc-a");
-        assert_eq!(
-            key.labels,
-            vec!["us-east".to_string(), "svc-a".to_string()]
-        );
+        assert_eq!(key.labels, vec!["us-east".to_string(), "svc-a".to_string()]);
 
         let key = build_group_key_label_values("");
         assert_eq!(key.labels, vec!["".to_string()]);

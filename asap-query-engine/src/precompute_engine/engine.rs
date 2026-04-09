@@ -88,8 +88,7 @@ impl PrecomputeEngine {
             .collect();
 
         // Build a Vec<Arc<AggregationConfig>> for the ingest handler
-        let agg_configs_vec: Vec<Arc<AggregationConfig>> =
-            agg_configs.values().cloned().collect();
+        let agg_configs_vec: Vec<Arc<AggregationConfig>> = agg_configs.values().cloned().collect();
 
         // Spawn workers
         let mut worker_handles = Vec::with_capacity(num_workers);

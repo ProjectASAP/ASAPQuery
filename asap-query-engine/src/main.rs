@@ -10,8 +10,8 @@ use sketch_core::config::{self, ImplMode};
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
-use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
+use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
     HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
     OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, Result, SimpleEngine,
@@ -315,8 +315,8 @@ async fn main() -> Result<()> {
 
     // Setup precompute engine (replaces standalone Prometheus remote write server)
     // Automatically enable when using precompute streaming engine
-    let enable_precompute = args.enable_prometheus_remote_write
-        || args.streaming_engine == StreamingEngine::Precompute;
+    let enable_precompute =
+        args.enable_prometheus_remote_write || args.streaming_engine == StreamingEngine::Precompute;
     let precompute_handle = if enable_precompute {
         let precompute_config = PrecomputeEngineConfig {
             num_workers: args.precompute_num_workers,

@@ -56,14 +56,12 @@ impl SimpleMapStore {
         lock_strategy: LockStrategy,
     ) -> Self {
         match lock_strategy {
-            LockStrategy::Global => SimpleMapStore::Global(SimpleMapStoreGlobal::new(
-                streaming_config,
-                cleanup_policy,
-            )),
-            LockStrategy::PerKey => SimpleMapStore::PerKey(SimpleMapStorePerKey::new(
-                streaming_config,
-                cleanup_policy,
-            )),
+            LockStrategy::Global => {
+                SimpleMapStore::Global(SimpleMapStoreGlobal::new(streaming_config, cleanup_policy))
+            }
+            LockStrategy::PerKey => {
+                SimpleMapStore::PerKey(SimpleMapStorePerKey::new(streaming_config, cleanup_policy))
+            }
         }
     }
 }
