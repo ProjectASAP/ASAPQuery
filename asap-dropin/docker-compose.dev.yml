@@ -1,0 +1,22 @@
+name: asapquery-dropin
+
+# Development override: builds ASAP services from local source instead of
+# pulling pre-built images from ghcr.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  asap-planner-rs:
+    build:
+      context: ..
+      dockerfile: asap-planner-rs/Dockerfile
+
+  asap-summary-ingest:
+    build:
+      context: ../asap-summary-ingest
+
+  queryengine:
+    build:
+      context: ..
+      dockerfile: asap-query-engine/Dockerfile

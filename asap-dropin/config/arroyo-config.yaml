@@ -1,0 +1,3 @@
+# Arroyo streaming engine configuration
+compiler:
+  use-local-udf-crate: true
