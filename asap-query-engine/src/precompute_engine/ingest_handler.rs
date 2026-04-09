@@ -82,7 +82,9 @@ async fn route_decoded_samples(
     // (agg_id, group_key). This is the equivalent of Arroyo's GROUP BY.
     //
     // Key: (agg_id, group_key) → Vec<(series_key, timestamp_ms, value)>
-    let mut by_group: HashMap<(u64, String), Vec<(String, i64, f64)>> = HashMap::new();
+    type GroupKey = (u64, String);
+    type SampleTuple = (String, i64, f64);
+    let mut by_group: HashMap<GroupKey, Vec<SampleTuple>> = HashMap::new();
 
     for s in &samples {
         let metric_name = extract_metric_name(&s.labels);

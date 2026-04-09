@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
 use crate::precompute_engine::accumulator_factory::{
-    config_is_keyed, create_accumulator_updater, AccumulatorUpdater,
+    create_accumulator_updater, AccumulatorUpdater,
 };
 use crate::precompute_engine::config::LateDataPolicy;
 use crate::precompute_engine::output_sink::OutputSink;
@@ -71,6 +71,7 @@ pub struct Worker {
 }
 
 impl Worker {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: usize,
         receiver: mpsc::Receiver<WorkerMessage>,
@@ -709,6 +710,7 @@ mod tests {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn make_agg_config_full(
         id: u64,
         metric: &str,
@@ -797,7 +799,7 @@ mod tests {
     #[test]
     fn test_raw_mode_forwarding() {
         let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker = make_worker(HashMap::new(), sink.clone(), true, 99, LateDataPolicy::Drop);
+        let worker = make_worker(HashMap::new(), sink.clone(), true, 99, LateDataPolicy::Drop);
 
         let samples = vec![(1000_i64, 1.5_f64), (2000, 2.5), (3000, 7.0)];
         worker

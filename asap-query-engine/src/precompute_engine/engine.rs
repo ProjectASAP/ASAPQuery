@@ -107,7 +107,7 @@ impl PrecomputeEngine {
                 },
                 self.diagnostics.worker_group_counts[id].clone(),
                 self.diagnostics.worker_watermarks[id].clone(),
-                self.diagnostics.worker_watermarks.iter().cloned().collect(),
+                self.diagnostics.worker_watermarks.to_vec(),
             );
             let handle = tokio::spawn(async move {
                 worker.run().await;
