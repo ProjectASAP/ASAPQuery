@@ -56,51 +56,6 @@ impl LegacySimpleMapStoreGlobal {
         }
     }
 
-    /// Collect diagnostic info for memory leak investigation.
-    pub fn diagnostic_info(&self) -> super::per_key::StoreDiagnostics {
-        use super::per_key::{AggregationDiagnostic, StoreDiagnostics};
-
-        let data = self.lock.lock().unwrap();
-        let mut per_aggregation = Vec::new();
-        let mut total_time_map_entries: usize = 0;
-        let mut total_sketch_bytes: usize = 0;
-
-        for (&agg_id, time_map) in &data.store {
-            let time_map_len = time_map.len();
-            let read_counts_len = data
-                .read_counts
-                .get(&agg_id)
-                .map(|rc| rc.len())
-                .unwrap_or(0);
-            total_time_map_entries += time_map_len;
-
-            let mut num_aggregate_objects: usize = 0;
-            let mut agg_sketch_bytes: usize = 0;
-            for store_values in time_map.values() {
-                num_aggregate_objects += store_values.len();
-                for (_key, aggregate) in store_values {
-                    agg_sketch_bytes += aggregate.serialize_to_bytes().len();
-                }
-            }
-            total_sketch_bytes += agg_sketch_bytes;
-
-            per_aggregation.push(AggregationDiagnostic {
-                aggregation_id: agg_id,
-                time_map_len,
-                read_counts_len,
-                num_aggregate_objects,
-                sketch_bytes: agg_sketch_bytes,
-            });
-        }
-
-        StoreDiagnostics {
-            num_aggregations: data.store.len(),
-            total_time_map_entries,
-            total_sketch_bytes,
-            per_aggregation,
-        }
-    }
-
     fn create_table(&self, data: &mut StoreData, metric: &str) {
         // In the in-memory implementation, "creating a table" just means
         // marking the metric as known
