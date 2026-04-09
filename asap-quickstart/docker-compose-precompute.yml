@@ -226,7 +226,6 @@ services:
       - "--dataset=sine"
       - "--num-labels=3"
       - "--num-values-per-label=30,30,30"
-      - "--num-values-per-label=30,30,30"
       - "--metric-type=gauge"
       - "--metric-name=sensor_reading"
       - "--label-names=region,service,host"
