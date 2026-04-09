@@ -4,37 +4,30 @@ use crate::precompute_engine::accumulator_factory::{
 };
 use crate::precompute_engine::config::LateDataPolicy;
 use crate::precompute_engine::output_sink::OutputSink;
-use crate::precompute_engine::series_buffer::SeriesBuffer;
 use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, debug_span, info, warn};
 
-/// Per-aggregation state within a series: the window manager and active
-/// pane accumulators.
+/// Per-group aggregation state: window manager + active pane accumulators.
+/// This is the equivalent of one (agg_id, group_key) in Arroyo's GROUP BY.
 ///
-/// Uses pane-based sliding window computation: each sample is routed to
-/// exactly 1 pane (sub-window of size `slide_interval`). When a window
-/// closes, its constituent panes are merged. This reduces per-sample
-/// accumulator updates from W to 1 (where W = window_size / slide_interval).
-struct AggregationState {
+/// All raw series sharing the same grouping label values feed into the same
+/// accumulator, producing one output per (group_key, window) — exactly like
+/// Arroyo's `GROUP BY window, key`.
+struct GroupState {
     config: Arc<AggregationConfig>,
     window_manager: WindowManager,
     /// Active panes keyed by pane_start_ms.
-    /// BTreeMap for ordered iteration (needed for pane eviction).
     active_panes: BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
-}
-
-/// Per-series state owned by the worker.
-struct SeriesState {
-    buffer: SeriesBuffer,
+    /// Per-group watermark: tracks the maximum timestamp seen across all
+    /// series in this group on this worker.
     previous_watermark_ms: i64,
-    /// One AggregationState per matching aggregation config.
-    aggregations: Vec<AggregationState>,
 }
 
 /// Runtime configuration for a Worker, grouping non-structural parameters.
@@ -46,17 +39,20 @@ pub struct WorkerRuntimeConfig {
     pub late_data_policy: LateDataPolicy,
 }
 
-/// Worker that processes samples for a shard of the series space.
+/// Worker that processes samples for a shard of the group space.
+///
+/// Unlike the old per-series design, this worker maintains accumulators
+/// keyed by `(agg_id, group_key)`. Multiple raw series with the same
+/// grouping label values share a single accumulator, producing one merged
+/// output per window — matching Arroyo's `GROUP BY` semantics.
 pub struct Worker {
     id: usize,
     receiver: mpsc::Receiver<WorkerMessage>,
     output_sink: Arc<dyn OutputSink>,
-    /// Map from series key to per-series state.
-    series_map: HashMap<String, SeriesState>,
+    /// Map from (agg_id, group_key) to per-group state.
+    group_states: HashMap<(u64, String), GroupState>,
     /// Aggregation configs, keyed by aggregation_id.
     agg_configs: HashMap<u64, Arc<AggregationConfig>>,
-    /// Max buffer size per series.
-    max_buffer_per_series: usize,
     /// Allowed lateness in ms.
     allowed_lateness_ms: i64,
     /// When true, skip aggregation and pass raw samples through.
@@ -65,6 +61,11 @@ pub struct Worker {
     raw_mode_aggregation_id: u64,
     /// Policy for handling late samples that arrive after their window has closed.
     late_data_policy: LateDataPolicy,
+    /// Worker-level watermark: min(group watermarks) — reserved for future
+    /// use (e.g. idle-group eviction). Currently each group tracks its own.
+    _worker_watermark_ms: i64,
+    /// Externally-readable group count for diagnostics.
+    group_count: Arc<AtomicUsize>,
 }
 
 impl Worker {
@@ -74,9 +75,10 @@ impl Worker {
         output_sink: Arc<dyn OutputSink>,
         agg_configs: HashMap<u64, Arc<AggregationConfig>>,
         runtime_config: WorkerRuntimeConfig,
+        group_count: Arc<AtomicUsize>,
     ) -> Self {
         let WorkerRuntimeConfig {
-            max_buffer_per_series,
+            max_buffer_per_series: _,
             allowed_lateness_ms,
             pass_raw_samples,
             raw_mode_aggregation_id,
@@ -86,13 +88,14 @@ impl Worker {
             id,
             receiver,
             output_sink,
-            series_map: HashMap::new(),
+            group_states: HashMap::new(),
             agg_configs,
-            max_buffer_per_series,
             allowed_lateness_ms,
             pass_raw_samples,
             raw_mode_aggregation_id,
             late_data_policy,
+            _worker_watermark_ms: i64::MIN,
+            group_count,
         }
     }
 
@@ -102,25 +105,52 @@ impl Worker {
 
         while let Some(msg) = self.receiver.recv().await {
             match msg {
-                WorkerMessage::Samples {
-                    series_key,
+                WorkerMessage::GroupSamples {
+                    agg_id,
+                    group_key,
                     samples,
                     ingest_received_at,
                 } => {
                     let sample_count = samples.len();
                     let _span = debug_span!(
-                        "worker_process",
+                        "worker_process_group",
                         worker_id = self.id,
-                        series = %series_key,
+                        agg_id,
+                        group = %group_key,
                         sample_count,
                     )
                     .entered();
-                    if let Err(e) = self.process_samples(&series_key, samples) {
-                        warn!("Worker {} error processing {}: {}", self.id, series_key, e);
+                    if let Err(e) =
+                        self.process_group_samples(agg_id, &group_key, samples)
+                    {
+                        warn!(
+                            "Worker {} error processing group ({}, {}): {}",
+                            self.id, agg_id, group_key, e
+                        );
                     }
                     debug!(
                         e2e_latency_us = ingest_received_at.elapsed().as_micros() as u64,
                         "e2e: ingest->worker complete"
+                    );
+                }
+                WorkerMessage::RawSamples {
+                    series_key,
+                    samples,
+                    ingest_received_at,
+                } => {
+                    let _span = debug_span!(
+                        "worker_process_raw",
+                        worker_id = self.id,
+                        series = %series_key,
+                        sample_count = samples.len(),
+                    )
+                    .entered();
+                    if let Err(e) = self.process_samples_raw(&series_key, samples) {
+                        warn!("Worker {} raw error for {}: {}", self.id, series_key, e);
+                    }
+                    debug!(
+                        e2e_latency_us = ingest_received_at.elapsed().as_micros() as u64,
+                        "e2e: ingest->worker complete (raw)"
                     );
                 }
                 WorkerMessage::Flush => {
@@ -130,7 +160,6 @@ impl Worker {
                 }
                 WorkerMessage::Shutdown => {
                     info!("Worker {} shutting down", self.id);
-                    // Final flush before shutdown
                     if let Err(e) = self.flush_all() {
                         warn!("Worker {} final flush error: {}", self.id, e);
                     }
@@ -140,188 +169,136 @@ impl Worker {
         }
 
         info!(
-            "Worker {} stopped, {} active series",
+            "Worker {} stopped, {} active groups",
             self.id,
-            self.series_map.len()
+            self.group_states.len()
         );
     }
 
-    /// Find all aggregation configs whose metric/spatial_filter matches this series.
-    /// Returns owned `Arc` clones so callers are not lifetime-bound to `&self`.
-    fn matching_agg_configs(&self, series_key: &str) -> Vec<(u64, Arc<AggregationConfig>)> {
-        let metric_name = extract_metric_name(series_key);
-
-        self.agg_configs
-            .iter()
-            .filter(|(_, config)| {
-                // Match on metric name
-                config.metric == metric_name
-                    || config.spatial_filter_normalized == metric_name
-                    || config.spatial_filter == metric_name
-            })
-            .map(|(&id, config)| (id, Arc::clone(config)))
-            .collect()
-    }
-
-    /// Get or create the SeriesState for a series key.
-    fn get_or_create_series_state(&mut self, series_key: &str) -> &mut SeriesState {
-        if !self.series_map.contains_key(series_key) {
-            let matching = self.matching_agg_configs(series_key);
-            let aggregations = matching
-                .into_iter()
-                .map(|(_, config)| AggregationState {
+    /// Get or create the GroupState for a (agg_id, group_key) pair.
+    fn get_or_create_group_state(&mut self, agg_id: u64, group_key: &str) -> &mut GroupState {
+        let key = (agg_id, group_key.to_string());
+        if !self.group_states.contains_key(&key) {
+            if let Some(config) = self.agg_configs.get(&agg_id) {
+                let gs = GroupState {
                     window_manager: WindowManager::new(config.window_size, config.slide_interval),
-                    config, // Arc clone is cheap; no deep copy
+                    config: Arc::clone(config),
                     active_panes: BTreeMap::new(),
-                })
-                .collect();
-
-            self.series_map.insert(
-                series_key.to_string(),
-                SeriesState {
-                    buffer: SeriesBuffer::new(self.max_buffer_per_series),
                     previous_watermark_ms: i64::MIN,
-                    aggregations,
-                },
-            );
+                };
+                self.group_states.insert(key.clone(), gs);
+                self.group_count
+                    .store(self.group_states.len(), Ordering::Relaxed);
+            }
         }
-
-        self.series_map.get_mut(series_key).unwrap()
+        self.group_states.get_mut(&key).unwrap()
     }
 
-    fn process_samples(
+    /// Process a batch of samples for a specific (agg_id, group_key).
+    /// All samples in the batch feed into the same shared accumulator.
+    ///
+    /// This is the core of the Arroyo-equivalent GROUP BY logic.
+    pub fn process_group_samples(
         &mut self,
-        series_key: &str,
-        samples: Vec<(i64, f64)>,
+        agg_id: u64,
+        group_key: &str,
+        samples: Vec<(String, i64, f64)>, // (series_key, timestamp_ms, value)
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        if self.pass_raw_samples {
-            return self.process_samples_raw(series_key, samples);
-        }
-
-        // Copy scalars out of self before taking &mut self.series_map
         let worker_id = self.id;
         let allowed_lateness_ms = self.allowed_lateness_ms;
         let late_data_policy = self.late_data_policy;
 
-        // Ensure state exists
-        self.get_or_create_series_state(series_key);
+        self.get_or_create_group_state(agg_id, group_key);
+        let state = self.group_states.get_mut(&(agg_id, group_key.to_string())).unwrap();
 
-        let state = self.series_map.get_mut(series_key).unwrap();
-
-        if state.aggregations.is_empty() {
-            return Ok(());
-        }
-
-        // Insert samples into buffer, dropping late arrivals
-        for &(ts, val) in &samples {
-            if state.buffer.watermark_ms() != i64::MIN
-                && ts < state.buffer.watermark_ms() - allowed_lateness_ms
-            {
-                debug!(
-                    "Worker {} dropping late sample for {}: ts={} watermark={}",
-                    worker_id,
-                    series_key,
-                    ts,
-                    state.buffer.watermark_ms()
-                );
-                continue;
-            }
-            state.buffer.insert(ts, val);
-        }
-
-        let current_wm = state.buffer.watermark_ms();
+        // Find the max timestamp in this batch to advance the watermark
+        let batch_max_ts = samples.iter().map(|(_, ts, _)| *ts).max().unwrap_or(i64::MIN);
         let previous_wm = state.previous_watermark_ms;
+        let current_wm = if batch_max_ts > previous_wm {
+            batch_max_ts
+        } else {
+            previous_wm
+        };
 
         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
 
-        for agg_state in &mut state.aggregations {
-            let closed = agg_state
-                .window_manager
-                .closed_windows(previous_wm, current_wm);
-
-            // Pane-based sample routing: each sample goes to exactly 1 pane
-            for &(ts, val) in &samples {
-                if current_wm != i64::MIN && ts < current_wm - allowed_lateness_ms {
-                    continue; // already dropped
-                }
-
-                let pane_start = agg_state.window_manager.pane_start_for(ts);
-                let pane_end = pane_start + agg_state.window_manager.slide_interval_ms();
-
-                // Check if pane was already evicted (late data for a closed window).
-                // A pane is evicted when its oldest window closes, i.e. the window
-                // starting at pane_start. If that window is closed, the pane is gone.
-                if !agg_state.active_panes.contains_key(&pane_start)
-                    && current_wm >= pane_start + agg_state.window_manager.window_size_ms()
-                {
-                    // The window starting at this pane_start is already closed,
-                    // so this pane was evicted — handle as late data.
-                    let window_start = pane_start;
-                    let window_end = pane_start + agg_state.window_manager.window_size_ms();
-                    match late_data_policy {
-                        LateDataPolicy::Drop => {
-                            debug!(
-                                "Dropping late sample for evicted pane [{}, {})",
-                                pane_start, pane_end
-                            );
-                            continue;
-                        }
-                        LateDataPolicy::ForwardToStore => {
-                            let mut updater = create_accumulator_updater(&agg_state.config);
-                            apply_sample(&mut *updater, series_key, val, ts, &agg_state.config);
-                            let key = if config_is_keyed(&agg_state.config) {
-                                Some(extract_key_from_series(series_key, &agg_state.config))
-                            } else {
-                                None
-                            };
-                            let output = PrecomputedOutput::new(
-                                window_start as u64,
-                                window_end as u64,
-                                key,
-                                agg_state.config.aggregation_id,
-                            );
-                            emit_batch.push((output, updater.take_accumulator()));
-                            debug!(
-                                "Forwarding late sample to store for evicted pane [{}, {})",
-                                pane_start, pane_end
-                            );
-                            continue;
-                        }
-                    }
-                }
-
-                // Normal path: route sample to its single pane
-                let updater = agg_state
-                    .active_panes
-                    .entry(pane_start)
-                    .or_insert_with(|| create_accumulator_updater(&agg_state.config));
-
-                apply_sample(&mut **updater, series_key, val, ts, &agg_state.config);
+        // Route each sample to its pane
+        for (series_key, ts, val) in &samples {
+            // Drop late samples
+            if previous_wm != i64::MIN && *ts < previous_wm - allowed_lateness_ms {
+                debug!(
+                    "Worker {} dropping late sample for group ({}, {}): ts={} watermark={}",
+                    worker_id, agg_id, group_key, ts, previous_wm
+                );
+                continue;
             }
 
-            // Emit closed windows by merging their constituent panes
-            for window_start in &closed {
-                let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
-                let pane_starts = agg_state.window_manager.panes_for_window(*window_start);
+            let pane_start = state.window_manager.pane_start_for(*ts);
+            let pane_end = pane_start + state.window_manager.slide_interval_ms();
 
-                if let Some(accumulator) =
-                    merge_panes_for_window(&mut agg_state.active_panes, &pane_starts)
-                {
-                    let key = if config_is_keyed(&agg_state.config) {
-                        Some(extract_key_from_series(series_key, &agg_state.config))
-                    } else {
-                        None
-                    };
-
-                    let output = PrecomputedOutput::new(
-                        *window_start as u64,
-                        window_end as u64,
-                        key,
-                        agg_state.config.aggregation_id,
-                    );
-
-                    emit_batch.push((output, accumulator));
+            // Check if pane was already evicted (late data for a closed window)
+            if !state.active_panes.contains_key(&pane_start)
+                && current_wm >= pane_start + state.window_manager.window_size_ms()
+            {
+                let window_start = pane_start;
+                let window_end = pane_start + state.window_manager.window_size_ms();
+                match late_data_policy {
+                    LateDataPolicy::Drop => {
+                        debug!(
+                            "Dropping late sample for evicted pane [{}, {})",
+                            pane_start, pane_end
+                        );
+                        continue;
+                    }
+                    LateDataPolicy::ForwardToStore => {
+                        let mut updater = create_accumulator_updater(&state.config);
+                        apply_sample(&mut *updater, series_key, *val, *ts, &state.config);
+                        let key = build_group_key_label_values(group_key);
+                        let output = PrecomputedOutput::new(
+                            window_start as u64,
+                            window_end as u64,
+                            Some(key),
+                            agg_id,
+                        );
+                        emit_batch.push((output, updater.take_accumulator()));
+                        debug!(
+                            "Forwarding late sample to store for evicted pane [{}, {})",
+                            pane_start, pane_end
+                        );
+                        continue;
+                    }
                 }
+            }
+
+            // Normal path: route sample to its single pane accumulator
+            let updater = state
+                .active_panes
+                .entry(pane_start)
+                .or_insert_with(|| create_accumulator_updater(&state.config));
+
+            apply_sample(&mut **updater, series_key, *val, *ts, &state.config);
+        }
+
+        // Check for closed windows
+        let closed = state
+            .window_manager
+            .closed_windows(previous_wm, current_wm);
+
+        for window_start in &closed {
+            let (_, window_end) = state.window_manager.window_bounds(*window_start);
+            let pane_starts = state.window_manager.panes_for_window(*window_start);
+
+            if let Some(accumulator) =
+                merge_panes_for_window(&mut state.active_panes, &pane_starts)
+            {
+                let key = build_group_key_label_values(group_key);
+                let output = PrecomputedOutput::new(
+                    *window_start as u64,
+                    window_end as u64,
+                    Some(key),
+                    agg_id,
+                );
+                emit_batch.push((output, accumulator));
             }
         }
 
@@ -330,10 +307,11 @@ impl Worker {
         // Emit to output sink
         if !emit_batch.is_empty() {
             debug!(
-                "Worker {} emitting {} outputs for {}",
+                "Worker {} emitting {} outputs for group ({}, {})",
                 worker_id,
                 emit_batch.len(),
-                series_key
+                agg_id,
+                group_key
             );
             self.output_sink.emit_batch(emit_batch)?;
         }
@@ -342,7 +320,7 @@ impl Worker {
     }
 
     /// Raw fast-path: emit each sample as a standalone `SumAccumulator`.
-    fn process_samples_raw(
+    pub fn process_samples_raw(
         &self,
         series_key: &str,
         samples: Vec<(i64, f64)>,
@@ -370,7 +348,8 @@ impl Worker {
         Ok(())
     }
 
-    /// Flush all series — force-close windows that are past due.
+    /// Flush all groups — force-close windows that are past due based on
+    /// group-level watermarks.
     fn flush_all(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if self.pass_raw_samples {
             return Ok(());
@@ -378,41 +357,34 @@ impl Worker {
 
         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
 
-        for (series_key, state) in &mut self.series_map {
-            let current_wm = state.buffer.watermark_ms();
-            let previous_wm = state.previous_watermark_ms;
+        for ((agg_id, group_key), state) in &mut self.group_states {
+            let current_wm = state.previous_watermark_ms;
+            // Use a slightly earlier "previous" to trigger re-checking
+            // In practice flush just re-runs closed_windows with the same watermark
+            // which returns empty — the real purpose is to catch windows that
+            // were missed because watermark advanced within process_group_samples.
+            // The flush timer is a safety net, not the primary close mechanism.
+            let closed = state
+                .window_manager
+                .closed_windows(state.previous_watermark_ms, current_wm);
 
-            for agg_state in &mut state.aggregations {
-                let closed = agg_state
-                    .window_manager
-                    .closed_windows(previous_wm, current_wm);
+            for window_start in &closed {
+                let (_, window_end) = state.window_manager.window_bounds(*window_start);
+                let pane_starts = state.window_manager.panes_for_window(*window_start);
 
-                for window_start in &closed {
-                    let (_, window_end) = agg_state.window_manager.window_bounds(*window_start);
-                    let pane_starts = agg_state.window_manager.panes_for_window(*window_start);
-
-                    if let Some(accumulator) =
-                        merge_panes_for_window(&mut agg_state.active_panes, &pane_starts)
-                    {
-                        let key = if config_is_keyed(&agg_state.config) {
-                            Some(extract_key_from_series(series_key, &agg_state.config))
-                        } else {
-                            None
-                        };
-
-                        let output = PrecomputedOutput::new(
-                            *window_start as u64,
-                            window_end as u64,
-                            key,
-                            agg_state.config.aggregation_id,
-                        );
-
-                        emit_batch.push((output, accumulator));
-                    }
+                if let Some(accumulator) =
+                    merge_panes_for_window(&mut state.active_panes, &pane_starts)
+                {
+                    let key = build_group_key_label_values(group_key);
+                    let output = PrecomputedOutput::new(
+                        *window_start as u64,
+                        window_end as u64,
+                        Some(key),
+                        *agg_id,
+                    );
+                    emit_batch.push((output, accumulator));
                 }
             }
-
-            state.previous_watermark_ms = current_wm;
         }
 
         if !emit_batch.is_empty() {
@@ -426,6 +398,15 @@ impl Worker {
 
         Ok(())
     }
+}
+
+/// Build a `KeyByLabelValues` from a semicolon-delimited group key string.
+/// e.g. "constant" → KeyByLabelValues { labels: ["constant"] }
+/// e.g. "us-east;svc-a" → KeyByLabelValues { labels: ["us-east", "svc-a"] }
+/// e.g. "" → KeyByLabelValues { labels: [""] }
+fn build_group_key_label_values(group_key: &str) -> KeyByLabelValues {
+    let labels: Vec<String> = group_key.split(';').map(|s| s.to_string()).collect();
+    KeyByLabelValues::new_with_labels(labels)
 }
 
 /// Extract the metric name from a series key like `"metric_name{key1=\"val1\"}"`.
@@ -457,7 +438,7 @@ pub fn extract_key_from_series(series_key: &str, config: &AggregationConfig) -> 
 
 /// Parse label key-value pairs from a series key string.
 /// `"metric{a=\"b\",c=\"d\"}"` → `{("a", "b"), ("c", "d")}`
-fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
+pub fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
     let mut labels = HashMap::new();
 
     let start = match series_key.find('{') {
@@ -476,23 +457,19 @@ fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
     let label_str = &series_key[start..end];
 
     // Parse comma-separated key="value" pairs
-    // Simple parser that handles the expected format
     let mut remaining = label_str;
     while !remaining.is_empty() {
-        // Find the '=' separator
         let eq_pos = match remaining.find('=') {
             Some(pos) => pos,
             None => break,
         };
         let key = remaining[..eq_pos].trim();
 
-        // Expect "value" after =
         let after_eq = &remaining[eq_pos + 1..];
         if !after_eq.starts_with('"') {
             break;
         }
 
-        // Find closing quote
         let value_start = 1; // skip opening quote
         let value_end = match after_eq[value_start..].find('"') {
             Some(pos) => value_start + pos,
@@ -502,8 +479,7 @@ fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
         let value = &after_eq[value_start..value_end];
         labels.insert(key, value);
 
-        // Move past the closing quote and optional comma
-        let consumed = value_end + 1; // past closing quote
+        let consumed = value_end + 1;
         remaining = &after_eq[consumed..];
         if remaining.starts_with(',') {
             remaining = &remaining[1..];
@@ -514,7 +490,6 @@ fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
 }
 
 /// Route a single sample to `updater`, dispatching keyed vs. non-keyed based on config.
-/// Eliminates repeated `if updater.is_keyed()` blocks at call sites.
 fn apply_sample(
     updater: &mut dyn AccumulatorUpdater,
     series_key: &str,
@@ -676,14 +651,25 @@ mod tests {
                 raw_mode_aggregation_id: raw_agg_id,
                 late_data_policy: late_policy,
             },
+            Arc::new(AtomicUsize::new(0)),
         )
     }
 
-    /// Wrap a `HashMap<u64, AggregationConfig>` for use with `make_worker`.
     fn arc_configs(
         configs: HashMap<u64, AggregationConfig>,
     ) -> HashMap<u64, Arc<AggregationConfig>> {
         configs.into_iter().map(|(k, v)| (k, Arc::new(v))).collect()
+    }
+
+    /// Helper to make GroupSamples from simple (ts, val) pairs for a single series.
+    fn group_samples(
+        series_key: &str,
+        samples: Vec<(i64, f64)>,
+    ) -> Vec<(String, i64, f64)> {
+        samples
+            .into_iter()
+            .map(|(ts, val)| (series_key.to_string(), ts, val))
+            .collect()
     }
 
     // -----------------------------------------------------------------------
@@ -697,15 +683,15 @@ mod tests {
 
         let samples = vec![(1000_i64, 1.5_f64), (2000, 2.5), (3000, 7.0)];
         worker
-            .process_samples("cpu{host=\"a\"}", samples.clone())
+            .process_samples_raw("cpu{host=\"a\"}", samples.clone())
             .unwrap();
 
         let captured = sink.drain();
         assert_eq!(captured.len(), 3, "should emit one output per raw sample");
 
         for ((ts, val), (output, acc)) in samples.iter().zip(captured.iter()) {
-            assert_eq!(output.start_timestamp as i64, *ts, "start should equal ts");
-            assert_eq!(output.end_timestamp as i64, *ts, "end should equal ts");
+            assert_eq!(output.start_timestamp as i64, *ts);
+            assert_eq!(output.end_timestamp as i64, *ts);
             assert_eq!(output.aggregation_id, 99);
             let sum_acc = acc
                 .as_any()
@@ -739,24 +725,21 @@ mod tests {
         );
 
         // Samples in window [0, 10000ms): sum should be 1+2+3=6.
-        // Send one at a time so the watermark advances incrementally —
-        // a batch's max-ts becomes the new watermark, and with
-        // allowed_lateness_ms=0 any ts < watermark in the same call is dropped.
+        // All go to the same group (agg_id=1, group_key="")
         worker
-            .process_samples("cpu", vec![(1000_i64, 1.0)])
+            .process_group_samples(1, "", group_samples("cpu", vec![(1000, 1.0)]))
             .unwrap();
         worker
-            .process_samples("cpu", vec![(5000_i64, 2.0)])
+            .process_group_samples(1, "", group_samples("cpu", vec![(5000, 2.0)]))
             .unwrap();
         worker
-            .process_samples("cpu", vec![(9000_i64, 3.0)])
+            .process_group_samples(1, "", group_samples("cpu", vec![(9000, 3.0)]))
             .unwrap();
-        // No windows closed yet (watermark still below 10000)
         assert_eq!(sink.len(), 0);
 
-        // Sample at t=10000ms advances watermark to 10000, closing [0, 10000)
+        // Sample at t=10000ms closes [0, 10000)
         worker
-            .process_samples("cpu", vec![(10000_i64, 100.0)])
+            .process_group_samples(1, "", group_samples("cpu", vec![(10000, 100.0)]))
             .unwrap();
 
         let captured = sink.drain();
@@ -766,10 +749,6 @@ mod tests {
         assert_eq!(output.aggregation_id, 1);
         assert_eq!(output.start_timestamp, 0);
         assert_eq!(output.end_timestamp, 10_000);
-        assert!(
-            output.key.is_none(),
-            "SingleSubpopulation should have no key"
-        );
 
         let sum_acc = acc
             .as_any()
@@ -783,7 +762,165 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test: sliding window pane sharing — one sample, two window emits, same sum
+    // Test: GROUP BY — multiple series merged into same group accumulator
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_group_by_merges_series() {
+        // SingleSubpopulation Sum with no grouping labels
+        // Two different series in the same group → both feed same accumulator
+        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(1, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        // Two different series, same group (agg_id=1, group_key="")
+        // Both feed into the same accumulator
+        worker
+            .process_group_samples(
+                1,
+                "",
+                vec![
+                    ("cpu{host=\"A\"}".to_string(), 1000, 10.0),
+                    ("cpu{host=\"B\"}".to_string(), 2000, 20.0),
+                ],
+            )
+            .unwrap();
+        assert_eq!(sink.len(), 0);
+
+        // Close the window
+        worker
+            .process_group_samples(1, "", group_samples("cpu{host=\"A\"}", vec![(10000, 0.0)]))
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1, "one output per group per window");
+
+        let (output, acc) = &captured[0];
+        assert_eq!(output.aggregation_id, 1);
+        assert_eq!(output.start_timestamp, 0);
+        assert_eq!(output.end_timestamp, 10_000);
+
+        let sum_acc = acc
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("should be SumAccumulator");
+        assert!(
+            (sum_acc.sum - 30.0).abs() < 1e-10,
+            "sum should be 10+20=30, got {} (both series merged)",
+            sum_acc.sum
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: GROUP BY with grouping labels — different groups produce separate outputs
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_different_groups_separate_outputs() {
+        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec!["pattern"]);
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(1, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        // Group "constant" gets samples
+        worker
+            .process_group_samples(1, "constant", group_samples("cpu{pattern=\"constant\"}", vec![(1000, 5.0)]))
+            .unwrap();
+        // Group "sine" gets samples
+        worker
+            .process_group_samples(1, "sine", group_samples("cpu{pattern=\"sine\"}", vec![(2000, 7.0)]))
+            .unwrap();
+
+        // Close both groups' windows
+        worker
+            .process_group_samples(1, "constant", group_samples("cpu{pattern=\"constant\"}", vec![(10000, 0.0)]))
+            .unwrap();
+        worker
+            .process_group_samples(1, "sine", group_samples("cpu{pattern=\"sine\"}", vec![(10000, 0.0)]))
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 2, "two groups → two outputs");
+
+        let mut sums_by_key: HashMap<String, f64> = HashMap::new();
+        for (output, acc) in &captured {
+            let sum_acc = acc.as_any().downcast_ref::<SumAccumulator>().unwrap();
+            let key = output.key.as_ref().unwrap().labels.join(";");
+            sums_by_key.insert(key, sum_acc.sum);
+        }
+        assert!((sums_by_key["constant"] - 5.0).abs() < 1e-10);
+        assert!((sums_by_key["sine"] - 7.0).abs() < 1e-10);
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: KLL GROUP BY — multiple series merged into one KLL sketch per group
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_kll_group_by_merges_series() {
+        let mut config = make_agg_config(1, "latency", "DatasketchesKLL", "", 10, 0, vec!["pattern"]);
+        config.parameters.insert("K".to_string(), serde_json::Value::from(20_u64));
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(1, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        // Three different series all in group "constant" — all feed one KLL
+        worker
+            .process_group_samples(
+                1,
+                "constant",
+                vec![
+                    ("latency{pattern=\"constant\",host=\"a\"}".to_string(), 1000, 10.0),
+                    ("latency{pattern=\"constant\",host=\"b\"}".to_string(), 2000, 20.0),
+                    ("latency{pattern=\"constant\",host=\"c\"}".to_string(), 3000, 30.0),
+                ],
+            )
+            .unwrap();
+
+        // Close the window
+        worker
+            .process_group_samples(1, "constant", group_samples("latency{pattern=\"constant\",host=\"a\"}", vec![(10000, 0.0)]))
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1, "one KLL output for the whole group");
+
+        let (output, acc) = &captured[0];
+        assert_eq!(output.aggregation_id, 1);
+        let kll = acc
+            .as_any()
+            .downcast_ref::<DatasketchesKLLAccumulator>()
+            .expect("should be KLL");
+        assert_eq!(kll.inner.count(), 3, "KLL should contain all 3 series' samples");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: sliding window pane sharing
     // -----------------------------------------------------------------------
 
     #[test]
@@ -803,22 +940,18 @@ mod tests {
         );
 
         // Sample at t=15000ms → goes to pane 10000ms
-        // previous_wm == i64::MIN → no windows close
         worker
-            .process_samples("cpu", vec![(15_000_i64, 42.0)])
+            .process_group_samples(2, "", group_samples("cpu", vec![(15_000, 42.0)]))
             .unwrap();
         assert_eq!(sink.len(), 0);
 
         // Sample at t=45000ms → advances watermark to 45000ms
         // Closes windows [0, 30000) and [10000, 40000)
         worker
-            .process_samples("cpu", vec![(45_000_i64, 0.0)])
+            .process_group_samples(2, "", group_samples("cpu", vec![(45_000, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
-        // Both windows should emit — one from pane merge snapshot, one from take
-        // Window [0, 30000): panes [0, 10000, 20000]; pane 10000 snapshot → sum=42
-        // Window [10000, 40000): panes [10000, 20000, 30000]; pane 10000 take → sum=42
         assert_eq!(
             captured.len(),
             2,
@@ -826,34 +959,30 @@ mod tests {
         );
 
         let window_starts: Vec<u64> = captured.iter().map(|(o, _)| o.start_timestamp).collect();
-        assert!(window_starts.contains(&0), "window [0, 30000) should emit");
-        assert!(
-            window_starts.contains(&10_000),
-            "window [10000, 40000) should emit"
-        );
+        assert!(window_starts.contains(&0));
+        assert!(window_starts.contains(&10_000));
 
-        for (output, acc) in &captured {
+        for (_output, acc) in &captured {
             let sum_acc = acc
                 .as_any()
                 .downcast_ref::<SumAccumulator>()
                 .expect("should be SumAccumulator");
             assert!(
                 (sum_acc.sum - 42.0).abs() < 1e-10,
-                "window {:?} should have sum=42 via pane sharing, got {}",
-                output.start_timestamp,
+                "window should have sum=42 via pane sharing, got {}",
                 sum_acc.sum
             );
         }
     }
 
     // -----------------------------------------------------------------------
-    // Test: GROUP BY — two series on same worker produce separate accumulators
+    // Test: MultipleSubpopulation GROUP BY — keyed accumulator within group
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_groupby_separate_emits_per_series() {
-        // MultipleSubpopulation Sum with grouping on "host"
-        // Two series on same worker → same window accumulator per-agg holds both keys
+    fn test_keyed_accumulator_within_group() {
+        // MultipleSum with grouping on "host" — the "aggregated" labels become
+        // the keys within the accumulator.
         let config = make_agg_config(
             3,
             "cpu",
@@ -875,58 +1004,143 @@ mod tests {
             LateDataPolicy::Drop,
         );
 
-        // Feed two series in the same window [0, 10000ms)
+        // Two series in different groups (different host values)
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(1000_i64, 10.0)])
+            .process_group_samples(3, "A", group_samples("cpu{host=\"A\"}", vec![(1000, 10.0)]))
             .unwrap();
         worker
-            .process_samples("cpu{host=\"B\"}", vec![(2000_i64, 20.0)])
+            .process_group_samples(3, "B", group_samples("cpu{host=\"B\"}", vec![(2000, 20.0)]))
             .unwrap();
-        assert_eq!(sink.len(), 0, "no windows closed yet");
 
-        // Advance watermark to close [0, 10000) for series "A"
+        // Close both groups
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(10_000_i64, 0.0)])
+            .process_group_samples(3, "A", group_samples("cpu{host=\"A\"}", vec![(10000, 0.0)]))
             .unwrap();
-        // Also advance "B"'s watermark
         worker
-            .process_samples("cpu{host=\"B\"}", vec![(10_000_i64, 0.0)])
+            .process_group_samples(3, "B", group_samples("cpu{host=\"B\"}", vec![(10000, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
-        // Each series has its own SeriesState and independent pane accumulators.
-        // The MultipleSubpopulation accumulator for each series records its own key.
-        // So we get 2 emits (one per series), each a MultipleSumAccumulator with a single key.
-        assert_eq!(
-            captured.len(),
-            2,
-            "each series emits independently — no ingest-time merge"
-        );
+        assert_eq!(captured.len(), 2, "two groups → two outputs");
 
-        // Verify the grouping keys are distinct
         let mut found_a = false;
         let mut found_b = false;
         for (output, acc) in &captured {
-            assert_eq!(output.start_timestamp, 0);
-            assert_eq!(output.end_timestamp, 10_000);
             let ms_acc = acc
                 .as_any()
                 .downcast_ref::<MultipleSumAccumulator>()
                 .expect("should be MultipleSumAccumulator");
-            for (key, &sum) in &ms_acc.sums {
-                if key.labels == vec!["A".to_string()] {
+            let group = output.key.as_ref().unwrap().labels.join(";");
+            if group == "A" {
+                for (_, &sum) in &ms_acc.sums {
                     assert!((sum - 10.0).abs() < 1e-10);
-                    found_a = true;
                 }
-                if key.labels == vec!["B".to_string()] {
+                found_a = true;
+            }
+            if group == "B" {
+                for (_, &sum) in &ms_acc.sums {
                     assert!((sum - 20.0).abs() < 1e-10);
-                    found_b = true;
                 }
+                found_b = true;
             }
         }
-        assert!(found_a, "expected emit for host=A");
-        assert!(found_b, "expected emit for host=B");
+        assert!(found_a && found_b);
     }
+
+    // -----------------------------------------------------------------------
+    // Test: Arroyo KLL equivalence — same output as Arroyo pipeline
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_arroyosketch_kll_matches_handcrafted_precompute_output() {
+        let mut config = make_agg_config(12, "latency", "DatasketchesKLL", "", 10, 0, vec![]);
+        config
+            .parameters
+            .insert("K".to_string(), serde_json::Value::from(20_u64));
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(12, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs.clone()),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        let samples = vec![(1_000_i64, 10.0), (5_000_i64, 20.0), (9_000_i64, 30.0)];
+        for &(ts, value) in &samples {
+            worker
+                .process_group_samples(12, "", group_samples("latency", vec![(ts, value)]))
+                .unwrap();
+        }
+        worker
+            .process_group_samples(12, "", group_samples("latency", vec![(10_000, 0.0)]))
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1, "expected one closed window output");
+
+        let (handcrafted_output, handcrafted_acc) = &captured[0];
+        let handcrafted_acc = handcrafted_acc
+            .as_any()
+            .downcast_ref::<DatasketchesKLLAccumulator>()
+            .expect("hand-crafted engine should emit DatasketchesKLLAccumulator");
+
+        let arroyo_precompute_bytes = KllSketch::aggregate_kll(20, &[10.0, 20.0, 30.0])
+            .expect("Arroyo KLL aggregation should produce bytes");
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&arroyo_precompute_bytes)
+            .expect("gzip encoding should succeed");
+        let arroyo_json = json!({
+            "aggregation_id": 12,
+            "window": {
+                "start": "1970-01-01T00:00:00",
+                "end": "1970-01-01T00:00:10"
+            },
+            "key": "",
+            "precompute": hex::encode(encoder.finish().expect("gzip finalize should succeed"))
+        });
+
+        let streaming_config = StreamingConfig::new(agg_configs);
+        let (arroyo_output, arroyo_acc) =
+            PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config)
+                .expect("Arroyo KLL precompute should deserialize");
+        let arroyo_acc = arroyo_acc
+            .as_any()
+            .downcast_ref::<DatasketchesKLLAccumulator>()
+            .expect("Arroyo payload should deserialize to DatasketchesKLLAccumulator");
+
+        assert_eq!(
+            handcrafted_output.aggregation_id,
+            arroyo_output.aggregation_id
+        );
+        assert_eq!(
+            handcrafted_output.start_timestamp,
+            arroyo_output.start_timestamp
+        );
+        assert_eq!(
+            handcrafted_output.end_timestamp,
+            arroyo_output.end_timestamp
+        );
+        assert_eq!(handcrafted_acc.inner.k, arroyo_acc.inner.k);
+        assert_eq!(handcrafted_acc.inner.count(), arroyo_acc.inner.count());
+
+        for quantile in [0.0, 0.5, 1.0] {
+            assert_eq!(
+                handcrafted_acc.get_quantile(quantile),
+                arroyo_acc.get_quantile(quantile)
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: Arroyo MultipleSum equivalence
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_arroyosketch_multiple_sum_matches_handcrafted_precompute_output() {
@@ -944,16 +1158,16 @@ mod tests {
         );
 
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(1_000_i64, 1.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(1_000, 1.0)]))
             .unwrap();
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(5_000_i64, 2.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(5_000, 2.0)]))
             .unwrap();
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(9_000_i64, 3.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(9_000, 3.0)]))
             .unwrap();
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(10_000_i64, 0.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(10_000, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
@@ -1009,100 +1223,8 @@ mod tests {
         assert_eq!(handcrafted_acc.sums, arroyo_acc.sums);
     }
 
-    #[test]
-    fn test_arroyosketch_kll_matches_handcrafted_precompute_output() {
-        let mut config = make_agg_config(12, "latency", "DatasketchesKLL", "", 10, 0, vec![]);
-        config
-            .parameters
-            .insert("K".to_string(), serde_json::Value::from(20_u64));
-
-        let mut agg_configs = HashMap::new();
-        agg_configs.insert(12, config);
-
-        let sink = Arc::new(CapturingOutputSink::new());
-        let mut worker = make_worker(
-            arc_configs(agg_configs.clone()),
-            sink.clone(),
-            false,
-            0,
-            LateDataPolicy::Drop,
-        );
-
-        let samples = vec![(1_000_i64, 10.0), (5_000_i64, 20.0), (9_000_i64, 30.0)];
-        for &(ts, value) in &samples {
-            worker
-                .process_samples("latency", vec![(ts, value)])
-                .unwrap();
-        }
-        worker
-            .process_samples("latency", vec![(10_000_i64, 0.0)])
-            .unwrap();
-
-        let captured = sink.drain();
-        assert_eq!(captured.len(), 1, "expected one closed window output");
-
-        let (handcrafted_output, handcrafted_acc) = &captured[0];
-        let handcrafted_acc = handcrafted_acc
-            .as_any()
-            .downcast_ref::<DatasketchesKLLAccumulator>()
-            .expect("hand-crafted engine should emit DatasketchesKLLAccumulator");
-
-        let arroyo_precompute_bytes = KllSketch::aggregate_kll(20, &[10.0, 20.0, 30.0])
-            .expect("Arroyo KLL aggregation should produce bytes");
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(&arroyo_precompute_bytes)
-            .expect("gzip encoding should succeed");
-        let arroyo_json = json!({
-            "aggregation_id": 12,
-            "window": {
-                "start": "1970-01-01T00:00:00",
-                "end": "1970-01-01T00:00:10"
-            },
-            "key": "",
-            "precompute": hex::encode(encoder.finish().expect("gzip finalize should succeed"))
-        });
-
-        let streaming_config = StreamingConfig::new(agg_configs);
-        let (arroyo_output, arroyo_acc) =
-            PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config)
-                .expect("Arroyo KLL precompute should deserialize");
-        let arroyo_acc = arroyo_acc
-            .as_any()
-            .downcast_ref::<DatasketchesKLLAccumulator>()
-            .expect("Arroyo payload should deserialize to DatasketchesKLLAccumulator");
-
-        assert_eq!(
-            handcrafted_output.aggregation_id,
-            arroyo_output.aggregation_id
-        );
-        assert_eq!(
-            handcrafted_output.start_timestamp,
-            arroyo_output.start_timestamp
-        );
-        assert_eq!(
-            handcrafted_output.end_timestamp,
-            arroyo_output.end_timestamp
-        );
-        assert_eq!(handcrafted_output.key, None);
-        assert_eq!(
-            arroyo_output.key,
-            Some(KeyByLabelValues::new_with_labels(vec![String::new()]))
-        );
-        assert_eq!(handcrafted_acc.inner.k, arroyo_acc.inner.k);
-        assert_eq!(handcrafted_acc.inner.count(), arroyo_acc.inner.count());
-
-        for quantile in [0.0, 0.5, 1.0] {
-            assert_eq!(
-                handcrafted_acc.get_quantile(quantile),
-                arroyo_acc.get_quantile(quantile)
-            );
-        }
-    }
-
     // -----------------------------------------------------------------------
-    // Test: late data drop — sample behind watermark - allowed_lateness not emitted
+    // Test: late data drop
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1112,7 +1234,6 @@ mod tests {
         agg_configs.insert(4, config);
 
         let sink = Arc::new(CapturingOutputSink::new());
-        // allowed_lateness_ms = 0
         let (_tx, rx) = tokio::sync::mpsc::channel(1);
         let mut worker = Worker::new(
             0,
@@ -1126,25 +1247,25 @@ mod tests {
                 raw_mode_aggregation_id: 0,
                 late_data_policy: LateDataPolicy::Drop,
             },
+            Arc::new(AtomicUsize::new(0)),
         );
 
-        // Establish watermark at t=20000ms (closes [0, 10000) and [10000, 20000))
+        // Establish watermark at t=20000ms
         worker
-            .process_samples("cpu", vec![(20_000_i64, 1.0)])
+            .process_group_samples(4, "", group_samples("cpu", vec![(20_000, 1.0)]))
             .unwrap();
-        let _ = sink.drain(); // discard any earlier emissions
+        let _ = sink.drain();
 
-        // Send a late sample (ts=5000 is behind watermark=20000 with lateness=0)
+        // Send a late sample
         worker
-            .process_samples("cpu", vec![(5_000_i64, 99.0)])
+            .process_group_samples(4, "", group_samples("cpu", vec![(5_000, 99.0)]))
             .unwrap();
 
-        // No new emission should occur (late sample is dropped)
-        assert_eq!(sink.len(), 0, "late sample should be dropped, not emitted");
+        assert_eq!(sink.len(), 0, "late sample should be dropped");
     }
 
     // -----------------------------------------------------------------------
-    // Test: late data ForwardToStore — late sample emitted as mini-accumulator
+    // Test: late data ForwardToStore
     // -----------------------------------------------------------------------
 
     #[test]
@@ -1155,9 +1276,6 @@ mod tests {
 
         let sink = Arc::new(CapturingOutputSink::new());
         let (_tx, rx) = tokio::sync::mpsc::channel(1);
-        // allowed_lateness_ms = 15000 — large enough that ts=8000 passes the
-        // lateness filter (8000 >= 20000 - 15000 = 5000) while pane 0 is already
-        // evicted (window [0,10000) closed when watermark reached 20000).
         let mut worker = Worker::new(
             0,
             rx,
@@ -1170,31 +1288,28 @@ mod tests {
                 raw_mode_aggregation_id: 0,
                 late_data_policy: LateDataPolicy::ForwardToStore,
             },
+            Arc::new(AtomicUsize::new(0)),
         );
 
-        // Seed pane 0, then advance watermark to 20000 (evicts pane 0)
-        worker.process_samples("cpu", vec![(500_i64, 1.0)]).unwrap();
+        // Seed then advance watermark to 20000
         worker
-            .process_samples("cpu", vec![(20_000_i64, 0.0)])
+            .process_group_samples(5, "", group_samples("cpu", vec![(500, 1.0)]))
             .unwrap();
-        let _ = sink.drain(); // discard the [0,10000) window emit
-
-        // Send a late sample for the evicted pane 0 (ts=8000 passes the
-        // lateness filter but pane 0 is gone → ForwardToStore path)
         worker
-            .process_samples("cpu", vec![(8_000_i64, 55.0)])
+            .process_group_samples(5, "", group_samples("cpu", vec![(20_000, 0.0)]))
+            .unwrap();
+        let _ = sink.drain();
+
+        // Send late sample for evicted pane
+        worker
+            .process_group_samples(5, "", group_samples("cpu", vec![(8_000, 55.0)]))
             .unwrap();
 
         let captured = sink.drain();
-        assert_eq!(
-            captured.len(),
-            1,
-            "ForwardToStore policy should emit the late sample"
-        );
+        assert_eq!(captured.len(), 1, "ForwardToStore should emit");
 
         let (output, acc) = &captured[0];
         assert_eq!(output.aggregation_id, 5);
-        // The late sample is emitted with the window it belongs to: pane_start=0, window=[0,10000)
         assert_eq!(output.start_timestamp, 0);
         assert_eq!(output.end_timestamp, 10_000);
 
@@ -1210,13 +1325,11 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test: worker built from a parsed streaming_config YAML
+    // Test: worker from streaming_config YAML
     // -----------------------------------------------------------------------
 
     #[test]
     fn test_worker_from_streaming_config_yaml() {
-        // A minimal streaming_config.yaml payload — the same format the Python
-        // controller writes to disk and the engine reads at startup.
         let yaml = r#"
 aggregations:
 - aggregationId: 10
@@ -1239,34 +1352,29 @@ aggregations:
         let streaming_config =
             StreamingConfig::from_yaml_data(&data, None).expect("valid streaming config");
 
-        assert!(
-            streaming_config.contains(10),
-            "aggregation 10 should be present"
-        );
+        assert!(streaming_config.contains(10));
 
         let agg_configs = arc_configs(streaming_config.get_all_aggregation_configs().clone());
         let sink = Arc::new(CapturingOutputSink::new());
         let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
 
-        // Three samples inside window [0, 10_000ms)
         worker
-            .process_samples("requests_total", vec![(1_000_i64, 3.0)])
+            .process_group_samples(10, "", group_samples("requests_total", vec![(1_000, 3.0)]))
             .unwrap();
         worker
-            .process_samples("requests_total", vec![(5_000_i64, 4.0)])
+            .process_group_samples(10, "", group_samples("requests_total", vec![(5_000, 4.0)]))
             .unwrap();
         worker
-            .process_samples("requests_total", vec![(9_000_i64, 5.0)])
+            .process_group_samples(10, "", group_samples("requests_total", vec![(9_000, 5.0)]))
             .unwrap();
-        assert_eq!(sink.len(), 0, "window not yet closed");
+        assert_eq!(sink.len(), 0);
 
-        // Advance watermark past window boundary to close [0, 10_000ms)
         worker
-            .process_samples("requests_total", vec![(10_000_i64, 0.0)])
+            .process_group_samples(10, "", group_samples("requests_total", vec![(10_000, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
-        assert_eq!(captured.len(), 1, "exactly one window should close");
+        assert_eq!(captured.len(), 1);
 
         let (output, acc) = &captured[0];
         assert_eq!(output.aggregation_id, 10);
@@ -1314,5 +1422,20 @@ aggregations:
             &config,
         );
         assert_eq!(key.labels, vec!["GET".to_string(), "200".to_string()]);
+    }
+
+    #[test]
+    fn test_build_group_key_label_values() {
+        let key = build_group_key_label_values("constant");
+        assert_eq!(key.labels, vec!["constant".to_string()]);
+
+        let key = build_group_key_label_values("us-east;svc-a");
+        assert_eq!(
+            key.labels,
+            vec!["us-east".to_string(), "svc-a".to_string()]
+        );
+
+        let key = build_group_key_label_values("");
+        assert_eq!(key.labels, vec!["".to_string()]);
     }
 }

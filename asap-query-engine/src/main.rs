@@ -11,6 +11,7 @@ use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingE
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
+use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::{
     HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
     OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, Result, SimpleEngine,
@@ -331,16 +332,29 @@ async fn main() -> Result<()> {
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
         let engine =
             PrecomputeEngine::new(precompute_config, streaming_config.clone(), output_sink);
+        let worker_diagnostics = engine.diagnostics();
         info!(
             "Starting precompute engine on port {}",
             args.prometheus_remote_write_port
         );
+
+        // Spawn periodic memory diagnostics logger
+        let diag_store = store.clone();
+        tokio::spawn(async move {
+            spawn_memory_diagnostics(diag_store, Some(worker_diagnostics)).await;
+        });
+
         Some(tokio::spawn(async move {
             if let Err(e) = engine.run().await {
                 error!("Precompute engine error: {}", e);
             }
         }))
     } else {
+        // Even without precompute, log store diagnostics
+        let diag_store = store.clone();
+        tokio::spawn(async move {
+            spawn_memory_diagnostics(diag_store, None).await;
+        });
         None
     };
 
@@ -433,6 +447,59 @@ async fn main() -> Result<()> {
 
     info!("Shutdown complete");
     Ok(())
+}
+
+/// Periodic memory diagnostics logger — runs every 30 seconds.
+async fn spawn_memory_diagnostics(
+    store: Arc<SimpleMapStore>,
+    worker_diagnostics: Option<Arc<PrecomputeWorkerDiagnostics>>,
+) {
+    use std::sync::atomic::Ordering;
+
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+
+        // 1. Store diagnostics
+        let store_diag = store.diagnostic_info();
+        info!(
+            "[MEMORY_DIAG] Store: {} aggregation(s), {} total time_map entries, {:.2} KB total sketch bytes",
+            store_diag.num_aggregations,
+            store_diag.total_time_map_entries,
+            store_diag.total_sketch_bytes as f64 / 1024.0,
+        );
+        for agg in &store_diag.per_aggregation {
+            info!(
+                "[MEMORY_DIAG]   agg_id={}: time_map_len={}, read_counts_len={}, aggregate_objects={}, sketch_bytes={:.2} KB",
+                agg.aggregation_id,
+                agg.time_map_len,
+                agg.read_counts_len,
+                agg.num_aggregate_objects,
+                agg.sketch_bytes as f64 / 1024.0,
+            );
+        }
+
+        // 2. Worker diagnostics (precompute engine only)
+        if let Some(ref diag) = worker_diagnostics {
+            let total_groups: usize = diag
+                .worker_group_counts
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .sum();
+            info!(
+                "[MEMORY_DIAG] PrecomputeEngine: {} total groups across {} workers",
+                total_groups,
+                diag.worker_group_counts.len(),
+            );
+            for (i, counter) in diag.worker_group_counts.iter().enumerate() {
+                info!(
+                    "[MEMORY_DIAG]   worker_{}: group_states_len={}",
+                    i,
+                    counter.load(Ordering::Relaxed),
+                );
+            }
+        }
+    }
 }
 
 fn setup_logging(
