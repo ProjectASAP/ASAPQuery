@@ -9,7 +9,7 @@ use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, debug_span, info, warn};
@@ -61,9 +61,11 @@ pub struct Worker {
     raw_mode_aggregation_id: u64,
     /// Policy for handling late samples that arrive after their window has closed.
     late_data_policy: LateDataPolicy,
-    /// Worker-level watermark: min(group watermarks) — reserved for future
-    /// use (e.g. idle-group eviction). Currently each group tracks its own.
-    _worker_watermark_ms: i64,
+    /// This worker's watermark atomic, shared with engine for cross-worker reads.
+    /// Updated during flush with max(all group watermarks).
+    worker_watermark: Arc<AtomicI64>,
+    /// All worker watermark atomics (including self), for computing global watermark.
+    all_worker_watermarks: Vec<Arc<AtomicI64>>,
     /// Externally-readable group count for diagnostics.
     group_count: Arc<AtomicUsize>,
 }
@@ -76,6 +78,8 @@ impl Worker {
         agg_configs: HashMap<u64, Arc<AggregationConfig>>,
         runtime_config: WorkerRuntimeConfig,
         group_count: Arc<AtomicUsize>,
+        worker_watermark: Arc<AtomicI64>,
+        all_worker_watermarks: Vec<Arc<AtomicI64>>,
     ) -> Self {
         let WorkerRuntimeConfig {
             max_buffer_per_series: _,
@@ -94,7 +98,8 @@ impl Worker {
             pass_raw_samples,
             raw_mode_aggregation_id,
             late_data_policy,
-            _worker_watermark_ms: i64::MIN,
+            worker_watermark,
+            all_worker_watermarks,
             group_count,
         }
     }
@@ -358,25 +363,51 @@ impl Worker {
         Ok(())
     }
 
-    /// Flush all groups — force-close windows that are past due based on
-    /// group-level watermarks.
+    /// Flush all groups with cross-group watermark propagation.
+    ///
+    /// 1. Compute worker watermark = max(all group watermarks)
+    /// 2. Publish it for cross-worker reads
+    /// 3. Compute global watermark = min(all worker watermarks)
+    /// 4. Advance idle groups to the global watermark, closing due windows
     fn flush_all(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         if self.pass_raw_samples {
             return Ok(());
         }
 
+        // Step 1: Compute worker watermark = max of all group watermarks.
+        let worker_wm = self
+            .group_states
+            .values()
+            .map(|s| s.previous_watermark_ms)
+            .filter(|&wm| wm != i64::MIN)
+            .max()
+            .unwrap_or(i64::MIN);
+
+        // Step 2: Publish our worker watermark for cross-worker reads.
+        self.worker_watermark.store(worker_wm, Ordering::Release);
+
+        // Step 3: Compute global watermark = min(all worker watermarks).
+        let global_wm = self.compute_global_watermark();
+
+        // Step 4: For each group, advance watermark and close due windows.
         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
 
         for ((agg_id, group_key), state) in &mut self.group_states {
             if state.previous_watermark_ms == i64::MIN {
-                continue; // No samples received yet for this group
+                continue; // No samples received yet — no panes to close.
             }
-            // Advance watermark by 1ms beyond current to force-close any windows
-            // whose end exactly equals the current watermark.
-            let flush_wm = state.previous_watermark_ms.saturating_add(1);
+
+            // Effective watermark: max(group's own, global) + 1ms for boundary.
+            let propagated_wm = if global_wm != i64::MIN {
+                state.previous_watermark_ms.max(global_wm)
+            } else {
+                state.previous_watermark_ms
+            };
+            let effective_wm = propagated_wm.saturating_add(1);
+
             let closed = state
                 .window_manager
-                .closed_windows(state.previous_watermark_ms, flush_wm);
+                .closed_windows(state.previous_watermark_ms, effective_wm);
 
             for window_start in &closed {
                 let (_, window_end) = state.window_manager.window_bounds(*window_start);
@@ -395,6 +426,11 @@ impl Worker {
                     emit_batch.push((output, accumulator));
                 }
             }
+
+            // Update group watermark to reflect the advancement.
+            if effective_wm > state.previous_watermark_ms {
+                state.previous_watermark_ms = effective_wm;
+            }
         }
 
         if !emit_batch.is_empty() {
@@ -407,6 +443,25 @@ impl Worker {
         }
 
         Ok(())
+    }
+
+    /// Compute the global watermark as min(all worker watermarks), ignoring
+    /// workers that haven't started yet (still at i64::MIN).
+    fn compute_global_watermark(&self) -> i64 {
+        let mut global_wm = i64::MAX;
+        let mut any_started = false;
+        for wm_atomic in &self.all_worker_watermarks {
+            let wm = wm_atomic.load(Ordering::Acquire);
+            if wm != i64::MIN {
+                global_wm = global_wm.min(wm);
+                any_started = true;
+            }
+        }
+        if any_started {
+            global_wm
+        } else {
+            i64::MIN
+        }
     }
 }
 
@@ -691,6 +746,7 @@ mod tests {
         late_policy: LateDataPolicy,
     ) -> Worker {
         let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
         Worker::new(
             0,
             rx,
@@ -704,6 +760,8 @@ mod tests {
                 late_data_policy: late_policy,
             },
             Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
         )
     }
 
@@ -1297,6 +1355,7 @@ mod tests {
 
         let sink = Arc::new(CapturingOutputSink::new());
         let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
         let mut worker = Worker::new(
             0,
             rx,
@@ -1310,6 +1369,8 @@ mod tests {
                 late_data_policy: LateDataPolicy::Drop,
             },
             Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
         );
 
         // Establish watermark at t=20000ms
@@ -1338,6 +1399,7 @@ mod tests {
 
         let sink = Arc::new(CapturingOutputSink::new());
         let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
         let mut worker = Worker::new(
             0,
             rx,
@@ -1351,6 +1413,8 @@ mod tests {
                 late_data_policy: LateDataPolicy::ForwardToStore,
             },
             Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
         );
 
         // Seed then advance watermark to 20000
@@ -1499,5 +1563,187 @@ aggregations:
 
         let key = build_group_key_label_values("");
         assert_eq!(key.labels, vec!["".to_string()]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Tests: cross-group watermark propagation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_intra_worker_watermark_propagation() {
+        // Two groups on the same worker. Group A advances to t=100s.
+        // Group B has data at t=10s and then goes idle.
+        // After flush, group B's idle windows should close via propagation.
+        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let agg_configs = arc_configs(HashMap::from([(1, config)]));
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
+
+        // Group A: send sample at t=5s (within window [0, 10s))
+        worker
+            .process_group_samples(1, "groupA", group_samples("cpu", vec![(5_000, 1.0)]))
+            .unwrap();
+        // Group B: send sample at t=5s (within window [0, 10s))
+        worker
+            .process_group_samples(1, "groupB", group_samples("cpu", vec![(5_000, 2.0)]))
+            .unwrap();
+        let _ = sink.drain();
+
+        // Advance group A's watermark to t=100s (closes many windows).
+        worker
+            .process_group_samples(1, "groupA", group_samples("cpu", vec![(100_000, 3.0)]))
+            .unwrap();
+        let _ = sink.drain();
+
+        // Group B has NOT received new data — its watermark is still at 5s.
+        // Flush should propagate group A's watermark to group B.
+        worker.flush_all().unwrap();
+        let flushed = sink.drain();
+
+        // Group B's window [0, 10s) should now be closed via propagation.
+        let group_b_outputs: Vec<_> = flushed
+            .iter()
+            .filter(|(out, _)| {
+                out.key
+                    .as_ref()
+                    .map(|k| k.labels == vec!["groupB".to_string()])
+                    .unwrap_or(false)
+            })
+            .collect();
+        assert!(
+            !group_b_outputs.is_empty(),
+            "idle group B should have windows closed via watermark propagation"
+        );
+    }
+
+    #[test]
+    fn test_compute_global_watermark_min_of_started() {
+        let wm0 = Arc::new(AtomicI64::new(100_000));
+        let wm1 = Arc::new(AtomicI64::new(80_000));
+        let wm2 = Arc::new(AtomicI64::new(90_000));
+        let all = vec![wm0.clone(), wm1.clone(), wm2.clone()];
+
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let worker = Worker::new(
+            0,
+            rx,
+            Arc::new(CapturingOutputSink::new()),
+            HashMap::new(),
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::Drop,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm0,
+            all,
+        );
+
+        assert_eq!(worker.compute_global_watermark(), 80_000);
+    }
+
+    #[test]
+    fn test_compute_global_watermark_ignores_unstarted() {
+        let wm0 = Arc::new(AtomicI64::new(100_000));
+        let wm1 = Arc::new(AtomicI64::new(i64::MIN)); // not started
+        let all = vec![wm0.clone(), wm1.clone()];
+
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let worker = Worker::new(
+            0,
+            rx,
+            Arc::new(CapturingOutputSink::new()),
+            HashMap::new(),
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::Drop,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm0,
+            all,
+        );
+
+        assert_eq!(
+            worker.compute_global_watermark(),
+            100_000,
+            "unstarted workers (i64::MIN) should be ignored"
+        );
+    }
+
+    #[test]
+    fn test_compute_global_watermark_all_unstarted() {
+        let wm0 = Arc::new(AtomicI64::new(i64::MIN));
+        let wm1 = Arc::new(AtomicI64::new(i64::MIN));
+        let all = vec![wm0.clone(), wm1.clone()];
+
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let worker = Worker::new(
+            0,
+            rx,
+            Arc::new(CapturingOutputSink::new()),
+            HashMap::new(),
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::Drop,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm0,
+            all,
+        );
+
+        assert_eq!(
+            worker.compute_global_watermark(),
+            i64::MIN,
+            "all unstarted should return i64::MIN"
+        );
+    }
+
+    #[test]
+    fn test_flush_publishes_worker_watermark() {
+        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let agg_configs = arc_configs(HashMap::from([(1, config)]));
+        let sink = Arc::new(CapturingOutputSink::new());
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
+        let all = vec![wm.clone()];
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let mut worker = Worker::new(
+            0,
+            rx,
+            sink,
+            agg_configs,
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::Drop,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            all,
+        );
+
+        assert_eq!(wm.load(Ordering::Acquire), i64::MIN);
+
+        // Send data at t=50s
+        worker
+            .process_group_samples(1, "", group_samples("cpu", vec![(50_000, 1.0)]))
+            .unwrap();
+
+        // Flush should publish worker watermark
+        worker.flush_all().unwrap();
+        assert_eq!(
+            wm.load(Ordering::Acquire),
+            50_000,
+            "worker watermark should be published after flush"
+        );
     }
 }

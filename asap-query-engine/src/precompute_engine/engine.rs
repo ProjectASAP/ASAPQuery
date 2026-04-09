@@ -9,7 +9,7 @@ use crate::precompute_engine::worker::{Worker, WorkerRuntimeConfig};
 use asap_types::aggregation_config::AggregationConfig;
 use axum::{routing::post, Router};
 use std::collections::HashMap;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicI64, AtomicUsize};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
@@ -18,6 +18,7 @@ use tracing::{info, warn};
 /// Shared diagnostic counters readable from outside the engine.
 pub struct PrecomputeWorkerDiagnostics {
     pub worker_group_counts: Vec<Arc<AtomicUsize>>,
+    pub worker_watermarks: Vec<Arc<AtomicI64>>,
 }
 
 /// The top-level precompute engine orchestrator.
@@ -39,8 +40,12 @@ impl PrecomputeEngine {
         let worker_group_counts = (0..config.num_workers)
             .map(|_| Arc::new(AtomicUsize::new(0)))
             .collect();
+        let worker_watermarks = (0..config.num_workers)
+            .map(|_| Arc::new(AtomicI64::new(i64::MIN)))
+            .collect();
         let diagnostics = Arc::new(PrecomputeWorkerDiagnostics {
             worker_group_counts,
+            worker_watermarks,
         });
         Self {
             config,
@@ -102,6 +107,8 @@ impl PrecomputeEngine {
                     late_data_policy: self.config.late_data_policy,
                 },
                 self.diagnostics.worker_group_counts[id].clone(),
+                self.diagnostics.worker_watermarks[id].clone(),
+                self.diagnostics.worker_watermarks.iter().cloned().collect(),
             );
             let handle = tokio::spawn(async move {
                 worker.run().await;

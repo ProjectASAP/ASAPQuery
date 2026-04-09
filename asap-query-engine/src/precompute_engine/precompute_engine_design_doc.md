@@ -51,6 +51,122 @@ A periodic **flush timer** broadcasts `Flush` messages to all workers so that
 windows that would otherwise remain open (no new samples arriving) are closed
 and emitted.
 
+## 2.1 Watermark Propagation
+
+### How watermarks work
+
+A watermark is a monotonically increasing timestamp assertion: **"no more events
+with timestamp <= W will arrive."** It tells the system when a time window can
+be safely closed and its results emitted.
+
+```
+Time ──────────────────────────────────────────────────────────►
+
+Event Stream (arriving out of order):
+  t=3  t=1  t=5  t=2  t=7  t=4  t=9  t=6  t=11  t=8  t=13
+   ●    ●    ●    ●    ●    ●    ●    ●    ●     ●     ●
+
+Watermark (max_ts - allowed_lateness, where lateness=2):
+  W=1  W=1  W=3  W=3  W=5  W=5  W=7  W=7  W=9   W=9  W=11
+   ─────┘    ─────┘    ─────┘    ─────┘    ─────┘      │
+   (no advance,       (advances)                        │
+    older event)                                        │
+
+Window Lifecycle (window_size=5, slide=5):
+                                                        │
+  ┌─────────────────────┐                               │
+  │  Window [0, 5)      │                               │
+  │  collects: t=3,1,2,4│                               │
+  │                     │── W=5 crosses end ──► EMIT    │
+  └─────────────────────┘                               │
+                                                        │
+        ┌─────────────────────┐                         │
+        │  Window [5, 10)     │                         │
+        │  collects: t=5,7,9,6│                         │
+        │                     │── W=11 crosses end      │
+        └─────────────────────┘           ──► EMIT      │
+                                                        │
+              ┌─────────────────────┐                   │
+              │  Window [10, 15)    │                    │
+              │  collects: t=11,13  │  (still open,     │
+              │  ...waiting...      │   W=11 < 15)      │
+              └─────────────────────┘                   │
+
+
+Late data handling:
+
+  Timeline:    ... t=6  t=10  t=3 ...
+                    ●     ●    ●
+                              │
+               Watermark W=8 ─┘
+               t=3 < W - allowed_lateness(2) = 6?
+               3 < 6 → YES, late → DROP (or ForwardToStore)
+```
+
+### Cross-group watermark propagation
+
+Without cross-group propagation, each group tracks its own watermark
+independently. If a group stops receiving data, its watermark freezes and its
+windows never close. Cross-group propagation solves this with two layers:
+
+**Layer 1 — Intra-worker (max):** Each worker computes its worker watermark as
+`max(all group watermarks)`. This represents "time has progressed to at least
+here on this worker." During each flush, idle groups are advanced to the worker
+watermark.
+
+**Layer 2 — Cross-worker (min):** Each worker publishes its worker watermark to
+a shared `Arc<AtomicI64>`. The global watermark is `min(all worker watermarks)`,
+ignoring workers that have not yet started. This becomes the floor for all group
+watermarks across all workers.
+
+```
+                    ┌──────────────────────────────────────────┐
+                    │              Shared Atomics               │
+                    │  AtomicI64[0]  AtomicI64[1]  AtomicI64[2]│
+                    │     100s          80s           90s       │
+                    └──┬──────────────┬──────────────┬─────────┘
+                       │ store        │ store        │ store
+                       │ (Release)    │ (Release)    │ (Release)
+              ┌────────┴───┐  ┌───────┴────┐  ┌─────┴──────┐
+              │  Worker 0  │  │  Worker 1  │  │  Worker 2  │
+              │            │  │            │  │            │
+              │ Groups:    │  │ Groups:    │  │ Groups:    │
+              │  A: wm=100s│  │  C: wm=80s│  │  E: wm=90s│
+              │  B: wm=50s │  │  D: wm=80s│  │  F: wm=30s│
+              │            │  │            │  │            │
+              │ worker_wm  │  │ worker_wm  │  │ worker_wm  │
+              │ = max(A,B) │  │ = max(C,D) │  │ = max(E,F) │
+              │ = 100s     │  │ = 80s      │  │ = 90s      │
+              └────────────┘  └────────────┘  └────────────┘
+                       │ load all      │ load all      │ load all
+                       │ (Acquire)     │ (Acquire)     │ (Acquire)
+                       ▼               ▼               ▼
+              global_wm = min(100s, 80s, 90s) = 80s
+
+              On flush, each group's effective watermark becomes:
+                max(group_wm, global_wm) + 1ms
+
+              Worker 0: Group B (50s) → advanced to 80s → closes [50s, 80s] windows
+              Worker 2: Group F (30s) → advanced to 80s → closes [30s, 80s] windows
+```
+
+**Why max within a worker?** We want to propagate forward progress from active
+groups to idle groups on the same worker.
+
+**Why min across workers?** Conservative: only advance as far as ALL workers
+agree time has progressed. If worker 1 is behind at 80s, we should not close
+windows at 90s on worker 2 because worker 1 might still send data for those
+windows.
+
+**Staleness:** Because workers read each other's atomics during flush, the
+global watermark may be up to one `flush_interval_ms` (default 1s) stale.
+This is acceptable — it only means idle groups close windows one flush cycle
+later than they theoretically could.
+
+**Unstarted workers:** Workers that have not yet received any data remain at
+`i64::MIN` and are excluded from the global watermark min calculation. This
+prevents a cold worker from blocking the entire system.
+
 ## 3. Components
 
 ### 3.1 PrecomputeEngine (`mod.rs`)
