@@ -490,6 +490,12 @@ pub fn parse_labels_from_series_key(series_key: &str) -> HashMap<&str, &str> {
 }
 
 /// Route a single sample to `updater`, dispatching keyed vs. non-keyed based on config.
+///
+/// For keyed accumulators (MultipleSum, CMS, HydraKLL), the key is extracted
+/// from the series' **aggregated_labels** — these are the labels that become
+/// the key dimension *inside* the sketch (e.g., which bucket in a CMS, which
+/// entry in a MultipleSumAccumulator's HashMap). This matches the Arroyo SQL
+/// pattern: `udf(concat_ws(';', aggregated_labels), value)`.
 fn apply_sample(
     updater: &mut dyn AccumulatorUpdater,
     series_key: &str,
@@ -498,11 +504,32 @@ fn apply_sample(
     config: &AggregationConfig,
 ) {
     if updater.is_keyed() {
-        let key = extract_key_from_series(series_key, config);
+        let key = extract_aggregated_key_from_series(series_key, config);
         updater.update_keyed(&key, val, ts);
     } else {
         updater.update_single(val, ts);
     }
+}
+
+/// Extract aggregated label values from a series key string.
+/// These are the labels that form the key dimension *inside* keyed accumulators
+/// (MultipleSum, CMS, HydraKLL), matching Arroyo's `agg_columns`.
+fn extract_aggregated_key_from_series(
+    series_key: &str,
+    config: &AggregationConfig,
+) -> KeyByLabelValues {
+    let labels = parse_labels_from_series_key(series_key);
+    let mut values = Vec::new();
+
+    for label_name in &config.aggregated_labels.labels {
+        if let Some(val) = labels.get(label_name.as_str()) {
+            values.push(val.to_string());
+        } else {
+            values.push(String::new());
+        }
+    }
+
+    KeyByLabelValues::new_with_labels(values)
 }
 
 /// Merge the pane accumulators that constitute a closed window.
@@ -603,6 +630,19 @@ mod tests {
         slide_secs: u64,
         grouping: Vec<&str>,
     ) -> AggregationConfig {
+        make_agg_config_full(id, metric, agg_type, agg_sub_type, window_secs, slide_secs, grouping, vec![])
+    }
+
+    fn make_agg_config_full(
+        id: u64,
+        metric: &str,
+        agg_type: &str,
+        agg_sub_type: &str,
+        window_secs: u64,
+        slide_secs: u64,
+        grouping: Vec<&str>,
+        aggregated: Vec<&str>,
+    ) -> AggregationConfig {
         let window_type = if slide_secs == 0 || slide_secs == window_secs {
             "tumbling"
         } else {
@@ -616,7 +656,9 @@ mod tests {
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
                 grouping.iter().map(|s| s.to_string()).collect(),
             ),
-            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
+                aggregated.iter().map(|s| s.to_string()).collect(),
+            ),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             String::new(),
             window_secs,
@@ -976,21 +1018,24 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Test: MultipleSubpopulation GROUP BY — keyed accumulator within group
+    // Test: MultipleSubpopulation — keyed accumulator with aggregated labels
+    // Matches planner output: grouping=[], aggregated=[host]
+    // All series go to one group, host is the key dimension INSIDE the sketch
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_keyed_accumulator_within_group() {
-        // MultipleSum with grouping on "host" — the "aggregated" labels become
-        // the keys within the accumulator.
-        let config = make_agg_config(
+    fn test_keyed_accumulator_aggregated_labels() {
+        // Like planner output for `sum by (host) (cpu)`:
+        // grouping=[] (empty), aggregated=[host] (key inside MultipleSumAccumulator)
+        let config = make_agg_config_full(
             3,
             "cpu",
             "MultipleSubpopulation",
             "Sum",
             10,
             0,
-            vec!["host"],
+            vec![],          // grouping: empty — one output group
+            vec!["host"],    // aggregated: host is the key INSIDE the sketch
         );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(3, config);
@@ -1004,47 +1049,50 @@ mod tests {
             LateDataPolicy::Drop,
         );
 
-        // Two series in different groups (different host values)
+        // Both series go to the SAME group (group_key="" since grouping is empty).
+        // The host label is extracted as the aggregated key inside the accumulator.
         worker
-            .process_group_samples(3, "A", group_samples("cpu{host=\"A\"}", vec![(1000, 10.0)]))
-            .unwrap();
-        worker
-            .process_group_samples(3, "B", group_samples("cpu{host=\"B\"}", vec![(2000, 20.0)]))
+            .process_group_samples(
+                3,
+                "",
+                vec![
+                    ("cpu{host=\"A\"}".to_string(), 1000, 10.0),
+                    ("cpu{host=\"B\"}".to_string(), 2000, 20.0),
+                ],
+            )
             .unwrap();
 
-        // Close both groups
+        // Close the single group's window
         worker
-            .process_group_samples(3, "A", group_samples("cpu{host=\"A\"}", vec![(10000, 0.0)]))
-            .unwrap();
-        worker
-            .process_group_samples(3, "B", group_samples("cpu{host=\"B\"}", vec![(10000, 0.0)]))
+            .process_group_samples(3, "", group_samples("cpu{host=\"A\"}", vec![(10000, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
-        assert_eq!(captured.len(), 2, "two groups → two outputs");
+        assert_eq!(captured.len(), 1, "one group → one output (both hosts inside)");
+
+        let (_output, acc) = &captured[0];
+        let ms_acc = acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("should be MultipleSumAccumulator");
+
+        // The MultipleSumAccumulator should have two internal keys: "A" and "B"
+        assert_eq!(ms_acc.sums.len(), 2, "two host keys inside one accumulator");
 
         let mut found_a = false;
         let mut found_b = false;
-        for (output, acc) in &captured {
-            let ms_acc = acc
-                .as_any()
-                .downcast_ref::<MultipleSumAccumulator>()
-                .expect("should be MultipleSumAccumulator");
-            let group = output.key.as_ref().unwrap().labels.join(";");
-            if group == "A" {
-                for (_, &sum) in &ms_acc.sums {
-                    assert!((sum - 10.0).abs() < 1e-10);
-                }
+        for (key, &sum) in &ms_acc.sums {
+            if key.labels == vec!["A".to_string()] {
+                assert!((sum - 10.0).abs() < 1e-10);
                 found_a = true;
             }
-            if group == "B" {
-                for (_, &sum) in &ms_acc.sums {
-                    assert!((sum - 20.0).abs() < 1e-10);
-                }
+            if key.labels == vec!["B".to_string()] {
+                assert!((sum - 20.0).abs() < 1e-10);
                 found_b = true;
             }
         }
-        assert!(found_a && found_b);
+        assert!(found_a, "expected key A inside accumulator");
+        assert!(found_b, "expected key B inside accumulator");
     }
 
     // -----------------------------------------------------------------------
@@ -1144,7 +1192,8 @@ mod tests {
 
     #[test]
     fn test_arroyosketch_multiple_sum_matches_handcrafted_precompute_output() {
-        let config = make_agg_config(11, "cpu", "MultipleSum", "sum", 10, 0, vec!["host"]);
+        // Like planner output: grouping=[], aggregated=[host]
+        let config = make_agg_config_full(11, "cpu", "MultipleSum", "sum", 10, 0, vec![], vec!["host"]);
         let mut agg_configs = HashMap::new();
         agg_configs.insert(11, config.clone());
 
@@ -1157,17 +1206,19 @@ mod tests {
             LateDataPolicy::Drop,
         );
 
+        // All samples go to group "" (empty group key since grouping=[]).
+        // The host label is the aggregated key inside the accumulator.
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(1_000, 1.0)]))
+            .process_group_samples(11, "", group_samples("cpu{host=\"A\"}", vec![(1_000, 1.0)]))
             .unwrap();
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(5_000, 2.0)]))
+            .process_group_samples(11, "", group_samples("cpu{host=\"A\"}", vec![(5_000, 2.0)]))
             .unwrap();
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(9_000, 3.0)]))
+            .process_group_samples(11, "", group_samples("cpu{host=\"A\"}", vec![(9_000, 3.0)]))
             .unwrap();
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(10_000, 0.0)]))
+            .process_group_samples(11, "", group_samples("cpu{host=\"A\"}", vec![(10_000, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
@@ -1179,6 +1230,7 @@ mod tests {
             .downcast_ref::<MultipleSumAccumulator>()
             .expect("hand-crafted engine should emit MultipleSumAccumulator");
 
+        // Arroyo: GROUP BY '' (empty key), UDF gets host="A" as aggregated key
         let mut arroyo_sums = HashMap::new();
         arroyo_sums.insert("A".to_string(), 6.0);
         let arroyo_precompute_bytes =
@@ -1194,7 +1246,7 @@ mod tests {
                 "start": "1970-01-01T00:00:00",
                 "end": "1970-01-01T00:00:10"
             },
-            "key": "A",
+            "key": "",
             "precompute": hex::encode(encoder.finish().expect("gzip finalize should succeed"))
         });
 
