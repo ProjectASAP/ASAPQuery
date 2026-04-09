@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
+use asap_types::enums::CleanupPolicy;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryTreatmentType, Statistic};
-use sketch_db_common::enums::CleanupPolicy;
 use sql_utilities::ast_matching::sqlhelper::Table;
 use sql_utilities::ast_matching::sqlpattern_matcher::{QueryType, SQLPatternMatcher};
 use sql_utilities::ast_matching::sqlpattern_parser::SQLPatternParser;

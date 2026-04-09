@@ -103,7 +103,7 @@ impl StreamingConfig {
 
 impl StreamingConfig {
     /// Find a compatible aggregation for the given requirements using capability-based matching.
-    /// Delegates to `sketch_db_common::find_compatible_aggregation`.
+    /// Delegates to `asap_types::find_compatible_aggregation`.
     pub fn find_compatible_aggregation(
         &self,
         requirements: &QueryRequirements,

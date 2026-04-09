@@ -1,3 +1,5 @@
+use asap_types::enums::CleanupPolicy;
+use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, QueryTreatmentType, Statistic};
@@ -8,8 +10,6 @@ use promql_utilities::query_logics::parsing::{
     get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
 };
 use serde_json::Value;
-use sketch_db_common::enums::CleanupPolicy;
-use sketch_db_common::PromQLSchema;
 use std::collections::HashMap;
 
 use crate::config::input::SketchParameterOverrides;

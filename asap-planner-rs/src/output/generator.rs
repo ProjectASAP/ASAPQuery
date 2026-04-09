@@ -3,9 +3,9 @@ use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
 use std::collections::HashMap;
 
+use asap_types::enums::CleanupPolicy;
+use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
-use sketch_db_common::enums::CleanupPolicy;
-use sketch_db_common::PromQLSchema;
 
 use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
@@ -367,7 +367,7 @@ pub fn params_to_yaml(params: &HashMap<String, JsonValue>) -> YamlValue {
 fn build_streaming_yaml(
     dedup_map: &IndexMap<String, IntermediateAggConfig>,
     id_map: &HashMap<String, u32>,
-    metric_schema: &sketch_db_common::PromQLSchema,
+    metric_schema: &asap_types::PromQLSchema,
 ) -> Result<YamlValue, ControllerError> {
     let aggregations: Vec<YamlValue> = dedup_map
         .iter()
@@ -401,7 +401,7 @@ fn build_inference_yaml(
     cleanup_policy_str: &str,
     query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
     id_map: &HashMap<String, u32>,
-    metric_schema: &sketch_db_common::PromQLSchema,
+    metric_schema: &asap_types::PromQLSchema,
 ) -> Result<YamlValue, ControllerError> {
     let mut cleanup_map = serde_yaml::Mapping::new();
     cleanup_map.insert(

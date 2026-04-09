@@ -9,7 +9,7 @@ pub enum StreamingEngine {
     Arroyo,
 }
 
-pub use sketch_db_common::enums::{CleanupPolicy, QueryLanguage};
+pub use asap_types::enums::{CleanupPolicy, QueryLanguage};
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
 pub enum QueryProtocol {

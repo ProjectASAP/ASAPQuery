@@ -17,14 +17,14 @@ use tracing::{debug, warn};
 
 use crate::AggregateCore;
 
+use asap_types::query_requirements::QueryRequirements;
+use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::ast_matching::{PromQLMatchResult, PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
 use promql_utilities::query_logics::parsing::{
     get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
 };
-use sketch_db_common::query_requirements::QueryRequirements;
-use sketch_db_common::utils::normalize_spatial_filter;
 
 use sql_utilities::ast_matching::QueryType;
 use sql_utilities::ast_matching::{SQLPatternMatcher, SQLPatternParser, SQLQuery};

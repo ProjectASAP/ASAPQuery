@@ -5,7 +5,7 @@ members = [
     "asap-common/dependencies/rs/promql_utilities",
     "asap-common/dependencies/rs/sql_utilities",
     "asap-common/dependencies/rs/elastic_dsl_utilities",
-    "asap-common/dependencies/rs/sketch_db_common",
+    "asap-common/dependencies/rs/asap_types",
     "asap-common/dependencies/rs/datafusion_summary_library",
     "asap-common/tests/compare_matched_tokens/rust_tests",
     "asap-common/tests/compare_patterns",
@@ -35,7 +35,7 @@ tokio = { version = "1.0", features = ["full"] }
 sketch-core = { path = "asap-common/sketch-core" }
 promql_utilities = { path = "asap-common/dependencies/rs/promql_utilities" }
 sql_utilities = { path = "asap-common/dependencies/rs/sql_utilities" }
-sketch_db_common = { path = "asap-common/dependencies/rs/sketch_db_common" }
+asap_types = { path = "asap-common/dependencies/rs/asap_types" }
 datafusion_summary_library = { path = "asap-common/dependencies/rs/datafusion_summary_library" }
 elastic_dsl_utilities = { path = "asap-common/dependencies/rs/elastic_dsl_utilities" }
 asap_planner = { path = "asap-planner-rs" }
