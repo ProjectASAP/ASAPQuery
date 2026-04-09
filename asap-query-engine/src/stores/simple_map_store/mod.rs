@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 pub use legacy::LegacySimpleMapStoreGlobal;
 pub use legacy::LegacySimpleMapStorePerKey;
+pub use legacy::{AggregationDiagnostic, StoreDiagnostics};
 
 /// Enum wrapper that dispatches to either global or per-key lock implementation
 pub enum SimpleMapStore {
@@ -23,6 +24,14 @@ impl SimpleMapStore {
     /// Constructor with default strategy (backward compatibility for tests)
     pub fn new(streaming_config: Arc<StreamingConfig>, cleanup_policy: CleanupPolicy) -> Self {
         Self::new_with_strategy(streaming_config, cleanup_policy, LockStrategy::PerKey)
+    }
+
+    /// Collect diagnostic info for memory leak investigation.
+    pub fn diagnostic_info(&self) -> StoreDiagnostics {
+        match self {
+            SimpleMapStore::Global(store) => store.diagnostic_info(),
+            SimpleMapStore::PerKey(store) => store.diagnostic_info(),
+        }
     }
 
     /// Constructor with explicit lock strategy (used by main.rs)

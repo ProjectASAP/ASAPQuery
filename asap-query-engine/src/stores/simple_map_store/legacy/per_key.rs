@@ -48,6 +48,23 @@ pub struct LegacySimpleMapStorePerKey {
     cleanup_policy: CleanupPolicy,
 }
 
+/// Diagnostic snapshot from a single aggregation ID in the store.
+pub struct AggregationDiagnostic {
+    pub aggregation_id: u64,
+    pub time_map_len: usize,
+    pub read_counts_len: usize,
+    pub num_aggregate_objects: usize,
+    pub sketch_bytes: usize,
+}
+
+/// Diagnostic snapshot of the entire store.
+pub struct StoreDiagnostics {
+    pub num_aggregations: usize,
+    pub total_time_map_entries: usize,
+    pub total_sketch_bytes: usize,
+    pub per_aggregation: Vec<AggregationDiagnostic>,
+}
+
 impl LegacySimpleMapStorePerKey {
     pub fn new(streaming_config: Arc<StreamingConfig>, cleanup_policy: CleanupPolicy) -> Self {
         Self {
@@ -57,6 +74,49 @@ impl LegacySimpleMapStorePerKey {
             items_inserted: DashMap::new(),
             streaming_config,
             cleanup_policy,
+        }
+    }
+
+    /// Collect diagnostic info for memory leak investigation.
+    pub fn diagnostic_info(&self) -> StoreDiagnostics {
+        let mut per_aggregation = Vec::new();
+        let mut total_time_map_entries: usize = 0;
+        let mut total_sketch_bytes: usize = 0;
+
+        for entry in self.store.iter() {
+            let agg_id = *entry.key();
+            let data = match entry.value().read() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let time_map_len = data.time_map.len();
+            let read_counts_len = data.read_counts.len();
+            total_time_map_entries += time_map_len;
+
+            let mut num_aggregate_objects: usize = 0;
+            let mut agg_sketch_bytes: usize = 0;
+            for store_values in data.time_map.values() {
+                num_aggregate_objects += store_values.len();
+                for (_key, aggregate) in store_values {
+                    agg_sketch_bytes += aggregate.serialize_to_bytes().len();
+                }
+            }
+            total_sketch_bytes += agg_sketch_bytes;
+
+            per_aggregation.push(AggregationDiagnostic {
+                aggregation_id: agg_id,
+                time_map_len,
+                read_counts_len,
+                num_aggregate_objects,
+                sketch_bytes: agg_sketch_bytes,
+            });
+        }
+
+        StoreDiagnostics {
+            num_aggregations: self.store.len(),
+            total_time_map_entries,
+            total_sketch_bytes,
+            per_aggregation,
         }
     }
 
