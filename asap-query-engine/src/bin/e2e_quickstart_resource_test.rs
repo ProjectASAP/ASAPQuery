@@ -339,7 +339,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         total_samples_sent += total_series as u64;
         let send_time = tick_start.elapsed();
 
-        if tick % 2 == 0 || !all_ok {
+        if tick.is_multiple_of(2) || !all_ok {
             println!(
                 "  tick={} t={}ms samples={} send_time={:.0}ms ok={}",
                 tick,
