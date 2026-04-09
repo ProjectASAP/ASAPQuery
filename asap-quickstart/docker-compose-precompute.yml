@@ -277,6 +277,28 @@ services:
       - "--add-pattern-label"
     restart: no
 
+  # Spiky pattern - tests sudden spikes/drops
+  fake-exporter-spiky:
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    container_name: asap-fake-exporter-spiky
+    hostname: fake-exporter-spiky
+    networks:
+      - asap-network
+    expose:
+      - "50006"
+    command:
+      - "--port=50006"
+      - "--valuescale=1000"
+      - "--dataset=spiky"
+      - "--num-labels=3"
+      - "--num-values-per-label=30,30,30"
+      - "--metric-type=gauge"
+      - "--metric-name=sensor_reading"
+      - "--label-names=region,service,host"
+      - "--label-value-prefixes=region,svc,host"
+      - "--add-pattern-label"
+    restart: no
+
   # Exponential growth - tests non-linear patterns
   fake-exporter-exp-up:
     image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0

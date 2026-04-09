@@ -176,22 +176,26 @@ impl Worker {
     }
 
     /// Get or create the GroupState for a (agg_id, group_key) pair.
-    fn get_or_create_group_state(&mut self, agg_id: u64, group_key: &str) -> &mut GroupState {
+    /// Returns None if agg_id has no matching config.
+    fn get_or_create_group_state(
+        &mut self,
+        agg_id: u64,
+        group_key: &str,
+    ) -> Option<&mut GroupState> {
         let key = (agg_id, group_key.to_string());
         if !self.group_states.contains_key(&key) {
-            if let Some(config) = self.agg_configs.get(&agg_id) {
-                let gs = GroupState {
-                    window_manager: WindowManager::new(config.window_size, config.slide_interval),
-                    config: Arc::clone(config),
-                    active_panes: BTreeMap::new(),
-                    previous_watermark_ms: i64::MIN,
-                };
-                self.group_states.insert(key.clone(), gs);
-                self.group_count
-                    .store(self.group_states.len(), Ordering::Relaxed);
-            }
+            let config = self.agg_configs.get(&agg_id)?;
+            let gs = GroupState {
+                window_manager: WindowManager::new(config.window_size, config.slide_interval),
+                config: Arc::clone(config),
+                active_panes: BTreeMap::new(),
+                previous_watermark_ms: i64::MIN,
+            };
+            self.group_states.insert(key.clone(), gs);
+            self.group_count
+                .store(self.group_states.len(), Ordering::Relaxed);
         }
-        self.group_states.get_mut(&key).unwrap()
+        self.group_states.get_mut(&key)
     }
 
     /// Process a batch of samples for a specific (agg_id, group_key).
@@ -208,7 +212,13 @@ impl Worker {
         let allowed_lateness_ms = self.allowed_lateness_ms;
         let late_data_policy = self.late_data_policy;
 
-        self.get_or_create_group_state(agg_id, group_key);
+        if self.get_or_create_group_state(agg_id, group_key).is_none() {
+            warn!(
+                "Worker {} skipping samples for unknown agg_id={}, group_key={}",
+                self.id, agg_id, group_key
+            );
+            return Ok(());
+        }
         let state = self.group_states.get_mut(&(agg_id, group_key.to_string())).unwrap();
 
         // Find the max timestamp in this batch to advance the watermark
@@ -358,15 +368,15 @@ impl Worker {
         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
 
         for ((agg_id, group_key), state) in &mut self.group_states {
-            let current_wm = state.previous_watermark_ms;
-            // Use a slightly earlier "previous" to trigger re-checking
-            // In practice flush just re-runs closed_windows with the same watermark
-            // which returns empty — the real purpose is to catch windows that
-            // were missed because watermark advanced within process_group_samples.
-            // The flush timer is a safety net, not the primary close mechanism.
+            if state.previous_watermark_ms == i64::MIN {
+                continue; // No samples received yet for this group
+            }
+            // Advance watermark by 1ms beyond current to force-close any windows
+            // whose end exactly equals the current watermark.
+            let flush_wm = state.previous_watermark_ms.saturating_add(1);
             let closed = state
                 .window_manager
-                .closed_windows(state.previous_watermark_ms, current_wm);
+                .closed_windows(state.previous_watermark_ms, flush_wm);
 
             for window_start in &closed {
                 let (_, window_end) = state.window_manager.window_bounds(*window_start);
