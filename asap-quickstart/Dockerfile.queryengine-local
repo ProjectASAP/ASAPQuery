@@ -1,0 +1,14 @@
+# Lightweight image that copies a pre-built query engine binary
+FROM ubuntu:24.04
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates libssl3 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY asap-quickstart/bin/query_engine_rust /usr/local/bin/query_engine_rust
+
+EXPOSE 8088
+
+ENTRYPOINT ["query_engine_rust"]

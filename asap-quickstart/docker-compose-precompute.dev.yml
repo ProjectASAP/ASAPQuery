@@ -1,0 +1,12 @@
+name: asapquery-quickstart-precompute
+
+# Development override for precompute variant: builds query engine from local source.
+#
+# Usage:
+#   docker compose -f docker-compose-precompute.yml -f docker-compose-precompute.dev.yml up -d --build
+
+services:
+  queryengine:
+    build:
+      context: ..
+      dockerfile: asap-query-engine/Dockerfile
