@@ -7,7 +7,6 @@ members = [
     "asap-common/dependencies/rs/elastic_dsl_utilities",
     "asap-common/dependencies/rs/sketch_db_common",
     "asap-common/dependencies/rs/datafusion_summary_library",
-    "asap-common/tests/rust_pattern_matching",
     "asap-common/tests/compare_matched_tokens/rust_tests",
     "asap-common/tests/compare_patterns",
     "asap-query-engine",
