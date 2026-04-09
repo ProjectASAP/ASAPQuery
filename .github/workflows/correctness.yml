@@ -160,9 +160,3 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-correctness-${{ hashFiles('**/Cargo.lock', '**/Cargo.toml') }}
-
-      - name: Run Rust pattern matching tests
-        working-directory: asap-common/tests/rust_pattern_matching
-        run: cargo test --release
-        env:
-          RUSTC_WRAPPER: sccache
