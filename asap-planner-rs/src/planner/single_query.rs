@@ -2,7 +2,9 @@ use asap_types::enums::{CleanupPolicy, WindowType};
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, QueryTreatmentType, Statistic};
+use promql_utilities::query_logics::enums::{
+    AggregationOperator, PromQLFunction, QueryPatternType, QueryTreatmentType, Statistic,
+};
 use promql_utilities::query_logics::logics::{
     get_is_collapsable, map_statistic_to_precompute_operator,
 };
@@ -174,18 +176,15 @@ impl SingleQueryProcessor {
         match pattern_type {
             QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
                 let fn_name = match_result.get_function_name().unwrap_or_default();
-                match fn_name.as_str() {
-                    "quantile_over_time" | "sum_over_time" | "count_over_time"
-                    | "avg_over_time" => QueryTreatmentType::Approximate,
+                match fn_name.parse::<PromQLFunction>() {
+                    Ok(f) if f.is_approximate() => QueryTreatmentType::Approximate,
                     _ => QueryTreatmentType::Exact,
                 }
             }
             QueryPatternType::OnlySpatial => {
                 let op = match_result.get_aggregation_op().unwrap_or_default();
-                match op.as_str() {
-                    "quantile" | "sum" | "count" | "avg" | "topk" => {
-                        QueryTreatmentType::Approximate
-                    }
+                match op.parse::<AggregationOperator>() {
+                    Ok(o) if o.is_approximate() => QueryTreatmentType::Approximate,
                     _ => QueryTreatmentType::Exact,
                 }
             }
@@ -246,12 +245,18 @@ impl SingleQueryProcessor {
 
         if pattern_type == QueryPatternType::OnlyTemporal {
             let fn_name = match_result.get_function_name().unwrap_or_default();
-            if matches!(fn_name.as_str(), "rate" | "increase" | "quantile_over_time") {
+            let parsed_fn = fn_name.parse::<PromQLFunction>();
+            if matches!(
+                parsed_fn,
+                Ok(PromQLFunction::Rate
+                    | PromQLFunction::Increase
+                    | PromQLFunction::QuantileOverTime)
+            ) {
                 let num_data_points = self.t_repeat as f64 / self.prometheus_scrape_interval as f64;
                 if num_data_points < 60.0 {
                     return false;
                 }
-                if fn_name == "quantile_over_time" {
+                if parsed_fn == Ok(PromQLFunction::QuantileOverTime) {
                     if let Some(range_dur) = match_result.get_range_duration() {
                         let range_secs = range_dur.num_seconds() as f64;
                         if range_secs / self.t_repeat as f64 > 15.0 {
@@ -373,7 +378,12 @@ fn get_label_routing(
         QueryPatternType::OneTemporalOneSpatial => {
             let fn_name = match_result.get_function_name().unwrap_or_default();
             let agg_op = match_result.get_aggregation_op().unwrap_or_default();
-            if !get_is_collapsable(&fn_name, &agg_op) {
+            let collapsable = fn_name
+                .parse::<PromQLFunction>()
+                .ok()
+                .zip(agg_op.parse::<AggregationOperator>().ok())
+                .is_some_and(|(f, o)| get_is_collapsable(f, o));
+            if !collapsable {
                 (KeyByLabelNames::empty(), all_labels.clone())
             } else {
                 let spatial_output =

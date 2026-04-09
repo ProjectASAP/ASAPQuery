@@ -3,6 +3,7 @@ use core::panic;
 use promql_parser::parser::Expr;
 use tracing::debug;
 
+use crate::ast_matching::promql_pattern::AggregationModifierType;
 use crate::ast_matching::PromQLMatchResult;
 use crate::data_model::KeyByLabelNames;
 use crate::query_logics::enums::{QueryPatternType, Statistic};
@@ -115,21 +116,20 @@ pub fn get_spatial_aggregation_output_labels(
     };
 
     debug!(
-        "Modifier type: {}, labels: {:?}",
+        "Modifier type: {:?}, labels: {:?}",
         modifier.modifier_type, modifier.labels
     );
-    match modifier.modifier_type.as_str() {
-        "by" => {
+    match modifier.modifier_type {
+        AggregationModifierType::By => {
             debug!("Processing 'by' modifier");
             // Return only the labels specified in "by" clause
             KeyByLabelNames::new(modifier.labels.clone())
         }
-        "without" => {
+        AggregationModifierType::Without => {
             debug!("Processing 'without' modifier");
             // Return all labels except those specified in "without" clause
             let without_labels = KeyByLabelNames::new(modifier.labels.clone());
             all_labels.difference(&without_labels)
         }
-        _ => panic!("Invalid aggregation modifier"),
     }
 }

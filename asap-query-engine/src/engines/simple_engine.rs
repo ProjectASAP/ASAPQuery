@@ -9,6 +9,7 @@ use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVecto
 use crate::stores::{Store, TimestampedBucketsMap};
 use core::panic;
 use promql_utilities::get_is_collapsable;
+use promql_utilities::query_logics::enums::{AggregationOperator, PromQLFunction};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -158,7 +159,7 @@ impl SimpleEngine {
         temporal_pattern_blocks.insert(
             "quantile".to_string(),
             PromQLPatternBuilder::function(
-                vec!["quantile_over_time"],
+                vec![PromQLFunction::QuantileOverTime.as_str()],
                 vec![
                     PromQLPatternBuilder::number(None, Some("quantile_param")),
                     PromQLPatternBuilder::matrix_selector(
@@ -203,10 +204,31 @@ impl SimpleEngine {
 
         // Create spatial pattern blocks
         let mut spatial_pattern_blocks = HashMap::new();
+        let spatial_ops_all: Vec<&str> = [
+            AggregationOperator::Sum,
+            AggregationOperator::Count,
+            AggregationOperator::Avg,
+            AggregationOperator::Quantile,
+            AggregationOperator::Min,
+            AggregationOperator::Max,
+            AggregationOperator::Topk,
+        ]
+        .map(AggregationOperator::as_str)
+        .to_vec();
+        let spatial_ops_no_topk: Vec<&str> = [
+            AggregationOperator::Sum,
+            AggregationOperator::Count,
+            AggregationOperator::Avg,
+            AggregationOperator::Quantile,
+            AggregationOperator::Min,
+            AggregationOperator::Max,
+        ]
+        .map(AggregationOperator::as_str)
+        .to_vec();
         spatial_pattern_blocks.insert(
             "generic".to_string(),
             PromQLPatternBuilder::aggregation(
-                vec!["sum", "count", "avg", "quantile", "min", "max", "topk"],
+                spatial_ops_all,
                 PromQLPatternBuilder::metric(None, None, None, Some("metric")),
                 None,
                 None,
@@ -230,19 +252,18 @@ impl SimpleEngine {
             PromQLPattern::new(blocks[pattern_type].clone())
         }
 
-        fn spatial_of_temporal_pattern(
-            temporal_block: &Option<HashMap<String, Value>>,
-        ) -> PromQLPattern {
-            let pattern = PromQLPatternBuilder::aggregation(
-                vec!["sum", "count", "avg", "quantile", "min", "max"],
-                temporal_block.clone(),
-                None,
-                None,
-                None,
-                Some("aggregation"),
-            );
-            PromQLPattern::new(pattern)
-        }
+        let spatial_of_temporal_pattern =
+            |temporal_block: &Option<HashMap<String, Value>>| -> PromQLPattern {
+                let pattern = PromQLPatternBuilder::aggregation(
+                    spatial_ops_no_topk.clone(),
+                    temporal_block.clone(),
+                    None,
+                    None,
+                    None,
+                    Some("aggregation"),
+                );
+                PromQLPattern::new(pattern)
+            };
 
         // Create controller patterns
         let mut controller_patterns = HashMap::new();
@@ -1089,9 +1110,15 @@ impl SimpleEngine {
             QueryPatternType::OneTemporalOneSpatial => {
                 let temporal_aggregation = match_result.get_function_name().unwrap();
                 let spatial_aggregation = match_result.get_aggregation_op().unwrap();
-                match get_is_collapsable(&temporal_aggregation, &spatial_aggregation) {
-                    false => all_labels.clone(),
-                    true => get_spatial_aggregation_output_labels(&match_result, &all_labels),
+                let collapsable = temporal_aggregation
+                    .parse::<PromQLFunction>()
+                    .ok()
+                    .zip(spatial_aggregation.parse::<AggregationOperator>().ok())
+                    .is_some_and(|(f, o)| get_is_collapsable(f, o));
+                if collapsable {
+                    get_spatial_aggregation_output_labels(&match_result, &all_labels)
+                } else {
+                    all_labels.clone()
                 }
             }
         };
@@ -1585,13 +1612,10 @@ impl SimpleEngine {
             _ => query_data.aggregation_info.get_name().to_lowercase(),
         };
 
-        let statistics: Vec<Statistic> = if statistic_name == "avg" {
-            vec![Statistic::Sum, Statistic::Count]
-        } else if let Ok(stat) = statistic_name.parse::<Statistic>() {
-            vec![stat]
-        } else {
-            vec![]
-        };
+        let statistics: Vec<Statistic> = statistic_name
+            .parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_default();
 
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
@@ -1850,13 +1874,10 @@ impl SimpleEngine {
             }
         };
 
-        let statistics_to_compute: Vec<Statistic> = if statistic_name == "avg" {
-            vec![Statistic::Sum, Statistic::Count]
-        } else if let Ok(stat) = statistic_name.parse::<Statistic>() {
-            vec![stat]
-        } else {
-            panic!("Unsupported statistic: {}", statistic_name);
-        };
+        let statistics_to_compute: Vec<Statistic> = statistic_name
+            .parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
 
         if statistics_to_compute.len() != 1 {
             warn!(
@@ -1975,13 +1996,10 @@ impl SimpleEngine {
             .get_name()
             .to_lowercase();
 
-        let statistics_to_compute: Vec<Statistic> = if statistic_name == "avg" {
-            vec![Statistic::Sum, Statistic::Count]
-        } else if let Ok(stat) = statistic_name.parse::<Statistic>() {
-            vec![stat]
-        } else {
-            panic!("Unsupported statistic: {}", statistic_name);
-        };
+        let statistics_to_compute: Vec<Statistic> = statistic_name
+            .parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
 
         if statistics_to_compute.len() != 1 {
             warn!(
@@ -2732,9 +2750,15 @@ impl SimpleEngine {
                 let spatial_aggregation = match_result.get_aggregation_op().unwrap();
                 // iff temporal outer labels issubset of spatial inner labels, collapse
                 // SQL issue: take into account labels from the query, not needed at present because only uses promql translations
-                match get_is_collapsable(&temporal_aggregation, &spatial_aggregation) {
-                    false => all_labels.clone(),
-                    true => get_spatial_aggregation_output_labels(&match_result, &all_labels),
+                let collapsable = temporal_aggregation
+                    .parse::<PromQLFunction>()
+                    .ok()
+                    .zip(spatial_aggregation.parse::<AggregationOperator>().ok())
+                    .is_some_and(|(f, o)| get_is_collapsable(f, o));
+                if collapsable {
+                    get_spatial_aggregation_output_labels(&match_result, &all_labels)
+                } else {
+                    all_labels.clone()
                 }
             }
         };

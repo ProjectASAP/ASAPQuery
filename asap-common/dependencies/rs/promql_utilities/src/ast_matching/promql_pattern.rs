@@ -448,11 +448,11 @@ impl PromQLPattern {
             debug!("Collecting aggregation token as: {}", collect_as);
             let modifier = match &agg.modifier {
                 Some(LabelModifier::Include(labels)) => Some(AggregationModifier {
-                    modifier_type: "by".to_string(),
+                    modifier_type: AggregationModifierType::By,
                     labels: labels.labels.clone(),
                 }),
                 Some(LabelModifier::Exclude(labels)) => Some(AggregationModifier {
-                    modifier_type: "without".to_string(),
+                    modifier_type: AggregationModifierType::Without,
                     labels: labels.labels.clone(),
                 }),
                 None => None,
@@ -844,16 +844,24 @@ impl Default for PromQLMatchResult {
     }
 }
 
+/// Whether a PromQL aggregation modifier is `by` or `without`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AggregationModifierType {
+    By,
+    Without,
+}
+
 /// Represents aggregation modifiers like "by" or "without"
 #[derive(Debug, Clone, Serialize)]
 pub struct AggregationModifier {
-    pub modifier_type: String, // "by" or "without"
+    pub modifier_type: AggregationModifierType,
     pub labels: Vec<String>,
 }
 
 impl AggregationModifier {
     /// Create a new AggregationModifier
-    pub fn new(modifier_type: String, labels: Vec<String>) -> Self {
+    pub fn new(modifier_type: AggregationModifierType, labels: Vec<String>) -> Self {
         Self {
             modifier_type,
             labels,

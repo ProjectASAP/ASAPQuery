@@ -1,4 +1,6 @@
-use crate::query_logics::enums::{QueryTreatmentType, Statistic};
+use crate::query_logics::enums::{
+    AggregationOperator, PromQLFunction, QueryTreatmentType, Statistic,
+};
 use tracing::debug;
 
 /// Map statistic to precompute operator based on treatment type
@@ -80,20 +82,24 @@ pub fn does_precompute_operator_support_subpopulations(
     }
 }
 
-/// Check if temporal and spatial aggregations are collapsible
+/// Check if temporal and spatial aggregations are collapsible.
 /// Based on Python implementation in promql_utilities/query_logics/logics.py
-pub fn get_is_collapsable(temporal_aggregation: &str, spatial_aggregation: &str) -> bool {
+pub fn get_is_collapsable(
+    temporal_aggregation: PromQLFunction,
+    spatial_aggregation: AggregationOperator,
+) -> bool {
     debug!(
         "Checking if temporal aggregation '{}' and spatial aggregation '{}' are collapsable",
         temporal_aggregation, spatial_aggregation
     );
     match spatial_aggregation {
-        "sum" => matches!(
+        AggregationOperator::Sum => matches!(
             temporal_aggregation,
-            "sum_over_time" | "count_over_time" // Note: "increase" and "rate" are commented out in Python
+            // Note: Increase and Rate are commented out in the Python reference
+            PromQLFunction::SumOverTime | PromQLFunction::CountOverTime
         ),
-        "min" => temporal_aggregation == "min_over_time",
-        "max" => temporal_aggregation == "max_over_time",
+        AggregationOperator::Min => temporal_aggregation == PromQLFunction::MinOverTime,
+        AggregationOperator::Max => temporal_aggregation == PromQLFunction::MaxOverTime,
         _ => false,
     }
 }
@@ -171,11 +177,29 @@ mod tests {
 
     #[test]
     fn test_get_is_collapsable() {
-        assert!(get_is_collapsable("sum_over_time", "sum"));
-        assert!(get_is_collapsable("count_over_time", "sum"));
-        assert!(get_is_collapsable("min_over_time", "min"));
-        assert!(get_is_collapsable("max_over_time", "max"));
-        assert!(!get_is_collapsable("min_over_time", "sum"));
-        assert!(!get_is_collapsable("unknown", "sum"));
+        assert!(get_is_collapsable(
+            PromQLFunction::SumOverTime,
+            AggregationOperator::Sum
+        ));
+        assert!(get_is_collapsable(
+            PromQLFunction::CountOverTime,
+            AggregationOperator::Sum
+        ));
+        assert!(get_is_collapsable(
+            PromQLFunction::MinOverTime,
+            AggregationOperator::Min
+        ));
+        assert!(get_is_collapsable(
+            PromQLFunction::MaxOverTime,
+            AggregationOperator::Max
+        ));
+        assert!(!get_is_collapsable(
+            PromQLFunction::MinOverTime,
+            AggregationOperator::Sum
+        ));
+        assert!(!get_is_collapsable(
+            PromQLFunction::Rate,
+            AggregationOperator::Sum
+        ));
     }
 }
