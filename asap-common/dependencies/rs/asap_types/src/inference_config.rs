@@ -172,15 +172,12 @@ impl InferenceConfig {
                 )
             })?;
 
-        match name {
-            "circular_buffer" => Ok(CleanupPolicy::CircularBuffer),
-            "read_based" => Ok(CleanupPolicy::ReadBased),
-            "no_cleanup" => Ok(CleanupPolicy::NoCleanup),
-            _ => Err(anyhow::anyhow!(
+        name.parse::<CleanupPolicy>().map_err(|_| {
+            anyhow::anyhow!(
                 "Invalid cleanup policy: '{}'. Valid options: circular_buffer, read_based, no_cleanup",
                 name
-            )),
-        }
+            )
+        })
     }
 
     fn parse_query_configs(

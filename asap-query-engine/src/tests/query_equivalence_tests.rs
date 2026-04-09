@@ -7,7 +7,7 @@
 //! timestamp calculation, and aggregation selection - WITHOUT actually executing
 //! queries against a store.
 
-use crate::data_model::QueryLanguage;
+use crate::data_model::{QueryLanguage, WindowType};
 use crate::engines::simple_engine::SimpleEngine;
 use crate::stores::{Store, TimestampedBucketsMap};
 use crate::tests::test_utilities::{assert_execution_context_equivalent, TestConfigBuilder};
@@ -90,7 +90,13 @@ mod tests {
         let (promql_config, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(grouping_labels)
             .with_scrape_interval(scrape_interval)
-            .add_temporal_query(promql_query, sql_query, 1, window_seconds, "tumbling")
+            .add_temporal_query(
+                promql_query,
+                sql_query,
+                1,
+                window_seconds,
+                WindowType::Tumbling,
+            )
             .build_both();
 
         // Create engines (they won't query the store)

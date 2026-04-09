@@ -6,6 +6,7 @@ use promql_utilities::query_logics::enums::Statistic;
 use tracing::{debug, warn};
 
 use crate::aggregation_config::{AggregationConfig, AggregationIdInfo};
+use crate::enums::WindowType;
 use crate::query_requirements::QueryRequirements;
 use crate::utils::normalize_spatial_filter;
 
@@ -76,9 +77,9 @@ pub fn window_compatible(config: &AggregationConfig, data_range_ms: Option<u64>)
     if window_ms == 0 || range == 0 {
         return false;
     }
-    match config.window_type.as_str() {
-        "sliding" => range == window_ms,
-        _ => range % window_ms == 0, // tumbling (or unknown — treat as tumbling)
+    match config.window_type {
+        WindowType::Sliding => range == window_ms,
+        WindowType::Tumbling => range % window_ms == 0,
     }
 }
 
@@ -288,7 +289,7 @@ mod tests {
             original_yaml: String::new(),
             window_size: window_size_s,
             slide_interval: window_size_s,
-            window_type: window_type.to_string(),
+            window_type: window_type.parse::<WindowType>().unwrap_or_default(),
             spatial_filter: spatial_filter.to_string(),
             spatial_filter_normalized,
             metric: metric.to_string(),

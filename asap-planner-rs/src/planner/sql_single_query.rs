@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use asap_types::enums::CleanupPolicy;
+use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryTreatmentType, Statistic};
 use sql_utilities::ast_matching::sqlhelper::Table;
@@ -198,7 +198,7 @@ fn compute_sql_window(
     IntermediateWindowConfig {
         window_size,
         slide_interval: window_size,
-        window_type: "tumbling".to_string(),
+        window_type: WindowType::Tumbling,
     }
 }
 

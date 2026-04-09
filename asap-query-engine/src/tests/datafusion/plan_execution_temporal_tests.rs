@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_model::WindowType;
     use crate::precompute_operators::DatasketchesKLLAccumulator;
     use crate::tests::test_utilities::engine_factories::*;
 
@@ -51,7 +52,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -81,7 +82,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -118,7 +119,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -155,7 +156,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -193,7 +194,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -226,7 +227,7 @@ mod tests {
             vec![],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -251,7 +252,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -275,7 +276,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -324,7 +325,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -376,7 +377,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -415,7 +416,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -443,7 +444,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -467,7 +468,7 @@ mod tests {
             vec![],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -503,7 +504,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         assert_old_new_match(&engine, query, QUERY_TIME).await;
@@ -533,7 +534,7 @@ mod tests {
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         assert_old_new_match(&engine, query, QUERY_TIME).await;

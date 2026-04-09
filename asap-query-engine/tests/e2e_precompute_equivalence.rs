@@ -8,6 +8,7 @@
 //!  4. Drains captured outputs and verifies equivalence with ArroYo-format accumulators
 
 use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::WindowType;
 use flate2::{write::GzEncoder, Compression};
 use prost::Message;
 use serde_json::json;
@@ -38,9 +39,9 @@ fn make_agg_config(
     grouping: Vec<&str>,
 ) -> AggregationConfig {
     let window_type = if slide_secs == 0 || slide_secs == window_secs {
-        "tumbling"
+        WindowType::Tumbling
     } else {
-        "sliding"
+        WindowType::Sliding
     };
     AggregationConfig::new(
         id,
@@ -55,7 +56,7 @@ fn make_agg_config(
         String::new(),
         window_secs,
         slide_secs,
-        window_type.to_string(),
+        window_type,
         metric.to_string(),
         metric.to_string(),
         None,

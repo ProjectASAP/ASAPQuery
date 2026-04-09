@@ -17,6 +17,7 @@ use tracing::{debug, warn};
 
 use crate::AggregateCore;
 
+use asap_types::enums::WindowType;
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::ast_matching::{PromQLMatchResult, PromQLPattern, PromQLPatternBuilder};
@@ -592,8 +593,8 @@ impl SimpleEngine {
                 )
             })?;
 
-        let window_type = &aggregation_config_for_value.window_type;
-        let is_exact_query = window_type == "sliding";
+        let window_type = aggregation_config_for_value.window_type;
+        let is_exact_query = window_type == WindowType::Sliding;
 
         // Determine start/end for values query based on window type
         let (values_start, values_end) = if is_exact_query {
@@ -720,9 +721,9 @@ impl SimpleEngine {
 
         let merge_start_time = Instant::now();
         let window_type = if plan.values_query.is_exact_query {
-            "sliding"
+            WindowType::Sliding
         } else {
-            "tumbling"
+            WindowType::Tumbling
         };
 
         let merged_values = if plan.values_query.is_exact_query {
@@ -755,7 +756,7 @@ impl SimpleEngine {
         let merge_duration = merge_start_time.elapsed();
         debug!(
             "[LATENCY] Precomputed output processing ({}): {:.2}ms, resulted in {} merged outputs",
-            if window_type == "sliding" {
+            if window_type == WindowType::Sliding {
                 "no merge"
             } else {
                 "merge"

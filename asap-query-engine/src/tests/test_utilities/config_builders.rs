@@ -5,7 +5,7 @@
 
 use crate::data_model::{
     AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, PromQLSchema,
-    QueryConfig, SchemaConfig, StreamingConfig,
+    QueryConfig, SchemaConfig, StreamingConfig, WindowType,
 };
 use promql_utilities::data_model::KeyByLabelNames;
 use sql_utilities::sqlhelper::{SQLSchema, Table};
@@ -75,7 +75,7 @@ impl TestConfigBuilder {
         sql: &str,
         agg_id: u64,
         window_seconds: u64,
-        window_type: &str, // "sliding" or "tumbling"
+        window_type: WindowType,
     ) -> Self {
         // Add PromQL query config
         let promql_config = QueryConfig::new(promql.to_string())
@@ -99,7 +99,7 @@ impl TestConfigBuilder {
             original_yaml: String::new(),
             window_size: window_seconds,
             slide_interval: window_seconds,
-            window_type: window_type.to_string(),
+            window_type,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -136,7 +136,7 @@ impl TestConfigBuilder {
             original_yaml: String::new(),
             window_size: self.scrape_interval,
             slide_interval: self.scrape_interval,
-            window_type: "tumbling".to_string(),
+            window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -179,7 +179,7 @@ impl TestConfigBuilder {
             original_yaml: String::new(),
             window_size: window_seconds,
             slide_interval: window_seconds,
-            window_type: "tumbling".to_string(),
+            window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -296,7 +296,7 @@ mod tests {
                 "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN NOW() AND DATEADD(s, -10, NOW()) GROUP BY L1, L2, L3, L4",
                 1,
                 10,
-                "tumbling",
+                WindowType::Tumbling,
             )
             .build();
 
@@ -317,7 +317,7 @@ mod tests {
         assert!(streaming_config.get_aggregation_config(1).is_some());
         let agg_config = streaming_config.get_aggregation_config(1).unwrap();
         assert_eq!(agg_config.window_size, 10);
-        assert_eq!(agg_config.window_type, "tumbling");
+        assert_eq!(agg_config.window_type, WindowType::Tumbling);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::config::input::SketchParameterOverrides;
-use asap_types::enums::CleanupPolicy;
+use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
@@ -60,12 +60,12 @@ fn set_tumbling_window_parameters(
         QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
             config.window_size = effective_repeat;
             config.slide_interval = effective_repeat;
-            config.window_type = "tumbling".to_string();
+            config.window_type = WindowType::Tumbling;
         }
         QueryPatternType::OnlySpatial => {
             config.window_size = prometheus_scrape_interval;
             config.slide_interval = prometheus_scrape_interval;
-            config.window_type = "tumbling".to_string();
+            config.window_type = WindowType::Tumbling;
         }
     }
 }
@@ -75,7 +75,7 @@ fn set_tumbling_window_parameters(
 pub struct IntermediateWindowConfig {
     pub window_size: u64,
     pub slide_interval: u64,
-    pub window_type: String,
+    pub window_type: WindowType,
 }
 
 /// Shared sketch parameter builder used by both PromQL and SQL paths.
@@ -213,7 +213,7 @@ pub fn get_cleanup_param(
     query_pattern_type: QueryPatternType,
     match_result: &PromQLMatchResult,
     t_repeat: u64,
-    window_type: &str,
+    window_type: WindowType,
     range_duration: u64,
     step: u64,
 ) -> Result<u64, String> {
@@ -236,7 +236,7 @@ pub fn get_cleanup_param(
             .ok_or_else(|| "No range_vector token found".to_string())?
     };
 
-    if window_type == "sliding" {
+    if window_type == WindowType::Sliding {
         let result = if is_range_query {
             range_duration / step + 1
         } else {
@@ -358,7 +358,7 @@ mod tests {
             pt,
             &mr,
             300,
-            "tumbling",
+            WindowType::Tumbling,
             0,
             0,
         )
@@ -376,7 +376,7 @@ mod tests {
             pt,
             &mr,
             300,
-            "tumbling",
+            WindowType::Tumbling,
             3600,
             30,
         )
@@ -388,8 +388,16 @@ mod tests {
     fn cleanup_param_read_based_spatial_instant_query() {
         let (pt, mr) = match_query("sum(some_metric)");
         // lookback_buckets = ceil(300/300) = 1, num_steps = 1 → result = 1
-        let result =
-            get_cleanup_param(CleanupPolicy::ReadBased, pt, &mr, 300, "tumbling", 0, 0).unwrap();
+        let result = get_cleanup_param(
+            CleanupPolicy::ReadBased,
+            pt,
+            &mr,
+            300,
+            WindowType::Tumbling,
+            0,
+            0,
+        )
+        .unwrap();
         assert_eq!(result, 1);
     }
 
@@ -398,9 +406,16 @@ mod tests {
         let (pt, mr) = match_query("sum(some_metric)");
         // lookback_buckets = ceil(300/30) = 10, num_steps = 3600/30 + 1 = 121
         // result = 10 * 121 = 1210
-        let result =
-            get_cleanup_param(CleanupPolicy::ReadBased, pt, &mr, 300, "tumbling", 3600, 30)
-                .unwrap();
+        let result = get_cleanup_param(
+            CleanupPolicy::ReadBased,
+            pt,
+            &mr,
+            300,
+            WindowType::Tumbling,
+            3600,
+            30,
+        )
+        .unwrap();
         assert_eq!(result, 1210);
     }
 
@@ -410,16 +425,31 @@ mod tests {
         assert_eq!(pt, QueryPatternType::OnlyTemporal);
         // t_lookback = 5m = 300s (from [5m] range vector), range_duration=0, step=0
         // effective_repeat = 60, ceil((300 + 0) / 60) = 5
-        let result =
-            get_cleanup_param(CleanupPolicy::CircularBuffer, pt, &mr, 60, "tumbling", 0, 0)
-                .unwrap();
+        let result = get_cleanup_param(
+            CleanupPolicy::CircularBuffer,
+            pt,
+            &mr,
+            60,
+            WindowType::Tumbling,
+            0,
+            0,
+        )
+        .unwrap();
         assert_eq!(result, 5);
     }
 
     #[test]
     fn cleanup_param_no_cleanup_returns_error() {
         let (pt, mr) = match_query("sum(some_metric)");
-        let result = get_cleanup_param(CleanupPolicy::NoCleanup, pt, &mr, 300, "tumbling", 0, 0);
+        let result = get_cleanup_param(
+            CleanupPolicy::NoCleanup,
+            pt,
+            &mr,
+            300,
+            WindowType::Tumbling,
+            0,
+            0,
+        );
         assert!(result.is_err());
     }
 
@@ -432,7 +462,7 @@ mod tests {
             pt,
             &mr,
             300,
-            "tumbling",
+            WindowType::Tumbling,
             3600,
             0,
         );

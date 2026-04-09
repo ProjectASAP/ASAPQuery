@@ -6,9 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::input::SQLControllerConfig;
 use crate::error::ControllerError;
-use crate::output::generator::{
-    build_aggregation_entry, build_queries_yaml, parse_cleanup_policy, GeneratorOutput,
-};
+use crate::output::generator::{build_aggregation_entry, build_queries_yaml, GeneratorOutput};
 use crate::planner::single_query::IntermediateAggConfig;
 use crate::planner::sql_single_query::SQLSingleQueryProcessor;
 use crate::StreamingEngine;
@@ -35,7 +33,9 @@ pub fn generate_sql_plan(
         .as_ref()
         .and_then(|c| c.policy.as_deref())
         .unwrap_or("read_based");
-    let cleanup_policy = parse_cleanup_policy(cleanup_policy_str)?;
+    let cleanup_policy = cleanup_policy_str.parse::<CleanupPolicy>().map_err(|_| {
+        ControllerError::PlannerError(format!("Unknown cleanup policy: {}", cleanup_policy_str))
+    })?;
 
     // Validate T % data_ingestion_interval == 0
     for qg in &config.query_groups {

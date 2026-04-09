@@ -7,7 +7,7 @@
 mod tests {
     use crate::data_model::{
         AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, QueryConfig,
-        QueryLanguage, SchemaConfig, StreamingConfig,
+        QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
     };
     use crate::engines::simple_engine::SimpleEngine;
     use crate::stores::simple_map_store::SimpleMapStore;
@@ -63,7 +63,7 @@ mod tests {
             original_yaml: String::new(),
             window_size: window_secs,
             slide_interval: window_secs,
-            window_type: "tumbling".to_string(),
+            window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: "cpu_usage".to_string(),

@@ -3,7 +3,7 @@ use serde_json::Value;
 use serde_yaml;
 use std::collections::HashMap;
 
-use crate::enums::QueryLanguage;
+use crate::enums::{QueryLanguage, WindowType};
 use crate::traits::SerializableToSink;
 use crate::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
@@ -19,9 +19,9 @@ pub struct AggregationConfig {
     pub rollup_labels: KeyByLabelNames,
     pub original_yaml: String,
 
-    pub window_size: u64,    // Window size in seconds (e.g., 900s for 15m)
-    pub slide_interval: u64, // Slide/hop interval in seconds (e.g., 30s)
-    pub window_type: String, // "tumbling" or "sliding"
+    pub window_size: u64,        // Window size in seconds (e.g., 900s for 15m)
+    pub slide_interval: u64,     // Slide/hop interval in seconds (e.g., 30s)
+    pub window_type: WindowType, // Tumbling or Sliding
 
     pub spatial_filter: String,
     pub spatial_filter_normalized: String,
@@ -60,7 +60,7 @@ impl AggregationConfig {
         original_yaml: String,
         window_size: u64,
         slide_interval: u64,
-        window_type: String,
+        window_type: WindowType,
         spatial_filter: String,
         metric: String,
         num_aggregates_to_retain: Option<u64>,
@@ -148,7 +148,8 @@ impl AggregationConfig {
             .get("windowType")
             .and_then(|v| v.as_str())
             .unwrap_or("tumbling")
-            .to_string();
+            .parse::<WindowType>()
+            .unwrap_or_default();
 
         let slide_interval = data
             .get("slideInterval")
@@ -270,7 +271,8 @@ impl AggregationConfig {
             .get("windowType")
             .and_then(|v| v.as_str())
             .unwrap_or("tumbling")
-            .to_string();
+            .parse::<WindowType>()
+            .unwrap_or_default();
 
         let slide_interval = aggregation_data
             .get("slideInterval")
@@ -348,7 +350,7 @@ impl SerializableToSink for AggregationConfig {
             "originalYaml": self.original_yaml,
             "windowSize": self.window_size,
             "slideInterval": self.slide_interval,
-            "windowType": self.window_type,
+            "windowType": self.window_type.to_string(),
             "spatialFilter": self.spatial_filter,
             "metric": self.metric,
         });

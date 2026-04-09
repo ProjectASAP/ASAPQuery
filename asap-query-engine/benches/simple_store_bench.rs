@@ -27,7 +27,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use promql_utilities::data_model::KeyByLabelNames;
 use query_engine_rust::data_model::{
-    AggregateCore, CleanupPolicy, KeyByLabelValues, LockStrategy, StreamingConfig,
+    AggregateCore, CleanupPolicy, KeyByLabelValues, LockStrategy, StreamingConfig, WindowType,
 };
 use query_engine_rust::precompute_operators::{DatasketchesKLLAccumulator, SumAccumulator};
 use query_engine_rust::stores::simple_map_store::legacy::{
@@ -134,10 +134,10 @@ fn make_agg_config(
         KeyByLabelNames::empty(),
         KeyByLabelNames::empty(),
         "".to_string(),
-        60,                     // window_size (seconds)
-        60,                     // slide_interval (seconds)
-        "tumbling".to_string(), // window_type
-        "".to_string(),         // spatial_filter
+        60,                   // window_size (seconds)
+        60,                   // slide_interval (seconds)
+        WindowType::Tumbling, // window_type
+        "".to_string(),       // spatial_filter
         metric.to_string(),
         num_aggregates_to_retain,
         read_count_threshold,

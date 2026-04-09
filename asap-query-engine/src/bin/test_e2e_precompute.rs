@@ -9,6 +9,7 @@
 //!   cargo run --bin test_e2e_precompute
 
 use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::WindowType;
 use prost::Message;
 use query_engine_rust::data_model::{LockStrategy, QueryLanguage, StreamingConfig};
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
@@ -584,9 +585,9 @@ fn make_sum_agg_config(
     slide_interval_secs: u64,
 ) -> AggregationConfig {
     let window_type = if slide_interval_secs == 0 || slide_interval_secs == window_size_secs {
-        "tumbling"
+        WindowType::Tumbling
     } else {
-        "sliding"
+        WindowType::Sliding
     };
     AggregationConfig::new(
         agg_id,
@@ -599,7 +600,7 @@ fn make_sum_agg_config(
         String::new(),
         window_size_secs,
         slide_interval_secs,
-        window_type.to_string(),
+        window_type,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
         None,

@@ -6,7 +6,7 @@
 
 use crate::data_model::{
     AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, PrecomputedOutput,
-    PromQLSchema, QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig,
+    PromQLSchema, QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
 };
 use crate::engines::simple_engine::SimpleEngine;
 use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
@@ -27,7 +27,7 @@ fn make_agg_config(
     metric: &str,
     agg_type: &str,
     window_size_s: u64,
-    window_type: &str,
+    window_type: WindowType,
     grouping: &[&str],
 ) -> AggregationConfig {
     AggregationConfig {
@@ -41,7 +41,7 @@ fn make_agg_config(
         original_yaml: String::new(),
         window_size: window_size_s,
         slide_interval: window_size_s,
-        window_type: window_type.to_string(),
+        window_type,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric.to_string(),
@@ -161,7 +161,7 @@ fn engine_with_query_config(
 /// capability matching should route to it and return a valid context.
 #[test]
 fn capability_fallback_fires_when_no_config() {
-    let agg = make_agg_config(1, "cpu", "Sum", 300, "tumbling", &[]);
+    let agg = make_agg_config(1, "cpu", "Sum", 300, WindowType::Tumbling, &[]);
     let engine = engine_no_query_configs("cpu", &[], vec![agg]);
 
     // sum_over_time(cpu[5m]) — 5 min = 300 s matches the 300 s tumbling config
@@ -178,7 +178,7 @@ fn capability_fallback_fires_when_no_config() {
 /// We verify by giving the config a different agg_id than any compatible-by-type config.
 #[test]
 fn config_path_takes_priority_over_capability_matching() {
-    let agg = make_agg_config(42, "cpu", "Sum", 300, "tumbling", &[]);
+    let agg = make_agg_config(42, "cpu", "Sum", 300, WindowType::Tumbling, &[]);
     let engine = engine_with_query_config("cpu", &[], agg, "sum_over_time(cpu[5m])");
 
     let ctx = engine
@@ -193,7 +193,14 @@ fn config_path_takes_priority_over_capability_matching() {
 /// KLL aggregation when no query_configs are present.
 #[test]
 fn quantile_different_values_resolve_to_same_aggregation() {
-    let kll = make_agg_config(7, "latency", "DatasketchesKLL", 300, "tumbling", &[]);
+    let kll = make_agg_config(
+        7,
+        "latency",
+        "DatasketchesKLL",
+        300,
+        WindowType::Tumbling,
+        &[],
+    );
     let engine = engine_no_query_configs("latency", &[], vec![kll]);
 
     let q50 = engine.build_query_execution_context_promql(
@@ -224,7 +231,7 @@ fn quantile_different_values_resolve_to_same_aggregation() {
 #[test]
 fn no_match_returns_none() {
     // KLL config present, but query asks for Sum — incompatible
-    let kll = make_agg_config(1, "cpu", "DatasketchesKLL", 300, "tumbling", &[]);
+    let kll = make_agg_config(1, "cpu", "DatasketchesKLL", 300, WindowType::Tumbling, &[]);
     let engine = engine_no_query_configs("cpu", &[], vec![kll]);
 
     let ctx =
@@ -238,8 +245,8 @@ fn no_match_returns_none() {
 /// When multiple compatible aggregations exist, the largest window should be preferred.
 #[test]
 fn priority_largest_window_wins() {
-    let small = make_agg_config(1, "cpu", "Sum", 300, "tumbling", &[]);
-    let large = make_agg_config(2, "cpu", "Sum", 900, "tumbling", &[]);
+    let small = make_agg_config(1, "cpu", "Sum", 300, WindowType::Tumbling, &[]);
+    let large = make_agg_config(2, "cpu", "Sum", 900, WindowType::Tumbling, &[]);
     let engine = engine_no_query_configs("cpu", &[], vec![small, large]);
 
     // sum_over_time(cpu[15m]) = 900 s — both 300 s and 900 s configs match (900 = 3×300),

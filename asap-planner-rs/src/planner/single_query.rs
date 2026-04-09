@@ -1,4 +1,4 @@
-use asap_types::enums::CleanupPolicy;
+use asap_types::enums::{CleanupPolicy, WindowType};
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
@@ -57,7 +57,7 @@ fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::E
 pub struct IntermediateAggConfig {
     pub aggregation_type: String,
     pub aggregation_sub_type: String,
-    pub window_type: String,
+    pub window_type: WindowType,
     pub window_size: u64,
     pub slide_interval: u64,
     pub spatial_filter: String,
@@ -331,7 +331,7 @@ impl SingleQueryProcessor {
                     pattern_type,
                     &match_result,
                     self.t_repeat,
-                    &window_cfg.window_type,
+                    window_cfg.window_type,
                     self.range_duration,
                     self.step,
                 )
@@ -424,7 +424,7 @@ pub fn build_agg_configs_for_statistics(
             configs.push(IntermediateAggConfig {
                 aggregation_type: "DeltaSetAggregator".to_string(),
                 aggregation_sub_type: String::new(),
-                window_type: window_cfg.window_type.clone(),
+                window_type: window_cfg.window_type,
                 window_size: window_cfg.window_size,
                 slide_interval: window_cfg.slide_interval,
                 spatial_filter: spatial_filter.to_string(),
@@ -442,7 +442,7 @@ pub fn build_agg_configs_for_statistics(
         configs.push(IntermediateAggConfig {
             aggregation_type: agg_type,
             aggregation_sub_type: agg_sub_type,
-            window_type: window_cfg.window_type.clone(),
+            window_type: window_cfg.window_type,
             window_size: window_cfg.window_size,
             slide_interval: window_cfg.slide_interval,
             spatial_filter: spatial_filter.to_string(),
@@ -469,7 +469,7 @@ mod tests {
         IntermediateAggConfig {
             aggregation_type: "MultipleIncrease".to_string(),
             aggregation_sub_type: "rate".to_string(),
-            window_type: "tumbling".to_string(),
+            window_type: WindowType::Tumbling,
             window_size: 300,
             slide_interval: 300,
             spatial_filter: String::new(),

@@ -649,6 +649,7 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asap_types::enums::WindowType;
 
     #[test]
     fn test_sum_updater() {
@@ -736,7 +737,7 @@ mod tests {
                 String::new(),
                 60,
                 0,
-                "tumbling".to_string(),
+                WindowType::Tumbling,
                 "m".to_string(),
                 "m".to_string(),
                 None,
@@ -801,7 +802,7 @@ mod tests {
             String::new(),
             60,
             0,
-            "tumbling".to_string(),
+            WindowType::Tumbling,
             "m".to_string(),
             "m".to_string(),
             None,

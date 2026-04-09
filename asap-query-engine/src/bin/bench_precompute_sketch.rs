@@ -1,4 +1,5 @@
 use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::WindowType;
 use clap::Parser;
 use prost::Message;
 use query_engine_rust::data_model::{
@@ -135,7 +136,7 @@ fn make_kll_streaming_config(
         String::new(),
         window_size_secs,
         window_size_secs,
-        "tumbling".to_string(),
+        WindowType::Tumbling,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
         None,

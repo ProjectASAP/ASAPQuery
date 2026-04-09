@@ -617,6 +617,7 @@ mod tests {
     use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use asap_types::enums::WindowType;
     use sketch_core::kll::KllSketch;
 
     fn make_agg_config(
@@ -629,9 +630,9 @@ mod tests {
         grouping: Vec<&str>,
     ) -> AggregationConfig {
         let window_type = if slide_secs == 0 || slide_secs == window_secs {
-            "tumbling"
+            WindowType::Tumbling
         } else {
-            "sliding"
+            WindowType::Sliding
         };
         AggregationConfig::new(
             id,
@@ -646,7 +647,7 @@ mod tests {
             String::new(),
             window_secs,
             slide_secs,
-            window_type.to_string(),
+            window_type,
             metric.to_string(),
             metric.to_string(),
             None,
@@ -1300,7 +1301,7 @@ aggregations:
             String::new(),
             60,
             0,
-            "tumbling".to_string(),
+            WindowType::Tumbling,
             "http_requests_total".to_string(),
             "http_requests_total".to_string(),
             Some(60),
