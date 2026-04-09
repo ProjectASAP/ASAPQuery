@@ -372,32 +372,6 @@ impl PatternTester {
             Some("aggregation"),
         )
     }
-
-    fn build_sum_rate_pattern() -> Option<HashMap<String, Value>> {
-        let ms = PromQLPatternBuilder::matrix_selector(
-            PromQLPatternBuilder::metric(None, None, None, Some("metric")),
-            None,
-            Some("range_vector"),
-        );
-
-        let func_args: Vec<Option<HashMap<String, Value>>> = vec![ms];
-
-        let func = PromQLPatternBuilder::function(
-            vec!["rate", "increase"],
-            func_args,
-            Some("function"),
-            None,
-        );
-
-        PromQLPatternBuilder::aggregation(
-            vec!["sum", "count", "avg", "min", "max"],
-            func,
-            None,
-            None,
-            None,
-            Some("aggregation"),
-        )
-    }
 }
 
 impl Default for PatternTester {

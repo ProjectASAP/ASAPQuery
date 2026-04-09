@@ -8,18 +8,14 @@ fn temporal_pattern(
     pattern_type: &str,
     blocks: &HashMap<String, Option<HashMap<String, Value>>>,
 ) -> PromQLPattern {
-    PromQLPattern::new(
-        blocks[pattern_type].clone(),
-    )
+    PromQLPattern::new(blocks[pattern_type].clone())
 }
 
 fn spatial_pattern(
     pattern_type: &str,
     blocks: &HashMap<String, Option<HashMap<String, Value>>>,
 ) -> PromQLPattern {
-    PromQLPattern::new(
-        blocks[pattern_type].clone(),
-    )
+    PromQLPattern::new(blocks[pattern_type].clone())
 }
 
 fn spatial_of_temporal_pattern(temporal_block: &Option<HashMap<String, Value>>) -> PromQLPattern {
@@ -31,9 +27,7 @@ fn spatial_of_temporal_pattern(temporal_block: &Option<HashMap<String, Value>>) 
         None,
         Some("aggregation"),
     );
-    PromQLPattern::new(
-        pattern,
-    )
+    PromQLPattern::new(pattern)
 }
 
 fn main() {
@@ -125,7 +119,7 @@ fn main() {
     ];
 
     for query in queries {
-        let ast = match promql_parser::parser::parse(&query) {
+        let ast = match promql_parser::parser::parse(query) {
             Ok(parsed) => parsed,
             Err(e) => {
                 eprintln!("Failed to parse query '{}': {}", query, e);
