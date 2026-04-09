@@ -7,17 +7,32 @@ use crate::data_model::{
     AggregateCore, CleanupPolicy, LockStrategy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
+use global::SimpleMapStoreGlobal;
+use per_key::SimpleMapStorePerKey;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub use legacy::LegacySimpleMapStoreGlobal;
-pub use legacy::LegacySimpleMapStorePerKey;
-pub use legacy::{AggregationDiagnostic, StoreDiagnostics};
+/// Diagnostic snapshot from a single aggregation ID in the store.
+pub struct AggregationDiagnostic {
+    pub aggregation_id: u64,
+    pub time_map_len: usize,
+    pub read_counts_len: usize,
+    pub num_aggregate_objects: usize,
+    pub sketch_bytes: usize,
+}
+
+/// Diagnostic snapshot of the entire store.
+pub struct StoreDiagnostics {
+    pub num_aggregations: usize,
+    pub total_time_map_entries: usize,
+    pub total_sketch_bytes: usize,
+    pub per_aggregation: Vec<AggregationDiagnostic>,
+}
 
 /// Enum wrapper that dispatches to either global or per-key lock implementation
 pub enum SimpleMapStore {
-    Global(LegacySimpleMapStoreGlobal),
-    PerKey(LegacySimpleMapStorePerKey),
+    Global(SimpleMapStoreGlobal),
+    PerKey(SimpleMapStorePerKey),
 }
 
 impl SimpleMapStore {
@@ -26,7 +41,7 @@ impl SimpleMapStore {
         Self::new_with_strategy(streaming_config, cleanup_policy, LockStrategy::PerKey)
     }
 
-    /// Collect diagnostic info for memory leak investigation.
+    /// Collect diagnostic info for memory investigation.
     pub fn diagnostic_info(&self) -> StoreDiagnostics {
         match self {
             SimpleMapStore::Global(store) => store.diagnostic_info(),
@@ -41,11 +56,11 @@ impl SimpleMapStore {
         lock_strategy: LockStrategy,
     ) -> Self {
         match lock_strategy {
-            LockStrategy::Global => SimpleMapStore::Global(LegacySimpleMapStoreGlobal::new(
+            LockStrategy::Global => SimpleMapStore::Global(SimpleMapStoreGlobal::new(
                 streaming_config,
                 cleanup_policy,
             )),
-            LockStrategy::PerKey => SimpleMapStore::PerKey(LegacySimpleMapStorePerKey::new(
+            LockStrategy::PerKey => SimpleMapStore::PerKey(SimpleMapStorePerKey::new(
                 streaming_config,
                 cleanup_policy,
             )),
