@@ -887,6 +887,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "compare_patterns_runner"
+version = "0.1.0"
+dependencies = [
+ "promql_utilities",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "const-random"
 version = "0.1.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3497,6 +3506,34 @@ dependencies = [
  "lrlex",
  "lrpar",
  "regex",
+]
+
+[[package]]
+name = "promql_pattern_matching_tests"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "promql-parser",
+ "promql_utilities",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "promql_token_matching_tests"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "promql-parser",
+ "promql_utilities",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
