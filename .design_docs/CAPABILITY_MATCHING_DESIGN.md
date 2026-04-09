@@ -101,12 +101,12 @@ this config serve this query type?" and "fetch this time window from the store" 
 separated.
 
 ### Q9: Where does the capability matching logic live?
-**Decision**: `sketch_db_common` (the shared crate). Rationale: this logic is pure — it takes a
+**Decision**: `asap_types` (the shared crate). Rationale: this logic is pure — it takes a
 map of `AggregationConfig` values and a `QueryRequirements` and produces an `AggregationIdInfo`.
 It has no dependency on query engine internals. Putting it in common means the planner and other
 components can eventually reuse it.
 
-`AggregationIdInfo` (previously defined in `simple_engine.rs`) was moved to `sketch_db_common` as
+`AggregationIdInfo` (previously defined in `simple_engine.rs`) was moved to `asap_types` as
 a prerequisite, since the common function needs to return it.
 
 `StreamingConfig` (in `asap-query-engine`) gets a thin wrapper method that delegates to the
@@ -208,13 +208,13 @@ Try find_query_config / find_query_config_sql    ← existing path (unchanged)
                               │
                               ▼
                      StreamingConfig::find_compatible_aggregation(&requirements)
-                     → sketch_db_common::find_compatible_aggregation(
+                     → asap_types::find_compatible_aggregation(
                            &self.aggregation_configs, requirements
                        )
                      → Option<AggregationIdInfo>
 ```
 
-The `find_compatible_aggregation` function in `sketch_db_common`:
+The `find_compatible_aggregation` function in `asap_types`:
 1. For each statistic, collects candidates from `StreamingConfig` passing all filters
    (metric, type, sub-type, window, labels, spatial filter).
 2. Sorts candidates by `aggregation_priority` (largest window first).

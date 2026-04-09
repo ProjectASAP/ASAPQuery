@@ -4,7 +4,7 @@ use crate::precompute_operators::{
     IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
     MultipleSumAccumulator, SumAccumulator,
 };
-use sketch_db_common::aggregation_config::AggregationConfig;
+use asap_types::aggregation_config::AggregationConfig;
 
 /// Generate the two boilerplate clone-based `AccumulatorUpdater` methods
 /// for updaters whose inner `acc` field implements `Clone + AggregateCore`.

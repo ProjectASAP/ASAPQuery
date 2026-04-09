@@ -1,1 +1,1 @@
-pub use sketch_db_common::promql_schema::*;
+pub use asap_types::promql_schema::*;

@@ -1,9 +1,9 @@
 use crate::config::input::SketchParameterOverrides;
+use asap_types::enums::CleanupPolicy;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
 use promql_utilities::query_logics::logics::does_precompute_operator_support_subpopulations;
-use sketch_db_common::enums::CleanupPolicy;
 use std::collections::HashMap;
 
 // Default sketch parameters

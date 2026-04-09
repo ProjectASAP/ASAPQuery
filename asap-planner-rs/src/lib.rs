@@ -5,21 +5,21 @@ pub mod planner;
 pub mod prometheus_client;
 pub mod query_log;
 
+use asap_types::enums::QueryLanguage;
+use asap_types::inference_config::InferenceConfig;
+use asap_types::streaming_config::StreamingConfig;
 use promql_utilities::data_model::KeyByLabelNames;
 use serde_yaml::Value as YamlValue;
-use sketch_db_common::enums::QueryLanguage;
-use sketch_db_common::inference_config::InferenceConfig;
-use sketch_db_common::streaming_config::StreamingConfig;
 use std::path::Path;
 use tracing::debug;
 
+pub use asap_types::PromQLSchema;
 pub use config::input::ControllerConfig;
 pub use config::input::SQLControllerConfig;
 pub use error::ControllerError;
 pub use output::generator::{GeneratorOutput, PuntedQuery};
 pub use output::sql_generator::SQLRuntimeOptions;
 pub use prometheus_client::build_schema_from_prometheus;
-pub use sketch_db_common::PromQLSchema;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamingEngine {

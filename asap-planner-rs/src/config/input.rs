@@ -1,6 +1,6 @@
+use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
 use serde::Deserialize;
-use sketch_db_common::PromQLSchema;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

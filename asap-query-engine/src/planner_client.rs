@@ -2,9 +2,9 @@ use anyhow::Result;
 use asap_planner::{
     build_schema_from_prometheus, Controller, ControllerConfig, PlannerOutput, RuntimeOptions,
 };
-use sketch_db_common::enums::QueryLanguage;
-use sketch_db_common::inference_config::InferenceConfig;
-use sketch_db_common::streaming_config::StreamingConfig;
+use asap_types::enums::QueryLanguage;
+use asap_types::inference_config::InferenceConfig;
+use asap_types::streaming_config::StreamingConfig;
 use tracing::warn;
 
 pub struct PlannerResult {

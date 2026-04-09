@@ -1,1 +1,1 @@
-pub use sketch_db_common::inference_config::*;
+pub use asap_types::inference_config::*;

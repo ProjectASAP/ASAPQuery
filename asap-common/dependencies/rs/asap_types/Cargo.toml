@@ -1,5 +1,5 @@
 [package]
-name = "sketch_db_common"
+name = "asap_types"
 version.workspace = true
 edition.workspace = true
 

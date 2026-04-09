@@ -8,7 +8,7 @@ use crate::precompute_engine::series_buffer::SeriesBuffer;
 use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
-use sketch_db_common::aggregation_config::AggregationConfig;
+use asap_types::aggregation_config::AggregationConfig;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use tokio::sync::mpsc;

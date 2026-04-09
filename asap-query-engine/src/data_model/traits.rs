@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-pub use sketch_db_common::traits::SerializableToSink;
+pub use asap_types::traits::SerializableToSink;
 
 /// Core trait for all aggregates containing shared functionality
 /// This trait provides common operations like serialization, cloning, and type identification

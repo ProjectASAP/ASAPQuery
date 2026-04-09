@@ -1,6 +1,6 @@
+use asap_types::enums::CleanupPolicy;
 use indexmap::IndexMap;
 use serde_yaml::Value as YamlValue;
-use sketch_db_common::enums::CleanupPolicy;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 

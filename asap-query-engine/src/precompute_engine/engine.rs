@@ -6,8 +6,8 @@ use crate::precompute_engine::ingest_handler::{
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
 use crate::precompute_engine::worker::{Worker, WorkerRuntimeConfig};
+use asap_types::aggregation_config::AggregationConfig;
 use axum::{routing::post, Router};
-use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpListener;
