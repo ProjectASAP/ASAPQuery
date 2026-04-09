@@ -389,6 +389,58 @@ impl Controller {
         })
     }
 
+    /// Build a `Controller` by auto-discovering all metrics from Prometheus and generating
+    /// default quantile queries for each metric.
+    ///
+    /// This is the zero-config path: no config file or query log is needed.
+    pub fn from_prometheus(
+        prometheus_url: &str,
+        opts: RuntimeOptions,
+    ) -> Result<Self, ControllerError> {
+        let metric_names = prometheus_client::fetch_all_metric_names(prometheus_url)?;
+        debug!(
+            "Discovered {} metric(s) from Prometheus",
+            metric_names.len()
+        );
+
+        // Generate default quantile queries for each metric.
+        let queries: Vec<String> = metric_names
+            .iter()
+            .flat_map(|m| {
+                [0.50, 0.90, 0.99]
+                    .iter()
+                    .map(move |q| format!("quantile({}, {})", q, m))
+            })
+            .collect();
+
+        let schema = prometheus_client::build_schema_from_prometheus(prometheus_url, &queries)?;
+
+        let config = ControllerConfig {
+            query_groups: vec![config::input::QueryGroup {
+                id: Some(1),
+                queries,
+                repetition_delay: 10,
+                controller_options: config::input::ControllerOptions {
+                    accuracy_sla: 0.99,
+                    latency_sla: 1.0,
+                },
+                step: None,
+                range_duration: None,
+            }],
+            sketch_parameters: None,
+            aggregate_cleanup: Some(config::input::AggregateCleanupConfig {
+                policy: Some("read_based".to_string()),
+            }),
+            metrics: None,
+        };
+
+        Ok(Self {
+            config,
+            schema,
+            options: opts,
+        })
+    }
+
     /// Build a `Controller` from a Prometheus query log file, fetching metric labels from
     /// Prometheus.
     ///
