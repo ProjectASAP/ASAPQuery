@@ -14,7 +14,7 @@ mod tests {
     fn create_kll_accumulator_with_values(values: &[f64]) -> DatasketchesKLLAccumulator {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for &v in values {
-            kll._update(v);
+            kll.update(v);
         }
         kll
     }

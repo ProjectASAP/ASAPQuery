@@ -111,7 +111,7 @@ impl AccumulatorKind {
             Self::Kll => {
                 let mut acc = DatasketchesKLLAccumulator::new(200);
                 for v in 0..20 {
-                    acc._update(v as f64 * (value + 1.0));
+                    acc.update(v as f64 * (value + 1.0));
                 }
                 Box::new(acc)
             }

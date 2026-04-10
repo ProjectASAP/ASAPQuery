@@ -41,7 +41,7 @@ mod tests {
     fn test_round_trip_kll() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for v in [1.0, 2.0, 3.0, 4.0, 5.0] {
-            kll._update(v);
+            kll.update(v);
         }
 
         let bytes = serialize_accumulator_arroyo(&kll);
@@ -316,7 +316,7 @@ mod tests {
     fn test_serialize_arroyo_dispatch_kll_uses_native() {
         // KLL's serialize_to_bytes already uses MessagePack, so arroyo falls through
         let mut kll = DatasketchesKLLAccumulator::new(200);
-        kll._update(1.0);
+        kll.update(1.0);
         let arroyo_bytes = serialize_accumulator_arroyo(&kll);
         let native_bytes = kll.serialize_to_bytes();
 
