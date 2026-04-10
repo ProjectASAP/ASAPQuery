@@ -395,13 +395,21 @@ impl SimpleEngine {
     ) -> u64 {
         match query_pattern_type {
             QueryPatternType::OnlyTemporal => {
-                let scrape_intervals =
-                    match_result.outer_data().time_info.clone().get_duration() as u64;
+                let scrape_intervals = match_result
+                    .outer_data()
+                    .expect("OnlyTemporal pattern guarantees outer_data is present")
+                    .time_info
+                    .clone()
+                    .get_duration() as u64;
                 end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000)
             }
             QueryPatternType::OneTemporalOneSpatial => {
-                let scrape_intervals =
-                    match_result.inner_data().time_info.clone().get_duration() as u64;
+                let scrape_intervals = match_result
+                    .inner_data()
+                    .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
+                    .time_info
+                    .clone()
+                    .get_duration() as u64;
                 end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000)
             }
             QueryPatternType::OnlySpatial => {
@@ -1627,12 +1635,15 @@ impl SimpleEngine {
         match_result: &SQLQuery,
         query_pattern_type: QueryPatternType,
     ) -> QueryRequirements {
-        let query_data = match_result.outer_data();
+        let query_data = match_result
+            .outer_data()
+            .expect("build_query_requirements_sql called on valid SQLQuery");
         let metric = query_data.metric.clone();
 
         let statistic_name = match query_pattern_type {
             QueryPatternType::OneTemporalOneSpatial => match_result
                 .inner_data()
+                .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
                 .aggregation_info
                 .get_name()
                 .to_lowercase(),
@@ -1650,8 +1661,12 @@ impl SimpleEngine {
                 Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
             }
             QueryPatternType::OneTemporalOneSpatial => {
-                let scrape_intervals =
-                    match_result.inner_data().time_info.clone().get_duration() as u64;
+                let scrape_intervals = match_result
+                    .inner_data()
+                    .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
+                    .time_info
+                    .clone()
+                    .get_duration() as u64;
                 Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
             }
         };
@@ -1845,7 +1860,7 @@ impl SimpleEngine {
         // so we need to use the inner (temporal) query's time_info to compute query_time
         let query_time = match query_pattern_type {
             QueryPatternType::OneTemporalOneSpatial => {
-                let inner_time_info = &match_result.inner_data().time_info;
+                let inner_time_info = &match_result.inner_data()?.time_info;
                 Self::convert_query_time_to_data_time(
                     inner_time_info.get_start() + inner_time_info.get_duration(),
                 )
@@ -1876,17 +1891,17 @@ impl SimpleEngine {
             // Potentially change SQLQueryType
             1 => {
                 // For non-nested queries, output associated labels
-                let labels = &match_result.outer_data().labels;
+                let labels = &match_result.outer_data()?.labels;
 
                 KeyByLabelNames::new(labels.clone().into_iter().collect())
             }
             2 => {
                 // Extract spatial aggregation output labels using AST-based approach
-                let temporal_labels = &match_result.inner_data().labels;
-                let spatial_labels = &match_result.outer_data().labels;
+                let temporal_labels = &match_result.inner_data()?.labels;
+                let spatial_labels = &match_result.outer_data()?.labels;
 
-                let temporal_aggregation = &match_result.inner_data().aggregation_info;
-                let spatial_aggregation = &match_result.outer_data().aggregation_info;
+                let temporal_aggregation = &match_result.inner_data()?.aggregation_info;
+                let spatial_aggregation = &match_result.outer_data()?.aggregation_info;
 
                 match self.sql_get_is_collapsable(temporal_aggregation, spatial_aggregation) {
                     // If false: get all labels, which are all temporal labels. If true, get only spatial labels
@@ -1905,7 +1920,7 @@ impl SimpleEngine {
             QueryPatternType::OnlyTemporal => {
                 // Use the temporal aggregation (first subquery)
                 match_result
-                    .outer_data()
+                    .outer_data()?
                     .aggregation_info
                     .get_name()
                     .to_lowercase()
@@ -1913,7 +1928,7 @@ impl SimpleEngine {
             QueryPatternType::OneTemporalOneSpatial => {
                 // Use the temporal aggregation (second subquery contains temporal)
                 match_result
-                    .inner_data()
+                    .inner_data()?
                     .aggregation_info
                     .get_name()
                     .to_lowercase()
@@ -1921,7 +1936,7 @@ impl SimpleEngine {
             QueryPatternType::OnlySpatial => {
                 // Use the spatial aggregation (first subquery)
                 match_result
-                    .outer_data()
+                    .outer_data()?
                     .aggregation_info
                     .get_name()
                     .to_lowercase()
@@ -1966,11 +1981,11 @@ impl SimpleEngine {
                 .find_compatible_aggregation(&requirements)?
         };
 
-        let metric = &match_result.outer_data().metric;
+        let metric = &match_result.outer_data()?.metric;
 
         let spatial_filter = if query_pattern_type == QueryPatternType::OneTemporalOneSpatial {
             match_result
-                .outer_data()
+                .outer_data()?
                 .labels
                 .iter()
                 .cloned()
@@ -2055,7 +2070,7 @@ impl SimpleEngine {
         // Output labels are the GROUP BY columns (subset of all labels)
         let query_output_labels = KeyByLabelNames::new(
             match_result
-                .outer_data()
+                .outer_data()?
                 .labels
                 .clone()
                 .into_iter()
@@ -2064,7 +2079,7 @@ impl SimpleEngine {
 
         // Get the statistic from the aggregation
         let statistic_name = match_result
-            .outer_data()
+            .outer_data()?
             .aggregation_info
             .get_name()
             .to_lowercase();
@@ -2088,7 +2103,7 @@ impl SimpleEngine {
         // Calculate timestamps - similar to OnlyTemporal
         let end_timestamp =
             self.validate_and_align_end_timestamp(query_time, QueryPatternType::OnlyTemporal);
-        let scrape_intervals = match_result.outer_data().time_info.get_duration() as u64;
+        let scrape_intervals = match_result.outer_data()?.time_info.get_duration() as u64;
         let start_timestamp =
             end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000);
 
@@ -2116,7 +2131,7 @@ impl SimpleEngine {
             self.streaming_config
                 .find_compatible_aggregation(&requirements)?
         };
-        let metric = &match_result.outer_data().metric;
+        let metric = &match_result.outer_data()?.metric;
 
         self.build_sql_execution_context_tail(
             metric,
