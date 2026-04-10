@@ -1286,16 +1286,16 @@ mod tests {
         );
 
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(1_000_i64, 1.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(1_000_i64, 1.0)]))
             .unwrap();
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(5_000_i64, 2.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(5_000_i64, 2.0)]))
             .unwrap();
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(9_000_i64, 3.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(9_000_i64, 3.0)]))
             .unwrap();
         worker
-            .process_samples("cpu{host=\"A\"}", vec![(10_000_i64, 0.0)])
+            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(10_000_i64, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
@@ -1307,48 +1307,19 @@ mod tests {
             .downcast_ref::<MultipleSumAccumulator>()
             .expect("hand-crafted engine should emit MultipleSumAccumulator");
 
-        let mut arroyo_sums = HashMap::new();
-        arroyo_sums.insert("A".to_string(), 6.0);
-        let arroyo_precompute_bytes =
-            rmp_serde::to_vec(&arroyo_sums).expect("Arroyo MessagePack encoding should succeed");
-
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder
-            .write_all(&arroyo_precompute_bytes)
-            .expect("gzip encoding should succeed");
-        let arroyo_json = json!({
-            "aggregation_id": 11,
-            "window": {
-                "start": "1970-01-01T00:00:00",
-                "end": "1970-01-01T00:00:10"
-            },
-            "key": "A",
-            "precompute": hex::encode(encoder.finish().expect("gzip finalize should succeed"))
-        });
-
-        let streaming_config = StreamingConfig::new(agg_configs);
-        let (arroyo_output, arroyo_acc) =
-            PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config)
-                .expect("Arroyo precompute should deserialize");
-        let arroyo_acc = arroyo_acc
-            .as_any()
-            .downcast_ref::<MultipleSumAccumulator>()
-            .expect("Arroyo payload should deserialize to MultipleSumAccumulator");
-
+        // grouping=["host"] means the host value goes in the outer key ("A"),
+        // and aggregated=[] means the accumulator sub-key has no labels.
+        assert_eq!(handcrafted_output.aggregation_id, 11);
+        assert_eq!(handcrafted_output.start_timestamp, 0);
+        assert_eq!(handcrafted_output.end_timestamp, 10_000);
         assert_eq!(
-            handcrafted_output.aggregation_id,
-            arroyo_output.aggregation_id
+            handcrafted_output.key,
+            Some(KeyByLabelValues::new_with_labels(vec!["A".to_string()]))
         );
-        assert_eq!(
-            handcrafted_output.start_timestamp,
-            arroyo_output.start_timestamp
-        );
-        assert_eq!(
-            handcrafted_output.end_timestamp,
-            arroyo_output.end_timestamp
-        );
-        assert_eq!(handcrafted_output.key, arroyo_output.key);
-        assert_eq!(handcrafted_acc.sums, arroyo_acc.sums);
+
+        let mut expected_sums = HashMap::new();
+        expected_sums.insert(KeyByLabelValues::new_with_labels(vec![]), 6.0);
+        assert_eq!(handcrafted_acc.sums, expected_sums);
     }
 
     #[test]
@@ -1451,7 +1422,7 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_arroyosketch_multiple_sum_matches_handcrafted_precompute_output() {
+    fn test_arroyosketch_multiple_sum_empty_grouping_matches_handcrafted_precompute_output() {
         // Like planner output: grouping=[], aggregated=[host]
         let config = make_agg_config_full(
             11,
