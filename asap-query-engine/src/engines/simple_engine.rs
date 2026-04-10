@@ -1155,7 +1155,13 @@ impl SimpleEngine {
             query_kwargs,
         };
 
-        let agg_info = self.get_aggregation_id_info(query_config);
+        let agg_info = self
+            .get_aggregation_id_info(query_config)
+            .map_err(|e| {
+                warn!("{}", e);
+                e
+            })
+            .ok()?;
 
         let query_plan = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
@@ -1594,6 +1600,32 @@ impl SimpleEngine {
         }
     }
 
+    /// Parse a lowercase aggregation name into exactly one `Statistic`.
+    ///
+    /// Returns `None` (with a warning) if the name is not a recognised
+    /// `AggregationOperator` or if it maps to a number of statistics other
+    /// than one. Centralises the three previously-scattered copies of this
+    /// logic, which had inconsistent error handling (silent empty vec, panic,
+    /// and warn+return-None).
+    fn parse_single_statistic(statistic_name: &str) -> Option<Statistic> {
+        let stats = statistic_name
+            .parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_else(|_| {
+                warn!("Unsupported statistic name: '{}'", statistic_name);
+                vec![]
+            });
+        if stats.len() != 1 {
+            warn!(
+                "Expected exactly one statistic for '{}', found {}",
+                statistic_name,
+                stats.len()
+            );
+            return None;
+        }
+        stats.into_iter().next()
+    }
+
     /// Extract QueryRequirements from a parsed SQL match result.
     /// Used as the fallback path when no query_configs entry is found.
     fn build_query_requirements_sql(
@@ -1612,10 +1644,9 @@ impl SimpleEngine {
             _ => query_data.aggregation_info.get_name().to_lowercase(),
         };
 
-        let statistics: Vec<Statistic> = statistic_name
-            .parse::<AggregationOperator>()
-            .map(|o| o.to_statistics())
-            .unwrap_or_default();
+        let statistics: Vec<Statistic> = Self::parse_single_statistic(&statistic_name)
+            .into_iter()
+            .collect();
 
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
@@ -1641,69 +1672,84 @@ impl SimpleEngine {
         }
     }
 
-    fn get_aggregation_id_info(&self, query_config: &QueryConfig) -> AggregationIdInfo {
+    fn get_aggregation_id_info(
+        &self,
+        query_config: &QueryConfig,
+    ) -> Result<AggregationIdInfo, String> {
         let query_config_aggregations = &query_config.aggregations;
+
+        if query_config_aggregations.is_empty() {
+            return Err("Query config has no aggregations defined".to_string());
+        }
+        if query_config_aggregations.len() > 2 {
+            return Err("Query config with > 2 aggregations is not supported".to_string());
+        }
+
         let mut aggregation_id_for_key: Option<u64> = None;
         let mut aggregation_id_for_value: Option<u64> = None;
         let mut aggregation_type_for_key: Option<AggregationType> = None;
         let mut aggregation_type_for_value: Option<AggregationType> = None;
 
-        if query_config_aggregations.is_empty() {
-            panic!("Query config for query has no aggregations defined",);
-        } else if query_config_aggregations.len() > 2 {
-            panic!("Query config with > 2 aggregations is not supported");
-        } else if query_config_aggregations.len() == 2 {
+        if query_config_aggregations.len() == 2 {
             for aggregation in query_config_aggregations {
                 let aggregation_type = self
                     .streaming_config
                     .get_aggregation_config(aggregation.aggregation_id)
-                    .map(|config| config.aggregation_type);
+                    .map(|config| config.aggregation_type)
+                    .ok_or_else(|| {
+                        format!(
+                            "No streaming config for aggregation_id {}",
+                            aggregation.aggregation_id
+                        )
+                    })?;
 
                 if matches!(
-                    aggregation_type.as_ref().unwrap(),
+                    aggregation_type,
                     AggregationType::DeltaSetAggregator | AggregationType::SetAggregator
                 ) {
                     if aggregation_id_for_key.is_some() {
-                        panic!("Aggregation ID for key must be None");
-                    }
-                    if aggregation_type_for_key.is_some() {
-                        panic!("Aggregation type for key must be None");
+                        return Err(
+                            "Query config has two key-type aggregations (expected at most one)"
+                                .to_string(),
+                        );
                     }
                     aggregation_id_for_key = Some(aggregation.aggregation_id);
-                    aggregation_type_for_key = aggregation_type;
+                    aggregation_type_for_key = Some(aggregation_type);
                 } else {
                     if aggregation_id_for_value.is_some() {
-                        panic!("Aggregation ID for value must be None");
+                        return Err(
+                            "Query config has two value-type aggregations (expected at most one)"
+                                .to_string(),
+                        );
                     }
                     aggregation_id_for_value = Some(aggregation.aggregation_id);
-                    aggregation_type_for_value = aggregation_type;
+                    aggregation_type_for_value = Some(aggregation_type);
                 }
             }
         } else {
-            aggregation_id_for_key = Some(query_config_aggregations[0].aggregation_id);
-            aggregation_id_for_value = aggregation_id_for_key;
-            // aggregation_type_for_key = Some(query_config_aggregations[0].aggregation_type.clone());
-            aggregation_type_for_key = self
+            // Single aggregation: key and value share the same aggregation
+            let id = query_config_aggregations[0].aggregation_id;
+            let agg_type = self
                 .streaming_config
-                .get_aggregation_config(aggregation_id_for_key.unwrap())
-                .map(|config| config.aggregation_type);
-            aggregation_type_for_value = self
-                .streaming_config
-                .get_aggregation_config(aggregation_id_for_value.unwrap())
-                .map(|config| config.aggregation_type);
+                .get_aggregation_config(id)
+                .map(|config| config.aggregation_type)
+                .ok_or_else(|| format!("No streaming config for aggregation_id {id}"))?;
+            aggregation_id_for_key = Some(id);
+            aggregation_id_for_value = Some(id);
+            aggregation_type_for_key = Some(agg_type);
+            aggregation_type_for_value = Some(agg_type);
         }
 
-        // check for None
-        if aggregation_id_for_key.is_none() || aggregation_id_for_value.is_none() {
-            panic!("Aggregation IDs must not be None");
-        }
-
-        AggregationIdInfo {
-            aggregation_id_for_key: aggregation_id_for_key.unwrap(),
-            aggregation_id_for_value: aggregation_id_for_value.unwrap(),
-            aggregation_type_for_key: aggregation_type_for_key.unwrap(),
-            aggregation_type_for_value: aggregation_type_for_value.unwrap(),
-        }
+        Ok(AggregationIdInfo {
+            aggregation_id_for_key: aggregation_id_for_key
+                .ok_or("aggregation_id_for_key was not set")?,
+            aggregation_id_for_value: aggregation_id_for_value
+                .ok_or("aggregation_id_for_value was not set")?,
+            aggregation_type_for_key: aggregation_type_for_key
+                .ok_or("aggregation_type_for_key was not set")?,
+            aggregation_type_for_value: aggregation_type_for_value
+                .ok_or("aggregation_type_for_value was not set")?,
+        })
     }
 
     pub fn handle_query_sql(
@@ -1875,22 +1921,10 @@ impl SimpleEngine {
             }
         };
 
-        let statistics_to_compute: Vec<Statistic> = statistic_name
-            .parse::<AggregationOperator>()
-            .map(|o| o.to_statistics())
-            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
-
-        if statistics_to_compute.len() != 1 {
-            warn!(
-                "Expected exactly one statistic to compute, found {}",
-                statistics_to_compute.len()
-            );
-            return None;
-        }
-        let statistic_to_compute = statistics_to_compute.first().unwrap();
+        let statistic_to_compute = Self::parse_single_statistic(&statistic_name)?;
 
         let query_kwargs = self
-            .build_query_kwargs_sql(statistic_to_compute, &match_result)
+            .build_query_kwargs_sql(&statistic_to_compute, &match_result)
             .map_err(|e| {
                 warn!("{}", e);
                 e
@@ -1900,7 +1934,7 @@ impl SimpleEngine {
         // Create query metadata
         let metadata = QueryMetadata {
             query_output_labels: query_output_labels.clone(),
-            statistic_to_compute: *statistic_to_compute,
+            statistic_to_compute,
             query_kwargs: query_kwargs.clone(),
         };
 
@@ -1913,6 +1947,11 @@ impl SimpleEngine {
             self.find_query_config_sql(&query_data)
         {
             self.get_aggregation_id_info(config)
+                .map_err(|e| {
+                    warn!("{}", e);
+                    e
+                })
+                .ok()?
         } else {
             warn!("No query_config entry for SQL query. Attempting capability-based matching.");
             let requirements = self.build_query_requirements_sql(&match_result, query_pattern_type);
@@ -1997,22 +2036,10 @@ impl SimpleEngine {
             .get_name()
             .to_lowercase();
 
-        let statistics_to_compute: Vec<Statistic> = statistic_name
-            .parse::<AggregationOperator>()
-            .map(|o| o.to_statistics())
-            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
-
-        if statistics_to_compute.len() != 1 {
-            warn!(
-                "Expected exactly one statistic to compute, found {}",
-                statistics_to_compute.len()
-            );
-            return None;
-        }
-        let statistic_to_compute = statistics_to_compute.first().unwrap();
+        let statistic_to_compute = Self::parse_single_statistic(&statistic_name)?;
 
         let query_kwargs = self
-            .build_query_kwargs_sql(statistic_to_compute, match_result)
+            .build_query_kwargs_sql(&statistic_to_compute, match_result)
             .map_err(|e| {
                 warn!("{}", e);
                 e
@@ -2021,7 +2048,7 @@ impl SimpleEngine {
 
         let metadata = QueryMetadata {
             query_output_labels: query_output_labels.clone(),
-            statistic_to_compute: *statistic_to_compute,
+            statistic_to_compute,
             query_kwargs: query_kwargs.clone(),
         };
 
@@ -2042,6 +2069,11 @@ impl SimpleEngine {
             self.find_query_config_sql(query_data)
         {
             self.get_aggregation_id_info(config)
+                .map_err(|e| {
+                    warn!("{}", e);
+                    e
+                })
+                .ok()?
         } else {
             warn!(
                     "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
@@ -2148,7 +2180,13 @@ impl SimpleEngine {
 
         // TODO: Figure out how to handle query configuration for ElasticSearch queries.
         let query_config = self.find_query_config(&query)?;
-        let agg_info = self.get_aggregation_id_info(query_config);
+        let agg_info = self
+            .get_aggregation_id_info(query_config)
+            .map_err(|e| {
+                warn!("{}", e);
+                e
+            })
+            .ok()?;
 
         let do_merge = true; // No "instant" queries in ElasticSearch supported for now, so we always need to merge.
 
@@ -2809,6 +2847,11 @@ impl SimpleEngine {
         // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
         let agg_info: AggregationIdInfo = if let Some(config) = self.find_query_config(&query) {
             self.get_aggregation_id_info(config)
+                .map_err(|e| {
+                    warn!("{}", e);
+                    e
+                })
+                .ok()?
         } else {
             warn!(
                 "No query_config entry for PromQL query '{}'. Attempting capability-based matching.",
@@ -3109,8 +3152,6 @@ impl SimpleEngine {
         Ok(keys.into_iter().take(k).collect())
     }
 
-    /// Query a precompute for a specific statistic
-    /// This follows the Python approach where precompute.query(statistic, key) is called
     fn query_precompute_for_statistic(
         &self,
         precompute: &dyn AggregateCore,
@@ -3118,145 +3159,7 @@ impl SimpleEngine {
         key: &Option<KeyByLabelValues>,
         query_kwargs: &HashMap<String, String>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-        // Handle different accumulator types and statistics using the trait methods
-        // TODO: change this logic to just check Single vs MultipleSubpopulationAggregate
-        match precompute.get_accumulator_type() {
-            AggregationType::Sum => {
-                if let Some(sum_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::sum_accumulator::SumAccumulator>() {
-                    use crate::data_model::SingleSubpopulationAggregate;
-                    sum_acc.query(*statistic, None)
-                } else {
-                    Err("Failed to downcast to SumAccumulator".into())
-                }
-            }
-            AggregationType::MinMax => {
-                if let Some(minmax_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::min_max_accumulator::MinMaxAccumulator>() {
-                    use crate::data_model::SingleSubpopulationAggregate;
-                    minmax_acc.query(*statistic, None)
-                } else {
-                    Err("Failed to downcast to MinMaxAccumulator".into())
-                }
-            }
-            AggregationType::Increase => {
-                if let Some(inc_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::increase_accumulator::IncreaseAccumulator>() {
-                    use crate::data_model::SingleSubpopulationAggregate;
-                    inc_acc.query(*statistic, None)
-                } else {
-                    Err("Failed to downcast to IncreaseAccumulator".into())
-                }
-            }
-            AggregationType::MultipleSum => {
-                if let Some(multi_sum_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator>() {
-                    if let Some(key_val) = key {
-                        use crate::data_model::MultipleSubpopulationAggregate;
-                        multi_sum_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        Err("Key required for MultipleSumAccumulator".into())
-                    }
-                } else {
-                    Err("Failed to downcast to MultipleSumAccumulator".into())
-                }
-            }
-            AggregationType::MultipleMinMax => {
-                if let Some(multi_minmax_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::multiple_min_max_accumulator::MultipleMinMaxAccumulator>() {
-                    if let Some(key_val) = key {
-                        use crate::data_model::MultipleSubpopulationAggregate;
-                        multi_minmax_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        Err("Key required for MultipleMinMaxAccumulator".into())
-                    }
-                } else {
-                    Err("Failed to downcast to MultipleMinMaxAccumulator".into())
-                }
-            }
-            AggregationType::MultipleIncrease => {
-                if let Some(multi_inc_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::multiple_increase_accumulator::MultipleIncreaseAccumulator>() {
-                    if let Some(key_val) = key {
-                        use crate::data_model::MultipleSubpopulationAggregate;
-                        multi_inc_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        Err("Key required for MultipleIncreaseAccumulator".into())
-                    }
-                } else {
-                    Err("Failed to downcast to MultipleIncreaseAccumulator".into())
-                }
-            }
-            AggregationType::CountMinSketch => {
-                if let Some(cms_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator>() {
-                    use crate::data_model::MultipleSubpopulationAggregate;
-                    if let Some(key_val) = key {
-                        cms_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        Err("Key required for CountMinSketchAccumulator".into())
-                    }
-                } else {
-                    Err("Failed to downcast to CountMinSketchAccumulator".into())
-                }
-            }
-            AggregationType::CountMinSketchWithHeap => {
-                if let Some(cms_heap_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::count_min_sketch_with_heap_accumulator::CountMinSketchWithHeapAccumulator>() {
-                    use crate::data_model::MultipleSubpopulationAggregate;
-                    if let Some(key_val) = key {
-                        cms_heap_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        Err("Key required for CountMinSketchWithHeapAccumulator".into())
-                    }
-                } else {
-                    Err("Failed to downcast to CountMinSketchWithHeapAccumulator".into())
-                }
-            }
-            AggregationType::DatasketchesKLL => {
-                if let Some(kll_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator>() {
-                    use crate::data_model::SingleSubpopulationAggregate;
-                    kll_acc.query(*statistic, Some(query_kwargs))
-                } else {
-                    Err("Failed to downcast to DatasketchesKLLAccumulator".into())
-                }
-            }
-            AggregationType::HydraKLL => {
-                if let Some(hydra_kll_acc) = precompute.as_any()
-                    .downcast_ref::<crate::precompute_operators::hydra_kll_accumulator::HydraKllSketchAccumulator>()
-                {
-                    if let Some(key_val) = key {
-                        use crate::data_model::MultipleSubpopulationAggregate;
-                        hydra_kll_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        Err("Key required for HydraKllSketchAccumulator".into())
-                    }
-                } else {
-                    Err("Failed to downcast to HydraKllSketchAccumulator".into())
-                }
-            }
-            AggregationType::DeltaSetAggregator => {
-                if let Some(delta_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator>() {
-                    if let Some(key_val) = key {
-                        use crate::data_model::MultipleSubpopulationAggregate;
-                        delta_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        // For DeltaSetAggregatorAccumulator without a key, return the union size
-                        Ok((delta_acc.added.union(&delta_acc.removed).count()) as f64)
-                    }
-                } else {
-                    Err("Failed to downcast to DeltaSetAggregatorAccumulator".into())
-                }
-            }
-            AggregationType::SetAggregator => {
-                if let Some(set_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::set_aggregator_accumulator::SetAggregatorAccumulator>() {
-                    if let Some(key_val) = key {
-                        use crate::data_model::MultipleSubpopulationAggregate;
-                        set_acc.query(*statistic, key_val, Some(query_kwargs))
-                    } else {
-                        // For SetAggregatorAccumulator without a key, return the set size
-                        Ok(set_acc.added.len() as f64)
-                    }
-                } else {
-                    Err("Failed to downcast to SetAggregatorAccumulator".into())
-                }
-            }
-            other => {
-                Err(format!("Unknown accumulator type: {other:?}").into())
-            }
-        }
+        precompute.query_statistic(*statistic, key, query_kwargs)
     }
 
     // ============================================================
@@ -3791,6 +3694,15 @@ mod range_query_tests {
 
         fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
             None
+        }
+
+        fn query_statistic(
+            &self,
+            _statistic: promql_utilities::query_logics::enums::Statistic,
+            _key: &Option<KeyByLabelValues>,
+            _query_kwargs: &std::collections::HashMap<String, String>,
+        ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+            Err("MockBucketAccumulator does not support query_statistic".into())
         }
     }
 

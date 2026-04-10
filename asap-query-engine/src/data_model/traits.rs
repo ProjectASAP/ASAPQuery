@@ -30,6 +30,20 @@ pub trait AggregateCore: SerializableToSink + Send + Sync {
 
     /// Get all keys stored in this accumulator
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>>;
+
+    /// Dispatch a statistic query without downcasting.
+    ///
+    /// Replaces the 12-arm `match get_accumulator_type()` in the engine.
+    /// Single-subpopulation types ignore `key`; multiple-subpopulation types
+    /// require it and return `Err` when it is `None`.
+    /// Special cases (DeltaSetAggregator, SetAggregator) fall back to a
+    /// cardinality value when `key` is `None`.
+    fn query_statistic(
+        &self,
+        statistic: Statistic,
+        key: &Option<KeyByLabelValues>,
+        query_kwargs: &HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 /// Trait for accumulators that support a single subpopulation

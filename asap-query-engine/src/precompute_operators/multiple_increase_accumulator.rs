@@ -285,6 +285,19 @@ impl AggregateCore for MultipleIncreaseAccumulator {
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
         Some(self.increases.keys().cloned().collect())
     }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        key: &Option<KeyByLabelValues>,
+        query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::MultipleSubpopulationAggregate;
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for MultipleIncreaseAccumulator")?;
+        self.query(statistic, key_val, Some(query_kwargs))
+    }
 }
 
 impl MultipleSubpopulationAggregate for MultipleIncreaseAccumulator {

@@ -248,6 +248,16 @@ impl AggregateCore for IncreaseAccumulator {
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
         None
     }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        _key: &Option<crate::KeyByLabelValues>,
+        _query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::SingleSubpopulationAggregate;
+        self.query(statistic, None)
+    }
 }
 
 impl SingleSubpopulationAggregate for IncreaseAccumulator {
