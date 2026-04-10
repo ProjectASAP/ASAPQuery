@@ -1286,16 +1286,32 @@ mod tests {
         );
 
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(1_000_i64, 1.0)]))
+            .process_group_samples(
+                11,
+                "A",
+                group_samples("cpu{host=\"A\"}", vec![(1_000_i64, 1.0)]),
+            )
             .unwrap();
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(5_000_i64, 2.0)]))
+            .process_group_samples(
+                11,
+                "A",
+                group_samples("cpu{host=\"A\"}", vec![(5_000_i64, 2.0)]),
+            )
             .unwrap();
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(9_000_i64, 3.0)]))
+            .process_group_samples(
+                11,
+                "A",
+                group_samples("cpu{host=\"A\"}", vec![(9_000_i64, 3.0)]),
+            )
             .unwrap();
         worker
-            .process_group_samples(11, "A", group_samples("cpu{host=\"A\"}", vec![(10_000_i64, 0.0)]))
+            .process_group_samples(
+                11,
+                "A",
+                group_samples("cpu{host=\"A\"}", vec![(10_000_i64, 0.0)]),
+            )
             .unwrap();
 
         let captured = sink.drain();
