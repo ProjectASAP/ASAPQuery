@@ -1,6 +1,9 @@
 use std::fmt;
 use std::str::FromStr;
 
+// Re-export AggregationType from promql_utilities (defined there to avoid circular deps).
+pub use promql_utilities::query_logics::enums::AggregationType;
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum QueryLanguage {

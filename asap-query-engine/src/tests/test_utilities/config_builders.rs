@@ -4,8 +4,8 @@
 //! and SQLSchema objects for testing.
 
 use crate::data_model::{
-    AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, PromQLSchema,
-    QueryConfig, SchemaConfig, StreamingConfig, WindowType,
+    AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+    PromQLSchema, QueryConfig, SchemaConfig, StreamingConfig, WindowType,
 };
 use promql_utilities::data_model::KeyByLabelNames;
 use sql_utilities::sqlhelper::{SQLSchema, Table};
@@ -90,7 +90,7 @@ impl TestConfigBuilder {
         // Create streaming config for this aggregation
         let agg_config = AggregationConfig {
             aggregation_id: agg_id,
-            aggregation_type: "SumAccumulator".to_string(),
+            aggregation_type: AggregationType::Sum,
             aggregation_sub_type: String::new(),
             parameters: HashMap::new(),
             grouping_labels: KeyByLabelNames::new(self.grouping_labels.clone()),
@@ -127,7 +127,7 @@ impl TestConfigBuilder {
 
         let agg_config = AggregationConfig {
             aggregation_id: agg_id,
-            aggregation_type: "SumAccumulator".to_string(),
+            aggregation_type: AggregationType::Sum,
             aggregation_sub_type: String::new(),
             parameters: HashMap::new(),
             grouping_labels: KeyByLabelNames::new(self.grouping_labels.clone()),
@@ -170,7 +170,7 @@ impl TestConfigBuilder {
 
         let agg_config = AggregationConfig {
             aggregation_id: agg_id,
-            aggregation_type: "SumAccumulator".to_string(), // For collapsable sum queries
+            aggregation_type: AggregationType::Sum, // For collapsable sum queries
             aggregation_sub_type: String::new(),
             parameters: HashMap::new(),
             grouping_labels: KeyByLabelNames::new(self.grouping_labels.clone()),

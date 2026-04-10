@@ -10,7 +10,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::WindowType;
+    use crate::data_model::{AggregationType, WindowType};
     use crate::precompute_operators::DatasketchesKLLAccumulator;
     use crate::tests::test_utilities::engine_factories::*;
 
@@ -47,7 +47,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
@@ -77,7 +77,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
@@ -114,7 +114,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
@@ -151,7 +151,7 @@ mod tests {
         let query = "quantile_over_time(0.5, latency[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "latency",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             data,
             query,
@@ -189,7 +189,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
@@ -222,7 +222,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![],
             query,
@@ -243,7 +243,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -267,7 +267,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -320,7 +320,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
@@ -372,7 +372,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
@@ -407,7 +407,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -435,7 +435,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -463,7 +463,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![],
             query,
@@ -499,7 +499,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
@@ -529,7 +529,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,

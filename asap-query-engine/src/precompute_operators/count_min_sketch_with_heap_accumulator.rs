@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink,
 };
 use serde_json::Value;
 use sketch_core::count_min_with_heap::{CountMinSketchWithHeap, HeapItem};
@@ -171,8 +171,8 @@ impl AggregateCore for CountMinSketchWithHeapAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "CountMinSketchWithHeapAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::CountMinSketchWithHeap
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {

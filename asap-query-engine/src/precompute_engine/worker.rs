@@ -617,13 +617,13 @@ mod tests {
     use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
-    use asap_types::enums::WindowType;
+    use asap_types::enums::{AggregationType, WindowType};
     use sketch_core::kll::KllSketch;
 
     fn make_agg_config(
         id: u64,
         metric: &str,
-        agg_type: &str,
+        agg_type: AggregationType,
         agg_sub_type: &str,
         window_secs: u64,
         slide_secs: u64,
@@ -636,7 +636,7 @@ mod tests {
         };
         AggregationConfig::new(
             id,
-            agg_type.to_string(),
+            agg_type,
             agg_sub_type.to_string(),
             HashMap::new(),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
@@ -726,7 +726,15 @@ mod tests {
     #[test]
     fn test_tumbling_window_correctness() {
         // 10s tumbling window
-        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            1,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(1, config);
 
@@ -790,7 +798,15 @@ mod tests {
     #[test]
     fn test_sliding_window_pane_sharing() {
         // 30s window, 10s slide → W=3 panes per window
-        let config = make_agg_config(2, "cpu", "SingleSubpopulation", "Sum", 30, 10, vec![]);
+        let config = make_agg_config(
+            2,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            30,
+            10,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(2, config);
 
@@ -858,7 +874,7 @@ mod tests {
         let config = make_agg_config(
             3,
             "cpu",
-            "MultipleSubpopulation",
+            AggregationType::MultipleSubpopulation,
             "Sum",
             10,
             0,
@@ -931,7 +947,15 @@ mod tests {
 
     #[test]
     fn test_arroyosketch_multiple_sum_matches_handcrafted_precompute_output() {
-        let config = make_agg_config(11, "cpu", "MultipleSum", "sum", 10, 0, vec!["host"]);
+        let config = make_agg_config(
+            11,
+            "cpu",
+            AggregationType::MultipleSum,
+            "sum",
+            10,
+            0,
+            vec!["host"],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(11, config.clone());
 
@@ -1012,7 +1036,15 @@ mod tests {
 
     #[test]
     fn test_arroyosketch_kll_matches_handcrafted_precompute_output() {
-        let mut config = make_agg_config(12, "latency", "DatasketchesKLL", "", 10, 0, vec![]);
+        let mut config = make_agg_config(
+            12,
+            "latency",
+            AggregationType::DatasketchesKLL,
+            "",
+            10,
+            0,
+            vec![],
+        );
         config
             .parameters
             .insert("K".to_string(), serde_json::Value::from(20_u64));
@@ -1108,7 +1140,15 @@ mod tests {
 
     #[test]
     fn test_late_data_drop() {
-        let config = make_agg_config(4, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            4,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(4, config);
 
@@ -1150,7 +1190,15 @@ mod tests {
 
     #[test]
     fn test_late_data_forward_to_store() {
-        let config = make_agg_config(5, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            5,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(5, config);
 
@@ -1289,7 +1337,7 @@ aggregations:
     fn test_extract_key_from_series() {
         let config = AggregationConfig::new(
             1,
-            "SingleSubpopulation".to_string(),
+            AggregationType::SingleSubpopulation,
             "Sum".to_string(),
             HashMap::new(),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![

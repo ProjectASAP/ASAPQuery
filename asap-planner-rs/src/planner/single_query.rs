@@ -3,7 +3,8 @@ use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{
-    AggregationOperator, PromQLFunction, QueryPatternType, QueryTreatmentType, Statistic,
+    AggregationOperator, AggregationType, PromQLFunction, QueryPatternType, QueryTreatmentType,
+    Statistic,
 };
 use promql_utilities::query_logics::logics::{
     get_is_collapsable, map_statistic_to_precompute_operator,
@@ -57,7 +58,7 @@ fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::E
 /// Internal representation of an aggregation config before IDs are assigned
 #[derive(Debug, Clone)]
 pub struct IntermediateAggConfig {
-    pub aggregation_type: String,
+    pub aggregation_type: AggregationType,
     pub aggregation_sub_type: String,
     pub window_type: WindowType,
     pub window_size: u64,
@@ -315,7 +316,7 @@ impl SingleQueryProcessor {
             None,
             None,
             &spatial_filter,
-            |agg_type, agg_sub_type| {
+            |agg_type: AggregationType, agg_sub_type: &str| {
                 build_sketch_parameters_from_promql(
                     agg_type,
                     agg_sub_type,
@@ -410,7 +411,7 @@ pub fn build_agg_configs_for_statistics(
     table_name: Option<&str>,
     value_column: Option<&str>,
     spatial_filter: &str,
-    get_params: impl Fn(&str, &str) -> Result<HashMap<String, Value>, String>,
+    get_params: impl Fn(AggregationType, &str) -> Result<HashMap<String, Value>, String>,
 ) -> Result<Vec<IntermediateAggConfig>, String> {
     let mut configs = Vec::new();
 
@@ -422,17 +423,20 @@ pub fn build_agg_configs_for_statistics(
         let mut aggregated = KeyByLabelNames::empty();
         set_subpopulation_labels(
             statistic,
-            &agg_type,
+            agg_type,
             subpopulation_labels,
             &mut rollup.clone(),
             &mut grouping,
             &mut aggregated,
         );
 
-        if matches!(agg_type.as_str(), "CountMinSketch" | "HydraKLL") {
-            let delta_params = get_params("DeltaSetAggregator", "")?;
+        if matches!(
+            agg_type,
+            AggregationType::CountMinSketch | AggregationType::HydraKLL
+        ) {
+            let delta_params = get_params(AggregationType::DeltaSetAggregator, "")?;
             configs.push(IntermediateAggConfig {
-                aggregation_type: "DeltaSetAggregator".to_string(),
+                aggregation_type: AggregationType::DeltaSetAggregator,
                 aggregation_sub_type: String::new(),
                 window_type: window_cfg.window_type,
                 window_size: window_cfg.window_size,
@@ -448,7 +452,7 @@ pub fn build_agg_configs_for_statistics(
             });
         }
 
-        let parameters = get_params(&agg_type, &agg_sub_type)?;
+        let parameters = get_params(agg_type, &agg_sub_type)?;
         configs.push(IntermediateAggConfig {
             aggregation_type: agg_type,
             aggregation_sub_type: agg_sub_type,
@@ -477,7 +481,7 @@ mod tests {
 
     fn base_config() -> IntermediateAggConfig {
         IntermediateAggConfig {
-            aggregation_type: "MultipleIncrease".to_string(),
+            aggregation_type: AggregationType::MultipleIncrease,
             aggregation_sub_type: "rate".to_string(),
             window_type: WindowType::Tumbling,
             window_size: 300,
@@ -511,7 +515,7 @@ mod tests {
     fn different_aggregation_type_produces_different_key() {
         let cfg1 = base_config();
         let mut cfg2 = base_config();
-        cfg2.aggregation_type = "DatasketchesKLL".to_string();
+        cfg2.aggregation_type = AggregationType::DatasketchesKLL;
         assert_ne!(cfg1.identifying_key(), cfg2.identifying_key());
     }
 

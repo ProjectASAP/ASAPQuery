@@ -1,4 +1,4 @@
-use crate::data_model::{AggregateCore, KeyByLabelValues, Measurement};
+use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, DatasketchesKLLAccumulator, HydraKllSketchAccumulator,
     IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
@@ -515,20 +515,14 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 /// in the corresponding struct.
 pub fn config_is_keyed(config: &AggregationConfig) -> bool {
     matches!(
-        config.aggregation_type.as_str(),
-        "MultipleSubpopulation"
-            | "MultipleSum"
-            | "multiple_sum"
-            | "MultipleIncrease"
-            | "multiple_increase"
-            | "MultipleMinMax"
-            | "multiple_min_max"
-            | "CountMinSketch"
-            | "count_min_sketch"
-            | "CMS"
-            | "cms"
-            | "HydraKLL"
-            | "hydra_kll"
+        config.aggregation_type,
+        AggregationType::MultipleSubpopulation
+            | AggregationType::MultipleSum
+            | AggregationType::MultipleIncrease
+            | AggregationType::MultipleMinMax
+            | AggregationType::CountMinSketch
+            | AggregationType::CountMinSketchWithHeap
+            | AggregationType::HydraKLL
     )
 }
 
@@ -570,11 +564,10 @@ fn hydra_kll_params(config: &AggregationConfig) -> (usize, usize, u16) {
 
 /// Create an appropriate `AccumulatorUpdater` from an `AggregationConfig`.
 pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn AccumulatorUpdater> {
-    let agg_type = config.aggregation_type.as_str();
     let sub_type = config.aggregation_sub_type.as_str();
 
-    match agg_type {
-        "SingleSubpopulation" => match sub_type {
+    match config.aggregation_type {
+        AggregationType::SingleSubpopulation => match sub_type {
             "Sum" | "sum" => Box::new(SumAccumulatorUpdater::new()),
             "Min" | "min" => Box::new(MinMaxAccumulatorUpdater::new("min".to_string())),
             "Max" | "max" => Box::new(MinMaxAccumulatorUpdater::new("max".to_string())),
@@ -590,7 +583,7 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
                 Box::new(SumAccumulatorUpdater::new())
             }
         },
-        "MultipleSubpopulation" => match sub_type {
+        AggregationType::MultipleSubpopulation => match sub_type {
             "Sum" | "sum" => Box::new(MultipleSumUpdater::new()),
             "Min" | "min" => Box::new(MultipleMinMaxUpdater::new("min".to_string())),
             "Max" | "max" => Box::new(MultipleMinMaxUpdater::new("max".to_string())),
@@ -611,34 +604,38 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
                 Box::new(MultipleSumUpdater::new())
             }
         },
-        // Top-level aggregation type aliases
-        "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
+        AggregationType::DatasketchesKLL => {
             Box::new(KllAccumulatorUpdater::new(kll_k_param(config)))
         }
-        "MultipleSum" | "multiple_sum" => Box::new(MultipleSumUpdater::new()),
-        "MultipleIncrease" | "multiple_increase" => Box::new(MultipleIncreaseUpdater::new()),
-        "MultipleMinMax" | "multiple_min_max" => Box::new(MultipleMinMaxUpdater::new(
+        AggregationType::MultipleSum => Box::new(MultipleSumUpdater::new()),
+        AggregationType::MultipleIncrease => Box::new(MultipleIncreaseUpdater::new()),
+        AggregationType::MultipleMinMax => Box::new(MultipleMinMaxUpdater::new(
             if sub_type.eq_ignore_ascii_case("max") {
                 "max".to_string()
             } else {
                 "min".to_string()
             },
         )),
-        "Sum" | "sum" => Box::new(SumAccumulatorUpdater::new()),
-        "Min" | "min" => Box::new(MinMaxAccumulatorUpdater::new("min".to_string())),
-        "Max" | "max" => Box::new(MinMaxAccumulatorUpdater::new("max".to_string())),
-        "Increase" | "increase" => Box::new(IncreaseAccumulatorUpdater::new()),
-        "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
+        AggregationType::Sum => Box::new(SumAccumulatorUpdater::new()),
+        AggregationType::MinMax => Box::new(MinMaxAccumulatorUpdater::new(
+            if sub_type.eq_ignore_ascii_case("max") {
+                "max".to_string()
+            } else {
+                "min".to_string()
+            },
+        )),
+        AggregationType::Increase => Box::new(IncreaseAccumulatorUpdater::new()),
+        AggregationType::CountMinSketch | AggregationType::CountMinSketchWithHeap => {
             let (row_num, col_num) = cms_params(config);
             Box::new(CmsAccumulatorUpdater::new(row_num, col_num))
         }
-        "HydraKLL" | "hydra_kll" => {
+        AggregationType::HydraKLL => {
             let (row_num, col_num, k) = hydra_kll_params(config);
             Box::new(HydraKllAccumulatorUpdater::new(row_num, col_num, k))
         }
         other => {
             tracing::warn!(
-                "Unknown aggregation_type '{}', defaulting to SingleSubpopulation Sum",
+                "Unknown aggregation_type '{:?}', defaulting to SingleSubpopulation Sum",
                 other
             );
             Box::new(SumAccumulatorUpdater::new())
@@ -649,7 +646,7 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use asap_types::enums::WindowType;
+    use asap_types::enums::{AggregationType, WindowType};
 
     #[test]
     fn test_sum_updater() {
@@ -725,10 +722,10 @@ mod tests {
     fn test_config_is_keyed() {
         use std::collections::HashMap;
 
-        let make_config = |agg_type: &str, sub_type: &str| {
+        let make_config = |agg_type: AggregationType, sub_type: &str| {
             AggregationConfig::new(
                 1,
-                agg_type.to_string(),
+                agg_type,
                 sub_type.to_string(),
                 HashMap::new(),
                 promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -748,38 +745,57 @@ mod tests {
         };
 
         // Non-keyed types
-        assert!(!config_is_keyed(&make_config("SingleSubpopulation", "Sum")));
-        assert!(!config_is_keyed(&make_config("Sum", "")));
-        assert!(!config_is_keyed(&make_config("DatasketchesKLL", "")));
-        assert!(!config_is_keyed(&make_config("KLL", "")));
-        assert!(!config_is_keyed(&make_config("Increase", "")));
+        assert!(!config_is_keyed(&make_config(
+            AggregationType::SingleSubpopulation,
+            "Sum"
+        )));
+        assert!(!config_is_keyed(&make_config(AggregationType::Sum, "")));
+        assert!(!config_is_keyed(&make_config(
+            AggregationType::DatasketchesKLL,
+            ""
+        )));
+        assert!(!config_is_keyed(&make_config(
+            AggregationType::Increase,
+            ""
+        )));
 
         // Keyed types
         assert!(config_is_keyed(&make_config(
-            "MultipleSubpopulation",
+            AggregationType::MultipleSubpopulation,
             "Sum"
         )));
-        assert!(config_is_keyed(&make_config("MultipleSum", "")));
-        assert!(config_is_keyed(&make_config("MultipleIncrease", "")));
-        assert!(config_is_keyed(&make_config("MultipleMinMax", "")));
-        assert!(config_is_keyed(&make_config("CountMinSketch", "")));
-        assert!(config_is_keyed(&make_config("CMS", "")));
-        assert!(config_is_keyed(&make_config("HydraKLL", "")));
+        assert!(config_is_keyed(&make_config(
+            AggregationType::MultipleSum,
+            ""
+        )));
+        assert!(config_is_keyed(&make_config(
+            AggregationType::MultipleIncrease,
+            ""
+        )));
+        assert!(config_is_keyed(&make_config(
+            AggregationType::MultipleMinMax,
+            ""
+        )));
+        assert!(config_is_keyed(&make_config(
+            AggregationType::CountMinSketch,
+            ""
+        )));
+        assert!(config_is_keyed(&make_config(AggregationType::HydraKLL, "")));
 
         // Verify agreement with updater.is_keyed()
         for (agg_type, sub_type) in &[
-            ("SingleSubpopulation", "Sum"),
-            ("MultipleSubpopulation", "Sum"),
-            ("MultipleSum", ""),
-            ("DatasketchesKLL", ""),
-            ("CountMinSketch", ""),
+            (AggregationType::SingleSubpopulation, "Sum"),
+            (AggregationType::MultipleSubpopulation, "Sum"),
+            (AggregationType::MultipleSum, ""),
+            (AggregationType::DatasketchesKLL, ""),
+            (AggregationType::CountMinSketch, ""),
         ] {
-            let config = make_config(agg_type, sub_type);
+            let config = make_config(*agg_type, sub_type);
             let updater = create_accumulator_updater(&config);
             assert_eq!(
                 config_is_keyed(&config),
                 updater.is_keyed(),
-                "config_is_keyed disagrees with updater.is_keyed() for type={}",
+                "config_is_keyed disagrees with updater.is_keyed() for type={:?}",
                 agg_type
             );
         }
@@ -793,7 +809,7 @@ mod tests {
         params.insert("K".to_string(), serde_json::Value::from(50_u64));
         let config = AggregationConfig::new(
             1,
-            "SingleSubpopulation".to_string(),
+            AggregationType::SingleSubpopulation,
             "DatasketchesKLL".to_string(),
             params,
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),

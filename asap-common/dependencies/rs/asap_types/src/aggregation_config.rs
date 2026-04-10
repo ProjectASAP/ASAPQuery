@@ -7,11 +7,12 @@ use crate::enums::{QueryLanguage, WindowType};
 use crate::traits::SerializableToSink;
 use crate::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::AggregationType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregationConfig {
     pub aggregation_id: u64,
-    pub aggregation_type: String,
+    pub aggregation_type: AggregationType,
     pub aggregation_sub_type: String,
     pub parameters: HashMap<String, Value>,
     pub grouping_labels: KeyByLabelNames,
@@ -41,8 +42,8 @@ pub struct AggregationConfig {
 pub struct AggregationIdInfo {
     pub aggregation_id_for_key: u64,
     pub aggregation_id_for_value: u64,
-    pub aggregation_type_for_key: String,
-    pub aggregation_type_for_value: String,
+    pub aggregation_type_for_key: AggregationType,
+    pub aggregation_type_for_value: AggregationType,
 }
 
 // TODO: need to implement deserialization methods
@@ -51,7 +52,7 @@ impl AggregationConfig {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         aggregation_id: u64,
-        aggregation_type: String,
+        aggregation_type: AggregationType,
         aggregation_sub_type: String,
         parameters: HashMap<String, Value>,
         grouping_labels: KeyByLabelNames,
@@ -116,10 +117,11 @@ impl AggregationConfig {
             .as_u64()
             .ok_or("Missing aggregationId")?;
 
-        let aggregation_type = data["aggregationType"]
+        let aggregation_type: AggregationType = data["aggregationType"]
             .as_str()
             .ok_or("Missing aggregationType")?
-            .to_string();
+            .parse()
+            .map_err(|e: String| e)?;
 
         let aggregation_sub_type = data["aggregationSubType"]
             .as_str()
@@ -241,10 +243,11 @@ impl AggregationConfig {
                 .collect(),
         );
 
-        let aggregation_type = aggregation_data["aggregationType"]
+        let aggregation_type: AggregationType = aggregation_data["aggregationType"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing aggregationType"))?
-            .to_string();
+            .parse()
+            .map_err(|e: String| anyhow::anyhow!(e))?;
 
         let aggregation_sub_type = aggregation_data["aggregationSubType"]
             .as_str()

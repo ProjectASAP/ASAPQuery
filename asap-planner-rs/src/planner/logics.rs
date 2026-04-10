@@ -2,7 +2,7 @@ use crate::config::input::SketchParameterOverrides;
 use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
+use promql_utilities::query_logics::enums::{AggregationType, QueryPatternType, Statistic};
 use promql_utilities::query_logics::logics::does_precompute_operator_support_subpopulations;
 use std::collections::HashMap;
 
@@ -84,16 +84,22 @@ pub struct IntermediateWindowConfig {
 /// from the `topk(k, …)` query argument; SQL passes `None` (SQL never produces
 /// this operator today, so the `None` branch is unreachable in practice).
 pub fn build_sketch_parameters(
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     aggregation_sub_type: &str,
     topk_k: Option<u64>,
     sketch_params: Option<&SketchParameterOverrides>,
 ) -> Result<HashMap<String, serde_json::Value>, String> {
     match aggregation_type {
-        "Increase" | "MinMax" | "Sum" | "MultipleIncrease" | "MultipleMinMax" | "MultipleSum"
-        | "DeltaSetAggregator" | "SetAggregator" => Ok(HashMap::new()),
+        AggregationType::Increase
+        | AggregationType::MinMax
+        | AggregationType::Sum
+        | AggregationType::MultipleIncrease
+        | AggregationType::MultipleMinMax
+        | AggregationType::MultipleSum
+        | AggregationType::DeltaSetAggregator
+        | AggregationType::SetAggregator => Ok(HashMap::new()),
 
-        "CountMinSketch" => {
+        AggregationType::CountMinSketch => {
             let depth = sketch_params
                 .and_then(|p| p.count_min_sketch.as_ref())
                 .map(|p| p.depth)
@@ -108,7 +114,7 @@ pub fn build_sketch_parameters(
             Ok(m)
         }
 
-        "CountMinSketchWithHeap" => {
+        AggregationType::CountMinSketchWithHeap => {
             if aggregation_sub_type != "topk" {
                 return Err(format!(
                     "Aggregation sub-type {} for CountMinSketchWithHeap not supported",
@@ -139,7 +145,7 @@ pub fn build_sketch_parameters(
             Ok(m)
         }
 
-        "DatasketchesKLL" => {
+        AggregationType::DatasketchesKLL => {
             let k = sketch_params
                 .and_then(|p| p.datasketches_kll.as_ref())
                 .map(|p| p.k)
@@ -149,7 +155,7 @@ pub fn build_sketch_parameters(
             Ok(m)
         }
 
-        "HydraKLL" => {
+        AggregationType::HydraKLL => {
             let row_num = sketch_params
                 .and_then(|p| p.hydra_kll.as_ref())
                 .map(|p| p.row_num)
@@ -182,12 +188,12 @@ pub fn build_sketch_parameters(
 /// PromQL wrapper: extracts the topk `k` from the match result when needed,
 /// then delegates to `build_sketch_parameters`.
 pub fn build_sketch_parameters_from_promql(
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     aggregation_sub_type: &str,
     match_result: &PromQLMatchResult,
     sketch_params: Option<&SketchParameterOverrides>,
 ) -> Result<HashMap<String, serde_json::Value>, String> {
-    let topk_k = if aggregation_type == "CountMinSketchWithHeap" {
+    let topk_k = if aggregation_type == AggregationType::CountMinSketchWithHeap {
         let k: u64 = match_result
             .tokens
             .get("aggregation")
@@ -274,7 +280,7 @@ pub fn get_cleanup_param(
 
 pub fn set_subpopulation_labels(
     statistic: Statistic,
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     subpopulation_labels: &KeyByLabelNames,
     rollup_labels: &mut KeyByLabelNames,
     grouping_labels: &mut KeyByLabelNames,

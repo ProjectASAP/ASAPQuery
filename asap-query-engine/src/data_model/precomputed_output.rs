@@ -5,7 +5,7 @@ use std::io::Read as _;
 use tracing::error;
 
 use crate::data_model::traits::SerializableToSink;
-use crate::data_model::{KeyByLabelValues, StreamingConfig};
+use crate::data_model::{AggregationType, KeyByLabelValues, StreamingConfig};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrecomputedOutput {
@@ -231,7 +231,7 @@ impl PrecomputedOutput {
             .map_err(|e| format!("Failed to decompress precompute data: {e}"))?;
 
         let precompute = Self::create_precompute_from_bytes(
-            &config.aggregation_type,
+            config.aggregation_type,
             Vec::as_slice(&precompute_bytes),
         )?;
 
@@ -362,34 +362,34 @@ impl PrecomputedOutput {
 
     /// Factory method to create precompute accumulator from bytes
     fn create_precompute_from_bytes(
-        precompute_type: &str,
+        precompute_type: AggregationType,
         buffer: &[u8],
     ) -> Result<Box<dyn crate::data_model::AggregateCore>, Box<dyn std::error::Error + Send + Sync>>
     {
         use crate::precompute_operators::*;
 
         match precompute_type {
-            "Sum" | "sum" => {
+            AggregationType::Sum => {
                 let accumulator = SumAccumulator::deserialize_from_bytes_arroyo(buffer)
                     .map_err(|e| format!("Failed to deserialize SumAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            "MinMax" => {
+            AggregationType::MinMax => {
                 let accumulator = MinMaxAccumulator::deserialize_from_bytes(buffer)
                     .map_err(|e| format!("Failed to deserialize MinMaxAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            "Increase" => {
+            AggregationType::Increase => {
                 let accumulator = IncreaseAccumulator::deserialize_from_bytes(buffer)
                     .map_err(|e| format!("Failed to deserialize IncreaseAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            "MultipleSum" => {
+            AggregationType::MultipleSum => {
                 let accumulator = MultipleSumAccumulator::deserialize_from_bytes_arroyo(buffer)
                     .map_err(|e| format!("Failed to deserialize MultipleSumAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            "MultipleMinMax" => {
+            AggregationType::MultipleMinMax => {
                 let accumulator =
                     MultipleMinMaxAccumulator::deserialize_from_bytes(buffer, "min".to_string())
                         .map_err(|e| {
@@ -397,19 +397,19 @@ impl PrecomputedOutput {
                         })?;
                 Ok(Box::new(accumulator))
             }
-            "MultipleIncrease" => {
+            AggregationType::MultipleIncrease => {
                 let accumulator = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
                     buffer,
                 )
                 .map_err(|e| format!("Failed to deserialize MultipleIncreaseAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            "CountMinSketch" => {
+            AggregationType::CountMinSketch => {
                 let accumulator = CountMinSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
                     .map_err(|e| format!("Failed to deserialize CountMinSketchAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            "CountMinSketchWithHeap" => {
+            AggregationType::CountMinSketchWithHeap => {
                 let accumulator =
                     CountMinSketchWithHeapAccumulator::deserialize_from_bytes_arroyo(buffer)
                         .map_err(|e| {
@@ -417,26 +417,26 @@ impl PrecomputedOutput {
                         })?;
                 Ok(Box::new(accumulator))
             }
-            "DatasketchesKLL" => {
+            AggregationType::DatasketchesKLL => {
                 let accumulator = DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(buffer)
                     .map_err(|e| {
                         format!("Failed to deserialize DatasketchesKLLAccumulator: {e}")
                     })?;
                 Ok(Box::new(accumulator))
             }
-            "HydraKLL" => {
+            AggregationType::HydraKLL => {
                 let accumulator = HydraKllSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
                     .map_err(|e| format!("Failed to deserialize HydraKllSketchAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            "DeltaSetAggregator" => {
+            AggregationType::DeltaSetAggregator => {
                 let accumulator = DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(
                     buffer,
                 )
                 .map_err(|e| format!("Failed to deserialize DeltaSetAggregatorAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
-            _ => Err(format!("Unknown precompute type: {precompute_type}").into()),
+            _ => Err(format!("Unknown precompute type: {precompute_type:?}").into()),
         }
     }
 }

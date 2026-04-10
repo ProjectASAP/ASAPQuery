@@ -1,5 +1,6 @@
 use crate::data_model::{
-    AggregateCore, MergeableAccumulator, SerializableToSink, SingleSubpopulationAggregate,
+    AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
+    SingleSubpopulationAggregate,
 };
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
@@ -79,9 +80,9 @@ impl DatasketchesKLLAccumulator {
 
         let mut kll_accumulators = Vec::with_capacity(accumulators.len());
         for acc in accumulators {
-            if acc.get_accumulator_type() != "DatasketchesKLLAccumulator" {
+            if acc.get_accumulator_type() != AggregationType::DatasketchesKLL {
                 return Err(format!(
-                    "Cannot merge DatasketchesKLLAccumulator with {}",
+                    "Cannot merge DatasketchesKLLAccumulator with {:?}",
                     acc.get_accumulator_type()
                 )
                 .into());
@@ -192,8 +193,8 @@ impl AggregateCore for DatasketchesKLLAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "DatasketchesKLLAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::DatasketchesKLL
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {

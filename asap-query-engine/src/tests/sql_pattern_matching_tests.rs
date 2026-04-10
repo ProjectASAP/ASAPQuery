@@ -6,8 +6,8 @@
 #[cfg(test)]
 mod tests {
     use crate::data_model::{
-        AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, QueryConfig,
-        QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
+        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+        QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
     };
     use crate::engines::simple_engine::SimpleEngine;
     use crate::stores::simple_map_store::SimpleMapStore;
@@ -49,7 +49,7 @@ mod tests {
         // Streaming config
         let agg_config = AggregationConfig {
             aggregation_id: agg_id,
-            aggregation_type: "SumAccumulator".to_string(),
+            aggregation_type: AggregationType::Sum,
             aggregation_sub_type: String::new(),
             parameters: HashMap::new(),
             grouping_labels: KeyByLabelNames::new(

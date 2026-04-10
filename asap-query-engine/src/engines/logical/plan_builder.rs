@@ -15,7 +15,7 @@ use datafusion_summary_library::{
     InferOperation, PrecomputedSummaryRead, SketchType, SummaryInfer, SummaryMergeMultiple,
 };
 use promql_parser::parser::token::{self, T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
-use promql_utilities::query_logics::enums::Statistic;
+use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 use std::sync::Arc;
 
 use crate::engines::simple_engine::{QueryExecutionContext, StoreQueryParams};
@@ -215,33 +215,34 @@ impl QueryExecutionContext {
         }
     }
 
-    /// Map aggregation type string to SketchType (SummaryType) for the value accumulator
+    /// Map aggregation type to SketchType (SummaryType) for the value accumulator
     fn map_aggregation_type_to_summary_type(&self) -> Result<SketchType, DataFusionError> {
-        Self::agg_type_str_to_sketch_type(&self.agg_info.aggregation_type_for_value)
+        Self::agg_type_to_sketch_type(self.agg_info.aggregation_type_for_value)
     }
 
-    /// Map aggregation type string to SketchType (SummaryType) for the key accumulator
+    /// Map aggregation type to SketchType (SummaryType) for the key accumulator
     fn map_key_aggregation_type_to_summary_type(&self) -> Result<SketchType, DataFusionError> {
-        Self::agg_type_str_to_sketch_type(&self.agg_info.aggregation_type_for_key)
+        Self::agg_type_to_sketch_type(self.agg_info.aggregation_type_for_key)
     }
 
-    fn agg_type_str_to_sketch_type(agg_type: &str) -> Result<SketchType, DataFusionError> {
+    fn agg_type_to_sketch_type(agg_type: AggregationType) -> Result<SketchType, DataFusionError> {
         match agg_type {
-            "SumAggregator" | "SumAccumulator" | "Sum" => Ok(SketchType::Sum),
-            "IncreaseAggregator" | "IncreaseAccumulator" | "Increase" => Ok(SketchType::Increase),
-            "MinMaxAggregator" | "MinMaxAccumulator" | "MinMax" => Ok(SketchType::MinMax),
-            "MultipleSumAccumulator" | "MultipleSum" => Ok(SketchType::MultipleSum),
-            "MultipleIncreaseAccumulator" | "MultipleIncrease" => Ok(SketchType::MultipleIncrease),
-            "MultipleMinMaxAccumulator" | "MultipleMinMax" => Ok(SketchType::MultipleMinMax),
-            "DeltaSetAggregator" => Ok(SketchType::DeltaSetAggregator),
-            "SetAggregator" => Ok(SketchType::SetAggregator),
-            "DatasketchesKLLAccumulator" | "DatasketchesKLL" | "KLL" => Ok(SketchType::KLL),
-            "HydraKllSketchAccumulator" | "HydraKLL" => Ok(SketchType::HydraKLL),
-            "CountMinSketchAccumulator" | "CountMinSketch" => Ok(SketchType::CountMinSketch),
-            "HyperLogLog" | "HLL" => Ok(SketchType::HLL),
+            AggregationType::Sum => Ok(SketchType::Sum),
+            AggregationType::Increase => Ok(SketchType::Increase),
+            AggregationType::MinMax => Ok(SketchType::MinMax),
+            AggregationType::MultipleSum => Ok(SketchType::MultipleSum),
+            AggregationType::MultipleIncrease => Ok(SketchType::MultipleIncrease),
+            AggregationType::MultipleMinMax => Ok(SketchType::MultipleMinMax),
+            AggregationType::DeltaSetAggregator => Ok(SketchType::DeltaSetAggregator),
+            AggregationType::SetAggregator => Ok(SketchType::SetAggregator),
+            AggregationType::DatasketchesKLL => Ok(SketchType::KLL),
+            AggregationType::HydraKLL => Ok(SketchType::HydraKLL),
+            AggregationType::CountMinSketch | AggregationType::CountMinSketchWithHeap => {
+                Ok(SketchType::CountMinSketch)
+            }
+            AggregationType::HLL => Ok(SketchType::HLL),
             _ => Err(DataFusionError::Plan(format!(
-                "Unknown aggregation type: {}",
-                agg_type
+                "Unknown aggregation type: {agg_type:?}"
             ))),
         }
     }
@@ -363,16 +364,23 @@ mod tests {
         metric: &str,
         statistic: Statistic,
         output_labels: Vec<&str>,
-        aggregation_type: &str,
+        aggregation_type: AggregationType,
     ) -> QueryExecutionContext {
-        create_test_context_with_keys(metric, statistic, output_labels, aggregation_type, None, "")
+        create_test_context_with_keys(
+            metric,
+            statistic,
+            output_labels,
+            aggregation_type,
+            None,
+            aggregation_type,
+        )
     }
 
     fn create_test_context_with_kwargs(
         metric: &str,
         statistic: Statistic,
         output_labels: Vec<&str>,
-        aggregation_type: &str,
+        aggregation_type: AggregationType,
         kwargs: HashMap<String, String>,
     ) -> QueryExecutionContext {
         let mut ctx = create_test_context_with_keys(
@@ -381,7 +389,7 @@ mod tests {
             output_labels,
             aggregation_type,
             None,
-            "",
+            aggregation_type,
         );
         ctx.metadata.query_kwargs = kwargs;
         ctx
@@ -391,9 +399,9 @@ mod tests {
         metric: &str,
         statistic: Statistic,
         output_labels: Vec<&str>,
-        aggregation_type_for_value: &str,
+        aggregation_type_for_value: AggregationType,
         keys_query: Option<StoreQueryParams>,
-        aggregation_type_for_key: &str,
+        aggregation_type_for_key: AggregationType,
     ) -> QueryExecutionContext {
         // Default: grouping_labels == query_output_labels
         create_test_context_with_keys_and_grouping(
@@ -411,9 +419,9 @@ mod tests {
         metric: &str,
         statistic: Statistic,
         output_labels: Vec<&str>,
-        aggregation_type_for_value: &str,
+        aggregation_type_for_value: AggregationType,
         keys_query: Option<StoreQueryParams>,
-        aggregation_type_for_key: &str,
+        aggregation_type_for_key: AggregationType,
         grouping_label_strs: Vec<&str>,
     ) -> QueryExecutionContext {
         // Default: aggregated_labels = output_labels - grouping_labels
@@ -439,9 +447,9 @@ mod tests {
         metric: &str,
         statistic: Statistic,
         output_labels: Vec<&str>,
-        aggregation_type_for_value: &str,
+        aggregation_type_for_value: AggregationType,
         keys_query: Option<StoreQueryParams>,
-        aggregation_type_for_key: &str,
+        aggregation_type_for_key: AggregationType,
         grouping_label_strs: Vec<&str>,
         aggregated_label_strs: Vec<&str>,
     ) -> QueryExecutionContext {
@@ -482,8 +490,8 @@ mod tests {
             agg_info: AggregationIdInfo {
                 aggregation_id_for_key,
                 aggregation_id_for_value: 42,
-                aggregation_type_for_key: aggregation_type_for_key.to_string(),
-                aggregation_type_for_value: aggregation_type_for_value.to_string(),
+                aggregation_type_for_key,
+                aggregation_type_for_value,
             },
             do_merge: false,
             spatial_filter: String::new(),
@@ -499,7 +507,7 @@ mod tests {
             "http_requests",
             Statistic::Sum,
             vec!["host"],
-            "SumAggregator",
+            AggregationType::Sum,
         );
 
         let plan = context.to_logical_plan().unwrap();
@@ -519,7 +527,7 @@ mod tests {
             "http_requests",
             Statistic::Sum,
             vec!["host", "region", "service"],
-            "SumAggregator",
+            AggregationType::Sum,
         );
 
         let plan = context.to_logical_plan().unwrap();
@@ -530,19 +538,30 @@ mod tests {
 
     #[test]
     fn test_map_statistic_to_infer_operation() {
-        let context = create_test_context("test", Statistic::Sum, vec!["host"], "SumAggregator");
+        let context =
+            create_test_context("test", Statistic::Sum, vec!["host"], AggregationType::Sum);
         assert!(matches!(
             context.map_statistic_to_infer_operation().unwrap(),
             InferOperation::ExtractSum
         ));
 
-        let context = create_test_context("test", Statistic::Min, vec!["host"], "MinMaxAggregator");
+        let context = create_test_context(
+            "test",
+            Statistic::Min,
+            vec!["host"],
+            AggregationType::MinMax,
+        );
         assert!(matches!(
             context.map_statistic_to_infer_operation().unwrap(),
             InferOperation::ExtractMin
         ));
 
-        let context = create_test_context("test", Statistic::Max, vec!["host"], "MinMaxAggregator");
+        let context = create_test_context(
+            "test",
+            Statistic::Max,
+            vec!["host"],
+            AggregationType::MinMax,
+        );
         assert!(matches!(
             context.map_statistic_to_infer_operation().unwrap(),
             InferOperation::ExtractMax
@@ -551,7 +570,8 @@ mod tests {
 
     #[test]
     fn test_map_aggregation_type_to_summary_type() {
-        let context = create_test_context("test", Statistic::Sum, vec!["host"], "SumAggregator");
+        let context =
+            create_test_context("test", Statistic::Sum, vec!["host"], AggregationType::Sum);
         assert_eq!(
             context.map_aggregation_type_to_summary_type().unwrap(),
             SketchType::Sum
@@ -561,7 +581,7 @@ mod tests {
             "test",
             Statistic::Increase,
             vec!["host"],
-            "IncreaseAggregator",
+            AggregationType::Increase,
         );
         assert_eq!(
             context.map_aggregation_type_to_summary_type().unwrap(),
@@ -572,7 +592,7 @@ mod tests {
             "test",
             Statistic::Quantile,
             vec!["host"],
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
         );
         assert_eq!(
             context.map_aggregation_type_to_summary_type().unwrap(),
@@ -673,7 +693,7 @@ mod tests {
             "http_requests",
             Statistic::Sum,
             vec!["host"],
-            "MultipleSumAccumulator",
+            AggregationType::MultipleSum,
         );
         assert_eq!(
             context.map_aggregation_type_to_summary_type().unwrap(),
@@ -690,7 +710,7 @@ mod tests {
             "http_requests",
             Statistic::Sum,
             vec!["host"],
-            "MultipleSumAccumulator",
+            AggregationType::MultipleSum,
         );
 
         let plan = context.to_logical_plan().unwrap();
@@ -722,7 +742,7 @@ mod tests {
             "http_requests",
             Statistic::Sum,
             vec!["host"],
-            "MultipleSumAccumulator",
+            AggregationType::MultipleSum,
         );
 
         let plan = context.to_logical_plan().unwrap();
@@ -748,7 +768,7 @@ mod tests {
             "http_requests",
             Statistic::Count,
             vec!["host"],
-            "CountMinSketchAccumulator",
+            AggregationType::CountMinSketch,
         );
         assert_eq!(
             context.map_aggregation_type_to_summary_type().unwrap(),
@@ -764,7 +784,7 @@ mod tests {
             "http_requests",
             Statistic::Count,
             vec!["host"],
-            "CountMinSketchAccumulator",
+            AggregationType::CountMinSketch,
         );
 
         let plan = context.to_logical_plan().unwrap();
@@ -791,7 +811,7 @@ mod tests {
             "http_requests",
             Statistic::Count,
             vec!["host"],
-            "CountMinSketchAccumulator",
+            AggregationType::CountMinSketch,
         );
 
         let plan = context.to_logical_plan().unwrap();
@@ -821,9 +841,9 @@ mod tests {
             "http_requests",
             Statistic::Sum,
             vec!["host"],
-            "MultipleSumAccumulator", // values use Hydra
+            AggregationType::MultipleSum, // values use Hydra
             Some(keys_query),
-            "DeltaSetAggregator", // keys use DeltaSet
+            AggregationType::DeltaSetAggregator, // keys use DeltaSet
         );
 
         let plan = context.to_logical_plan().unwrap();
@@ -876,9 +896,9 @@ mod tests {
             "request_duration",
             Statistic::Quantile,
             vec!["host", "endpoint"], // query_output_labels
-            "HydraKllSketchAccumulator",
+            AggregationType::HydraKLL,
             Some(keys_query),
-            "DeltaSetAggregator",
+            AggregationType::DeltaSetAggregator,
             vec!["host"], // grouping_labels (spatial)
         );
         context.metadata.query_kwargs = kwargs;
@@ -928,9 +948,9 @@ mod tests {
             "request_duration",
             Statistic::Quantile,
             vec!["host", "endpoint"], // query_output_labels
-            "HydraKllSketchAccumulator",
+            AggregationType::HydraKLL,
             Some(keys_query),
-            "DeltaSetAggregator",
+            AggregationType::DeltaSetAggregator,
             vec!["host"], // grouping_labels (spatial store labels)
         );
 
@@ -961,7 +981,7 @@ mod tests {
             "latency",
             Statistic::Quantile,
             vec!["host"],
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             kwargs,
         );
 
@@ -980,7 +1000,7 @@ mod tests {
             "latency",
             Statistic::Quantile,
             vec!["host"],
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
         );
 
         match context.map_statistic_to_infer_operation().unwrap() {

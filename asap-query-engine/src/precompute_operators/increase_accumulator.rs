@@ -1,5 +1,5 @@
 use crate::data_model::{
-    AggregateCore, Measurement, MergeableAccumulator, SerializableToSink,
+    AggregateCore, AggregationType, Measurement, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
 use serde::{Deserialize, Serialize};
@@ -241,8 +241,8 @@ impl AggregateCore for IncreaseAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "IncreaseAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::Increase
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {

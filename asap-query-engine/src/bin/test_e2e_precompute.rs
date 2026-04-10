@@ -9,7 +9,7 @@
 //!   cargo run --bin test_e2e_precompute
 
 use asap_types::aggregation_config::AggregationConfig;
-use asap_types::enums::WindowType;
+use asap_types::enums::{AggregationType, WindowType};
 use prost::Message;
 use query_engine_rust::data_model::{LockStrategy, QueryLanguage, StreamingConfig};
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
@@ -591,7 +591,7 @@ fn make_sum_agg_config(
     };
     AggregationConfig::new(
         agg_id,
-        "SingleSubpopulation".to_string(),
+        AggregationType::SingleSubpopulation,
         "Sum".to_string(),
         HashMap::new(),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),

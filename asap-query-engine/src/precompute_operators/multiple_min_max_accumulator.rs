@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -236,8 +236,8 @@ impl AggregateCore for MultipleMinMaxAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "MultipleMinMaxAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::MultipleMinMax
     }
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {

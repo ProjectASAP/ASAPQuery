@@ -17,7 +17,7 @@ mod tests {
         SetAggregatorAccumulator, SumAccumulator,
     };
     use datafusion_summary_library::SketchType;
-    use promql_utilities::query_logics::enums::Statistic;
+    use promql_utilities::query_logics::enums::{AggregationType, Statistic};
     use std::collections::HashMap;
 
     // ========================================================================
@@ -29,7 +29,7 @@ mod tests {
         let acc = SumAccumulator::with_sum(42.5);
         let bytes = serialize_accumulator_arroyo(&acc);
         let restored = deserialize_accumulator(&bytes, &SketchType::Sum).unwrap();
-        assert_eq!(restored.get_accumulator_type(), "SumAccumulator");
+        assert_eq!(restored.get_accumulator_type(), AggregationType::Sum);
 
         // Query the restored accumulator via single subpopulation
         let restored_single = deserialize_single_subpopulation(&bytes, &SketchType::Sum).unwrap();
@@ -48,7 +48,7 @@ mod tests {
         let restored = deserialize_accumulator(&bytes, &SketchType::KLL).unwrap();
         assert_eq!(
             restored.get_accumulator_type(),
-            "DatasketchesKLLAccumulator"
+            AggregationType::DatasketchesKLL
         );
 
         // Query quantile via single subpopulation
@@ -154,7 +154,7 @@ mod tests {
 
         let bytes = serialize_accumulator_arroyo(&hydra);
         let restored = deserialize_accumulator(&bytes, &SketchType::HydraKLL).unwrap();
-        assert_eq!(restored.get_accumulator_type(), "HydraKllSketchAccumulator");
+        assert_eq!(restored.get_accumulator_type(), AggregationType::HydraKLL);
     }
 
     #[test]
@@ -167,13 +167,16 @@ mod tests {
         let bytes = serialize_accumulator_arroyo(&cms);
 
         let restored = deserialize_accumulator(&bytes, &SketchType::CountMinSketch).unwrap();
-        assert_eq!(restored.get_accumulator_type(), "CountMinSketchAccumulator");
+        assert_eq!(
+            restored.get_accumulator_type(),
+            AggregationType::CountMinSketch
+        );
 
         let restored =
             deserialize_multiple_subpopulation(&bytes, &SketchType::CountMinSketch).unwrap();
         assert_eq!(
             restored.clone_boxed().as_ref().get_accumulator_type(),
-            "CountMinSketchAccumulator"
+            AggregationType::CountMinSketch
         );
     }
 
@@ -306,7 +309,7 @@ mod tests {
 
         // Verify the arroyo bytes can be deserialized
         let restored = deserialize_accumulator(&arroyo_bytes, &SketchType::Sum).unwrap();
-        assert_eq!(restored.get_accumulator_type(), "SumAccumulator");
+        assert_eq!(restored.get_accumulator_type(), AggregationType::Sum);
     }
 
     #[test]

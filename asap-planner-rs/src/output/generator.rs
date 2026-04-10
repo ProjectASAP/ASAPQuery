@@ -211,7 +211,7 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
     );
     map.insert(
         YamlValue::String("aggregationType".to_string()),
-        YamlValue::String(cfg.aggregation_type.clone()),
+        YamlValue::String(cfg.aggregation_type.to_string()),
     );
 
     let mut labels_map = serde_yaml::Mapping::new();

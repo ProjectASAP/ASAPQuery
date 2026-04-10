@@ -6,9 +6,9 @@
 //! the correct aggregation_type string.
 
 use crate::data_model::{
-    AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, KeyByLabelValues,
-    PrecomputedOutput, PromQLSchema, QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig,
-    WindowType,
+    AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+    KeyByLabelValues, PrecomputedOutput, PromQLSchema, QueryConfig, QueryLanguage, SchemaConfig,
+    StreamingConfig, WindowType,
 };
 use crate::engines::query_result::InstantVectorElement;
 use crate::engines::simple_engine::SimpleEngine;
@@ -32,7 +32,7 @@ pub type AccumulatorData = Vec<(Option<Vec<String>>, Box<dyn AggregateCore>)>;
 /// * `promql_query` - The PromQL query string
 pub fn create_engine_single_pop(
     metric: &str,
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     grouping_labels: Vec<&str>,
     data: AccumulatorData,
     promql_query: &str,
@@ -54,7 +54,7 @@ pub fn create_engine_single_pop(
 /// (e.g. "endpoint" within a MultipleIncrease accumulator).
 pub fn create_engine_single_pop_with_aggregated(
     metric: &str,
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     grouping_labels: Vec<&str>,
     aggregated_labels: Vec<&str>,
     data: AccumulatorData,
@@ -73,7 +73,7 @@ pub fn create_engine_single_pop_with_aggregated(
     let mut aggregation_configs = HashMap::new();
     let agg_config = AggregationConfig {
         aggregation_id: 1,
-        aggregation_type: aggregation_type.to_string(),
+        aggregation_type,
         aggregation_sub_type: String::new(),
         parameters: HashMap::new(),
         grouping_labels: KeyByLabelNames::new(grouping_label_strings.clone()),
@@ -147,8 +147,8 @@ pub fn create_engine_single_pop_with_aggregated(
 #[allow(clippy::too_many_arguments)]
 pub fn create_engine_dual_input(
     metric: &str,
-    value_agg_type: &str,
-    key_agg_type: &str,
+    value_agg_type: AggregationType,
+    key_agg_type: AggregationType,
     grouping_labels: Vec<&str>,
     aggregated_labels: Vec<&str>,
     value_data: AccumulatorData,
@@ -170,7 +170,7 @@ pub fn create_engine_dual_input(
     // Value aggregation (id=1)
     let value_agg_config = AggregationConfig {
         aggregation_id: 1,
-        aggregation_type: value_agg_type.to_string(),
+        aggregation_type: value_agg_type,
         aggregation_sub_type: String::new(),
         parameters: HashMap::new(),
         grouping_labels: KeyByLabelNames::new(grouping_label_strings.clone()),
@@ -193,7 +193,7 @@ pub fn create_engine_dual_input(
     // Keys aggregation (id=2)
     let keys_agg_config = AggregationConfig {
         aggregation_id: 2,
-        aggregation_type: key_agg_type.to_string(),
+        aggregation_type: key_agg_type,
         aggregation_sub_type: String::new(),
         parameters: HashMap::new(),
         grouping_labels: KeyByLabelNames::new(grouping_label_strings.clone()),
@@ -269,12 +269,12 @@ pub fn create_engine_dual_input(
 #[allow(clippy::too_many_arguments)]
 pub fn create_engine_two_metrics(
     metric_a: &str,
-    aggregation_type_a: &str,
+    aggregation_type_a: AggregationType,
     grouping_labels_a: Vec<&str>,
     data_a: AccumulatorData,
     query_a: &str,
     metric_b: &str,
-    aggregation_type_b: &str,
+    aggregation_type_b: AggregationType,
     grouping_labels_b: Vec<&str>,
     data_b: AccumulatorData,
     query_b: &str,
@@ -286,7 +286,7 @@ pub fn create_engine_two_metrics(
 
     let agg_config_a = AggregationConfig {
         aggregation_id: 1,
-        aggregation_type: aggregation_type_a.to_string(),
+        aggregation_type: aggregation_type_a,
         aggregation_sub_type: String::new(),
         parameters: HashMap::new(),
         grouping_labels: KeyByLabelNames::new(labels_a.clone()),
@@ -308,7 +308,7 @@ pub fn create_engine_two_metrics(
 
     let agg_config_b = AggregationConfig {
         aggregation_id: 2,
-        aggregation_type: aggregation_type_b.to_string(),
+        aggregation_type: aggregation_type_b,
         aggregation_sub_type: String::new(),
         parameters: HashMap::new(),
         grouping_labels: KeyByLabelNames::new(labels_b.clone()),
@@ -381,17 +381,17 @@ pub fn create_engine_two_metrics(
 #[allow(clippy::too_many_arguments)]
 pub fn create_engine_three_metrics(
     metric_a: &str,
-    aggregation_type_a: &str,
+    aggregation_type_a: AggregationType,
     grouping_labels_a: Vec<&str>,
     data_a: AccumulatorData,
     query_a: &str,
     metric_b: &str,
-    aggregation_type_b: &str,
+    aggregation_type_b: AggregationType,
     grouping_labels_b: Vec<&str>,
     data_b: AccumulatorData,
     query_b: &str,
     metric_c: &str,
-    aggregation_type_c: &str,
+    aggregation_type_c: AggregationType,
     grouping_labels_c: Vec<&str>,
     data_c: AccumulatorData,
     query_c: &str,
@@ -411,7 +411,7 @@ pub fn create_engine_three_metrics(
             id,
             AggregationConfig {
                 aggregation_id: id,
-                aggregation_type: agg_type.to_string(),
+                aggregation_type: agg_type,
                 aggregation_sub_type: String::new(),
                 parameters: HashMap::new(),
                 grouping_labels: KeyByLabelNames::new(labels.clone()),
@@ -481,7 +481,7 @@ pub fn create_engine_three_metrics(
 #[allow(clippy::type_complexity)]
 pub fn create_engine_multi_timestamp(
     metric: &str,
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     grouping_labels: Vec<&str>,
     data: Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>,
     promql_query: &str,
@@ -492,7 +492,7 @@ pub fn create_engine_multi_timestamp(
     let mut aggregation_configs = HashMap::new();
     let agg_config = AggregationConfig {
         aggregation_id: 1,
-        aggregation_type: aggregation_type.to_string(),
+        aggregation_type,
         aggregation_sub_type: String::new(),
         parameters: HashMap::new(),
         grouping_labels: KeyByLabelNames::new(grouping_label_strings.clone()),
@@ -559,7 +559,7 @@ pub fn create_engine_multi_timestamp(
 #[allow(clippy::type_complexity)]
 pub fn create_engine_multi_timestamp_with_window(
     metric: &str,
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     grouping_labels: Vec<&str>,
     data: Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>,
     promql_query: &str,
@@ -572,7 +572,7 @@ pub fn create_engine_multi_timestamp_with_window(
     let mut aggregation_configs = HashMap::new();
     let agg_config = AggregationConfig {
         aggregation_id: 1,
-        aggregation_type: aggregation_type.to_string(),
+        aggregation_type,
         aggregation_sub_type: String::new(),
         parameters: HashMap::new(),
         grouping_labels: KeyByLabelNames::new(grouping_label_strings.clone()),

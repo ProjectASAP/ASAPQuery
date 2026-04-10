@@ -27,7 +27,8 @@
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use promql_utilities::data_model::KeyByLabelNames;
 use query_engine_rust::data_model::{
-    AggregateCore, CleanupPolicy, KeyByLabelValues, LockStrategy, StreamingConfig, WindowType,
+    AggregateCore, AggregationType, CleanupPolicy, KeyByLabelValues, LockStrategy, StreamingConfig,
+    WindowType,
 };
 use query_engine_rust::precompute_operators::{DatasketchesKLLAccumulator, SumAccumulator};
 use query_engine_rust::stores::simple_map_store::legacy::{
@@ -97,10 +98,10 @@ impl AccumulatorKind {
         }
     }
 
-    fn aggregation_type(self) -> &'static str {
+    fn aggregation_type(self) -> AggregationType {
         match self {
-            Self::Sum => "Sum",
-            Self::Kll => "DatasketchesKLL",
+            Self::Sum => AggregationType::Sum,
+            Self::Kll => AggregationType::DatasketchesKLL,
         }
     }
 
@@ -120,14 +121,14 @@ impl AccumulatorKind {
 
 fn make_agg_config(
     agg_id: u64,
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     metric: &str,
     num_aggregates_to_retain: Option<u64>,
     read_count_threshold: Option<u64>,
 ) -> AggregationConfig {
     AggregationConfig::new(
         agg_id,
-        aggregation_type.to_string(),
+        aggregation_type,
         "".to_string(),
         HashMap::new(),
         KeyByLabelNames::empty(),
