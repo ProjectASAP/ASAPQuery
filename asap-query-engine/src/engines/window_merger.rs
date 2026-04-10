@@ -166,6 +166,15 @@ mod tests {
         fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
             None
         }
+
+        fn query_statistic(
+            &self,
+            _statistic: promql_utilities::query_logics::enums::Statistic,
+            _key: &Option<KeyByLabelValues>,
+            _query_kwargs: &std::collections::HashMap<String, String>,
+        ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+            Err("MockSumAccumulator does not support query_statistic".into())
+        }
     }
 
     // Basic structure tests

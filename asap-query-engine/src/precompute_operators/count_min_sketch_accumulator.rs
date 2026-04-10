@@ -212,6 +212,19 @@ impl AggregateCore for CountMinSketchAccumulator {
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
         None
     }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        key: &Option<crate::KeyByLabelValues>,
+        query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::MultipleSubpopulationAggregate;
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for CountMinSketchAccumulator")?;
+        self.query(statistic, key_val, Some(query_kwargs))
+    }
 }
 
 impl MultipleSubpopulationAggregate for CountMinSketchAccumulator {
