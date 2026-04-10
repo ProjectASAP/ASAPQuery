@@ -1,4 +1,6 @@
-use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
+use crate::data_model::{
+    AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
+};
 use crate::stores::simple_map_store::common::{
     EpochID, InternTable, MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange,
 };
@@ -352,7 +354,7 @@ impl SimpleMapStorePerKey {
             .ok_or_else(|| format!("Aggregation config not found for {}", aggregation_id))?;
 
         // Configure epoch capacity on first insert (Optimization 2)
-        if aggregation_config.aggregation_type != "DeltaSetAggregator" {
+        if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
             data.configure_epochs(aggregation_config.num_aggregates_to_retain);
         }
 
@@ -366,7 +368,7 @@ impl SimpleMapStorePerKey {
                 .insert(metric_id, timestamp_range, Arc::from(precompute));
 
             // After each item, check if we should rotate (CircularBuffer, Optimization 2)
-            if aggregation_config.aggregation_type != "DeltaSetAggregator"
+            if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator
                 && matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer)
             {
                 data.maybe_rotate_epoch();
@@ -374,7 +376,7 @@ impl SimpleMapStorePerKey {
         }
 
         // Apply retention policy if configured (but exclude DeltaSetAggregator)
-        if aggregation_config.aggregation_type != "DeltaSetAggregator" {
+        if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
             self.cleanup_old_aggregates(
                 &mut data,
                 metric,

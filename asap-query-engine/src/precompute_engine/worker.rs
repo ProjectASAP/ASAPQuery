@@ -687,12 +687,13 @@ mod tests {
     use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use asap_types::enums::{AggregationType, WindowType};
     use sketch_core::kll::KllSketch;
 
     fn make_agg_config(
         id: u64,
         metric: &str,
-        agg_type: &str,
+        agg_type: AggregationType,
         agg_sub_type: &str,
         window_secs: u64,
         slide_secs: u64,
@@ -714,7 +715,7 @@ mod tests {
     fn make_agg_config_full(
         id: u64,
         metric: &str,
-        agg_type: &str,
+        agg_type: AggregationType,
         agg_sub_type: &str,
         window_secs: u64,
         slide_secs: u64,
@@ -722,13 +723,13 @@ mod tests {
         aggregated: Vec<&str>,
     ) -> AggregationConfig {
         let window_type = if slide_secs == 0 || slide_secs == window_secs {
-            "tumbling"
+            WindowType::Tumbling
         } else {
-            "sliding"
+            WindowType::Sliding
         };
         AggregationConfig::new(
             id,
-            agg_type.to_string(),
+            agg_type,
             agg_sub_type.to_string(),
             HashMap::new(),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
@@ -741,7 +742,7 @@ mod tests {
             String::new(),
             window_secs,
             slide_secs,
-            window_type.to_string(),
+            window_type,
             metric.to_string(),
             metric.to_string(),
             None,
@@ -831,7 +832,15 @@ mod tests {
     #[test]
     fn test_tumbling_window_correctness() {
         // 10s tumbling window
-        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            1,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(1, config);
 
@@ -889,7 +898,15 @@ mod tests {
     fn test_group_by_merges_series() {
         // SingleSubpopulation Sum with no grouping labels
         // Two different series in the same group → both feed same accumulator
-        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            1,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(1, config);
 
@@ -949,7 +966,7 @@ mod tests {
         let config = make_agg_config(
             1,
             "cpu",
-            "SingleSubpopulation",
+            AggregationType::SingleSubpopulation,
             "Sum",
             10,
             0,
@@ -1019,8 +1036,15 @@ mod tests {
 
     #[test]
     fn test_kll_group_by_merges_series() {
-        let mut config =
-            make_agg_config(1, "latency", "DatasketchesKLL", "", 10, 0, vec!["pattern"]);
+        let mut config = make_agg_config(
+            1,
+            "latency",
+            AggregationType::DatasketchesKLL,
+            "",
+            10,
+            0,
+            vec!["pattern"],
+        );
         config
             .parameters
             .insert("K".to_string(), serde_json::Value::from(20_u64));
@@ -1096,7 +1120,15 @@ mod tests {
     #[test]
     fn test_sliding_window_pane_sharing() {
         // 30s window, 10s slide → W=3 panes per window
-        let config = make_agg_config(2, "cpu", "SingleSubpopulation", "Sum", 30, 10, vec![]);
+        let config = make_agg_config(
+            2,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            30,
+            10,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(2, config);
 
@@ -1158,7 +1190,7 @@ mod tests {
         let config = make_agg_config_full(
             3,
             "cpu",
-            "MultipleSubpopulation",
+            AggregationType::MultipleSubpopulation,
             "Sum",
             10,
             0,
@@ -1230,10 +1262,106 @@ mod tests {
     // -----------------------------------------------------------------------
     // Test: Arroyo KLL equivalence — same output as Arroyo pipeline
     // -----------------------------------------------------------------------
+    #[test]
+    fn test_arroyosketch_multiple_sum_matches_handcrafted_precompute_output() {
+        let config = make_agg_config(
+            11,
+            "cpu",
+            AggregationType::MultipleSum,
+            "sum",
+            10,
+            0,
+            vec!["host"],
+        );
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(11, config.clone());
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs.clone()),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        worker
+            .process_samples("cpu{host=\"A\"}", vec![(1_000_i64, 1.0)])
+            .unwrap();
+        worker
+            .process_samples("cpu{host=\"A\"}", vec![(5_000_i64, 2.0)])
+            .unwrap();
+        worker
+            .process_samples("cpu{host=\"A\"}", vec![(9_000_i64, 3.0)])
+            .unwrap();
+        worker
+            .process_samples("cpu{host=\"A\"}", vec![(10_000_i64, 0.0)])
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1, "expected one closed window output");
+
+        let (handcrafted_output, handcrafted_acc) = &captured[0];
+        let handcrafted_acc = handcrafted_acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("hand-crafted engine should emit MultipleSumAccumulator");
+
+        let mut arroyo_sums = HashMap::new();
+        arroyo_sums.insert("A".to_string(), 6.0);
+        let arroyo_precompute_bytes =
+            rmp_serde::to_vec(&arroyo_sums).expect("Arroyo MessagePack encoding should succeed");
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&arroyo_precompute_bytes)
+            .expect("gzip encoding should succeed");
+        let arroyo_json = json!({
+            "aggregation_id": 11,
+            "window": {
+                "start": "1970-01-01T00:00:00",
+                "end": "1970-01-01T00:00:10"
+            },
+            "key": "A",
+            "precompute": hex::encode(encoder.finish().expect("gzip finalize should succeed"))
+        });
+
+        let streaming_config = StreamingConfig::new(agg_configs);
+        let (arroyo_output, arroyo_acc) =
+            PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config)
+                .expect("Arroyo precompute should deserialize");
+        let arroyo_acc = arroyo_acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("Arroyo payload should deserialize to MultipleSumAccumulator");
+
+        assert_eq!(
+            handcrafted_output.aggregation_id,
+            arroyo_output.aggregation_id
+        );
+        assert_eq!(
+            handcrafted_output.start_timestamp,
+            arroyo_output.start_timestamp
+        );
+        assert_eq!(
+            handcrafted_output.end_timestamp,
+            arroyo_output.end_timestamp
+        );
+        assert_eq!(handcrafted_output.key, arroyo_output.key);
+        assert_eq!(handcrafted_acc.sums, arroyo_acc.sums);
+    }
 
     #[test]
     fn test_arroyosketch_kll_matches_handcrafted_precompute_output() {
-        let mut config = make_agg_config(12, "latency", "DatasketchesKLL", "", 10, 0, vec![]);
+        let mut config = make_agg_config(
+            12,
+            "latency",
+            AggregationType::DatasketchesKLL,
+            "",
+            10,
+            0,
+            vec![],
+        );
         config
             .parameters
             .insert("K".to_string(), serde_json::Value::from(20_u64));
@@ -1325,8 +1453,16 @@ mod tests {
     #[test]
     fn test_arroyosketch_multiple_sum_matches_handcrafted_precompute_output() {
         // Like planner output: grouping=[], aggregated=[host]
-        let config =
-            make_agg_config_full(11, "cpu", "MultipleSum", "sum", 10, 0, vec![], vec!["host"]);
+        let config = make_agg_config_full(
+            11,
+            "cpu",
+            AggregationType::MultipleSum,
+            "sum",
+            10,
+            0,
+            vec![],
+            vec!["host"],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(11, config.clone());
 
@@ -1418,7 +1554,15 @@ mod tests {
 
     #[test]
     fn test_late_data_drop() {
-        let config = make_agg_config(4, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            4,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(4, config);
 
@@ -1462,7 +1606,15 @@ mod tests {
 
     #[test]
     fn test_late_data_forward_to_store() {
-        let config = make_agg_config(5, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            5,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let mut agg_configs = HashMap::new();
         agg_configs.insert(5, config);
 
@@ -1591,7 +1743,7 @@ aggregations:
     fn test_extract_key_from_series() {
         let config = AggregationConfig::new(
             1,
-            "SingleSubpopulation".to_string(),
+            AggregationType::SingleSubpopulation,
             "Sum".to_string(),
             HashMap::new(),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
@@ -1603,7 +1755,7 @@ aggregations:
             String::new(),
             60,
             0,
-            "tumbling".to_string(),
+            WindowType::Tumbling,
             "http_requests_total".to_string(),
             "http_requests_total".to_string(),
             Some(60),
@@ -1640,7 +1792,15 @@ aggregations:
         // Two groups on the same worker. Group A advances to t=100s.
         // Group B has data at t=10s and then goes idle.
         // After flush, group B's idle windows should close via propagation.
-        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            1,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let agg_configs = arc_configs(HashMap::from([(1, config)]));
         let sink = Arc::new(CapturingOutputSink::new());
         let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
@@ -1774,7 +1934,15 @@ aggregations:
 
     #[test]
     fn test_flush_publishes_worker_watermark() {
-        let config = make_agg_config(1, "cpu", "SingleSubpopulation", "Sum", 10, 0, vec![]);
+        let config = make_agg_config(
+            1,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
         let agg_configs = arc_configs(HashMap::from([(1, config)]));
         let sink = Arc::new(CapturingOutputSink::new());
         let wm = Arc::new(AtomicI64::new(i64::MIN));

@@ -1,4 +1,6 @@
-use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
+use crate::data_model::{
+    AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
+};
 use crate::stores::simple_map_store::common::{
     EpochID, InternTable, MetricBucketMap, MutableEpoch, SealedEpoch, TimestampRange,
 };
@@ -265,7 +267,8 @@ impl Store for SimpleMapStoreGlobal {
                 (
                     BatchConfig {
                         metric: aggregation_config.metric.clone(),
-                        is_delta: aggregation_config.aggregation_type == "DeltaSetAggregator",
+                        is_delta: aggregation_config.aggregation_type
+                            == AggregationType::DeltaSetAggregator,
                         num_aggregates_to_retain: aggregation_config.num_aggregates_to_retain,
                         read_count_threshold: aggregation_config.read_count_threshold,
                     },

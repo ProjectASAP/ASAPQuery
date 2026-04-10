@@ -13,7 +13,7 @@ mod tests {
     use datafusion::logical_expr::LogicalPlan;
     use promql_parser::parser::token::{TokenType, T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
     use promql_utilities::data_model::KeyByLabelNames;
-    use promql_utilities::query_logics::enums::Statistic;
+    use promql_utilities::query_logics::enums::{AggregationType, Statistic};
     use std::collections::HashMap;
 
     fn make_context(
@@ -42,8 +42,8 @@ mod tests {
             agg_info: AggregationIdInfo {
                 aggregation_id_for_key: 1,
                 aggregation_id_for_value: 1,
-                aggregation_type_for_key: "SumAggregator".to_string(),
-                aggregation_type_for_value: "SumAggregator".to_string(),
+                aggregation_type_for_key: AggregationType::Sum,
+                aggregation_type_for_value: AggregationType::Sum,
             },
             do_merge: false,
             spatial_filter: String::new(),

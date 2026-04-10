@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::data_model::AggregationType;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
     use crate::tests::test_utilities::engine_factories::create_engine_single_pop;
 
@@ -13,7 +14,7 @@ mod tests {
     fn test_structural_match_rate_query_finds_config() {
         let engine = create_engine_single_pop(
             "http_requests_total",
-            "MultipleIncrease",
+            AggregationType::MultipleIncrease,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -35,7 +36,7 @@ mod tests {
     fn test_structural_match_wrong_metric_returns_none() {
         let engine = create_engine_single_pop(
             "http_requests_total",
-            "MultipleIncrease",
+            AggregationType::MultipleIncrease,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -56,7 +57,7 @@ mod tests {
     fn test_structural_match_wrong_range_returns_none() {
         let engine = create_engine_single_pop(
             "http_requests_total",
-            "MultipleIncrease",
+            AggregationType::MultipleIncrease,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -78,7 +79,7 @@ mod tests {
     fn test_structural_match_wrong_function_returns_none() {
         let engine = create_engine_single_pop(
             "http_requests_total",
-            "MultipleIncrease",
+            AggregationType::MultipleIncrease,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -100,7 +101,7 @@ mod tests {
     fn test_structural_match_spatial_query() {
         let engine = create_engine_single_pop(
             "http_requests_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),

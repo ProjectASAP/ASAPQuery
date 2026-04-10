@@ -279,6 +279,7 @@ pub fn deserialize_keys_accumulator(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_model::AggregationType;
 
     // Helper to serialize f64 as MessagePack (Arroyo format)
     fn serialize_f64_arroyo(value: f64) -> Vec<u8> {
@@ -292,7 +293,7 @@ mod tests {
 
         let restored = deserialize_accumulator(&bytes, &SketchType::Sum).unwrap();
 
-        assert_eq!(restored.get_accumulator_type(), "SumAccumulator");
+        assert_eq!(restored.get_accumulator_type(), AggregationType::Sum);
     }
 
     #[test]

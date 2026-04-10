@@ -1,3 +1,9 @@
+use std::fmt;
+use std::str::FromStr;
+
+// Re-export AggregationType from promql_utilities (defined there to avoid circular deps).
+pub use promql_utilities::query_logics::enums::AggregationType;
+
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq)]
 #[allow(non_camel_case_types)]
 pub enum QueryLanguage {
@@ -22,4 +28,59 @@ pub enum CleanupPolicy {
     ReadBased,
     /// Never clean up aggregates
     NoCleanup,
+}
+
+impl fmt::Display for CleanupPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CleanupPolicy::CircularBuffer => write!(f, "circular_buffer"),
+            CleanupPolicy::ReadBased => write!(f, "read_based"),
+            CleanupPolicy::NoCleanup => write!(f, "no_cleanup"),
+        }
+    }
+}
+
+impl FromStr for CleanupPolicy {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "circular_buffer" => Ok(CleanupPolicy::CircularBuffer),
+            "read_based" => Ok(CleanupPolicy::ReadBased),
+            "no_cleanup" => Ok(CleanupPolicy::NoCleanup),
+            _ => Err(format!("Unknown cleanup policy: '{s}'")),
+        }
+    }
+}
+
+/// Window type for streaming aggregations.
+#[derive(
+    Clone, Debug, Copy, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowType {
+    #[default]
+    Tumbling,
+    Sliding,
+}
+
+impl fmt::Display for WindowType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WindowType::Tumbling => write!(f, "tumbling"),
+            WindowType::Sliding => write!(f, "sliding"),
+        }
+    }
+}
+
+impl FromStr for WindowType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "tumbling" => Ok(WindowType::Tumbling),
+            "sliding" => Ok(WindowType::Sliding),
+            _ => Err(format!("Unknown window type: '{s}'")),
+        }
+    }
 }

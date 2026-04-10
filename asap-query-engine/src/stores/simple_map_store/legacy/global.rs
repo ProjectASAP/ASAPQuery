@@ -1,5 +1,6 @@
 use crate::data_model::{
-    AggregateCore, CleanupPolicy, KeyByLabelValues, PrecomputedOutput, StreamingConfig,
+    AggregateCore, AggregationType, CleanupPolicy, KeyByLabelValues, PrecomputedOutput,
+    StreamingConfig,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::HashMap;
@@ -280,7 +281,7 @@ impl Store for LegacySimpleMapStoreGlobal {
             store_value.push((output.key, precompute));
 
             // Apply retention policy if configured (but exclude DeltaSetAggregator)
-            if aggregation_config.aggregation_type != "DeltaSetAggregator" {
+            if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
                 self.cleanup_old_aggregates(
                     &mut data,
                     &metric,

@@ -1,8 +1,11 @@
-use asap_types::enums::CleanupPolicy;
+use asap_types::enums::{CleanupPolicy, WindowType};
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, QueryTreatmentType, Statistic};
+use promql_utilities::query_logics::enums::{
+    AggregationOperator, AggregationType, PromQLFunction, QueryPatternType, QueryTreatmentType,
+    Statistic,
+};
 use promql_utilities::query_logics::logics::{
     get_is_collapsable, map_statistic_to_precompute_operator,
 };
@@ -55,9 +58,9 @@ fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::E
 /// Internal representation of an aggregation config before IDs are assigned
 #[derive(Debug, Clone)]
 pub struct IntermediateAggConfig {
-    pub aggregation_type: String,
+    pub aggregation_type: AggregationType,
     pub aggregation_sub_type: String,
-    pub window_type: String,
+    pub window_type: WindowType,
     pub window_size: u64,
     pub slide_interval: u64,
     pub spatial_filter: String,
@@ -174,18 +177,15 @@ impl SingleQueryProcessor {
         match pattern_type {
             QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
                 let fn_name = match_result.get_function_name().unwrap_or_default();
-                match fn_name.as_str() {
-                    "quantile_over_time" | "sum_over_time" | "count_over_time"
-                    | "avg_over_time" => QueryTreatmentType::Approximate,
+                match fn_name.parse::<PromQLFunction>() {
+                    Ok(f) if f.is_approximate() => QueryTreatmentType::Approximate,
                     _ => QueryTreatmentType::Exact,
                 }
             }
             QueryPatternType::OnlySpatial => {
                 let op = match_result.get_aggregation_op().unwrap_or_default();
-                match op.as_str() {
-                    "quantile" | "sum" | "count" | "avg" | "topk" => {
-                        QueryTreatmentType::Approximate
-                    }
+                match op.parse::<AggregationOperator>() {
+                    Ok(o) if o.is_approximate() => QueryTreatmentType::Approximate,
                     _ => QueryTreatmentType::Exact,
                 }
             }
@@ -246,12 +246,18 @@ impl SingleQueryProcessor {
 
         if pattern_type == QueryPatternType::OnlyTemporal {
             let fn_name = match_result.get_function_name().unwrap_or_default();
-            if matches!(fn_name.as_str(), "rate" | "increase" | "quantile_over_time") {
+            let parsed_fn = fn_name.parse::<PromQLFunction>();
+            if matches!(
+                parsed_fn,
+                Ok(PromQLFunction::Rate
+                    | PromQLFunction::Increase
+                    | PromQLFunction::QuantileOverTime)
+            ) {
                 let num_data_points = self.t_repeat as f64 / self.prometheus_scrape_interval as f64;
                 if num_data_points < 60.0 {
                     return false;
                 }
-                if fn_name == "quantile_over_time" {
+                if parsed_fn == Ok(PromQLFunction::QuantileOverTime) {
                     if let Some(range_dur) = match_result.get_range_duration() {
                         let range_secs = range_dur.num_seconds() as f64;
                         if range_secs / self.t_repeat as f64 > 15.0 {
@@ -310,7 +316,7 @@ impl SingleQueryProcessor {
             None,
             None,
             &spatial_filter,
-            |agg_type, agg_sub_type| {
+            |agg_type: AggregationType, agg_sub_type: &str| {
                 build_sketch_parameters_from_promql(
                     agg_type,
                     agg_sub_type,
@@ -331,7 +337,7 @@ impl SingleQueryProcessor {
                     pattern_type,
                     &match_result,
                     self.t_repeat,
-                    &window_cfg.window_type,
+                    window_cfg.window_type,
                     self.range_duration,
                     self.step,
                 )
@@ -373,7 +379,12 @@ fn get_label_routing(
         QueryPatternType::OneTemporalOneSpatial => {
             let fn_name = match_result.get_function_name().unwrap_or_default();
             let agg_op = match_result.get_aggregation_op().unwrap_or_default();
-            if !get_is_collapsable(&fn_name, &agg_op) {
+            let collapsable = fn_name
+                .parse::<PromQLFunction>()
+                .ok()
+                .zip(agg_op.parse::<AggregationOperator>().ok())
+                .is_some_and(|(f, o)| get_is_collapsable(f, o));
+            if !collapsable {
                 (KeyByLabelNames::empty(), all_labels.clone())
             } else {
                 let spatial_output =
@@ -400,7 +411,7 @@ pub fn build_agg_configs_for_statistics(
     table_name: Option<&str>,
     value_column: Option<&str>,
     spatial_filter: &str,
-    get_params: impl Fn(&str, &str) -> Result<HashMap<String, Value>, String>,
+    get_params: impl Fn(AggregationType, &str) -> Result<HashMap<String, Value>, String>,
 ) -> Result<Vec<IntermediateAggConfig>, String> {
     let mut configs = Vec::new();
 
@@ -412,19 +423,22 @@ pub fn build_agg_configs_for_statistics(
         let mut aggregated = KeyByLabelNames::empty();
         set_subpopulation_labels(
             statistic,
-            &agg_type,
+            agg_type,
             subpopulation_labels,
             &mut rollup.clone(),
             &mut grouping,
             &mut aggregated,
         );
 
-        if matches!(agg_type.as_str(), "CountMinSketch" | "HydraKLL") {
-            let delta_params = get_params("DeltaSetAggregator", "")?;
+        if matches!(
+            agg_type,
+            AggregationType::CountMinSketch | AggregationType::HydraKLL
+        ) {
+            let delta_params = get_params(AggregationType::DeltaSetAggregator, "")?;
             configs.push(IntermediateAggConfig {
-                aggregation_type: "DeltaSetAggregator".to_string(),
+                aggregation_type: AggregationType::DeltaSetAggregator,
                 aggregation_sub_type: String::new(),
-                window_type: window_cfg.window_type.clone(),
+                window_type: window_cfg.window_type,
                 window_size: window_cfg.window_size,
                 slide_interval: window_cfg.slide_interval,
                 spatial_filter: spatial_filter.to_string(),
@@ -438,11 +452,11 @@ pub fn build_agg_configs_for_statistics(
             });
         }
 
-        let parameters = get_params(&agg_type, &agg_sub_type)?;
+        let parameters = get_params(agg_type, &agg_sub_type)?;
         configs.push(IntermediateAggConfig {
             aggregation_type: agg_type,
             aggregation_sub_type: agg_sub_type,
-            window_type: window_cfg.window_type.clone(),
+            window_type: window_cfg.window_type,
             window_size: window_cfg.window_size,
             slide_interval: window_cfg.slide_interval,
             spatial_filter: spatial_filter.to_string(),
@@ -467,9 +481,9 @@ mod tests {
 
     fn base_config() -> IntermediateAggConfig {
         IntermediateAggConfig {
-            aggregation_type: "MultipleIncrease".to_string(),
+            aggregation_type: AggregationType::MultipleIncrease,
             aggregation_sub_type: "rate".to_string(),
-            window_type: "tumbling".to_string(),
+            window_type: WindowType::Tumbling,
             window_size: 300,
             slide_interval: 300,
             spatial_filter: String::new(),
@@ -501,7 +515,7 @@ mod tests {
     fn different_aggregation_type_produces_different_key() {
         let cfg1 = base_config();
         let mut cfg2 = base_config();
-        cfg2.aggregation_type = "DatasketchesKLL".to_string();
+        cfg2.aggregation_type = AggregationType::DatasketchesKLL;
         assert_ne!(cfg1.identifying_key(), cfg2.identifying_key());
     }
 

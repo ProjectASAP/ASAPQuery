@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::data_model::{AggregateCore, KeyByLabelValues};
+    use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues};
     use crate::precompute_operators::DatasketchesKLLAccumulator;
     use crate::tests::test_utilities::create_engine_multi_timestamp;
     use crate::QueryResult;
@@ -72,7 +72,7 @@ mod tests {
 
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             Vec::new(), // No labels for this test
             kll_data,
             &elastic_query.to_string(),
@@ -135,7 +135,7 @@ mod tests {
 
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             kll_data,
             &elastic_query.to_string(),
@@ -217,7 +217,7 @@ mod tests {
 
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host", "region"],
             kll_data,
             &elastic_query.to_string(),
@@ -303,7 +303,7 @@ mod tests {
 
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host", "region"],
             kll_data,
             &elastic_query.to_string(),
@@ -355,7 +355,7 @@ mod tests {
 
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             Vec::new(), // No labels for this test
             kll_data,
             &elastic_query.to_string(),

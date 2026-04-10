@@ -2,7 +2,7 @@
 //!
 //! Provides assertion helpers for deep equality checking of query execution contexts.
 
-use crate::data_model::AggregationIdInfo;
+use crate::data_model::{AggregationIdInfo, AggregationType};
 use crate::engines::simple_engine::{
     QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
 };
@@ -200,8 +200,8 @@ mod tests {
             agg_info: AggregationIdInfo {
                 aggregation_id_for_key: 1,
                 aggregation_id_for_value: 1,
-                aggregation_type_for_key: "SumAccumulator".to_string(),
-                aggregation_type_for_value: "SumAccumulator".to_string(),
+                aggregation_type_for_key: AggregationType::Sum,
+                aggregation_type_for_value: AggregationType::Sum,
             },
             do_merge: true, // OnlyTemporal queries merge
             spatial_filter: String::new(),

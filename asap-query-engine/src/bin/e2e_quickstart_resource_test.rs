@@ -8,6 +8,8 @@
 //!   cargo run --release --bin e2e_quickstart_resource_test
 
 use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::WindowType;
+use promql_utilities::query_logics::enums::AggregationType;
 use prost::Message;
 use query_engine_rust::data_model::{CleanupPolicy, LockStrategy, StreamingConfig};
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
@@ -138,7 +140,7 @@ fn make_kll_streaming_config() -> Arc<StreamingConfig> {
 
     let agg_config = AggregationConfig::new(
         1,
-        "DatasketchesKLL".to_string(),
+        AggregationType::DatasketchesKLL,
         String::new(),
         params,
         grouping,
@@ -147,7 +149,7 @@ fn make_kll_streaming_config() -> Arc<StreamingConfig> {
         String::new(),
         10, // window size = 10s (matching quickstart range-duration/step)
         10, // tumbling
-        "tumbling".to_string(),
+        WindowType::Tumbling,
         "sensor_reading".to_string(),
         "sensor_reading".to_string(),
         None,

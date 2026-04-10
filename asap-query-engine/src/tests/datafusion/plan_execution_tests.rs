@@ -5,7 +5,7 @@
 //!
 //! These tests use an actual store with test data.
 
-use crate::data_model::{KeyByLabelValues, Measurement};
+use crate::data_model::{AggregationType, KeyByLabelValues, Measurement};
 use crate::engines::simple_engine::SimpleEngine;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use std::collections::HashMap;
@@ -23,7 +23,7 @@ mod tests {
     fn create_test_engine_with_data() -> SimpleEngine {
         create_engine_single_pop(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![
                 (
@@ -132,7 +132,7 @@ mod tests {
     async fn test_execute_plan_multiple_timestamps() {
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![
                 (
@@ -192,7 +192,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "latency",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             vec![
                 (Some(vec!["host-a".to_string()]), Box::new(kll_a)),
@@ -213,7 +213,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "latency",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(kll))],
             "quantile(0.99, latency) by (host)",
@@ -231,7 +231,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "latency",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(kll))],
             "quantile(0.0, latency) by (host)",
@@ -249,7 +249,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "latency",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(kll))],
             "quantile(1.0, latency) by (host)",
@@ -267,7 +267,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "latency",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(kll))],
             "quantile(0.25, latency) by (host)",
@@ -293,7 +293,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "active_users",
-            "SetAggregator",
+            AggregationType::SetAggregator,
             vec!["host"],
             vec![
                 (Some(vec!["host-a".to_string()]), Box::new(set_a)),
@@ -313,7 +313,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "http_requests_total",
-            "IncreaseAccumulator",
+            AggregationType::Increase,
             vec!["host"],
             vec![
                 (Some(vec!["host-a".to_string()]), Box::new(inc_a)),
@@ -338,7 +338,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "temperature",
-            "MinMaxAccumulator",
+            AggregationType::MinMax,
             vec!["host"],
             vec![
                 (Some(vec!["host-a".to_string()]), Box::new(mm_a)),
@@ -358,7 +358,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "temperature",
-            "MinMaxAccumulator",
+            AggregationType::MinMax,
             vec!["host"],
             vec![
                 (Some(vec!["host-a".to_string()]), Box::new(mm_a)),
@@ -380,7 +380,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "requests",
-            "MultipleSumAccumulator",
+            AggregationType::MultipleSum,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(ms))],
             "sum(requests) by (host)",
@@ -396,7 +396,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "latency",
-            "MultipleMinMaxAccumulator",
+            AggregationType::MultipleMinMax,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(mm))],
             "min(latency) by (host)",
@@ -413,7 +413,7 @@ mod tests {
     async fn test_execute_plan_empty_store() {
         let engine = create_engine_single_pop(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![], // No data
             "sum(http_requests) by (host)",
@@ -441,7 +441,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             "sum(http_requests) by (host)",
@@ -472,7 +472,7 @@ mod tests {
 
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             "sum(http_requests) by (host)",
@@ -516,7 +516,7 @@ mod tests {
 
         let engine = create_engine_multi_timestamp(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             "sum(http_requests) by (host)",
@@ -542,7 +542,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "http_requests_total",
-            "IncreaseAccumulator",
+            AggregationType::Increase,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(inc))],
             "sum(increase(http_requests_total[10s])) by (host)",
@@ -568,7 +568,7 @@ mod tests {
 
         let engine = create_engine_single_pop(
             "temperature",
-            "MinMaxAccumulator",
+            AggregationType::MinMax,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(mm))],
             "min(temperature) by (host)",

@@ -10,12 +10,12 @@ mod tests {
         QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
     };
     use promql_utilities::data_model::KeyByLabelNames;
-    use promql_utilities::query_logics::enums::Statistic;
+    use promql_utilities::query_logics::enums::{AggregationType, Statistic};
     use std::collections::HashMap;
 
     fn create_context(
         statistic: Statistic,
-        aggregation_type: &str,
+        aggregation_type: AggregationType,
         output_labels: Vec<&str>,
         kwargs: HashMap<String, String>,
     ) -> QueryExecutionContext {
@@ -43,8 +43,8 @@ mod tests {
             agg_info: AggregationIdInfo {
                 aggregation_id_for_key: 1,
                 aggregation_id_for_value: 1,
-                aggregation_type_for_key: String::new(),
-                aggregation_type_for_value: aggregation_type.to_string(),
+                aggregation_type_for_key: AggregationType::Sum,
+                aggregation_type_for_value: aggregation_type,
             },
             do_merge: false,
             spatial_filter: String::new(),
@@ -61,15 +61,15 @@ mod tests {
     #[test]
     fn test_all_statistics_map_without_panic() {
         let statistics = vec![
-            (Statistic::Sum, "SumAccumulator"),
-            (Statistic::Min, "MinMaxAccumulator"),
-            (Statistic::Max, "MinMaxAccumulator"),
-            (Statistic::Count, "SumAccumulator"),
-            (Statistic::Increase, "IncreaseAccumulator"),
-            (Statistic::Rate, "IncreaseAccumulator"),
-            (Statistic::Quantile, "DatasketchesKLLAccumulator"),
-            (Statistic::Cardinality, "SetAggregator"),
-            (Statistic::Topk, "CountMinSketchAccumulator"),
+            (Statistic::Sum, AggregationType::Sum),
+            (Statistic::Min, AggregationType::MinMax),
+            (Statistic::Max, AggregationType::MinMax),
+            (Statistic::Count, AggregationType::Sum),
+            (Statistic::Increase, AggregationType::Increase),
+            (Statistic::Rate, AggregationType::Increase),
+            (Statistic::Quantile, AggregationType::DatasketchesKLL),
+            (Statistic::Cardinality, AggregationType::SetAggregator),
+            (Statistic::Topk, AggregationType::CountMinSketch),
         ];
 
         for (stat, agg_type) in statistics {
@@ -96,7 +96,7 @@ mod tests {
 
         let ctx = create_context(
             Statistic::Topk,
-            "CountMinSketchAccumulator",
+            AggregationType::CountMinSketch,
             vec!["host"],
             kwargs,
         );
@@ -111,7 +111,7 @@ mod tests {
         use datafusion_summary_library::InferOperation;
         let ctx = create_context(
             Statistic::Topk,
-            "CountMinSketchAccumulator",
+            AggregationType::CountMinSketch,
             vec!["host"],
             HashMap::new(),
         );
@@ -130,7 +130,7 @@ mod tests {
         use datafusion_summary_library::InferOperation;
         let ctx = create_context(
             Statistic::Cardinality,
-            "SetAggregator",
+            AggregationType::SetAggregator,
             vec!["host"],
             HashMap::new(),
         );
@@ -145,7 +145,7 @@ mod tests {
         use datafusion_summary_library::InferOperation;
         let ctx = create_context(
             Statistic::Rate,
-            "IncreaseAccumulator",
+            AggregationType::Increase,
             vec!["host"],
             HashMap::new(),
         );
@@ -160,7 +160,7 @@ mod tests {
         use datafusion_summary_library::InferOperation;
         let ctx = create_context(
             Statistic::Count,
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             HashMap::new(),
         );
@@ -176,18 +176,19 @@ mod tests {
 
     #[test]
     fn test_unknown_agg_type_errors() {
+        // SingleSubpopulation is a legacy wrapper variant not mapped to a SketchType
         let ctx = create_context(
             Statistic::Sum,
-            "FooBarAccumulator",
+            AggregationType::SingleSubpopulation,
             vec!["host"],
             HashMap::new(),
         );
         let result = ctx.to_logical_plan();
-        assert!(result.is_err(), "Unknown aggregation type should error");
+        assert!(result.is_err(), "Unmapped aggregation type should error");
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
-            err_msg.contains("FooBarAccumulator") || err_msg.contains("Unknown"),
-            "Error should mention the unknown type, got: {}",
+            err_msg.contains("Unknown"),
+            "Error should mention Unknown, got: {}",
             err_msg
         );
     }
@@ -198,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_plan_with_empty_labels() {
-        let ctx = create_context(Statistic::Sum, "SumAccumulator", vec![], HashMap::new());
+        let ctx = create_context(Statistic::Sum, AggregationType::Sum, vec![], HashMap::new());
         let result = ctx.to_logical_plan();
         assert!(
             result.is_ok(),

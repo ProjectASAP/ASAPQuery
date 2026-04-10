@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink, SingleSubpopulationAggregate,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
 };
 use crate::precompute_operators::IncreaseAccumulator;
 use serde::{Deserialize, Serialize};
@@ -278,8 +278,8 @@ impl AggregateCore for MultipleIncreaseAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "MultipleIncreaseAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::MultipleIncrease
     }
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {

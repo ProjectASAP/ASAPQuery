@@ -9,6 +9,7 @@ use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVecto
 use crate::stores::{Store, TimestampedBucketsMap};
 use core::panic;
 use promql_utilities::get_is_collapsable;
+use promql_utilities::query_logics::enums::{AggregationOperator, AggregationType, PromQLFunction};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use tracing::{debug, warn};
 
 use crate::AggregateCore;
 
+use asap_types::enums::WindowType;
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::ast_matching::{PromQLMatchResult, PromQLPattern, PromQLPatternBuilder};
@@ -157,7 +159,7 @@ impl SimpleEngine {
         temporal_pattern_blocks.insert(
             "quantile".to_string(),
             PromQLPatternBuilder::function(
-                vec!["quantile_over_time"],
+                vec![PromQLFunction::QuantileOverTime.as_str()],
                 vec![
                     PromQLPatternBuilder::number(None, Some("quantile_param")),
                     PromQLPatternBuilder::matrix_selector(
@@ -202,10 +204,31 @@ impl SimpleEngine {
 
         // Create spatial pattern blocks
         let mut spatial_pattern_blocks = HashMap::new();
+        let spatial_ops_all: Vec<&str> = [
+            AggregationOperator::Sum,
+            AggregationOperator::Count,
+            AggregationOperator::Avg,
+            AggregationOperator::Quantile,
+            AggregationOperator::Min,
+            AggregationOperator::Max,
+            AggregationOperator::Topk,
+        ]
+        .map(AggregationOperator::as_str)
+        .to_vec();
+        let spatial_ops_no_topk: Vec<&str> = [
+            AggregationOperator::Sum,
+            AggregationOperator::Count,
+            AggregationOperator::Avg,
+            AggregationOperator::Quantile,
+            AggregationOperator::Min,
+            AggregationOperator::Max,
+        ]
+        .map(AggregationOperator::as_str)
+        .to_vec();
         spatial_pattern_blocks.insert(
             "generic".to_string(),
             PromQLPatternBuilder::aggregation(
-                vec!["sum", "count", "avg", "quantile", "min", "max", "topk"],
+                spatial_ops_all,
                 PromQLPatternBuilder::metric(None, None, None, Some("metric")),
                 None,
                 None,
@@ -229,19 +252,18 @@ impl SimpleEngine {
             PromQLPattern::new(blocks[pattern_type].clone())
         }
 
-        fn spatial_of_temporal_pattern(
-            temporal_block: &Option<HashMap<String, Value>>,
-        ) -> PromQLPattern {
-            let pattern = PromQLPatternBuilder::aggregation(
-                vec!["sum", "count", "avg", "quantile", "min", "max"],
-                temporal_block.clone(),
-                None,
-                None,
-                None,
-                Some("aggregation"),
-            );
-            PromQLPattern::new(pattern)
-        }
+        let spatial_of_temporal_pattern =
+            |temporal_block: &Option<HashMap<String, Value>>| -> PromQLPattern {
+                let pattern = PromQLPatternBuilder::aggregation(
+                    spatial_ops_no_topk.clone(),
+                    temporal_block.clone(),
+                    None,
+                    None,
+                    None,
+                    Some("aggregation"),
+                );
+                PromQLPattern::new(pattern)
+            };
 
         // Create controller patterns
         let mut controller_patterns = HashMap::new();
@@ -541,12 +563,12 @@ impl SimpleEngine {
         end_timestamp: u64,
         agg_info: &AggregationIdInfo,
     ) -> Result<StoreQueryParams, String> {
-        let (start_timestamp, end_timestamp) = match agg_info.aggregation_type_for_key.as_str() {
-            "DeltaSetAggregator" => {
+        let (start_timestamp, end_timestamp) = match agg_info.aggregation_type_for_key {
+            AggregationType::DeltaSetAggregator => {
                 // All keys from beginning of time
                 (0, end_timestamp)
             }
-            "SetAggregator" => {
+            AggregationType::SetAggregator => {
                 // Latest window only
                 let window_size = self
                     .streaming_config
@@ -561,7 +583,7 @@ impl SimpleEngine {
                 (end_timestamp - window_size, end_timestamp)
             }
             other => {
-                return Err(format!("Unsupported key aggregation type: {}", other));
+                return Err(format!("Unsupported key aggregation type: {other:?}"));
             }
         };
 
@@ -592,8 +614,8 @@ impl SimpleEngine {
                 )
             })?;
 
-        let window_type = &aggregation_config_for_value.window_type;
-        let is_exact_query = window_type == "sliding";
+        let window_type = aggregation_config_for_value.window_type;
+        let is_exact_query = window_type == WindowType::Sliding;
 
         // Determine start/end for values query based on window type
         let (values_start, values_end) = if is_exact_query {
@@ -720,9 +742,9 @@ impl SimpleEngine {
 
         let merge_start_time = Instant::now();
         let window_type = if plan.values_query.is_exact_query {
-            "sliding"
+            WindowType::Sliding
         } else {
-            "tumbling"
+            WindowType::Tumbling
         };
 
         let merged_values = if plan.values_query.is_exact_query {
@@ -748,14 +770,14 @@ impl SimpleEngine {
             self.merge_precomputed_outputs(
                 &values_map,
                 do_merge,
-                agg_info.aggregation_type_for_value.clone(),
+                agg_info.aggregation_type_for_value,
             )
         };
 
         let merge_duration = merge_start_time.elapsed();
         debug!(
             "[LATENCY] Precomputed output processing ({}): {:.2}ms, resulted in {} merged outputs",
-            if window_type == "sliding" {
+            if window_type == WindowType::Sliding {
                 "no merge"
             } else {
                 "merge"
@@ -783,7 +805,7 @@ impl SimpleEngine {
             let merged = self.merge_precomputed_outputs(
                 &keys_map,
                 do_merge,
-                agg_info.aggregation_type_for_key.clone(),
+                agg_info.aggregation_type_for_key,
             );
             debug!(
                 "[LATENCY] Keys merge operation: {:.2}ms, resulted in {} merged outputs",
@@ -1088,9 +1110,15 @@ impl SimpleEngine {
             QueryPatternType::OneTemporalOneSpatial => {
                 let temporal_aggregation = match_result.get_function_name().unwrap();
                 let spatial_aggregation = match_result.get_aggregation_op().unwrap();
-                match get_is_collapsable(&temporal_aggregation, &spatial_aggregation) {
-                    false => all_labels.clone(),
-                    true => get_spatial_aggregation_output_labels(&match_result, &all_labels),
+                let collapsable = temporal_aggregation
+                    .parse::<PromQLFunction>()
+                    .ok()
+                    .zip(spatial_aggregation.parse::<AggregationOperator>().ok())
+                    .is_some_and(|(f, o)| get_is_collapsable(f, o));
+                if collapsable {
+                    get_spatial_aggregation_output_labels(&match_result, &all_labels)
+                } else {
+                    all_labels.clone()
                 }
             }
         };
@@ -1584,13 +1612,10 @@ impl SimpleEngine {
             _ => query_data.aggregation_info.get_name().to_lowercase(),
         };
 
-        let statistics: Vec<Statistic> = if statistic_name == "avg" {
-            vec![Statistic::Sum, Statistic::Count]
-        } else if let Ok(stat) = statistic_name.parse::<Statistic>() {
-            vec![stat]
-        } else {
-            vec![]
-        };
+        let statistics: Vec<Statistic> = statistic_name
+            .parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_default();
 
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
@@ -1620,8 +1645,8 @@ impl SimpleEngine {
         let query_config_aggregations = &query_config.aggregations;
         let mut aggregation_id_for_key: Option<u64> = None;
         let mut aggregation_id_for_value: Option<u64> = None;
-        let mut aggregation_type_for_key: Option<String> = None;
-        let mut aggregation_type_for_value: Option<String> = None;
+        let mut aggregation_type_for_key: Option<AggregationType> = None;
+        let mut aggregation_type_for_value: Option<AggregationType> = None;
 
         if query_config_aggregations.is_empty() {
             panic!("Query config for query has no aggregations defined",);
@@ -1632,11 +1657,12 @@ impl SimpleEngine {
                 let aggregation_type = self
                     .streaming_config
                     .get_aggregation_config(aggregation.aggregation_id)
-                    .map(|config| config.aggregation_type.clone());
+                    .map(|config| config.aggregation_type);
 
-                if aggregation_type.as_ref().unwrap() == "DeltaSetAggregator"
-                    || aggregation_type.as_ref().unwrap() == "SetAggregator"
-                {
+                if matches!(
+                    aggregation_type.as_ref().unwrap(),
+                    AggregationType::DeltaSetAggregator | AggregationType::SetAggregator
+                ) {
                     if aggregation_id_for_key.is_some() {
                         panic!("Aggregation ID for key must be None");
                     }
@@ -1660,11 +1686,11 @@ impl SimpleEngine {
             aggregation_type_for_key = self
                 .streaming_config
                 .get_aggregation_config(aggregation_id_for_key.unwrap())
-                .map(|config| config.aggregation_type.clone());
+                .map(|config| config.aggregation_type);
             aggregation_type_for_value = self
                 .streaming_config
                 .get_aggregation_config(aggregation_id_for_value.unwrap())
-                .map(|config| config.aggregation_type.clone());
+                .map(|config| config.aggregation_type);
         }
 
         // check for None
@@ -1849,13 +1875,10 @@ impl SimpleEngine {
             }
         };
 
-        let statistics_to_compute: Vec<Statistic> = if statistic_name == "avg" {
-            vec![Statistic::Sum, Statistic::Count]
-        } else if let Ok(stat) = statistic_name.parse::<Statistic>() {
-            vec![stat]
-        } else {
-            panic!("Unsupported statistic: {}", statistic_name);
-        };
+        let statistics_to_compute: Vec<Statistic> = statistic_name
+            .parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
 
         if statistics_to_compute.len() != 1 {
             warn!(
@@ -1974,13 +1997,10 @@ impl SimpleEngine {
             .get_name()
             .to_lowercase();
 
-        let statistics_to_compute: Vec<Statistic> = if statistic_name == "avg" {
-            vec![Statistic::Sum, Statistic::Count]
-        } else if let Ok(stat) = statistic_name.parse::<Statistic>() {
-            vec![stat]
-        } else {
-            panic!("Unsupported statistic: {}", statistic_name);
-        };
+        let statistics_to_compute: Vec<Statistic> = statistic_name
+            .parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
 
         if statistics_to_compute.len() != 1 {
             warn!(
@@ -2731,9 +2751,15 @@ impl SimpleEngine {
                 let spatial_aggregation = match_result.get_aggregation_op().unwrap();
                 // iff temporal outer labels issubset of spatial inner labels, collapse
                 // SQL issue: take into account labels from the query, not needed at present because only uses promql translations
-                match get_is_collapsable(&temporal_aggregation, &spatial_aggregation) {
-                    false => all_labels.clone(),
-                    true => get_spatial_aggregation_output_labels(&match_result, &all_labels),
+                let collapsable = temporal_aggregation
+                    .parse::<PromQLFunction>()
+                    .ok()
+                    .zip(spatial_aggregation.parse::<AggregationOperator>().ok())
+                    .is_some_and(|(f, o)| get_is_collapsable(f, o));
+                if collapsable {
+                    get_spatial_aggregation_output_labels(&match_result, &all_labels)
+                } else {
+                    all_labels.clone()
                 }
             }
         };
@@ -2846,7 +2872,7 @@ impl SimpleEngine {
         &self,
         precomputed_outputs_map: &TimestampedBucketsMap,
         do_merge: bool,
-        aggregation_type: String,
+        aggregation_type: AggregationType,
     ) -> HashMap<Option<KeyByLabelValues>, Box<dyn crate::data_model::AggregateCore>> {
         #[cfg(feature = "extra_debugging")]
         let start_time = Instant::now();
@@ -2854,29 +2880,16 @@ impl SimpleEngine {
         debug!("Starting merge for {} keys", precomputed_outputs_map.len());
         #[cfg(feature = "extra_debugging")]
         debug!(
-            "do_merge: {}, aggregation_type: {}",
+            "do_merge: {}, aggregation_type: {:?}",
             do_merge, aggregation_type
         );
 
         // Merge if: temporal query OR DeltaSetAggregator (which accumulates keys over time)
-        let should_merge = do_merge || aggregation_type == "DeltaSetAggregator";
+        let should_merge = do_merge || aggregation_type == AggregationType::DeltaSetAggregator;
 
         let mut merged = HashMap::with_capacity(precomputed_outputs_map.len());
 
-        for (idx, (key, timestamped_buckets)) in precomputed_outputs_map.iter().enumerate() {
-            #[cfg(feature = "extra_debugging")]
-            debug!(
-                "Processing key {} of {}: {:?}",
-                idx + 1,
-                precomputed_outputs_map.len(),
-                key
-            );
-            #[cfg(feature = "extra_debugging")]
-            debug!(
-                "  Number of precomputes for this key: {}",
-                timestamped_buckets.len()
-            );
-
+        for (key, timestamped_buckets) in precomputed_outputs_map.iter() {
             if !timestamped_buckets.is_empty() {
                 // Extract just the buckets (without timestamps) for merging
                 let precomputes: Vec<Box<dyn AggregateCore>> = timestamped_buckets
@@ -2938,7 +2951,7 @@ impl SimpleEngine {
 
         // Try to use optimized batch merge for KLL accumulators
         if !accumulators.is_empty()
-            && accumulators[0].get_accumulator_type() == "DatasketchesKLLAccumulator"
+            && accumulators[0].get_accumulator_type() == AggregationType::DatasketchesKLL
         {
             use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 
@@ -2956,7 +2969,7 @@ impl SimpleEngine {
 
         // Try to use optimized batch merge for CountMinSketch accumulators
         if !accumulators.is_empty()
-            && accumulators[0].get_accumulator_type() == "CountMinSketchAccumulator"
+            && accumulators[0].get_accumulator_type() == AggregationType::CountMinSketch
         {
             use crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator;
 
@@ -3108,7 +3121,7 @@ impl SimpleEngine {
         // Handle different accumulator types and statistics using the trait methods
         // TODO: change this logic to just check Single vs MultipleSubpopulationAggregate
         match precompute.get_accumulator_type() {
-            "SumAccumulator" => {
+            AggregationType::Sum => {
                 if let Some(sum_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::sum_accumulator::SumAccumulator>() {
                     use crate::data_model::SingleSubpopulationAggregate;
                     sum_acc.query(*statistic, None)
@@ -3116,7 +3129,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to SumAccumulator".into())
                 }
             }
-            "MinMaxAccumulator" => {
+            AggregationType::MinMax => {
                 if let Some(minmax_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::min_max_accumulator::MinMaxAccumulator>() {
                     use crate::data_model::SingleSubpopulationAggregate;
                     minmax_acc.query(*statistic, None)
@@ -3124,7 +3137,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to MinMaxAccumulator".into())
                 }
             }
-            "IncreaseAccumulator" => {
+            AggregationType::Increase => {
                 if let Some(inc_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::increase_accumulator::IncreaseAccumulator>() {
                     use crate::data_model::SingleSubpopulationAggregate;
                     inc_acc.query(*statistic, None)
@@ -3132,7 +3145,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to IncreaseAccumulator".into())
                 }
             }
-            "MultipleSumAccumulator" => {
+            AggregationType::MultipleSum => {
                 if let Some(multi_sum_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator>() {
                     if let Some(key_val) = key {
                         use crate::data_model::MultipleSubpopulationAggregate;
@@ -3144,7 +3157,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to MultipleSumAccumulator".into())
                 }
             }
-            "MultipleMinMaxAccumulator" => {
+            AggregationType::MultipleMinMax => {
                 if let Some(multi_minmax_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::multiple_min_max_accumulator::MultipleMinMaxAccumulator>() {
                     if let Some(key_val) = key {
                         use crate::data_model::MultipleSubpopulationAggregate;
@@ -3156,7 +3169,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to MultipleMinMaxAccumulator".into())
                 }
             }
-            "MultipleIncreaseAccumulator" => {
+            AggregationType::MultipleIncrease => {
                 if let Some(multi_inc_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::multiple_increase_accumulator::MultipleIncreaseAccumulator>() {
                     if let Some(key_val) = key {
                         use crate::data_model::MultipleSubpopulationAggregate;
@@ -3168,7 +3181,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to MultipleIncreaseAccumulator".into())
                 }
             }
-            "CountMinSketchAccumulator" => {
+            AggregationType::CountMinSketch => {
                 if let Some(cms_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator>() {
                     use crate::data_model::MultipleSubpopulationAggregate;
                     if let Some(key_val) = key {
@@ -3180,7 +3193,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to CountMinSketchAccumulator".into())
                 }
             }
-            "CountMinSketchWithHeapAccumulator" => {
+            AggregationType::CountMinSketchWithHeap => {
                 if let Some(cms_heap_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::count_min_sketch_with_heap_accumulator::CountMinSketchWithHeapAccumulator>() {
                     use crate::data_model::MultipleSubpopulationAggregate;
                     if let Some(key_val) = key {
@@ -3192,7 +3205,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to CountMinSketchWithHeapAccumulator".into())
                 }
             }
-            "DatasketchesKLLAccumulator" => {
+            AggregationType::DatasketchesKLL => {
                 if let Some(kll_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator>() {
                     use crate::data_model::SingleSubpopulationAggregate;
                     kll_acc.query(*statistic, Some(query_kwargs))
@@ -3200,7 +3213,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to DatasketchesKLLAccumulator".into())
                 }
             }
-            "HydraKllSketchAccumulator" => {
+            AggregationType::HydraKLL => {
                 if let Some(hydra_kll_acc) = precompute.as_any()
                     .downcast_ref::<crate::precompute_operators::hydra_kll_accumulator::HydraKllSketchAccumulator>()
                 {
@@ -3214,7 +3227,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to HydraKllSketchAccumulator".into())
                 }
             }
-            "DeltaSetAggregatorAccumulator" => {
+            AggregationType::DeltaSetAggregator => {
                 if let Some(delta_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator>() {
                     if let Some(key_val) = key {
                         use crate::data_model::MultipleSubpopulationAggregate;
@@ -3227,7 +3240,7 @@ impl SimpleEngine {
                     Err("Failed to downcast to DeltaSetAggregatorAccumulator".into())
                 }
             }
-            "SetAggregatorAccumulator" => {
+            AggregationType::SetAggregator => {
                 if let Some(set_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::set_aggregator_accumulator::SetAggregatorAccumulator>() {
                     if let Some(key_val) = key {
                         use crate::data_model::MultipleSubpopulationAggregate;
@@ -3240,8 +3253,8 @@ impl SimpleEngine {
                     Err("Failed to downcast to SetAggregatorAccumulator".into())
                 }
             }
-            _ => {
-                Err(format!("Unknown accumulator type: {}", precompute.get_accumulator_type()).into())
+            other => {
+                Err(format!("Unknown accumulator type: {other:?}").into())
             }
         }
     }
@@ -3652,7 +3665,7 @@ impl SimpleEngine {
 
                 if !window_buckets.is_empty() {
                     // Merge available buckets
-                    let mut merger = create_window_merger(accumulator_type);
+                    let mut merger = create_window_merger(*accumulator_type);
                     merger.initialize(window_buckets);
 
                     match merger.get_merged() {
@@ -3716,7 +3729,7 @@ impl SimpleEngine {
 
 #[cfg(test)]
 mod range_query_tests {
-    use crate::data_model::{AggregateCore, KeyByLabelValues, SerializableToSink};
+    use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, SerializableToSink};
     use crate::engines::window_merger::NaiveMerger;
     use serde_json::Value;
     use std::any::Any;
@@ -3772,8 +3785,8 @@ mod range_query_tests {
             }
         }
 
-        fn get_accumulator_type(&self) -> &'static str {
-            "MockBucketAccumulator"
+        fn get_accumulator_type(&self) -> AggregationType {
+            AggregationType::Sum
         }
 
         fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
