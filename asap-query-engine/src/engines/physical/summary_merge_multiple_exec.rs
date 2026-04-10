@@ -466,11 +466,11 @@ mod tests {
     #[test]
     fn test_merge_kll_sketches() {
         let mut kll1 = DatasketchesKLLAccumulator::new(200);
-        kll1._update(1.0);
-        kll1._update(2.0);
+        kll1.update(1.0);
+        kll1.update(2.0);
         let mut kll2 = DatasketchesKLLAccumulator::new(200);
-        kll2._update(3.0);
-        kll2._update(4.0);
+        kll2.update(3.0);
+        kll2.update(4.0);
 
         let bytes1 = serialize_accumulator_arroyo(&kll1);
         let bytes2 = serialize_accumulator_arroyo(&kll2);

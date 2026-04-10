@@ -140,7 +140,7 @@ mod tests {
         for (i, &ts) in TEMPORAL_TIMESTAMPS.iter().enumerate() {
             let mut kll = DatasketchesKLLAccumulator::new(200);
             // Insert values 10, 20, 30, 40, 50 at successive timestamps
-            kll._update((i as f64 + 1.0) * 10.0);
+            kll.update((i as f64 + 1.0) * 10.0);
             data.push((
                 ts,
                 Some(vec!["host-a".to_string()]),

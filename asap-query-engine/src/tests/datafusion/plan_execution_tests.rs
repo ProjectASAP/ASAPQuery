@@ -183,11 +183,11 @@ mod tests {
     async fn test_old_vs_new_kll_quantile() {
         let mut kll_a = DatasketchesKLLAccumulator::new(200);
         for v in [10.0, 20.0, 30.0, 40.0, 50.0] {
-            kll_a._update(v);
+            kll_a.update(v);
         }
         let mut kll_b = DatasketchesKLLAccumulator::new(200);
         for v in [100.0, 200.0, 300.0] {
-            kll_b._update(v);
+            kll_b.update(v);
         }
 
         let engine = create_engine_single_pop(
@@ -208,7 +208,7 @@ mod tests {
     async fn test_old_vs_new_kll_quantile_p99() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for v in 1..=100 {
-            kll._update(v as f64);
+            kll.update(v as f64);
         }
 
         let engine = create_engine_single_pop(
@@ -226,7 +226,7 @@ mod tests {
     async fn test_old_vs_new_kll_quantile_p0() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for v in [5.0, 10.0, 15.0, 20.0, 25.0] {
-            kll._update(v);
+            kll.update(v);
         }
 
         let engine = create_engine_single_pop(
@@ -244,7 +244,7 @@ mod tests {
     async fn test_old_vs_new_kll_quantile_p1() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for v in [5.0, 10.0, 15.0, 20.0, 25.0] {
-            kll._update(v);
+            kll.update(v);
         }
 
         let engine = create_engine_single_pop(
@@ -262,7 +262,7 @@ mod tests {
     async fn test_old_vs_new_kll_quantile_p25() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for v in 1..=1000 {
-            kll._update(v as f64);
+            kll.update(v as f64);
         }
 
         let engine = create_engine_single_pop(

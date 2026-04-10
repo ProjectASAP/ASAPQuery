@@ -80,7 +80,7 @@ fn engine_no_query_configs(
         let acc: Box<dyn crate::AggregateCore> = match c.aggregation_type.as_str() {
             "DatasketchesKLL" => {
                 let mut kll = DatasketchesKLLAccumulator::new(200);
-                kll._update(1.0);
+                kll.update(1.0);
                 Box::new(kll)
             }
             _ => Box::new(SumAccumulator::with_sum(42.0)),

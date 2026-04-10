@@ -836,7 +836,7 @@ fn test_clone_fidelity_min_max(strategy: LockStrategy) {
 fn test_clone_fidelity_kll(strategy: LockStrategy) {
     let mut acc = DatasketchesKLLAccumulator::new(200);
     for v in [1.0, 5.0, 10.0, 50.0, 100.0] {
-        acc._update(v);
+        acc.update(v);
     }
     roundtrip(strategy, acc);
 }
