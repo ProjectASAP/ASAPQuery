@@ -11,7 +11,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::data_model::{KeyByLabelValues, Measurement};
+    use crate::data_model::{AggregationType, KeyByLabelValues, Measurement};
     use crate::precompute_operators::{
         CountMinSketchAccumulator, DeltaSetAggregatorAccumulator, HydraKllSketchAccumulator,
         IncreaseAccumulator, MultipleIncreaseAccumulator,
@@ -59,7 +59,7 @@ mod tests {
 
         let engine = create_engine_single_pop_with_aggregated(
             "http_requests_total",
-            "MultipleIncreaseAccumulator",
+            AggregationType::MultipleIncrease,
             vec![],
             vec!["host", "endpoint"],
             vec![(None, Box::new(acc))],
@@ -88,7 +88,7 @@ mod tests {
 
         let engine = create_engine_single_pop_with_aggregated(
             "http_requests_total",
-            "MultipleIncreaseAccumulator",
+            AggregationType::MultipleIncrease,
             vec![],
             vec!["host", "service"],
             vec![(None, Box::new(acc))],
@@ -145,8 +145,8 @@ mod tests {
 
         let engine = create_engine_dual_input(
             "request_duration",
-            "HydraKllSketchAccumulator",
-            "DeltaSetAggregator",
+            AggregationType::HydraKLL,
+            AggregationType::DeltaSetAggregator,
             vec![],                        // grouping_labels: no store GROUP BY
             vec!["host", "endpoint"],      // aggregated_labels: sub-keys tracked by DeltaSet
             vec![(None, Box::new(hydra))], // store key = None
@@ -187,8 +187,8 @@ mod tests {
 
         let engine = create_engine_dual_input(
             "event_frequency",
-            "CountMinSketchAccumulator",
-            "DeltaSetAggregator",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
             vec![],                       // grouping_labels: no store GROUP BY
             vec!["host", "event"],        // aggregated_labels: sub-keys tracked by DeltaSet
             vec![(None, Box::new(cms))],  // store key = None
@@ -220,7 +220,7 @@ mod tests {
 
         let engine = create_engine_single_pop_with_aggregated(
             "requests",
-            "MultipleIncreaseAccumulator",
+            AggregationType::MultipleIncrease,
             vec![],
             vec!["host", "endpoint"],
             vec![(None, Box::new(acc1)), (None, Box::new(acc2))],
@@ -249,7 +249,7 @@ mod tests {
 
         let engine = create_engine_single_pop_with_aggregated(
             "requests",
-            "MultipleIncreaseAccumulator",
+            AggregationType::MultipleIncrease,
             vec![],
             vec!["host", "endpoint"],
             vec![(None, Box::new(empty))],
@@ -289,8 +289,8 @@ mod tests {
 
         let engine = create_engine_dual_input(
             "request_duration",
-            "HydraKllSketchAccumulator",
-            "DeltaSetAggregator",
+            AggregationType::HydraKLL,
+            AggregationType::DeltaSetAggregator,
             vec![],                   // no store GROUP BY
             vec!["host", "endpoint"], // aggregated_labels
             vec![(None, Box::new(hydra))],

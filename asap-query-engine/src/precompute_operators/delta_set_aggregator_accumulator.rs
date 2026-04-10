@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink,
 };
 use serde_json::Value;
 use sketch_core::delta_set_aggregator::{deserialize_msgpack, serialize_msgpack};
@@ -240,8 +240,8 @@ impl AggregateCore for DeltaSetAggregatorAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "DeltaSetAggregatorAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::DeltaSetAggregator
     }
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {

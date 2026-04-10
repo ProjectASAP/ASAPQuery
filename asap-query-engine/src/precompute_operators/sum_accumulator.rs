@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, MergeableAccumulator, SerializableToSink, SingleSubpopulationAggregate,
-    SingleSubpopulationAggregateFactory,
+    AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
+    SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -114,8 +114,8 @@ impl AggregateCore for SumAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "SumAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::Sum
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {

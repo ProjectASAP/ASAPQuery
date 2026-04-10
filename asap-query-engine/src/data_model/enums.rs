@@ -9,7 +9,8 @@ pub enum StreamingEngine {
     Arroyo,
 }
 
-pub use asap_types::enums::{CleanupPolicy, QueryLanguage};
+pub use asap_types::enums::{CleanupPolicy, QueryLanguage, WindowType};
+pub use promql_utilities::query_logics::enums::AggregationType;
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
 pub enum QueryProtocol {

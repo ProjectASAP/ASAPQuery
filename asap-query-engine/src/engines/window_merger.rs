@@ -8,7 +8,7 @@
 //! - `IncrementalMerger`: Add/subtract for subtractable accumulators (future)
 //! - `SwagMerger`: Two-stack queue for non-subtractable accumulators (future)
 
-use crate::data_model::AggregateCore;
+use crate::data_model::{AggregateCore, AggregationType};
 
 /// Trait for merging buckets in a sliding window
 ///
@@ -94,7 +94,7 @@ impl WindowMerger for NaiveMerger {
 /// - IncrementalMerger for subtractable accumulators (Sum, CountMinSketch)
 /// - SwagMerger for non-subtractable accumulators (KLL, MinMax)
 #[allow(dead_code)]
-pub fn create_window_merger(_accumulator_type: &str) -> Box<dyn WindowMerger> {
+pub fn create_window_merger(_accumulator_type: AggregationType) -> Box<dyn WindowMerger> {
     // Future implementation:
     // match accumulator_type {
     //     "SumAccumulator" | "CountMinSketchAccumulator" => Box::new(IncrementalMerger::new()),
@@ -159,8 +159,8 @@ mod tests {
             }
         }
 
-        fn get_accumulator_type(&self) -> &'static str {
-            "MockSumAccumulator"
+        fn get_accumulator_type(&self) -> AggregationType {
+            AggregationType::Sum
         }
 
         fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
@@ -186,7 +186,7 @@ mod tests {
 
     #[test]
     fn test_create_window_merger() {
-        let merger = create_window_merger("SumAccumulator");
+        let merger = create_window_merger(AggregationType::Sum);
         assert!(!merger.is_initialized());
     }
 

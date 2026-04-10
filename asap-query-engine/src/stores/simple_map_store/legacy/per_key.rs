@@ -1,5 +1,6 @@
 use crate::data_model::{
-    AggregateCore, CleanupPolicy, KeyByLabelValues, PrecomputedOutput, StreamingConfig,
+    AggregateCore, AggregationType, CleanupPolicy, KeyByLabelValues, PrecomputedOutput,
+    StreamingConfig,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
@@ -276,7 +277,7 @@ impl LegacySimpleMapStorePerKey {
             .get_aggregation_config(aggregation_id)
             .ok_or_else(|| format!("Aggregation config not found for {}", aggregation_id))?;
 
-        if aggregation_config.aggregation_type != "DeltaSetAggregator" {
+        if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
             self.cleanup_old_aggregates(
                 &mut data,
                 metric,

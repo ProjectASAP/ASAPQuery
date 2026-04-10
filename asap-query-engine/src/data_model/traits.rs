@@ -2,7 +2,7 @@ use crate::data_model::KeyByLabelValues;
 use serde_json::Value;
 use std::collections::HashMap;
 
-use promql_utilities::query_logics::enums::Statistic;
+use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 
 pub use asap_types::traits::SerializableToSink;
 
@@ -26,7 +26,7 @@ pub trait AggregateCore: SerializableToSink + Send + Sync {
     ) -> Result<Box<dyn AggregateCore>, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Get the accumulator type identifier for merge compatibility checking
-    fn get_accumulator_type(&self) -> &'static str;
+    fn get_accumulator_type(&self) -> AggregationType;
 
     /// Get all keys stored in this accumulator
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>>;

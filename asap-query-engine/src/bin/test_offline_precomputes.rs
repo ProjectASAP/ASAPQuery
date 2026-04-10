@@ -9,7 +9,7 @@ use clap::Parser;
 use serde::Deserialize;
 
 // Internal imports from QueryEngineRust
-use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
+use promql_utilities::query_logics::enums::{AggregationType, QueryPatternType, Statistic};
 use query_engine_rust::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
 use query_engine_rust::precompute_operators::*;
 
@@ -740,7 +740,7 @@ fn query_precompute_for_statistic(
     query_kwargs: &HashMap<String, String>,
 ) -> Result<f64, Box<dyn std::error::Error>> {
     match precompute.get_accumulator_type() {
-        "SumAccumulator" => {
+        AggregationType::Sum => {
             let acc = precompute
                 .as_any()
                 .downcast_ref::<sum_accumulator::SumAccumulator>()
@@ -749,7 +749,7 @@ fn query_precompute_for_statistic(
             acc.query(*statistic, None)
                 .map_err(|e| format!("{}", e).into())
         }
-        "MultipleIncreaseAccumulator" => {
+        AggregationType::MultipleIncrease => {
             let acc = precompute
                 .as_any()
                 .downcast_ref::<multiple_increase_accumulator::MultipleIncreaseAccumulator>()
@@ -761,7 +761,7 @@ fn query_precompute_for_statistic(
             acc.query(*statistic, key_val, Some(query_kwargs))
                 .map_err(|e| format!("{}", e).into())
         }
-        "CountMinSketchAccumulator" => {
+        AggregationType::CountMinSketch => {
             let acc = precompute
                 .as_any()
                 .downcast_ref::<count_min_sketch_accumulator::CountMinSketchAccumulator>()
@@ -773,7 +773,7 @@ fn query_precompute_for_statistic(
             acc.query(*statistic, key_val, Some(query_kwargs))
                 .map_err(|e| format!("{}", e).into())
         }
-        "CountMinSketchWithHeapAccumulator" => {
+        AggregationType::CountMinSketchWithHeap => {
             let acc = precompute
                 .as_any()
                 .downcast_ref::<count_min_sketch_with_heap_accumulator::CountMinSketchWithHeapAccumulator>()
@@ -785,7 +785,7 @@ fn query_precompute_for_statistic(
             acc.query(*statistic, key_val, Some(query_kwargs))
                 .map_err(|e| format!("{}", e).into())
         }
-        "DatasketchesKLLAccumulator" => {
+        AggregationType::DatasketchesKLL => {
             let acc = precompute
                 .as_any()
                 .downcast_ref::<datasketches_kll_accumulator::DatasketchesKLLAccumulator>()
@@ -794,7 +794,7 @@ fn query_precompute_for_statistic(
             acc.query(*statistic, Some(query_kwargs))
                 .map_err(|e| format!("{}", e).into())
         }
-        "DeltaSetAggregatorAccumulator" => {
+        AggregationType::DeltaSetAggregator => {
             let acc = precompute
                 .as_any()
                 .downcast_ref::<delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator>()
@@ -807,7 +807,7 @@ fn query_precompute_for_statistic(
                 Ok((acc.added.union(&acc.removed).count()) as f64)
             }
         }
-        "SetAggregatorAccumulator" => {
+        AggregationType::SetAggregator => {
             let acc = precompute
                 .as_any()
                 .downcast_ref::<set_aggregator_accumulator::SetAggregatorAccumulator>()
@@ -820,11 +820,7 @@ fn query_precompute_for_statistic(
                 Ok(acc.added.len() as f64)
             }
         }
-        _ => Err(format!(
-            "Unsupported accumulator type: {}",
-            precompute.get_accumulator_type()
-        )
-        .into()),
+        other => Err(format!("Unsupported accumulator type: {other:?}").into()),
     }
 }
 

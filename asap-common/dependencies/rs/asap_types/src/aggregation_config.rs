@@ -3,15 +3,16 @@ use serde_json::Value;
 use serde_yaml;
 use std::collections::HashMap;
 
-use crate::enums::QueryLanguage;
+use crate::enums::{QueryLanguage, WindowType};
 use crate::traits::SerializableToSink;
 use crate::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::AggregationType;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregationConfig {
     pub aggregation_id: u64,
-    pub aggregation_type: String,
+    pub aggregation_type: AggregationType,
     pub aggregation_sub_type: String,
     pub parameters: HashMap<String, Value>,
     pub grouping_labels: KeyByLabelNames,
@@ -19,9 +20,9 @@ pub struct AggregationConfig {
     pub rollup_labels: KeyByLabelNames,
     pub original_yaml: String,
 
-    pub window_size: u64,    // Window size in seconds (e.g., 900s for 15m)
-    pub slide_interval: u64, // Slide/hop interval in seconds (e.g., 30s)
-    pub window_type: String, // "tumbling" or "sliding"
+    pub window_size: u64,        // Window size in seconds (e.g., 900s for 15m)
+    pub slide_interval: u64,     // Slide/hop interval in seconds (e.g., 30s)
+    pub window_type: WindowType, // Tumbling or Sliding
 
     pub spatial_filter: String,
     pub spatial_filter_normalized: String,
@@ -41,8 +42,8 @@ pub struct AggregationConfig {
 pub struct AggregationIdInfo {
     pub aggregation_id_for_key: u64,
     pub aggregation_id_for_value: u64,
-    pub aggregation_type_for_key: String,
-    pub aggregation_type_for_value: String,
+    pub aggregation_type_for_key: AggregationType,
+    pub aggregation_type_for_value: AggregationType,
 }
 
 // TODO: need to implement deserialization methods
@@ -51,7 +52,7 @@ impl AggregationConfig {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         aggregation_id: u64,
-        aggregation_type: String,
+        aggregation_type: AggregationType,
         aggregation_sub_type: String,
         parameters: HashMap<String, Value>,
         grouping_labels: KeyByLabelNames,
@@ -60,7 +61,7 @@ impl AggregationConfig {
         original_yaml: String,
         window_size: u64,
         slide_interval: u64,
-        window_type: String,
+        window_type: WindowType,
         spatial_filter: String,
         metric: String,
         num_aggregates_to_retain: Option<u64>,
@@ -116,10 +117,11 @@ impl AggregationConfig {
             .as_u64()
             .ok_or("Missing aggregationId")?;
 
-        let aggregation_type = data["aggregationType"]
+        let aggregation_type: AggregationType = data["aggregationType"]
             .as_str()
             .ok_or("Missing aggregationType")?
-            .to_string();
+            .parse()
+            .map_err(|e: String| e)?;
 
         let aggregation_sub_type = data["aggregationSubType"]
             .as_str()
@@ -148,7 +150,8 @@ impl AggregationConfig {
             .get("windowType")
             .and_then(|v| v.as_str())
             .unwrap_or("tumbling")
-            .to_string();
+            .parse::<WindowType>()
+            .unwrap_or_default();
 
         let slide_interval = data
             .get("slideInterval")
@@ -240,10 +243,11 @@ impl AggregationConfig {
                 .collect(),
         );
 
-        let aggregation_type = aggregation_data["aggregationType"]
+        let aggregation_type: AggregationType = aggregation_data["aggregationType"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("Missing aggregationType"))?
-            .to_string();
+            .parse()
+            .map_err(|e: String| anyhow::anyhow!(e))?;
 
         let aggregation_sub_type = aggregation_data["aggregationSubType"]
             .as_str()
@@ -270,7 +274,8 @@ impl AggregationConfig {
             .get("windowType")
             .and_then(|v| v.as_str())
             .unwrap_or("tumbling")
-            .to_string();
+            .parse::<WindowType>()
+            .unwrap_or_default();
 
         let slide_interval = aggregation_data
             .get("slideInterval")
@@ -348,7 +353,7 @@ impl SerializableToSink for AggregationConfig {
             "originalYaml": self.original_yaml,
             "windowSize": self.window_size,
             "slideInterval": self.slide_interval,
-            "windowType": self.window_type,
+            "windowType": self.window_type.to_string(),
             "spatialFilter": self.spatial_filter,
             "metric": self.metric,
         });

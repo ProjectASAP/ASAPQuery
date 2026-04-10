@@ -1,6 +1,7 @@
 use crate::{
     data_model::{
-        AggregateCore, MergeableAccumulator, MultipleSubpopulationAggregate, SerializableToSink,
+        AggregateCore, AggregationType, MergeableAccumulator, MultipleSubpopulationAggregate,
+        SerializableToSink,
     },
     KeyByLabelValues,
 };
@@ -108,8 +109,8 @@ impl AggregateCore for HydraKllSketchAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "HydraKllSketchAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::HydraKLL
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {

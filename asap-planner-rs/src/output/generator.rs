@@ -29,7 +29,9 @@ pub fn generate_plan(
         .as_ref()
         .and_then(|c| c.policy.as_deref())
         .unwrap_or("read_based");
-    let cleanup_policy = parse_cleanup_policy(cleanup_policy_str)?;
+    let cleanup_policy = cleanup_policy_str.parse::<CleanupPolicy>().map_err(|_| {
+        ControllerError::PlannerError(format!("Unknown cleanup policy: {}", cleanup_policy_str))
+    })?;
 
     // Validate no duplicate queries
     let mut seen_queries = std::collections::HashSet::new();
@@ -187,18 +189,6 @@ fn collect_binary_leaf_entries(
     Ok(Some(all_entries))
 }
 
-pub fn parse_cleanup_policy(s: &str) -> Result<CleanupPolicy, ControllerError> {
-    match s {
-        "circular_buffer" => Ok(CleanupPolicy::CircularBuffer),
-        "read_based" => Ok(CleanupPolicy::ReadBased),
-        "no_cleanup" => Ok(CleanupPolicy::NoCleanup),
-        other => Err(ControllerError::PlannerError(format!(
-            "Unknown cleanup policy: {}",
-            other
-        ))),
-    }
-}
-
 pub fn key_by_labels_to_yaml(labels: &KeyByLabelNames) -> YamlValue {
     YamlValue::Sequence(
         labels
@@ -221,7 +211,7 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
     );
     map.insert(
         YamlValue::String("aggregationType".to_string()),
-        YamlValue::String(cfg.aggregation_type.clone()),
+        YamlValue::String(cfg.aggregation_type.to_string()),
     );
 
     let mut labels_map = serde_yaml::Mapping::new();
@@ -278,7 +268,7 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
     );
     map.insert(
         YamlValue::String("windowType".to_string()),
-        YamlValue::String(cfg.window_type.clone()),
+        YamlValue::String(cfg.window_type.to_string()),
     );
 
     YamlValue::Mapping(map)

@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink,
 };
 use serde_json::Value;
 use sketch_core::set_aggregator::SetAggregator;
@@ -175,8 +175,8 @@ impl AggregateCore for SetAggregatorAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "SetAggregatorAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::SetAggregator
     }
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {

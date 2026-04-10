@@ -287,7 +287,7 @@ pub(crate) fn build_output_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data_model::KeyByLabelValues;
+    use crate::data_model::{AggregationType, KeyByLabelValues};
     use crate::engines::physical::accumulator_serde::serialize_accumulator_arroyo;
     use crate::precompute_operators::{
         DatasketchesKLLAccumulator, SetAggregatorAccumulator, SumAccumulator,
@@ -365,7 +365,7 @@ mod tests {
         // The single row should pass through unchanged
         let (_, merged_bytes) = groups.values().next().unwrap();
         let restored = deserialize_accumulator(merged_bytes, &SketchType::Sum).unwrap();
-        assert_eq!(restored.get_accumulator_type(), "SumAccumulator");
+        assert_eq!(restored.get_accumulator_type(), AggregationType::Sum);
     }
 
     #[test]
