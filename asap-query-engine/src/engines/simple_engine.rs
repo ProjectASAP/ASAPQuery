@@ -1333,21 +1333,14 @@ impl SimpleEngine {
         rhs: f64,
     ) -> f64 {
         use promql_parser::parser::token::{T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
-        let id = op.id();
-        if id == T_ADD {
-            lhs + rhs
-        } else if id == T_SUB {
-            lhs - rhs
-        } else if id == T_MUL {
-            lhs * rhs
-        } else if id == T_DIV {
-            lhs / rhs
-        } else if id == T_MOD {
-            lhs % rhs
-        } else if id == T_POW {
-            lhs.powf(rhs)
-        } else {
-            f64::NAN
+        match op.id() {
+            id if id == T_ADD => lhs + rhs,
+            id if id == T_SUB => lhs - rhs,
+            id if id == T_MUL => lhs * rhs,
+            id if id == T_DIV => lhs / rhs,
+            id if id == T_MOD => lhs % rhs,
+            id if id == T_POW => lhs.powf(rhs),
+            _ => f64::NAN,
         }
     }
 
@@ -2849,9 +2842,7 @@ impl SimpleEngine {
         }
 
         // Try to use optimized batch merge for KLL accumulators
-        if !accumulators.is_empty()
-            && accumulators[0].get_accumulator_type() == AggregationType::DatasketchesKLL
-        {
+        if accumulators[0].get_accumulator_type() == AggregationType::DatasketchesKLL {
             use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 
             match DatasketchesKLLAccumulator::merge_multiple(accumulators) {
@@ -2867,9 +2858,7 @@ impl SimpleEngine {
         }
 
         // Try to use optimized batch merge for CountMinSketch accumulators
-        if !accumulators.is_empty()
-            && accumulators[0].get_accumulator_type() == AggregationType::CountMinSketch
-        {
+        if accumulators[0].get_accumulator_type() == AggregationType::CountMinSketch {
             use crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator;
 
             match CountMinSketchAccumulator::merge_multiple(accumulators) {
