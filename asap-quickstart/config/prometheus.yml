@@ -34,5 +34,4 @@ scrape_configs:
           - 'fake-exporter-sine:50003'
           - 'fake-exporter-sine-noise:50004'
           - 'fake-exporter-step:50005'
-          - 'fake-exporter-spiky:50006'
-          - 'fake-exporter-exp-up:50007'
+          - 'fake-exporter-exp-up:50006'
