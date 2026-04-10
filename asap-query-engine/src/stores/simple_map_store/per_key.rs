@@ -185,6 +185,53 @@ impl SimpleMapStorePerKey {
         }
     }
 
+    /// Collect diagnostic info about store contents.
+    pub fn diagnostic_info(&self) -> super::StoreDiagnostics {
+        use super::{AggregationDiagnostic, StoreDiagnostics};
+
+        let mut per_aggregation = Vec::new();
+        let mut total_time_map_entries: usize = 0;
+        let total_sketch_bytes: usize = 0;
+
+        for entry in self.store.iter() {
+            let agg_id = *entry.key();
+            let data = match entry.value().read() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let time_map_len = data.current_epoch.window_count()
+                + data
+                    .sealed_epochs
+                    .values()
+                    .map(|e| e.distinct_window_count())
+                    .sum::<usize>();
+            let read_counts_len = data.read_counts.lock().map(|rc| rc.len()).unwrap_or(0);
+            total_time_map_entries += time_map_len;
+
+            let num_aggregate_objects = data.current_epoch.len()
+                + data
+                    .sealed_epochs
+                    .values()
+                    .map(|e| e.entries.len())
+                    .sum::<usize>();
+
+            per_aggregation.push(AggregationDiagnostic {
+                aggregation_id: agg_id,
+                time_map_len,
+                read_counts_len,
+                num_aggregate_objects,
+                sketch_bytes: 0, // skip serialization for diagnostics
+            });
+        }
+
+        StoreDiagnostics {
+            num_aggregations: self.store.len(),
+            total_time_map_entries,
+            total_sketch_bytes,
+            per_aggregation,
+        }
+    }
+
     fn cleanup_old_aggregates(
         &self,
         data: &mut StoreKeyData,

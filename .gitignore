@@ -1,5 +1,6 @@
 target/
 experiment_outputs/
+asap-quickstart/bin/
 
 # Runtime and generated files
 metadata/

@@ -156,6 +156,53 @@ impl SimpleMapStoreGlobal {
             cleanup_policy,
         }
     }
+
+    /// Collect diagnostic info about store contents.
+    pub fn diagnostic_info(&self) -> super::StoreDiagnostics {
+        use super::{AggregationDiagnostic, StoreDiagnostics};
+
+        let data = self.lock.lock().unwrap();
+        let mut per_aggregation = Vec::new();
+        let mut total_time_map_entries: usize = 0;
+        let total_sketch_bytes: usize = 0;
+
+        for (&agg_id, per_key) in &data.stores {
+            let time_map_len = per_key.current_epoch.window_count()
+                + per_key
+                    .sealed_epochs
+                    .values()
+                    .map(|e| e.distinct_window_count())
+                    .sum::<usize>();
+            let read_counts_len = data
+                .read_counts
+                .get(&agg_id)
+                .map(|rc| rc.len())
+                .unwrap_or(0);
+            total_time_map_entries += time_map_len;
+
+            let num_aggregate_objects = per_key.current_epoch.len()
+                + per_key
+                    .sealed_epochs
+                    .values()
+                    .map(|e| e.entries.len())
+                    .sum::<usize>();
+
+            per_aggregation.push(AggregationDiagnostic {
+                aggregation_id: agg_id,
+                time_map_len,
+                read_counts_len,
+                num_aggregate_objects,
+                sketch_bytes: 0, // skip serialization for diagnostics
+            });
+        }
+
+        StoreDiagnostics {
+            num_aggregations: data.stores.len(),
+            total_time_map_entries,
+            total_sketch_bytes,
+            per_aggregation,
+        }
+    }
 }
 
 /// Extracted config fields needed inside the locked batch loop.

@@ -9,10 +9,17 @@ use crate::precompute_engine::worker::{Worker, WorkerRuntimeConfig};
 use asap_types::aggregation_config::AggregationConfig;
 use axum::{routing::post, Router};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicI64, AtomicUsize};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+
+/// Shared diagnostic counters readable from outside the engine.
+pub struct PrecomputeWorkerDiagnostics {
+    pub worker_group_counts: Vec<Arc<AtomicUsize>>,
+    pub worker_watermarks: Vec<Arc<AtomicI64>>,
+}
 
 /// The top-level precompute engine orchestrator.
 ///
@@ -21,6 +28,7 @@ pub struct PrecomputeEngine {
     config: PrecomputeEngineConfig,
     streaming_config: Arc<StreamingConfig>,
     output_sink: Arc<dyn OutputSink>,
+    diagnostics: Arc<PrecomputeWorkerDiagnostics>,
 }
 
 impl PrecomputeEngine {
@@ -29,11 +37,27 @@ impl PrecomputeEngine {
         streaming_config: Arc<StreamingConfig>,
         output_sink: Arc<dyn OutputSink>,
     ) -> Self {
+        let worker_group_counts = (0..config.num_workers)
+            .map(|_| Arc::new(AtomicUsize::new(0)))
+            .collect();
+        let worker_watermarks = (0..config.num_workers)
+            .map(|_| Arc::new(AtomicI64::new(i64::MIN)))
+            .collect();
+        let diagnostics = Arc::new(PrecomputeWorkerDiagnostics {
+            worker_group_counts,
+            worker_watermarks,
+        });
         Self {
             config,
             streaming_config,
             output_sink,
+            diagnostics,
         }
+    }
+
+    /// Get a handle to worker diagnostics, readable even after `run()` starts.
+    pub fn diagnostics(&self) -> Arc<PrecomputeWorkerDiagnostics> {
+        self.diagnostics.clone()
     }
 
     /// Start the precompute engine. This spawns worker tasks and the HTTP
@@ -63,6 +87,9 @@ impl PrecomputeEngine {
             .map(|(&id, cfg)| (id, Arc::new(cfg.clone())))
             .collect();
 
+        // Build a Vec<Arc<AggregationConfig>> for the ingest handler
+        let agg_configs_vec: Vec<Arc<AggregationConfig>> = agg_configs.values().cloned().collect();
+
         // Spawn workers
         let mut worker_handles = Vec::with_capacity(num_workers);
         for (id, rx) in receivers.into_iter().enumerate() {
@@ -78,6 +105,9 @@ impl PrecomputeEngine {
                     raw_mode_aggregation_id: self.config.raw_mode_aggregation_id,
                     late_data_policy: self.config.late_data_policy,
                 },
+                self.diagnostics.worker_group_counts[id].clone(),
+                self.diagnostics.worker_watermarks[id].clone(),
+                self.diagnostics.worker_watermarks.to_vec(),
             );
             let handle = tokio::spawn(async move {
                 worker.run().await;
@@ -94,6 +124,8 @@ impl PrecomputeEngine {
         let ingest_state = Arc::new(IngestState {
             router,
             samples_ingested: std::sync::atomic::AtomicU64::new(0),
+            agg_configs: agg_configs_vec,
+            pass_raw_samples: self.config.pass_raw_samples,
         });
 
         // Start flush timer

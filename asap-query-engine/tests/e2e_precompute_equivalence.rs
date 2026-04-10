@@ -38,6 +38,29 @@ fn make_agg_config(
     slide_secs: u64,
     grouping: Vec<&str>,
 ) -> AggregationConfig {
+    make_agg_config_full(
+        id,
+        metric,
+        agg_type,
+        agg_sub_type,
+        window_secs,
+        slide_secs,
+        grouping,
+        vec![],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_agg_config_full(
+    id: u64,
+    metric: &str,
+    agg_type: AggregationType,
+    agg_sub_type: &str,
+    window_secs: u64,
+    slide_secs: u64,
+    grouping: Vec<&str>,
+    aggregated: Vec<&str>,
+) -> AggregationConfig {
     let window_type = if slide_secs == 0 || slide_secs == window_secs {
         WindowType::Tumbling
     } else {
@@ -51,7 +74,9 @@ fn make_agg_config(
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
             grouping.iter().map(|s| s.to_string()).collect(),
         ),
-        promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+        promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
+            aggregated.iter().map(|s| s.to_string()).collect(),
+        ),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         String::new(),
         window_secs,
@@ -265,14 +290,15 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     let agg_id = 2u64;
     let window_secs = 10u64;
 
-    let config = make_agg_config(
+    let config = make_agg_config_full(
         agg_id,
         "cpu",
         AggregationType::MultipleSum,
         "sum",
         window_secs,
         0,
-        vec!["host"],
+        vec![],       // grouping: none
+        vec!["host"], // aggregated: host is the key INSIDE the sketch
     );
     let mut agg_map = HashMap::new();
     agg_map.insert(agg_id, config);
