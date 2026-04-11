@@ -4,8 +4,8 @@
 tables:
   - name: h2o_groupby
     time_column: timestamp
-    metadata_columns: [id1, id2]
-    value_columns: [v1]
+    metadata_columns: [id1, id2, id3, id4, id5, id6]
+    value_columns: [v1, v2, v3]
 
 aggregations:
   # Temporal queries (10s window, all labels) - QUANTILE (DatasketchesKLL)
@@ -14,10 +14,10 @@ aggregations:
     aggregationSubType: ''
     labels:
       grouping: [id1, id2]
-      rollup: []
+      rollup: [id3, id4, id5, id6]
       aggregated: []
     table_name: h2o_groupby
-    value_column: v1
+    value_column: v3
     parameters:
       K: 200
     tumblingWindowSize: 10

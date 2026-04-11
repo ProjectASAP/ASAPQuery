@@ -127,19 +127,15 @@ def prepare_h2o(input_path: str, output_path: str, max_rows: int = 0):
                 print(f"  Written {i:,} rows...", end="\r")
 
             parts = line.rstrip("\n").split(",")
-            abs_sec = H2O_BASE_EPOCH + i // H2O_ROWS_PER_SECOND
-            ms = i % H2O_ROWS_PER_SECOND
-            ts = datetime.fromtimestamp(abs_sec, tz=timezone.utc)
-            ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S") + f".{ms:03d}Z"
-
+            abs_ms = H2O_BASE_EPOCH * 1000 + i * 10  # 10 ms per row
             record = {
-                H2O_TIMESTAMP_FIELD: ts_str,
+                H2O_TIMESTAMP_FIELD: abs_ms,
                 "id1": parts[id_idx["id1"]],
                 "id2": parts[id_idx["id2"]],
                 "id3": parts[id_idx["id3"]],
-                "id4": int(parts[id_idx["id4"]]),
-                "id5": int(parts[id_idx["id5"]]),
-                "id6": int(parts[id_idx["id6"]]),
+                "id4": str(parts[id_idx["id4"]]),
+                "id5": str(parts[id_idx["id5"]]),
+                "id6": str(parts[id_idx["id6"]]),
                 "v1": float(parts[id_idx["v1"]]),
                 "v2": float(parts[id_idx["v2"]]),
                 "v3": float(parts[id_idx["v3"]]),

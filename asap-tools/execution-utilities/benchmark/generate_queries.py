@@ -211,7 +211,12 @@ def generate_sql_file(
 ):
     """Write a single SQL file compatible with both ASAP and ClickHouse."""
     group_by_clause = ", ".join(group_by_columns)
-    lines = []
+    percentile = quantile * 100
+    # Strip trailing zero: 95.0 -> 95, 99.5 -> 99.5
+    percentile_str = f"{percentile:.1f}".rstrip("0").rstrip(".")
+
+    ch_lines = []
+    es_lines = []
 
     for i, end_ts in enumerate(window_ends):
         end_str = format_ts(end_ts, ts_format)
@@ -225,19 +230,40 @@ def generate_sql_file(
         else:
             where_clause = f"{ts_column} BETWEEN '{start_str}' AND '{end_str}'"
 
-        lines.append(
+        # Elasticsearch uses DATEADD + CAST form
+        es_where = (
+            f"{ts_column} BETWEEN DATEADD('s', -{window_size}, CAST('{end_str}' AS DATETIME)) "
+            f"AND CAST('{end_str}' AS DATETIME)"
+        )
+
+        ch_sql = (
             f"-- {label}: {desc}\n"
             f"SELECT quantile({quantile})({value_column}) FROM {table_name} "
             f"WHERE {where_clause} GROUP BY {group_by_clause};"
         )
 
-    sql_file = f"{output_prefix}.sql"
-    Path(sql_file).parent.mkdir(parents=True, exist_ok=True)
+        asap_lines.append(asap_sql)
+        ch_lines.append(ch_sql)
+        es_lines.append(
+            f"-- {label}: {desc}\n"
+            f"SELECT PERCENTILE({value_column}, {percentile_str}) FROM {table_name} "
+            f"WHERE {es_where} GROUP BY {group_by_clause};"
+        )
 
-    with open(sql_file, "w") as f:
-        f.write("\n".join(lines) + "\n")
+    ch_file = f"{output_prefix}_clickhouse.sql"
+    es_file = f"{output_prefix}_elasticsearch.sql"
 
-    print(f"Generated {len(window_ends)} queries → {sql_file}")
+    Path(asap_file).parent.mkdir(parents=True, exist_ok=True)
+
+    with open(ch_file, "w") as f:
+        f.write("\n".join(ch_lines) + "\n")
+
+    with open(es_file, "w") as f:
+        f.write("\n".join(es_lines) + "\n")
+
+    print(f"Generated {len(window_ends)} queries:")
+    print(f"  ClickHouse:    {ch_file}")
+    print(f"  Elasticsearch: {es_file}")
 
 
 def main():

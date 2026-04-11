@@ -1,25 +1,35 @@
 #!/usr/bin/env python3
 """
-Load a dataset into ClickHouse for baseline comparison.
+Load a dataset into ClickHouse or Elasticsearch for baseline comparison.
 
 Supports ClickBench (hits.json.gz), H2O groupby CSV, or a custom table.
 
 Usage:
-    # ClickBench
+    # ClickBench to Clickhouse
     python export_to_database.py \\
-        --dataset clickbench \\
+        --dataset clickbench --database clickhouse \\
         --file-path ./data/hits.json.gz \\
         --init-sql-file ../clickhouse-benchmark-pipeline/clickhouse/clickbench_init.sql
 
-    # H2O
+    # H2O to Clickhouse
     python export_to_database.py \\
-        --dataset h2o \\
+        --dataset h2o --database clickhouse \\
         --file-path ./data/G1_1e7_1e2_0_0.csv \\
         --init-sql-file ../asap_benchmark_pipeline/h2o_init.sql
 
-    # Custom JSON file
+    # H2O to Elasticsearch
     python export_to_database.py \\
-        --dataset custom \\
+        --dataset h2o --database elasticsearch \\
+        --file-path ./data/G1_1e7_1e2_0_0.csv \\
+        --es-host localhost \\
+        --es-port 9200 \\
+        --es-index h2o_benchmark \\
+        --es-api-key your_api_key_here \\
+        --es-bulk-size 5000
+
+    # Custom JSON to ClickHouse
+    python export_to_database.py \\
+        --dataset custom --database clickhouse \\
         --file-path ./data/mydata.json \\
         --table-name mytable \\
         --ts-column event_time \\
@@ -27,7 +37,6 @@ Usage:
 """
 
 import argparse
-import gzip
 import os
 import sys
 from datetime import datetime, timezone
@@ -38,6 +47,14 @@ DEFAULT_CLICKHOUSE_URL = "http://localhost:8123/"
 H2O_BATCH_SIZE = 50_000
 H2O_ROWS_PER_SECOND = 1000
 H2O_BASE_EPOCH = 1704067200  # 2024-01-01T00:00:00Z
+
+# Valid (dataset, database) combinations tested so far
+VALID_COMBINATIONS = {
+    ("clickbench", "clickhouse"),
+    ("h2o", "clickhouse"),
+    ("h2o", "elasticsearch"),
+    ("custom", "clickhouse"),
+}
 
 
 def _exec_clickhouse_sql(clickhouse_url: str, sql: str, label: str = ""):
@@ -117,7 +134,7 @@ def _flush_h2o_batch(clickhouse_url: str, rows: list):
         raise RuntimeError(f"ClickHouse insert failed: {r.text[:200]}")
 
 
-def load_h2o(
+def load_h2o_clickhouse(
     clickhouse_url: str,
     file_path: str,
     init_sql_file: str = None,
@@ -178,6 +195,112 @@ def load_h2o(
     print(f"Loaded {total:,} rows into ClickHouse (h2o_groupby)")
     return True
 
+def load_h2o_elasticsearch(
+    es_host: str,
+    es_port: int,
+    index_name: str,
+    file_path: str,
+    api_key: str = None,
+    skip_if_loaded: bool = False,
+    max_rows: int = 0,
+):
+    """Load H2O groupby CSV into Elasticsearch with synthetic timestamps."""
+    try:
+        from elasticsearch import Elasticsearch, helpers
+    except ImportError:
+        print("ERROR: elasticsearch-py not installed. Run: pip install elasticsearch")
+        return False
+
+    auth = {"api_key": api_key} if api_key else {}
+    es = Elasticsearch(f"http://{es_host}:{es_port}", **auth)
+
+    if not es.ping():
+        print(f"ERROR: Cannot connect to Elasticsearch at {es_host}:{es_port}")
+        return False
+
+    if skip_if_loaded and es.indices.exists(index=index_name):
+        count = es.count(index=index_name)["count"]
+        if count > 0:
+            print(f"Data already loaded ({count:,} rows). Skipping.")
+            return True
+
+    if es.indices.exists(index=index_name):
+        print(f"Deleting existing index: {index_name}")
+        es.indices.delete(index=index_name)
+
+    print(f"Creating index: {index_name}")
+    es.indices.create(index=index_name, body={
+        "settings": {
+            "number_of_shards": 1,
+            "number_of_replicas": 0,
+            "refresh_interval": "30s",
+        },
+        "mappings": {
+            "properties": {
+                "timestamp": {"type": "date", "format": "epoch_millis"},
+                "id1": {"type": "keyword"},
+                "id2": {"type": "keyword"},
+                "id3": {"type": "keyword"},
+                "id4": {"type": "long"},
+                "id5": {"type": "long"},
+                "id6": {"type": "long"},
+                "v1": {"type": "long"},
+                "v2": {"type": "long"},
+                "v3": {"type": "double"},
+            }
+        },
+    })
+
+    if not os.path.exists(file_path):
+        print(f"ERROR: Data file not found: {file_path}")
+        return False
+
+    print(f"Importing H2O data from {file_path} into Elasticsearch ({index_name})...")
+
+    base_timestamp_ms = 1704067200000  # 2024-01-01T00:00:00Z in millis
+
+    def generate_docs():
+        with open(file_path, "r", encoding="utf-8") as f:
+            f.readline()  # skip header
+            for row_num, line in enumerate(f):
+                if max_rows > 0 and row_num >= max_rows:
+                    break
+                parts = line.rstrip("\n").split(",")
+                if len(parts) < 9:
+                    continue
+                yield {
+                    "_index": index_name,
+                    "_source": {
+                        "timestamp": base_timestamp_ms + row_num * 10,
+                        "id1": parts[0],
+                        "id2": parts[1],
+                        "id3": parts[2],
+                        "id4": int(parts[3] or 0),
+                        "id5": int(parts[4] or 0),
+                        "id6": int(parts[5] or 0),
+                        "v1":  int(parts[6] or 0),
+                        "v2":  int(parts[7] or 0),
+                        "v3":  float(parts[8] or 0.0),
+                    },
+                }
+
+    total = 0
+    errors = 0
+    for ok, _ in helpers.streaming_bulk(
+        es, generate_docs(), chunk_size=H2O_BATCH_SIZE, raise_on_error=False
+    ):
+        if ok:
+            total += 1
+        else:
+            errors += 1
+        if total % 500_000 == 0 and total > 0:
+            print(f"  Indexed {total:,} documents...")
+
+    print(f"Indexed {total:,} documents ({errors} errors)")
+    print("Refreshing index...")
+    es.indices.refresh(index=index_name)
+    print(f"✓ Import complete! Index: {index_name}")
+    return True
 
 def load_custom(
     clickhouse_url: str,
@@ -253,7 +376,7 @@ def load_custom(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Load a dataset into ClickHouse for baseline comparison",
+        description="Load a dataset into ClickHouse or Elasticsearch for baseline comparison",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -262,6 +385,12 @@ def main():
         choices=["clickbench", "h2o", "custom"],
         required=True,
         help="Dataset type",
+    )
+    parser.add_argument(
+        "--database",
+        choices=["clickhouse", "elasticsearch"],
+        required=True,
+        help="Target database",
     )
     parser.add_argument(
         "--file-path",
@@ -311,7 +440,24 @@ def main():
         help="Maximum rows to load (0 = all)",
     )
 
+    # Elasticsearch-specific flags
+    es_group = parser.add_argument_group("Elasticsearch options (--database elasticsearch)")
+    es_group.add_argument("--es-host", default="localhost", help="Elasticsearch host")
+    es_group.add_argument("--es-port", type=int, default=9200, help="Elasticsearch port")
+    es_group.add_argument("--es-index", default="h2o_benchmark", help="Elasticsearch index name")
+    es_group.add_argument("--es-api-key", default=None, help="Elasticsearch API key")
+    es_group.add_argument("--es-bulk-size", type=int, default=5000, help="Bulk insert batch size")
+
     args = parser.parse_args()
+
+    # Validate (dataset, database) combination
+    combo = (args.dataset, args.database)
+    if combo not in VALID_COMBINATIONS:
+        valid = ", ".join(f"({d}/{db})" for d, db in sorted(VALID_COMBINATIONS))
+        parser.error(
+            f"--dataset {args.dataset} is not supported with --database {args.database}. "
+            f"Valid combinations: {valid}"
+        )
 
     if args.dataset == "custom" and not args.table_name:
         parser.error("--table-name is required when --dataset custom")
@@ -327,15 +473,26 @@ def main():
             max_rows=args.max_rows,
         )
     elif args.dataset == "h2o":
-        success = load_h2o(
-            args.clickhouse_url,
-            args.file_path,
-            init_sql_file=args.init_sql_file,
-            skip_table_init=args.skip_table_init,
-            skip_if_loaded=args.skip_if_loaded,
-            max_rows=args.max_rows,
-        )
-    else:
+        if args.database == "elasticsearch":
+            success = load_h2o_elasticsearch(
+                es_host=args.es_host,
+                es_port=args.es_port,
+                index_name=args.es_index,
+                file_path=args.file_path,
+                api_key=args.es_api_key,
+                skip_if_loaded=args.skip_if_loaded,
+                max_rows=args.max_rows,
+            )
+        else:
+            success = load_h2o_clickhouse(
+                args.clickhouse_url,
+                args.file_path,
+                init_sql_file=args.init_sql_file,
+                skip_table_init=args.skip_table_init,
+                skip_if_loaded=args.skip_if_loaded,
+                max_rows=args.max_rows,
+            )
+    elif args.dataset == "custom":
         success = load_custom(
             args.clickhouse_url,
             args.file_path,
