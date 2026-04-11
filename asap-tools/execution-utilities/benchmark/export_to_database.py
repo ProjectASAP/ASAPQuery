@@ -37,6 +37,7 @@ Usage:
 """
 
 import argparse
+import gzip
 import os
 import sys
 from datetime import datetime, timezone
@@ -195,6 +196,7 @@ def load_h2o_clickhouse(
     print(f"Loaded {total:,} rows into ClickHouse (h2o_groupby)")
     return True
 
+
 def load_h2o_elasticsearch(
     es_host: str,
     es_port: int,
@@ -229,27 +231,30 @@ def load_h2o_elasticsearch(
         es.indices.delete(index=index_name)
 
     print(f"Creating index: {index_name}")
-    es.indices.create(index=index_name, body={
-        "settings": {
-            "number_of_shards": 1,
-            "number_of_replicas": 0,
-            "refresh_interval": "30s",
+    es.indices.create(
+        index=index_name,
+        body={
+            "settings": {
+                "number_of_shards": 1,
+                "number_of_replicas": 0,
+                "refresh_interval": "30s",
+            },
+            "mappings": {
+                "properties": {
+                    "timestamp": {"type": "date", "format": "epoch_millis"},
+                    "id1": {"type": "keyword"},
+                    "id2": {"type": "keyword"},
+                    "id3": {"type": "keyword"},
+                    "id4": {"type": "long"},
+                    "id5": {"type": "long"},
+                    "id6": {"type": "long"},
+                    "v1": {"type": "long"},
+                    "v2": {"type": "long"},
+                    "v3": {"type": "double"},
+                }
+            },
         },
-        "mappings": {
-            "properties": {
-                "timestamp": {"type": "date", "format": "epoch_millis"},
-                "id1": {"type": "keyword"},
-                "id2": {"type": "keyword"},
-                "id3": {"type": "keyword"},
-                "id4": {"type": "long"},
-                "id5": {"type": "long"},
-                "id6": {"type": "long"},
-                "v1": {"type": "long"},
-                "v2": {"type": "long"},
-                "v3": {"type": "double"},
-            }
-        },
-    })
+    )
 
     if not os.path.exists(file_path):
         print(f"ERROR: Data file not found: {file_path}")
@@ -278,9 +283,9 @@ def load_h2o_elasticsearch(
                         "id4": int(parts[3] or 0),
                         "id5": int(parts[4] or 0),
                         "id6": int(parts[5] or 0),
-                        "v1":  int(parts[6] or 0),
-                        "v2":  int(parts[7] or 0),
-                        "v3":  float(parts[8] or 0.0),
+                        "v1": int(parts[6] or 0),
+                        "v2": int(parts[7] or 0),
+                        "v3": float(parts[8] or 0.0),
                     },
                 }
 
@@ -301,6 +306,7 @@ def load_h2o_elasticsearch(
     es.indices.refresh(index=index_name)
     print(f"✓ Import complete! Index: {index_name}")
     return True
+
 
 def load_custom(
     clickhouse_url: str,
@@ -441,12 +447,20 @@ def main():
     )
 
     # Elasticsearch-specific flags
-    es_group = parser.add_argument_group("Elasticsearch options (--database elasticsearch)")
+    es_group = parser.add_argument_group(
+        "Elasticsearch options (--database elasticsearch)"
+    )
     es_group.add_argument("--es-host", default="localhost", help="Elasticsearch host")
-    es_group.add_argument("--es-port", type=int, default=9200, help="Elasticsearch port")
-    es_group.add_argument("--es-index", default="h2o_benchmark", help="Elasticsearch index name")
+    es_group.add_argument(
+        "--es-port", type=int, default=9200, help="Elasticsearch port"
+    )
+    es_group.add_argument(
+        "--es-index", default="h2o_benchmark", help="Elasticsearch index name"
+    )
     es_group.add_argument("--es-api-key", default=None, help="Elasticsearch API key")
-    es_group.add_argument("--es-bulk-size", type=int, default=5000, help="Bulk insert batch size")
+    es_group.add_argument(
+        "--es-bulk-size", type=int, default=5000, help="Bulk insert batch size"
+    )
 
     args = parser.parse_args()
 

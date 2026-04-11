@@ -108,7 +108,9 @@ def run_query(
             if api_key:
                 headers["Authorization"] = f"ApiKey {api_key}"
             body = {"query": query.strip().rstrip(";"), "fetch_size": fetch_size}
-            response = session.post(endpoint_url, headers=headers, json=body, timeout=timeout)
+            response = session.post(
+                endpoint_url, headers=headers, json=body, timeout=timeout
+            )
         else:
             encoded_query = urllib.parse.quote(query)
             separator = "&" if "?" in endpoint_url else "?"
@@ -132,7 +134,10 @@ def run_query(
                     if hits:
                         col_names = list(hits[0].get("_source", {}).keys())
                         formatted_rows = [
-                            ", ".join(f"{k}={hit.get('_source', {}).get(k)}" for k in col_names)
+                            ", ".join(
+                                f"{k}={hit.get('_source', {}).get(k)}"
+                                for k in col_names
+                            )
                             for hit in hits
                         ]
                         result_text = "\n".join(formatted_rows)
@@ -144,12 +149,18 @@ def run_query(
                 elif "rows" in data:
                     rows = data.get("rows", [])
                     columns = data.get("columns", [])
-                    col_names = [c.get("name", f"col{i}") for i, c in enumerate(columns)]
+                    col_names = [
+                        c.get("name", f"col{i}") for i, c in enumerate(columns)
+                    ]
                     formatted_rows = [
-                        ", ".join(
-                            f"{col_names[i]}={v}" if i < len(col_names) else str(v)
-                            for i, v in enumerate(row)
-                        ) if isinstance(row, (list, tuple)) else str(row)
+                        (
+                            ", ".join(
+                                f"{col_names[i]}={v}" if i < len(col_names) else str(v)
+                                for i, v in enumerate(row)
+                            )
+                            if isinstance(row, (list, tuple))
+                            else str(row)
+                        )
                         for row in rows
                     ]
                     result_text = "\n".join(formatted_rows)
@@ -267,8 +278,13 @@ def run_benchmark(
             last_result, last_error, last_row_count = None, None, 0
             for _ in range(repeat):
                 lat, result, row_count, error = run_query(
-                    sql, endpoint_url, session, timeout, debug,
-                    database=database, api_key=api_key,
+                    sql,
+                    endpoint_url,
+                    session,
+                    timeout,
+                    debug,
+                    database=database,
+                    api_key=api_key,
                 )
                 trial_latencies.append(lat)
                 last_result, last_error, last_row_count = result, error, row_count
@@ -436,13 +452,21 @@ def main():
     )
 
     # Elasticsearch flags
-    es_group = parser.add_argument_group("Elasticsearch options (--database elasticsearch)")
-    es_group.add_argument("--elastic-host", default=DEFAULT_ELASTIC_HOST,
-                          help="Elasticsearch host")
-    es_group.add_argument("--elastic-port", type=int, default=DEFAULT_ELASTIC_PORT,
-                          help="Elasticsearch port")
-    es_group.add_argument("--elastic-api-key", default=None,
-                          help="Elasticsearch API key")
+    es_group = parser.add_argument_group(
+        "Elasticsearch options (--database elasticsearch)"
+    )
+    es_group.add_argument(
+        "--elastic-host", default=DEFAULT_ELASTIC_HOST, help="Elasticsearch host"
+    )
+    es_group.add_argument(
+        "--elastic-port",
+        type=int,
+        default=DEFAULT_ELASTIC_PORT,
+        help="Elasticsearch port",
+    )
+    es_group.add_argument(
+        "--elastic-api-key", default=None, help="Elasticsearch API key"
+    )
 
     # Shared flags
     parser.add_argument(
@@ -498,8 +522,8 @@ def main():
         if use_elastic
         else args.clickhouse_url
     )
-    asap_url = (
-        args.asap_url or (DEFAULT_ASAP_ELASTIC_URL if use_elastic else DEFAULT_ASAP_CLICKHOUSE_URL)
+    asap_url = args.asap_url or (
+        DEFAULT_ASAP_ELASTIC_URL if use_elastic else DEFAULT_ASAP_CLICKHOUSE_URL
     )
 
     output_dir = Path(args.output_dir)
@@ -542,7 +566,9 @@ def main():
         )
 
     if args.mode == "both" and not args.no_plot:
-        _plot_comparison(asap_csv, baseline_csv, output_dir / f"{prefix}_comparison.png")
+        _plot_comparison(
+            asap_csv, baseline_csv, output_dir / f"{prefix}_comparison.png"
+        )
 
 
 if __name__ == "__main__":

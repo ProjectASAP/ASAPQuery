@@ -242,7 +242,6 @@ def generate_sql_file(
             f"WHERE {where_clause} GROUP BY {group_by_clause};"
         )
 
-        asap_lines.append(asap_sql)
         ch_lines.append(ch_sql)
         es_lines.append(
             f"-- {label}: {desc}\n"
@@ -252,8 +251,6 @@ def generate_sql_file(
 
     ch_file = f"{output_prefix}_clickhouse.sql"
     es_file = f"{output_prefix}_elasticsearch.sql"
-
-    Path(asap_file).parent.mkdir(parents=True, exist_ok=True)
 
     with open(ch_file, "w") as f:
         f.write("\n".join(ch_lines) + "\n")
