@@ -1,3 +1,5 @@
+use asap_types::enums::CleanupPolicy;
+
 use crate::config::input::{AggregateCleanupConfig, ControllerConfig, QueryGroup};
 
 use super::frequency::{InstantQueryInfo, RangeQueryInfo};
@@ -37,7 +39,7 @@ pub fn to_controller_config(
         query_groups,
         sketch_parameters: None,
         aggregate_cleanup: Some(AggregateCleanupConfig {
-            policy: Some("read_based".to_string()),
+            policy: Some(CleanupPolicy::ReadBased),
         }),
         metrics: None,
     }
