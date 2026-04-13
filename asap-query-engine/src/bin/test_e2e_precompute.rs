@@ -8,6 +8,8 @@
 //! Usage:
 //!   cargo run --bin test_e2e_precompute
 
+use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::{AggregationType, WindowType};
 use prost::Message;
 use query_engine_rust::data_model::{LockStrategy, QueryLanguage, StreamingConfig};
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
@@ -23,7 +25,6 @@ use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{HttpServer, HttpServerConfig};
-use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -584,13 +585,13 @@ fn make_sum_agg_config(
     slide_interval_secs: u64,
 ) -> AggregationConfig {
     let window_type = if slide_interval_secs == 0 || slide_interval_secs == window_size_secs {
-        "tumbling"
+        WindowType::Tumbling
     } else {
-        "sliding"
+        WindowType::Sliding
     };
     AggregationConfig::new(
         agg_id,
-        "SingleSubpopulation".to_string(),
+        AggregationType::SingleSubpopulation,
         "Sum".to_string(),
         HashMap::new(),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -599,7 +600,7 @@ fn make_sum_agg_config(
         String::new(),
         window_size_secs,
         slide_interval_secs,
-        window_type.to_string(),
+        window_type,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
         None,

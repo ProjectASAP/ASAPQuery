@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink,
 };
 use serde_json::Value;
 use sketch_core::delta_set_aggregator::{deserialize_msgpack, serialize_msgpack};
@@ -240,8 +240,8 @@ impl AggregateCore for DeltaSetAggregatorAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "DeltaSetAggregatorAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::DeltaSetAggregator
     }
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
@@ -249,6 +249,19 @@ impl AggregateCore for DeltaSetAggregatorAccumulator {
             panic!("DeltaSetAggregatorAccumulator does not support get_keys when removed items are present");
         }
         Some(self.added.iter().cloned().collect())
+    }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        key: &Option<KeyByLabelValues>,
+        query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::MultipleSubpopulationAggregate;
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for DeltaSetAggregatorAccumulator")?;
+        self.query(statistic, key_val, Some(query_kwargs))
     }
 }
 

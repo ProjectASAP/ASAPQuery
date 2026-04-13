@@ -1,3 +1,5 @@
+use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::{AggregationType, WindowType};
 use clap::Parser;
 use prost::Message;
 use query_engine_rust::data_model::{
@@ -10,7 +12,6 @@ use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEng
 use query_engine_rust::precompute_engine::output_sink::OutputSink;
 use query_engine_rust::precompute_engine::PrecomputeEngine;
 use query_engine_rust::stores::{SimpleMapStore, Store};
-use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -126,7 +127,7 @@ fn make_kll_streaming_config(
 
     let agg_config = AggregationConfig::new(
         aggregation_id,
-        "DatasketchesKLL".to_string(),
+        AggregationType::DatasketchesKLL,
         String::new(),
         params,
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -135,7 +136,7 @@ fn make_kll_streaming_config(
         String::new(),
         window_size_secs,
         window_size_secs,
-        "tumbling".to_string(),
+        WindowType::Tumbling,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
         None,

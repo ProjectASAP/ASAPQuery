@@ -1,4 +1,6 @@
-use crate::query_logics::enums::{QueryTreatmentType, Statistic};
+use crate::query_logics::enums::{
+    AggregationOperator, AggregationType, PromQLFunction, QueryTreatmentType, Statistic,
+};
 use tracing::debug;
 
 /// Map statistic to precompute operator based on treatment type
@@ -6,7 +8,7 @@ use tracing::debug;
 pub fn map_statistic_to_precompute_operator(
     statistic: Statistic,
     treatment_type: QueryTreatmentType,
-) -> Result<(String, String), String> {
+) -> Result<(AggregationType, String), String> {
     debug!(
         "Mapping statistic {:?} with treatment type {:?} to precompute operator",
         statistic, treatment_type
@@ -16,17 +18,17 @@ pub fn map_statistic_to_precompute_operator(
             if treatment_type == QueryTreatmentType::Exact {
                 Err("Statistic Quantile cannot be computed exactly".to_string())
             } else {
-                Ok(("DatasketchesKLL".to_string(), "".to_string()))
-                //Ok(("HydraKLL".to_string(), "".to_string()))
+                Ok((AggregationType::DatasketchesKLL, "".to_string()))
+                //Ok((AggregationType::HydraKLL, "".to_string()))
             }
         }
         Statistic::Min | Statistic::Max => {
             if treatment_type == QueryTreatmentType::Approximate {
-                Ok(("DatasketchesKLL".to_string(), "".to_string()))
-                //Ok(("HydraKLL".to_string(), "".to_string()))
+                Ok((AggregationType::DatasketchesKLL, "".to_string()))
+                //Ok((AggregationType::HydraKLL, "".to_string()))
             } else {
                 Ok((
-                    "MultipleMinMax".to_string(),
+                    AggregationType::MultipleMinMax,
                     statistic.to_string().to_lowercase(),
                 ))
             }
@@ -34,20 +36,20 @@ pub fn map_statistic_to_precompute_operator(
         Statistic::Sum | Statistic::Count => {
             if treatment_type == QueryTreatmentType::Approximate {
                 Ok((
-                    "CountMinSketch".to_string(),
+                    AggregationType::CountMinSketch,
                     statistic.to_string().to_lowercase(),
                 ))
             } else {
                 Ok((
-                    "MultipleSum".to_string(),
+                    AggregationType::MultipleSum,
                     statistic.to_string().to_lowercase(),
                 ))
             }
         }
         Statistic::Rate | Statistic::Increase => {
-            Ok(("MultipleIncrease".to_string(), "".to_string()))
+            Ok((AggregationType::MultipleIncrease, "".to_string()))
         }
-        Statistic::Topk => Ok(("CountMinSketchWithHeap".to_string(), "topk".to_string())),
+        Statistic::Topk => Ok((AggregationType::CountMinSketchWithHeap, "topk".to_string())),
         _ => Err(format!("Statistic {statistic:?} not supported")),
     }
 }
@@ -55,7 +57,7 @@ pub fn map_statistic_to_precompute_operator(
 /// Check if a precompute operator supports subpopulations (multiple keys)
 pub fn does_precompute_operator_support_subpopulations(
     statistic: Statistic,
-    precompute_operator: &str,
+    precompute_operator: AggregationType,
 ) -> bool {
     debug!(
         "Checking if precompute operator '{}' supports subpopulations for statistic {:?}",
@@ -63,37 +65,46 @@ pub fn does_precompute_operator_support_subpopulations(
     );
     match precompute_operator {
         // Single-key operators
-        "Increase" | "MinMax" | "Sum" | "DatasketchesKLL" => false,
+        AggregationType::Increase
+        | AggregationType::MinMax
+        | AggregationType::Sum
+        | AggregationType::DatasketchesKLL => false,
 
         // Multi-key operators
-        "MultipleIncrease" | "MultipleMinMax" | "MultipleSum" | "HydraKLL" => true,
+        AggregationType::MultipleIncrease
+        | AggregationType::MultipleMinMax
+        | AggregationType::MultipleSum
+        | AggregationType::HydraKLL => true,
 
         // CountMinSketch supports subpopulations only for certain statistics
-        "CountMinSketch" => matches!(statistic, Statistic::Sum | Statistic::Count),
+        AggregationType::CountMinSketch => matches!(statistic, Statistic::Sum | Statistic::Count),
 
-        // "CountMinSketchWithHeap" is only supported for Topk
-        // Other usages of CountMinSketchWithHeap will fall through.
-        "CountMinSketchWithHeap" if matches!(statistic, Statistic::Topk) => false,
+        // CountMinSketchWithHeap is only supported for Topk — does not support subpopulations
+        AggregationType::CountMinSketchWithHeap if matches!(statistic, Statistic::Topk) => false,
 
         // Default: not supported
         _ => panic!("Unexpected precompute operator: {}", precompute_operator),
     }
 }
 
-/// Check if temporal and spatial aggregations are collapsible
+/// Check if temporal and spatial aggregations are collapsible.
 /// Based on Python implementation in promql_utilities/query_logics/logics.py
-pub fn get_is_collapsable(temporal_aggregation: &str, spatial_aggregation: &str) -> bool {
+pub fn get_is_collapsable(
+    temporal_aggregation: PromQLFunction,
+    spatial_aggregation: AggregationOperator,
+) -> bool {
     debug!(
         "Checking if temporal aggregation '{}' and spatial aggregation '{}' are collapsable",
         temporal_aggregation, spatial_aggregation
     );
     match spatial_aggregation {
-        "sum" => matches!(
+        AggregationOperator::Sum => matches!(
             temporal_aggregation,
-            "sum_over_time" | "count_over_time" // Note: "increase" and "rate" are commented out in Python
+            // Note: Increase and Rate are commented out in the Python reference
+            PromQLFunction::SumOverTime | PromQLFunction::CountOverTime
         ),
-        "min" => temporal_aggregation == "min_over_time",
-        "max" => temporal_aggregation == "max_over_time",
+        AggregationOperator::Min => temporal_aggregation == PromQLFunction::MinOverTime,
+        AggregationOperator::Max => temporal_aggregation == PromQLFunction::MaxOverTime,
         _ => false,
     }
 }
@@ -108,13 +119,13 @@ mod tests {
         let result =
             map_statistic_to_precompute_operator(Statistic::Sum, QueryTreatmentType::Exact)
                 .unwrap();
-        assert_eq!(result, ("MultipleSum".to_string(), "sum".to_string()));
+        assert_eq!(result, (AggregationType::MultipleSum, "sum".to_string()));
 
         // Test approximate sum
         let result =
             map_statistic_to_precompute_operator(Statistic::Sum, QueryTreatmentType::Approximate)
                 .unwrap();
-        assert_eq!(result, ("CountMinSketch".to_string(), "sum".to_string()));
+        assert_eq!(result, (AggregationType::CountMinSketch, "sum".to_string()));
 
         // Test exact quantile (should fail)
         let result =
@@ -127,8 +138,8 @@ mod tests {
             QueryTreatmentType::Approximate,
         )
         .unwrap();
-        assert_eq!(result, ("DatasketchesKLL".to_string(), "".to_string()));
-        //assert_eq!(result, ("HydraKLL".to_string(), "".to_string()));
+        assert_eq!(result, (AggregationType::DatasketchesKLL, "".to_string()));
+        //assert_eq!(result, (AggregationType::HydraKLL, "".to_string()));
     }
 
     #[test]
@@ -136,25 +147,25 @@ mod tests {
         // Test MultipleSum supports subpopulations
         assert!(does_precompute_operator_support_subpopulations(
             Statistic::Sum,
-            "MultipleSum"
+            AggregationType::MultipleSum,
         ));
 
         // Test DatasketchesKLL does not support subpopulations
         assert!(!does_precompute_operator_support_subpopulations(
             Statistic::Quantile,
-            "DatasketchesKLL"
+            AggregationType::DatasketchesKLL,
         ));
 
         // Test HydraKLL supports subpopulations
         assert!(does_precompute_operator_support_subpopulations(
             Statistic::Quantile,
-            "HydraKLL"
+            AggregationType::HydraKLL,
         ));
 
         // Test CountMinSketch with valid statistic
         assert!(does_precompute_operator_support_subpopulations(
             Statistic::Sum,
-            "CountMinSketch"
+            AggregationType::CountMinSketch,
         ));
     }
 
@@ -165,17 +176,35 @@ mod tests {
                 .unwrap();
         assert_eq!(
             result,
-            ("CountMinSketchWithHeap".to_string(), "topk".to_string())
+            (AggregationType::CountMinSketchWithHeap, "topk".to_string())
         );
     }
 
     #[test]
     fn test_get_is_collapsable() {
-        assert!(get_is_collapsable("sum_over_time", "sum"));
-        assert!(get_is_collapsable("count_over_time", "sum"));
-        assert!(get_is_collapsable("min_over_time", "min"));
-        assert!(get_is_collapsable("max_over_time", "max"));
-        assert!(!get_is_collapsable("min_over_time", "sum"));
-        assert!(!get_is_collapsable("unknown", "sum"));
+        assert!(get_is_collapsable(
+            PromQLFunction::SumOverTime,
+            AggregationOperator::Sum
+        ));
+        assert!(get_is_collapsable(
+            PromQLFunction::CountOverTime,
+            AggregationOperator::Sum
+        ));
+        assert!(get_is_collapsable(
+            PromQLFunction::MinOverTime,
+            AggregationOperator::Min
+        ));
+        assert!(get_is_collapsable(
+            PromQLFunction::MaxOverTime,
+            AggregationOperator::Max
+        ));
+        assert!(!get_is_collapsable(
+            PromQLFunction::MinOverTime,
+            AggregationOperator::Sum
+        ));
+        assert!(!get_is_collapsable(
+            PromQLFunction::Rate,
+            AggregationOperator::Sum
+        ));
     }
 }

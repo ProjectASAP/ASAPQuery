@@ -409,9 +409,9 @@ services:
     networks:
       - asap-network
     expose:
-      - "50007"
+      - "50006"
     command:
-      - "--port=50007"
+      - "--port=50006"
       - "--valuescale=1000"
       - "--dataset=exp-up"
       - "--num-labels=3"

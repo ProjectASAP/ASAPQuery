@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::data_model::AggregationType;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
     use crate::tests::test_utilities::engine_factories::{
         create_engine_single_pop, create_engine_two_metrics,
@@ -17,7 +18,7 @@ mod tests {
     async fn test_handle_query_promql_binary_returns_result() {
         let engine = create_engine_two_metrics(
             "errors_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -25,7 +26,7 @@ mod tests {
             )],
             "sum(errors_total) by (host)",
             "requests_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -54,7 +55,7 @@ mod tests {
         // Only requests_total is configured; foo() is not a known function.
         let engine = create_engine_single_pop(
             "requests_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -78,7 +79,7 @@ mod tests {
     async fn test_handle_query_promql_scalar_binary_returns_result() {
         let engine = create_engine_single_pop(
             "errors_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 Some(vec!["host-a".to_string()]),
@@ -104,7 +105,7 @@ mod tests {
         // Regression: single-metric queries continue to work after binary dispatch is wired in.
         let engine = create_engine_single_pop(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![
                 (

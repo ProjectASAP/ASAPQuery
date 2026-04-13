@@ -1,9 +1,9 @@
-mod test_data;
 mod pattern_tests;
+mod test_data;
 
 use pattern_tests::PatternTester;
-use test_data::*;
 use std::env;
+use test_data::*;
 use tracing_subscriber::filter::LevelFilter;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,9 +34,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if result.success {
             println!("✅ PASSED ({}ms)", result.execution_time_ms);
         } else {
-            println!("❌ FAILED ({}ms): {}",
-                     result.execution_time_ms,
-                     result.error_message.as_deref().unwrap_or("Unknown error"));
+            println!(
+                "❌ FAILED ({}ms): {}",
+                result.execution_time_ms,
+                result.error_message.as_deref().unwrap_or("Unknown error")
+            );
         }
 
         results.push(result);
@@ -46,7 +48,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let total = results.len();
 
     println!("\nTest Summary:");
-    println!("Total: {}, Passed: {}, Failed: {}", total, passed, total - passed);
+    println!(
+        "Total: {}, Passed: {}, Failed: {}",
+        total,
+        passed,
+        total - passed
+    );
 
     // Create test suite result
     let suite_result = TestSuiteResult {

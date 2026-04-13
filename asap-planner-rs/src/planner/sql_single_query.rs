@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
+use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryTreatmentType, Statistic};
-use sketch_db_common::enums::CleanupPolicy;
+use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
 use sql_utilities::ast_matching::sqlhelper::Table;
 use sql_utilities::ast_matching::sqlpattern_matcher::{QueryType, SQLPatternMatcher};
 use sql_utilities::ast_matching::sqlpattern_parser::SQLPatternParser;
@@ -120,7 +120,7 @@ impl SQLSingleQueryProcessor {
             Some(table_name),
             Some(&value_column),
             "",
-            |agg_type, agg_sub_type| {
+            |agg_type: AggregationType, agg_sub_type: &str| {
                 build_sketch_parameters(
                     agg_type,
                     agg_sub_type,
@@ -198,7 +198,7 @@ fn compute_sql_window(
     IntermediateWindowConfig {
         window_size,
         slide_interval: window_size,
-        window_type: "tumbling".to_string(),
+        window_type: WindowType::Tumbling,
     }
 }
 

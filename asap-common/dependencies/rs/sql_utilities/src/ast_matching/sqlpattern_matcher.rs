@@ -71,6 +71,17 @@ impl SQLQuery {
     pub fn is_valid(&self) -> bool {
         self.error.is_none()
     }
+
+    /// The outer (spatial / single) query's data — always `query_data[0]`.
+    pub fn outer_data(&self) -> Option<&SQLQueryData> {
+        self.query_data.first()
+    }
+
+    /// The inner (temporal) query's data for nested queries — always `query_data[1]`.
+    /// Only valid for `OneTemporalOneSpatial` patterns.
+    pub fn inner_data(&self) -> Option<&SQLQueryData> {
+        self.query_data.get(1)
+    }
 }
 
 pub struct SQLPatternMatcher {

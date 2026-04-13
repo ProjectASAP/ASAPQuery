@@ -1,1 +1,1 @@
-pub use sketch_db_common::aggregation_config::*;
+pub use asap_types::aggregation_config::*;

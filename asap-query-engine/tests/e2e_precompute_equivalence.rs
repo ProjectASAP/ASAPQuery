@@ -7,11 +7,12 @@
 //!  3. Advances the watermark past the window boundary to close it
 //!  4. Drains captured outputs and verifies equivalence with ArroYo-format accumulators
 
+use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::{AggregationType, WindowType};
 use flate2::{write::GzEncoder, Compression};
 use prost::Message;
 use serde_json::json;
 use sketch_core::kll::KllSketch;
-use sketch_db_common::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -31,31 +32,56 @@ use query_engine_rust::precompute_operators::multiple_sum_accumulator::MultipleS
 fn make_agg_config(
     id: u64,
     metric: &str,
-    agg_type: &str,
+    agg_type: AggregationType,
     agg_sub_type: &str,
     window_secs: u64,
     slide_secs: u64,
     grouping: Vec<&str>,
 ) -> AggregationConfig {
+    make_agg_config_full(
+        id,
+        metric,
+        agg_type,
+        agg_sub_type,
+        window_secs,
+        slide_secs,
+        grouping,
+        vec![],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_agg_config_full(
+    id: u64,
+    metric: &str,
+    agg_type: AggregationType,
+    agg_sub_type: &str,
+    window_secs: u64,
+    slide_secs: u64,
+    grouping: Vec<&str>,
+    aggregated: Vec<&str>,
+) -> AggregationConfig {
     let window_type = if slide_secs == 0 || slide_secs == window_secs {
-        "tumbling"
+        WindowType::Tumbling
     } else {
-        "sliding"
+        WindowType::Sliding
     };
     AggregationConfig::new(
         id,
-        agg_type.to_string(),
+        agg_type,
         agg_sub_type.to_string(),
         HashMap::new(),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
             grouping.iter().map(|s| s.to_string()).collect(),
         ),
-        promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+        promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(
+            aggregated.iter().map(|s| s.to_string()).collect(),
+        ),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         String::new(),
         window_secs,
         slide_secs,
-        window_type.to_string(),
+        window_type,
         metric.to_string(),
         metric.to_string(),
         None,
@@ -150,7 +176,7 @@ async fn e2e_kll_output_matches_arroyo() {
     let mut kll_config = make_agg_config(
         agg_id,
         "latency",
-        "DatasketchesKLL",
+        AggregationType::DatasketchesKLL,
         "",
         window_secs,
         0,
@@ -264,14 +290,15 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     let agg_id = 2u64;
     let window_secs = 10u64;
 
-    let config = make_agg_config(
+    let config = make_agg_config_full(
         agg_id,
         "cpu",
-        "MultipleSum",
+        AggregationType::MultipleSum,
         "sum",
         window_secs,
         0,
-        vec!["host"],
+        vec![],       // grouping: none
+        vec!["host"], // aggregated: host is the key INSIDE the sketch
     );
     let mut agg_map = HashMap::new();
     agg_map.insert(agg_id, config);

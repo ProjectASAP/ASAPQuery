@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink,
 };
 use serde_json::Value;
 use sketch_core::count_min::CountMinSketch;
@@ -121,9 +121,9 @@ impl CountMinSketchAccumulator {
 
         let mut cms_accumulators = Vec::with_capacity(accumulators.len());
         for acc in accumulators {
-            if acc.get_accumulator_type() != "CountMinSketchAccumulator" {
+            if acc.get_accumulator_type() != AggregationType::CountMinSketch {
                 return Err(format!(
-                    "Cannot merge CountMinSketchAccumulator with {}",
+                    "Cannot merge CountMinSketchAccumulator with {:?}",
                     acc.get_accumulator_type()
                 )
                 .into());
@@ -205,12 +205,25 @@ impl AggregateCore for CountMinSketchAccumulator {
         }))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "CountMinSketchAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::CountMinSketch
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
         None
+    }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        key: &Option<crate::KeyByLabelValues>,
+        query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::MultipleSubpopulationAggregate;
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for CountMinSketchAccumulator")?;
+        self.query(statistic, key_val, Some(query_kwargs))
     }
 }
 

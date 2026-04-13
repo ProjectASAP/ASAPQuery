@@ -1,1 +1,1 @@
-pub use sketch_db_common::streaming_config::*;
+pub use asap_types::streaming_config::*;

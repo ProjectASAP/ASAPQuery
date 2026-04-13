@@ -6,31 +6,35 @@ use promql_utilities::query_logics::enums::Statistic;
 use tracing::{debug, warn};
 
 use crate::aggregation_config::{AggregationConfig, AggregationIdInfo};
+use crate::enums::WindowType;
 use crate::query_requirements::QueryRequirements;
 use crate::utils::normalize_spatial_filter;
+use promql_utilities::query_logics::enums::AggregationType;
 
 // ---------------------------------------------------------------------------
 // Pure compatibility helpers
 // ---------------------------------------------------------------------------
 
-/// Returns the aggregation_type strings that can serve this statistic.
-pub fn compatible_agg_types(stat: Statistic) -> &'static [&'static str] {
+/// Returns the aggregation types that can serve this statistic.
+pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
     match stat {
-        Statistic::Sum => &["Sum", "MultipleSumAccumulator"],
+        Statistic::Sum => &[AggregationType::Sum, AggregationType::MultipleSum],
         Statistic::Count => &[
-            "CountMinSketch",
-            "CountMinSketchWithHeap",
-            "CountMinSketchWithHeapAccumulator",
+            AggregationType::CountMinSketch,
+            AggregationType::CountMinSketchWithHeap,
         ],
-        Statistic::Min => &["MinMax", "MultipleMinMaxAccumulator"],
-        Statistic::Max => &["MinMax", "MultipleMinMaxAccumulator"],
-        Statistic::Quantile => &["DatasketchesKLL", "HydraKLL"],
-        Statistic::Rate | Statistic::Increase => &["Increase", "MultipleIncreaseAccumulator"],
-        Statistic::Cardinality => &["SetAggregator", "DeltaSetAggregator"],
-        Statistic::Topk => &[
-            "CountMinSketchWithHeap",
-            "CountMinSketchWithHeapAccumulator",
+        Statistic::Min | Statistic::Max => {
+            &[AggregationType::MinMax, AggregationType::MultipleMinMax]
+        }
+        Statistic::Quantile => &[AggregationType::DatasketchesKLL, AggregationType::HydraKLL],
+        Statistic::Rate | Statistic::Increase => {
+            &[AggregationType::Increase, AggregationType::MultipleIncrease]
+        }
+        Statistic::Cardinality => &[
+            AggregationType::SetAggregator,
+            AggregationType::DeltaSetAggregator,
         ],
+        Statistic::Topk => &[AggregationType::CountMinSketchWithHeap],
     }
 }
 
@@ -46,20 +50,13 @@ pub fn required_sub_type(stat: Statistic) -> Option<&'static str> {
 
 /// Whether this value aggregation type requires a paired key aggregation
 /// (`SetAggregator` or `DeltaSetAggregator`).
-pub fn is_multi_population_value_type(agg_type: &str) -> bool {
-    matches!(
-        agg_type,
-        "MultipleSumAccumulator"
-            | "MultipleMinMaxAccumulator"
-            | "MultipleIncreaseAccumulator"
-            | "CountMinSketchWithHeap"
-            | "CountMinSketchWithHeapAccumulator"
-    )
+pub fn is_multi_population_value_type(agg_type: AggregationType) -> bool {
+    agg_type.is_multi_population_value_type()
 }
 
 /// Whether this type is a key aggregation (tracks which label-value combinations exist).
-fn is_key_agg_type(agg_type: &str) -> bool {
-    matches!(agg_type, "SetAggregator" | "DeltaSetAggregator")
+fn is_key_agg_type(agg_type: AggregationType) -> bool {
+    agg_type.is_key_agg_type()
 }
 
 /// Window compatibility: can `config` serve a query needing `data_range_ms`?
@@ -76,9 +73,9 @@ pub fn window_compatible(config: &AggregationConfig, data_range_ms: Option<u64>)
     if window_ms == 0 || range == 0 {
         return false;
     }
-    match config.window_type.as_str() {
-        "sliding" => range == window_ms,
-        _ => range % window_ms == 0, // tumbling (or unknown — treat as tumbling)
+    match config.window_type {
+        WindowType::Sliding => range == window_ms,
+        WindowType::Tumbling => range % window_ms == 0,
     }
 }
 
@@ -152,7 +149,7 @@ pub fn find_compatible_aggregation(
             .values()
             .filter(|c| {
                 let ok = c.metric == requirements.metric
-                    && types.contains(&c.aggregation_type.as_str())
+                    && types.contains(&c.aggregation_type)
                     && sub_type.is_none_or(|st| c.aggregation_sub_type == st)
                     && window_compatible(c, requirements.data_range_ms)
                     && labels_compatible(&c.grouping_labels, &requirements.grouping_labels)
@@ -218,11 +215,11 @@ pub fn find_compatible_aggregation(
     }
 
     // If value type is multi-population, find the paired key aggregation.
-    let key_agg: &AggregationConfig = if is_multi_population_value_type(&value_agg.aggregation_type)
+    let key_agg: &AggregationConfig = if is_multi_population_value_type(value_agg.aggregation_type)
     {
         let ka = configs
             .values()
-            .find(|c| c.metric == requirements.metric && is_key_agg_type(&c.aggregation_type));
+            .find(|c| c.metric == requirements.metric && is_key_agg_type(c.aggregation_type));
         if ka.is_none() {
             warn!(
                 metric = %requirements.metric,
@@ -246,9 +243,9 @@ pub fn find_compatible_aggregation(
 
     Some(AggregationIdInfo {
         aggregation_id_for_value: value_agg.aggregation_id,
-        aggregation_type_for_value: value_agg.aggregation_type.clone(),
+        aggregation_type_for_value: value_agg.aggregation_type,
         aggregation_id_for_key: key_agg.aggregation_id,
-        aggregation_type_for_key: key_agg.aggregation_type.clone(),
+        aggregation_type_for_key: key_agg.aggregation_type,
     })
 }
 
@@ -279,7 +276,7 @@ mod tests {
         let spatial_filter_normalized = normalize_spatial_filter(spatial_filter);
         AggregationConfig {
             aggregation_id: id,
-            aggregation_type: agg_type.to_string(),
+            aggregation_type: agg_type.parse::<AggregationType>().expect("valid agg type"),
             aggregation_sub_type: sub_type.to_string(),
             parameters: HashMap::new(),
             grouping_labels,
@@ -288,7 +285,7 @@ mod tests {
             original_yaml: String::new(),
             window_size: window_size_s,
             slide_interval: window_size_s,
-            window_type: window_type.to_string(),
+            window_type: window_type.parse::<WindowType>().unwrap_or_default(),
             spatial_filter: spatial_filter.to_string(),
             spatial_filter_normalized,
             metric: metric.to_string(),

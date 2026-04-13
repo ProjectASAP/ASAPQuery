@@ -1,0 +1,12 @@
+name: asapquery-quickstart-precompute
+
+# Override: builds query engine from pre-built local binary (fast).
+# Usage:
+#   cargo build --release -p query_engine_rust  # build locally first
+#   sudo docker compose -f docker-compose-precompute.yml -f docker-compose-precompute.local.yml up -d --build
+
+services:
+  queryengine:
+    build:
+      context: ..
+      dockerfile: asap-quickstart/Dockerfile.queryengine-local

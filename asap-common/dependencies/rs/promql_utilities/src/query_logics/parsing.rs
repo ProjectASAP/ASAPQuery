@@ -3,9 +3,10 @@ use core::panic;
 use promql_parser::parser::Expr;
 use tracing::debug;
 
+use crate::ast_matching::promql_pattern::AggregationModifierType;
 use crate::ast_matching::PromQLMatchResult;
 use crate::data_model::KeyByLabelNames;
-use crate::query_logics::enums::{QueryPatternType, Statistic};
+use crate::query_logics::enums::{AggregationOperator, QueryPatternType, Statistic};
 
 pub fn get_metric_and_spatial_filter(match_result: &PromQLMatchResult) -> (String, String) {
     debug!("Extracting metric and spatial filter from match result");
@@ -72,7 +73,7 @@ pub fn get_statistics_to_compute(
 
     if let Some(statistic_to_compute) = statistic_to_compute {
         debug!("Found statistic to compute: {}", statistic_to_compute);
-        if statistic_to_compute == "avg" {
+        if statistic_to_compute.parse::<AggregationOperator>() == Ok(AggregationOperator::Avg) {
             vec![Statistic::Sum, Statistic::Count]
         } else if let Ok(stat) = statistic_to_compute.parse::<Statistic>() {
             vec![stat]
@@ -100,7 +101,7 @@ pub fn get_spatial_aggregation_output_labels(
         .expect("aggregation token missing");
 
     // Patching: When the query is topk, we should always return all labels
-    if aggregation_token.op.to_lowercase() == "topk" {
+    if aggregation_token.op.parse::<AggregationOperator>() == Ok(AggregationOperator::Topk) {
         debug!("Aggregation operation is 'topk', returning all labels");
         return all_labels.clone();
     }
@@ -115,21 +116,20 @@ pub fn get_spatial_aggregation_output_labels(
     };
 
     debug!(
-        "Modifier type: {}, labels: {:?}",
+        "Modifier type: {:?}, labels: {:?}",
         modifier.modifier_type, modifier.labels
     );
-    match modifier.modifier_type.as_str() {
-        "by" => {
+    match modifier.modifier_type {
+        AggregationModifierType::By => {
             debug!("Processing 'by' modifier");
             // Return only the labels specified in "by" clause
             KeyByLabelNames::new(modifier.labels.clone())
         }
-        "without" => {
+        AggregationModifierType::Without => {
             debug!("Processing 'without' modifier");
             // Return all labels except those specified in "without" clause
             let without_labels = KeyByLabelNames::new(modifier.labels.clone());
             all_labels.difference(&without_labels)
         }
-        _ => panic!("Invalid aggregation modifier"),
     }
 }

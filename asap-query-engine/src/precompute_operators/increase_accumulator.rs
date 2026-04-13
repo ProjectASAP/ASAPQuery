@@ -1,5 +1,5 @@
 use crate::data_model::{
-    AggregateCore, Measurement, MergeableAccumulator, SerializableToSink,
+    AggregateCore, AggregationType, Measurement, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
 use serde::{Deserialize, Serialize};
@@ -241,12 +241,22 @@ impl AggregateCore for IncreaseAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "IncreaseAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::Increase
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
         None
+    }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        _key: &Option<crate::KeyByLabelValues>,
+        _query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::SingleSubpopulationAggregate;
+        self.query(statistic, None)
     }
 }
 

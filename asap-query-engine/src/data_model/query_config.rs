@@ -1,1 +1,1 @@
-pub use sketch_db_common::query_config::*;
+pub use asap_types::query_config::*;

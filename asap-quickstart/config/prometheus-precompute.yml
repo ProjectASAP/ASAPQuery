@@ -1,0 +1,36 @@
+# Prometheus configuration for pattern-based fake exporters demo
+# Uses the hand-crafted precompute engine (instead of Arroyo) for sketch building
+
+global:
+  scrape_interval: 1s
+  evaluation_interval: 1s
+
+# Remote write configuration to send metrics to the precompute engine for sketch building
+remote_write:
+  - url: http://queryengine:9091/api/v1/write
+    queue_config:
+      batch_send_deadline: 1s
+    write_relabel_configs:
+      - source_labels: [__name__]
+        regex: sensor_reading
+        action: keep
+
+scrape_configs:
+  # Scrape pattern-based fake exporters
+  # Each exporter generates one pattern type (constant, sine, linear, etc.)
+  # All metrics have a 'pattern' label indicating their pattern type
+  - job_name: 'pattern-exporters'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: sensor_reading
+        action: keep
+    static_configs:
+      - targets:
+          - 'fake-exporter-constant:50000'
+          - 'fake-exporter-linear-up:50001'
+          - 'fake-exporter-linear-down:50002'
+          - 'fake-exporter-sine:50003'
+          - 'fake-exporter-sine-noise:50004'
+          - 'fake-exporter-step:50005'
+          - 'fake-exporter-spiky:50006'
+          - 'fake-exporter-exp-up:50007'

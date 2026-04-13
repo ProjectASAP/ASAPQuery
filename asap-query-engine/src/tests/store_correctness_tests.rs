@@ -28,7 +28,8 @@
 //! | `contract_global`     | `LockStrategy::Global`      |
 
 use crate::data_model::{
-    CleanupPolicy, KeyByLabelValues, LockStrategy, Measurement, SerializableToSink, StreamingConfig,
+    AggregationType, CleanupPolicy, KeyByLabelValues, LockStrategy, Measurement,
+    SerializableToSink, StreamingConfig, WindowType,
 };
 use crate::precompute_operators::{
     CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
@@ -46,23 +47,23 @@ use std::sync::Arc;
 
 fn make_agg_config(
     agg_id: u64,
-    aggregation_type: &str,
+    aggregation_type: AggregationType,
     num_aggregates_to_retain: Option<u64>,
     read_count_threshold: Option<u64>,
 ) -> AggregationConfig {
     AggregationConfig::new(
         agg_id,
-        aggregation_type.to_string(),
+        aggregation_type,
         "".to_string(),
         HashMap::new(),
         KeyByLabelNames::empty(),
         KeyByLabelNames::empty(),
         KeyByLabelNames::empty(),
         "".to_string(),
-        60,                     // window_size (seconds)
-        60,                     // slide_interval (seconds)
-        "tumbling".to_string(), // window_type
-        "".to_string(),         // spatial_filter
+        60,                   // window_size (seconds)
+        60,                   // slide_interval (seconds)
+        WindowType::Tumbling, // window_type
+        "".to_string(),       // spatial_filter
         "cpu_usage".to_string(),
         num_aggregates_to_retain,
         read_count_threshold,
@@ -71,7 +72,9 @@ fn make_agg_config(
     )
 }
 
-fn make_streaming_config(ids: &[(u64, &str, Option<u64>, Option<u64>)]) -> Arc<StreamingConfig> {
+fn make_streaming_config(
+    ids: &[(u64, AggregationType, Option<u64>, Option<u64>)],
+) -> Arc<StreamingConfig> {
     let configs = ids
         .iter()
         .map(|&(id, agg_type, retain, threshold)| {
@@ -84,18 +87,18 @@ fn make_streaming_config(ids: &[(u64, &str, Option<u64>, Option<u64>)]) -> Arc<S
 fn make_store(
     strategy: LockStrategy,
     policy: CleanupPolicy,
-    ids: &[(u64, &str, Option<u64>, Option<u64>)],
+    ids: &[(u64, AggregationType, Option<u64>, Option<u64>)],
 ) -> SimpleMapStore {
     let config = make_streaming_config(ids);
     SimpleMapStore::new_with_strategy(config, policy, strategy)
 }
 
-/// Convenience: single agg_id=1, type "Sum", no cleanup.
+/// Convenience: single agg_id=1, type Sum, no cleanup.
 fn make_store_simple(strategy: LockStrategy) -> SimpleMapStore {
     make_store(
         strategy,
         CleanupPolicy::NoCleanup,
-        &[(1, "Sum", None, None)],
+        &[(1, AggregationType::Sum, None, None)],
     )
 }
 
@@ -413,7 +416,10 @@ fn test_multiple_agg_ids_are_isolated(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::NoCleanup,
-        &[(1, "Sum", None, None), (2, "Sum", None, None)],
+        &[
+            (1, AggregationType::Sum, None, None),
+            (2, AggregationType::Sum, None, None),
+        ],
     );
     let (o1, a1) = sum_entry(1, 1_000, 2_000, 10.0);
     let (o2, a2) = sum_entry(2, 3_000, 4_000, 20.0);
@@ -474,7 +480,10 @@ fn test_earliest_timestamp_tracked_per_agg_id(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::NoCleanup,
-        &[(1, "Sum", None, None), (2, "Sum", None, None)],
+        &[
+            (1, AggregationType::Sum, None, None),
+            (2, AggregationType::Sum, None, None),
+        ],
     );
     let (o1, a1) = sum_entry(1, 1_000, 2_000, 1.0);
     let (o2, a2) = sum_entry(2, 9_000, 10_000, 1.0);
@@ -504,7 +513,7 @@ fn test_cleanup_circular_buffer_evicts_oldest_window(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
-        &[(1, "Sum", Some(2), None)],
+        &[(1, AggregationType::Sum, Some(2), None)],
     );
     for i in 0u64..9 {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
@@ -524,7 +533,7 @@ fn test_cleanup_circular_buffer_retains_newest_windows(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
-        &[(1, "Sum", Some(2), None)],
+        &[(1, AggregationType::Sum, Some(2), None)],
     );
     for i in 0u64..9 {
         let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
@@ -549,7 +558,7 @@ fn test_cleanup_read_based_evicts_after_threshold_reads(strategy: LockStrategy) 
     let store = make_store(
         strategy,
         CleanupPolicy::ReadBased,
-        &[(1, "Sum", None, Some(2))],
+        &[(1, AggregationType::Sum, None, Some(2))],
     );
     let (out, acc) = sum_entry(1, 1_000, 2_000, 1.0);
     store.insert_precomputed_output(out, acc).unwrap();
@@ -592,7 +601,7 @@ fn test_cleanup_read_based_unread_window_is_retained(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::ReadBased,
-        &[(1, "Sum", None, Some(1))],
+        &[(1, AggregationType::Sum, None, Some(1))],
     );
     let (out, acc) = sum_entry(1, 1_000, 2_000, 1.0);
     store.insert_precomputed_output(out, acc).unwrap();
@@ -622,7 +631,7 @@ fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
     let store = make_store(
         strategy,
         CleanupPolicy::CircularBuffer,
-        &[(1, "DeltaSetAggregator", Some(2), None)],
+        &[(1, AggregationType::DeltaSetAggregator, Some(2), None)],
     );
     let n = 10u64;
     for i in 0..n {
@@ -827,7 +836,7 @@ fn test_clone_fidelity_min_max(strategy: LockStrategy) {
 fn test_clone_fidelity_kll(strategy: LockStrategy) {
     let mut acc = DatasketchesKLLAccumulator::new(200);
     for v in [1.0, 5.0, 10.0, 50.0, 100.0] {
-        acc._update(v);
+        acc.update(v);
     }
     roundtrip(strategy, acc);
 }

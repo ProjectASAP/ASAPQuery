@@ -1,6 +1,6 @@
 use asap_planner::{Controller, RuntimeOptions, SQLController, SQLRuntimeOptions, StreamingEngine};
+use asap_types::enums::QueryLanguage;
 use clap::Parser;
-use sketch_db_common::enums::QueryLanguage;
 use std::path::PathBuf;
 
 #[derive(Parser, Debug)]

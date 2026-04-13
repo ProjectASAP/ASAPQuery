@@ -8,7 +8,7 @@ edition.workspace = true
 sketch-core.workspace = true
 promql_utilities.workspace = true
 sql_utilities.workspace = true
-sketch_db_common.workspace = true
+asap_types.workspace = true
 datafusion_summary_library.workspace = true
 asap_planner.workspace = true
 
@@ -71,6 +71,10 @@ path = "src/bin/test_e2e_precompute.rs"
 [[bin]]
 name = "bench_precompute_sketch"
 path = "src/bin/bench_precompute_sketch.rs"
+
+[[bin]]
+name = "e2e_quickstart_resource_test"
+path = "src/bin/e2e_quickstart_resource_test.rs"
 
 [dev-dependencies]
 ctor = "0.2"

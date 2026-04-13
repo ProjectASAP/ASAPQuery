@@ -1,4 +1,4 @@
-pub use sketch_db_common::utils::normalize_spatial_filter;
+pub use asap_types::utils::normalize_spatial_filter;
 
 #[cfg(test)]
 mod tests {

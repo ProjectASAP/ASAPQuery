@@ -381,6 +381,7 @@ name = "asap_planner"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "asap_types",
  "chrono",
  "clap 4.6.0",
  "indexmap 2.13.1",
@@ -391,7 +392,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "sketch_db_common",
  "sql_utilities",
  "sqlparser 0.59.0",
  "tempfile",
@@ -418,6 +418,20 @@ dependencies = [
  "serde-big-array",
  "smallvec",
  "twox-hash 2.1.2",
+]
+
+[[package]]
+name = "asap_types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap 4.6.0",
+ "promql_utilities",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sql_utilities",
+ "tracing",
 ]
 
 [[package]]
@@ -884,6 +898,15 @@ checksum = "958c5d6ecf1f214b4c2bbbbf6ab9523a864bd136dcf71a7e8904799acfe1ad47"
 dependencies = [
  "unicode-segmentation",
  "unicode-width 0.2.2",
+]
+
+[[package]]
+name = "compare_patterns_runner"
+version = "0.1.0"
+dependencies = [
+ "promql_utilities",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3500,6 +3523,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "promql_token_matching_tests"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "promql-parser",
+ "promql_utilities",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "promql_utilities"
 version = "0.1.0"
 dependencies = [
@@ -3588,6 +3625,7 @@ dependencies = [
  "arrow",
  "asap_planner",
  "asap_sketchlib",
+ "asap_types",
  "async-trait",
  "axum",
  "base64 0.21.7",
@@ -3620,7 +3658,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sketch-core",
- "sketch_db_common",
  "snap",
  "sql_utilities",
  "sqlparser 0.59.0",
@@ -4170,20 +4207,6 @@ dependencies = [
  "rmp-serde",
  "serde",
  "xxhash-rust",
-]
-
-[[package]]
-name = "sketch_db_common"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap 4.6.0",
- "promql_utilities",
- "serde",
- "serde_json",
- "serde_yaml",
- "sql_utilities",
- "tracing",
 ]
 
 [[package]]

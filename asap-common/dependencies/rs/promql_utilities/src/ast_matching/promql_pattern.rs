@@ -448,11 +448,11 @@ impl PromQLPattern {
             debug!("Collecting aggregation token as: {}", collect_as);
             let modifier = match &agg.modifier {
                 Some(LabelModifier::Include(labels)) => Some(AggregationModifier {
-                    modifier_type: "by".to_string(),
+                    modifier_type: AggregationModifierType::By,
                     labels: labels.labels.clone(),
                 }),
                 Some(LabelModifier::Exclude(labels)) => Some(AggregationModifier {
-                    modifier_type: "without".to_string(),
+                    modifier_type: AggregationModifierType::Without,
                     labels: labels.labels.clone(),
                 }),
                 None => None,
@@ -844,16 +844,24 @@ impl Default for PromQLMatchResult {
     }
 }
 
+/// Whether a PromQL aggregation modifier is `by` or `without`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AggregationModifierType {
+    By,
+    Without,
+}
+
 /// Represents aggregation modifiers like "by" or "without"
 #[derive(Debug, Clone, Serialize)]
 pub struct AggregationModifier {
-    pub modifier_type: String, // "by" or "without"
+    pub modifier_type: AggregationModifierType,
     pub labels: Vec<String>,
 }
 
 impl AggregationModifier {
     /// Create a new AggregationModifier
-    pub fn new(modifier_type: String, labels: Vec<String>) -> Self {
+    pub fn new(modifier_type: AggregationModifierType, labels: Vec<String>) -> Self {
         Self {
             modifier_type,
             labels,
@@ -914,4 +922,449 @@ impl AggregationModifier {
     //         }
     //     }
     // }
+}
+
+// =============================================================================
+// Tests migrated from asap-common/tests/{compare_matched_tokens,
+// rust_pattern_matching, compare_patterns} binary runners.
+//
+// The PatternTester struct and all build_* methods below are copied verbatim
+// from compare_matched_tokens/rust_tests/src/pattern_tests.rs.  Only the
+// main() harness has been replaced with individual #[test] functions, and
+// assertions come from the test_data/promql_queries.json file that was used
+// by the binary runner.
+// =============================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast_matching::PromQLPatternBuilder;
+    use promql_parser::parser as promql;
+    use serde_json::Value;
+
+    // ------------------------------------------------------------------
+    // PatternTester — copied from compare_matched_tokens/rust_tests/src/pattern_tests.rs
+    // ------------------------------------------------------------------
+
+    struct PatternTester {
+        patterns: HashMap<String, Vec<PromQLPattern>>,
+    }
+
+    impl PatternTester {
+        fn new() -> Self {
+            let mut patterns = HashMap::new();
+
+            // ONLY_TEMPORAL patterns
+            let temporal_patterns = vec![
+                // Rate pattern
+                PromQLPattern::new(Self::build_rate_pattern()),
+                // Quantile over time pattern
+                PromQLPattern::new(Self::build_quantile_over_time_pattern()),
+            ];
+
+            // ONLY_SPATIAL patterns
+            let spatial_patterns = vec![
+                // Sum aggregation pattern
+                PromQLPattern::new(Self::build_sum_pattern()),
+                // Simple metric pattern
+                PromQLPattern::new(Self::build_metric_pattern()),
+            ];
+
+            // ONE_TEMPORAL_ONE_SPATIAL patterns
+            let combined_patterns = vec![
+                // Aggregation of single-arg temporal functions
+                PromQLPattern::new(Self::build_one_temporal_one_spatial_pattern()),
+                // Aggregation of quantile_over_time (2-arg)
+                PromQLPattern::new(Self::build_combined_quantile_pattern()),
+            ];
+
+            patterns.insert("ONLY_SPATIAL".to_string(), spatial_patterns);
+            patterns.insert("ONLY_TEMPORAL".to_string(), temporal_patterns);
+            patterns.insert("ONE_TEMPORAL_ONE_SPATIAL".to_string(), combined_patterns);
+
+            Self { patterns }
+        }
+
+        fn classify_query(&self, query: &str) -> Option<(String, PromQLMatchResult)> {
+            let ast = promql::parse(query).expect("Failed to parse query");
+
+            for (pattern_type, pattern_list) in &self.patterns {
+                for pattern in pattern_list {
+                    let match_result = pattern.matches(&ast);
+                    if match_result.matches {
+                        let final_type = if pattern_type == "ONLY_SPATIAL" {
+                            if match_result.tokens.contains_key("aggregation") {
+                                pattern_type.clone()
+                            } else if match_result.tokens.contains_key("metric") {
+                                "ONLY_VECTOR".to_string()
+                            } else {
+                                pattern_type.clone()
+                            }
+                        } else {
+                            pattern_type.clone()
+                        };
+                        return Some((final_type, match_result));
+                    }
+                }
+            }
+            None
+        }
+
+        fn build_rate_pattern() -> Option<HashMap<String, Value>> {
+            let ms = PromQLPatternBuilder::matrix_selector(
+                PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                Some("range_vector"),
+            );
+
+            let args: Vec<Option<HashMap<String, Value>>> = vec![ms];
+
+            PromQLPatternBuilder::function(
+                vec![
+                    "rate",
+                    "increase",
+                    "avg_over_time",
+                    "sum_over_time",
+                    "count_over_time",
+                    "min_over_time",
+                    "max_over_time",
+                ],
+                args,
+                Some("function"),
+                None,
+            )
+        }
+
+        fn build_quantile_over_time_pattern() -> Option<HashMap<String, Value>> {
+            let num = PromQLPatternBuilder::number(None, None);
+            let ms = PromQLPatternBuilder::matrix_selector(
+                PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                Some("range_vector"),
+            );
+
+            let args: Vec<Option<HashMap<String, Value>>> = vec![num, ms];
+
+            PromQLPatternBuilder::function(
+                vec!["quantile_over_time"],
+                args,
+                Some("function"),
+                Some("function_args"),
+            )
+        }
+
+        fn build_sum_pattern() -> Option<HashMap<String, Value>> {
+            PromQLPatternBuilder::aggregation(
+                vec!["sum", "count", "avg", "min", "max"],
+                PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                None,
+                None,
+                Some("aggregation"),
+            )
+        }
+
+        fn build_metric_pattern() -> Option<HashMap<String, Value>> {
+            PromQLPatternBuilder::metric(None, None, None, Some("metric"))
+        }
+
+        fn build_one_temporal_one_spatial_pattern() -> Option<HashMap<String, Value>> {
+            let ms = PromQLPatternBuilder::matrix_selector(
+                PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                Some("range_vector"),
+            );
+
+            let func_args: Vec<Option<HashMap<String, Value>>> = vec![ms];
+
+            let func = PromQLPatternBuilder::function(
+                vec![
+                    "sum_over_time",
+                    "count_over_time",
+                    "avg_over_time",
+                    "min_over_time",
+                    "max_over_time",
+                    "rate",
+                    "increase",
+                ],
+                func_args,
+                Some("function"),
+                None,
+            );
+
+            PromQLPatternBuilder::aggregation(
+                vec!["sum", "count", "avg", "quantile", "min", "max"],
+                func,
+                None,
+                None,
+                None,
+                Some("aggregation"),
+            )
+        }
+
+        fn build_combined_quantile_pattern() -> Option<HashMap<String, Value>> {
+            let num = PromQLPatternBuilder::number(None, None);
+            let ms = PromQLPatternBuilder::matrix_selector(
+                PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                Some("range_vector"),
+            );
+            let func_args: Vec<Option<HashMap<String, Value>>> = vec![num, ms];
+            let func = PromQLPatternBuilder::function(
+                vec!["quantile_over_time"],
+                func_args,
+                Some("function"),
+                None,
+            );
+            PromQLPatternBuilder::aggregation(
+                vec!["sum", "count", "avg", "quantile", "min", "max"],
+                func,
+                None,
+                None,
+                None,
+                Some("aggregation"),
+            )
+        }
+
+        #[allow(dead_code)]
+        fn build_sum_rate_pattern() -> Option<HashMap<String, Value>> {
+            let ms = PromQLPatternBuilder::matrix_selector(
+                PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                None,
+                Some("range_vector"),
+            );
+
+            let func_args: Vec<Option<HashMap<String, Value>>> = vec![ms];
+
+            let func = PromQLPatternBuilder::function(
+                vec!["rate", "increase"],
+                func_args,
+                Some("function"),
+                None,
+            );
+
+            PromQLPatternBuilder::aggregation(
+                vec!["sum", "count", "avg", "min", "max"],
+                func,
+                None,
+                None,
+                None,
+                Some("aggregation"),
+            )
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Tests from compare_matched_tokens/test_data/promql_queries.json
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn temporal_rate_basic() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("rate(http_requests_total{job=\"api\"}[5m])")
+            .unwrap();
+        assert_eq!(cat, "ONLY_TEMPORAL");
+        assert_eq!(result.get_metric_name().unwrap(), "http_requests_total");
+        assert_eq!(result.get_function_name().unwrap(), "rate");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::minutes(5));
+        let labels = &result.tokens["metric"].metric.as_ref().unwrap().labels;
+        assert_eq!(labels.get("job").unwrap(), "api");
+    }
+
+    #[test]
+    fn temporal_increase_basic() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("increase(http_requests_total[1h])")
+            .unwrap();
+        assert_eq!(cat, "ONLY_TEMPORAL");
+        assert_eq!(result.get_metric_name().unwrap(), "http_requests_total");
+        assert_eq!(result.get_function_name().unwrap(), "increase");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::hours(1));
+    }
+
+    #[test]
+    fn temporal_quantile_over_time() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("quantile_over_time(0.95, cpu_usage{instance=\"host1\"}[10m])")
+            .unwrap();
+        assert_eq!(cat, "ONLY_TEMPORAL");
+        assert_eq!(result.get_metric_name().unwrap(), "cpu_usage");
+        assert_eq!(result.get_function_name().unwrap(), "quantile_over_time");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::minutes(10));
+        let labels = &result.tokens["metric"].metric.as_ref().unwrap().labels;
+        assert_eq!(labels.get("instance").unwrap(), "host1");
+    }
+
+    #[test]
+    fn temporal_avg_over_time() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("avg_over_time(memory_bytes[30m])")
+            .unwrap();
+        assert_eq!(cat, "ONLY_TEMPORAL");
+        assert_eq!(result.get_metric_name().unwrap(), "memory_bytes");
+        assert_eq!(result.get_function_name().unwrap(), "avg_over_time");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::minutes(30));
+    }
+
+    #[test]
+    fn spatial_sum_aggregation() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("sum(http_requests_total{job=\"api\"})")
+            .unwrap();
+        assert_eq!(cat, "ONLY_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "http_requests_total");
+        assert_eq!(result.get_aggregation_op().unwrap(), "sum");
+        let labels = &result.tokens["metric"].metric.as_ref().unwrap().labels;
+        assert_eq!(labels.get("job").unwrap(), "api");
+    }
+
+    #[test]
+    fn spatial_avg_aggregation() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("avg by (instance) (cpu_usage)")
+            .unwrap();
+        assert_eq!(cat, "ONLY_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "cpu_usage");
+        assert_eq!(result.get_aggregation_op().unwrap(), "avg");
+    }
+
+    #[test]
+    fn spatial_count_aggregation() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester.classify_query("count(up{job=\"node\"})").unwrap();
+        assert_eq!(cat, "ONLY_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "up");
+        assert_eq!(result.get_aggregation_op().unwrap(), "count");
+        let labels = &result.tokens["metric"].metric.as_ref().unwrap().labels;
+        assert_eq!(labels.get("job").unwrap(), "node");
+    }
+
+    #[test]
+    fn combined_sum_of_rate() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("sum(rate(http_requests_total{job=\"api\"}[5m]))")
+            .unwrap();
+        assert_eq!(cat, "ONE_TEMPORAL_ONE_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "http_requests_total");
+        assert_eq!(result.get_function_name().unwrap(), "rate");
+        assert_eq!(result.get_aggregation_op().unwrap(), "sum");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::minutes(5));
+    }
+
+    #[test]
+    fn combined_avg_of_quantile_over_time() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("avg(quantile_over_time(0.99, response_time_seconds[15m]))")
+            .unwrap();
+        assert_eq!(cat, "ONE_TEMPORAL_ONE_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "response_time_seconds");
+        assert_eq!(result.get_function_name().unwrap(), "quantile_over_time");
+        assert_eq!(result.get_aggregation_op().unwrap(), "avg");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::minutes(15));
+    }
+
+    #[test]
+    fn combined_sum_of_avg_over_time() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("sum by (job) (avg_over_time(memory_bytes{env=\"prod\"}[1h]))")
+            .unwrap();
+        assert_eq!(cat, "ONE_TEMPORAL_ONE_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "memory_bytes");
+        assert_eq!(result.get_function_name().unwrap(), "avg_over_time");
+        assert_eq!(result.get_aggregation_op().unwrap(), "sum");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::hours(1));
+        let labels = &result.tokens["metric"].metric.as_ref().unwrap().labels;
+        assert_eq!(labels.get("env").unwrap(), "prod");
+    }
+
+    // ------------------------------------------------------------------
+    // Tests from rust_pattern_matching binary
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn spatial_of_temporal_sum_of_sum_over_time() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("sum by (instance, job) (sum_over_time(fake_metric_total[1m]))")
+            .unwrap();
+        assert_eq!(cat, "ONE_TEMPORAL_ONE_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "fake_metric_total");
+        assert_eq!(result.get_function_name().unwrap(), "sum_over_time");
+        assert_eq!(result.get_aggregation_op().unwrap(), "sum");
+        assert_eq!(result.get_range_duration().unwrap(), Duration::minutes(1));
+    }
+
+    #[test]
+    fn spatial_of_temporal_sum_of_count_over_time() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester
+            .classify_query("sum by (instance, job) (count_over_time(fake_metric_total[1m]))")
+            .unwrap();
+        assert_eq!(cat, "ONE_TEMPORAL_ONE_SPATIAL");
+        assert_eq!(result.get_metric_name().unwrap(), "fake_metric_total");
+        assert_eq!(result.get_function_name().unwrap(), "count_over_time");
+        assert_eq!(result.get_aggregation_op().unwrap(), "sum");
+    }
+
+    // ------------------------------------------------------------------
+    // Tests from compare_patterns binary (pattern construction)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn pattern_builds_temporal_rate_increase() {
+        let ast = PatternTester::build_rate_pattern();
+        assert!(ast.is_some());
+        assert_eq!(ast.unwrap()["type"], "Call");
+    }
+
+    #[test]
+    fn pattern_builds_temporal_quantile_over_time() {
+        let ast = PatternTester::build_quantile_over_time_pattern();
+        assert!(ast.is_some());
+        assert_eq!(ast.unwrap()["type"], "Call");
+    }
+
+    #[test]
+    fn pattern_builds_spatial_aggregation() {
+        let ast = PatternTester::build_sum_pattern();
+        assert!(ast.is_some());
+        assert_eq!(ast.unwrap()["type"], "AggregateExpr");
+    }
+
+    #[test]
+    fn pattern_builds_metric() {
+        let ast = PatternTester::build_metric_pattern();
+        assert!(ast.is_some());
+        assert_eq!(ast.unwrap()["type"], "VectorSelector");
+    }
+
+    #[test]
+    fn pattern_builds_combined_temporal() {
+        let ast = PatternTester::build_one_temporal_one_spatial_pattern();
+        assert!(ast.is_some());
+        assert_eq!(ast.unwrap()["type"], "AggregateExpr");
+    }
+
+    #[test]
+    fn pattern_builds_combined_quantile() {
+        let ast = PatternTester::build_combined_quantile_pattern();
+        assert!(ast.is_some());
+        assert_eq!(ast.unwrap()["type"], "AggregateExpr");
+    }
+
+    #[test]
+    fn bare_metric_classified_as_only_vector() {
+        let tester = PatternTester::new();
+        let (cat, result) = tester.classify_query("http_requests_total").unwrap();
+        assert_eq!(cat, "ONLY_VECTOR");
+        assert_eq!(result.get_metric_name().unwrap(), "http_requests_total");
+    }
 }

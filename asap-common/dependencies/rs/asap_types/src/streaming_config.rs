@@ -1,5 +1,4 @@
 use anyhow::Result;
-use core::panic;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::collections::HashMap;
@@ -83,7 +82,12 @@ impl StreamingConfig {
         if let Some(aggregations) = data.get("aggregations").and_then(|v| v.as_sequence()) {
             for aggregation_data in aggregations {
                 if let Some(aggregation_id) = aggregation_data.get("aggregationId") {
-                    let aggregation_id_u64 = aggregation_id.as_u64().or_else(|| panic!()).unwrap();
+                    let aggregation_id_u64 = aggregation_id.as_u64().ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "aggregationId must be a valid u64, got: {:?}",
+                            aggregation_id
+                        )
+                    })?;
                     let num_aggregates_to_retain = retention_map.get(&aggregation_id_u64);
                     let read_count_threshold = read_count_threshold_map.get(&aggregation_id_u64);
                     let config = AggregationConfig::from_yaml_data(
@@ -103,7 +107,7 @@ impl StreamingConfig {
 
 impl StreamingConfig {
     /// Find a compatible aggregation for the given requirements using capability-based matching.
-    /// Delegates to `sketch_db_common::find_compatible_aggregation`.
+    /// Delegates to `asap_types::find_compatible_aggregation`.
     pub fn find_compatible_aggregation(
         &self,
         requirements: &QueryRequirements,

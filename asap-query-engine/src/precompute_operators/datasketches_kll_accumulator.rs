@@ -1,5 +1,6 @@
 use crate::data_model::{
-    AggregateCore, MergeableAccumulator, SerializableToSink, SingleSubpopulationAggregate,
+    AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
+    SingleSubpopulationAggregate,
 };
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
@@ -25,7 +26,7 @@ impl DatasketchesKLLAccumulator {
         }
     }
 
-    pub fn _update(&mut self, value: f64) {
+    pub fn update(&mut self, value: f64) {
         self.inner.update(value);
     }
 
@@ -79,9 +80,9 @@ impl DatasketchesKLLAccumulator {
 
         let mut kll_accumulators = Vec::with_capacity(accumulators.len());
         for acc in accumulators {
-            if acc.get_accumulator_type() != "DatasketchesKLLAccumulator" {
+            if acc.get_accumulator_type() != AggregationType::DatasketchesKLL {
                 return Err(format!(
-                    "Cannot merge DatasketchesKLLAccumulator with {}",
+                    "Cannot merge DatasketchesKLLAccumulator with {:?}",
                     acc.get_accumulator_type()
                 )
                 .into());
@@ -192,12 +193,22 @@ impl AggregateCore for DatasketchesKLLAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "DatasketchesKLLAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::DatasketchesKLL
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
         None
+    }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        _key: &Option<crate::KeyByLabelValues>,
+        query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::SingleSubpopulationAggregate;
+        self.query(statistic, Some(query_kwargs))
     }
 }
 
@@ -266,9 +277,9 @@ mod tests {
     #[test]
     fn test_datasketches_kll_update() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
-        kll._update(10.0);
-        kll._update(20.0);
-        kll._update(15.0);
+        kll.update(10.0);
+        kll.update(20.0);
+        kll.update(15.0);
         assert_eq!(kll.inner.count(), 3);
     }
 
@@ -276,7 +287,7 @@ mod tests {
     fn test_datasketches_kll_quantile() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for i in 1..=10 {
-            kll._update(i as f64);
+            kll.update(i as f64);
         }
         assert_eq!(kll.get_quantile(0.0), 1.0);
         assert_eq!(kll.get_quantile(1.0), 10.0);
@@ -289,7 +300,7 @@ mod tests {
     fn test_datasketches_kll_query() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for i in 1..=10 {
-            kll._update(i as f64);
+            kll.update(i as f64);
         }
 
         let mut query_kwargs = HashMap::new();
@@ -310,10 +321,10 @@ mod tests {
         let mut kll2 = DatasketchesKLLAccumulator::new(200);
 
         for i in 1..=5 {
-            kll1._update(i as f64);
+            kll1.update(i as f64);
         }
         for i in 6..=10 {
-            kll2._update(i as f64);
+            kll2.update(i as f64);
         }
 
         let merged = DatasketchesKLLAccumulator::merge_accumulators(vec![kll1, kll2]).unwrap();
@@ -326,7 +337,7 @@ mod tests {
     fn test_datasketches_kll_serialization() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for i in 1..=5 {
-            kll._update(i as f64);
+            kll.update(i as f64);
         }
 
         let bytes = kll.serialize_to_bytes();
@@ -348,7 +359,7 @@ mod tests {
     #[test]
     fn test_trait_object() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
-        kll._update(5.0);
+        kll.update(5.0);
         let trait_obj: Box<dyn AggregateCore> = Box::new(kll);
         assert_eq!(trait_obj.type_name(), "DatasketchesKLLAccumulator");
     }
@@ -357,7 +368,7 @@ mod tests {
     fn test_datasketches_kll_query_with_kwargs() {
         let mut kll = DatasketchesKLLAccumulator::new(200);
         for i in 1..=10 {
-            kll._update(i as f64);
+            kll.update(i as f64);
         }
 
         let mut query_kwargs = HashMap::new();
@@ -411,13 +422,13 @@ mod tests {
         let mut kll3 = DatasketchesKLLAccumulator::new(200);
 
         for i in 1..=5 {
-            kll1._update(i as f64);
+            kll1.update(i as f64);
         }
         for i in 6..=10 {
-            kll2._update(i as f64);
+            kll2.update(i as f64);
         }
         for i in 11..=15 {
-            kll3._update(i as f64);
+            kll3.update(i as f64);
         }
 
         let boxed_accs: Vec<Box<dyn AggregateCore>> =

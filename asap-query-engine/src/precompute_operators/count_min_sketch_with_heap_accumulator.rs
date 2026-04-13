@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink,
 };
 use serde_json::Value;
 use sketch_core::count_min_with_heap::{CountMinSketchWithHeap, HeapItem};
@@ -171,12 +171,25 @@ impl AggregateCore for CountMinSketchWithHeapAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "CountMinSketchWithHeapAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::CountMinSketchWithHeap
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
         Some(self.get_topk_keys())
+    }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        key: &Option<crate::KeyByLabelValues>,
+        query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::MultipleSubpopulationAggregate;
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for CountMinSketchWithHeapAccumulator")?;
+        self.query(statistic, key_val, Some(query_kwargs))
     }
 }
 

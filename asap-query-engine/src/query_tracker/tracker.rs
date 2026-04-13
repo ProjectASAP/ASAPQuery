@@ -139,8 +139,8 @@ mod tests {
     use super::*;
     use crate::planner_client::PlannerResult;
     use anyhow::Result;
-    use sketch_db_common::inference_config::InferenceConfig;
-    use sketch_db_common::streaming_config::StreamingConfig;
+    use asap_types::inference_config::InferenceConfig;
+    use asap_types::streaming_config::StreamingConfig;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -163,8 +163,8 @@ mod tests {
             Ok(PlannerResult {
                 streaming_config: StreamingConfig::new(HashMap::new()),
                 inference_config: InferenceConfig::new(
-                    sketch_db_common::enums::QueryLanguage::promql,
-                    sketch_db_common::enums::CleanupPolicy::NoCleanup,
+                    asap_types::enums::QueryLanguage::promql,
+                    asap_types::enums::CleanupPolicy::NoCleanup,
                 ),
                 punted_queries: vec![],
             })

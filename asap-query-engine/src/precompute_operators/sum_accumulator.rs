@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, MergeableAccumulator, SerializableToSink, SingleSubpopulationAggregate,
-    SingleSubpopulationAggregateFactory,
+    AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
+    SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -114,12 +114,22 @@ impl AggregateCore for SumAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "SumAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::Sum
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
         None
+    }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        _key: &Option<crate::KeyByLabelValues>,
+        _query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::SingleSubpopulationAggregate;
+        self.query(statistic, None)
     }
 }
 

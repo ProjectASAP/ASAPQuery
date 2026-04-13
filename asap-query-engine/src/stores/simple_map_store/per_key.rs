@@ -1,4 +1,6 @@
-use crate::data_model::{AggregateCore, CleanupPolicy, PrecomputedOutput, StreamingConfig};
+use crate::data_model::{
+    AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
+};
 use crate::stores::simple_map_store::common::{
     EpochID, InternTable, MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange,
 };
@@ -183,6 +185,53 @@ impl SimpleMapStorePerKey {
         }
     }
 
+    /// Collect diagnostic info about store contents.
+    pub fn diagnostic_info(&self) -> super::StoreDiagnostics {
+        use super::{AggregationDiagnostic, StoreDiagnostics};
+
+        let mut per_aggregation = Vec::new();
+        let mut total_time_map_entries: usize = 0;
+        let total_sketch_bytes: usize = 0;
+
+        for entry in self.store.iter() {
+            let agg_id = *entry.key();
+            let data = match entry.value().read() {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            let time_map_len = data.current_epoch.window_count()
+                + data
+                    .sealed_epochs
+                    .values()
+                    .map(|e| e.distinct_window_count())
+                    .sum::<usize>();
+            let read_counts_len = data.read_counts.lock().map(|rc| rc.len()).unwrap_or(0);
+            total_time_map_entries += time_map_len;
+
+            let num_aggregate_objects = data.current_epoch.len()
+                + data
+                    .sealed_epochs
+                    .values()
+                    .map(|e| e.entries.len())
+                    .sum::<usize>();
+
+            per_aggregation.push(AggregationDiagnostic {
+                aggregation_id: agg_id,
+                time_map_len,
+                read_counts_len,
+                num_aggregate_objects,
+                sketch_bytes: 0, // skip serialization for diagnostics
+            });
+        }
+
+        StoreDiagnostics {
+            num_aggregations: self.store.len(),
+            total_time_map_entries,
+            total_sketch_bytes,
+            per_aggregation,
+        }
+    }
+
     fn cleanup_old_aggregates(
         &self,
         data: &mut StoreKeyData,
@@ -305,7 +354,7 @@ impl SimpleMapStorePerKey {
             .ok_or_else(|| format!("Aggregation config not found for {}", aggregation_id))?;
 
         // Configure epoch capacity on first insert (Optimization 2)
-        if aggregation_config.aggregation_type != "DeltaSetAggregator" {
+        if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
             data.configure_epochs(aggregation_config.num_aggregates_to_retain);
         }
 
@@ -319,7 +368,7 @@ impl SimpleMapStorePerKey {
                 .insert(metric_id, timestamp_range, Arc::from(precompute));
 
             // After each item, check if we should rotate (CircularBuffer, Optimization 2)
-            if aggregation_config.aggregation_type != "DeltaSetAggregator"
+            if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator
                 && matches!(self.cleanup_policy, CleanupPolicy::CircularBuffer)
             {
                 data.maybe_rotate_epoch();
@@ -327,7 +376,7 @@ impl SimpleMapStorePerKey {
         }
 
         // Apply retention policy if configured (but exclude DeltaSetAggregator)
-        if aggregation_config.aggregation_type != "DeltaSetAggregator" {
+        if aggregation_config.aggregation_type != AggregationType::DeltaSetAggregator {
             self.cleanup_old_aggregates(
                 &mut data,
                 metric,

@@ -6,6 +6,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::data_model::AggregationType;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
     use crate::tests::test_utilities::engine_factories::{
         create_engine_three_metrics, create_engine_two_metrics,
@@ -49,12 +50,12 @@ mod tests {
         let (data_errors, data_requests) = host_a_b_data(100.0, 200.0);
         let engine = create_engine_two_metrics(
             "errors_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_errors,
             "sum(errors_total) by (host)",
             "requests_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_requests,
             "sum(requests_total) by (host)",
@@ -85,12 +86,12 @@ mod tests {
         let (data_a, data_b) = host_a_b_data(3.0, 4.0);
         let engine = create_engine_two_metrics(
             "metric_a",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_a,
             "sum(metric_a) by (host)",
             "metric_b",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_b,
             "sum(metric_b) by (host)",
@@ -116,12 +117,12 @@ mod tests {
         let (data_a, data_b) = host_a_b_data(10.0, 20.0);
         let engine = create_engine_two_metrics(
             "metric_a",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_a,
             "sum(metric_a) by (host)",
             "metric_b",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_b,
             "sum(metric_b) by (host)",
@@ -147,12 +148,12 @@ mod tests {
         let (data_a, data_b) = host_a_b_data(50.0, 30.0);
         let engine = create_engine_two_metrics(
             "metric_a",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_a,
             "sum(metric_a) by (host)",
             "metric_b",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_b,
             "sum(metric_b) by (host)",
@@ -193,12 +194,12 @@ mod tests {
 
         let engine = create_engine_two_metrics(
             "errors_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_errors,
             "sum(errors_total) by (host)",
             "requests_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_requests,
             "sum(requests_total) by (host)",
@@ -229,13 +230,13 @@ mod tests {
         )];
         let engine = create_engine_two_metrics(
             "errors_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             "sum(errors_total) by (host)",
             // second metric not used but factory requires it; use empty data
             "dummy",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![],
             "sum(dummy) by (host)",
@@ -264,12 +265,12 @@ mod tests {
         )];
         let engine = create_engine_two_metrics(
             "success_total",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             "sum(success_total) by (host)",
             "dummy",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![],
             "sum(dummy) by (host)",
@@ -328,17 +329,17 @@ mod tests {
 
         let engine = create_engine_three_metrics(
             "metric_a",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_a,
             "sum(metric_a) by (host)",
             "metric_b",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_b,
             "sum(metric_b) by (host)",
             "metric_c",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data_c,
             "sum(metric_c) by (host)",

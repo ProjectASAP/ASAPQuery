@@ -10,6 +10,7 @@ use sketch_core::config::{self, ImplMode};
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
+use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
     HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
@@ -20,13 +21,13 @@ use query_engine_rust::{
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Kafka topic to consume from
+    /// Kafka topic to consume from (required when streaming-engine=arroyo)
     #[arg(long)]
-    kafka_topic: String,
+    kafka_topic: Option<String>,
 
-    /// Input format for Kafka messages
+    /// Input format for Kafka messages (required when streaming-engine=arroyo)
     #[arg(long, value_enum)]
-    input_format: InputFormat,
+    input_format: Option<InputFormat>,
 
     /// Configuration file path
     #[arg(long)]
@@ -37,7 +38,7 @@ struct Args {
     streaming_config: String,
 
     /// Streaming engine to use
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, default_value = "arroyo")]
     streaming_engine: StreamingEngine,
 
     /// Prometheus scrape interval in seconds
@@ -241,41 +242,54 @@ async fn main() -> Result<()> {
         args.query_language,
     ));
 
-    // Setup Kafka consumer (equivalent to Python's kafka_thread)
-    let kafka_config = KafkaConsumerConfig {
-        broker: args.kafka_broker.clone(),
-        topic: args.kafka_topic.clone(),
-        group_id: "query-engine-rust".to_string(),
-        auto_offset_reset: "beginning".to_string(),
-        input_format: args.input_format,
-        decompress_json: args.decompress_json,
-        batch_size: 1000,
-        poll_timeout_ms: 1000,
-        streaming_engine: args.streaming_engine.clone(),
-        dump_precomputes: args.dump_precomputes,
-        dump_output_dir: if args.dump_precomputes {
-            Some(args.output_dir.clone())
-        } else {
-            None
-        },
-    };
+    // Setup Kafka consumer (only when not using precompute engine as the streaming backend)
+    let kafka_handle = if args.streaming_engine == StreamingEngine::Precompute {
+        info!("Using precompute engine as streaming backend — skipping Kafka consumer");
+        None
+    } else {
+        let kafka_topic = args.kafka_topic.clone().unwrap_or_else(|| {
+            error!("--kafka-topic is required when --streaming-engine is not precompute");
+            std::process::exit(1);
+        });
+        let input_format = args.input_format.unwrap_or_else(|| {
+            error!("--input-format is required when --streaming-engine is not precompute");
+            std::process::exit(1);
+        });
+        let kafka_config = KafkaConsumerConfig {
+            broker: args.kafka_broker.clone(),
+            topic: kafka_topic.clone(),
+            group_id: "query-engine-rust".to_string(),
+            auto_offset_reset: "beginning".to_string(),
+            input_format,
+            decompress_json: args.decompress_json,
+            batch_size: 1000,
+            poll_timeout_ms: 1000,
+            streaming_engine: args.streaming_engine.clone(),
+            dump_precomputes: args.dump_precomputes,
+            dump_output_dir: if args.dump_precomputes {
+                Some(args.output_dir.clone())
+            } else {
+                None
+            },
+        };
 
-    let store_for_kafka = store.clone();
-    let kafka_consumer_result =
-        KafkaConsumer::new(kafka_config, store_for_kafka, streaming_config.clone());
-    let kafka_handle = match kafka_consumer_result {
-        Ok(mut consumer) => {
-            info!("Starting Kafka consumer for topic: {}", args.kafka_topic);
-            Some(tokio::spawn(async move {
-                if let Err(e) = consumer.run().await {
-                    error!("Kafka consumer error: {}", e);
-                }
-            }))
-        }
-        Err(e) => {
-            error!("Failed to create Kafka consumer: {}", e);
-            info!("Continuing without Kafka consumer");
-            None
+        let store_for_kafka = store.clone();
+        let kafka_consumer_result =
+            KafkaConsumer::new(kafka_config, store_for_kafka, streaming_config.clone());
+        match kafka_consumer_result {
+            Ok(mut consumer) => {
+                info!("Starting Kafka consumer for topic: {}", kafka_topic);
+                Some(tokio::spawn(async move {
+                    if let Err(e) = consumer.run().await {
+                        error!("Kafka consumer error: {}", e);
+                    }
+                }))
+            }
+            Err(e) => {
+                error!("Failed to create Kafka consumer: {}", e);
+                info!("Continuing without Kafka consumer");
+                None
+            }
         }
     };
 
@@ -300,7 +314,10 @@ async fn main() -> Result<()> {
     };
 
     // Setup precompute engine (replaces standalone Prometheus remote write server)
-    let precompute_handle = if args.enable_prometheus_remote_write {
+    // Automatically enable when using precompute streaming engine
+    let enable_precompute =
+        args.enable_prometheus_remote_write || args.streaming_engine == StreamingEngine::Precompute;
+    let precompute_handle = if enable_precompute {
         let precompute_config = PrecomputeEngineConfig {
             num_workers: args.precompute_num_workers,
             ingest_port: args.prometheus_remote_write_port,
@@ -315,16 +332,29 @@ async fn main() -> Result<()> {
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
         let engine =
             PrecomputeEngine::new(precompute_config, streaming_config.clone(), output_sink);
+        let worker_diagnostics = engine.diagnostics();
         info!(
             "Starting precompute engine on port {}",
             args.prometheus_remote_write_port
         );
+
+        // Spawn periodic memory diagnostics logger
+        let diag_store = store.clone();
+        tokio::spawn(async move {
+            spawn_memory_diagnostics(diag_store, Some(worker_diagnostics)).await;
+        });
+
         Some(tokio::spawn(async move {
             if let Err(e) = engine.run().await {
                 error!("Precompute engine error: {}", e);
             }
         }))
     } else {
+        // Even without precompute, log store diagnostics
+        let diag_store = store.clone();
+        tokio::spawn(async move {
+            spawn_memory_diagnostics(diag_store, None).await;
+        });
         None
     };
 
@@ -417,6 +447,59 @@ async fn main() -> Result<()> {
 
     info!("Shutdown complete");
     Ok(())
+}
+
+/// Periodic memory diagnostics logger — runs every 30 seconds.
+async fn spawn_memory_diagnostics(
+    store: Arc<SimpleMapStore>,
+    worker_diagnostics: Option<Arc<PrecomputeWorkerDiagnostics>>,
+) {
+    use std::sync::atomic::Ordering;
+
+    let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+
+        // 1. Store diagnostics
+        let store_diag = store.diagnostic_info();
+        info!(
+            "[MEMORY_DIAG] Store: {} aggregation(s), {} total time_map entries, {:.2} KB total sketch bytes",
+            store_diag.num_aggregations,
+            store_diag.total_time_map_entries,
+            store_diag.total_sketch_bytes as f64 / 1024.0,
+        );
+        for agg in &store_diag.per_aggregation {
+            info!(
+                "[MEMORY_DIAG]   agg_id={}: time_map_len={}, read_counts_len={}, aggregate_objects={}, sketch_bytes={:.2} KB",
+                agg.aggregation_id,
+                agg.time_map_len,
+                agg.read_counts_len,
+                agg.num_aggregate_objects,
+                agg.sketch_bytes as f64 / 1024.0,
+            );
+        }
+
+        // 2. Worker diagnostics (precompute engine only)
+        if let Some(ref diag) = worker_diagnostics {
+            let total_groups: usize = diag
+                .worker_group_counts
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .sum();
+            info!(
+                "[MEMORY_DIAG] PrecomputeEngine: {} total groups across {} workers",
+                total_groups,
+                diag.worker_group_counts.len(),
+            );
+            for (i, counter) in diag.worker_group_counts.iter().enumerate() {
+                info!(
+                    "[MEMORY_DIAG]   worker_{}: group_states_len={}",
+                    i,
+                    counter.load(Ordering::Relaxed),
+                );
+            }
+        }
+    }
 }
 
 fn setup_logging(

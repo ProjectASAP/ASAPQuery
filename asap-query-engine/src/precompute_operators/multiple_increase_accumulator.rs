@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, KeyByLabelValues, MergeableAccumulator, MultipleSubpopulationAggregate,
-    SerializableToSink, SingleSubpopulationAggregate,
+    AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
+    MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
 };
 use crate::precompute_operators::IncreaseAccumulator;
 use serde::{Deserialize, Serialize};
@@ -278,12 +278,25 @@ impl AggregateCore for MultipleIncreaseAccumulator {
         Ok(Box::new(merged))
     }
 
-    fn get_accumulator_type(&self) -> &'static str {
-        "MultipleIncreaseAccumulator"
+    fn get_accumulator_type(&self) -> AggregationType {
+        AggregationType::MultipleIncrease
     }
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
         Some(self.increases.keys().cloned().collect())
+    }
+
+    fn query_statistic(
+        &self,
+        statistic: promql_utilities::query_logics::enums::Statistic,
+        key: &Option<KeyByLabelValues>,
+        query_kwargs: &std::collections::HashMap<String, String>,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        use crate::data_model::MultipleSubpopulationAggregate;
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for MultipleIncreaseAccumulator")?;
+        self.query(statistic, key_val, Some(query_kwargs))
     }
 }
 

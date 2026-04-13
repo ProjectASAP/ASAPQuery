@@ -10,6 +10,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_model::{AggregationType, WindowType};
     use crate::precompute_operators::DatasketchesKLLAccumulator;
     use crate::tests::test_utilities::engine_factories::*;
 
@@ -46,12 +47,12 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -76,12 +77,12 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -113,12 +114,12 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -139,7 +140,7 @@ mod tests {
         for (i, &ts) in TEMPORAL_TIMESTAMPS.iter().enumerate() {
             let mut kll = DatasketchesKLLAccumulator::new(200);
             // Insert values 10, 20, 30, 40, 50 at successive timestamps
-            kll._update((i as f64 + 1.0) * 10.0);
+            kll.update((i as f64 + 1.0) * 10.0);
             data.push((
                 ts,
                 Some(vec!["host-a".to_string()]),
@@ -150,12 +151,12 @@ mod tests {
         let query = "quantile_over_time(0.5, latency[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "latency",
-            "DatasketchesKLLAccumulator",
+            AggregationType::DatasketchesKLL,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -188,12 +189,12 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -221,12 +222,12 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -242,7 +243,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -251,7 +252,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -266,7 +267,7 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -275,7 +276,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -319,12 +320,12 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -371,12 +372,12 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -406,7 +407,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -415,7 +416,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -434,7 +435,7 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![(
                 1_000_000,
@@ -443,7 +444,7 @@ mod tests {
             )],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let context = engine
@@ -462,12 +463,12 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             vec![],
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         let results = execute_new_plan(&engine, query, QUERY_TIME).await;
@@ -498,12 +499,12 @@ mod tests {
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         assert_old_new_match(&engine, query, QUERY_TIME).await;
@@ -528,12 +529,12 @@ mod tests {
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
-            "SumAccumulator",
+            AggregationType::Sum,
             vec!["host"],
             data,
             query,
             5,
-            "tumbling",
+            WindowType::Tumbling,
         );
 
         assert_old_new_match(&engine, query, QUERY_TIME).await;

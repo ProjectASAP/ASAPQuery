@@ -7,10 +7,25 @@ use xxhash_rust::xxh64::xxh64;
 /// A message sent from the router to a worker.
 #[derive(Debug)]
 pub enum WorkerMessage {
-    /// A batch of samples for the same series.
-    Samples {
+    /// A batch of samples for the same series, routed by series key.
+    /// Used in `pass_raw_samples` mode where no aggregation is needed.
+    RawSamples {
         series_key: String,
         samples: Vec<(i64, f64)>, // (timestamp_ms, value)
+        ingest_received_at: Instant,
+    },
+    /// A batch of samples destined for a specific aggregation group.
+    /// All samples share the same (agg_id, group_key) and are fed into
+    /// a single shared accumulator (like Arroyo's GROUP BY).
+    GroupSamples {
+        agg_id: u64,
+        /// Grouping label values joined by semicolons (e.g. "constant").
+        /// Empty string if the aggregation has no grouping labels.
+        group_key: String,
+        /// Each entry: (series_key, timestamp_ms, value).
+        /// series_key is needed for keyed (MultipleSubpopulation) accumulators
+        /// to extract the aggregated-label key.
+        samples: Vec<(String, i64, f64)>,
         ingest_received_at: Instant,
     },
     /// Signal the worker to flush/check idle windows.
@@ -19,8 +34,7 @@ pub enum WorkerMessage {
     Shutdown,
 }
 
-/// Routes incoming samples to one of N workers based on a consistent hash
-/// of the series label string.
+/// Routes incoming samples to one of N workers based on a consistent hash.
 pub struct SeriesRouter {
     senders: Vec<mpsc::Sender<WorkerMessage>>,
     num_workers: usize,
@@ -35,46 +49,26 @@ impl SeriesRouter {
         }
     }
 
-    /// Route a batch of samples for one series to the appropriate worker.
-    pub async fn route(
-        &self,
-        series_key: &str,
-        samples: Vec<(i64, f64)>,
-        ingest_received_at: Instant,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let worker_idx = self.worker_for(series_key);
-        self.senders[worker_idx]
-            .send(WorkerMessage::Samples {
-                series_key: series_key.to_string(),
-                samples,
-                ingest_received_at,
-            })
-            .await
-            .map_err(|e| format!("Failed to send to worker {}: {}", worker_idx, e))?;
-        Ok(())
-    }
-
-    /// Route a pre-grouped batch of series to workers concurrently.
+    /// Route a pre-grouped batch of group messages to workers concurrently.
     ///
-    /// Groups messages by target worker, then sends to each worker in parallel
-    /// (messages within a single worker are sent sequentially to preserve ordering).
-    pub async fn route_batch(
+    /// Each `GroupSamples` message is routed by `hash(agg_id, group_key)`.
+    /// Messages within a single worker are sent sequentially to preserve ordering.
+    pub async fn route_group_batch(
         &self,
-        by_series: HashMap<String, Vec<(i64, f64)>>,
-        ingest_received_at: Instant,
+        messages: Vec<WorkerMessage>,
+        _ingest_received_at: Instant,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Group messages by target worker index
         let mut per_worker: HashMap<usize, Vec<WorkerMessage>> = HashMap::new();
-        for (series_key, samples) in by_series {
-            let worker_idx = self.worker_for(&series_key);
-            per_worker
-                .entry(worker_idx)
-                .or_default()
-                .push(WorkerMessage::Samples {
-                    series_key,
-                    samples,
-                    ingest_received_at,
-                });
+        for msg in messages {
+            let worker_idx = match &msg {
+                WorkerMessage::GroupSamples {
+                    agg_id, group_key, ..
+                } => self.worker_for_group(*agg_id, group_key),
+                WorkerMessage::RawSamples { series_key, .. } => self.worker_for(series_key),
+                _ => 0,
+            };
+            per_worker.entry(worker_idx).or_default().push(msg);
         }
 
         // Send to each worker concurrently
@@ -120,7 +114,16 @@ impl SeriesRouter {
         Ok(())
     }
 
-    /// Determine which worker handles a given series key.
+    /// Determine which worker handles a given group key.
+    fn worker_for_group(&self, agg_id: u64, group_key: &str) -> usize {
+        // Hash both agg_id and group_key together for consistent routing
+        let mut hash_input = agg_id.to_le_bytes().to_vec();
+        hash_input.extend_from_slice(group_key.as_bytes());
+        let hash = xxh64(&hash_input, 0);
+        (hash as usize) % self.num_workers
+    }
+
+    /// Determine which worker handles a given series key (for raw mode).
     fn worker_for(&self, series_key: &str) -> usize {
         let hash = xxh64(series_key.as_bytes(), 0);
         (hash as usize) % self.num_workers
@@ -132,8 +135,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_consistent_routing() {
-        // Build a router with dummy senders (we only test the hash logic)
+    fn test_consistent_group_routing() {
+        let (senders, _receivers): (Vec<_>, Vec<_>) =
+            (0..4).map(|_| mpsc::channel::<WorkerMessage>(10)).unzip();
+
+        let router = SeriesRouter::new(senders);
+
+        // Same (agg_id, group_key) should always go to the same worker
+        let w1 = router.worker_for_group(1, "constant");
+        let w2 = router.worker_for_group(1, "constant");
+        assert_eq!(w1, w2);
+
+        // Different group keys may go to different workers
+        let _ = router.worker_for_group(1, "sine");
+        assert!(router.worker_for_group(1, "linear-up") < 4);
+
+        // Different agg_ids with same group key may go to different workers
+        let _ = router.worker_for_group(2, "constant");
+        assert!(router.worker_for_group(2, "constant") < 4);
+    }
+
+    #[test]
+    fn test_raw_mode_routing() {
         let (senders, _receivers): (Vec<_>, Vec<_>) =
             (0..4).map(|_| mpsc::channel::<WorkerMessage>(10)).unzip();
 
@@ -143,10 +166,6 @@ mod tests {
         let w1 = router.worker_for("cpu{host=\"a\"}");
         let w2 = router.worker_for("cpu{host=\"a\"}");
         assert_eq!(w1, w2);
-
-        // Different keys may go to different workers (probabilistic, but verifiable)
-        let _ = router.worker_for("cpu{host=\"b\"}");
-        // Just ensure no panic and result is in range
         assert!(router.worker_for("mem{host=\"a\"}") < 4);
     }
 }

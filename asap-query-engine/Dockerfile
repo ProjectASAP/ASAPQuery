@@ -31,6 +31,7 @@ RUN mkdir -p asap-query-engine/src/bin \
     && echo "fn main() {}" > asap-query-engine/src/bin/precompute_engine.rs \
     && echo "fn main() {}" > asap-query-engine/src/bin/test_e2e_precompute.rs \
     && echo "fn main() {}" > asap-query-engine/src/bin/bench_precompute_sketch.rs \
+    && echo "fn main() {}" > asap-query-engine/src/bin/e2e_quickstart_resource_test.rs \
     && mkdir -p asap-query-engine/benches && echo "fn main() {}" > asap-query-engine/benches/simple_store_bench.rs \
     && mkdir -p asap-planner-rs/src && echo "fn main() {}" > asap-planner-rs/src/main.rs \
     && echo "pub fn placeholder() {}" >> asap-planner-rs/src/lib.rs

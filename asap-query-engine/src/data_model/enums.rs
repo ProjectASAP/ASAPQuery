@@ -4,12 +4,14 @@ pub enum InputFormat {
     Byte,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
 pub enum StreamingEngine {
     Arroyo,
+    Precompute,
 }
 
-pub use sketch_db_common::enums::{CleanupPolicy, QueryLanguage};
+pub use asap_types::enums::{CleanupPolicy, QueryLanguage, WindowType};
+pub use promql_utilities::query_logics::enums::AggregationType;
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
 pub enum QueryProtocol {

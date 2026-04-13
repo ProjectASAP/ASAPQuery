@@ -14,7 +14,7 @@
 use datafusion::logical_expr::LogicalPlan;
 use datafusion_summary_library::{PrecomputedSummaryRead, SummaryInfer, SummaryMergeMultiple};
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::Statistic;
+use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 use query_engine_rust::data_model::AggregationIdInfo;
 use query_engine_rust::engines::simple_engine::{
     QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
@@ -33,8 +33,8 @@ fn build_context(
     query_output_labels: Vec<&str>,
     grouping_labels: Vec<&str>,
     aggregated_labels: Vec<&str>,
-    agg_type_value: &str,
-    agg_type_key: &str,
+    agg_type_value: AggregationType,
+    agg_type_key: AggregationType,
     agg_id_value: u64,
     agg_id_key: u64,
     keys_query: Option<StoreQueryParams>,
@@ -64,8 +64,8 @@ fn build_context(
         agg_info: AggregationIdInfo {
             aggregation_id_for_key: agg_id_key,
             aggregation_id_for_value: agg_id_value,
-            aggregation_type_for_key: agg_type_key.to_string(),
-            aggregation_type_for_value: agg_type_value.to_string(),
+            aggregation_type_for_key: agg_type_key,
+            aggregation_type_for_value: agg_type_value,
         },
         do_merge,
         spatial_filter: String::new(),
@@ -235,11 +235,11 @@ fn build_all_test_cases() -> Vec<TestCase> {
         context: build_context(
             metric,
             Statistic::Sum,
-            vec!["host"],     // query_output_labels
-            vec!["host"],     // grouping_labels (store GROUP BY)
-            vec![],           // aggregated_labels (none)
-            "SumAccumulator", // value accumulator
-            "SumAccumulator", // key accumulator (same = single)
+            vec!["host"],         // query_output_labels
+            vec!["host"],         // grouping_labels (store GROUP BY)
+            vec![],               // aggregated_labels (none)
+            AggregationType::Sum, // value accumulator
+            AggregationType::Sum, // key accumulator (same = single)
             42,
             42,    // same agg_id
             None,  // no keys_query
@@ -264,8 +264,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host"], // query_output_labels
             vec![],       // grouping_labels (no store grouping)
             vec!["host"], // aggregated_labels (host tracked internally)
-            "MultipleSumAccumulator",
-            "MultipleSumAccumulator", // same type = single agg_id
+            AggregationType::MultipleSum,
+            AggregationType::MultipleSum, // same type = single agg_id
             42,
             42,
             None,
@@ -289,8 +289,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host"],
             vec![],       // grouping_labels (no store grouping)
             vec!["host"], // aggregated_labels
-            "CountMinSketch",
-            "DeltaSetAggregator",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
             42,
             99, // different agg_ids
             Some(make_keys_query(metric, 99)),
@@ -320,8 +320,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host"],
             vec!["host"],
             vec![],
-            "KLL",
-            "KLL",
+            AggregationType::DatasketchesKLL,
+            AggregationType::DatasketchesKLL,
             42,
             42,
             None,
@@ -344,8 +344,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host"],
             vec![],       // no store grouping
             vec!["host"], // host tracked internally
-            "HydraKLL",
-            "DeltaSetAggregator",
+            AggregationType::HydraKLL,
+            AggregationType::DeltaSetAggregator,
             42,
             99,
             Some(make_keys_query(metric, 99)),
@@ -373,8 +373,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host", "service", "region"],
             vec!["host", "service", "region"],
             vec![],
-            "SumAccumulator",
-            "SumAccumulator",
+            AggregationType::Sum,
+            AggregationType::Sum,
             42,
             42,
             None,
@@ -397,8 +397,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host", "service", "region"],
             vec!["host"],              // store groups by host only
             vec!["service", "region"], // rest tracked internally
-            "MultipleSumAccumulator",
-            "MultipleSumAccumulator",
+            AggregationType::MultipleSum,
+            AggregationType::MultipleSum,
             42,
             42,
             None,
@@ -422,8 +422,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host", "service", "region"],
             vec!["host"],
             vec!["service", "region"],
-            "CountMinSketch",
-            "DeltaSetAggregator",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
             42,
             99,
             Some(make_keys_query(metric, 99)),
@@ -451,8 +451,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host", "service", "region"],
             vec!["host", "service", "region"],
             vec![],
-            "KLL",
-            "KLL",
+            AggregationType::DatasketchesKLL,
+            AggregationType::DatasketchesKLL,
             42,
             42,
             None,
@@ -477,8 +477,8 @@ fn build_all_test_cases() -> Vec<TestCase> {
             vec!["host", "service", "region"],
             vec!["host"],
             vec!["service", "region"],
-            "HydraKLL",
-            "DeltaSetAggregator",
+            AggregationType::HydraKLL,
+            AggregationType::DeltaSetAggregator,
             42,
             99,
             Some(make_keys_query(metric, 99)),

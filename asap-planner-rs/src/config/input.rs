@@ -1,6 +1,7 @@
+use asap_types::enums::CleanupPolicy;
+use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
 use serde::Deserialize;
-use sketch_db_common::PromQLSchema;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -58,7 +59,7 @@ pub struct MetricDefinition {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AggregateCleanupConfig {
-    pub policy: Option<String>,
+    pub policy: Option<CleanupPolicy>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

@@ -12,7 +12,7 @@ name = "asap-planner"
 path = "src/main.rs"
 
 [dependencies]
-sketch_db_common.workspace = true
+asap_types.workspace = true
 promql_utilities.workspace = true
 sql_utilities.workspace = true
 sqlparser = "0.59.0"

@@ -2,9 +2,9 @@ use std::collections::HashSet;
 use std::thread;
 use std::time::Duration;
 
+use asap_types::PromQLSchema;
 use promql_parser::parser::Expr;
 use promql_utilities::data_model::KeyByLabelNames;
-use sketch_db_common::PromQLSchema;
 use tracing::{debug, warn};
 
 use crate::error::ControllerError;
