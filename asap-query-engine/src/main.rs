@@ -330,19 +330,17 @@ async fn main() -> Result<()> {
 
     //info!("=== TEMPORARY: Using ClickHouse HTTP adapter ===");
     //info!("ClickHouse endpoint will be available at: /clickhouse/query");
-    //info!("ClickHouse fallback URL: http://localhost:8123/?database=default");
-
-    //let adapter_config = AdapterConfig::clickhouse_sql(
-    //    "http://localhost:8123".to_string(), // ClickHouse server URL
-    //    "default".to_string(),               // Database name
-    //    true,                                // Always forward (fallback for every query)
-    //);
-
-    // Original Prometheus config (commented out temporarily):
-    let adapter_config = AdapterConfig::prometheus_promql(
-        args.prometheus_server.clone(),
-        args.forward_unsupported_queries,
+    let adapter_config = AdapterConfig::clickhouse_sql(
+        "http://localhost:8123".to_string(),
+        "default".to_string(),
+        true,
     );
+
+    // Prometheus config (commented out):
+    // let adapter_config = AdapterConfig::prometheus_promql(
+    //     args.prometheus_server.clone(),
+    //     args.forward_unsupported_queries,
+    // );
 
     let http_config = HttpServerConfig {
         port: args.http_port,

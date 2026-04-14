@@ -31,6 +31,7 @@ use promql_utilities::query_logics::parsing::{
 use sql_utilities::ast_matching::QueryType;
 use sql_utilities::ast_matching::{SQLPatternMatcher, SQLPatternParser, SQLQuery};
 use sql_utilities::sqlhelper::{AggregationInfo, SQLQueryData};
+use sqlparser::ast::{OrderByKind, SelectItem, SetExpr, Statement};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
 
@@ -41,6 +42,18 @@ use elastic_dsl_utilities::types::{EsDslQueryPattern, GroupBySpec, MetricAggType
 
 // Type alias for merged outputs (single aggregate per key after merging)
 type MergedOutputsMap = HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SqlOrderByTarget {
+    Value,
+    Label(usize),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SqlOrderBySpec {
+    target: SqlOrderByTarget,
+    asc: bool,
+}
 
 /// Metadata extracted from a query, independent of query language
 #[derive(Debug, Clone)]
@@ -1539,6 +1552,134 @@ impl SimpleEngine {
             .collect()
     }
 
+    fn extract_sql_value_alias(statement: &Statement) -> Option<String> {
+        let Statement::Query(query) = statement else {
+            return None;
+        };
+
+        let SetExpr::Select(select) = query.body.as_ref() else {
+            return None;
+        };
+
+        for item in &select.projection {
+            if let SelectItem::ExprWithAlias {
+                expr: sqlparser::ast::Expr::Function(_),
+                alias,
+            } = item
+            {
+                return Some(alias.value.clone());
+            }
+        }
+
+        None
+    }
+
+    fn parse_sql_order_by_spec(query: &str, query_output_labels: &KeyByLabelNames) -> Option<SqlOrderBySpec> {
+        let statements = parser::parse_sql(&GenericDialect {}, query).ok()?;
+        let statement = statements.first()?;
+        let Statement::Query(parsed_query) = statement else {
+            return None;
+        };
+
+        let order_by = parsed_query.order_by.as_ref()?;
+        let order_exprs = match &order_by.kind {
+            OrderByKind::Expressions(exprs) => exprs,
+            _ => return None,
+        };
+
+        let first_order_expr = order_exprs.first()?;
+        let asc = first_order_expr.options.asc.unwrap_or(true);
+        let value_alias = Self::extract_sql_value_alias(statement);
+
+        let target = match &first_order_expr.expr {
+            sqlparser::ast::Expr::Identifier(ident) => {
+                if let Some(idx) = query_output_labels
+                    .labels
+                    .iter()
+                    .position(|label| label == &ident.value)
+                {
+                    SqlOrderByTarget::Label(idx)
+                } else if value_alias
+                    .as_ref()
+                    .map(|alias| alias.eq_ignore_ascii_case(&ident.value))
+                    .unwrap_or(false)
+                    || ident.value.eq_ignore_ascii_case("value")
+                {
+                    SqlOrderByTarget::Value
+                } else {
+                    return None;
+                }
+            }
+            sqlparser::ast::Expr::CompoundIdentifier(idents) => {
+                let last = idents.last()?.value.as_str();
+                if let Some(idx) = query_output_labels
+                    .labels
+                    .iter()
+                    .position(|label| label.eq_ignore_ascii_case(last))
+                {
+                    SqlOrderByTarget::Label(idx)
+                } else if value_alias
+                    .as_ref()
+                    .map(|alias| alias.eq_ignore_ascii_case(last))
+                    .unwrap_or(false)
+                    || last.eq_ignore_ascii_case("value")
+                {
+                    SqlOrderByTarget::Value
+                } else {
+                    return None;
+                }
+            }
+            sqlparser::ast::Expr::Function(_) => SqlOrderByTarget::Value,
+            sqlparser::ast::Expr::Value(v) => match &v.value {
+                sqlparser::ast::Value::Number(pos, _) => {
+                    let position = pos.parse::<usize>().ok()?;
+                    if position == 0 {
+                        return None;
+                    }
+                    if position <= query_output_labels.labels.len() {
+                        SqlOrderByTarget::Label(position - 1)
+                    } else if position == query_output_labels.labels.len() + 1 {
+                        SqlOrderByTarget::Value
+                    } else {
+                        return None;
+                    }
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+
+        Some(SqlOrderBySpec { target, asc })
+    }
+
+    pub(crate) fn apply_sql_order_by(
+        mut results: Vec<InstantVectorElement>,
+        query_output_labels: &KeyByLabelNames,
+        query: &str,
+    ) -> Vec<InstantVectorElement> {
+        let Some(spec) = Self::parse_sql_order_by_spec(query, query_output_labels) else {
+            return results;
+        };
+
+        results.sort_by(|a, b| match &spec.target {
+            SqlOrderByTarget::Value => a
+                .value
+                .partial_cmp(&b.value)
+                .unwrap_or(std::cmp::Ordering::Equal),
+            SqlOrderByTarget::Label(idx) => {
+                let a_label = a.labels.labels.get(*idx).map(String::as_str).unwrap_or("");
+                let b_label = b.labels.labels.get(*idx).map(String::as_str).unwrap_or("");
+                a_label.cmp(b_label)
+            }
+        });
+
+        if !spec.asc {
+            results.reverse();
+        }
+
+        results
+    }
+
     fn sql_get_is_collapsable(
         &self,
         temporal_aggregation: &AggregationInfo,
@@ -1714,7 +1855,7 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let context = self.build_query_execution_context_sql(query, time)?;
+        let context = self.build_query_execution_context_sql(query.clone(), time)?;
         // Execute complete query pipeline
         let results = self
             .execute_query_pipeline(&context, false) // SQL: topk disabled
@@ -1724,9 +1865,12 @@ impl SimpleEngine {
             })
             .ok()?;
 
+        let ordered_results =
+            Self::apply_sql_order_by(results, &context.metadata.query_output_labels, &query);
+
         Some((
             context.metadata.query_output_labels,
-            QueryResult::vector(results, context.query_time),
+            QueryResult::vector(ordered_results, context.query_time),
         ))
     }
 

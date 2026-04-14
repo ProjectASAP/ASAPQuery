@@ -6,9 +6,10 @@
 #[cfg(test)]
 mod tests {
     use crate::data_model::{
-        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig, KeyByLabelValues,
         QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
     };
+    use crate::engines::query_result::InstantVectorElement;
     use crate::engines::simple_engine::SimpleEngine;
     use crate::stores::simple_map_store::SimpleMapStore;
     use promql_utilities::data_model::KeyByLabelNames;
@@ -190,6 +191,57 @@ mod tests {
             context.is_none(),
             "Expected build_query_execution_context_sql to return None for a query that doesn't match the template, got Some."
         );
+    }
+
+    #[test]
+    fn test_sql_order_by_value_desc_applies_result_sorting() {
+        let labels = KeyByLabelNames::new(vec!["srcip".to_string()]);
+        let query = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY transfer_events DESC";
+        let results = vec![
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.2".to_string()]),
+                3.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]),
+                9.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.3".to_string()]),
+                5.0,
+            ),
+        ];
+
+        let ordered = SimpleEngine::apply_sql_order_by(results, &labels, query);
+        let values: Vec<f64> = ordered.iter().map(|e| e.value).collect();
+        assert_eq!(values, vec![9.0, 5.0, 3.0]);
+    }
+
+    #[test]
+    fn test_sql_order_by_label_asc_applies_result_sorting() {
+        let labels = KeyByLabelNames::new(vec!["srcip".to_string()]);
+        let query = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY srcip ASC";
+        let results = vec![
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.2".to_string()]),
+                3.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]),
+                9.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.3".to_string()]),
+                5.0,
+            ),
+        ];
+
+        let ordered = SimpleEngine::apply_sql_order_by(results, &labels, query);
+        let keys: Vec<String> = ordered
+            .iter()
+            .map(|e| e.labels.labels.first().cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(keys, vec!["10.0.0.1", "10.0.0.2", "10.0.0.3"]);
     }
 
 }

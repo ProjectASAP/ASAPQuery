@@ -97,7 +97,6 @@ impl SQLPatternParser {
                 || select.prewhere.is_some()
                 || !select.cluster_by.is_empty()
                 || !select.distribute_by.is_empty()
-                || !select.sort_by.is_empty()
                 || select.having.is_some()
                 || !select.named_window.is_empty()
                 || select.window_before_qualify

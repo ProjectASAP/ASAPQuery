@@ -80,6 +80,15 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_order_by_with_grouped_count_is_accepted() {
+        check_query(
+            "SELECT L1, COUNT(value) AS c FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1 ORDER BY c DESC",
+            vec![QueryType::SpatioTemporal],
+            None,
+        );
+    }
+
     // ── Basic smoke tests ────────────────────────────────────────────────────
 
     #[test]
