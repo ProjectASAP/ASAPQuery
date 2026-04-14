@@ -1680,6 +1680,46 @@ impl SimpleEngine {
         results
     }
 
+    fn parse_sql_limit(query: &str) -> Option<usize> {
+        let statements = parser::parse_sql(&GenericDialect {}, query).ok()?;
+        let statement = statements.first()?;
+        let Statement::Query(parsed_query) = statement else {
+            return None;
+        };
+
+        let limit_clause = parsed_query.limit_clause.as_ref()?;
+        match limit_clause {
+            sqlparser::ast::LimitClause::LimitOffset {
+                limit,
+                offset: _,
+                limit_by: _,
+            } => match limit {
+                Some(sqlparser::ast::Expr::Value(v)) => match &v.value {
+                    sqlparser::ast::Value::Number(n, _) => n.parse::<usize>().ok(),
+                    _ => None,
+                },
+                _ => None,
+            },
+            sqlparser::ast::LimitClause::OffsetCommaLimit { offset: _, limit } => match limit {
+                sqlparser::ast::Expr::Value(v) => match &v.value {
+                    sqlparser::ast::Value::Number(n, _) => n.parse::<usize>().ok(),
+                    _ => None,
+                },
+                _ => None,
+            },
+        }
+    }
+
+    pub(crate) fn apply_sql_limit(
+        mut results: Vec<InstantVectorElement>,
+        query: &str,
+    ) -> Vec<InstantVectorElement> {
+        if let Some(limit) = Self::parse_sql_limit(query) {
+            results.truncate(limit);
+        }
+        results
+    }
+
     fn sql_get_is_collapsable(
         &self,
         temporal_aggregation: &AggregationInfo,
@@ -1867,10 +1907,11 @@ impl SimpleEngine {
 
         let ordered_results =
             Self::apply_sql_order_by(results, &context.metadata.query_output_labels, &query);
+        let final_results = Self::apply_sql_limit(ordered_results, &query);
 
         Some((
             context.metadata.query_output_labels,
-            QueryResult::vector(ordered_results, context.query_time),
+            QueryResult::vector(final_results, context.query_time),
         ))
     }
 

@@ -244,4 +244,54 @@ mod tests {
         assert_eq!(keys, vec!["10.0.0.1", "10.0.0.2", "10.0.0.3"]);
     }
 
+    #[test]
+    fn test_sql_limit_truncates_results() {
+        let query = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip LIMIT 2";
+        let results = vec![
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.2".to_string()]),
+                3.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]),
+                9.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.3".to_string()]),
+                5.0,
+            ),
+        ];
+
+        let limited = SimpleEngine::apply_sql_limit(results, query);
+        assert_eq!(limited.len(), 2);
+    }
+
+    #[test]
+    fn test_sql_order_by_then_limit_matches_topk_shape() {
+        let labels = KeyByLabelNames::new(vec!["srcip".to_string()]);
+        let query = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY transfer_events DESC LIMIT 2";
+        let results = vec![
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.2".to_string()]),
+                3.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]),
+                9.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec!["10.0.0.3".to_string()]),
+                5.0,
+            ),
+        ];
+
+        let ordered = SimpleEngine::apply_sql_order_by(results, &labels, query);
+        let top2 = SimpleEngine::apply_sql_limit(ordered, query);
+        let keys: Vec<String> = top2
+            .iter()
+            .map(|e| e.labels.labels.first().cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(keys, vec!["10.0.0.1", "10.0.0.3"]);
+    }
+
 }
