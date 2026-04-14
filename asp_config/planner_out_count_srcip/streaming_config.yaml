@@ -1,0 +1,49 @@
+aggregations:
+- aggregationId: 1
+  aggregationSubType: ''
+  aggregationType: DeltaSetAggregator
+  labels:
+    aggregated:
+    - srcip
+    grouping: []
+    rollup:
+    - dstip
+    - proto
+  metric: netflow_table
+  parameters: {}
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: pkt_len
+  windowSize: 1
+  windowType: tumbling
+- aggregationId: 2
+  aggregationSubType: count
+  aggregationType: CountMinSketch
+  labels:
+    aggregated:
+    - srcip
+    grouping: []
+    rollup:
+    - dstip
+    - proto
+  metric: netflow_table
+  parameters:
+    depth: 3
+    width: 1024
+    _impl_mode: Sketchlib
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: pkt_len
+  windowSize: 1
+  windowType: tumbling
+tables:
+- name: netflow_table
+  time_column: time
+  value_columns:
+  - pkt_len
+  metadata_columns:
+  - srcip
+  - dstip
+  - proto

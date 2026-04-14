@@ -1,0 +1,16 @@
+cleanup_policy:
+  name: no_cleanup
+queries:
+- aggregations:
+  - aggregation_id: 1
+  - aggregation_id: 2
+  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
+tables:
+- name: netflow_table
+  time_column: time
+  value_columns:
+  - pkt_len
+  metadata_columns:
+  - srcip
+  - dstip
+  - proto
