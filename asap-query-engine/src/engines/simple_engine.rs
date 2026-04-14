@@ -395,14 +395,18 @@ impl SimpleEngine {
     ) -> u64 {
         match query_pattern_type {
             QueryPatternType::OnlyTemporal => {
-                let scrape_intervals =
-                    match_result.query_data[0].time_info.clone().get_duration() as u64;
-                end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000)
+                let window_ms = (match_result.query_data[0].time_info.get_duration()
+                    * self.prometheus_scrape_interval as f64
+                    * 1000.0)
+                    .round() as u64;
+                end_timestamp.saturating_sub(window_ms)
             }
             QueryPatternType::OneTemporalOneSpatial => {
-                let scrape_intervals =
-                    match_result.query_data[1].time_info.clone().get_duration() as u64;
-                end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000)
+                let window_ms = (match_result.query_data[1].time_info.get_duration()
+                    * self.prometheus_scrape_interval as f64
+                    * 1000.0)
+                    .round() as u64;
+                end_timestamp.saturating_sub(window_ms)
             }
             QueryPatternType::OnlySpatial => {
                 end_timestamp - (self.prometheus_scrape_interval * 1000)
@@ -485,7 +489,7 @@ impl SimpleEngine {
         match_result
             .query_data
             .first()
-            .map(|data| data.aggregation_info.get_args()[0].to_string())
+            .and_then(|data| data.aggregation_info.get_args().first().map(|s| s.to_string()))
     }
 
     /// Extracts topk k parameter from PromQL match result
@@ -551,7 +555,6 @@ impl SimpleEngine {
                 .ok_or_else(|| "Missing quantile parameter for quantile query".to_string())?;
             query_kwargs.insert("quantile".to_string(), quantile);
         }
-        // Note: SQL doesn't support topk limiting yet
 
         Ok(query_kwargs)
     }
@@ -1620,13 +1623,13 @@ impl SimpleEngine {
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
             QueryPatternType::OnlyTemporal => {
-                let scrape_intervals = query_data.time_info.clone().get_duration() as u64;
-                Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
+                let window_ms = (query_data.time_info.get_duration() * 1000.0).round() as u64;
+                Some(window_ms)
             }
             QueryPatternType::OneTemporalOneSpatial => {
-                let scrape_intervals =
-                    match_result.query_data[1].time_info.clone().get_duration() as u64;
-                Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
+                let window_ms =
+                    (match_result.query_data[1].time_info.get_duration() * 1000.0).round() as u64;
+                Some(window_ms)
             }
         };
 
@@ -2028,9 +2031,11 @@ impl SimpleEngine {
         // Calculate timestamps - similar to OnlyTemporal
         let end_timestamp =
             self.validate_and_align_end_timestamp(query_time, QueryPatternType::OnlyTemporal);
-        let scrape_intervals = match_result.query_data[0].time_info.get_duration() as u64;
-        let start_timestamp =
-            end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000);
+        let window_ms = (match_result.query_data[0].time_info.get_duration()
+            * self.prometheus_scrape_interval as f64
+            * 1000.0)
+            .round() as u64;
+        let start_timestamp = end_timestamp.saturating_sub(window_ms);
 
         let timestamps = QueryTimestamps {
             start_timestamp,

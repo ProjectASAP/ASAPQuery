@@ -174,17 +174,18 @@ impl SQLPatternMatcher {
                     ));
                 }
 
+                // Wall-clock span in units of prometheus scrape interval (ratio, not seconds).
                 let scrape_duration = time_info.get_duration();
                 scraped_intervals = scrape_duration / self.scrape_interval;
 
-                if scraped_intervals < self.scrape_interval {
+                if scraped_intervals < 1.0 {
                     println!("Returned QueryError::SpatialDurationSmall");
 
                     return Err((
                         QueryError::SpatialDurationSmall,
                         format!(
-                            "scrape duration {} less than one interval {}",
-                            scraped_intervals, self.scrape_interval
+                            "query time span {:.4} is shorter than one scrape interval ({:.4} s)",
+                            scrape_duration, self.scrape_interval
                         ),
                     ));
                 }
@@ -216,7 +217,8 @@ impl SQLPatternMatcher {
 
         let mut sql_query = SQLQuery::new(Vec::new(), None, None);
 
-        for (i, (metric, aggregation_info, scrape_duration, labels, time_info)) in
+        // Third tuple field is `wall_seconds / scrape_interval` (how many scrape steps).
+        for (i, (metric, aggregation_info, scrape_steps, labels, time_info)) in
             query_data.iter().enumerate()
         {
             if i < query_data.len() - 1 {
@@ -233,7 +235,7 @@ impl SQLPatternMatcher {
                 // Last query
                 // let time_info = TimeInfo::new("time".to_string(), *start, *scrape_duration);
 
-                if (scrape_duration - self.scrape_interval).abs() < f64::EPSILON {
+                if (scrape_steps - 1.0).abs() < f64::EPSILON {
                     sql_query.add_subquery(
                         QueryType::Spatial,
                         aggregation_info.clone(),
@@ -241,7 +243,7 @@ impl SQLPatternMatcher {
                         labels.clone(),
                         time_info.clone(),
                     );
-                } else if *scrape_duration > self.scrape_interval {
+                } else if *scrape_steps > 1.0 {
                     // Check if labels match all metadata columns
                     let has_all_labels = self
                         .schema

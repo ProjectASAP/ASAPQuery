@@ -60,6 +60,26 @@ mod tests {
         assert_eq!(result.error, expected_error);
     }
 
+    /// Multi-column SELECT: GROUP BY keys repeated as bare identifiers + one aggregate (ClickHouse style).
+    #[test]
+    fn test_multi_column_select_quantile_matches_single_aggregate_semantics() {
+        let sql = "\
+            SELECT L1, L2, L3, L4, quantile(0.99)(value) AS p99 \
+            FROM cpu_usage \
+            WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+            GROUP BY L1, L2, L3, L4";
+        let q = parse_sql_query(sql).expect("multi-column quantile should parse");
+        assert_eq!(q.metric, "cpu_usage");
+        assert_eq!(q.aggregation_info.get_name(), "QUANTILE");
+        assert_eq!(
+            q.labels,
+            HashSet::from_iter(
+                ["L1", "L2", "L3", "L4"]
+                    .map(|s| s.to_string())
+            )
+        );
+    }
+
     // ── Basic smoke tests ────────────────────────────────────────────────────
 
     #[test]

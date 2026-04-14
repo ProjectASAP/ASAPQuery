@@ -191,4 +191,5 @@ mod tests {
             "Expected build_query_execution_context_sql to return None for a query that doesn't match the template, got Some."
         );
     }
+
 }

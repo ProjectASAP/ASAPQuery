@@ -83,9 +83,8 @@ impl SQLPatternParser {
     fn parse_select(&self, select: &Select) -> Option<SQLQueryData> {
         let (metric, has_subquery) = self.get_metric(select)?;
 
-        let aggregation = self.get_aggregation(select)?;
-
         let group_bys = self.get_groupbys(select)?;
+        let aggregation = self.get_aggregation(select, &group_bys)?;
 
         if !has_subquery {
             let time_info = self.get_time_info(select, &metric)?;
@@ -119,8 +118,9 @@ impl SQLPatternParser {
             let subquery = match &select.from[0].relation {
                 TableFactor::Derived { subquery, .. } => match subquery.body.as_ref() {
                     SetExpr::Select(inner_select) => {
-                        let inner_aggregation = self.get_aggregation(inner_select)?;
                         let inner_group_bys = self.get_groupbys(inner_select)?;
+                        let inner_aggregation =
+                            self.get_aggregation(inner_select, &inner_group_bys)?;
                         let time_info = self.get_time_info(inner_select, &metric)?;
 
                         Some(Box::new(SQLQueryData {
@@ -205,89 +205,130 @@ impl SQLPatternParser {
         }
     }
 
-    fn get_aggregation(&self, select: &Select) -> Option<AggregationInfo> {
-        if select.projection.len() != 1 {
-            return None;
-        }
+    /// Parses `func(...)` into `AggregationInfo` (SUM, COUNT, QUANTILE, etc.).
+    fn try_parse_aggregation_function(&self, func: &Function) -> Option<AggregationInfo> {
+        let name = func.name.to_string().to_uppercase();
 
-        match &select.projection[0] {
-            SelectItem::UnnamedExpr(Expr::Function(func))
-            | SelectItem::ExprWithAlias {
-                expr: Expr::Function(func),
-                ..
-            } => {
-                let name = func.name.to_string().to_uppercase();
+        let args = self.get_quantile_args(func);
 
-                let args = self.get_quantile_args(func);
-
-                // Get the column being aggregated
-                let col = match &func.args {
-                    FunctionArguments::None => return None,
-                    FunctionArguments::Subquery(_) => return None,
-                    FunctionArguments::List(func_args) => {
-                        if name == "QUANTILE" {
-                            if let FunctionArguments::List(params) = &func.parameters {
-                                if !params.args.is_empty() {
-                                    // ClickHouse parametric syntax: quantile(0.95)(column)
-                                    // Column is the sole argument in func.args.
-                                    match func_args.args.first() {
-                                        Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(
-                                            Expr::Identifier(ident),
-                                        ))) => ident.value.clone(),
-                                        _ => return None,
-                                    }
-                                } else {
-                                    return None;
-                                }
-                            } else {
-                                // ASAP syntax: QUANTILE(0.95, value) - column is second argument
-                                if func_args.args.len() < 2 {
-                                    return None;
-                                }
-                                match &func_args.args[1] {
-                                    FunctionArg::Unnamed(FunctionArgExpr::Expr(
-                                        Expr::Identifier(ident),
-                                    )) => ident.value.clone(),
-                                    _ => return None,
-                                }
-                            }
-                        } else if name == "PERCENTILE" {
-                            // PERCENTILE(value, 95) - column is first argument
-                            if func_args.args.is_empty() {
-                                return None;
-                            }
-                            match &func_args.args[0] {
-                                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(
-                                    ident,
+        // Get the column being aggregated
+        let col = match &func.args {
+            FunctionArguments::None => return None,
+            FunctionArguments::Subquery(_) => return None,
+            FunctionArguments::List(func_args) => {
+                if name == "QUANTILE" {
+                    if let FunctionArguments::List(params) = &func.parameters {
+                        if !params.args.is_empty() {
+                            // ClickHouse parametric syntax: quantile(0.95)(column)
+                            match func_args.args.first() {
+                                Some(FunctionArg::Unnamed(FunctionArgExpr::Expr(
+                                    Expr::Identifier(ident),
                                 ))) => ident.value.clone(),
                                 _ => return None,
                             }
                         } else {
-                            // For other aggregations - column is first argument
-                            if func_args.args.is_empty() {
-                                return None;
-                            }
-                            match &func_args.args[0] {
-                                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(
-                                    ident,
-                                ))) => ident.value.clone(),
-                                _ => return None,
-                            }
+                            return None;
+                        }
+                    } else {
+                        // ASAP syntax: QUANTILE(0.95, value) - column is second argument
+                        if func_args.args.len() < 2 {
+                            return None;
+                        }
+                        match &func_args.args[1] {
+                            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(
+                                ident,
+                            ))) => ident.value.clone(),
+                            _ => return None,
                         }
                     }
-                };
-
-                // Always store PERCENTILE as QUANTILE internally
-                let normalized_name = if name == "PERCENTILE" {
-                    "QUANTILE".to_string()
+                } else if name == "PERCENTILE" {
+                    if func_args.args.is_empty() {
+                        return None;
+                    }
+                    match &func_args.args[0] {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                            ident.value.clone()
+                        }
+                        _ => return None,
+                    }
                 } else {
-                    name
-                };
-
-                Some(AggregationInfo::new(normalized_name, col, args))
+                    if func_args.args.is_empty() {
+                        return None;
+                    }
+                    match &func_args.args[0] {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                            ident.value.clone()
+                        }
+                        _ => return None,
+                    }
+                }
             }
-            _ => None,
+        };
+
+        let normalized_name = if name == "PERCENTILE" {
+            "QUANTILE".to_string()
+        } else {
+            name
+        };
+
+        Some(AggregationInfo::new(normalized_name, col, args))
+    }
+
+    /// Single aggregate in `SELECT`, or grouping columns (identifiers) plus exactly one aggregate.
+    /// In the multi-column form, bare identifiers must match `GROUP BY` exactly as a set.
+    fn get_aggregation(
+        &self,
+        select: &Select,
+        group_bys: &HashSet<String>,
+    ) -> Option<AggregationInfo> {
+        if select.projection.is_empty() {
+            return None;
         }
+
+        if select.projection.len() == 1 {
+            return match &select.projection[0] {
+                SelectItem::UnnamedExpr(Expr::Function(func))
+                | SelectItem::ExprWithAlias {
+                    expr: Expr::Function(func),
+                    ..
+                } => self.try_parse_aggregation_function(func),
+                _ => None,
+            };
+        }
+
+        let mut agg: Option<AggregationInfo> = None;
+        let mut key_cols: HashSet<String> = HashSet::new();
+
+        for item in &select.projection {
+            match item {
+                SelectItem::UnnamedExpr(Expr::Function(func))
+                | SelectItem::ExprWithAlias {
+                    expr: Expr::Function(func),
+                    ..
+                } => {
+                    let parsed = self.try_parse_aggregation_function(func)?;
+                    if agg.replace(parsed).is_some() {
+                        return None;
+                    }
+                }
+                SelectItem::UnnamedExpr(Expr::Identifier(ident)) => {
+                    key_cols.insert(ident.value.clone());
+                }
+                SelectItem::ExprWithAlias {
+                    expr: Expr::Identifier(ident),
+                    ..
+                } => {
+                    key_cols.insert(ident.value.clone());
+                }
+                _ => return None,
+            }
+        }
+
+        let agg = agg?;
+        if &key_cols != group_bys {
+            return None;
+        }
+        Some(agg)
     }
 
     fn get_metric(&self, select: &Select) -> Option<(String, bool)> {
