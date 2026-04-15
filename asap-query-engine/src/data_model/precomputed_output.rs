@@ -232,6 +232,7 @@ impl PrecomputedOutput {
 
         let precompute = Self::create_precompute_from_bytes(
             config.aggregation_type,
+            &config.aggregation_sub_type,
             Vec::as_slice(&precompute_bytes),
         )?;
 
@@ -363,6 +364,7 @@ impl PrecomputedOutput {
     /// Factory method to create precompute accumulator from bytes
     fn create_precompute_from_bytes(
         precompute_type: AggregationType,
+        aggregation_sub_type: &str,
         buffer: &[u8],
     ) -> Result<Box<dyn crate::data_model::AggregateCore>, Box<dyn std::error::Error + Send + Sync>>
     {
@@ -390,11 +392,15 @@ impl PrecomputedOutput {
                 Ok(Box::new(accumulator))
             }
             AggregationType::MultipleMinMax => {
-                let accumulator =
-                    MultipleMinMaxAccumulator::deserialize_from_bytes(buffer, "min".to_string())
-                        .map_err(|e| {
-                            format!("Failed to deserialize MultipleMinMaxAccumulator: {e}")
-                        })?;
+                let sub_type = if aggregation_sub_type.eq_ignore_ascii_case("max") {
+                    "max".to_string()
+                } else {
+                    "min".to_string()
+                };
+                let accumulator = MultipleMinMaxAccumulator::deserialize_from_bytes_arroyo(
+                    buffer, sub_type,
+                )
+                .map_err(|e| format!("Failed to deserialize MultipleMinMaxAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
             AggregationType::MultipleIncrease => {

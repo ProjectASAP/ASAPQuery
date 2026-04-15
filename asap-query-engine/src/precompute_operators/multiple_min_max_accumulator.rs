@@ -156,6 +156,44 @@ impl MultipleMinMaxAccumulator {
 
         Ok(Self { values, sub_type })
     }
+
+    /// Deserialize from Arroyo-compatible format (MessagePack HashMap<String, f64>)
+    pub fn deserialize_from_bytes_arroyo(
+        buffer: &[u8],
+        sub_type: String,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        if sub_type != "min" && sub_type != "max" {
+            return Err("sub_type must be 'min' or 'max'".into());
+        }
+
+        let precompute: HashMap<String, f64> = rmp_serde::from_slice(buffer).map_err(|e| {
+            format!("Failed to deserialize MultipleMinMaxAccumulator from MessagePack: {e}")
+        })?;
+
+        let mut values = HashMap::new();
+        for (key_str, value) in precompute {
+            let key_values: Vec<String> = key_str.split(';').map(|s| s.to_string()).collect();
+            let key = KeyByLabelValues::new_with_labels(key_values);
+            values.insert(key, value);
+        }
+
+        Ok(Self { values, sub_type })
+    }
+
+    /// Serialize to Arroyo-compatible format (MessagePack HashMap<String, f64>)
+    pub fn serialize_to_bytes_arroyo(&self) -> Vec<u8> {
+        let per_key_storage: HashMap<String, f64> = self
+            .values
+            .iter()
+            .map(|(key, &value)| (key.labels.join(";"), value))
+            .collect();
+
+        let mut buf = Vec::new();
+        per_key_storage
+            .serialize(&mut rmp_serde::Serializer::new(&mut buf))
+            .expect("Failed to serialize MultipleMinMaxAccumulator to MessagePack");
+        buf
+    }
 }
 
 impl SerializableToSink for MultipleMinMaxAccumulator {
@@ -453,6 +491,21 @@ mod tests {
             MultipleMinMaxAccumulator::deserialize_from_bytes(&bytes, "min".to_string()).unwrap();
         assert_eq!(deserialized_bytes.values.get(&key), Some(&42.5));
         assert_eq!(deserialized_bytes.sub_type, "min");
+    }
+
+    #[test]
+    fn test_multiple_min_max_accumulator_arroyo_msgpack_roundtrip_max() {
+        let mut acc = MultipleMinMaxAccumulator::new_max();
+        let key = KeyByLabelValues::new_with_labels(vec!["1.2.3.4".to_string()]);
+        acc.add_value(key.clone(), 1500.0);
+
+        let bytes = acc.serialize_to_bytes_arroyo();
+        let deserialized =
+            MultipleMinMaxAccumulator::deserialize_from_bytes_arroyo(&bytes, "max".to_string())
+                .unwrap();
+
+        assert_eq!(deserialized.values.get(&key), Some(&1500.0));
+        assert_eq!(deserialized.sub_type, "max");
     }
 
     #[test]

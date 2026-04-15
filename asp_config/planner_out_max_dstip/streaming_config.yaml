@@ -1,0 +1,28 @@
+aggregations:
+- aggregationId: 31
+  aggregationSubType: max
+  aggregationType: MultipleMinMax
+  labels:
+    aggregated:
+    - dstip
+    grouping: []
+    rollup:
+    - proto
+    - srcip
+  metric: netflow_table
+  parameters: {}
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: pkt_len
+  windowSize: 1
+  windowType: tumbling
+tables:
+- name: netflow_table
+  time_column: time
+  value_columns:
+  - pkt_len
+  metadata_columns:
+  - srcip
+  - dstip
+  - proto
