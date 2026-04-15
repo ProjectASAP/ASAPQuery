@@ -159,6 +159,21 @@ pub struct SimpleEngine {
 }
 
 impl SimpleEngine {
+    fn sql_aggregation_statistics(aggregation_info: &AggregationInfo) -> Vec<Statistic> {
+        let name = aggregation_info.get_name().to_lowercase();
+        if name == "count"
+            && aggregation_info
+                .get_args()
+                .iter()
+                .any(|arg| arg.eq_ignore_ascii_case("distinct"))
+        {
+            return vec![Statistic::Cardinality];
+        }
+        name.parse::<AggregationOperator>()
+            .map(|o| o.to_statistics())
+            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", name))
+    }
+
     pub fn new(
         store: Arc<dyn Store>,
         // promsketch_store: Option<Arc<PromSketchStore>>,
@@ -1788,18 +1803,12 @@ impl SimpleEngine {
         let query_data = &match_result.query_data[0];
         let metric = query_data.metric.clone();
 
-        let statistic_name = match query_pattern_type {
-            QueryPatternType::OneTemporalOneSpatial => match_result.query_data[1]
-                .aggregation_info
-                .get_name()
-                .to_lowercase(),
-            _ => query_data.aggregation_info.get_name().to_lowercase(),
+        let statistics = match query_pattern_type {
+            QueryPatternType::OneTemporalOneSpatial => {
+                Self::sql_aggregation_statistics(&match_result.query_data[1].aggregation_info)
+            }
+            _ => Self::sql_aggregation_statistics(&query_data.aggregation_info),
         };
-
-        let statistics: Vec<Statistic> = statistic_name
-            .parse::<AggregationOperator>()
-            .map(|o| o.to_statistics())
-            .unwrap_or_default();
 
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
@@ -2039,34 +2048,17 @@ impl SimpleEngine {
         };
 
         // Statistic - determine based on query pattern type
-        let statistic_name = match query_pattern_type {
+        let statistics_to_compute = match query_pattern_type {
             QueryPatternType::OnlyTemporal => {
-                // Use the temporal aggregation (first subquery)
-                match_result.query_data[0]
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
+                Self::sql_aggregation_statistics(&match_result.query_data[0].aggregation_info)
             }
             QueryPatternType::OneTemporalOneSpatial => {
-                // Use the temporal aggregation (second subquery contains temporal)
-                match_result.query_data[1]
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
+                Self::sql_aggregation_statistics(&match_result.query_data[1].aggregation_info)
             }
             QueryPatternType::OnlySpatial => {
-                // Use the spatial aggregation (first subquery)
-                match_result.query_data[0]
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
+                Self::sql_aggregation_statistics(&match_result.query_data[0].aggregation_info)
             }
         };
-
-        let statistics_to_compute: Vec<Statistic> = statistic_name
-            .parse::<AggregationOperator>()
-            .map(|o| o.to_statistics())
-            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
 
         if statistics_to_compute.len() != 1 {
             warn!(
@@ -2180,15 +2172,8 @@ impl SimpleEngine {
         );
 
         // Get the statistic from the aggregation
-        let statistic_name = match_result.query_data[0]
-            .aggregation_info
-            .get_name()
-            .to_lowercase();
-
-        let statistics_to_compute: Vec<Statistic> = statistic_name
-            .parse::<AggregationOperator>()
-            .map(|o| o.to_statistics())
-            .unwrap_or_else(|_| panic!("Unsupported statistic: {}", statistic_name));
+        let statistics_to_compute =
+            Self::sql_aggregation_statistics(&match_result.query_data[0].aggregation_info);
 
         if statistics_to_compute.len() != 1 {
             warn!(
@@ -3241,6 +3226,19 @@ impl SimpleEngine {
         let mut unformatted_results = HashMap::new();
 
         for (key, precompute) in merged_outputs {
+            // SetAggregator stores an internal set (e.g., distinct dstip values).
+            // For cardinality queries we must keep the *outer* grouping key
+            // (e.g., srcip), not iterate internal set keys.
+            if *statistic == Statistic::Cardinality
+                && precompute.get_accumulator_type() == AggregationType::SetAggregator
+            {
+                let value = self
+                    .query_precompute_for_statistic(precompute.as_ref(), statistic, &None, query_kwargs)
+                    .map_err(|e| format!("Query failed: {}", e))?;
+                unformatted_results.insert(key.clone(), value);
+                continue;
+            }
+
             if let Some(unwrapped_keys) = precompute.get_keys() {
                 let keys_to_process = if enable_topk_limiting {
                     self.limit_keys_for_topk(unwrapped_keys, statistic, query_kwargs)?
@@ -3432,7 +3430,10 @@ impl SimpleEngine {
             }
             AggregationType::SetAggregator => {
                 if let Some(set_acc) = precompute.as_any().downcast_ref::<crate::precompute_operators::set_aggregator_accumulator::SetAggregatorAccumulator>() {
-                    if let Some(key_val) = key {
+                    if *statistic == Statistic::Cardinality {
+                        // COUNT(DISTINCT ...) is represented by SetAggregator; cardinality is set size.
+                        Ok(set_acc.added.len() as f64)
+                    } else if let Some(key_val) = key {
                         use crate::data_model::MultipleSubpopulationAggregate;
                         set_acc.query(*statistic, key_val, Some(query_kwargs))
                     } else {

@@ -442,6 +442,11 @@ impl PrecomputedOutput {
                 .map_err(|e| format!("Failed to deserialize DeltaSetAggregatorAccumulator: {e}"))?;
                 Ok(Box::new(accumulator))
             }
+            AggregationType::SetAggregator => {
+                let accumulator = SetAggregatorAccumulator::deserialize_from_bytes_arroyo(buffer)
+                    .map_err(|e| format!("Failed to deserialize SetAggregatorAccumulator: {e}"))?;
+                Ok(Box::new(accumulator))
+            }
             _ => Err(format!("Unknown precompute type: {precompute_type:?}").into()),
         }
     }
@@ -618,3 +623,30 @@ impl SerializableToSink for PrecomputedOutput {
 //         assert_eq!(deserialized_accumulator.sum, 42.5);
 //     }
 // }
+
+#[cfg(test)]
+mod tests {
+    use super::PrecomputedOutput;
+    use crate::data_model::AggregationType;
+    use crate::data_model::KeyByLabelValues;
+    use crate::precompute_operators::set_aggregator_accumulator::SetAggregatorAccumulator;
+
+    #[test]
+    fn create_precompute_from_bytes_supports_set_aggregator_arroyo() {
+        let mut acc = SetAggregatorAccumulator::new();
+        acc.add_key(KeyByLabelValues::new_with_labels(vec![
+            "src-1".to_string(),
+            "dst-1".to_string(),
+        ]));
+        let bytes = acc.serialize_to_bytes_arroyo();
+
+        let restored = PrecomputedOutput::create_precompute_from_bytes(
+            AggregationType::SetAggregator,
+            "",
+            &bytes,
+        )
+        .expect("SetAggregator should deserialize from Arroyo bytes");
+
+        assert_eq!(restored.get_accumulator_type(), AggregationType::SetAggregator);
+    }
+}

@@ -909,6 +909,14 @@ def main(args):
         # Choose appropriate SQL template
         if streaming_aggregation_config.aggregationType == "deltasetaggregator":
             sql_template = deltasetaggregator_sql_template
+        elif (
+            streaming_aggregation_config.aggregationType == "setaggregator"
+            and query_language == "sql"
+        ):
+            # SQL COUNT(DISTINCT value_column) must feed value_column into SetAggregator.
+            # The labels template ignores value_column and produces setaggregator_(''),
+            # which collapses cardinality to 1 per group.
+            sql_template = value_only_sql_template
         elif is_labels_accumulator:
             sql_template = labels_sql_template
         elif is_value_only_aggregation:

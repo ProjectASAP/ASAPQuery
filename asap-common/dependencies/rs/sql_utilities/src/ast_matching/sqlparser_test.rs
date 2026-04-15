@@ -89,6 +89,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_count_distinct_marks_distinct_arg() {
+        let q = parse_sql_query(
+            "SELECT L1, COUNT(DISTINCT value) AS distinct_values FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1",
+        )
+        .expect("count distinct should parse");
+        assert_eq!(q.aggregation_info.get_name(), "COUNT");
+        assert!(
+            q.aggregation_info
+                .get_args()
+                .iter()
+                .any(|arg| arg.eq_ignore_ascii_case("distinct")),
+            "COUNT(DISTINCT ...) should carry a distinct marker in AggregationInfo args",
+        );
+    }
+
     // ── Basic smoke tests ────────────────────────────────────────────────────
 
     #[test]

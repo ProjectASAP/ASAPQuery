@@ -13,6 +13,7 @@ mod tests {
     use crate::engines::simple_engine::SimpleEngine;
     use crate::stores::simple_map_store::SimpleMapStore;
     use promql_utilities::data_model::KeyByLabelNames;
+    use promql_utilities::query_logics::enums::Statistic;
     use sql_utilities::sqlhelper::{SQLSchema, Table};
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -292,6 +293,20 @@ mod tests {
             .map(|e| e.labels.labels.first().cloned().unwrap_or_default())
             .collect();
         assert_eq!(keys, vec!["10.0.0.1", "10.0.0.3"]);
+    }
+
+    #[test]
+    fn test_count_distinct_query_matches_now_template() {
+        let template = "SELECT L1, COUNT(DISTINCT value) AS unique_values FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1";
+        let engine = build_sql_engine(template, 1, 10);
+
+        let incoming = "SELECT L1, COUNT(DISTINCT value) AS unique_values FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1";
+        let query_time = 1727740810.0_f64;
+
+        let context = engine.build_query_execution_context_sql(incoming.to_string(), query_time);
+        assert!(context.is_some(), "COUNT(DISTINCT ...) SQL query should match template");
+        let context = context.unwrap();
+        assert_eq!(context.metadata.statistic_to_compute, Statistic::Cardinality);
     }
 
 }

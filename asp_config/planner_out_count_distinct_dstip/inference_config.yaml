@@ -1,0 +1,28 @@
+cleanup_policy:
+  name: no_cleanup
+queries:
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+tables:
+- name: netflow_table
+  time_column: time
+  value_columns:
+  - pkt_len
+  - dstip
+  metadata_columns:
+  - srcip
+  - dstip
+  - proto

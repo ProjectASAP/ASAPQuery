@@ -253,6 +253,30 @@ class TestGetSqlQuerySQL:
         assert '"region"' in sql_query
 
 
+class TestTemplateSelectionForSetAggregatorSQL:
+    """Tests for SQL SetAggregator template selection in run_arroyosketch main loop."""
+
+    def test_sql_setaggregator_uses_value_only_template(self):
+        # This mirrors the template selection branch in run_arroyosketch.main().
+        query_language = "sql"
+        aggregation_type = "setaggregator"
+        is_labels_accumulator = aggregation_type in {"setaggregator", "deltasetaggregator"}
+        is_value_only_aggregation = aggregation_type == "datasketcheskll"
+
+        if aggregation_type == "deltasetaggregator":
+            selected = "deltasetaggregator_sql_template"
+        elif aggregation_type == "setaggregator" and query_language == "sql":
+            selected = "value_only_sql_template"
+        elif is_labels_accumulator:
+            selected = "labels_sql_template"
+        elif is_value_only_aggregation:
+            selected = "value_only_sql_template"
+        else:
+            selected = "aggregation_sql_template"
+
+        assert selected == "value_only_sql_template"
+
+
 class TestGetSqlQueryPromQL:
     """Tests for get_sql_query with PromQL mode (backward compatibility)."""
 

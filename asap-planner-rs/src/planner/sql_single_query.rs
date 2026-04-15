@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
-use sql_utilities::ast_matching::sqlhelper::Table;
+use sql_utilities::ast_matching::sqlhelper::{AggregationInfo, Table};
 use sql_utilities::ast_matching::sqlpattern_matcher::{QueryType, SQLPatternMatcher};
 use sql_utilities::ast_matching::sqlpattern_parser::SQLPatternParser;
 use sql_utilities::ast_matching::SQLSchema;
@@ -108,7 +108,7 @@ impl SQLSingleQueryProcessor {
         let rollup = all_metadata.difference(&spatial_output);
 
         let treatment_type = get_sql_treatment_type(agg_info.get_name());
-        let statistics = get_sql_statistics(agg_info.get_name())?;
+        let statistics = get_sql_statistics(agg_info)?;
 
         let configs = build_agg_configs_for_statistics(
             &statistics,
@@ -171,11 +171,22 @@ fn get_sql_treatment_type(name: &str) -> QueryTreatmentType {
     }
 }
 
-fn get_sql_statistics(name: &str) -> Result<Vec<Statistic>, ControllerError> {
+fn get_sql_statistics(agg_info: &AggregationInfo) -> Result<Vec<Statistic>, ControllerError> {
+    let name = agg_info.get_name();
     match name.to_uppercase().as_str() {
         "QUANTILE" => Ok(vec![Statistic::Quantile]),
         "SUM" => Ok(vec![Statistic::Sum]),
-        "COUNT" => Ok(vec![Statistic::Count]),
+        "COUNT" => {
+            if agg_info
+                .get_args()
+                .iter()
+                .any(|arg| arg.eq_ignore_ascii_case("distinct"))
+            {
+                Ok(vec![Statistic::Cardinality])
+            } else {
+                Ok(vec![Statistic::Count])
+            }
+        }
         "AVG" => Ok(vec![Statistic::Sum, Statistic::Count]),
         "MIN" => Ok(vec![Statistic::Min]),
         "MAX" => Ok(vec![Statistic::Max]),
@@ -211,4 +222,21 @@ fn get_all_metadata_columns(
         .find(|t| t.name == table_name)
         .ok_or_else(|| ControllerError::UnknownTable(table_name.to_string()))?;
     Ok(KeyByLabelNames::new(table.metadata_columns.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sql_utilities::ast_matching::sqlhelper::AggregationInfo;
+
+    #[test]
+    fn sql_statistics_count_distinct_maps_to_cardinality() {
+        let agg = AggregationInfo::new(
+            "COUNT".to_string(),
+            "dstip".to_string(),
+            vec!["distinct".to_string()],
+        );
+        let stats = get_sql_statistics(&agg).expect("COUNT(DISTINCT) should be supported");
+        assert_eq!(stats, vec![Statistic::Cardinality]);
+    }
 }

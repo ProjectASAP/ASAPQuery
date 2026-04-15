@@ -208,7 +208,18 @@ impl SQLPatternParser {
     fn try_parse_aggregation_function(&self, func: &Function) -> Option<AggregationInfo> {
         let name = func.name.to_string().to_uppercase();
 
-        let args = self.get_quantile_args(func);
+        let mut args = self.get_quantile_args(func);
+        let is_distinct = matches!(
+            &func.args,
+            FunctionArguments::List(func_args)
+                if matches!(
+                    func_args.duplicate_treatment,
+                    Some(DuplicateTreatment::Distinct)
+                )
+        );
+        if is_distinct && name == "COUNT" {
+            args.push("distinct".to_string());
+        }
 
         // Get the column being aggregated
         let col = match &func.args {
