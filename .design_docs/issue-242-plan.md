@@ -88,7 +88,7 @@ Currently `run()` creates channels and workers internally and consumes `self`, m
 ```rust
 pub struct PrecomputeEngineHandle {
     worker_senders: Vec<mpsc::Sender<WorkerMessage>>,
-    ingest_agg_configs: Arc<RwLock<Vec<Arc<AggregationConfig>>>>,
+    ingest_agg_configs: Arc<ArcSwap<Vec<Arc<AggregationConfig>>>>,
 }
 
 impl PrecomputeEngineHandle {
@@ -102,7 +102,8 @@ impl PrecomputeEngineHandle {
         let agg_configs_vec: Vec<Arc<AggregationConfig>> =
             agg_configs_map.values().cloned().collect();
 
-        *self.ingest_agg_configs.write().await = agg_configs_vec;
+        // Lock-free atomic swap — ingest handler readers see new configs immediately
+        self.ingest_agg_configs.store(Arc::new(agg_configs_vec));
 
         for sender in &self.worker_senders {
             let _ = sender
@@ -125,10 +126,19 @@ impl PrecomputeEngineHandle {
 agg_configs: Vec<Arc<AggregationConfig>>,
 
 // After
-agg_configs: Arc<RwLock<Vec<Arc<AggregationConfig>>>>,
+agg_configs: ArcSwap<Vec<Arc<AggregationConfig>>>,
 ```
 
-The ingest handler acquires a read lock per request to match incoming samples against aggregation configs.
+`IngestState` is behind `Arc<IngestState>` (immutable), so `agg_configs` needs interior mutability. `ArcSwap` is used because the ingest handler reads `agg_configs` on the hot path (once per request, iterates over all configs per sample). `ArcSwap::load()` is lock-free for readers; the applier does a single atomic pointer swap via `ArcSwap::store()`.
+
+```rust
+// Reading (hot path, per request):
+let configs = state.agg_configs.load();
+for config in configs.iter() { ... }
+
+// Writing (once, from PrecomputeEngineHandle::update_streaming_config):
+self.ingest_agg_configs.store(Arc::new(new_vec));
+```
 
 ---
 
@@ -148,12 +158,14 @@ Workers lazily create `WindowManager` instances the first time they see a new `a
 
 ### 7. `engines/simple_engine/mod.rs` — `SimpleEngine`
 
+`SimpleEngine` is already behind `Arc` at the call site, so no extra `Arc` wrapper is needed on the field — just a `RwLock` for interior mutability.
+
 ```rust
 // Before
 inference_config: InferenceConfig,
 
 // After
-inference_config: Arc<RwLock<InferenceConfig>>,
+inference_config: RwLock<InferenceConfig>,
 ```
 
 Add update method:
@@ -170,20 +182,29 @@ pub fn update_inference_config(&self, new_config: InferenceConfig) {
 
 ### 8. `stores/simple_map_store/*.rs` — `SimpleMapStore` (all variants)
 
+The store variants are behind `Arc` at the call site. The `RwLock` goes around the `Arc<StreamingConfig>` (not around the config itself) so that readers briefly lock to clone the Arc pointer, then use it without holding the lock during lookups.
+
 ```rust
 // Before
 streaming_config: Arc<StreamingConfig>,
 
 // After
-streaming_config: Arc<RwLock<StreamingConfig>>,
+streaming_config: RwLock<Arc<StreamingConfig>>,
 ```
 
 Add update method on the store trait and each implementation:
 
 ```rust
 pub fn update_streaming_config(&self, new_config: StreamingConfig) {
-    *self.streaming_config.write().unwrap() = new_config;
+    *self.streaming_config.write().unwrap() = Arc::new(new_config);
 }
+```
+
+Readers clone the Arc cheaply under a brief shared lock, then look up aggregation configs from it without holding the lock:
+
+```rust
+let config = self.streaming_config.read().unwrap().clone();
+config.get_aggregation_config(aggregation_id)
 ```
 
 > **NOTE:** Precomputed data for aggregations removed by the new config is not purged immediately. It expires naturally via the existing cleanup policy. If immediate purge is ever needed, `update_streaming_config` is the right place to add it.
@@ -237,8 +258,8 @@ tokio::spawn(async move {
 | `query_tracker/tracker.rs` | Add config refs, `AtomicBool`, accept watch sender in `start_background_loop` |
 | `precompute_engine/series_router.rs` | Add `UpdateAggConfigs` variant to `WorkerMessage` |
 | `precompute_engine/engine.rs` | Move channel creation to `new()`, add `PrecomputeEngineHandle`, expose `handle()` |
-| `precompute_engine/ingest_handler.rs` | `agg_configs: Arc<RwLock<Vec<...>>>` |
+| `precompute_engine/ingest_handler.rs` | `agg_configs: ArcSwap<Vec<...>>` (lock-free reads on hot path) |
 | `precompute_engine/worker.rs` | Handle `UpdateAggConfigs` message |
-| `engines/simple_engine/mod.rs` | `Arc<RwLock<InferenceConfig>>`, add `update_inference_config` |
-| `stores/simple_map_store/*.rs` | `Arc<RwLock<StreamingConfig>>`, add `update_streaming_config` |
+| `engines/simple_engine/mod.rs` | `RwLock<InferenceConfig>`, add `update_inference_config` |
+| `stores/simple_map_store/*.rs` | `RwLock<Arc<StreamingConfig>>`, add `update_streaming_config` |
 | `main.rs` | Wire watch channel, spawn applier task |

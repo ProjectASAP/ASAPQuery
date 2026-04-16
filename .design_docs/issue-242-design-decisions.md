@@ -57,7 +57,7 @@ After exploring the codebase:
 
 **Option B — Start with empty configs, hot-swap internals:**
 - Start all components immediately with empty `streaming_config` / `inference_config`.
-- After planning, update shared state in-place: push new `agg_configs` to workers via message, update `IngestState` via `RwLock`, update `SimpleEngine` and `SimpleMapStore` via `RwLock`.
+- After planning, update shared state in-place: push new `agg_configs` to workers via message, swap `IngestState.agg_configs` via `ArcSwap`, update `SimpleEngine` and `SimpleMapStore` via `RwLock`.
 - Workers are **not restarted** — they lazily pick up new aggregation configs as samples arrive.
 - For *repeated* reconfiguration: same mechanism — update configs, workers adapt. Store's precomputed history is preserved across reconfigurations.
 
@@ -121,11 +121,28 @@ This means: if a metric was being precomputed and the planner decides it still s
 
 **Question:** Workers each hold their own `HashMap<u64, Arc<AggregationConfig>>`. To give them new configs without restarting, the options are:
 - Send `UpdateAggConfigs` messages via the existing `WorkerMessage` channel.
-- Use `Arc<RwLock<HashMap<...>>>` shared state that workers read on every sample.
+- Use shared mutable state (e.g. `Arc<RwLock<HashMap<...>>>`) that workers read on every sample.
 
 **Decision:** Message-passing (`WorkerMessage::UpdateAggConfigs`). This fits the existing actor-like architecture (workers already process typed messages) and avoids adding a lock acquisition on every sample's hot path.
 
 Workers lazily create `WindowManager` instances the first time they see a new `agg_id`, so new aggregations are picked up automatically as samples arrive after the update — no special initialization needed.
+
+---
+
+## Decision 11: Synchronization primitive for `IngestState.agg_configs`
+
+**Question:** `IngestState` is behind `Arc<IngestState>` (immutable). The ingest handler reads `agg_configs` on the hot path — once per HTTP request, iterating over all configs for every sample. The applier task needs to swap in a new vec. What interior-mutability primitive to use?
+
+**Options considered:**
+- `RwLock<Vec<...>>` — readers hold the lock during the full iteration over configs. Lock held on the hot path.
+- `RwLock<Arc<Vec<...>>>` — readers briefly lock to clone the Arc, then iterate without holding the lock.
+- `ArcSwap<Vec<...>>` — truly lock-free reads via atomic pointer swap; no locking on the read path at all.
+
+**Decision: `ArcSwap<Vec<Arc<AggregationConfig>>>`** — the ingest handler is on the hot path and should not pay any lock cost on reads. `ArcSwap::load()` is lock-free; the applier calls `ArcSwap::store(Arc::new(new_vec))` for the atomic swap.
+
+**Note:** This is distinct from `SimpleMapStore.streaming_config`, where `RwLock<Arc<StreamingConfig>>` is used. The store's `streaming_config` is accessed only during batch inserts (less frequent, not per-sample), and the sequential ordering in the applier task means there is no real concurrent write race for the store. `RwLock<Arc<...>>` (brief lock to clone the pointer, then use without lock) is sufficient there.
+
+**Note:** `SimpleEngine.inference_config` uses `RwLock<InferenceConfig>` — queries are the read path, which is less frequent than ingest. Holding the read lock for the duration of a query lookup is acceptable.
 
 ---
 
@@ -141,9 +158,9 @@ Workers lazily create `WindowManager` instances the first time they see a new `a
 
 | Component | Before | After |
 |---|---|---|
-| `streaming_config` in store/engine | `Arc<StreamingConfig>` | `Arc<RwLock<StreamingConfig>>` |
-| `inference_config` in `SimpleEngine` | `InferenceConfig` (owned) | `Arc<RwLock<InferenceConfig>>` |
-| `agg_configs` in `IngestState` | `Vec<Arc<AggregationConfig>>` | `Arc<RwLock<Vec<Arc<AggregationConfig>>>>` |
+| `streaming_config` in store | `Arc<StreamingConfig>` | `RwLock<Arc<StreamingConfig>>` (brief lock to clone pointer, iterate without lock) |
+| `inference_config` in `SimpleEngine` | `InferenceConfig` (owned) | `RwLock<InferenceConfig>` (SimpleEngine is already behind Arc) |
+| `agg_configs` in `IngestState` | `Vec<Arc<AggregationConfig>>` | `ArcSwap<Vec<Arc<AggregationConfig>>>` (lock-free reads on hot path) |
 | Worker config updates | impossible | `WorkerMessage::UpdateAggConfigs` |
 | Planner output | logged and discarded | sent via `watch` channel, applied by `main.rs` task |
 | `PrecomputeEngine::run()` | creates channels internally, consumes self | channels created in `new()`, `handle()` extracted before `run()` |
