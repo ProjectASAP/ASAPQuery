@@ -4,7 +4,7 @@
 //! providing automatic top-k tracking during insert and merge.
 
 use asap_sketchlib::RegularPath;
-use asap_sketchlib::{CMSHeap, SketchInput, Vector2D};
+use asap_sketchlib::{CMSHeap, DataInput, Vector2D};
 
 /// Wire-format heap item (key, value) to avoid circular dependency with count_min_with_heap.
 pub struct WireHeapItem {
@@ -47,7 +47,7 @@ pub fn sketchlib_cms_heap_from_matrix_and_heap(
     for item in topk_heap {
         let count = item.value.round() as i64;
         if count > 0 {
-            let input = SketchInput::Str(&item.key);
+            let input = DataInput::Str(&item.key);
             cms_heap.heap_mut().update(&input, count);
         }
     }
@@ -98,12 +98,12 @@ pub fn sketchlib_cms_heap_update(cms_heap: &mut SketchlibCMSHeap, key: &str, val
     if many <= 0 {
         return;
     }
-    let input = SketchInput::String(key.to_owned());
+    let input = DataInput::String(key.to_owned());
     cms_heap.insert_many(&input, many);
 }
 
 /// Queries a CMSHeap for a key's frequency estimate.
 pub fn sketchlib_cms_heap_query(cms_heap: &SketchlibCMSHeap, key: &str) -> f64 {
-    let input = SketchInput::String(key.to_owned());
+    let input = DataInput::String(key.to_owned());
     cms_heap.estimate(&input) as f64
 }

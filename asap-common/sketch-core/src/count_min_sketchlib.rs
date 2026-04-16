@@ -1,4 +1,4 @@
-use asap_sketchlib::{CountMin, RegularPath, SketchInput, Vector2D};
+use asap_sketchlib::{CountMin, DataInput, RegularPath, Vector2D};
 
 /// Concrete Count-Min type from asap_sketchlib when sketchlib backend is enabled.
 /// Uses f64 counters (Vector2D<f64>) for weighted updates without integer rounding.
@@ -48,12 +48,12 @@ pub fn sketchlib_cms_update(inner: &mut SketchlibCms, key: &str, value: f64) {
     if value <= 0.0 {
         return;
     }
-    let input = SketchInput::String(key.to_owned());
+    let input = DataInput::String(key.to_owned());
     inner.insert_many(&input, value);
 }
 
 /// Helper to query a sketchlib Count-Min for a key, returning f64.
 pub fn sketchlib_cms_query(inner: &SketchlibCms, key: &str) -> f64 {
-    let input = SketchInput::String(key.to_owned());
+    let input = DataInput::String(key.to_owned());
     inner.estimate(&input)
 }

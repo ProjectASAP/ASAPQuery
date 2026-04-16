@@ -1,4 +1,4 @@
-use asap_sketchlib::{SketchInput, KLL};
+use asap_sketchlib::KLL;
 
 /// Concrete KLL type from asap_sketchlib when sketchlib backend is enabled.
 pub type SketchlibKll = KLL;
@@ -12,7 +12,7 @@ pub fn new_sketchlib_kll(k: u16) -> SketchlibKll {
 pub fn sketchlib_kll_update(inner: &mut SketchlibKll, value: f64) {
     // KLL accepts only numeric inputs. We intentionally ignore the error here because `value`
     // is always numeric.
-    let _ = inner.update(&SketchInput::F64(value));
+    inner.update(&value);
 }
 
 /// Queries a sketchlib KLL for the value at the requested quantile.
