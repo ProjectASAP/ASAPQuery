@@ -64,7 +64,7 @@ pub fn infer_queries(
 
     for (_query_str, mut variants) in by_query {
         // Sort descending by count so [0] is the most frequent variant.
-        variants.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+        variants.sort_by_key(|b| std::cmp::Reverse(b.1.len()));
 
         if variants.len() > 1 {
             tracing::warn!(
