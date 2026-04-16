@@ -1,9 +1,9 @@
 use clap::Parser;
 use query_engine_rust::data_model::QueryLanguage;
 use std::fs;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::signal;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use sketch_core::config::{self, ImplMode};
 
@@ -14,8 +14,8 @@ use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::{
     HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
-    OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, Result, SimpleEngine,
-    SimpleMapStore, StoreOutputSink,
+    OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, PrecomputeEngineHandle, Result,
+    SimpleEngine, SimpleMapStore, StoreOutputSink,
 };
 
 #[derive(Parser, Debug)]
@@ -203,6 +203,12 @@ async fn main() -> Result<()> {
     );
     info!("Streaming config: {:?}", streaming_config);
 
+    // Shared config refs — passed to QueryTracker so it can populate ControllerConfig
+    // with the current configs as context for the planner.  The applier task updates
+    // them after applying a new plan so that subsequent windows see the latest state.
+    let streaming_config_ref = Arc::new(RwLock::new(streaming_config.clone()));
+    let inference_config_ref = Arc::new(RwLock::new(Arc::new(inference_config.clone())));
+
     // Setup store (equivalent to Python's SimpleMapStore())
     // Get cleanup policy from inference config
     let cleanup_policy = inference_config.cleanup_policy;
@@ -317,6 +323,10 @@ async fn main() -> Result<()> {
     // Automatically enable when using precompute streaming engine
     let enable_precompute =
         args.enable_prometheus_remote_write || args.streaming_engine == StreamingEngine::Precompute;
+
+    // Handle extracted before run() so the applier task can call update_streaming_config.
+    let mut pe_engine_handle: Option<PrecomputeEngineHandle> = None;
+
     let precompute_handle = if enable_precompute {
         let precompute_config = PrecomputeEngineConfig {
             num_workers: args.precompute_num_workers,
@@ -330,9 +340,10 @@ async fn main() -> Result<()> {
             late_data_policy: LateDataPolicy::Drop,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
-        let engine =
-            PrecomputeEngine::new(precompute_config, streaming_config.clone(), output_sink);
-        let worker_diagnostics = engine.diagnostics();
+        let pe = PrecomputeEngine::new(precompute_config, streaming_config.clone(), output_sink);
+        let worker_diagnostics = pe.diagnostics();
+        // Extract the handle before run() consumes the engine.
+        pe_engine_handle = Some(pe.handle());
         info!(
             "Starting precompute engine on port {}",
             args.prometheus_remote_write_port
@@ -345,7 +356,7 @@ async fn main() -> Result<()> {
         });
 
         Some(tokio::spawn(async move {
-            if let Err(e) = engine.run().await {
+            if let Err(e) = pe.run().await {
                 error!("Precompute engine error: {}", e);
             }
         }))
@@ -381,7 +392,7 @@ async fn main() -> Result<()> {
     };
 
     let query_tracker = if args.enable_query_tracker {
-        use query_engine_rust::planner_client::LocalPlannerClient;
+        use query_engine_rust::planner_client::{LocalPlannerClient, PlannerResult};
         use query_engine_rust::QueryTrackerConfig;
 
         let tracker_config = QueryTrackerConfig {
@@ -400,8 +411,59 @@ async fn main() -> Result<()> {
             args.query_language,
             args.prometheus_server.clone(),
         ));
-        let tracker = Arc::new(query_engine_rust::QueryTracker::new(tracker_config));
-        let _tracker_handle = tracker.start_background_loop(planner_client);
+
+        let (plan_tx, plan_rx) = tokio::sync::watch::channel(None::<PlannerResult>);
+
+        let tracker = Arc::new(query_engine_rust::QueryTracker::new(
+            tracker_config,
+            streaming_config_ref.clone(),
+            inference_config_ref.clone(),
+        ));
+        let _tracker_handle = tracker.start_background_loop(planner_client, plan_tx);
+
+        // Applier task: watches for the first plan result and applies it to all
+        // running components.
+        // NOTE: streaming_config and inference_config are not applied atomically
+        // across components. A brief window may exist where one component has the
+        // new config and another still has the old one, causing query misses that
+        // fall back to Prometheus. This is acceptable for a one-shot first-plan apply.
+        let engine_for_applier = engine.clone();
+        let store_for_applier = store.clone();
+        let streaming_config_ref_for_applier = streaming_config_ref.clone();
+        let inference_config_ref_for_applier = inference_config_ref.clone();
+        tokio::spawn(async move {
+            let mut rx = plan_rx;
+            loop {
+                if rx.changed().await.is_err() {
+                    break;
+                }
+                let result = rx.borrow().clone();
+                if let Some(result) = result {
+                    // 1. Apply to precompute engine (lock-free ArcSwap + worker broadcast).
+                    if let Some(ref handle) = pe_engine_handle {
+                        if let Err(e) = handle
+                            .update_streaming_config(&result.streaming_config)
+                            .await
+                        {
+                            warn!("Applier: failed to update precompute engine: {}", e);
+                        }
+                    }
+                    // 2. Apply to query engine.
+                    engine_for_applier
+                        .update_streaming_config(Arc::new(result.streaming_config.clone()));
+                    engine_for_applier.update_inference_config(result.inference_config.clone());
+                    // 3. Apply to store.
+                    store_for_applier.update_streaming_config(result.streaming_config.clone());
+                    // 4. Update shared config refs so future tracker windows see the new state.
+                    *streaming_config_ref_for_applier.write().unwrap() =
+                        Arc::new(result.streaming_config);
+                    *inference_config_ref_for_applier.write().unwrap() =
+                        Arc::new(result.inference_config);
+                    info!("Applier: applied new plan from query tracker");
+                }
+            }
+        });
+
         info!(
             "Query tracker enabled (observation window: {}s)",
             args.tracker_observation_window_secs

@@ -25,25 +25,29 @@ impl SimpleEngine {
     /// each template in query_configs and compares it structurally against the incoming
     /// query_data — ignoring absolute timestamps and comparing only metric, aggregation,
     /// labels, time column name, and duration.
-    fn find_query_config_sql(&self, query_data: &SQLQueryData) -> Option<&QueryConfig> {
-        let schema = match &self.inference_config.schema {
-            SchemaConfig::SQL(sql_schema) => sql_schema,
+    fn find_query_config_sql(&self, query_data: &SQLQueryData) -> Option<QueryConfig> {
+        let ic = self.inference_config.read().unwrap();
+        let schema = match &ic.schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
             _ => return None,
         };
 
-        self.inference_config.query_configs.iter().find(|config| {
-            let template_statements =
-                match parser::parse_sql(&GenericDialect {}, config.query.as_str()) {
-                    Ok(stmts) => stmts,
-                    Err(_) => return false,
-                };
-            let template_data =
-                match SQLPatternParser::new(schema, 0.0).parse_query(&template_statements) {
-                    Some(data) => data,
-                    None => return false,
-                };
-            query_data.matches_sql_pattern(&template_data)
-        })
+        ic.query_configs
+            .iter()
+            .find(|config| {
+                let template_statements =
+                    match parser::parse_sql(&GenericDialect {}, config.query.as_str()) {
+                        Ok(stmts) => stmts,
+                        Err(_) => return false,
+                    };
+                let template_data =
+                    match SQLPatternParser::new(&schema, 0.0).parse_query(&template_statements) {
+                        Some(data) => data,
+                        None => return false,
+                    };
+                query_data.matches_sql_pattern(&template_data)
+            })
+            .cloned()
     }
 
     /// Calculates start timestamp for SQL queries
@@ -208,7 +212,7 @@ impl SimpleEngine {
         time: f64,
     ) -> Option<QueryExecutionContext> {
         // Get SQL schema from inference config
-        let schema = match &self.inference_config.schema {
+        let schema = match &self.inference_config.read().unwrap().schema {
             SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
             SchemaConfig::PromQL(_) => {
                 warn!("SQL query requested but config has PromQL schema");
@@ -378,7 +382,7 @@ impl SimpleEngine {
         let agg_info: AggregationIdInfo = if let Some(config) =
             self.find_query_config_sql(&query_data)
         {
-            self.get_aggregation_id_info(config)
+            self.get_aggregation_id_info(&config)
                 .map_err(|e| {
                     warn!("{}", e);
                     e
@@ -388,6 +392,9 @@ impl SimpleEngine {
             warn!("No query_config entry for SQL query. Attempting capability-based matching.");
             let requirements = self.build_query_requirements_sql(&match_result, query_pattern_type);
             self.streaming_config
+                .read()
+                .unwrap()
+                .clone()
                 .find_compatible_aggregation(&requirements)?
         };
 
@@ -444,14 +451,13 @@ impl SimpleEngine {
             })
             .ok()?;
 
-        let grouping_labels = self
-            .streaming_config
+        let sc = self.streaming_config.read().unwrap().clone();
+        let grouping_labels = sc
             .get_aggregation_config(agg_info.aggregation_id_for_value)
             .map(|config| config.grouping_labels.clone())
             .unwrap_or_else(|| metadata.query_output_labels.clone());
 
-        let aggregated_labels = self
-            .streaming_config
+        let aggregated_labels = sc
             .get_aggregation_config(agg_info.aggregation_id_for_key)
             .map(|config| config.aggregated_labels.clone())
             .unwrap_or_else(KeyByLabelNames::empty);
@@ -526,7 +532,7 @@ impl SimpleEngine {
         let agg_info: AggregationIdInfo = if let Some(config) =
             self.find_query_config_sql(query_data)
         {
-            self.get_aggregation_id_info(config)
+            self.get_aggregation_id_info(&config)
                 .map_err(|e| {
                     warn!("{}", e);
                     e
@@ -539,6 +545,9 @@ impl SimpleEngine {
             let requirements =
                 self.build_query_requirements_sql(match_result, QueryPatternType::OnlyTemporal);
             self.streaming_config
+                .read()
+                .unwrap()
+                .clone()
                 .find_compatible_aggregation(&requirements)?
         };
         let metric = &match_result.outer_data()?.metric;
