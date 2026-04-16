@@ -105,9 +105,30 @@ This means: if a metric was being precomputed and the planner decides it still s
 
 ---
 
-## Decision 8: Stale precomputed data after config replace
+## Decision 8: Stale precomputed data and in-flight state after config replace
 
-**Question:** When `streaming_config` is replaced, the `SimpleMapStore` may contain precomputed sketch data for aggregations that are no longer in the new config. Should this data be purged?
+**Question:** When `streaming_config` is replaced, how is in-flight precompute data handled, and what happens to stale state in both the store and the workers?
+
+### In-flight data in precompute engine workers
+
+`UpdateAggConfigs` replaces each worker's `agg_configs` map but **does not touch `group_states`**. Existing `GroupState` entries (keyed by `(agg_id, group_key)`) for old aggregation IDs are left in the worker's HashMap.
+
+Consequences:
+- **Data is not silently dropped.** The flush loop iterates over *all* `group_states`, so old groups still close their open windows and emit accumulated sketch data to the `SimpleMapStore` — under the old aggregation IDs.
+- **No new samples reach old group states.** The ingest router only routes samples to agg IDs present in the new `agg_configs`, so old groups stop receiving input but still flush whatever they have accumulated.
+- **Memory is never reclaimed.** Old `GroupState` entries are never evicted from the worker's HashMap. For the one-shot first-plan scenario this is a fixed-size overhead. For repeated reconfigurations this is a latent memory leak — stale group states accumulate in worker memory until process restart.
+
+The data committed to the store under old agg IDs becomes **orphaned**: the query engine now uses new inference/streaming configs pointing to new agg IDs, so those store entries are never queried and eventually expire via the cleanup policy.
+
+**Implementation:** On `UpdateAggConfigs`, workers now prune `group_states` entries whose `agg_id` is absent from the new config, after a final forced flush. Specifically:
+1. Identify removed agg IDs (old `agg_configs` keys not present in `new_configs`).
+2. For each removed group state, run the window-close logic with `effective_wm = i64::MAX` — since no new samples will arrive, all open windows are treated as due regardless of watermark.
+3. Emit accumulated data from those windows to the store, then remove the entry from `group_states` and update `group_count`.
+4. Swap in `new_configs`.
+
+The final flush happens **before** `agg_configs` is swapped so that `GroupState.config` (an `Arc<AggregationConfig>`) is still valid during window-bound calculations. The emitted data is still written under old agg IDs (and will not be queried), but this avoids silently discarding partially-accumulated windows and correctly frees the worker memory.
+
+### Stale data already committed to `SimpleMapStore`
 
 **Decision:** Let it expire naturally via the existing cleanup policy. No active purge.
 

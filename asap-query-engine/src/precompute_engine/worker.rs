@@ -170,6 +170,85 @@ impl Worker {
                     break;
                 }
                 WorkerMessage::UpdateAggConfigs(new_configs) => {
+                    // Flush and evict group states for agg IDs that are being removed.
+                    // Must happen before swapping agg_configs so GroupState.config is
+                    // still valid during the final window close.
+                    let removed_ids: Vec<u64> = self
+                        .agg_configs
+                        .keys()
+                        .filter(|id| !new_configs.contains_key(id))
+                        .copied()
+                        .collect();
+
+                    if !removed_ids.is_empty() {
+                        let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> =
+                            Vec::new();
+
+                        for agg_id in &removed_ids {
+                            // Drain all group states for this agg_id.
+                            let removed_keys: Vec<_> = self
+                                .group_states
+                                .keys()
+                                .filter(|(id, _)| id == agg_id)
+                                .cloned()
+                                .collect();
+
+                            for key in removed_keys {
+                                let Some(state) = self.group_states.remove(&key) else {
+                                    continue;
+                                };
+                                if state.previous_watermark_ms == i64::MIN {
+                                    continue; // No samples received — nothing to emit.
+                                }
+                                // Force-close all open windows by advancing the watermark
+                                // to i64::MAX. No new samples will arrive for this group.
+                                let (group_key_str, mut active_panes) =
+                                    (key.1.clone(), state.active_panes);
+                                let closed = state
+                                    .window_manager
+                                    .closed_windows(state.previous_watermark_ms, i64::MAX);
+
+                                for window_start in &closed {
+                                    let (_, window_end) =
+                                        state.window_manager.window_bounds(*window_start);
+                                    let pane_starts =
+                                        state.window_manager.panes_for_window(*window_start);
+                                    if let Some(accumulator) =
+                                        merge_panes_for_window(&mut active_panes, &pane_starts)
+                                    {
+                                        let group_key_lv =
+                                            build_group_key_label_values(&group_key_str);
+                                        let output = PrecomputedOutput::new(
+                                            *window_start as u64,
+                                            window_end as u64,
+                                            Some(group_key_lv),
+                                            *agg_id,
+                                        );
+                                        emit_batch.push((output, accumulator));
+                                    }
+                                }
+                            }
+                        }
+
+                        if !emit_batch.is_empty() {
+                            if let Err(e) = self.output_sink.emit_batch(emit_batch) {
+                                warn!(
+                                    "Worker {}: error flushing removed agg_ids {:?}: {}",
+                                    self.id, removed_ids, e
+                                );
+                            }
+                        }
+
+                        self.group_count
+                            .store(self.group_states.len(), Ordering::Relaxed);
+                        info!(
+                            "Worker {}: evicted {} removed agg_id(s) {:?}",
+                            self.id,
+                            removed_ids.len(),
+                            removed_ids,
+                        );
+                    }
+
                     let added = new_configs.len().saturating_sub(self.agg_configs.len());
                     self.agg_configs = new_configs;
                     info!(
