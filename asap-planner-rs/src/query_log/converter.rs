@@ -42,5 +42,7 @@ pub fn to_controller_config(
             policy: Some(CleanupPolicy::ReadBased),
         }),
         metrics: None,
+        existing_streaming_config: None,
+        existing_inference_config: None,
     }
 }

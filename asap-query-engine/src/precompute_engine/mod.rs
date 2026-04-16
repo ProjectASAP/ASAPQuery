@@ -8,4 +8,4 @@ pub mod series_router;
 pub mod window_manager;
 pub mod worker;
 
-pub use engine::{PrecomputeEngine, PrecomputeWorkerDiagnostics};
+pub use engine::{PrecomputeEngine, PrecomputeEngineHandle, PrecomputeWorkerDiagnostics};

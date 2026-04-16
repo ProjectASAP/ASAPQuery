@@ -12,7 +12,7 @@ use crate::engines::query_result::{InstantVectorElement, QueryResult};
 // };
 use crate::stores::{Store, TimestampedBucketsMap};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, warn};
 
@@ -125,8 +125,12 @@ pub struct RangeQueryExecutionContext {
 pub struct SimpleEngine {
     store: Arc<dyn Store>,
     // promsketch_store: Option<Arc<PromSketchStore>>,
-    inference_config: InferenceConfig,
-    streaming_config: Arc<StreamingConfig>,
+    /// Updated at runtime via update_inference_config(). RwLock provides interior
+    /// mutability since SimpleEngine is shared behind Arc<SimpleEngine>.
+    inference_config: RwLock<InferenceConfig>,
+    /// Updated at runtime via update_streaming_config(). Readers briefly lock to
+    /// clone the Arc pointer, then use without holding the lock.
+    streaming_config: RwLock<Arc<StreamingConfig>>,
     prometheus_scrape_interval: u64,
     controller_patterns: HashMap<QueryPatternType, Vec<PromQLPattern>>,
     query_language: QueryLanguage,
@@ -276,12 +280,29 @@ impl SimpleEngine {
         Self {
             store,
             // promsketch_store,
-            inference_config,
-            streaming_config,
+            inference_config: RwLock::new(inference_config),
+            streaming_config: RwLock::new(streaming_config),
             prometheus_scrape_interval,
             controller_patterns,
             query_language,
         }
+    }
+
+    /// Replace the inference config at runtime. Called by the applier task after
+    /// the planner fires.
+    ///
+    /// NOTE: streaming_config and inference_config are applied to their respective
+    /// components independently (not atomically). A brief window may exist where
+    /// the precompute engine has a new streaming_config but this engine still uses
+    /// the old inference_config, causing query misses that fall back to Prometheus.
+    pub fn update_inference_config(&self, new_config: InferenceConfig) {
+        *self.inference_config.write().unwrap() = new_config;
+    }
+
+    /// Replace the streaming config at runtime. Called by the applier task after
+    /// the planner fires.
+    pub fn update_streaming_config(&self, new_config: Arc<StreamingConfig>) {
+        *self.streaming_config.write().unwrap() = new_config;
     }
 
     /// Convert query timestamp (seconds) to data timestamp (milliseconds)
@@ -290,11 +311,14 @@ impl SimpleEngine {
     }
 
     /// Finds the query configuration for a given query string
-    fn find_query_config(&self, query: &str) -> Option<&QueryConfig> {
+    fn find_query_config(&self, query: &str) -> Option<QueryConfig> {
         self.inference_config
+            .read()
+            .unwrap()
             .query_configs
             .iter()
             .find(|config| config.query == query)
+            .cloned()
     }
 
     /// Validates and potentially aligns end timestamp based on query pattern
@@ -344,6 +368,8 @@ impl SimpleEngine {
                 // Latest window only
                 let window_size = self
                     .streaming_config
+                    .read()
+                    .unwrap()
                     .get_aggregation_config(agg_info.aggregation_id_for_key)
                     .map(|config| config.window_size * 1000)
                     .ok_or_else(|| {
@@ -375,9 +401,9 @@ impl SimpleEngine {
         timestamps: &QueryTimestamps,
         agg_info: &AggregationIdInfo,
     ) -> Result<StoreQueryPlan, String> {
+        let sc = self.streaming_config.read().unwrap().clone();
         // Get aggregation config for value to determine window type
-        let aggregation_config_for_value = self
-            .streaming_config
+        let aggregation_config_for_value = sc
             .get_aggregation_config(agg_info.aggregation_id_for_value)
             .ok_or_else(|| {
                 format!(
@@ -896,10 +922,10 @@ impl SimpleEngine {
         let mut aggregation_type_for_key: Option<AggregationType> = None;
         let mut aggregation_type_for_value: Option<AggregationType> = None;
 
+        let sc = self.streaming_config.read().unwrap().clone();
         if query_config_aggregations.len() == 2 {
             for aggregation in query_config_aggregations {
-                let aggregation_type = self
-                    .streaming_config
+                let aggregation_type = sc
                     .get_aggregation_config(aggregation.aggregation_id)
                     .map(|config| config.aggregation_type)
                     .ok_or_else(|| {
@@ -935,8 +961,7 @@ impl SimpleEngine {
         } else {
             // Single aggregation: key and value share the same aggregation
             let id = query_config_aggregations[0].aggregation_id;
-            let agg_type = self
-                .streaming_config
+            let agg_type = sc
                 .get_aggregation_config(id)
                 .map(|config| config.aggregation_type)
                 .ok_or_else(|| format!("No streaming config for aggregation_id {id}"))?;

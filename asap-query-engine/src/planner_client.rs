@@ -7,6 +7,7 @@ use asap_types::inference_config::InferenceConfig;
 use asap_types::streaming_config::StreamingConfig;
 use tracing::warn;
 
+#[derive(Clone)]
 pub struct PlannerResult {
     pub streaming_config: StreamingConfig,
     pub inference_config: InferenceConfig,
@@ -116,6 +117,8 @@ mod tests {
             }]),
             sketch_parameters: None,
             aggregate_cleanup: None,
+            existing_streaming_config: None,
+            existing_inference_config: None,
         }
     }
 

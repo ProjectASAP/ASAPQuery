@@ -1,5 +1,7 @@
+use asap_types::aggregation_config::AggregationConfig;
 use futures::future::try_join_all;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc;
 use xxhash_rust::xxh64::xxh64;
@@ -32,6 +34,10 @@ pub enum WorkerMessage {
     Flush,
     /// Graceful shutdown.
     Shutdown,
+    /// Push a new set of aggregation configs to this worker.
+    /// Workers replace their local map on receipt; new agg_ids are picked up
+    /// lazily the next time a matching sample arrives.
+    UpdateAggConfigs(HashMap<u64, Arc<AggregationConfig>>),
 }
 
 /// Routes incoming samples to one of N workers based on a consistent hash.
@@ -99,6 +105,20 @@ impl SeriesRouter {
                 .send(WorkerMessage::Flush)
                 .await
                 .map_err(|e| format!("Failed to send flush to worker {}: {}", i, e))?;
+        }
+        Ok(())
+    }
+
+    /// Broadcast updated aggregation configs to all workers.
+    pub async fn broadcast_update_agg_configs(
+        &self,
+        agg_configs: HashMap<u64, Arc<AggregationConfig>>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for (i, sender) in self.senders.iter().enumerate() {
+            sender
+                .send(WorkerMessage::UpdateAggConfigs(agg_configs.clone()))
+                .await
+                .map_err(|e| format!("Failed to send UpdateAggConfigs to worker {}: {}", i, e))?;
         }
         Ok(())
     }

@@ -169,6 +169,95 @@ impl Worker {
                     }
                     break;
                 }
+                WorkerMessage::UpdateAggConfigs(new_configs) => {
+                    // Flush and evict group states for agg IDs that are being removed.
+                    // Must happen before swapping agg_configs so GroupState.config is
+                    // still valid during the final window close.
+                    let removed_ids: Vec<u64> = self
+                        .agg_configs
+                        .keys()
+                        .filter(|id| !new_configs.contains_key(id))
+                        .copied()
+                        .collect();
+
+                    if !removed_ids.is_empty() {
+                        let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> =
+                            Vec::new();
+
+                        for agg_id in &removed_ids {
+                            // Drain all group states for this agg_id.
+                            let removed_keys: Vec<_> = self
+                                .group_states
+                                .keys()
+                                .filter(|(id, _)| id == agg_id)
+                                .cloned()
+                                .collect();
+
+                            for key in removed_keys {
+                                let Some(state) = self.group_states.remove(&key) else {
+                                    continue;
+                                };
+                                if state.previous_watermark_ms == i64::MIN {
+                                    continue; // No samples received — nothing to emit.
+                                }
+                                // Force-close all open windows by advancing the watermark
+                                // to i64::MAX. No new samples will arrive for this group.
+                                let (group_key_str, mut active_panes) =
+                                    (key.1.clone(), state.active_panes);
+                                let closed = state
+                                    .window_manager
+                                    .closed_windows(state.previous_watermark_ms, i64::MAX);
+
+                                for window_start in &closed {
+                                    let (_, window_end) =
+                                        state.window_manager.window_bounds(*window_start);
+                                    let pane_starts =
+                                        state.window_manager.panes_for_window(*window_start);
+                                    if let Some(accumulator) =
+                                        merge_panes_for_window(&mut active_panes, &pane_starts)
+                                    {
+                                        let group_key_lv =
+                                            build_group_key_label_values(&group_key_str);
+                                        let output = PrecomputedOutput::new(
+                                            *window_start as u64,
+                                            window_end as u64,
+                                            Some(group_key_lv),
+                                            *agg_id,
+                                        );
+                                        emit_batch.push((output, accumulator));
+                                    }
+                                }
+                            }
+                        }
+
+                        if !emit_batch.is_empty() {
+                            if let Err(e) = self.output_sink.emit_batch(emit_batch) {
+                                warn!(
+                                    "Worker {}: error flushing removed agg_ids {:?}: {}",
+                                    self.id, removed_ids, e
+                                );
+                            }
+                        }
+
+                        self.group_count
+                            .store(self.group_states.len(), Ordering::Relaxed);
+                        info!(
+                            "Worker {}: evicted {} removed agg_id(s) {:?}",
+                            self.id,
+                            removed_ids.len(),
+                            removed_ids,
+                        );
+                    }
+
+                    let added = new_configs.len().saturating_sub(self.agg_configs.len());
+                    self.agg_configs = new_configs;
+                    info!(
+                        "Worker {}: agg_configs updated ({} total, ~{} added)",
+                        self.id,
+                        self.agg_configs.len(),
+                        added,
+                    );
+                }
             }
         }
 
@@ -1965,6 +2054,108 @@ aggregations:
             wm.load(Ordering::Acquire),
             50_000,
             "worker watermark should be published after flush"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: UpdateAggConfigs enables processing of a new aggregation at runtime
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_update_agg_configs_enables_new_aggregation_at_runtime() {
+        let config = make_agg_config(
+            1,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10, // 10s tumbling window
+            0,
+            vec![],
+        );
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
+        // Start worker with NO agg configs — it doesn't know about agg_id=1 yet.
+        let worker = Worker::new(
+            0,
+            rx,
+            sink.clone(),
+            HashMap::new(),
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::Drop,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
+        );
+        let handle = tokio::spawn(async move { worker.run().await });
+
+        // Sample arrives before config update — silently ignored (agg_id unknown).
+        tx.send(WorkerMessage::GroupSamples {
+            agg_id: 1,
+            group_key: String::new(),
+            samples: vec![("cpu".to_string(), 1_000, 1.0)],
+            ingest_received_at: std::time::Instant::now(),
+        })
+        .await
+        .unwrap();
+
+        // Push the new agg config at runtime.
+        let mut new_configs = HashMap::new();
+        new_configs.insert(1, Arc::new(config));
+        tx.send(WorkerMessage::UpdateAggConfigs(new_configs))
+            .await
+            .unwrap();
+
+        // Post-update samples — should be processed now.
+        tx.send(WorkerMessage::GroupSamples {
+            agg_id: 1,
+            group_key: String::new(),
+            samples: vec![("cpu".to_string(), 5_000, 2.0)],
+            ingest_received_at: std::time::Instant::now(),
+        })
+        .await
+        .unwrap();
+        // t=10_000 closes window [0, 10_000).
+        tx.send(WorkerMessage::GroupSamples {
+            agg_id: 1,
+            group_key: String::new(),
+            samples: vec![("cpu".to_string(), 10_000, 0.0)],
+            ingest_received_at: std::time::Instant::now(),
+        })
+        .await
+        .unwrap();
+
+        tx.send(WorkerMessage::Shutdown).await.unwrap();
+        handle.await.unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(
+            captured.len(),
+            1,
+            "one window should close after UpdateAggConfigs"
+        );
+
+        let (output, acc) = &captured[0];
+        assert_eq!(output.aggregation_id, 1);
+        assert_eq!(output.start_timestamp, 0);
+        assert_eq!(output.end_timestamp, 10_000);
+
+        let sum_acc = acc
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("should be SumAccumulator");
+        // Pre-update sample (t=1000, val=1.0) was dropped — agg_id was unknown.
+        // Post-update sample (t=5000, val=2.0) is the only one aggregated.
+        assert!(
+            (sum_acc.sum - 2.0).abs() < 1e-10,
+            "only post-update sample should be aggregated, got {}",
+            sum_acc.sum
         );
     }
 }
