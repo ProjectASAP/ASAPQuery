@@ -10,7 +10,7 @@ xxhash-rust = { version = "0.8", features = ["xxh32"] }
 use arroyo_udf_plugin::udf;
 use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
-use asap_sketchlib::{KLL, SketchInput};
+use asap_sketchlib::KLL;
 use xxhash_rust::xxh32::xxh32;
 
 const ROW_NUM: usize = {{ row_num }};
@@ -48,7 +48,7 @@ fn hydrakll_(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
         for row in 0..ROW_NUM {
             let hash_value = xxh32(key_bytes, row as u32);
             let col_index = (hash_value as usize) % COL_NUM;
-            let _ = sketches[row][col_index].update(&SketchInput::F64(values[i]));
+            sketches[row][col_index].update(&values[i]);
         }
     }
 
