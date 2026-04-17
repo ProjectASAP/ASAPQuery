@@ -7,42 +7,16 @@ name: asapquery-dropin
 #   2. docker compose up -d
 #   3. Add remote_write to your prometheus.yml  ->  http://localhost:${REMOTE_WRITE_PORT}/receive
 #   4. Point your Grafana datasource URL        ->  http://localhost:${QUERY_ENGINE_PORT}
+#
+# The query engine starts with an empty plan and forwards all queries to Prometheus.
+# After the observation window (default 10 min), it automatically generates a plan
+# based on real query patterns and begins precomputing sketches.
 
 networks:
   asap-network:
     driver: bridge
 
-volumes:
-  asap-planner-output:
-
 services:
-  #############################################################################
-  # INIT CONTAINERS
-  #############################################################################
-
-  asap-planner-rs:
-    image: ghcr.io/projectasap/asap-planner-rs:v0.3.0
-    container_name: asap-dropin-planner
-    hostname: asap-planner-rs
-    networks:
-      - asap-network
-    command:
-      - "--output_dir=/asap-planner-output"
-      - "--prometheus_scrape_interval=${PROMETHEUS_SCRAPE_INTERVAL:-15}"
-      - "--streaming_engine=arroyo"
-      - "--range-duration=300"
-      - "--step=10"
-      - "--prometheus-url=${PROMETHEUS_URL:-http://host.docker.internal:9090}"
-      - "--query-language=promql"
-      - "-v"
-    volumes:
-      - asap-planner-output:/asap-planner-output
-    restart: "no"
-
-  #############################################################################
-  # CORE SERVICE
-  #############################################################################
-
   queryengine:
     image: ghcr.io/projectasap/asap-query-engine:v0.3.0
     container_name: asap-dropin-queryengine
@@ -56,11 +30,8 @@ services:
       - RUST_LOG=INFO
       - RUST_BACKTRACE=1
     volumes:
-      - asap-planner-output:/asap-planner-output:ro
       - ./output/queryengine:/app/outputs
     command:
-      - "--config=/asap-planner-output/inference_config.yaml"
-      - "--streaming-config=/asap-planner-output/streaming_config.yaml"
       - "--prometheus-server=${PROMETHEUS_URL:-http://host.docker.internal:9090}"
       - "--prometheus-scrape-interval=${PROMETHEUS_SCRAPE_INTERVAL:-15}"
       - "--streaming-engine=precompute"
@@ -71,13 +42,12 @@ services:
       - "--query-language=PROMQL"
       - "--lock-strategy=per-key"
       - "--forward-unsupported-queries"
+      - "--enable-query-tracker"
+      - "--tracker-observation-window-secs=600"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8088' 2>/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 15s
-    depends_on:
-      asap-planner-rs:
-        condition: service_completed_successfully
     restart: unless-stopped

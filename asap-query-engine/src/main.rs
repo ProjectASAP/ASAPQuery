@@ -7,11 +7,15 @@ use tracing::{error, info, warn};
 
 use sketch_core::config::{self, ImplMode};
 
-use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
+use asap_types::streaming_config::StreamingConfig;
+use query_engine_rust::data_model::enums::{
+    CleanupPolicy, InputFormat, LockStrategy, StreamingEngine,
+};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
 use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
+use query_engine_rust::InferenceConfig;
 use query_engine_rust::{
     HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
     OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, PrecomputeEngineHandle, Result,
@@ -29,13 +33,13 @@ struct Args {
     #[arg(long, value_enum)]
     input_format: Option<InputFormat>,
 
-    /// Configuration file path
+    /// Inference config file path (optional; starts with empty config when omitted, requires --enable-query-tracker)
     #[arg(long)]
-    config: String,
+    config: Option<String>,
 
-    /// File path for streaming_config
+    /// Streaming config file path (optional; starts with empty config when omitted, requires --enable-query-tracker)
     #[arg(long)]
-    streaming_config: String,
+    streaming_config: Option<String>,
 
     /// Streaming engine to use
     #[arg(long, value_enum, default_value = "arroyo")]
@@ -182,26 +186,34 @@ async fn main() -> Result<()> {
     let _log_guard = setup_logging(&args.output_dir, &args.log_level)?;
 
     info!("Starting Query Engine Rust");
-    info!("Config file: {}", args.config);
     info!("Output directory: {}", args.output_dir);
 
-    // Read config (equivalent to utils.file_io.read_inference_config)
-    let inference_config = read_inference_config(&args.config, args.query_language)?;
+    let inference_config = match &args.config {
+        Some(path) => {
+            info!("Config file: {}", path);
+            read_inference_config(path, args.query_language)?
+        }
+        None => {
+            info!("No config file provided; starting with empty inference config");
+            InferenceConfig::new(args.query_language, CleanupPolicy::NoCleanup)
+        }
+    };
     info!(
         "Loaded inference config with {} query configs",
         inference_config.query_configs.len()
     );
-    info!("Inference config: {:?}", inference_config);
 
-    let streaming_config = Arc::new(read_streaming_config(
-        &args.streaming_config,
-        &inference_config,
-    )?);
+    let streaming_config = Arc::new(match &args.streaming_config {
+        Some(path) => read_streaming_config(path, &inference_config)?,
+        None => {
+            info!("No streaming config file provided; starting with empty streaming config");
+            StreamingConfig::default()
+        }
+    });
     info!(
         "Loaded streaming config with {} entries",
         streaming_config.get_all_aggregation_configs().len()
     );
-    info!("Streaming config: {:?}", streaming_config);
 
     // Shared config refs — passed to QueryTracker so it can populate ControllerConfig
     // with the current configs as context for the planner.  The applier task updates

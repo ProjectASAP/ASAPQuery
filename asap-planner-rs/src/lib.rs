@@ -416,9 +416,11 @@ impl Controller {
             }],
             sketch_parameters: None,
             aggregate_cleanup: Some(config::input::AggregateCleanupConfig {
-                policy: Some("read_based".to_string()),
+                policy: Some(asap_types::enums::CleanupPolicy::ReadBased),
             }),
             metrics: None,
+            existing_streaming_config: None,
+            existing_inference_config: None,
         };
 
         Ok(Self {
