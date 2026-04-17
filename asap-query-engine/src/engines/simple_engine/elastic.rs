@@ -52,7 +52,7 @@ impl SimpleEngine {
         // TODO: Figure out how to handle query configuration for ElasticSearch queries.
         let query_config = self.find_query_config(&query)?;
         let agg_info = self
-            .get_aggregation_id_info(query_config)
+            .get_aggregation_id_info(&query_config)
             .map_err(|e| {
                 warn!("{}", e);
                 e
@@ -76,14 +76,13 @@ impl SimpleEngine {
             })
             .ok()?;
 
-        let grouping_labels = self
-            .streaming_config
+        let sc = self.streaming_config.read().unwrap().clone();
+        let grouping_labels = sc
             .get_aggregation_config(agg_info.aggregation_id_for_value)
             .map(|config| config.grouping_labels.clone())
             .unwrap_or_else(|| query_metadata.query_output_labels.clone());
 
-        let aggregated_labels = self
-            .streaming_config
+        let aggregated_labels = sc
             .get_aggregation_config(agg_info.aggregation_id_for_key)
             .map(|config| config.aggregated_labels.clone())
             .unwrap_or_else(KeyByLabelNames::empty);

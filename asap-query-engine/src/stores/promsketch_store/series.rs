@@ -1,5 +1,5 @@
 use asap_sketchlib::{
-    EHSketchList, EHUnivOptimized, ExponentialHistogram, SketchInput, UniformSampling, KLL,
+    DataInput, EHSketchList, EHUnivOptimized, ExponentialHistogram, UniformSampling, KLL,
 };
 
 use super::config::PromSketchConfig;
@@ -68,7 +68,7 @@ impl PromSketchInstances {
 
     /// Insert a data point into all active sketches.
     pub fn insert(&mut self, time: u64, value: f64) {
-        let input = SketchInput::F64(value);
+        let input = DataInput::F64(value);
 
         if let Some(ref mut eh) = self.eh_univ {
             // EHUnivOptimized::update(time, key, frequency_count)

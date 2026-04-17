@@ -1,4 +1,6 @@
 use asap_types::enums::CleanupPolicy;
+use asap_types::inference_config::InferenceConfig;
+use asap_types::streaming_config::StreamingConfig;
 use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
 use serde::Deserialize;
@@ -13,6 +15,18 @@ pub struct ControllerConfig {
     /// returns no series for a metric. Prometheus-inferred labels take priority.
     #[serde(default)]
     pub metrics: Option<Vec<MetricDefinition>>,
+    /// Current streaming config, passed as context for repeated reconfiguration.
+    /// NOTE: reserved for future use — the planner does not yet act on these fields.
+    /// They are wired through now so that repeated-reconfig support can be added
+    /// without a second round of type-signature changes.
+    #[serde(default)]
+    pub existing_streaming_config: Option<StreamingConfig>,
+    /// Current inference config, passed as context for repeated reconfiguration.
+    /// NOTE: see existing_streaming_config — same future-use caveat applies.
+    /// Not serializable via serde (InferenceConfig does not impl Deserialize);
+    /// set programmatically only.
+    #[serde(skip)]
+    pub existing_inference_config: Option<InferenceConfig>,
 }
 
 impl ControllerConfig {

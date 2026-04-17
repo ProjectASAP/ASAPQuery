@@ -2,6 +2,7 @@ use crate::drivers::ingest::prometheus_remote_write::decode_prometheus_remote_wr
 use crate::drivers::ingest::victoriametrics_remote_write::decode_victoriametrics_remote_write;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
 use crate::precompute_engine::worker::{extract_metric_name, parse_labels_from_series_key};
+use arc_swap::ArcSwap;
 use asap_types::aggregation_config::AggregationConfig;
 use axum::{body::Bytes, extract::State, http::StatusCode};
 use std::collections::HashMap;
@@ -14,7 +15,10 @@ pub(crate) struct IngestState {
     pub(crate) router: SeriesRouter,
     pub(crate) samples_ingested: std::sync::atomic::AtomicU64,
     /// Aggregation configs for group-key extraction.
-    pub(crate) agg_configs: Vec<Arc<AggregationConfig>>,
+    /// Wrapped in Arc so the same ArcSwap is shared with PrecomputeEngineHandle.
+    /// The handle calls ArcSwap::store() to push a new Vec; this state sees it
+    /// immediately via the shared Arc pointer (lock-free on the read path).
+    pub(crate) agg_configs: Arc<ArcSwap<Vec<Arc<AggregationConfig>>>>,
     /// When true, skip group-key extraction and pass raw samples through.
     pub(crate) pass_raw_samples: bool,
 }
@@ -86,9 +90,11 @@ async fn route_decoded_samples(
     type SampleTuple = (String, i64, f64);
     let mut by_group: HashMap<GroupKey, Vec<SampleTuple>> = HashMap::new();
 
+    // Load agg_configs once per request (lock-free ArcSwap read).
+    let agg_configs = state.agg_configs.load();
     for s in &samples {
         let metric_name = extract_metric_name(&s.labels);
-        for config in &state.agg_configs {
+        for config in agg_configs.iter() {
             if config.metric != metric_name
                 && config.spatial_filter_normalized != metric_name
                 && config.spatial_filter != metric_name

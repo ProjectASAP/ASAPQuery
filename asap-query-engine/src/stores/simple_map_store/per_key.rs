@@ -166,8 +166,12 @@ pub struct SimpleMapStorePerKey {
     metrics: DashMap<String, ()>, // HashSet equivalent
     items_inserted: DashMap<String, AtomicU64>,
 
-    // Store the streaming configuration
-    streaming_config: Arc<StreamingConfig>,
+    // Store the streaming configuration.
+    // RwLock<Arc<StreamingConfig>>: readers briefly lock to clone the Arc pointer,
+    // then use the Arc without holding the lock. Writers (applier task) swap the Arc.
+    // NOTE: stale precomputed data for removed aggregations expires naturally via
+    // the existing cleanup policy; no active purge is performed on update.
+    streaming_config: RwLock<Arc<StreamingConfig>>,
 
     // Policy for cleaning up old aggregates
     cleanup_policy: CleanupPolicy,
@@ -180,9 +184,16 @@ impl SimpleMapStorePerKey {
             earliest_timestamps: DashMap::new(),
             metrics: DashMap::new(),
             items_inserted: DashMap::new(),
-            streaming_config,
+            streaming_config: RwLock::new(streaming_config),
             cleanup_policy,
         }
+    }
+
+    /// Replace the streaming config at runtime. Called by the applier task after
+    /// the planner fires. Stale precomputed data for dropped aggregations expires
+    /// naturally via the existing cleanup policy.
+    pub fn update_streaming_config(&self, new_config: StreamingConfig) {
+        *self.streaming_config.write().unwrap() = Arc::new(new_config);
     }
 
     /// Collect diagnostic info about store contents.
@@ -348,8 +359,8 @@ impl SimpleMapStorePerKey {
         }
 
         // Get aggregation config once for cleanup settings
-        let aggregation_config = self
-            .streaming_config
+        let sc = self.streaming_config.read().unwrap().clone();
+        let aggregation_config = sc
             .get_aggregation_config(aggregation_id)
             .ok_or_else(|| format!("Aggregation config not found for {}", aggregation_id))?;
 
@@ -425,10 +436,9 @@ impl Store for SimpleMapStorePerKey {
             (String, Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>),
         > = HashMap::new();
 
+        let sc = self.streaming_config.read().unwrap().clone();
         for (output, precompute) in outputs {
-            let aggregation_config = self
-                .streaming_config
-                .get_aggregation_config(output.aggregation_id);
+            let aggregation_config = sc.get_aggregation_config(output.aggregation_id);
 
             if aggregation_config.is_none() {
                 error!(

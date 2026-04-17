@@ -155,14 +155,20 @@ impl SimpleEngine {
     pub fn find_query_config_promql_structural(
         &self,
         arm_ast: &promql_parser::parser::Expr,
-    ) -> Option<&QueryConfig> {
+    ) -> Option<QueryConfig> {
         let arm_canonical = format!("{}", arm_ast);
-        self.inference_config.query_configs.iter().find(|config| {
-            let config_canonical = promql_parser::parser::parse(&config.query)
-                .map(|ast| format!("{}", ast))
-                .unwrap_or_default();
-            config_canonical == arm_canonical
-        })
+        self.inference_config
+            .read()
+            .unwrap()
+            .query_configs
+            .iter()
+            .find(|config| {
+                let config_canonical = promql_parser::parser::parse(&config.query)
+                    .map(|ast| format!("{}", ast))
+                    .unwrap_or_default();
+                config_canonical == arm_canonical
+            })
+            .cloned()
     }
 
     /// Variant of `build_query_execution_context_promql` that accepts a pre-parsed
@@ -222,7 +228,8 @@ impl SimpleEngine {
     ) -> Option<QueryExecutionContext> {
         let (metric, spatial_filter) = get_metric_and_spatial_filter(match_result);
 
-        let promql_schema = match &self.inference_config.schema {
+        let ic = self.inference_config.read().unwrap();
+        let promql_schema = match &ic.schema {
             SchemaConfig::PromQL(schema) => schema,
             _ => return None,
         };
@@ -299,14 +306,13 @@ impl SimpleEngine {
         let do_merge = query_pattern_type == QueryPatternType::OnlyTemporal
             || query_pattern_type == QueryPatternType::OneTemporalOneSpatial;
 
-        let grouping_labels = self
-            .streaming_config
+        let sc = self.streaming_config.read().unwrap().clone();
+        let grouping_labels = sc
             .get_aggregation_config(agg_info.aggregation_id_for_value)
             .map(|config| config.grouping_labels.clone())
             .unwrap_or_else(|| query_output_labels.clone());
 
-        let aggregated_labels = self
-            .streaming_config
+        let aggregated_labels = sc
             .get_aggregation_config(agg_info.aggregation_id_for_key)
             .map(|config| config.aggregated_labels.clone())
             .unwrap_or_else(KeyByLabelNames::empty);
@@ -355,7 +361,7 @@ impl SimpleEngine {
             other => {
                 // Leaf pattern: structural config lookup + context + plan
                 let config = self.find_query_config_promql_structural(other)?;
-                let ctx = self.build_query_execution_context_from_ast(other, config, time)?;
+                let ctx = self.build_query_execution_context_from_ast(other, &config, time)?;
                 let label_names = ctx.metadata.query_output_labels.labels.clone();
                 let plan = ctx.to_logical_plan().ok()?;
                 Some((plan, label_names))
@@ -463,7 +469,7 @@ impl SimpleEngine {
             other => {
                 let config = self.find_query_config_promql_structural(other)?;
                 let base_context =
-                    self.build_query_execution_context_from_ast(other, config, end)?;
+                    self.build_query_execution_context_from_ast(other, &config, end)?;
                 let label_names = base_context.metadata.query_output_labels.labels.clone();
 
                 let start_ms = Self::convert_query_time_to_data_time(start);
@@ -472,6 +478,8 @@ impl SimpleEngine {
 
                 let tumbling_window_ms = self
                     .streaming_config
+                    .read()
+                    .unwrap()
                     .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
                     .map(|c| c.window_size * 1000)?;
 
@@ -619,7 +627,7 @@ impl SimpleEngine {
                 .map(|d| d.num_seconds() as u64 * 1000),
         };
 
-        let all_labels = match &self.inference_config.schema {
+        let all_labels = match &self.inference_config.read().unwrap().schema {
             SchemaConfig::PromQL(schema) => schema
                 .get_labels(&metric)
                 .cloned()
@@ -1053,7 +1061,7 @@ impl SimpleEngine {
 
         // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
         let agg_info: AggregationIdInfo = if let Some(config) = self.find_query_config(&query) {
-            self.get_aggregation_id_info(config)
+            self.get_aggregation_id_info(&config)
                 .map_err(|e| {
                     warn!("{}", e);
                     e
@@ -1067,6 +1075,9 @@ impl SimpleEngine {
             let requirements =
                 self.build_query_requirements_promql(&match_result, query_pattern_type);
             self.streaming_config
+                .read()
+                .unwrap()
+                .clone()
                 .find_compatible_aggregation(&requirements)?
         };
 
@@ -1106,6 +1117,8 @@ impl SimpleEngine {
         // Get window size
         let tumbling_window_ms = self
             .streaming_config
+            .read()
+            .unwrap()
             .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
             .map(|config| config.window_size * 1000)?;
 

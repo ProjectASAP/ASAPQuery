@@ -11,7 +11,7 @@ use rmp_serde::Serializer;
 use serde::{Deserialize, Serialize};
 use twox_hash::XxHash32;
 
-use asap_sketchlib::{CountMin as SketchlibCountMin, RegularPath, SketchInput, Vector2D};
+use asap_sketchlib::{CountMin as SketchlibCountMin, RegularPath, DataInput, Vector2D};
 
 // Count-Min Sketch parameters
 const DEPTH: usize = {{ depth }}; // Number of hash functions
@@ -77,7 +77,7 @@ fn countminsketch_sum(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
             if many <= 0 {
                 continue;
             }
-            let input = SketchInput::String(key.to_owned());
+            let input = DataInput::String(key.to_owned());
             inner.insert_many(&input, many);
         }
 
