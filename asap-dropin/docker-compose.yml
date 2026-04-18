@@ -1,0 +1,53 @@
+name: asapquery-dropin
+
+# Self-contained ASAPQuery stack for existing Prometheus + Grafana deployments.
+#
+# Usage:
+#   1. Adjust PROMETHEUS_URL in .env to point at your Prometheus.
+#   2. docker compose up -d
+#   3. Add remote_write to your prometheus.yml  ->  http://localhost:${REMOTE_WRITE_PORT}/receive
+#   4. Point your Grafana datasource URL        ->  http://localhost:${QUERY_ENGINE_PORT}
+#
+# The query engine starts with an empty plan and forwards all queries to Prometheus.
+# After the observation window (default 10 min), it automatically generates a plan
+# based on real query patterns and begins precomputing sketches.
+
+networks:
+  asap-network:
+    driver: bridge
+
+services:
+  queryengine:
+    image: ghcr.io/projectasap/asap-query-engine:v0.3.0
+    container_name: asap-dropin-queryengine
+    hostname: queryengine
+    networks:
+      - asap-network
+    ports:
+      - "${QUERY_ENGINE_PORT:-8088}:8088"
+      - "${REMOTE_WRITE_PORT:-9091}:9091"
+    environment:
+      - RUST_LOG=INFO
+      - RUST_BACKTRACE=1
+    volumes:
+      - ./output/queryengine:/app/outputs
+    command:
+      - "--prometheus-server=${PROMETHEUS_URL:-http://host.docker.internal:9090}"
+      - "--prometheus-scrape-interval=${PROMETHEUS_SCRAPE_INTERVAL:-15}"
+      - "--streaming-engine=precompute"
+      - "--prometheus-remote-write-port=9091"
+      - "--delete-existing-db"
+      - "--log-level=INFO"
+      - "--output-dir=/app/outputs"
+      - "--query-language=PROMQL"
+      - "--lock-strategy=per-key"
+      - "--forward-unsupported-queries"
+      - "--enable-query-tracker"
+      - "--tracker-observation-window-secs=600"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8088' 2>/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
