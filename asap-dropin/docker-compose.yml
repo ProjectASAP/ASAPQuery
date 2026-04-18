@@ -9,7 +9,7 @@ name: asapquery-dropin
 #   4. Point your Grafana datasource URL        ->  http://localhost:${QUERY_ENGINE_PORT}
 #
 # The query engine starts with an empty plan and forwards all queries to Prometheus.
-# After the observation window (default 10 min), it automatically generates a plan
+# After the observation window (default 180s), it automatically generates a plan
 # based on real query patterns and begins precomputing sketches.
 
 networks:
@@ -43,11 +43,11 @@ services:
       - "--lock-strategy=per-key"
       - "--forward-unsupported-queries"
       - "--enable-query-tracker"
-      - "--tracker-observation-window-secs=600"
+      - "--tracker-observation-window-secs=${TRACKER_OBSERVATION_WINDOW_SECS:-60}"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8088' 2>/dev/null || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 15s
-    restart: unless-stopped
+    restart: no
