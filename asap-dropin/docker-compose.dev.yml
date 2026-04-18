@@ -7,15 +7,6 @@ name: asapquery-dropin
 #   docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
-  asap-planner-rs:
-    build:
-      context: ..
-      dockerfile: asap-planner-rs/Dockerfile
-
-  asap-summary-ingest:
-    build:
-      context: ../asap-summary-ingest
-
   queryengine:
     build:
       context: ..
