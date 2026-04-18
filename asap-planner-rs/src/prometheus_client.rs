@@ -158,69 +158,6 @@ fn fetch_labels_for_metric(
     )))
 }
 
-/// Query Prometheus `GET /api/v1/label/__name__/values` and return all metric names.
-pub fn fetch_all_metric_names(prometheus_url: &str) -> Result<Vec<String>, ControllerError> {
-    let url = format!(
-        "{}/api/v1/label/__name__/values",
-        prometheus_url.trim_end_matches('/')
-    );
-    let client = reqwest::blocking::Client::new();
-
-    for attempt in 1..=MAX_RETRIES {
-        let response = client.get(&url).send().map_err(|e| {
-            ControllerError::PrometheusClient(format!(
-                "HTTP request failed for metric names: {}",
-                e
-            ))
-        })?;
-
-        let status = response.status();
-
-        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-            warn!(
-                "Prometheus returned 503 for metric names (attempt {}/{}); retrying in {}s",
-                attempt,
-                MAX_RETRIES,
-                RETRY_DELAY.as_secs(),
-            );
-            thread::sleep(RETRY_DELAY);
-            continue;
-        }
-
-        if !status.is_success() {
-            return Err(ControllerError::PrometheusClient(format!(
-                "Prometheus returned HTTP {} for metric names",
-                status
-            )));
-        }
-
-        let body: serde_json::Value = response.json().map_err(|e| {
-            ControllerError::PrometheusClient(format!(
-                "Failed to parse Prometheus response for metric names: {}",
-                e
-            ))
-        })?;
-
-        let data = match body.get("data").and_then(|d| d.as_array()) {
-            Some(arr) => arr,
-            None => {
-                warn!("Prometheus returned no 'data' array for metric names");
-                return Ok(Vec::new());
-            }
-        };
-
-        return Ok(data
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect());
-    }
-
-    Err(ControllerError::PrometheusClient(format!(
-        "Prometheus returned 503 for metric names after {} attempts; giving up",
-        MAX_RETRIES
-    )))
-}
-
 /// Build a `PromQLSchema` by querying Prometheus for each metric name found in the given
 /// PromQL queries. Metrics with no series in Prometheus are skipped with a warning.
 pub fn build_schema_from_prometheus(

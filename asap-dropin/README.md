@@ -1,8 +1,8 @@
 # ASAPQuery Drop-in for Existing Prometheus + Grafana Stacks
 
-A self-contained Docker Compose that adds ASAPQuery to an existing Prometheus and Grafana deployment. No additional services need to be installed or managed beyond what is in this compose file.
+A self-contained single-container Docker Compose that adds ASAPQuery to an existing Prometheus and Grafana deployment.
 
-ASAPQuery auto-discovers all metrics from your Prometheus and generates quantile sketches for them — no query configuration needed.
+On startup, all queries are forwarded transparently to your upstream Prometheus. After one observation window (default 10 min), the engine automatically plans and activates sketch-based acceleration based on the real queries it observed from Grafana.
 
 ## Prerequisites
 
@@ -12,9 +12,9 @@ ASAPQuery auto-discovers all metrics from your Prometheus and generates quantile
 
 ## Quick Start
 
-### 1. Set environment variables
+### 1. Configure environment
 
-Copy and edit the `.env` file:
+Edit `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
@@ -59,27 +59,16 @@ ASAPQuery speaks the Prometheus query API. Queries it can accelerate are answere
 ## Architecture
 
 ```
-Your Prometheus ──remote_write──▸ Arroyo (:9091/receive)
-                                     │
-                                     ▼
-                                   Kafka
-                                     │
-                                     ▼
+Your Prometheus ──remote_write──▸ ASAPQuery (:9091/receive)
+                                      │
+                                      ▼
 Your Grafana ◂──query──── ASAPQuery Query Engine (:8088)
-                                     │
-                                     ▼ (fallback)
-                              Your Prometheus
+                                      │
+                                      ▼ (fallback / passthrough)
+                               Your Prometheus
 ```
 
-## Future: single-container mode
-
-This compose currently runs six containers (Kafka, Arroyo, planner, summary-ingest, query engine, plus kafka-init). Once issues #242, #243, and #244 are completed and the precompute_engine cutover is done, the query engine will be able to:
-
-- Receive Prometheus remote_write directly (precompute engine, `--enable-prometheus-remote-write`)
-- Auto-discover metrics and run the planner in-process (already embedded via #271/#272)
-- Hot-reload sketch and ingest configs at runtime (#242/#243/#244)
-
-At that point this compose should be collapsed to a single `queryengine` container — Kafka, Arroyo, the planner init container, and asap-summary-ingest all become unnecessary.
+The query engine embeds the planner and runs it automatically after observing real Grafana queries for one observation window. No separate planner container, no Kafka, no Arroyo.
 
 ## Development
 

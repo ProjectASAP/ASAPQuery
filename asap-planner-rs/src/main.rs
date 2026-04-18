@@ -98,15 +98,14 @@ fn main() -> anyhow::Result<()> {
                 (None, Some(log_path), Some(url)) => {
                     Controller::from_query_log(&log_path, opts, &url)?
                 }
-                (None, None, Some(url)) => Controller::from_prometheus(&url, opts)?,
                 (None, Some(_log_path), None) => {
                     anyhow::bail!(
                         "--prometheus-url is required when using --query-log \
                          (query logs have no metrics hint to fall back on)"
                     )
                 }
-                (None, None, None) => {
-                    anyhow::bail!("provide one of --input_config, --query-log, or --prometheus-url")
+                (None, None, _) => {
+                    anyhow::bail!("provide one of --input_config or --query-log")
                 }
                 _ => unreachable!("clap conflicts_with prevents this combination"),
             };
