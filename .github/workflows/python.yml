@@ -12,6 +12,7 @@ on:
       - 'asap-common/dependencies/py/**'
       - '.github/workflows/python.yml'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [ main ]
     paths:
       - 'asap-summary-ingest/**'
@@ -23,12 +24,17 @@ on:
       - '.github/workflows/python.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
   detect-changes:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     outputs:
       summary_ingest: ${{ steps.filter.outputs.summary_ingest }}
