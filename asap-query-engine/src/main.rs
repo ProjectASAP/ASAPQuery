@@ -403,6 +403,40 @@ async fn main() -> Result<()> {
         adapter_config,
     };
 
+    // Verify Prometheus is reachable before starting
+    {
+        let client = reqwest::Client::new();
+        let health_url = format!(
+            "{}/api/v1/status/runtimeinfo",
+            args.prometheus_server.trim_end_matches('/')
+        );
+        match client
+            .get(&health_url)
+            .timeout(std::time::Duration::from_secs(5))
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                info!("Prometheus reachable at {}", args.prometheus_server);
+            }
+            Ok(resp) => {
+                error!(
+                    "Prometheus at {} returned HTTP {} — cannot start",
+                    args.prometheus_server,
+                    resp.status()
+                );
+                std::process::exit(1);
+            }
+            Err(e) => {
+                error!(
+                    "Cannot reach Prometheus at {}: {}",
+                    args.prometheus_server, e
+                );
+                std::process::exit(1);
+            }
+        }
+    }
+
     let query_tracker = if args.enable_query_tracker {
         use query_engine_rust::planner_client::{LocalPlannerClient, PlannerResult};
         use query_engine_rust::QueryTrackerConfig;

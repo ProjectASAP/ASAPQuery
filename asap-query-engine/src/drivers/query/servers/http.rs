@@ -217,6 +217,12 @@ async fn process_query_request(
                 total_duration.as_secs_f64() * 1000.0
             );
             debug!("=== RETURNING SUCCESS RESPONSE ===");
+            info!(
+                "query='{}' destination=asap asap_latency_ms={:.2} total_latency_ms={:.2}",
+                parsed_request.query,
+                query_duration.as_secs_f64() * 1000.0,
+                total_duration.as_secs_f64() * 1000.0
+            );
 
             match state
                 .adapter
@@ -238,6 +244,11 @@ async fn process_query_request(
             // Step 4: Handle unsupported query using fallback client
             if let Some(fallback) = &state.fallback {
                 debug!("Query not supported locally, forwarding to fallback");
+                info!(
+                    "query='{}' destination=prometheus total_latency_ms={:.2}",
+                    parsed_request.query,
+                    total_duration.as_secs_f64() * 1000.0
+                );
                 // Fallback client handles the HTTP call and returns formatted response
                 match fallback
                     .execute_query_with_headers(parsed_request, headers)
@@ -248,6 +259,11 @@ async fn process_query_request(
                 }
             } else {
                 debug!("Query not supported and forwarding disabled, returning error");
+                info!(
+                    "query='{}' destination=none_unsupported total_latency_ms={:.2}",
+                    parsed_request.query,
+                    total_duration.as_secs_f64() * 1000.0
+                );
                 // Adapter formats the unsupported query error for its protocol
                 match state.adapter.format_unsupported_query_response().await {
                     Ok(json) => json.into_response(),
