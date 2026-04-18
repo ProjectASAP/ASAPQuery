@@ -6,6 +6,7 @@ name: PR Evaluation
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
       - main
     paths:
@@ -16,6 +17,10 @@ on:
       - '.github/workflows/accuracy_performance.yml'
       - 'benchmarks/**'
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -28,6 +33,7 @@ jobs:
   # All downstream jobs pull these images instead of rebuilding.
   # ---------------------------------------------------------------------------
   build:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Build CI images
     runs-on: ubuntu-latest
     outputs:

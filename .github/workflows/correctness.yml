@@ -13,6 +13,7 @@ on:
       - 'asap-common/sketch-core/**'
       - '.github/workflows/correctness.yml'
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches: [ main ]
     paths:
       - 'asap-common/tests/**'
@@ -21,9 +22,14 @@ on:
       - '.github/workflows/correctness.yml'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ── 1. Cross-language token matching (Python vs Rust) ──────────────────────
   cross-language-token-matching:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Cross-language PromQL token matching
     runs-on: ubuntu-latest
     steps:
@@ -82,6 +88,7 @@ jobs:
 
   # ── 2. Cross-language serialised pattern comparison ────────────────────────
   cross-language-pattern-serialisation:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Cross-language pattern serialisation
     runs-on: ubuntu-latest
     steps:
@@ -136,6 +143,7 @@ jobs:
 
   # ── 3. Rust pattern-matching unit tests ────────────────────────────────────
   rust-pattern-matching:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     name: Rust pattern matching unit tests
     runs-on: ubuntu-latest
     steps:
