@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "asap_planner"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "asap_types",
@@ -427,7 +427,7 @@ dependencies = [
 
 [[package]]
 name = "asap_types"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap 4.6.0",
@@ -907,7 +907,7 @@ dependencies = [
 
 [[package]]
 name = "compare_patterns_runner"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "promql_utilities",
  "serde",
@@ -1606,7 +1606,7 @@ dependencies = [
 
 [[package]]
 name = "datafusion_summary_library"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "async-trait",
@@ -1676,7 +1676,7 @@ checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
 
 [[package]]
 name = "elastic_dsl_utilities"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "serde",
@@ -3447,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "promql_token_matching_tests"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "promql-parser",
@@ -3461,7 +3461,7 @@ dependencies = [
 
 [[package]]
 name = "promql_utilities"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "promql-parser",
@@ -3542,7 +3542,7 @@ dependencies = [
 
 [[package]]
 name = "query_engine_rust"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4122,7 +4122,7 @@ checksum = "b2aa850e253778c88a04c3d7323b043aeda9d3e30d5971937c1855769763678e"
 
 [[package]]
 name = "sketch-core"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "asap_sketchlib",
  "clap 4.6.0",
@@ -4206,7 +4206,7 @@ dependencies = [
 
 [[package]]
 name = "sql_utilities"
-version = "0.1.0"
+version = "0.3.0"
 dependencies = [
  "chrono",
  "parse_datetime",
