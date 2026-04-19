@@ -15,25 +15,5 @@ query_groups:
         FROM netflow_table
         WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW())
         GROUP BY srcip
-      - >-
-        SELECT srcip, COUNT(pkt_len) AS transfer_events
-        FROM netflow_table
-        WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW())
-        GROUP BY srcip
-      - >-
-        SELECT srcip, COUNT(pkt_len) AS transfer_events
-        FROM netflow_table
-        WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW())
-        GROUP BY srcip
-      - >-
-        SELECT srcip, COUNT(pkt_len) AS transfer_events
-        FROM netflow_table
-        WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW())
-        GROUP BY srcip
-      - >-
-        SELECT srcip, COUNT(pkt_len) AS transfer_events
-        FROM netflow_table
-        WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW())
-        GROUP BY srcip
 aggregate_cleanup:
   policy: no_cleanup

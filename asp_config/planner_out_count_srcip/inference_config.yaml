@@ -2,25 +2,9 @@ cleanup_policy:
   name: no_cleanup
 queries:
 - aggregations:
-  - aggregation_id: 51
-  - aggregation_id: 52
+  - aggregation_id: 1
+  - aggregation_id: 2
   query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
-- aggregations:
-  - aggregation_id: 51
-  - aggregation_id: 52
-  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
-- aggregations:
-  - aggregation_id: 51
-  - aggregation_id: 52
-  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
-- aggregations:
-  - aggregation_id: 51
-  - aggregation_id: 52
-  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
-- aggregations:
-  - aggregation_id: 51
-  - aggregation_id: 52
-  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
 tables:
 - name: netflow_table
   time_column: time

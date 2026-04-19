@@ -1,5 +1,5 @@
 aggregations:
-- aggregationId: 51
+- aggregationId: 1
   aggregationSubType: ''
   aggregationType: DeltaSetAggregator
   labels:
@@ -17,7 +17,7 @@ aggregations:
   value_column: pkt_len
   windowSize: 1
   windowType: tumbling
-- aggregationId: 52
+- aggregationId: 2
   aggregationSubType: count
   aggregationType: CountMinSketch
   labels:
@@ -31,6 +31,7 @@ aggregations:
   parameters:
     depth: 3
     width: 1024
+    _impl_mode: Sketchlib
   slideInterval: 1
   spatialFilter: ''
   table_name: netflow_table
