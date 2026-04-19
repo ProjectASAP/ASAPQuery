@@ -16,7 +16,6 @@ import os
 import sys
 import urllib.request
 
-
 CLICKBENCH_URL = "https://datasets.clickhouse.com/hits_compatible/hits.json.gz"
 CLICKBENCH_FILENAME = "hits.json.gz"
 

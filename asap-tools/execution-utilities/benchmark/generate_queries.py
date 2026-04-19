@@ -64,7 +64,6 @@ from pathlib import Path
 from typing import List, Optional
 
 
-
 def _parse_timestamp(value: str) -> Optional[datetime]:
     """Try to parse a timestamp string in common formats."""
     value = str(value).strip()
@@ -90,9 +89,7 @@ def _parse_timestamp(value: str) -> Optional[datetime]:
     return None
 
 
-def _scan_ts_range_json(
-    file_path: str, ts_column: str, compressed: bool
-) -> tuple:
+def _scan_ts_range_json(file_path: str, ts_column: str, compressed: bool) -> tuple:
     """Scan a JSON-lines file and return (min_ts, max_ts, count)."""
     min_ts = max_ts = None
     count = 0
@@ -119,11 +116,10 @@ def _scan_ts_range_json(
     return min_ts, max_ts, count
 
 
-def _scan_ts_range_csv(
-    file_path: str, ts_column: str
-) -> tuple:
+def _scan_ts_range_csv(file_path: str, ts_column: str) -> tuple:
     """Scan a CSV file and return (min_ts, max_ts, count)."""
     import csv
+
     min_ts = max_ts = None
     count = 0
     with open(file_path, "r", newline="") as f:
@@ -145,15 +141,17 @@ def _scan_ts_range_csv(
     return min_ts, max_ts, count
 
 
-def detect_timestamps(
-    data_file: str, data_file_format: str, ts_column: str
-) -> tuple:
+def detect_timestamps(data_file: str, data_file_format: str, ts_column: str) -> tuple:
     """Return (min_ts, max_ts) by scanning the entire data file."""
     fmt = data_file_format.lower()
     if fmt in ("json.gz", "jsonl.gz"):
-        min_ts, max_ts, count = _scan_ts_range_json(data_file, ts_column, compressed=True)
+        min_ts, max_ts, count = _scan_ts_range_json(
+            data_file, ts_column, compressed=True
+        )
     elif fmt in ("json", "jsonl"):
-        min_ts, max_ts, count = _scan_ts_range_json(data_file, ts_column, compressed=False)
+        min_ts, max_ts, count = _scan_ts_range_json(
+            data_file, ts_column, compressed=False
+        )
     elif fmt == "csv":
         min_ts, max_ts, count = _scan_ts_range_csv(data_file, ts_column)
     else:
@@ -161,9 +159,7 @@ def detect_timestamps(
         sys.exit(1)
 
     if min_ts is None:
-        print(
-            f"ERROR: No '{ts_column}' timestamps found in {data_file}"
-        )
+        print(f"ERROR: No '{ts_column}' timestamps found in {data_file}")
         sys.exit(1)
 
     return min_ts, max_ts
@@ -250,19 +246,11 @@ def generate_sql_files(
         desc_db = f"quantile window ending at {db_end}"
 
         if window_form == "dateadd":
-            asap_where = (
-                f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{asap_end}') AND '{asap_end}'"
-            )
-            db_where = (
-                f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{db_end}') AND '{db_end}'"
-            )
+            asap_where = f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{asap_end}') AND '{asap_end}'"
+            db_where = f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{db_end}') AND '{db_end}'"
         else:
-            asap_where = (
-                f"{ts_column} BETWEEN '{asap_start}' AND '{asap_end}'"
-            )
-            db_where = (
-                f"{ts_column} BETWEEN '{db_start}' AND '{db_end}'"
-            )
+            asap_where = f"{ts_column} BETWEEN '{asap_start}' AND '{asap_end}'"
+            db_where = f"{ts_column} BETWEEN '{db_start}' AND '{db_end}'"
 
         asap_sql = (
             f"-- {label}: {desc_asap}\n"
@@ -379,7 +367,9 @@ def main():
     # Table/column config
     parser.add_argument("--table-name", required=True)
     parser.add_argument("--ts-column", required=True, help="Timestamp column name")
-    parser.add_argument("--value-column", required=True, help="Column to compute quantile on")
+    parser.add_argument(
+        "--value-column", required=True, help="Column to compute quantile on"
+    )
     parser.add_argument(
         "--group-by-columns",
         required=True,
@@ -387,7 +377,9 @@ def main():
     )
     # Query parameters
     parser.add_argument("--quantile", type=float, default=0.95)
-    parser.add_argument("--window-size", type=int, default=10, help="Window size in seconds")
+    parser.add_argument(
+        "--window-size", type=int, default=10, help="Window size in seconds"
+    )
     parser.add_argument("--num-queries", type=int, default=50)
     parser.add_argument(
         "--ts-format-asap",
