@@ -953,13 +953,15 @@ def main(args):
 
         parameters = dict(parameters)
         if agg_function in ("countminsketch_count", "countminsketch_sum"):
-            parameters["impl_mode"] = getattr(
-                args, "sketch_cms_impl", "legacy"
-            ).capitalize()
+            impl_mode = getattr(args, "sketch_cms_impl", "legacy").capitalize()
+            # Some Jinja templates expose `_impl_mode` via internal set/default usage.
+            # Provide both keys so template variable discovery and rendering are robust.
+            parameters["impl_mode"] = impl_mode
+            parameters["_impl_mode"] = impl_mode
         elif agg_function == "countminsketchwithheap_topk":
-            parameters["impl_mode"] = getattr(
-                args, "sketch_cmwh_impl", "legacy"
-            ).capitalize()
+            impl_mode = getattr(args, "sketch_cmwh_impl", "legacy").capitalize()
+            parameters["impl_mode"] = impl_mode
+            parameters["_impl_mode"] = impl_mode
 
         sql_queries.append(sql_query)
         # if not is_labels_accumulator:
