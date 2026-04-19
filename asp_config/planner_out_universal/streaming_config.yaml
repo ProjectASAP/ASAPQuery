@@ -1,0 +1,104 @@
+aggregations:
+- aggregationId: 21
+  aggregationSubType: ''
+  aggregationType: DatasketchesKLL
+  labels:
+    aggregated: []
+    grouping:
+    - dstip
+    - proto
+    - srcip
+    rollup: []
+  metric: netflow_table
+  parameters:
+    K: 20
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: pkt_len
+  windowSize: 1
+  windowType: tumbling
+- aggregationId: 31
+  aggregationSubType: max
+  aggregationType: MultipleMinMax
+  labels:
+    aggregated:
+    - dstip
+    grouping: []
+    rollup:
+    - proto
+    - srcip
+  metric: netflow_table
+  parameters: {}
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: pkt_len
+  windowSize: 1
+  windowType: tumbling
+- aggregationId: 41
+  aggregationSubType: ''
+  aggregationType: SetAggregator
+  labels:
+    aggregated: []
+    grouping:
+    - srcip
+    rollup:
+    - dstip
+    - proto
+  metric: netflow_table
+  parameters: {}
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: dstip
+  windowSize: 1
+  windowType: tumbling
+- aggregationId: 51
+  aggregationSubType: ''
+  aggregationType: DeltaSetAggregator
+  labels:
+    aggregated:
+    - srcip
+    grouping: []
+    rollup:
+    - dstip
+    - proto
+  metric: netflow_table
+  parameters: {}
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: pkt_len
+  windowSize: 1
+  windowType: tumbling
+- aggregationId: 52
+  aggregationSubType: count
+  aggregationType: CountMinSketch
+  labels:
+    aggregated:
+    - srcip
+    grouping: []
+    rollup:
+    - dstip
+    - proto
+  metric: netflow_table
+  parameters:
+    depth: 3
+    width: 1024
+  slideInterval: 1
+  spatialFilter: ''
+  table_name: netflow_table
+  value_column: pkt_len
+  windowSize: 1
+  windowType: tumbling
+tables:
+- name: netflow_table
+  time_column: time
+  value_columns:
+  - pkt_len
+  - dstip
+  metadata_columns:
+  - srcip
+  - dstip
+  - proto

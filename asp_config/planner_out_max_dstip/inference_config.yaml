@@ -9,6 +9,9 @@ queries:
   query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
 - aggregations:
   - aggregation_id: 31
+  query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 31
   query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
 - aggregations:
   - aggregation_id: 31

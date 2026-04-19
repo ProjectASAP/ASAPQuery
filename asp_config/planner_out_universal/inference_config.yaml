@@ -1,0 +1,78 @@
+cleanup_policy:
+  name: no_cleanup
+queries:
+- aggregations:
+  - aggregation_id: 21
+  query: SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY proto, srcip, dstip ORDER BY p99_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 21
+  query: SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY proto, srcip, dstip ORDER BY p99_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 21
+  query: SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY proto, srcip, dstip ORDER BY p99_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 21
+  query: SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY proto, srcip, dstip ORDER BY p99_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 21
+  query: SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY proto, srcip, dstip ORDER BY p99_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 31
+  query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 31
+  query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 31
+  query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 31
+  query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 31
+  query: SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip ORDER BY max_pkt_len DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 41
+  query: SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip ORDER BY unique_peers DESC LIMIT 10
+- aggregations:
+  - aggregation_id: 51
+  - aggregation_id: 52
+  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
+- aggregations:
+  - aggregation_id: 51
+  - aggregation_id: 52
+  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
+- aggregations:
+  - aggregation_id: 51
+  - aggregation_id: 52
+  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
+- aggregations:
+  - aggregation_id: 51
+  - aggregation_id: 52
+  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
+- aggregations:
+  - aggregation_id: 51
+  - aggregation_id: 52
+  query: SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip
+tables:
+- name: netflow_table
+  time_column: time
+  value_columns:
+  - pkt_len
+  - dstip
+  metadata_columns:
+  - srcip
+  - dstip
+  - proto

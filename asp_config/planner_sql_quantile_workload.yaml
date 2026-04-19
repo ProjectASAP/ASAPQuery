@@ -17,5 +17,33 @@ query_groups:
         GROUP BY proto, srcip, dstip
         ORDER BY p99_pkt_len DESC
         LIMIT 10
+      - >-
+        SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len
+        FROM netflow_table
+        WHERE time BETWEEN DATEADD(s, -15, NOW()) AND DATEADD(s, -10, NOW())
+        GROUP BY proto, srcip, dstip
+        ORDER BY p99_pkt_len DESC
+        LIMIT 10
+      - >-
+        SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len
+        FROM netflow_table
+        WHERE time BETWEEN DATEADD(s, -20, NOW()) AND DATEADD(s, -10, NOW())
+        GROUP BY proto, srcip, dstip
+        ORDER BY p99_pkt_len DESC
+        LIMIT 10
+      - >-
+        SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len
+        FROM netflow_table
+        WHERE time BETWEEN DATEADD(s, -70, NOW()) AND DATEADD(s, -10, NOW())
+        GROUP BY proto, srcip, dstip
+        ORDER BY p99_pkt_len DESC
+        LIMIT 10
+      - >-
+        SELECT proto, srcip, dstip, quantile(0.99)(pkt_len) AS p99_pkt_len
+        FROM netflow_table
+        WHERE time BETWEEN DATEADD(s, -310, NOW()) AND DATEADD(s, -10, NOW())
+        GROUP BY proto, srcip, dstip
+        ORDER BY p99_pkt_len DESC
+        LIMIT 10
 aggregate_cleanup:
   policy: no_cleanup
