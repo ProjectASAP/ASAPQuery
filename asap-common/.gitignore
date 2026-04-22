@@ -5,6 +5,7 @@
 .vscode/
 
 dependencies/py/promql_utilities/promql_utilities.egg-info/
+dependencies/py/promql_utilities/build/
 dependencies/rs/**/target/
 
 tests/**/*.json
