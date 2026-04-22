@@ -178,6 +178,7 @@ def run_query(
             return (
                 latency_ms,
                 None,
+                0,
                 f"HTTP {response.status_code}: {response.text[:200]}",
             )
     except requests.Timeout:
@@ -300,7 +301,7 @@ def run_benchmark(
                 )
                 plot_latencies.append(0.0)
             else:
-                preview = last_result.replace("\n", " | ")[:200] if last_result else ""
+                preview = last_result.replace("\n", " | ") if last_result else ""
                 latencies_ok.append(latency_ms)
                 plot_latencies.append(latency_ms)
                 print(f"{latency_ms:.2f}ms ({last_row_count} rows)")
@@ -341,18 +342,56 @@ def _plot_single(latencies: List[float], mode: str, out_path: Path):
     print(f"Plot saved to {out_path}")
 
 
-def _plot_comparison(asap_csv: Path, baseline_csv: Path, out_path: Path):
-    """Two-panel comparison plot: per-query bars + speedup bars.
+def _parse_result_values(result_full: str) -> List[float]:
+    """Extract numeric values from a pipe-separated result_full string."""
+    if not result_full:
+        return []
+    values = []
+    for part in result_full.split(" | "):
+        part = part.strip()
+        if not part:
+            continue
+        cols = part.split("\t")
+        try:
+            values.append(float(cols[-1]))
+        except (ValueError, IndexError):
+            continue
+    return values
 
-    Adapted from asap_query_latency/plot_latency.py.
-    """
+
+def _compute_result_error(
+    baseline_values: List[float], asap_values: List[float]
+) -> Optional[float]:
+    """Mean absolute relative error between two sorted result sets."""
+    if not baseline_values or not asap_values:
+        return None
+    b = sorted(baseline_values)
+    a = sorted(asap_values)
+    n = min(len(b), len(a))
+    if n == 0:
+        return None
+    b, a = b[:n], a[:n]
+    errors = []
+    for bv, av in zip(b, a):
+        if bv == 0:
+            errors.append(0.0 if av == 0 else abs(av))
+        else:
+            errors.append(abs(av - bv) / abs(bv))
+    return sum(errors) / len(errors)
+
+
+def _plot_comparison(asap_csv: Path, baseline_csv: Path, out_path: Path):
+    """Three-panel comparison: latency bars, speedup, and result accuracy."""
 
     def _load(path):
         rows = {}
         with open(path) as f:
             for row in csv.DictReader(f):
                 if not row["error"]:
-                    rows[row["query_id"]] = float(row["latency_ms"])
+                    rows[row["query_id"]] = {
+                        "latency": float(row["latency_ms"]),
+                        "result": row.get("result_full", ""),
+                    }
         return rows
 
     asap = _load(asap_csv)
@@ -363,13 +402,28 @@ def _plot_comparison(asap_csv: Path, baseline_csv: Path, out_path: Path):
         return
 
     x = np.arange(len(qids))
-    a_vals = [asap[q] for q in qids]
-    b_vals = [base[q] for q in qids]
+    a_vals = [asap[q]["latency"] for q in qids]
+    b_vals = [base[q]["latency"] for q in qids]
     speedup = [b / a if a > 0 else 0 for a, b in zip(a_vals, b_vals)]
 
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(14, 7), gridspec_kw={"height_ratios": [3, 1]}
+    errors_pct = []
+    for q in qids:
+        b_results = _parse_result_values(base[q]["result"])
+        a_results = _parse_result_values(asap[q]["result"])
+        err = _compute_result_error(b_results, a_results)
+        errors_pct.append((err or 0.0) * 100)
+
+    has_accuracy = any(e > 0 for e in errors_pct)
+    n_panels = 3 if has_accuracy else 2
+    ratios = [3, 1, 1.5] if has_accuracy else [3, 1]
+
+    fig, axes = plt.subplots(
+        n_panels,
+        1,
+        figsize=(14, 4 + 3 * n_panels),
+        gridspec_kw={"height_ratios": ratios},
     )
+    ax1, ax2 = axes[0], axes[1]
 
     w = 0.4
     ax1.bar(x - w / 2, b_vals, w, label="Baseline", color="#f4a460")
@@ -398,10 +452,43 @@ def _plot_comparison(asap_csv: Path, baseline_csv: Path, out_path: Path):
     ax2.legend(fontsize=8)
     ax2.set_xlim(-0.6, len(qids) - 0.4)
 
+    if has_accuracy:
+        ax3 = axes[2]
+        colors = [
+            "#d9534f" if e > 10 else "#f0ad4e" if e > 5 else "#5cb85c"
+            for e in errors_pct
+        ]
+        ax3.bar(
+            x, errors_pct, color=colors, width=0.7, edgecolor="black", linewidth=0.3
+        )
+        mean_err = np.mean(errors_pct)
+        ax3.axhline(
+            mean_err,
+            color="red",
+            linewidth=1,
+            linestyle="--",
+            label=f"mean {mean_err:.2f}%",
+        )
+        ax3.set_xticks(x)
+        ax3.set_xticklabels(qids, rotation=90, fontsize=7)
+        ax3.set_ylabel("Relative Error (%)")
+        ax3.set_title("Result accuracy: ASAP estimate vs baseline exact answer")
+        ax3.legend(fontsize=8)
+        ax3.set_xlim(-0.6, len(qids) - 0.4)
+
     plt.tight_layout()
     plt.savefig(out_path, dpi=150)
     plt.close()
     print(f"Comparison plot saved to {out_path}")
+
+    if has_accuracy:
+        s = sorted(errors_pct)
+        n = len(s)
+        print(
+            f"Result error: mean={np.mean(s):.2f}%  "
+            f"p50={s[int(n*0.50)]:.2f}%  p95={s[int(n*0.95)]:.2f}%  "
+            f"max={s[-1]:.2f}%"
+        )
 
 
 # ---------------------------------------------------------------------------
