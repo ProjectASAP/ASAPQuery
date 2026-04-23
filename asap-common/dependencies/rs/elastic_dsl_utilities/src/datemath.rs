@@ -1,6 +1,5 @@
+use crate::ast_parsing::query_info::{FieldName, Predicate, TermValue};
 use serde::{Deserialize, Serialize};
-use crate::ast_parsing::query_info::{FieldName, TermValue, Predicate};
-
 
 /// Time range bounds resolved into epoch milliseconds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -117,9 +116,9 @@ pub fn range_query_to_time_range(predicate: &Predicate, now_ms: i64) -> Option<R
                     _ => None,
                 }),
             };
-            let resolved =tr.resolve_epoch_millis(now_ms)?;
+            let resolved = tr.resolve_epoch_millis(now_ms)?;
             Some(resolved)
-        },
+        }
         _ => None,
     }
 }
@@ -188,8 +187,8 @@ mod tests {
         };
         let now_ms = 1_000_000_i64;
 
-        let resolved = range_query_to_time_range(&predicate, now_ms)
-            .expect("range predicate should convert");
+        let resolved =
+            range_query_to_time_range(&predicate, now_ms).expect("range predicate should convert");
         assert_eq!(resolved.field, "@timestamp");
         assert_eq!(resolved.gte_ms, Some(970_000));
         assert_eq!(resolved.lte_ms, Some(1_000_000));
