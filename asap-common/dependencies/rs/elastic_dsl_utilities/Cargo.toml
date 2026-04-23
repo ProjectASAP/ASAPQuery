@@ -7,3 +7,4 @@ version.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true
+opensearch-dsl = { version = "0.3.1", path = "../../../../../opensearch-client-rs/opensearch-dsl" }
