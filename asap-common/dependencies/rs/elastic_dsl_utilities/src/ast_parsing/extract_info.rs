@@ -1,17 +1,23 @@
 use crate::ast_parsing::query_info::{
-    AggregationType, ElasticDSLQuery, FieldName, GroupBySpec, Predicate, TermValue,
+    AggregationType, ElasticDSLQueryInfo, FieldName, GroupBySpec, Predicate, TermValue,
 };
 use crate::helpers::strip_keyword_suffix;
 use opensearch_dsl::{self as dsl};
 use serde_json;
+
+pub fn extract_query_info(query: &str) -> Option<ElasticDSLQueryInfo> {
+    // Main entry point for extracting relevant information from the parsed query pattern. This function would contain the core logic for traversing the AST and applying rules to determine the target field, predicates, group by specifications, and aggregation type.
+    let search_request = parse_query_to_ast(query)?;
+    walk_ast_and_extract_info(&search_request)
+ }
 
 pub fn parse_query_to_ast(query: &str) -> Option<dsl::Search> {
     let search_request = serde_json::from_str(query).ok()?;
     search_request
 }
 
-pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQuery> {
-    // Placeholder for walking the AST and extracting relevant information
+pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInfo> {
+    // Traverses the AST and extracts relevant information for answering sketchable aggregations within ASAPQuery.
     // This would involve traversing the AST nodes and applying logic to determine query patterns, labels, statistics, etc.
     let predicates = match ast.query.clone()? {
         dsl::Query::Bool(bool_query) => {
@@ -25,7 +31,7 @@ pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQuery> {
     };
     let (target_field, aggregation_type, group_by_spec) =
         walk_aggregations_and_extract_info(&ast.aggs)?;
-    Some(ElasticDSLQuery::new(
+    Some(ElasticDSLQueryInfo::new(
         target_field,
         predicates,
         group_by_spec,
@@ -33,7 +39,7 @@ pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQuery> {
     ))
 }
 
-pub fn walk_bool_query_and_extract_info(bool_query: &dsl::BoolQuery) -> Vec<Predicate> {
+fn walk_bool_query_and_extract_info(bool_query: &dsl::BoolQuery) -> Vec<Predicate> {
     // Placeholder for walking the filter context of the AST and extracting relevant information
     // This would involve traversing the filter nodes and applying logic to determine label filters, time ranges, etc.
     let dsl::QueryCollection(filters) = bool_query.filter.clone();
@@ -83,7 +89,7 @@ pub fn walk_bool_query_and_extract_info(bool_query: &dsl::BoolQuery) -> Vec<Pred
     predicates
 }
 
-pub fn walk_aggregations_and_extract_info(
+fn walk_aggregations_and_extract_info(
     aggregations: &dsl::Aggregations,
 ) -> Option<(FieldName, AggregationType, Option<GroupBySpec>)> {
     // Traverse the aggregations in the AST and extracting relevant information. Extract the first valid aggregation type found, along with any associated group by specifications.
@@ -139,7 +145,7 @@ fn find_aggregation_info(aggregations: &dsl::Aggregations) -> Option<(FieldName,
     None // Return None if no relevant aggregation information is found
 }
 
-pub fn extract_aggregation_info(agg: &dsl::Aggregation) -> Option<(FieldName, AggregationType)> {
+fn extract_aggregation_info(agg: &dsl::Aggregation) -> Option<(FieldName, AggregationType)> {
     // Extracts the specific aggregation type and target field from the given aggregation node, if it matches supported types (avg, sum, min, max, percentiles).
     match agg {
         dsl::Aggregation::Avg(avg_agg) => {

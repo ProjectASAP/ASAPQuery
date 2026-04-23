@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 
 pub type FieldName = String;
 
-pub struct ElasticDSLQuery {
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ElasticDSLQueryInfo {
     // A distilled representation of an ElasticSearch DSL query, capturing the essential logic and structure.
     pub target_field: FieldName,    // List of metrics being queried
     pub predicates: Vec<Predicate>, // Predicates applied to the query (e.g. filters in bool.filter)
@@ -10,7 +11,7 @@ pub struct ElasticDSLQuery {
     pub aggregation: AggregationType, // The statistic being computed (e.g. avg, sum, percentiles)
 }
 
-impl ElasticDSLQuery {
+impl ElasticDSLQueryInfo {
     // Additional methods for processing or analyzing the query can be added here
 
     pub fn new(
