@@ -5,8 +5,10 @@
 use super::SimpleEngine;
 use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps};
 use crate::engines::query_result::QueryResult;
-use elastic_dsl_utilities::pattern::parse_and_classify;
-use elastic_dsl_utilities::types::{EsDslQueryPattern, GroupBySpec, MetricAggType};
+use elastic_dsl_utilities::ast_parsing::{
+    self, AggregationType, ElasticDSLQueryInfo, GroupBySpec, Predicate,
+};
+use elastic_dsl_utilities::datemath::range_query_to_time_range;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
 use std::collections::HashMap;
@@ -34,18 +36,8 @@ impl SimpleEngine {
         let query_time = Self::convert_query_time_to_data_time(time);
 
         // 1. Parse query DSL somehow. Elasticsearch DSL crate does not support deserializing, but maybe can use Opensearch instead?
-        // 2. Determine whether query is supported using some AST representation or hardcoded pattern matching.
-        let query_pattern: EsDslQueryPattern =
-            parse_and_classify(&query).unwrap_or(EsDslQueryPattern::Unknown);
-        match query_pattern {
-            EsDslQueryPattern::Unknown => {
-                debug!("Could not parse query into known pattern");
-                return None;
-            }
-            _ => {
-                debug!("Parsed query pattern: {:?}", query_pattern);
-            }
-        }
+        // 2. Determine whether query is supported using some AST representation or hardcoded pattern matching (do this throughout context) - parsing validates basic structure.
+        let query_info = ast_parsing::extract_info::extract_query_info(&query)?;
 
         // 3. Convert parsed query into execution context components (labels, statistic, kwargs, metadata, store query plan, etc.)
 
@@ -61,12 +53,12 @@ impl SimpleEngine {
 
         let do_merge = true; // No "instant" queries in ElasticSearch supported for now, so we always need to merge.
 
-        let (metric, query_metadata) = self.build_query_metadata_elastic(&query_pattern)?;
+        let (metric, query_metadata) = self.build_query_metadata_elastic(&query_info)?;
 
         let spatial_filter = String::new(); // Placeholder - extract from query if applicable
 
-        // TODO: Need way to parse ES DSL "date math".
-        let timestamps = self.resolve_query_time_range_elastic(query_time, query_pattern);
+        // Parse time range information from first query predicate if available, otherwise default to entire history up to query_time.
+        let timestamps = self.resolve_query_time_range_elastic(query_time, query_info);
 
         let query_plan = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
@@ -102,7 +94,7 @@ impl SimpleEngine {
 
     fn build_query_metadata_elastic(
         &self,
-        query_pattern: &EsDslQueryPattern,
+        query_info: &ElasticDSLQueryInfo,
     ) -> Option<(String, QueryMetadata)> {
         // Constructs QueryMetadata based on the parsed ES DSL query pattern. This includes determining the
         // metric to query, the statistic to compute, and any relevant query kwargs (e.g. quantile value for percentiles).
@@ -111,40 +103,34 @@ impl SimpleEngine {
         // By default, we only include grouping labels in the output for ES DSL.
 
         // Take first aggregation by default since current engine doesn't support multiple aggregations in a single query.
-        let aggregation = query_pattern.get_metric_aggs()?.first()?.clone();
+        let aggregation = query_info.aggregation.clone();
 
         // By default, we only include grouping labels in the output for ES DSL.
-        let query_output_labels = match query_pattern.get_groupby_spec() {
-            Some(GroupBySpec::Terms { field }) => KeyByLabelNames::new(vec![field.clone()]),
-            Some(GroupBySpec::MultiTerms { fields }) => KeyByLabelNames::new(fields.to_vec()),
+        let query_output_labels = match &query_info.group_by_buckets {
+            Some(GroupBySpec::Fields(fields)) => KeyByLabelNames::new(fields.clone()),
+            Some(GroupBySpec::Filters(_)) => {
+                return None;
+            } // We don't support filter-based group by in ES DSL for now, so return None to indicate unsupported query pattern.
             None => KeyByLabelNames::empty(),
         };
 
-        let metric = aggregation.field.clone();
+        let metric = query_info.target_field.clone();
 
         // Map ElasticSearch aggregation types to our internal Statistic enum.
-        let statistic_to_compute = match aggregation.agg_type {
-            MetricAggType::Percentiles => Statistic::Quantile,
-            MetricAggType::Avg => Statistic::Rate,
-            MetricAggType::Sum => Statistic::Sum,
-            MetricAggType::Min => Statistic::Min,
-            MetricAggType::Max => Statistic::Max,
+        let statistic_to_compute = match aggregation {
+            AggregationType::Percentiles(_) => Statistic::Quantile,
+            AggregationType::Avg => Statistic::Rate,
+            AggregationType::Sum => Statistic::Sum,
+            AggregationType::Min => Statistic::Min,
+            AggregationType::Max => Statistic::Max,
         };
 
-        let mut query_kwargs = HashMap::new(); // Placeholder - build based on query and statistic
-        if aggregation.agg_type == MetricAggType::Percentiles {
-            // Extract quantile value from aggregation parameters and add to query_kwargs
-            if let Some(params) = &aggregation.params {
-                if let Some(percents) = params.get("percents") {
-                    // Get first value from percents array since we only support one quantile argument for now.
-                    let quantile = percents
-                        .as_array()
-                        .and_then(|arr| arr.first())
-                        .and_then(|v| v.as_f64());
-                    // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
-                    query_kwargs.insert("quantile".to_string(), (quantile? / 100.0).to_string());
-                }
-            }
+        let mut query_kwargs = HashMap::new();
+        if let AggregationType::Percentiles(percents) = aggregation {
+            // Get first value from percents array since we only support one quantile argument for now.
+            let quantile = percents.first()?;
+            // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
+            query_kwargs.insert("quantile".to_string(), (quantile / 100.0).to_string());
         }
 
         let metadata = QueryMetadata {
@@ -158,7 +144,7 @@ impl SimpleEngine {
     pub fn resolve_query_time_range_elastic(
         &self,
         query_time: u64,
-        query_pattern: EsDslQueryPattern,
+        query_info: ElasticDSLQueryInfo,
     ) -> QueryTimestamps {
         // Resolves the actual start and end timestamps into milliseconds for an ElasticSearch query
         // based on the provided query_time and the time range specified in the ES DSL query pattern (if any).
@@ -167,20 +153,40 @@ impl SimpleEngine {
         let mut start_timestamp: u64 = 0;
         let mut end_timestamp: u64 = query_time;
 
-        let time_range = query_pattern.get_time_range();
-        if let Some(tr) = time_range {
-            if let Some(resolved_range) = tr.resolve_epoch_millis(query_time as i64) {
+        let predicate = query_info.predicates.first(); // For now, we only look at the first predicate for time range information. We can extend this to support multiple predicates and more complex logic in the future.
+
+        match predicate {
+            Some(Predicate::Range {
+                field: _,
+                gte: _,
+                lte: _,
+            }) => {
+                // If we have a range predicate, we can try to extract time range information from it.
+                // For now, we assume that any range predicate applies to the timestamp field, but we could add more complex logic here to determine which field is the timestamp field.
                 debug!(
-                    "Parsed time range from query: start={} end={}",
-                    resolved_range.gte_ms.unwrap_or(0),
-                    resolved_range.lte_ms.unwrap_or(0)
+                    "Found range predicate in query, attempting to extract time range information"
                 );
-                start_timestamp = resolved_range.gte_ms.unwrap_or(0) as u64;
-                end_timestamp = resolved_range.lte_ms.unwrap_or(query_time as i64) as u64;
-            } else {
-                debug!("Failed to resolve time range from query");
+                if let Some(resolved_range) =
+                    range_query_to_time_range(predicate.unwrap(), query_time as i64)
+                {
+                    debug!(
+                        "Parsed time range from range predicate: start={} end={}",
+                        resolved_range.gte_ms.unwrap_or(0),
+                        resolved_range.lte_ms.unwrap_or(0)
+                    );
+                    start_timestamp = resolved_range.gte_ms.unwrap_or(0) as u64;
+                    end_timestamp = resolved_range.lte_ms.unwrap_or(query_time as i64) as u64;
+                } else {
+                    debug!("Failed to resolve time range from range predicate");
+                }
             }
-        };
+            Some(_) => {
+                debug!("First predicate is not a range predicate, so we won't be able to extract time range information from it");
+            }
+            None => {
+                debug!("No predicates found in query, so we won't be able to extract time range information");
+            }
+        }
 
         QueryTimestamps {
             start_timestamp,
