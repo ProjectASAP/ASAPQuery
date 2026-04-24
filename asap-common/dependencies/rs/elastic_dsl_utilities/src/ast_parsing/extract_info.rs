@@ -6,14 +6,13 @@ use opensearch_dsl::{self as dsl};
 use serde_json;
 
 pub fn extract_query_info(query: &str) -> Option<ElasticDSLQueryInfo> {
-    // Main entry point for extracting relevant information from the parsed query pattern. This function would contain the core logic for traversing the AST and applying rules to determine the target field, predicates, group by specifications, and aggregation type.
-    let search_request = parse_query_to_ast(query)?;
+    // Main entry point for extracting relevant information from the parsed query pattern.
+    let search_request = serde_json::from_str(query).ok()?;
     walk_ast_and_extract_info(&search_request)
- }
+}
 
 pub fn parse_query_to_ast(query: &str) -> Option<dsl::Search> {
-    let search_request = serde_json::from_str(query).ok()?;
-    search_request
+    serde_json::from_str(query).ok()?
 }
 
 pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInfo> {
@@ -24,7 +23,7 @@ pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInf
         Some(dsl::Query::Bool(bool_query)) => {
             // Extract information from the bool query
             walk_bool_query_and_extract_info(&bool_query)
-        },
+        }
         Some(other) => {
             // Predicates may just be specified directly without enclosing bool context.
             if let Some(predicate) = extract_predicates_from_query(&other) {
@@ -32,7 +31,7 @@ pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInf
             } else {
                 Vec::new()
             }
-        },
+        }
         None => Vec::new(), // Return an empty vector of predicates if no query is specified
     };
     let (target_field, aggregation_type, group_by_spec) =
@@ -71,7 +70,7 @@ fn extract_predicates_from_query(query: &dsl::Query) -> Option<Predicate> {
                 return None; // Skip if term query value cannot be mapped to a JSON value
             };
             // Process the term query information as needed
-            return Some(Predicate::Term {
+            Some(Predicate::Term {
                 field,
                 value: term_value,
             })
@@ -83,21 +82,17 @@ fn extract_predicates_from_query(query: &dsl::Query) -> Option<Predicate> {
             let gte = range_query.gte.clone();
             let lte = range_query.lte.clone();
             // Process the range query information as needed
-            let gte_value = gte
-                .as_ref()
-                .and_then(|gte_term| map_term_to_json_value(gte_term));
-            let lte_value = lte
-                .as_ref()
-                .and_then(|lte_term| map_term_to_json_value(lte_term));
-            return Some(Predicate::Range {
+            let gte_value = gte.as_ref().and_then(map_term_to_json_value);
+            let lte_value = lte.as_ref().and_then(map_term_to_json_value);
+            Some(Predicate::Range {
                 field,
                 gte: gte_value,
                 lte: lte_value,
             })
-        },
+        }
         _ => {
             // Handle other query types
-            return None; // Skip unsupported query types
+            None // Skip unsupported query types
         }
     }
 }
@@ -106,7 +101,7 @@ fn walk_aggregations_and_extract_info(
     aggregations: &dsl::Aggregations,
 ) -> Option<(FieldName, AggregationType, Option<GroupBySpec>)> {
     // Traverse the aggregations in the AST and extracting relevant information. Extract the first valid aggregation type found, along with any associated group by specifications.
-    for (_, agg) in aggregations {
+    for agg in aggregations.values() {
         match agg {
             dsl::Aggregation::MultiTerms(terms_agg) => {
                 // Extract information from the terms aggregation
@@ -141,7 +136,7 @@ fn walk_aggregations_and_extract_info(
             }
             other => {
                 // Handle other aggregation types
-                let (target_field, aggregation_type) = extract_aggregation_info(&other)?;
+                let (target_field, aggregation_type) = extract_aggregation_info(other)?;
                 return Some((target_field, aggregation_type, None));
             }
         }
@@ -151,8 +146,8 @@ fn walk_aggregations_and_extract_info(
 
 fn find_aggregation_info(aggregations: &dsl::Aggregations) -> Option<(FieldName, AggregationType)> {
     // Placeholder for extracting specific information from an aggregation node
-    for (_, agg) in aggregations {
-        let (field, aggregation_type) = extract_aggregation_info(&agg)?;
+    if let Some((_, agg)) = aggregations.iter().next() {
+        let (field, aggregation_type) = extract_aggregation_info(agg)?;
         return Some((field, aggregation_type));
     }
     None // Return None if no relevant aggregation information is found
@@ -202,11 +197,11 @@ fn map_term_to_json_value(term: &dsl::Term) -> Option<TermValue> {
             let value_str = value.to_string(); // Convert the term value to a string representation
             Some(TermValue::String(value_str))
         }
-        dsl::Term::Float32(value) => Some(TermValue::Float(value.clone() as f64)),
-        dsl::Term::Float64(value) => Some(TermValue::Float(value.clone())),
-        dsl::Term::PositiveNumber(value) => Some(TermValue::UnsignedInt(value.clone())),
-        dsl::Term::NegativeNumber(value) => Some(TermValue::Int(value.clone())),
-        dsl::Term::Boolean(value) => Some(TermValue::Boolean(value.clone())),
+        dsl::Term::Float32(value) => Some(TermValue::Float(*value as f64)),
+        dsl::Term::Float64(value) => Some(TermValue::Float(*value)),
+        dsl::Term::PositiveNumber(value) => Some(TermValue::UnsignedInt(*value)),
+        dsl::Term::NegativeNumber(value) => Some(TermValue::Int(*value)),
+        dsl::Term::Boolean(value) => Some(TermValue::Boolean(*value)),
     }
 }
 

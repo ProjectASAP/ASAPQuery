@@ -5,8 +5,10 @@
 use super::SimpleEngine;
 use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps};
 use crate::engines::query_result::QueryResult;
-use elastic_dsl_utilities::ast_parsing::{self, ElasticDSLQueryInfo, GroupBySpec, AggregationType, Predicate};
-use elastic_dsl_utilities::datemath::{range_query_to_time_range};
+use elastic_dsl_utilities::ast_parsing::{
+    self, AggregationType, ElasticDSLQueryInfo, GroupBySpec, Predicate,
+};
+use elastic_dsl_utilities::datemath::range_query_to_time_range;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
 use std::collections::HashMap;
@@ -55,7 +57,7 @@ impl SimpleEngine {
 
         let spatial_filter = String::new(); // Placeholder - extract from query if applicable
 
-        // Parse time range information from first query predicate if available, otherwise default to entire history up to query_time. 
+        // Parse time range information from first query predicate if available, otherwise default to entire history up to query_time.
         let timestamps = self.resolve_query_time_range_elastic(query_time, query_info);
 
         let query_plan = self
@@ -106,7 +108,9 @@ impl SimpleEngine {
         // By default, we only include grouping labels in the output for ES DSL.
         let query_output_labels = match &query_info.group_by_buckets {
             Some(GroupBySpec::Fields(fields)) => KeyByLabelNames::new(fields.clone()),
-            Some(GroupBySpec::Filters(_)) => { return None; } // We don't support filter-based group by in ES DSL for now, so return None to indicate unsupported query pattern.
+            Some(GroupBySpec::Filters(_)) => {
+                return None;
+            } // We don't support filter-based group by in ES DSL for now, so return None to indicate unsupported query pattern.
             None => KeyByLabelNames::empty(),
         };
 
@@ -124,9 +128,9 @@ impl SimpleEngine {
         let mut query_kwargs = HashMap::new();
         if let AggregationType::Percentiles(percents) = aggregation {
             // Get first value from percents array since we only support one quantile argument for now.
-                let quantile = percents.first()?;
-                // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
-                query_kwargs.insert("quantile".to_string(), (quantile / 100.0).to_string());
+            let quantile = percents.first()?;
+            // ES percentiles are specified as values between 0 and 100, but we want to convert to 0-1 range for our internal representation.
+            query_kwargs.insert("quantile".to_string(), (quantile / 100.0).to_string());
         }
 
         let metadata = QueryMetadata {
@@ -149,16 +153,22 @@ impl SimpleEngine {
         let mut start_timestamp: u64 = 0;
         let mut end_timestamp: u64 = query_time;
 
-        let predicate = query_info
-            .predicates
-            .first().clone(); // For now, we only look at the first predicate for time range information. We can extend this to support multiple predicates and more complex logic in the future.
+        let predicate = query_info.predicates.first(); // For now, we only look at the first predicate for time range information. We can extend this to support multiple predicates and more complex logic in the future.
 
         match predicate {
-            Some(Predicate::Range { field: _, gte: _, lte: _ }) => {
+            Some(Predicate::Range {
+                field: _,
+                gte: _,
+                lte: _,
+            }) => {
                 // If we have a range predicate, we can try to extract time range information from it.
                 // For now, we assume that any range predicate applies to the timestamp field, but we could add more complex logic here to determine which field is the timestamp field.
-                debug!("Found range predicate in query, attempting to extract time range information");
-                if let Some(resolved_range) = range_query_to_time_range(predicate.unwrap(), query_time as i64) {
+                debug!(
+                    "Found range predicate in query, attempting to extract time range information"
+                );
+                if let Some(resolved_range) =
+                    range_query_to_time_range(predicate.unwrap(), query_time as i64)
+                {
                     debug!(
                         "Parsed time range from range predicate: start={} end={}",
                         resolved_range.gte_ms.unwrap_or(0),
