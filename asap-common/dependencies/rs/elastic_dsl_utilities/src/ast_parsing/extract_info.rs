@@ -19,15 +19,21 @@ pub fn parse_query_to_ast(query: &str) -> Option<dsl::Search> {
 pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInfo> {
     // Traverses the AST and extracts relevant information for answering sketchable aggregations within ASAPQuery.
     // This would involve traversing the AST nodes and applying logic to determine query patterns, labels, statistics, etc.
-    let predicates = match ast.query.clone()? {
-        dsl::Query::Bool(bool_query) => {
+    let query = ast.query.clone();
+    let predicates = match query {
+        Some(dsl::Query::Bool(bool_query)) => {
             // Extract information from the bool query
             walk_bool_query_and_extract_info(&bool_query)
-        }
-        _ => {
-            // Handle other query types
-            Vec::new() // Return an empty vector of predicates for unsupported query types
-        }
+        },
+        Some(other) => {
+            // Predicates may just be specified directly without enclosing bool context.
+            if let Some(predicate) = extract_predicates_from_query(&other) {
+                vec![predicate]
+            } else {
+                Vec::new()
+            }
+        },
+        None => Vec::new(), // Return an empty vector of predicates if no query is specified
     };
     let (target_field, aggregation_type, group_by_spec) =
         walk_aggregations_and_extract_info(&ast.aggs)?;
@@ -45,48 +51,55 @@ fn walk_bool_query_and_extract_info(bool_query: &dsl::BoolQuery) -> Vec<Predicat
     let dsl::QueryCollection(filters) = bool_query.filter.clone();
     let mut predicates = Vec::new();
     for query in filters {
-        match query {
-            dsl::Query::Term(term_query) => {
-                // Extract information from the term query
-                let field = strip_keyword_suffix(&term_query.field).to_owned();
-                let Some(value) = term_query.value else {
-                    continue; // Skip if term query does not have a value
-                };
-                let Some(term_value) = map_term_to_json_value(&value) else {
-                    continue; // Skip if term query value cannot be mapped to a JSON value
-                };
-                // Process the term query information as needed
-                predicates.push(Predicate::Term {
-                    field,
-                    value: term_value,
-                });
-            }
-
-            dsl::Query::Range(range_query) => {
-                // Extract information from the range query
-                let field = strip_keyword_suffix(&range_query.field).to_owned();
-                let gte = range_query.gte.clone();
-                let lte = range_query.lte.clone();
-                // Process the range query information as needed
-                let gte_value = gte
-                    .as_ref()
-                    .and_then(|gte_term| map_term_to_json_value(gte_term));
-                let lte_value = lte
-                    .as_ref()
-                    .and_then(|lte_term| map_term_to_json_value(lte_term));
-                predicates.push(Predicate::Range {
-                    field,
-                    gte: gte_value,
-                    lte: lte_value,
-                });
-            }
-            _ => {
-                // Handle other query types
-                continue; // Skip unsupported query types
-            }
+        if let Some(predicate) = extract_predicates_from_query(&query) {
+            predicates.push(predicate);
         }
     }
     predicates
+}
+
+fn extract_predicates_from_query(query: &dsl::Query) -> Option<Predicate> {
+    // Extract predicate information from a given query node, if it matches supported patterns (term or range queries).
+    match query {
+        dsl::Query::Term(term_query) => {
+            // Extract information from the term query
+            let field = strip_keyword_suffix(&term_query.field).to_owned();
+            let Some(value) = term_query.value.clone() else {
+                return None; // Skip if term query does not have a value
+            };
+            let Some(term_value) = map_term_to_json_value(&value) else {
+                return None; // Skip if term query value cannot be mapped to a JSON value
+            };
+            // Process the term query information as needed
+            return Some(Predicate::Term {
+                field,
+                value: term_value,
+            })
+        }
+
+        dsl::Query::Range(range_query) => {
+            // Extract information from the range query
+            let field = strip_keyword_suffix(&range_query.field).to_owned();
+            let gte = range_query.gte.clone();
+            let lte = range_query.lte.clone();
+            // Process the range query information as needed
+            let gte_value = gte
+                .as_ref()
+                .and_then(|gte_term| map_term_to_json_value(gte_term));
+            let lte_value = lte
+                .as_ref()
+                .and_then(|lte_term| map_term_to_json_value(lte_term));
+            return Some(Predicate::Range {
+                field,
+                gte: gte_value,
+                lte: lte_value,
+            })
+        },
+        _ => {
+            // Handle other query types
+            return None; // Skip unsupported query types
+        }
+    }
 }
 
 fn walk_aggregations_and_extract_info(

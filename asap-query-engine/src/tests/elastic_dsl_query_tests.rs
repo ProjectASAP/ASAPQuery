@@ -100,10 +100,10 @@ mod tests {
 
     #[test]
     fn test_esdsl_single_label_groupby_aggregation_quantile() {
-        // let _ = tracing_subscriber::fmt()
-        //     .with_max_level(tracing::Level::DEBUG)
-        //     .with_test_writer() // Routes output through the test runner's capture mechanism
-        //     .try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer() // Routes output through the test runner's capture mechanism
+            .try_init();
 
         // Elastic DSL query (batch filtered).
         let elastic_query = json!({
@@ -173,10 +173,10 @@ mod tests {
 
     #[test]
     fn test_esdsl_multi_label_groupby_aggregation_quantile() {
-        // let _ = tracing_subscriber::fmt()
-        //     .with_max_level(tracing::Level::DEBUG)
-        //     .with_test_writer() // Routes output through the test runner's capture mechanism
-        //     .try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer() // Routes output through the test runner's capture mechanism
+            .try_init();
 
         // Elastic DSL query (batch filtered).
         let elastic_query = json!({
@@ -320,10 +320,10 @@ mod tests {
 
     #[test]
     fn test_esdsl_time_range_query() {
-        // let _ = tracing_subscriber::fmt()
-        //     .with_max_level(tracing::Level::DEBUG)
-        //     .with_test_writer() // Routes output through the test runner's capture mechanism
-        //     .try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer() // Routes output through the test runner's capture mechanism
+            .try_init();
 
         // Elastic DSL query (batch filtered).
         let elastic_query = json!({
