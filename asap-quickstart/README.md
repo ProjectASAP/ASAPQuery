@@ -2,7 +2,7 @@
 
 ## What is ASAPQuery?
 
-ASAPQuery is a drop-in accelerator that reduces query latency by 100x. The current version of ASAPQuery (v0.1.0) sits between Prometheus and Grafana and accelerates repeating PromQL queries.
+ASAPQuery is a drop-in accelerator that reduces query latency by 100x. It sits between Prometheus and Grafana and accelerates repeating PromQL queries.
 ASAPQuery is compatible with the Prometheus query API and integrates seamlessly with existing Grafana dashboards.
 
 ## What This Demo Shows
@@ -13,9 +13,7 @@ This quickstart simulates a typical monitoring deployment with components you mi
 - Grafana - send queries to Prometheus and visualizing query results
 
 Then it adds ASAPQuery's components on top:
-- **Query Engine** - Prometheus-compatible API with sketch-based acceleration
-- **[Arroyo](https://github.com/ProjectASAP/arroyo) + asap-summary-ingest** - Streaming engine with pipelines configured for building sketches
-- **Kafka** - Message broker for streaming data from Arroyo to the Query Engine
+- **Query Engine** - Prometheus-compatible API with sketch-based acceleration and built-in precompute engine
 - **asap-planner-rs** - Automatically configures sketches from PromQL queries
 
 Once you run the quickstart, you will see a pre-configured Grafana dashboard that compares Prometheues and ASAPQuery side-by-side. You will see **visually indistinguishable** results from Prometheus and ASAPQuery, with ASAPQuery being 100x faster
@@ -23,7 +21,7 @@ Once you run the quickstart, you will see a pre-configured Grafana dashboard tha
 ## Prerequisites
 
 - **Docker & Docker Compose** v2.0+
-- **Ports available**: 3000 (Grafana), 5115 (Arroyo), 8088 (ASAPQuery), 9090 (Prometheus)
+- **Ports available**: 3000 (Grafana), 8088 (ASAPQuery), 9090 (Prometheus)
 
 ## Quick Start
 
@@ -117,4 +115,4 @@ docker compose restart
 
 ### Running ASAPQuery with your own Grafana and Prometheus setup
 
-**Coming Soon**: A drop-in ASAPQuery artifact that works with your existing already-configured Grafana and Prometheus deployments.
+See [asap-dropin/](../asap-dropin/README.md) for a single-container setup that integrates with an existing Prometheus and Grafana deployment.

@@ -8,11 +8,11 @@
 - **Configurable query accuracy**
 - **Ease-of-use with your existing tech stack**
 
-![ASAPQuery v0.1.0 intercepts queries between Grafana and Prometheus, and accelerates them. Currently, it ingests data using Prometheus' remote_write interface](assets/img/asapquery_intro_figure.jpg)
+![ASAPQuery intercepts queries between Grafana and Prometheus, and accelerates them. It ingests data using Prometheus' remote_write interface](assets/img/asapquery_intro_figure.jpg)
 
-ASAPQuery v0.1.0 sits between Prometheus and Grafana. It intercepts queries from Grafana and answers them using streaming sketches, instead of scanning large volumes of raw data in Prometheus.
-Currently, it ingests data using Prometheus' remote_write interface.
-Future versions of ASAPQuery will accelerate queries against other observability systems (e.g. VictoriaMetrics) and time-series databases (e.g. Clickhouse, Elastic).
+ASAPQuery sits between Prometheus and Grafana. It intercepts queries from Grafana and answers them using streaming sketches, instead of scanning large volumes of raw data in Prometheus.
+It ingests data using Prometheus' remote_write interface.
+ASAPQuery also targets other observability systems (e.g. VictoriaMetrics) and time-series databases (e.g. Clickhouse, Elastic).
 
 ## Quick Start
 
@@ -47,29 +47,24 @@ ASAPQuery uses **streaming sketches** to:
 
 ## Architecture
 
-ASAPQuery has four main components: the **asap-planner-rs** generates sketch configurations from your query workload, **asap-summary-ingest** deploys streaming pipelines in **Arroyo** that continuously build sketches from live Prometheus metrics, and **asap-query-engine** intercepts PromQL queries and serves them from those pre-computed sketches.
+ASAPQuery has two main components: **asap-planner-rs** analyzes your PromQL query workload and generates sketch configurations, and **asap-query-engine** intercepts PromQL queries and serves them from pre-computed sketches. The query engine includes a built-in **precompute engine** that continuously builds sketches directly from live metrics via Prometheus `remote_write` — no external streaming infrastructure required.
 
 ### Components
 
-- **[asap-planner-rs](asap-planner-rs/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-summary-ingest and asap-query-engine
-- **[asap-summary-ingest](asap-summary-ingest/)** - Deploys Arroyo streaming pipelines that continuously compute and publish sketches from live metrics
-- **[arroyo](https://github.com/ProjectASAP/arroyo)** - Fork of the [Arroyo](https://github.com/ArroyoSystems/arroyo) stream processing engine that runs the sketch-building SQL pipelines
-- **[asap-query-engine](asap-query-engine/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries
+- **[asap-planner-rs](asap-planner-rs/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-query-engine
+- **[asap-query-engine](asap-query-engine/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries; includes a built-in precompute engine that continuously builds sketches from live metrics via Prometheus `remote_write`
 
 ### Repository Structure
 
 ```
 ├── asap-quickstart/         # Self-contained demo (start here!)
 ├── asap-planner-rs/         # Auto-configuration service
-├── asap-summary-ingest/      # Arroyo pipeline deployer
-└── asap-query-engine/       # Query serving engine
-# Note: Arroyo fork lives at https://github.com/ProjectASAP/arroyo
+└── asap-query-engine/       # Query serving and sketch precomputation engine
 ```
 
 ## Coming soon
 
-1. Drop-in ASAPQuery artifact that works with your existing pre-configured Prometheus-Grafana stack
-2. Drop-in ASAPQuery artifact that accelerates Clickhouse queries
+1. Drop-in ASAPQuery artifact that accelerates Clickhouse queries
 
 ## Current state
 

@@ -14,10 +14,6 @@ services:
       context: ..
       dockerfile: asap-planner-rs/Dockerfile
 
-  asap-summary-ingest:
-    build:
-      context: ../asap-summary-ingest
-
   queryengine:
     build:
       context: ..

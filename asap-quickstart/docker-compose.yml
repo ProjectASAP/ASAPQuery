@@ -13,7 +13,6 @@ networks:
         - subnet: 172.25.0.0/16
 
 volumes:
-  kafka-data:
   prometheus-data:
   grafana-data:
   asap-planner-output:
@@ -22,97 +21,6 @@ services:
   #############################################################################
   # INFRASTRUCTURE SERVICES
   #############################################################################
-
-  kafka:
-    image: apache/kafka:3.7.0
-    container_name: asap-kafka
-    hostname: kafka
-    networks:
-      - asap-network
-    environment:
-      KAFKA_NODE_ID: 1
-      KAFKA_PROCESS_ROLES: broker,controller
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
-      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
-      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
-      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
-      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
-      KAFKA_MESSAGE_MAX_BYTES: 20971520
-      KAFKA_REPLICA_FETCH_MAX_BYTES: 20971520
-      KAFKA_LOG_RETENTION_HOURS: 1
-      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
-      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
-    volumes:
-      - kafka-data:/tmp/kraft-combined-logs
-    user: "0:0"
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        chown -R appuser:appuser /tmp/kraft-combined-logs
-        chmod -R 755 /tmp/kraft-combined-logs
-        exec su appuser -c "/etc/kafka/docker/run"
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    restart: no
-
-  kafka-init:
-    image: apache/kafka:3.7.0
-    container_name: asap-kafka-init
-    networks:
-      - asap-network
-    depends_on:
-      kafka:
-        condition: service_healthy
-    entrypoint: /bin/bash
-    command:
-      - -c
-      - |
-        echo "Creating Kafka topics..."
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
-          --create --if-not-exists --topic flink_input \
-          --partitions 1 --replication-factor 1 \
-          --config max.message.bytes=20971520
-
-        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
-          --create --if-not-exists --topic flink_output \
-          --partitions 1 --replication-factor 1 \
-          --config max.message.bytes=20971520
-
-        echo "Kafka topics created successfully"
-    restart: "no"
-
-  arroyo:
-    image: ghcr.io/projectasap/asap-arroyo:v0.1.0
-    container_name: asap-arroyo
-    hostname: arroyo
-    networks:
-      - asap-network
-    ports:
-      - "5115:5115"
-    volumes:
-      - ./config/arroyo-config.yaml:/config.yaml:ro
-    command: ["--config", "/config.yaml", "cluster"]
-    environment:
-      - ARROYO__API__RUN_HTTP_PORT=5115
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-    depends_on:
-      kafka:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:5115/api/v1/pipelines || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    restart: no
 
   prometheus:
     image: prom/prometheus:v3.9.1
@@ -137,9 +45,6 @@ services:
       timeout: 5s
       retries: 10
       start_period: 3m
-    depends_on:
-      asap-summary-ingest:
-        condition: service_completed_successfully
     restart: no
 
   grafana:
@@ -171,7 +76,7 @@ services:
   #############################################################################
 
   asap-planner-rs:
-    image: ghcr.io/projectasap/asap-planner-rs:v0.2.0
+    image: ghcr.io/projectasap/asap-planner-rs:v0.3.0
     container_name: asap-planner-rs
     hostname: asap-planner-rs
     networks:
@@ -180,7 +85,7 @@ services:
       - "--input_config=/config/controller-config.yaml"
       - "--output_dir=/asap-planner-output"
       - "--prometheus_scrape_interval=1"
-      - "--streaming_engine=arroyo"
+      - "--streaming_engine=precompute"
       - "--range-duration=300"
       - "--step=10"
       - "-v"
@@ -189,47 +94,19 @@ services:
       - asap-planner-output:/asap-planner-output
     restart: "no"
 
-  asap-summary-ingest:
-    image: ghcr.io/projectasap/asap-summary-ingest:v0.2.0
-    container_name: asap-summary-ingest
-    hostname: asap-summary-ingest
-    networks:
-      - asap-network
-    command:
-      - "--config_file_path=/asap-planner-output/streaming_config.yaml"
-      - "--source_type=prometheus_remote_write"
-      - "--prometheus_base_port=9091"
-      - "--prometheus_path=/receive"
-      - "--prometheus_bind_ip=0.0.0.0"
-      - "--parallelism=1"
-      - "--output_kafka_topic=flink_output"
-      - "--output_format=json"
-      - "--pipeline_name=asap-demo"
-      - "--output_dir=/asap-summary-ingest-output"
-      - "--arroyo_url=http://arroyo:5115/api/v1"
-      - "--bootstrap_servers=kafka:9092"
-    volumes:
-      - asap-planner-output:/asap-planner-output:ro
-      - ./output/asap-summary-ingest:/asap-summary-ingest-output
-    depends_on:
-      asap-planner-rs:
-        condition: service_completed_successfully
-      arroyo:
-        condition: service_healthy
-    restart: "no"
-
   #############################################################################
   # CORE SERVICES
   #############################################################################
 
   queryengine:
-    image: ghcr.io/projectasap/asap-query-engine:v0.2.0
+    image: ghcr.io/projectasap/asap-query-engine:v0.3.0
     container_name: asap-queryengine
     hostname: queryengine
     networks:
       - asap-network
     ports:
       - "8088:8088"
+      - "9091:9091"
     environment:
       - RUST_LOG=INFO
       - RUST_BACKTRACE=1
@@ -237,27 +114,20 @@ services:
       - asap-planner-output:/asap-planner-output:ro
       - ./output/queryengine:/app/outputs
     command:
-      - "--kafka-topic=flink_output"
-      - "--kafka-broker=kafka:9092"
-      - "--input-format=json"
       - "--config=/asap-planner-output/inference_config.yaml"
       - "--streaming-config=/asap-planner-output/streaming_config.yaml"
       - "--prometheus-server=http://prometheus:9090"
       - "--prometheus-scrape-interval=1"
-      - "--streaming-engine=arroyo"
+      - "--streaming-engine=precompute"
+      - "--prometheus-remote-write-port=9091"
       - "--delete-existing-db"
       - "--log-level=INFO"
       - "--output-dir=/app/outputs"
       - "--query-language=PROMQL"
       - "--lock-strategy=per-key"
-      - "--decompress-json"
       - "--forward-unsupported-queries"
     depends_on:
-      asap-summary-ingest:
-        condition: service_completed_successfully
-      kafka:
-        condition: service_healthy
-      kafka-init:
+      asap-planner-rs:
         condition: service_completed_successfully
       prometheus:
         condition: service_healthy
@@ -271,7 +141,7 @@ services:
 
   # Constant values - baseline for comparison
   fake-exporter-constant:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.3.0
     container_name: asap-fake-exporter-constant
     hostname: fake-exporter-constant
     networks:
@@ -293,7 +163,7 @@ services:
 
   # Linear increasing - tests trend preservation
   fake-exporter-linear-up:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.3.0
     container_name: asap-fake-exporter-linear-up
     hostname: fake-exporter-linear-up
     networks:
@@ -315,7 +185,7 @@ services:
 
   # Linear decreasing - tests trend preservation
   fake-exporter-linear-down:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.3.0
     container_name: asap-fake-exporter-linear-down
     hostname: fake-exporter-linear-down
     networks:
@@ -337,7 +207,7 @@ services:
 
   # Sine wave - tests periodicity preservation
   fake-exporter-sine:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.3.0
     container_name: asap-fake-exporter-sine
     hostname: fake-exporter-sine
     networks:
@@ -359,7 +229,7 @@ services:
 
   # Sine with noise - tests signal extraction / smoothing
   fake-exporter-sine-noise:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.3.0
     container_name: asap-fake-exporter-sine-noise
     hostname: fake-exporter-sine-noise
     networks:
@@ -381,7 +251,7 @@ services:
 
   # Step function - tests edge preservation
   fake-exporter-step:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.3.0
     container_name: asap-fake-exporter-step
     hostname: fake-exporter-step
     networks:
@@ -403,7 +273,7 @@ services:
 
   # Exponential growth - tests non-linear patterns
   fake-exporter-exp-up:
-    image: ghcr.io/projectasap/asap-fake-exporter:v0.2.0
+    image: ghcr.io/projectasap/asap-fake-exporter:v0.3.0
     container_name: asap-fake-exporter-exp-up
     hostname: fake-exporter-exp-up
     networks:
