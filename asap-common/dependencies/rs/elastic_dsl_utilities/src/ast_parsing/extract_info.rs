@@ -2,7 +2,7 @@ use crate::ast_parsing::query_info::{
     AggregationType, ElasticDSLQueryInfo, FieldName, GroupBySpec, Predicate, TermValue,
 };
 use crate::helpers::strip_keyword_suffix;
-use opensearch_dsl::{self as dsl};
+use elasticsearch_dsl_ast::{self as dsl};
 use serde_json;
 
 pub fn extract_query_info(query: &str) -> Option<ElasticDSLQueryInfo> {
