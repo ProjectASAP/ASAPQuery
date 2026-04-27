@@ -21,7 +21,7 @@ Once you run the quickstart, you will see a pre-configured Grafana dashboard tha
 ## Prerequisites
 
 - **Docker & Docker Compose** v2.0+
-- **Ports available**: 3000 (Grafana), 8088 (ASAPQuery), 9090 (Prometheus)
+- **Ports available**: 3000 (Grafana), 8088 (ASAPQuery query), 9091 (ASAPQuery ingest), 9090 (Prometheus)
 
 ## Quick Start
 

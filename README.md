@@ -27,6 +27,16 @@ Open http://localhost:3000 and see ASAPQuery vs Prometheus side-by-side!
 
 Full quickstart instructions at [**Quickstart Guide**](asap-quickstart/README.md)
 
+**Already have Prometheus and Grafana running?** Use the drop-in instead:
+
+```bash
+cd asap-dropin
+# Edit .env to point at your Prometheus, then:
+docker compose up -d
+```
+
+Full drop-in instructions at [**Drop-in Guide**](asap-dropin/README.md)
+
 ## Why ASAPQuery?
 
 ### The Problem
@@ -58,6 +68,7 @@ ASAPQuery has two main components: **asap-planner-rs** analyzes your PromQL quer
 
 ```
 ├── asap-quickstart/         # Self-contained demo (start here!)
+├── asap-dropin/             # Drop-in for existing Prometheus-Grafana stacks
 ├── asap-planner-rs/         # Auto-configuration service
 └── asap-query-engine/       # Query serving and sketch precomputation engine
 ```
