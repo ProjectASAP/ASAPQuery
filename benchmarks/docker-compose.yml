@@ -13,8 +13,5 @@ services:
   asap-planner-rs:
     image: ghcr.io/projectasap/asap-planner-rs:${ASAP_IMAGE_TAG}
 
-  asap-summary-ingest:
-    image: ghcr.io/projectasap/asap-summary-ingest:${ASAP_IMAGE_TAG}
-
   queryengine:
     image: ghcr.io/projectasap/asap-query-engine:${ASAP_IMAGE_TAG}

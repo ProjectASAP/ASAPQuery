@@ -4,7 +4,6 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'asap-summary-ingest/**'
       - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-tools/**'
       - 'asap-tools/data-sources/prometheus-exporters/**'
@@ -15,7 +14,6 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [ main ]
     paths:
-      - 'asap-summary-ingest/**'
       - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-tools/**'
       - 'asap-tools/data-sources/prometheus-exporters/**'
@@ -37,7 +35,6 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     outputs:
-      summary_ingest: ${{ steps.filter.outputs.summary_ingest }}
       prometheus_client: ${{ steps.filter.outputs.prometheus_client }}
       utilities: ${{ steps.filter.outputs.utilities }}
       prometheus_exporters: ${{ steps.filter.outputs.prometheus_exporters }}
@@ -48,9 +45,6 @@ jobs:
         id: filter
         with:
           filters: |
-            summary_ingest:
-              - 'asap-summary-ingest/**'
-              - 'asap-common/dependencies/py/**'
             prometheus_client:
               - 'asap-tools/queriers/prometheus-client/**'
               - 'asap-common/dependencies/py/**'
@@ -63,35 +57,6 @@ jobs:
             execution_utilities:
               - 'asap-tools/execution-utilities/**'
               - 'asap-common/dependencies/py/**'
-
-  test-summary-ingest:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.summary_ingest == 'true'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11"]
-    steps:
-    - uses: actions/checkout@v4
-    - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v4
-      with:
-        python-version: ${{ matrix.python-version }}
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install black==24.8.0 flake8==6.1.0
-        if [ -f asap-summary-ingest/requirements.txt ]; then pip install -r asap-summary-ingest/requirements.txt; fi
-    - name: Check formatting with Black
-      working-directory: asap-summary-ingest
-      run: black --check --diff .
-    - name: Lint with flake8
-      working-directory: asap-summary-ingest
-      run: |
-        # Stop the build if there are Python syntax errors or undefined names
-        flake8 . --config=../.flake8 --count --select=E9,F63,F7,F82 --show-source --statistics
-        # Exit-zero treats all errors as warnings
-        flake8 . --config=../.flake8 --count --exit-zero --max-complexity=10 --statistics
 
   test-prometheus-client:
     needs: detect-changes

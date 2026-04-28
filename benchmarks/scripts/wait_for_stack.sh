@@ -28,7 +28,6 @@ wait_for_url() {
 }
 
 wait_for_url "Prometheus"   "http://localhost:9090/-/healthy"
-wait_for_url "Arroyo API"   "http://localhost:5115/api/v1/pipelines"
 wait_for_url "QueryEngine"  "http://localhost:8088/api/v1/query?query=vector(1)"
 
 echo "[wait_for_stack] All services are healthy."
