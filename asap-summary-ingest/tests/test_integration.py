@@ -430,5 +430,48 @@ metrics:
         agg_configs[0].validate(metric_config, query_language="promql")
 
 
+class TestKllUdfTemplates:
+    """Tests for KLL UDF template rendering."""
+
+    @pytest.fixture
+    def udf_template_dir(self):
+        """Load the UDF template directory."""
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "templates",
+            "udfs",
+        )
+
+    def test_template_variables_ignore_local_jinja_assignments(self):
+        """Test that local Jinja variables are not treated as required params."""
+        template_source = """
+{% set _impl_mode = impl_mode | default("Sketchlib") %}
+{{ _impl_mode }} {{ k }}
+"""
+        template_vars = jinja_utils.get_template_variables(template_source)
+
+        assert template_vars == {"impl_mode", "k"}
+
+    def test_datasketches_kll_template_renders_legacy_mode(self, udf_template_dir):
+        """Test rendering the single KLL UDF with the legacy backend."""
+        template = jinja_utils.load_template(udf_template_dir, "datasketcheskll_.rs.j2")
+        rendered = template.render(k=200, impl_mode="Legacy")
+
+        assert "const IMPL_MODE: ImplMode = ImplMode::Legacy;" in rendered
+        assert "KllDoubleSketch::with_k(DEFAULT_K)" in rendered
+        assert "asap_sketchlib" in rendered
+        assert "{{" not in rendered
+
+    def test_hydra_kll_template_renders_sketchlib_mode(self, udf_template_dir):
+        """Test rendering the Hydra KLL UDF with the sketchlib backend."""
+        template = jinja_utils.load_template(udf_template_dir, "hydrakll_.rs.j2")
+        rendered = template.render(row_num=3, col_num=128, k=200, impl_mode="Sketchlib")
+
+        assert "const IMPL_MODE: ImplMode = ImplMode::Sketchlib;" in rendered
+        assert "KLL::init_kll(DEFAULT_K as i32)" in rendered
+        assert "KllDoubleSketch::with_k(DEFAULT_K)" in rendered
+        assert "{{" not in rendered
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
