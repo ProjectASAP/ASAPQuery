@@ -65,15 +65,15 @@ Prometheus needs to send all ingested samples to ASAPQuery so it can build sketc
 
 ```yaml
 remote_write:
-  - url: http://localhost:9091/receive
+  - url: http://localhost:9091/api/v1/write
     queue_config:
       batch_send_deadline: 1s
       sample_age_limit: 5m
 ```
 
 > **Finding the right `remote_write` URL:** The URL is from Prometheus's perspective.
-> - **Prometheus on the same host as Docker:** `http://localhost:9091/receive` (default above)
-> - **Prometheus in Docker on the same host:** `http://host.docker.internal:9091/receive` (Mac/Windows) or `http://172.17.0.1:9091/receive` (Linux)
+> - **Prometheus on the same host as Docker:** `http://localhost:9091/api/v1/write` (default above)
+> - **Prometheus in Docker on the same host:** `http://host.docker.internal:9091/api/v1/write` (Mac/Windows) or `http://172.17.0.1:9091/api/v1/write` (Linux)
 > - Change `9091` if you set a different `REMOTE_WRITE_PORT` in `.env`
 
 **Reload Prometheus to apply the change:**

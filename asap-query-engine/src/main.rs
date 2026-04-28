@@ -3,7 +3,7 @@ use query_engine_rust::data_model::QueryLanguage;
 use std::fs;
 use std::sync::{Arc, RwLock};
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use sketch_core::config::{self, ImplMode};
 
@@ -570,14 +570,14 @@ async fn spawn_memory_diagnostics(
 
         // 1. Store diagnostics
         let store_diag = store.diagnostic_info();
-        info!(
+        debug!(
             "[MEMORY_DIAG] Store: {} aggregation(s), {} total time_map entries, {:.2} KB total sketch bytes",
             store_diag.num_aggregations,
             store_diag.total_time_map_entries,
             store_diag.total_sketch_bytes as f64 / 1024.0,
         );
         for agg in &store_diag.per_aggregation {
-            info!(
+            debug!(
                 "[MEMORY_DIAG]   agg_id={}: time_map_len={}, read_counts_len={}, aggregate_objects={}, sketch_bytes={:.2} KB",
                 agg.aggregation_id,
                 agg.time_map_len,
@@ -594,13 +594,13 @@ async fn spawn_memory_diagnostics(
                 .iter()
                 .map(|c| c.load(Ordering::Relaxed))
                 .sum();
-            info!(
+            debug!(
                 "[MEMORY_DIAG] PrecomputeEngine: {} total groups across {} workers",
                 total_groups,
                 diag.worker_group_counts.len(),
             );
             for (i, counter) in diag.worker_group_counts.iter().enumerate() {
-                info!(
+                debug!(
                     "[MEMORY_DIAG]   worker_{}: group_states_len={}",
                     i,
                     counter.load(Ordering::Relaxed),

@@ -499,7 +499,7 @@ impl Store for SimpleMapStorePerKey {
         let store_data_lock = match self.store.get(&store_key) {
             Some(lock) => lock,
             None => {
-                info!("Metric {} not found in store", metric);
+                debug!("Metric {} not found in store", metric);
                 return Ok(HashMap::new());
             }
         };
