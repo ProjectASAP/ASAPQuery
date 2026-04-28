@@ -12,7 +12,6 @@ on:
     paths:
       - 'asap-query-engine/**'
       - 'asap-planner-rs/**'
-      - 'asap-summary-ingest/**'
       - 'asap-quickstart/**'
       - '.github/workflows/accuracy_performance.yml'
       - 'benchmarks/**'
@@ -66,15 +65,6 @@ jobs:
           tags: ghcr.io/projectasap/asap-planner-rs:${{ steps.tag.outputs.value }}
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache
           cache-to: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache,mode=max
-
-      - name: Build and push asap-summary-ingest
-        uses: docker/build-push-action@v6
-        with:
-          context: asap-summary-ingest
-          file: asap-summary-ingest/Dockerfile
-          push: true
-          tags: ghcr.io/projectasap/asap-summary-ingest:${{ steps.tag.outputs.value }}
-          build-args: BASE_IMAGE=ghcr.io/projectasap/asap-base:latest
 
       - name: Build and push asap-query-engine
         uses: docker/build-push-action@v6

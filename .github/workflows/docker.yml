@@ -10,7 +10,6 @@ on:
     paths:
       - 'asap-common/installation/**'
       - 'asap-planner-rs/**'
-      - 'asap-summary-ingest/**'
       - 'asap-query-engine/**'
       - 'asap-tools/queriers/prometheus-client/**'
       - 'asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/**'
@@ -88,22 +87,6 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache
           cache-to: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && 'type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache,mode=max' || '' }}
 
-
-      # --- Summary Ingest (Python, depends on base) ---
-      - name: Build summary-ingest image
-        run: |
-          docker build \
-            -t asap-summary-ingest:local \
-            -f asap-summary-ingest/Dockerfile \
-            asap-summary-ingest
-
-      - name: Push summary-ingest image
-        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-        run: |
-          docker tag asap-summary-ingest:local ghcr.io/projectasap/asap-summary-ingest:${{ steps.tag.outputs.value }}
-          docker tag asap-summary-ingest:local ghcr.io/projectasap/asap-summary-ingest:latest
-          docker push ghcr.io/projectasap/asap-summary-ingest:${{ steps.tag.outputs.value }}
-          docker push ghcr.io/projectasap/asap-summary-ingest:latest
 
       # --- Prometheus Client (Python, depends on base) ---
       - name: Build prometheus-client image
