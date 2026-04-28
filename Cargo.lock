@@ -1679,6 +1679,18 @@ name = "elastic_dsl_utilities"
 version = "0.3.0"
 dependencies = [
  "chrono",
+ "elasticsearch-dsl-ast",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "elasticsearch-dsl-ast"
+version = "0.1.0"
+source = "git+https://github.com/ProjectASAP/elasticsearch-dsl-ast#f1e1e3565be1c04d64ba0234def1d3b1042838e9"
+dependencies = [
+ "chrono",
+ "num-traits",
  "serde",
  "serde_json",
 ]
