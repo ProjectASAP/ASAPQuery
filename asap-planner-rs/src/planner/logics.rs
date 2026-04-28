@@ -10,7 +10,7 @@ use std::collections::HashMap;
 const DEFAULT_CMS_DEPTH: u64 = 3;
 const DEFAULT_CMS_WIDTH: u64 = 1024;
 const DEFAULT_CMS_HEAP_MULT: u64 = 4;
-const DEFAULT_KLL_K: u64 = 20;
+const DEFAULT_KLL_K: u64 = 500;
 const DEFAULT_HYDRA_ROW: u64 = 3;
 const DEFAULT_HYDRA_COL: u64 = 1024;
 const DEFAULT_HYDRA_K: u64 = 20;
