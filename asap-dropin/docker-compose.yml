@@ -12,17 +12,11 @@ name: asapquery-dropin
 # After the observation window (default 60s), it automatically generates a plan
 # based on real query patterns and begins precomputing sketches.
 
-networks:
-  asap-network:
-    driver: bridge
-
 services:
   queryengine:
     image: ghcr.io/projectasap/asap-query-engine:v0.3.0
     container_name: asap-dropin-queryengine
     hostname: queryengine
-    networks:
-      - asap-network
     ports:
       - "${ASAPQUERY_QUERY_PORT:-8088}:8088"
       - "${ASAPQUERY_DATA_PORT:-9091}:9091"
