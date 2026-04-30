@@ -17,9 +17,10 @@ use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::InferenceConfig;
 use query_engine_rust::{
-    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
-    OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, PrecomputeEngineHandle, Result,
-    SimpleEngine, SimpleMapStore, StoreOutputSink,
+    HttpIngestConfig, HttpIngestSource, HttpServer, HttpServerConfig, IngestSource, KafkaConsumer,
+    KafkaConsumerConfig, OtlpReceiver, OtlpReceiverConfig, PrecomputeEngine,
+    PrecomputeEngineConfig, PrecomputeEngineHandle, Result, SimpleEngine, SimpleMapStore,
+    StoreOutputSink,
 };
 
 #[derive(Parser, Debug)]
@@ -342,7 +343,6 @@ async fn main() -> Result<()> {
     let precompute_handle = if enable_precompute {
         let precompute_config = PrecomputeEngineConfig {
             num_workers: args.precompute_num_workers,
-            ingest_port: args.prometheus_remote_write_port,
             allowed_lateness_ms: args.precompute_allowed_lateness_ms,
             max_buffer_per_series: args.precompute_max_buffer_per_series,
             flush_interval_ms: args.precompute_flush_interval_ms,
@@ -352,7 +352,16 @@ async fn main() -> Result<()> {
             late_data_policy: LateDataPolicy::Drop,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
-        let pe = PrecomputeEngine::new(precompute_config, streaming_config.clone(), output_sink);
+        let sources: Vec<Box<dyn IngestSource>> =
+            vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
+                port: args.prometheus_remote_write_port,
+            }))];
+        let pe = PrecomputeEngine::new(
+            precompute_config,
+            streaming_config.clone(),
+            output_sink,
+            sources,
+        );
         let worker_diagnostics = pe.diagnostics();
         // Extract the handle before run() consumes the engine.
         pe_engine_handle = Some(pe.handle());

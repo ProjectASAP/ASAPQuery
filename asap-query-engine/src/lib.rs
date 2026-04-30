@@ -47,7 +47,10 @@ pub use drivers::{
 
 pub use precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 pub use precompute_engine::output_sink::StoreOutputSink;
-pub use precompute_engine::{PrecomputeEngine, PrecomputeEngineHandle};
+pub use precompute_engine::{
+    HttpIngestConfig, HttpIngestSource, IngestContext, IngestSource, PrecomputeEngine,
+    PrecomputeEngineHandle,
+};
 
 pub use query_tracker::{QueryTracker, QueryTrackerConfig};
 

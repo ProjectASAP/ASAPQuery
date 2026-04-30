@@ -7,7 +7,7 @@ use query_engine_rust::drivers::query::adapters::AdapterConfig;
 use query_engine_rust::engines::SimpleEngine;
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::{RawPassthroughSink, StoreOutputSink};
-use query_engine_rust::precompute_engine::PrecomputeEngine;
+use query_engine_rust::precompute_engine::{HttpIngestConfig, HttpIngestSource, PrecomputeEngine};
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::{HttpServer, HttpServerConfig};
 use std::sync::Arc;
@@ -128,7 +128,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Build the precompute engine config
     let engine_config = PrecomputeEngineConfig {
         num_workers: args.num_workers,
-        ingest_port: args.ingest_port,
         allowed_lateness_ms: args.allowed_lateness_ms,
         max_buffer_per_series: args.max_buffer_per_series,
         flush_interval_ms: args.flush_interval_ms,
@@ -146,8 +145,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Arc::new(StoreOutputSink::new(store))
         };
 
+    let sources: Vec<Box<dyn query_engine_rust::precompute_engine::IngestSource>> =
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
+            port: args.ingest_port,
+        }))];
+
     // Build and run the engine
-    let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink);
+    let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink, sources);
 
     info!("Starting precompute engine...");
     engine.run().await?;
