@@ -264,7 +264,67 @@ python run_benchmark.py \
     --output-dir ./results \
     --output-prefix h2o
 ```
+---
+## Elasticsearch End-to-End Example using H2O Dataset
 
+### Step 1-5:
+Follow the same instructions from the H2O GroupBy example above.
+
+### Step 6 — Launch Arroyo sketch pipeline
+
+```bash
+python export_to_arroyo.py \
+    --streaming-config ./configs/h2o_streaming.yaml \
+    --source-type file \
+    --input-file ./data/h2o_arroyo.json \
+    --file-format json \
+    --ts-format unix_millis \
+    --pipeline-name h2o_pipeline \
+    --arroyosketch-dir ~/ASAPQuery/asap-summary-ingest \
+    --output-dir ./arroyo_outputs
+```
+
+### Step 7 — Start QueryEngineRust
+
+```bash
+cd ~/ASAPQuery/asap-query-engine
+
+./target/release/query_engine_rust \
+    --kafka-topic sketch_topic 
+    --input-format json \
+    --config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/h2o_inference.yaml \
+    --streaming-config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/h2o_streaming.yaml \
+    --http-port 8088 --delete-existing-db --log-level DEBUG \
+    --output-dir ./output --streaming-engine arroyo \
+    --query-language SQL --lock-strategy per-key \
+    --prometheus-scrape-interval 1 > /tmp/query_engine.log 2>&1 &
+```
+
+### Step 8 — Load data into Elasticsearch (baseline)
+
+```bash
+python export_to_database.py 
+    --dataset h2o 
+    --file-path ./data/G1_1e7_1e2_0_0.csv 
+    --es-host localhost 
+    --es-port 9200 
+    --es-index h2o_groupby 
+    --es-api-key your-api-key
+    --es-bulk-size 5000
+```
+
+### Step 9 — Run benchmark
+
+```bash
+python run_benchmark.py 
+    --mode asap 
+    --asap-sql-file ./queries/h2o_asap.sql 
+    --baseline-sql-file ./queries/h2o_elasticsearch.sql 
+    --elastic-host localhost 
+    --elastic-port 9200 
+    --elastic-api-key your-api-key
+    --output-dir ./results --output-prefix h2o
+```
 ---
 
 ## Custom Dataset
