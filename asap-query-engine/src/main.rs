@@ -13,6 +13,7 @@ use query_engine_rust::data_model::enums::{
 };
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
+use query_engine_rust::precompute_engine::csv_ingest::{CsvFileIngestConfig, CsvFileIngestSource};
 use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::InferenceConfig;
@@ -165,6 +166,40 @@ struct Args {
     /// Query tracker: observation window in seconds before triggering planning
     #[arg(long, default_value = "100")]
     tracker_observation_window_secs: u64,
+
+    // --- CSV file ingest (alternative to HTTP remote write) ---
+    /// Path to a local CSV file to ingest instead of listening for HTTP writes
+    #[arg(long)]
+    input_file: Option<String>,
+
+    /// Metric name to assign to every row (required with --input-file)
+    #[arg(long)]
+    csv_metric_name: Option<String>,
+
+    /// CSV column to use as the float value (required with --input-file)
+    #[arg(long)]
+    csv_value_col: Option<String>,
+
+    /// Comma-separated CSV columns to include as labels (e.g. "id1,id2,id3")
+    #[arg(long, default_value = "")]
+    csv_label_cols: String,
+
+    /// CSV column containing timestamps in milliseconds; omit to synthesize timestamps
+    #[arg(long)]
+    csv_timestamp_col: Option<String>,
+
+    /// Start timestamp (ms) for synthesized timestamps when --csv-timestamp-col is absent
+    #[arg(long, default_value_t = 0)]
+    csv_start_ts_ms: i64,
+
+    /// Milliseconds between consecutive rows for synthesized timestamps
+    /// (required when --csv-timestamp-col is absent)
+    #[arg(long)]
+    csv_ts_step_ms: Option<i64>,
+
+    /// Number of CSV rows per batch sent to workers
+    #[arg(long, default_value_t = 1000)]
+    csv_batch_size: usize,
 }
 
 #[tokio::main]
@@ -333,9 +368,10 @@ async fn main() -> Result<()> {
     };
 
     // Setup precompute engine (replaces standalone Prometheus remote write server)
-    // Automatically enable when using precompute streaming engine
-    let enable_precompute =
-        args.enable_prometheus_remote_write || args.streaming_engine == StreamingEngine::Precompute;
+    // Automatically enable when using precompute streaming engine or ingesting from a file
+    let enable_precompute = args.enable_prometheus_remote_write
+        || args.streaming_engine == StreamingEngine::Precompute
+        || args.input_file.is_some();
 
     // Handle extracted before run() so the applier task can call update_streaming_config.
     let mut pe_engine_handle: Option<PrecomputeEngineHandle> = None;
@@ -352,10 +388,46 @@ async fn main() -> Result<()> {
             late_data_policy: LateDataPolicy::Drop,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
-        let sources: Vec<Box<dyn IngestSource>> =
+        let sources: Vec<Box<dyn IngestSource>> = if let Some(ref path) = args.input_file {
+            let metric_name = args
+                .csv_metric_name
+                .clone()
+                .ok_or("--csv-metric-name is required with --input-file")?;
+            let value_col = args
+                .csv_value_col
+                .clone()
+                .ok_or("--csv-value-col is required with --input-file")?;
+            let ts_step_ms = if args.csv_timestamp_col.is_none() {
+                args.csv_ts_step_ms.ok_or(
+                    "--csv-ts-step-ms is required when --csv-timestamp-col is not specified",
+                )?
+            } else {
+                args.csv_ts_step_ms.unwrap_or(0)
+            };
+            let label_cols = if args.csv_label_cols.is_empty() {
+                vec![]
+            } else {
+                args.csv_label_cols
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect()
+            };
+            info!("File ingest mode: {}", path);
+            vec![Box::new(CsvFileIngestSource::new(CsvFileIngestConfig {
+                path: path.clone(),
+                metric_name,
+                value_col,
+                label_cols,
+                timestamp_col: args.csv_timestamp_col.clone(),
+                start_ts_ms: args.csv_start_ts_ms,
+                ts_step_ms,
+                batch_size: args.csv_batch_size,
+            }))]
+        } else {
             vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
                 port: args.prometheus_remote_write_port,
-            }))];
+            }))]
+        };
         let pe = PrecomputeEngine::new(
             precompute_config,
             streaming_config.clone(),
@@ -412,8 +484,8 @@ async fn main() -> Result<()> {
         adapter_config,
     };
 
-    // Verify Prometheus is reachable before starting
-    {
+    // Verify Prometheus is reachable before starting (only needed when forwarding queries)
+    if args.forward_unsupported_queries {
         let client = reqwest::Client::new();
         let health_url = format!(
             "{}/api/v1/status/runtimeinfo",

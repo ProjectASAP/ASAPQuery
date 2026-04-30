@@ -3569,6 +3569,7 @@ dependencies = [
  "chrono",
  "clap 4.6.0",
  "criterion",
+ "csv",
  "ctor",
  "dashmap 5.5.3",
  "datafusion",
