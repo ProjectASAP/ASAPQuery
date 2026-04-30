@@ -10,7 +10,9 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 };
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::OutputSink;
-use query_engine_rust::precompute_engine::PrecomputeEngine;
+use query_engine_rust::precompute_engine::{
+    HttpIngestConfig, HttpIngestSource, IngestSource, PrecomputeEngine,
+};
 use query_engine_rust::stores::{SimpleMapStore, Store};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -166,7 +168,6 @@ async fn start_engine(
 ) {
     let config = PrecomputeEngineConfig {
         num_workers: workers,
-        ingest_port: port,
         allowed_lateness_ms: 5_000,
         max_buffer_per_series: 100_000,
         flush_interval_ms: 100,
@@ -175,7 +176,9 @@ async fn start_engine(
         raw_mode_aggregation_id: 0,
         late_data_policy: LateDataPolicy::Drop,
     };
-    let engine = PrecomputeEngine::new(config, streaming_config, sink);
+    let sources: Vec<Box<dyn IngestSource>> =
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))];
+    let engine = PrecomputeEngine::new(config, streaming_config, sink, sources);
     tokio::spawn(async move {
         if let Err(err) = engine.run().await {
             eprintln!("precompute engine on port {port} failed: {err}");

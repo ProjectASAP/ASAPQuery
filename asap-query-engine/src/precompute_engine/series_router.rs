@@ -41,6 +41,7 @@ pub enum WorkerMessage {
 }
 
 /// Routes incoming samples to one of N workers based on a consistent hash.
+#[derive(Clone)]
 pub struct SeriesRouter {
     senders: Vec<mpsc::Sender<WorkerMessage>>,
     num_workers: usize,

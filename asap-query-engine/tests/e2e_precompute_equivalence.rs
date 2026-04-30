@@ -23,7 +23,9 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 };
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::CapturingOutputSink;
-use query_engine_rust::precompute_engine::PrecomputeEngine;
+use query_engine_rust::precompute_engine::{
+    HttpIngestConfig, HttpIngestSource, IngestSource, PrecomputeEngine,
+};
 use query_engine_rust::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 use query_engine_rust::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
 
@@ -141,10 +143,9 @@ async fn send_remote_write(client: &reqwest::Client, port: u16, timeseries: Vec<
     );
 }
 
-fn engine_config(port: u16) -> PrecomputeEngineConfig {
+fn engine_config() -> PrecomputeEngineConfig {
     PrecomputeEngineConfig {
         num_workers: 2,
-        ingest_port: port,
         allowed_lateness_ms: 0,
         max_buffer_per_series: 10_000,
         flush_interval_ms: 100,
@@ -191,7 +192,9 @@ async fn e2e_kll_output_matches_arroyo() {
     let streaming_config = Arc::new(StreamingConfig::new(agg_map.clone()));
 
     let sink = Arc::new(CapturingOutputSink::new());
-    let engine = PrecomputeEngine::new(engine_config(port), streaming_config, sink.clone());
+    let sources: Vec<Box<dyn IngestSource>> =
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))];
+    let engine = PrecomputeEngine::new(engine_config(), streaming_config, sink.clone(), sources);
     tokio::spawn(async move {
         let _ = engine.run().await;
     });
@@ -305,7 +308,9 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     let streaming_config = Arc::new(StreamingConfig::new(agg_map.clone()));
 
     let sink = Arc::new(CapturingOutputSink::new());
-    let engine = PrecomputeEngine::new(engine_config(port), streaming_config, sink.clone());
+    let sources: Vec<Box<dyn IngestSource>> =
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))];
+    let engine = PrecomputeEngine::new(engine_config(), streaming_config, sink.clone(), sources);
     tokio::spawn(async move {
         let _ = engine.run().await;
     });

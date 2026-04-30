@@ -1,141 +1,59 @@
 use crate::drivers::ingest::prometheus_remote_write::decode_prometheus_remote_write;
 use crate::drivers::ingest::victoriametrics_remote_write::decode_victoriametrics_remote_write;
-use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
-use crate::precompute_engine::worker::{extract_metric_name, parse_labels_from_series_key};
-use arc_swap::ArcSwap;
-use asap_types::aggregation_config::AggregationConfig;
-use axum::{body::Bytes, extract::State, http::StatusCode};
-use std::collections::HashMap;
+use crate::precompute_engine::ingest_source::{route_decoded_samples, IngestContext, IngestSource};
+use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::warn;
+use tokio::net::TcpListener;
+use tracing::{info, warn};
 
-/// Shared state for the ingest HTTP handler.
-pub(crate) struct IngestState {
-    pub(crate) router: SeriesRouter,
-    pub(crate) samples_ingested: std::sync::atomic::AtomicU64,
-    /// Aggregation configs for group-key extraction.
-    /// Wrapped in Arc so the same ArcSwap is shared with PrecomputeEngineHandle.
-    /// The handle calls ArcSwap::store() to push a new Vec; this state sees it
-    /// immediately via the shared Arc pointer (lock-free on the read path).
-    pub(crate) agg_configs: Arc<ArcSwap<Vec<Arc<AggregationConfig>>>>,
-    /// When true, skip group-key extraction and pass raw samples through.
-    pub(crate) pass_raw_samples: bool,
+pub struct HttpIngestConfig {
+    pub port: u16,
 }
 
-/// Extract the group key (grouping label values joined by semicolons)
-/// for a given series key and aggregation config.
-fn extract_group_key(series_key: &str, config: &AggregationConfig) -> String {
-    let labels = parse_labels_from_series_key(series_key);
-    let mut values = Vec::new();
-    for label_name in &config.grouping_labels.labels {
-        if let Some(val) = labels.get(label_name.as_str()) {
-            values.push(*val);
-        } else {
-            values.push("");
-        }
-    }
-    values.join(";")
+pub struct HttpIngestSource {
+    config: HttpIngestConfig,
 }
 
-/// Shared logic: group decoded samples by (agg_id, group_key) and route to workers.
-async fn route_decoded_samples(
-    state: &IngestState,
-    samples: Vec<crate::drivers::ingest::prometheus_remote_write::DecodedSample>,
-    ingest_received_at: Instant,
-) -> StatusCode {
-    if samples.is_empty() {
-        return StatusCode::NO_CONTENT;
+impl HttpIngestSource {
+    pub fn new(config: HttpIngestConfig) -> Self {
+        Self { config }
     }
-
-    let count = samples.len() as u64;
-    state
-        .samples_ingested
-        .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
-
-    if state.pass_raw_samples {
-        // Raw mode: group by series key and send as RawSamples
-        let mut by_series: HashMap<&str, Vec<(i64, f64)>> = HashMap::new();
-        for s in &samples {
-            by_series
-                .entry(&s.labels)
-                .or_default()
-                .push((s.timestamp_ms, s.value));
-        }
-        let messages: Vec<WorkerMessage> = by_series
-            .into_iter()
-            .map(|(k, v)| WorkerMessage::RawSamples {
-                series_key: k.to_string(),
-                samples: v,
-                ingest_received_at,
-            })
-            .collect();
-
-        if let Err(e) = state
-            .router
-            .route_group_batch(messages, ingest_received_at)
-            .await
-        {
-            warn!("Batch routing error: {}", e);
-            return StatusCode::INTERNAL_SERVER_ERROR;
-        }
-        return StatusCode::NO_CONTENT;
-    }
-
-    // Group-by mode: for each sample, find matching agg configs and group by
-    // (agg_id, group_key). This is the equivalent of Arroyo's GROUP BY.
-    //
-    // Key: (agg_id, group_key) → Vec<(series_key, timestamp_ms, value)>
-    type GroupKey = (u64, String);
-    type SampleTuple = (String, i64, f64);
-    let mut by_group: HashMap<GroupKey, Vec<SampleTuple>> = HashMap::new();
-
-    // Load agg_configs once per request (lock-free ArcSwap read).
-    let agg_configs = state.agg_configs.load();
-    for s in &samples {
-        let metric_name = extract_metric_name(&s.labels);
-        for config in agg_configs.iter() {
-            if config.metric != metric_name
-                && config.spatial_filter_normalized != metric_name
-                && config.spatial_filter != metric_name
-            {
-                continue;
-            }
-            let group_key = extract_group_key(&s.labels, config);
-            by_group
-                .entry((config.aggregation_id, group_key))
-                .or_default()
-                .push((s.labels.clone(), s.timestamp_ms, s.value));
-        }
-    }
-
-    let messages: Vec<WorkerMessage> = by_group
-        .into_iter()
-        .map(
-            |((agg_id, group_key), samples)| WorkerMessage::GroupSamples {
-                agg_id,
-                group_key,
-                samples,
-                ingest_received_at,
-            },
-        )
-        .collect();
-
-    if let Err(e) = state
-        .router
-        .route_group_batch(messages, ingest_received_at)
-        .await
-    {
-        warn!("Batch routing error: {}", e);
-        return StatusCode::INTERNAL_SERVER_ERROR;
-    }
-
-    StatusCode::NO_CONTENT
 }
 
-/// Axum handler for Prometheus remote write (Snappy + Protobuf).
-pub(crate) async fn handle_prometheus_ingest(
-    State(state): State<Arc<IngestState>>,
+#[async_trait::async_trait]
+impl IngestSource for HttpIngestSource {
+    async fn run(
+        self: Box<Self>,
+        ctx: IngestContext,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let state = Arc::new(HttpIngestState {
+            ctx,
+            samples_ingested: AtomicU64::new(0),
+        });
+
+        let app = Router::new()
+            .route("/api/v1/write", post(handle_prometheus_ingest))
+            .route("/api/v1/import", post(handle_victoriametrics_ingest))
+            .with_state(state);
+
+        let addr = format!("0.0.0.0:{}", self.config.port);
+        info!("HTTP ingest server listening on {}", addr);
+
+        let listener = TcpListener::bind(&addr).await?;
+        axum::serve(listener, app).await?;
+        Ok(())
+    }
+}
+
+struct HttpIngestState {
+    ctx: IngestContext,
+    samples_ingested: AtomicU64,
+}
+
+async fn handle_prometheus_ingest(
+    State(state): State<Arc<HttpIngestState>>,
     body: Bytes,
 ) -> StatusCode {
     let ingest_received_at = Instant::now();
@@ -146,12 +64,20 @@ pub(crate) async fn handle_prometheus_ingest(
             return StatusCode::BAD_REQUEST;
         }
     };
-    route_decoded_samples(&state, samples, ingest_received_at).await
+    state
+        .samples_ingested
+        .fetch_add(samples.len() as u64, Ordering::Relaxed);
+    match route_decoded_samples(&state.ctx, samples, ingest_received_at).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            warn!("Routing error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
 
-/// Axum handler for VictoriaMetrics remote write (Zstd + Protobuf).
-pub(crate) async fn handle_victoriametrics_ingest(
-    State(state): State<Arc<IngestState>>,
+async fn handle_victoriametrics_ingest(
+    State(state): State<Arc<HttpIngestState>>,
     body: Bytes,
 ) -> StatusCode {
     let ingest_received_at = Instant::now();
@@ -162,5 +88,14 @@ pub(crate) async fn handle_victoriametrics_ingest(
             return StatusCode::BAD_REQUEST;
         }
     };
-    route_decoded_samples(&state, samples, ingest_received_at).await
+    state
+        .samples_ingested
+        .fetch_add(samples.len() as u64, Ordering::Relaxed);
+    match route_decoded_samples(&state.ctx, samples, ingest_received_at).await {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(e) => {
+            warn!("Routing error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+    }
 }
