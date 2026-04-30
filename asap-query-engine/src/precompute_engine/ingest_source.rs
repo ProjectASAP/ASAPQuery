@@ -11,7 +11,12 @@ use std::time::Instant;
 #[derive(Clone)]
 pub struct IngestContext {
     pub(crate) router: SeriesRouter,
+    /// Aggregation configs for group-key extraction.
+    /// Wrapped in Arc so the same ArcSwap is shared with PrecomputeEngineHandle.
+    /// The handle calls ArcSwap::store() to push a new Vec; this context sees it
+    /// immediately via the shared Arc pointer (lock-free on the read path).
     pub(crate) agg_configs: Arc<ArcSwap<Vec<Arc<AggregationConfig>>>>,
+    /// When true, skip group-key extraction and pass raw samples through.
     pub(crate) pass_raw_samples: bool,
 }
 
@@ -74,10 +79,15 @@ pub(crate) async fn route_decoded_samples(
         return Ok(());
     }
 
+    // Group-by mode: for each sample, find matching agg configs and group by
+    // (agg_id, group_key). This is the equivalent of Arroyo's GROUP BY.
+    //
+    // Key: (agg_id, group_key) → Vec<(series_key, timestamp_ms, value)>
     type GroupKey = (u64, String);
     type SampleTuple = (String, i64, f64);
     let mut by_group: HashMap<GroupKey, Vec<SampleTuple>> = HashMap::new();
 
+    // Load agg_configs once per request (lock-free ArcSwap read).
     let agg_configs = ctx.agg_configs.load();
     for s in &samples {
         let metric_name = extract_metric_name(&s.labels);

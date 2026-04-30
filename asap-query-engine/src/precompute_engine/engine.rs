@@ -146,8 +146,10 @@ impl PrecomputeEngine {
             .take()
             .expect("PrecomputeEngine::run() called twice");
 
+        // Build the router from the pre-created senders.
         let router = SeriesRouter::new(self.senders.clone());
 
+        // Build aggregation config map from streaming config for workers.
         let agg_configs: HashMap<u64, Arc<AggregationConfig>> = self
             .streaming_config
             .get_all_aggregation_configs()

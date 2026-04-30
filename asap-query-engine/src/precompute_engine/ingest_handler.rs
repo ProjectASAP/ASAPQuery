@@ -47,6 +47,7 @@ impl IngestSource for HttpIngestSource {
     }
 }
 
+/// Shared state for the Axum ingest handlers.
 struct HttpIngestState {
     ctx: IngestContext,
     samples_ingested: AtomicU64,
