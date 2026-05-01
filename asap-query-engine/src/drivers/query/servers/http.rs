@@ -458,22 +458,34 @@ async fn process_range_query_request(
     state: &AppState,
     parsed_request: &ParsedRangeQueryRequest,
     start_time: Instant,
+    headers: HashMap<String, String>,
 ) -> Response {
     // Check if handling is enabled
     if !state.config.handle_http_requests {
         debug!("HTTP request handling is disabled for range query");
-        // For now, return error - fallback for range queries can be added later
-        use crate::drivers::query::adapters::AdapterError;
-        return match state
-            .adapter
-            .format_error_response(&AdapterError::ProtocolError(
-                "Range query handling is disabled".to_string(),
-            ))
-            .await
-        {
-            Ok(json) => json.into_response(),
-            Err(status) => status.into_response(),
-        };
+        if let Some(fallback) = &state.fallback {
+            debug!("Forwarding range query to fallback due to disabled handling");
+            return match fallback
+                .execute_range_query_with_headers(parsed_request, headers)
+                .await
+            {
+                Ok(response) => response.into_response(),
+                Err(status) => status.into_response(),
+            };
+        } else {
+            debug!("Returning error - both handling and forwarding disabled");
+            use crate::drivers::query::adapters::AdapterError;
+            return match state
+                .adapter
+                .format_error_response(&AdapterError::ProtocolError(
+                    "Range query handling is disabled".to_string(),
+                ))
+                .await
+            {
+                Ok(json) => json.into_response(),
+                Err(status) => status.into_response(),
+            };
+        }
     }
 
     // Record query for passive auto-discovery (if tracker is enabled)
@@ -523,10 +535,34 @@ async fn process_range_query_request(
             }
         }
         None => {
+            let total_duration = start_time.elapsed();
             debug!("Range query returned None - query not supported");
-            match state.adapter.format_unsupported_query_response().await {
-                Ok(json) => json.into_response(),
-                Err(status) => status.into_response(),
+
+            if let Some(fallback) = &state.fallback {
+                debug!("Range query not supported locally, forwarding to fallback");
+                info!(
+                    "query='{}' destination=prometheus total_latency_ms={:.2}",
+                    parsed_request.query,
+                    total_duration.as_secs_f64() * 1000.0
+                );
+                match fallback
+                    .execute_range_query_with_headers(parsed_request, headers)
+                    .await
+                {
+                    Ok(response) => response.into_response(),
+                    Err(status) => status.into_response(),
+                }
+            } else {
+                debug!("Range query not supported and forwarding disabled, returning error");
+                info!(
+                    "query='{}' destination=none_unsupported total_latency_ms={:.2}",
+                    parsed_request.query,
+                    total_duration.as_secs_f64() * 1000.0
+                );
+                match state.adapter.format_unsupported_query_response().await {
+                    Ok(json) => json.into_response(),
+                    Err(status) => status.into_response(),
+                }
             }
         }
     }
@@ -535,10 +571,18 @@ async fn process_range_query_request(
 async fn handle_range_query(
     query_params: Query<HashMap<String, String>>,
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let start_time = Instant::now();
     debug!("=== INCOMING RANGE QUERY GET REQUEST ===");
     debug!("Raw query params: {:?}", query_params.0);
+
+    let mut forwarding_headers = HashMap::new();
+    if let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth.to_str() {
+            forwarding_headers.insert("Authorization".to_string(), auth_str.to_string());
+        }
+    }
 
     let parsed_request = match state.adapter.parse_range_get_request(query_params).await {
         Ok(req) => {
@@ -557,12 +601,23 @@ async fn handle_range_query(
         }
     };
 
-    process_range_query_request(&state, &parsed_request, start_time).await
+    process_range_query_request(&state, &parsed_request, start_time, forwarding_headers).await
 }
 
-async fn handle_range_query_post(State(state): State<AppState>, body: Bytes) -> Response {
+async fn handle_range_query_post(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
     let start_time = Instant::now();
     debug!("=== INCOMING RANGE QUERY POST REQUEST ===");
+
+    let mut forwarding_headers = HashMap::new();
+    if let Some(auth) = headers.get(axum::http::header::AUTHORIZATION) {
+        if let Ok(auth_str) = auth.to_str() {
+            forwarding_headers.insert("Authorization".to_string(), auth_str.to_string());
+        }
+    }
 
     // Parse the body as form data
     let body_str = match String::from_utf8(body.to_vec()) {
@@ -607,7 +662,7 @@ async fn handle_range_query_post(State(state): State<AppState>, body: Bytes) -> 
         }
     };
 
-    process_range_query_request(&state, &parsed_request, start_time).await
+    process_range_query_request(&state, &parsed_request, start_time, forwarding_headers).await
 }
 
 #[cfg(test)]

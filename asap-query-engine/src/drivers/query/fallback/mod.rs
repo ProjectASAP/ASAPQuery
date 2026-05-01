@@ -6,7 +6,7 @@ use axum::{
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::drivers::query::adapters::ParsedQueryRequest;
+use crate::drivers::query::adapters::{ParsedQueryRequest, ParsedRangeQueryRequest};
 
 /// Response format from fallback backend
 #[derive(Debug, Clone)]
@@ -67,6 +67,21 @@ pub trait FallbackClient: Send + Sync {
     async fn get_runtime_info(&self) -> Result<Value, StatusCode> {
         // Default implementation: return empty object
         Ok(serde_json::json!({}))
+    }
+
+    async fn execute_range_query(
+        &self,
+        _request: &ParsedRangeQueryRequest,
+    ) -> Result<FallbackResponse, StatusCode> {
+        Err(StatusCode::NOT_IMPLEMENTED)
+    }
+
+    async fn execute_range_query_with_headers(
+        &self,
+        request: &ParsedRangeQueryRequest,
+        _headers: HashMap<String, String>,
+    ) -> Result<FallbackResponse, StatusCode> {
+        self.execute_range_query(request).await
     }
 
     async fn get_runtime_info_with_headers(

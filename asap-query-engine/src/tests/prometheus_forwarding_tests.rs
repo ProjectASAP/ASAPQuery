@@ -19,7 +19,6 @@ async fn start_mock_prometheus_server(port: u16) -> Result<(), Box<dyn std::erro
     async fn mock_query_handler(Query(params): Query<HashMap<String, String>>) -> Json<Value> {
         let query = params.get("query").unwrap_or(&"".to_string()).clone();
 
-        // Simulate different types of queries
         if query.contains("unsupported_metric") {
             Json(json!({
                 "status": "success",
@@ -50,7 +49,44 @@ async fn start_mock_prometheus_server(port: u16) -> Result<(), Box<dyn std::erro
         }
     }
 
-    let app = Router::new().route("/api/v1/query", get(mock_query_handler));
+    async fn mock_range_query_handler(
+        Query(params): Query<HashMap<String, String>>,
+    ) -> Json<Value> {
+        let query = params.get("query").unwrap_or(&"".to_string()).clone();
+
+        if query.contains("unsupported_metric") {
+            Json(json!({
+                "status": "success",
+                "data": {
+                    "resultType": "matrix",
+                    "result": [
+                        {
+                            "metric": {"__name__": "unsupported_metric"},
+                            "values": [[1672531200, "42.0"], [1672531260, "43.0"]]
+                        }
+                    ]
+                }
+            }))
+        } else if query.contains("error_query") {
+            Json(json!({
+                "status": "error",
+                "errorType": "bad_data",
+                "error": "invalid query syntax"
+            }))
+        } else {
+            Json(json!({
+                "status": "success",
+                "data": {
+                    "resultType": "matrix",
+                    "result": []
+                }
+            }))
+        }
+    }
+
+    let app = Router::new()
+        .route("/api/v1/query", get(mock_query_handler))
+        .route("/api/v1/query_range", get(mock_range_query_handler));
 
     let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
 
@@ -267,5 +303,143 @@ async fn test_prometheus_server_unreachable() {
     assert!(
         status.is_server_error()
             || (status == reqwest::StatusCode::OK && response_json["status"] == "error")
+    );
+}
+
+#[tokio::test]
+async fn test_prometheus_forwarding_range_query() {
+    let prometheus_port = 19094;
+    start_mock_prometheus_server(prometheus_port).await.unwrap();
+
+    let (_server, server_port) = setup_test_server(prometheus_port).await;
+
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://127.0.0.1:{server_port}/api/v1/query_range"))
+        .query(&[
+            ("query", "unsupported_metric"),
+            ("start", "1672531200"),
+            ("end", "1672531260"),
+            ("step", "60"),
+        ])
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let json_response: Value = response.json().await.expect("Failed to parse JSON");
+    assert_eq!(json_response["status"], "success");
+    assert_eq!(json_response["data"]["resultType"], "matrix");
+
+    let result = &json_response["data"]["result"][0];
+    assert_eq!(result["metric"]["__name__"], "unsupported_metric");
+    assert_eq!(result["values"][0][1], "42.0");
+    assert_eq!(result["values"][1][1], "43.0");
+}
+
+#[tokio::test]
+async fn test_range_query_forwarding_disabled() {
+    let config = HttpServerConfig {
+        port: 0,
+        handle_http_requests: true,
+        adapter_config: AdapterConfig::prometheus_promql(
+            "http://127.0.0.1:19095".to_string(),
+            false, // Forwarding disabled
+        ),
+    };
+
+    let inference_config = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup);
+    let streaming_config = Arc::new(StreamingConfig::default());
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+    let query_engine = Arc::new(SimpleEngine::new(
+        store.clone(),
+        inference_config,
+        streaming_config.clone(),
+        15000,
+        crate::data_model::QueryLanguage::promql,
+    ));
+
+    let server = HttpServer::new(config, query_engine, store, None);
+    let server_port = server
+        .start_test_server()
+        .await
+        .expect("Failed to start test server");
+
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://127.0.0.1:{server_port}/api/v1/query_range"))
+        .query(&[
+            ("query", "unsupported_metric"),
+            ("start", "1672531200"),
+            ("end", "1672531260"),
+            ("step", "60"),
+        ])
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+
+    let json_response: Value = response.json().await.expect("Failed to parse JSON");
+    assert_eq!(json_response["status"], "error");
+}
+
+#[tokio::test]
+async fn test_range_query_server_unreachable() {
+    let config = HttpServerConfig {
+        port: 0,
+        handle_http_requests: true,
+        adapter_config: AdapterConfig::prometheus_promql(
+            "http://127.0.0.1:99998".to_string(), // Unreachable port
+            true,
+        ),
+    };
+
+    let inference_config = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup);
+    let streaming_config = Arc::new(StreamingConfig::default());
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+    let query_engine = Arc::new(SimpleEngine::new(
+        store.clone(),
+        inference_config,
+        streaming_config.clone(),
+        15000,
+        crate::data_model::QueryLanguage::promql,
+    ));
+
+    let server = HttpServer::new(config, query_engine, store, None);
+    let server_port = server
+        .start_test_server()
+        .await
+        .expect("Failed to start test server");
+
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://127.0.0.1:{server_port}/api/v1/query_range"))
+        .query(&[
+            ("query", "unsupported_metric"),
+            ("start", "1672531200"),
+            ("end", "1672531260"),
+            ("step", "60"),
+        ])
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    let status = response.status();
+    let json_response: Value = response.json().await.expect("Failed to parse JSON");
+
+    assert!(
+        status.is_server_error()
+            || (status == reqwest::StatusCode::OK && json_response["status"] == "error")
     );
 }

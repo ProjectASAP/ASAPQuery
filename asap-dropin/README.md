@@ -168,6 +168,8 @@ kill -HUP $(pgrep prometheus)
 
 See the [Prometheus configuration docs](https://prometheus.io/docs/prometheus/latest/configuration/configuration/) for more details on reloading.
 
+> **Note:** Most editors (vim, VS Code, etc.) replace the file on save rather than writing in place, which changes the inode. If Prometheus is running in Docker, its bind-mount tracks the original inode, so `/-/reload` will silently reload the old content. To avoid this: mount the config **directory** instead of the file (e.g. `-v ./prometheus-config:/etc/prometheus`), which lets Docker follow file replacements correctly. Alternatively, restart the Prometheus container after editing.
+
 ### Step 4 — Add an ASAPQuery datasource in Grafana
 
 Create a new datasource in Grafana pointing at ASAPQuery, then switch your dashboards to use it.
