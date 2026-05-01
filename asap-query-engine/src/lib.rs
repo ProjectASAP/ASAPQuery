@@ -1,16 +1,3 @@
-#[cfg(test)]
-#[ctor::ctor]
-fn init_sketch_backend_for_tests() {
-    #[cfg(feature = "sketchlib-tests")]
-    let _ = asap_sketchlib::asap::config::configure(
-        asap_sketchlib::asap::config::ImplMode::Sketchlib,
-        asap_sketchlib::asap::config::ImplMode::Legacy,
-        asap_sketchlib::asap::config::ImplMode::Sketchlib,
-    );
-    #[cfg(not(feature = "sketchlib-tests"))]
-    asap_sketchlib::asap::config::force_legacy_mode_for_tests();
-}
-
 pub mod data_model;
 pub mod drivers;
 pub mod engines;
