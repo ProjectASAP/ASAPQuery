@@ -2,13 +2,13 @@
 #[ctor::ctor]
 fn init_sketch_backend_for_tests() {
     #[cfg(feature = "sketchlib-tests")]
-    let _ = sketch_core::config::configure(
-        sketch_core::config::ImplMode::Sketchlib,
-        sketch_core::config::ImplMode::Legacy,
-        sketch_core::config::ImplMode::Sketchlib,
+    let _ = asap_sketchlib::asap::config::configure(
+        asap_sketchlib::asap::config::ImplMode::Sketchlib,
+        asap_sketchlib::asap::config::ImplMode::Legacy,
+        asap_sketchlib::asap::config::ImplMode::Sketchlib,
     );
     #[cfg(not(feature = "sketchlib-tests"))]
-    sketch_core::config::force_legacy_mode_for_tests();
+    asap_sketchlib::asap::config::force_legacy_mode_for_tests();
 }
 
 pub mod data_model;

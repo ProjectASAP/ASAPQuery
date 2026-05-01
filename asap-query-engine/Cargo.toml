@@ -5,7 +5,6 @@ edition.workspace = true
 
 [dependencies]
 # Internal crates (workspace)
-sketch-core.workspace = true
 promql_utilities.workspace = true
 sql_utilities.workspace = true
 asap_types.workspace = true
@@ -60,7 +59,7 @@ tracing-appender = "0.2"
 arc-swap = "1"
 csv = "1"
 elastic_dsl_utilities.workspace = true
-asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib" }
+asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", branch = "refactor/adopt-sketch-core-modules", features = ["asap-cli"] }
 
 [[bin]]
 name = "precompute_engine"

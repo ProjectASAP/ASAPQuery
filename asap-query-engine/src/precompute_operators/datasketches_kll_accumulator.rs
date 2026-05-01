@@ -2,9 +2,9 @@ use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate,
 };
+use asap_sketchlib::asap::kll::KllSketch;
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
-use sketch_core::kll::KllSketch;
 use std::collections::HashMap;
 #[cfg(feature = "extra_debugging")]
 use std::time::Instant;
@@ -12,7 +12,7 @@ use tracing::debug;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// KLL sketch accumulator — wraps sketch_core::KllSketch.
+/// KLL sketch accumulator — wraps asap_sketchlib::asap::KllSketch.
 /// Core struct, update/merge/serde logic live in sketch-core.
 /// This file retains QE-specific trait impls, legacy deserializers, and JSON output.
 pub struct DatasketchesKLLAccumulator {

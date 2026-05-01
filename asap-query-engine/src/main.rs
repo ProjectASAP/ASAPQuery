@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use tokio::signal;
 use tracing::{debug, error, info, warn};
 
-use sketch_core::config::{self, ImplMode};
+use asap_sketchlib::asap::config::{self, ImplMode};
 
 use asap_types::streaming_config::StreamingConfig;
 use query_engine_rust::data_model::enums::{

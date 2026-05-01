@@ -16,9 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy the asap-common directory
 COPY asap-common ./asap-common
 
-# Copy path dependencies of asap-query-engine
-COPY asap-common/sketch-core ./asap-common/sketch-core
-
 COPY Cargo.toml ./
 COPY Cargo.lock ./
 COPY asap-query-engine/Cargo.toml ./asap-query-engine/

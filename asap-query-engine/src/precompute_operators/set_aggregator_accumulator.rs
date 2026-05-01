@@ -2,13 +2,13 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
+use asap_sketchlib::asap::set_aggregator::SetAggregator;
 use serde_json::Value;
-use sketch_core::set_aggregator::SetAggregator;
 use std::collections::{HashMap, HashSet};
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// Set aggregator accumulator — wraps sketch_core::SetAggregator.
+/// Set aggregator accumulator — wraps asap_sketchlib::asap::SetAggregator.
 /// Core struct, merge/serde logic live in sketch-core.
 /// This file retains QE-specific trait impls, KeyByLabelValues conversion,
 /// and legacy deserializers.

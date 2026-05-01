@@ -7,12 +7,12 @@
 //!  3. Advances the watermark past the window boundary to close it
 //!  4. Drains captured outputs and verifies equivalence with ArroYo-format accumulators
 
+use asap_sketchlib::asap::kll::KllSketch;
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::enums::{AggregationType, WindowType};
 use flate2::{write::GzEncoder, Compression};
 use prost::Message;
 use serde_json::json;
-use sketch_core::kll::KllSketch;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;

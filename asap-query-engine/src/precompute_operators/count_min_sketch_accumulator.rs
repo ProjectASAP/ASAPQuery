@@ -2,13 +2,13 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
+use asap_sketchlib::asap::count_min::CountMinSketch;
 use serde_json::Value;
-use sketch_core::count_min::CountMinSketch;
 use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// Count-Min Sketch accumulator — wraps sketch_core::CountMinSketch.
+/// Count-Min Sketch accumulator — wraps asap_sketchlib::asap::CountMinSketch.
 /// Core struct, update/merge/serde logic live in sketch-core.
 /// This file retains QE-specific trait impls, legacy deserializers, and JSON output.
 #[derive(Debug, Clone)]
