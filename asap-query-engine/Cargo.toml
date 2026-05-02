@@ -58,7 +58,7 @@ tracing-appender = "0.2"
 arc-swap = "1"
 csv = "1"
 elastic_dsl_utilities.workspace = true
-asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", branch = "refactor/adopt-sketch-core-modules" }
+asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", branch = "refactor/wire-format-align-go" }
 
 [[bin]]
 name = "precompute_engine"
