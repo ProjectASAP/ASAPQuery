@@ -1,18 +1,18 @@
 //! End-to-end integration tests: precompute engine output equivalence
-//! with the wire-format sketch encoding.
+//! with ArroYo sketch format.
 //!
 //! Each test:
 //!  1. Starts a PrecomputeEngine backed by a CapturingOutputSink
 //!  2. Sends Prometheus remote write samples via HTTP (Snappy-compressed protobuf)
 //!  3. Advances the watermark past the window boundary to close it
-//!  4. Drains captured outputs and verifies equivalence with wire-format accumulators
+//!  4. Drains captured outputs and verifies equivalence with ArroYo-format accumulators
 
-use asap_sketchlib::sketches::kll::KllSketch;
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::enums::{AggregationType, WindowType};
 use flate2::{write::GzEncoder, Compression};
 use prost::Message;
 use serde_json::json;
+use sketch_core::kll::KllSketch;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -162,10 +162,10 @@ fn gzip_hex(bytes: &[u8]) -> String {
     hex::encode(encoder.finish().unwrap())
 }
 
-// ─── test 1: DatasketchesKLL output matches wire-format KLL ─────────────────
+// ─── test 1: DatasketchesKLL output matches ArroYo KLL ──────────────────────
 
 /// Full e2e: send KLL samples through the HTTP ingest → PrecomputeEngine stack,
-/// then verify the emitted DatasketchesKLLAccumulator matches what the wire-format
+/// then verify the emitted DatasketchesKLLAccumulator matches what ArroYo's
 /// KllSketch::aggregate_kll would produce for the same values.
 #[tokio::test]
 async fn e2e_kll_output_matches_arroyo() {
@@ -240,7 +240,7 @@ async fn e2e_kll_output_matches_arroyo() {
         .downcast_ref::<DatasketchesKLLAccumulator>()
         .expect("captured accumulator should be DatasketchesKLLAccumulator");
 
-    // Build the wire-format equivalent and deserialize it
+    // Build the ArroYo-format equivalent and deserialize it
     let arroyo_bytes =
         KllSketch::aggregate_kll(k, &values).expect("KllSketch::aggregate_kll failed");
     let arroyo_json = json!({
@@ -252,11 +252,11 @@ async fn e2e_kll_output_matches_arroyo() {
     let streaming_config_for_deser = StreamingConfig::new(agg_map);
     let (_arroyo_output, arroyo_acc_box) =
         PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config_for_deser)
-            .expect("wire-format KLL deserialization failed");
+            .expect("ArroYo KLL deserialization failed");
     let arroyo_acc = arroyo_acc_box
         .as_any()
         .downcast_ref::<DatasketchesKLLAccumulator>()
-        .expect("wire-format payload should deserialize to DatasketchesKLLAccumulator");
+        .expect("ArroYo payload should deserialize to DatasketchesKLLAccumulator");
 
     // Window metadata
     assert_eq!(handcrafted_output.aggregation_id, agg_id);
@@ -282,11 +282,11 @@ async fn e2e_kll_output_matches_arroyo() {
     }
 }
 
-// ─── test 2: MultipleSum output matches wire-format MultipleSum ─────────────
+// ─── test 2: MultipleSum output matches ArroYo MultipleSum ──────────────────
 
 /// Full e2e: send MultipleSum samples (grouped by "host") through the HTTP
 /// ingest → PrecomputeEngine stack, then verify the emitted
-/// MultipleSumAccumulator matches the wire-format MessagePack-encoded sums map.
+/// MultipleSumAccumulator matches the ArroYo MessagePack-encoded sums map.
 #[tokio::test]
 async fn e2e_multiple_sum_output_matches_arroyo() {
     let port = 19401u16;
@@ -352,7 +352,7 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
         .downcast_ref::<MultipleSumAccumulator>()
         .expect("captured accumulator should be MultipleSumAccumulator");
 
-    // Build the wire-format equivalent and deserialize it
+    // Build the ArroYo-format equivalent and deserialize it
     let mut expected_sums: HashMap<String, f64> = HashMap::new();
     expected_sums.insert("A".to_string(), 6.0);
     let arroyo_bytes = rmp_serde::to_vec(&expected_sums).expect("msgpack encoding failed");
@@ -365,11 +365,11 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     let streaming_config_for_deser = StreamingConfig::new(agg_map);
     let (_arroyo_output, arroyo_acc_box) =
         PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config_for_deser)
-            .expect("wire-format MultipleSum deserialization failed");
+            .expect("ArroYo MultipleSum deserialization failed");
     let arroyo_acc = arroyo_acc_box
         .as_any()
         .downcast_ref::<MultipleSumAccumulator>()
-        .expect("wire-format payload should deserialize to MultipleSumAccumulator");
+        .expect("ArroYo payload should deserialize to MultipleSumAccumulator");
 
     // Window metadata
     assert_eq!(handcrafted_output.aggregation_id, agg_id);

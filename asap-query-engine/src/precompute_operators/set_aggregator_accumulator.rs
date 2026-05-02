@@ -2,14 +2,14 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::set_aggregator::SetAggregator;
 use serde_json::Value;
+use sketch_core::set_aggregator::SetAggregator;
 use std::collections::{HashMap, HashSet};
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// Set aggregator accumulator — wraps asap_sketchlib::sketches::SetAggregator.
-/// Core struct, merge/serde logic live in `asap_sketchlib::sketches`.
+/// Set aggregator accumulator — wraps sketch_core::SetAggregator.
+/// Core struct, merge/serde logic live in sketch-core.
 /// This file retains QE-specific trait impls, KeyByLabelValues conversion,
 /// and legacy deserializers.
 #[derive(Debug, Clone)]
@@ -92,8 +92,7 @@ impl SetAggregatorAccumulator {
     pub fn deserialize_from_bytes_arroyo(
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let sa = SetAggregator::deserialize_msgpack(buffer)
-            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
+        let sa = SetAggregator::deserialize_msgpack(buffer)?;
         let added = sa
             .values
             .into_iter()
@@ -107,9 +106,9 @@ impl SetAggregatorAccumulator {
     pub fn serialize_to_bytes_arroyo(&self) -> Vec<u8> {
         let mut sa = SetAggregator::new();
         for key in &self.added {
-            sa.update(&key.to_semicolon_str());
+            sa.insert(&key.to_semicolon_str());
         }
-        sa.serialize_msgpack().unwrap_or_default()
+        sa.serialize_msgpack()
     }
 }
 

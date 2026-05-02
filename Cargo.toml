@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "asap-common/sketch-core",
     "asap-common/dependencies/rs/promql_utilities",
     "asap-common/dependencies/rs/sql_utilities",
     "asap-common/dependencies/rs/elastic_dsl_utilities",
@@ -31,6 +32,7 @@ promql-parser = "0.5.0"
 tokio = { version = "1.0", features = ["full"] }
 
 # Internal crates
+sketch-core = { path = "asap-common/sketch-core" }
 promql_utilities = { path = "asap-common/dependencies/rs/promql_utilities" }
 sql_utilities = { path = "asap-common/dependencies/rs/sql_utilities" }
 asap_types = { path = "asap-common/dependencies/rs/asap_types" }

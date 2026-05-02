@@ -776,8 +776,8 @@ mod tests {
     use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
-    use asap_sketchlib::sketches::kll::KllSketch;
     use asap_types::enums::{AggregationType, WindowType};
+    use sketch_core::kll::KllSketch;
 
     fn make_agg_config(
         id: u64,
