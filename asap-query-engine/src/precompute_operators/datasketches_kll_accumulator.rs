@@ -2,9 +2,9 @@ use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate,
 };
+use asap_sketchlib::sketches::kll::KllSketch;
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
-use sketch_core::kll::KllSketch;
 use std::collections::HashMap;
 #[cfg(feature = "extra_debugging")]
 use std::time::Instant;
@@ -12,9 +12,9 @@ use tracing::debug;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// KLL sketch accumulator — wraps sketch_core::KllSketch.
-/// Core struct, update/merge/serde logic live in sketch-core.
-/// This file retains QE-specific trait impls, legacy deserializers, and JSON output.
+/// KLL sketch accumulator — wraps asap_sketchlib::sketches::KllSketch.
+/// Core struct, update/merge/serde logic live in `asap_sketchlib::sketches`.
+/// This file retains QE-specific trait impls and JSON output.
 pub struct DatasketchesKLLAccumulator {
     pub inner: KllSketch,
 }
@@ -31,42 +31,19 @@ impl DatasketchesKLLAccumulator {
     }
 
     pub fn get_quantile(&self, quantile: f64) -> f64 {
-        self.inner.get_quantile(quantile)
-    }
-
-    pub fn deserialize_from_json(data: &Value) -> Result<Self, Box<dyn std::error::Error>> {
-        // Mirror Python implementation: expects {"sketch": base64_encoded_string}
-        let sketch_b64 = data["sketch"]
-            .as_str()
-            .ok_or("Missing or invalid 'sketch' field")?;
-
-        let sketch_bytes = general_purpose::STANDARD
-            .decode(sketch_b64)
-            .map_err(|e| format!("Failed to decode base64 sketch data: {e}"))?;
-
-        // TODO: remove this hardcoding once FlinkSketch serializes k in its output
-        Ok(Self {
-            inner: KllSketch::from_dsrs_bytes(&sketch_bytes, 200)?,
-        })
-    }
-
-    pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        // Mirror Python implementation: deserialize sketch directly from bytes
-        // TODO: remove this hardcoding once FlinkSketch serializes k in its output
-        Ok(Self {
-            inner: KllSketch::from_dsrs_bytes(buffer, 200)?,
-        })
+        self.inner.quantile(quantile)
     }
 
     pub fn deserialize_from_bytes_arroyo(
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         debug!(
-            "Deserializing DatasketchesKLLAccumulator from Arroyo MessagePack buffer of size {}",
+            "Deserializing DatasketchesKLLAccumulator from MessagePack buffer of size {}",
             buffer.len()
         );
         Ok(Self {
-            inner: KllSketch::deserialize_msgpack(buffer)?,
+            inner: KllSketch::deserialize_msgpack(buffer)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
         })
     }
 
@@ -136,7 +113,7 @@ impl SerializableToSink for DatasketchesKLLAccumulator {
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.serialize_msgpack()
+        self.inner.serialize_msgpack().unwrap_or_default()
     }
 }
 
@@ -255,11 +232,12 @@ impl MergeableAccumulator<DatasketchesKLLAccumulator> for DatasketchesKLLAccumul
         if accumulators.is_empty() {
             return Err("No accumulators to merge".into());
         }
-        let inners: Vec<KllSketch> = accumulators.into_iter().map(|acc| acc.inner).collect();
-        let merged_inner = KllSketch::merge(inners)?;
-        Ok(Self {
-            inner: merged_inner,
-        })
+        let mut iter = accumulators.into_iter();
+        let mut merged = iter.next().unwrap();
+        for acc in iter {
+            merged.inner.merge(&acc.inner)?;
+        }
+        Ok(merged)
     }
 }
 
