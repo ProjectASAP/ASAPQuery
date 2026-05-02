@@ -5,14 +5,14 @@ use crate::{
     },
     KeyByLabelValues,
 };
-use asap_sketchlib::sketches::hydra_kll::HydraKllSketch;
 use base64::{engine::general_purpose, Engine as _};
+use sketch_core::hydra_kll::HydraKllSketch;
 use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// HydraKLL sketch accumulator — wraps asap_sketchlib::sketches::HydraKllSketch.
-/// Core struct, update/merge/serde logic live in `asap_sketchlib::sketches`.
+/// HydraKLL sketch accumulator — wraps sketch_core::HydraKllSketch.
+/// Core struct, update/merge/serde logic live in sketch-core.
 /// This file retains QE-specific trait impls and JSON output.
 #[derive(Debug, Clone)]
 pub struct HydraKllSketchAccumulator {
@@ -38,26 +38,25 @@ impl HydraKllSketchAccumulator {
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            inner: HydraKllSketch::deserialize_msgpack(buffer)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
+            inner: HydraKllSketch::deserialize_msgpack(buffer)?,
         })
     }
 
     pub fn query_key(&self, key: &KeyByLabelValues, quantile: f64) -> f64 {
-        self.inner.quantile(&key.to_semicolon_str(), quantile)
+        self.inner.query(&key.to_semicolon_str(), quantile)
     }
 }
 
 impl SerializableToSink for HydraKllSketchAccumulator {
     fn serialize_to_json(&self) -> serde_json::Value {
         // Mirror Python implementation: {"sketch": base64_encoded_string}
-        let sketch_bytes = self.inner.serialize_msgpack().unwrap_or_default();
+        let sketch_bytes = self.inner.serialize_msgpack();
         let sketch_b64 = general_purpose::STANDARD.encode(&sketch_bytes);
         serde_json::json!({ "sketch": sketch_b64 })
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.serialize_msgpack().unwrap_or_default()
+        self.inner.serialize_msgpack()
     }
 }
 
@@ -68,12 +67,11 @@ impl MergeableAccumulator<HydraKllSketchAccumulator> for HydraKllSketchAccumulat
         if accumulators.is_empty() {
             return Err("No accumulators to merge".into());
         }
-        let mut iter = accumulators.into_iter();
-        let mut merged = iter.next().unwrap();
-        for acc in iter {
-            merged.inner.merge(&acc.inner)?;
-        }
-        Ok(merged)
+        let inners: Vec<HydraKllSketch> = accumulators.into_iter().map(|acc| acc.inner).collect();
+        let merged_inner = HydraKllSketch::merge(inners)?;
+        Ok(Self {
+            inner: merged_inner,
+        })
     }
 }
 
