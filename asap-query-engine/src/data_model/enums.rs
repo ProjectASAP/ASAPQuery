@@ -1,10 +1,12 @@
-#[derive(clap::ValueEnum, Clone, Debug)]
+#[derive(clap::ValueEnum, Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum InputFormat {
     Json,
     Byte,
 }
 
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StreamingEngine {
     Arroyo,
     Precompute,
@@ -24,10 +26,12 @@ pub enum QueryProtocol {
     // Future: DuckDbHttp, etc.
 }
 
-#[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq)]
+#[derive(clap::ValueEnum, Clone, Debug, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum LockStrategy {
     #[value(name = "global")]
+    #[serde(rename = "global")]
     Global,
     #[value(name = "per-key")]
+    #[serde(rename = "per-key")]
     PerKey,
 }
