@@ -639,4 +639,11 @@ mod tests {
         ).unwrap();
         assert!(incoming.matches_sql_pattern(&template));
     }
+
+    #[test]
+    fn test_order_by_is_rejected() {
+        assert!(parse_sql_query(
+            "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2 ORDER BY L1"
+        ).is_none());
+    }
 }
