@@ -188,7 +188,7 @@ impl SQLPatternMatcher {
                 let scrape_duration = time_info.get_duration();
                 scraped_intervals = scrape_duration / self.scrape_interval;
 
-                if scraped_intervals < self.scrape_interval {
+                if scraped_intervals < 1.0 {
                     println!("Returned QueryError::SpatialDurationSmall");
 
                     return Err((
@@ -244,7 +244,7 @@ impl SQLPatternMatcher {
                 // Last query
                 // let time_info = TimeInfo::new("time".to_string(), *start, *scrape_duration);
 
-                if (scrape_duration - self.scrape_interval).abs() < f64::EPSILON {
+                if (scrape_duration - 1.0).abs() < f64::EPSILON {
                     sql_query.add_subquery(
                         QueryType::Spatial,
                         aggregation_info.clone(),
@@ -252,7 +252,7 @@ impl SQLPatternMatcher {
                         labels.clone(),
                         time_info.clone(),
                     );
-                } else if *scrape_duration > self.scrape_interval {
+                } else if *scrape_duration > 1.0 {
                     // Check if labels match all metadata columns
                     let has_all_labels = self
                         .schema

@@ -36,6 +36,11 @@ impl SQLPatternParser {
     }
 
     fn parse_query_node(&self, query: &Query) -> Option<SQLQueryData> {
+        if query.order_by.is_some() {
+            println!("ORDER BY is not supported");
+            return None;
+        }
+
         // Convert CTE to subquery if present
         let query = self.cte_to_subquery(query);
 
