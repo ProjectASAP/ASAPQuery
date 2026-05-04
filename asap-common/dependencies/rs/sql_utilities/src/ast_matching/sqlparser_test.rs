@@ -646,4 +646,101 @@ mod tests {
             "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2 ORDER BY L1"
         ).is_none());
     }
+
+    // ── scrape_interval > 1s regression tests (issue #201) ───────────────────
+
+    fn check_query_with_interval(
+        sql: &str,
+        scrape_interval: f64,
+        expected_types: Vec<QueryType>,
+        expected_error: Option<QueryError>,
+    ) {
+        let schema = create_test_schema();
+        let matcher = SQLPatternMatcher::new(schema, scrape_interval);
+        let query_data =
+            parse_sql_query(sql).unwrap_or_else(|| panic!("Failed to parse query: {}", sql));
+        let result = matcher.query_info_to_pattern(&query_data);
+        assert_eq!(result.query_type, expected_types);
+        assert_eq!(result.error, expected_error);
+    }
+
+    /// scraped_intervals = 15/15 = 1.0; bug fires 1.0 < 15.0 → false positive error
+    #[test]
+    fn test_bug_201_single_interval_spatial_query_not_rejected() {
+        check_query_with_interval(
+            "SELECT AVG(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -15, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4",
+            15.0,
+            vec![QueryType::Spatial],
+            None,
+        );
+    }
+
+    /// scraped_intervals = 30/15 = 2.0; bug fires 2.0 < 15.0 → false positive error
+    #[test]
+    fn test_bug_201_two_interval_temporal_query_not_rejected() {
+        check_query_with_interval(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -30, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4",
+            15.0,
+            vec![QueryType::TemporalGeneric],
+            None,
+        );
+    }
+
+    /// scraped_intervals = 30/15 = 2.0 with QUANTILE agg → TemporalQuantile
+    #[test]
+    fn test_bug_201_temporal_quantile_not_rejected() {
+        check_query_with_interval(
+            "SELECT QUANTILE(0.95, value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -30, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4",
+            15.0,
+            vec![QueryType::TemporalQuantile],
+            None,
+        );
+    }
+
+    /// scraped_intervals = 30/15 = 2.0 with subset of labels → SpatioTemporal
+    #[test]
+    fn test_bug_201_spatiotemporal_not_rejected() {
+        check_query_with_interval(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -30, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1",
+            15.0,
+            vec![QueryType::SpatioTemporal],
+            None,
+        );
+    }
+
+    /// Spatial-of-temporal: outer has UNUSED time (not checked), inner scraped_intervals = 30/15 = 2.0
+    #[test]
+    fn test_bug_201_spatial_of_temporal_not_rejected() {
+        check_query_with_interval(
+            "SELECT SUM(result) FROM \
+             (SELECT SUM(value) AS result FROM cpu_usage \
+              WHERE time BETWEEN DATEADD(s, -30, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+              GROUP BY L1, L2, L3, L4) \
+             GROUP BY L1",
+            15.0,
+            vec![QueryType::Spatial, QueryType::TemporalGeneric],
+            None,
+        );
+    }
+
+    /// scraped_intervals = 14/15 = 0.93 < 1.0 → should still be rejected (guard still works)
+    #[test]
+    fn test_bug_201_sub_interval_query_still_rejected() {
+        check_query_with_interval(
+            "SELECT AVG(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -14, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4",
+            15.0,
+            vec![],
+            Some(QueryError::SpatialDurationSmall),
+        );
+    }
 }
