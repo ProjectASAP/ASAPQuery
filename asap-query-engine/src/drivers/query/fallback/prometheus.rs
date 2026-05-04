@@ -1,5 +1,5 @@
 use super::{FallbackClient, FallbackResponse};
-use crate::drivers::query::adapters::ParsedQueryRequest;
+use crate::drivers::query::adapters::{ParsedQueryRequest, ParsedRangeQueryRequest};
 use async_trait::async_trait;
 use axum::http::StatusCode;
 use reqwest::Client;
@@ -89,6 +89,70 @@ impl FallbackClient for PrometheusHttpFallback {
                 let error = PrometheusResponse::error(
                     "internal",
                     &format!("Failed to forward query to Prometheus: {}", req_err),
+                );
+                Ok(FallbackResponse::Json(serde_json::to_value(error).unwrap()))
+            }
+        }
+    }
+
+    async fn execute_range_query(
+        &self,
+        request: &ParsedRangeQueryRequest,
+    ) -> Result<FallbackResponse, StatusCode> {
+        debug!("=== FORWARDING RANGE QUERY TO PROMETHEUS ===");
+        debug!(
+            "Forwarding range query: '{}', start: {}, end: {}, step: {}",
+            request.query, request.start, request.end, request.step
+        );
+
+        let full_url = format!("{}/api/v1/query_range", self.base_url.trim_end_matches('/'));
+
+        let query_params = vec![
+            ("query", request.query.clone()),
+            ("start", request.start.to_string()),
+            ("end", request.end.to_string()),
+            ("step", request.step.to_string()),
+        ];
+
+        match self
+            .client
+            .get(&full_url)
+            .query(&query_params)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(response) => {
+                let status = response.status();
+                debug!(
+                    "Received range query response from Prometheus, status: {}",
+                    status
+                );
+                match response.json::<Value>().await {
+                    Ok(prometheus_response) => {
+                        debug!("=== PROMETHEUS RANGE FORWARD SUCCESS ===");
+                        Ok(FallbackResponse::Json(prometheus_response))
+                    }
+                    Err(parse_err) => {
+                        error!(
+                            "Failed to parse Prometheus range query response: {}",
+                            parse_err
+                        );
+                        use crate::drivers::query::adapters::PrometheusResponse;
+                        let error = PrometheusResponse::error(
+                            "internal",
+                            "Failed to parse Prometheus range query response",
+                        );
+                        Ok(FallbackResponse::Json(serde_json::to_value(error).unwrap()))
+                    }
+                }
+            }
+            Err(req_err) => {
+                error!("Failed to forward range query to Prometheus: {}", req_err);
+                use crate::drivers::query::adapters::PrometheusResponse;
+                let error = PrometheusResponse::error(
+                    "internal",
+                    &format!("Failed to forward range query to Prometheus: {}", req_err),
                 );
                 Ok(FallbackResponse::Json(serde_json::to_value(error).unwrap()))
             }
