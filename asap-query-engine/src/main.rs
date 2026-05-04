@@ -63,6 +63,7 @@ async fn main() -> Result<()> {
     // Keep the guard alive for the entire lifetime of the application
     let _log_guard = setup_logging(&config.output_dir, &config.log_level)?;
 
+    debug!("Loaded config:\n{:#?}", config);
     info!("Starting Query Engine Rust");
     info!("Output directory: {}", config.output_dir);
 
