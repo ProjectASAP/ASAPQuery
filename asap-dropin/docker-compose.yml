@@ -14,7 +14,7 @@ name: asapquery-dropin
 
 services:
   queryengine:
-    image: ghcr.io/projectasap/asap-query-engine:v0.3.0
+    image: ghcr.io/projectasap/asap-query-engine:v0.3.1
     container_name: asap-dropin-queryengine
     hostname: queryengine
     ports:
