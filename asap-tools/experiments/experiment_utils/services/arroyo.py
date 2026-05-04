@@ -105,9 +105,6 @@ class ArroyoService(BaseService):
         use_kafka_ingest: bool = False,
         enable_optimized_remote_write: bool = False,
         avoid_long_ssh: bool = False,
-        sketch_cms_impl: str = "sketchlib",
-        sketch_kll_impl: str = "sketchlib",
-        sketch_cmwh_impl: str = "sketchlib",
     ) -> str:
         """
         Run ArroyoSketch pipeline.
@@ -125,9 +122,6 @@ class ArroyoService(BaseService):
             parallelism: Pipeline parallelism
             enable_optimized_remote_write: If True, use optimized Prometheus remote_write source (10-20x faster)
             avoid_long_ssh: If True, run command in background to avoid long SSH connections
-            sketch_cms_impl: Count-Min Sketch backend (legacy|sketchlib). Must match QueryEngine.
-            sketch_kll_impl: KLL Sketch backend (legacy|sketchlib). Must match QueryEngine.
-            sketch_cmwh_impl: Count-Min-With-Heap backend (legacy|sketchlib). Must match QueryEngine.
 
         Returns:
             Pipeline ID
@@ -140,7 +134,7 @@ class ArroyoService(BaseService):
         )
 
         if use_kafka_ingest:
-            cmd = "python run_arroyosketch.py --source_type kafka --kafka_input_format {} --output_format {} --pipeline_name {} --config_file_path {}/streaming_config.yaml  --input_kafka_topic {} --output_kafka_topic {} --output_dir {} --sketch_cms_impl {} --sketch_kll_impl {} --sketch_cmwh_impl {}".format(
+            cmd = "python run_arroyosketch.py --source_type kafka --kafka_input_format {} --output_format {} --pipeline_name {} --config_file_path {}/streaming_config.yaml  --input_kafka_topic {} --output_kafka_topic {} --output_dir {}".format(
                 flink_input_format,
                 flink_output_format,
                 experiment_name,
@@ -148,9 +142,6 @@ class ArroyoService(BaseService):
                 constants.FLINK_INPUT_TOPIC,
                 constants.FLINK_OUTPUT_TOPIC,
                 arroyosketch_output_dir,
-                sketch_cms_impl,
-                sketch_kll_impl,
-                sketch_cmwh_impl,
             )
         else:
             # Build base command for Prometheus remote write
@@ -168,12 +159,6 @@ class ArroyoService(BaseService):
             # Add optimized source flag if enabled
             if enable_optimized_remote_write:
                 cmd += " --prometheus_remote_write_source optimized"
-        # Sketch impl mode - must match QueryEngine
-        cmd += (
-            " --sketch_cms_impl {} --sketch_kll_impl {} --sketch_cmwh_impl {}".format(
-                sketch_cms_impl, sketch_kll_impl, sketch_cmwh_impl
-            )
-        )
         cmd_dir = os.path.join(
             constants.CLOUDLAB_HOME_DIR, "code", "asap-summary-ingest"
         )
