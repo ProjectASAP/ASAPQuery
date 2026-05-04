@@ -337,6 +337,31 @@ output_dir: "./output"
     }
 
     #[test]
+    fn check_config_valid_otlp_arroyo() {
+        let yaml = r#"
+streaming_engine: "arroyo"
+ingest:
+  type: "otlp"
+output_dir: "./output"
+"#;
+        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
+        assert!(check_config(&config).is_ok());
+    }
+
+    #[test]
+    fn enum_override_sets_lock_strategy() {
+        let config: EngineConfig = Figment::new()
+            .merge(Yaml::string(MINIMAL_YAML))
+            .merge(("store.lock_strategy", "global"))
+            .extract()
+            .expect("config should deserialize");
+        assert_eq!(
+            config.store.lock_strategy,
+            query_engine_rust::data_model::enums::LockStrategy::Global
+        );
+    }
+
+    #[test]
     fn check_config_rejects_zero_scrape_interval() {
         let yaml = r#"
 streaming_engine: "precompute"

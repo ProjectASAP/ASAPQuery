@@ -41,7 +41,7 @@ struct Args {
 async fn main() -> Result<()> {
     let args = Args::parse();
 
-    let mut figment = Figment::new().merge(Yaml::file(&args.config_file));
+    let mut figment = Figment::new().merge(Yaml::file_exact(&args.config_file));
     for kv in &args.overrides {
         let (key, val_str) = kv
             .split_once('=')
@@ -157,6 +157,8 @@ async fn main() -> Result<()> {
                     }
                 }
             }
+            // OTLP uses its own receiver started below; kafka_handle is not needed.
+            IngestConfig::Otlp { .. } => None,
             _ => unreachable!("check_config enforces arroyo requires kafka"),
         }
     } else {
