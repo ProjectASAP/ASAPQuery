@@ -12,10 +12,6 @@
 output_dir: "./output"
 log_level: "INFO"                # DEBUG | INFO | WARN | ERROR (also respects RUST_LOG)
 
-# Query language used for both ingest and query parsing.
-# Values are case-sensitive: use lowercase exactly as shown.
-query_language: "promql"         # promql | sql | elastic_querydsl | elastic_sql
-
 # Prometheus scrape interval in seconds. Used by the query tracker and planner.
 prometheus_scrape_interval: 15
 
@@ -33,12 +29,37 @@ do_profiling: false
 http_server:
   port: 8088
 
-  # Prometheus server used for query forwarding and planner context.
-  prometheus_server: "http://localhost:9090"
+# ---------------------------------------------------------------------------
+# DB backend — determines the query protocol and optional fallback forwarding.
+# Choose exactly one type.
+# ---------------------------------------------------------------------------
 
-  # When true, queries not answerable from sketches are forwarded to prometheus_server.
-  # The server must be reachable at startup when this is enabled.
-  forward_unsupported_queries: false
+# Prometheus (default) — exposes a PromQL-compatible HTTP API.
+backend:
+  type: "prometheus"
+  server: "http://localhost:9090"         # used for forwarding and planner context
+  forward_unsupported_queries: false      # when true, server must be reachable at startup
+
+# ClickHouse — exposes an SQL-over-HTTP API.
+# backend:
+#   type: "clickhouse"
+#   url: "http://localhost:8123"
+#   database: "default"
+#   forward_unsupported_queries: false
+
+# Elasticsearch (QueryDSL):
+# backend:
+#   type: "elastic_querydsl"
+#   url: "http://localhost:9200"
+#   index: "metrics-*"                   # required
+#   forward_unsupported_queries: false
+
+# Elasticsearch (SQL):
+# backend:
+#   type: "elastic_sql"
+#   url: "http://localhost:9200"
+#   index: "metrics-*"                   # required
+#   forward_unsupported_queries: false
 
 # ---------------------------------------------------------------------------
 # Store
@@ -98,7 +119,7 @@ precompute_engine:
   dump_precomputes: false        # dump received precomputes to output_dir for debugging
 
 # ---------------------------------------------------------------------------
-# Query tracker / planner (optional)
+# Query tracker / planner (optional — Prometheus backend only)
 # ---------------------------------------------------------------------------
 
 query_tracker:

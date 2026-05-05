@@ -1,13 +1,15 @@
 output_dir: "/app/outputs"
 log_level: "INFO"
-query_language: "promql"
 prometheus_scrape_interval: 1
 streaming_engine: "precompute"
 do_profiling: false
 
 http_server:
   port: 8088
-  prometheus_server: "http://prometheus:9090"
+
+backend:
+  type: "prometheus"
+  server: "http://prometheus:9090"
   forward_unsupported_queries: true
 
 store:
