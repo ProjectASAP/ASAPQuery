@@ -1,4 +1,4 @@
-use asap_planner::{Controller, RuntimeOptions, SQLController, SQLRuntimeOptions, StreamingEngine};
+use asap_planner::{Controller, RuntimeOptions, SQLController, SQLRuntimeOptions, ElasticController, ElasticRuntimeOptions, StreamingEngine};
 use asap_types::enums::QueryLanguage;
 use clap::Parser;
 use std::path::PathBuf;
@@ -126,7 +126,17 @@ fn main() -> anyhow::Result<()> {
             SQLController::from_file(&config_path, opts)?.generate_to_dir(&args.output_dir)?;
         }
         QueryLanguage::elastic_querydsl => {
-            anyhow::bail!("ElasticQueryDSL is not yet supported");
+            let interval = args.data_ingestion_interval.ok_or_else(|| {
+                anyhow::anyhow!("--data-ingestion-interval is required for Elasticsearch DSL mode")
+            })?;
+            let config_path = args
+                .input_config
+                .ok_or_else(|| anyhow::anyhow!("--input_config is required for Elasticsearch DSL mode"))?;
+            let opts = ElasticRuntimeOptions {
+                streaming_engine: engine,
+                data_ingestion_interval: interval,
+            };
+            ElasticController::from_file(&config_path, opts)?.generate_to_dir(&args.output_dir)?;
         }
     }
 

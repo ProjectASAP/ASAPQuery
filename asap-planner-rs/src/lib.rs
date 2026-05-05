@@ -16,6 +16,7 @@ use tracing::debug;
 pub use asap_types::PromQLSchema;
 pub use config::input::ControllerConfig;
 pub use config::input::SQLControllerConfig;
+pub use config::input::ElasticDSLControllerConfig;
 pub use error::ControllerError;
 pub use output::generator::{GeneratorOutput, PuntedQuery};
 use output::generator::{
@@ -24,6 +25,7 @@ use output::generator::{
     KEY_WINDOW_SIZE,
 };
 pub use output::sql_generator::SQLRuntimeOptions;
+pub use output::elastic_generator::ElasticRuntimeOptions;
 pub use prometheus_client::build_schema_from_prometheus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,6 +276,51 @@ impl SQLController {
 
     pub fn generate(&self) -> Result<PlannerOutput, ControllerError> {
         let output = output::sql_generator::generate_sql_plan(&self.config, &self.options)?;
+        Ok(PlannerOutput {
+            punted_queries: output.punted_queries,
+            streaming_yaml: output.streaming_yaml,
+            inference_yaml: output.inference_yaml,
+            aggregation_count: output.aggregation_count,
+            query_count: output.query_count,
+        })
+    }
+
+    pub fn generate_to_dir(&self, dir: &Path) -> Result<PlannerOutput, ControllerError> {
+        let output = self.generate()?;
+        std::fs::create_dir_all(dir)?;
+        let streaming_str = serde_yaml::to_string(&output.streaming_yaml)?;
+        let inference_str = serde_yaml::to_string(&output.inference_yaml)?;
+        std::fs::write(dir.join("streaming_config.yaml"), streaming_str)?;
+        std::fs::write(dir.join("inference_config.yaml"), inference_str)?;
+        Ok(output)
+    }
+}
+
+pub struct ElasticController {
+    config: ElasticDSLControllerConfig,
+    options: ElasticRuntimeOptions,
+}
+
+impl ElasticController {
+    pub fn new(config: ElasticDSLControllerConfig, options: ElasticRuntimeOptions) -> Self {
+        Self { config, options }
+    }
+
+    pub fn from_file(path: &Path, opts: ElasticRuntimeOptions) -> Result<Self, ControllerError> {
+        let yaml_str = std::fs::read_to_string(path)?;
+        Self::from_yaml(&yaml_str, opts)
+    }
+
+    pub fn from_yaml(yaml: &str, opts: ElasticRuntimeOptions) -> Result<Self, ControllerError> {
+        let config: ElasticDSLControllerConfig = serde_yaml::from_str(yaml)?;
+        Ok(Self {
+            config,
+            options: opts,
+        })
+    }
+
+    pub fn generate(&self) -> Result<PlannerOutput, ControllerError> {
+        let output = output::elastic_generator::generate_elastic_plan(&self.config, &self.options)?;
         Ok(PlannerOutput {
             punted_queries: output.punted_queries,
             streaming_yaml: output.streaming_yaml,
