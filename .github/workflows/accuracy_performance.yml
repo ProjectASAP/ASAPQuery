@@ -76,6 +76,16 @@ jobs:
           cache-from: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache
           cache-to: type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache,mode=max
 
+      - name: Build and push asap-fake-exporter
+        uses: docker/build-push-action@v6
+        with:
+          context: asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter
+          file: asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter/Dockerfile
+          push: true
+          tags: ghcr.io/projectasap/asap-fake-exporter:${{ steps.tag.outputs.value }}
+          cache-from: type=registry,ref=ghcr.io/projectasap/asap-fake-exporter:buildcache
+          cache-to: type=registry,ref=ghcr.io/projectasap/asap-fake-exporter:buildcache,mode=max
+
   # ---------------------------------------------------------------------------
   # Job 2: pull the images built above, deploy the full stack, and evaluate.
   # ---------------------------------------------------------------------------
