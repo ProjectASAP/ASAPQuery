@@ -1,14 +1,18 @@
+mod engine_config;
+
 use clap::Parser;
-use query_engine_rust::data_model::QueryLanguage;
+use engine_config::{EngineConfig, IngestConfig};
+use figment::{
+    providers::{Format, Yaml},
+    Figment,
+};
 use std::fs;
 use std::sync::{Arc, RwLock};
 use tokio::signal;
 use tracing::{debug, error, info, warn};
 
 use asap_types::streaming_config::StreamingConfig;
-use query_engine_rust::data_model::enums::{
-    CleanupPolicy, InputFormat, LockStrategy, StreamingEngine,
-};
+use query_engine_rust::data_model::enums::{CleanupPolicy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
 use query_engine_rust::precompute_engine::csv_ingest::{CsvFileIngestConfig, CsvFileIngestSource};
@@ -25,191 +29,52 @@ use query_engine_rust::{
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Kafka topic to consume from (required when streaming-engine=arroyo)
+    /// Path to the engine YAML configuration file
     #[arg(long)]
-    kafka_topic: Option<String>,
+    config_file: String,
 
-    /// Input format for Kafka messages (required when streaming-engine=arroyo)
-    #[arg(long, value_enum)]
-    input_format: Option<InputFormat>,
-
-    /// Inference config file path (optional; starts with empty config when omitted, requires --enable-query-tracker)
-    #[arg(long)]
-    config: Option<String>,
-
-    /// Streaming config file path (optional; starts with empty config when omitted, requires --enable-query-tracker)
-    #[arg(long)]
-    streaming_config: Option<String>,
-
-    /// Streaming engine to use
-    #[arg(long, value_enum, default_value = "arroyo")]
-    streaming_engine: StreamingEngine,
-
-    /// Prometheus scrape interval in seconds
-    #[arg(long)]
-    prometheus_scrape_interval: u64,
-
-    /// HTTP server port
-    #[arg(long, default_value = "8088")]
-    http_port: u16,
-
-    /// Prometheus server URL
-    #[arg(long, default_value = "http://localhost:9090")]
-    prometheus_server: String,
-
-    /// Forward unsupported queries to Prometheus
-    #[arg(long)]
-    forward_unsupported_queries: bool,
-
-    /// Kafka broker address
-    #[arg(long, default_value = "localhost:9092")]
-    kafka_broker: String,
-
-    /// Database path (currently unused, kept for compatibility)
-    #[arg(long, default_value = "sketchdb.db")]
-    db_path: String,
-
-    /// Delete existing database (currently unused, kept for compatibility)
-    #[arg(long)]
-    delete_existing_db: bool,
-
-    /// Output directory for logs
-    #[arg(long)]
-    output_dir: String,
-
-    /// Log level
-    #[arg(long, default_value = "INFO")]
-    log_level: String,
-
-    /// Enable profiling (currently unused, kept for compatibility)
-    #[arg(long)]
-    do_profiling: bool,
-
-    /// Decompress JSON messages
-    #[arg(long)]
-    decompress_json: bool,
-
-    /// Enable dumping received precomputes to files for debugging
-    #[arg(long)]
-    dump_precomputes: bool,
-
-    /// Differentiate between query languages of input query
-    #[arg(long, value_enum)]
-    query_language: QueryLanguage,
-
-    /// Lock strategy for SimpleMapStore: "global" for single mutex, "per-key" for fine-grained locking
-    #[arg(long, value_enum)]
-    lock_strategy: LockStrategy,
-
-    /// Enable Prometheus remote write ingest endpoint
-    #[arg(long)]
-    enable_prometheus_remote_write: bool,
-
-    /// Port for the Prometheus remote write endpoint
-    #[arg(long, default_value = "9090")]
-    prometheus_remote_write_port: u16,
-
-    /// Path to promsketch configuration YAML file (optional; uses defaults if omitted)
-    #[arg(long)]
-    promsketch_config: Option<String>,
-
-    /// Enable OTLP metrics ingest (gRPC + HTTP)
-    #[arg(long)]
-    enable_otel_ingest: bool,
-
-    /// OTLP gRPC listen port
-    #[arg(long, default_value = "4317")]
-    otel_grpc_port: u16,
-
-    /// OTLP HTTP listen port
-    #[arg(long, default_value = "4318")]
-    otel_http_port: u16,
-
-    /// Number of precompute engine worker threads
-    #[arg(long, default_value = "4")]
-    precompute_num_workers: usize,
-
-    /// Maximum allowed lateness for out-of-order samples (milliseconds)
-    #[arg(long, default_value = "5000")]
-    precompute_allowed_lateness_ms: i64,
-
-    /// Maximum buffered samples per series before eviction
-    #[arg(long, default_value = "10000")]
-    precompute_max_buffer_per_series: usize,
-
-    /// Interval at which the flush timer fires (milliseconds)
-    #[arg(long, default_value = "1000")]
-    precompute_flush_interval_ms: u64,
-
-    /// Capacity of the channel between router and each worker
-    #[arg(long, default_value = "10000")]
-    precompute_channel_buffer_size: usize,
-
-    /// Enable automatic query tracking and planning
-    #[arg(long)]
-    enable_query_tracker: bool,
-
-    /// Query tracker: observation window in seconds before triggering planning
-    #[arg(long, default_value = "100")]
-    tracker_observation_window_secs: u64,
-
-    // --- CSV file ingest (alternative to HTTP remote write) ---
-    /// Path to a local CSV file to ingest instead of listening for HTTP writes
-    #[arg(long)]
-    input_file: Option<String>,
-
-    /// Metric name to assign to every row (required with --input-file)
-    #[arg(long)]
-    csv_metric_name: Option<String>,
-
-    /// CSV column to use as the float value (required with --input-file)
-    #[arg(long)]
-    csv_value_col: Option<String>,
-
-    /// Comma-separated CSV columns to include as labels (e.g. "id1,id2,id3")
-    #[arg(long, default_value = "")]
-    csv_label_cols: String,
-
-    /// CSV column containing timestamps in milliseconds; omit to synthesize timestamps
-    #[arg(long)]
-    csv_timestamp_col: Option<String>,
-
-    /// Start timestamp (ms) for synthesized timestamps when --csv-timestamp-col is absent
-    #[arg(long, default_value_t = 0)]
-    csv_start_ts_ms: i64,
-
-    /// Milliseconds between consecutive rows for synthesized timestamps
-    /// (required when --csv-timestamp-col is absent)
-    #[arg(long)]
-    csv_ts_step_ms: Option<i64>,
-
-    /// Number of CSV rows per batch sent to workers
-    #[arg(long, default_value_t = 1000)]
-    csv_batch_size: usize,
+    /// KEY=VALUE overrides applied on top of the config file (e.g. http_server.port=9000)
+    overrides: Vec<String>,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
 
+    let mut figment = Figment::new().merge(Yaml::file_exact(&args.config_file));
+    for kv in &args.overrides {
+        let (key, val_str) = kv
+            .split_once('=')
+            .ok_or_else(|| format!("invalid override '{kv}': expected KEY=VALUE"))?;
+        // Parse as JSON so booleans and numbers get the right type; fall back to string.
+        let val: serde_json::Value = serde_json::from_str(val_str)
+            .unwrap_or_else(|_| serde_json::Value::String(val_str.to_string()));
+        figment = figment.merge((key, val));
+    }
+    let config: EngineConfig = figment
+        .extract()
+        .map_err(|e| format!("Config error in {}: {e}", args.config_file))?;
+
+    engine_config::check_config(&config).map_err(|e| format!("Invalid config: {e}"))?;
+
     // Create output directory
-    fs::create_dir_all(&args.output_dir)?;
+    fs::create_dir_all(&config.output_dir)?;
 
-    // Initialize logging similar to Python's create_loggers function
     // Keep the guard alive for the entire lifetime of the application
-    let _log_guard = setup_logging(&args.output_dir, &args.log_level)?;
+    let _log_guard = setup_logging(&config.output_dir, &config.log_level)?;
 
+    debug!("Loaded config:\n{:#?}", config);
     info!("Starting Query Engine Rust");
-    info!("Output directory: {}", args.output_dir);
+    info!("Output directory: {}", config.output_dir);
 
-    let inference_config = match &args.config {
+    let inference_config = match &config.inference_config {
         Some(path) => {
             info!("Config file: {}", path);
-            read_inference_config(path, args.query_language)?
+            read_inference_config(path, config.query_language)?
         }
         None => {
             info!("No config file provided; starting with empty inference config");
-            InferenceConfig::new(args.query_language, CleanupPolicy::NoCleanup)
+            InferenceConfig::new(config.query_language, CleanupPolicy::NoCleanup)
         }
     };
     info!(
@@ -217,7 +82,7 @@ async fn main() -> Result<()> {
         inference_config.query_configs.len()
     );
 
-    let streaming_config = Arc::new(match &args.streaming_config {
+    let streaming_config = Arc::new(match &config.streaming_config {
         Some(path) => read_streaming_config(path, &inference_config)?,
         None => {
             info!("No streaming config file provided; starting with empty streaming config");
@@ -230,111 +95,91 @@ async fn main() -> Result<()> {
     );
 
     // Shared config refs — passed to QueryTracker so it can populate ControllerConfig
-    // with the current configs as context for the planner.  The applier task updates
+    // with the current configs as context for the planner. The applier task updates
     // them after applying a new plan so that subsequent windows see the latest state.
     let streaming_config_ref = Arc::new(RwLock::new(streaming_config.clone()));
     let inference_config_ref = Arc::new(RwLock::new(Arc::new(inference_config.clone())));
 
-    // Setup store (equivalent to Python's SimpleMapStore())
-    // Get cleanup policy from inference config
     let cleanup_policy = inference_config.cleanup_policy;
     info!("Using cleanup policy: {:?}", cleanup_policy);
     let store = Arc::new(SimpleMapStore::new_with_strategy(
         streaming_config.clone(),
         cleanup_policy,
-        args.lock_strategy,
+        config.store.lock_strategy,
     ));
 
-    // // Setup PromSketchStore (shared between engine and remote write server)
-    // let promsketch_store = if args.enable_prometheus_remote_write {
-    //     let promsketch_config = match &args.promsketch_config {
-    //         Some(path) => {
-    //             let cfg = read_promsketch_config(path)?;
-    //             info!("Loaded promsketch config from {}: {:?}", path, cfg);
-    //             cfg
-    //         }
-    //         None => {
-    //             info!("Using default promsketch config");
-    //             PromSketchConfig::default()
-    //         }
-    //     };
-    //     info!("Prometheus remote write enabled: creating PromSketchStore");
-    //     Some(Arc::new(PromSketchStore::new(promsketch_config)))
-    // } else {
-    //     None
-    // };
-
-    // Setup query engine
     let engine = Arc::new(SimpleEngine::new(
         store.clone(),
-        // promsketch_store.clone(),
         inference_config,
         streaming_config.clone(),
-        args.prometheus_scrape_interval,
-        args.query_language,
+        config.prometheus_scrape_interval,
+        config.query_language,
     ));
 
-    // Setup Kafka consumer (only when not using precompute engine as the streaming backend)
-    let kafka_handle = if args.streaming_engine == StreamingEngine::Precompute {
+    // Kafka consumer — only when streaming_engine=arroyo and ingest.type=kafka.
+    let kafka_handle = if config.streaming_engine == StreamingEngine::Arroyo {
+        match &config.ingest {
+            IngestConfig::Kafka {
+                broker,
+                topic,
+                input_format,
+                decompress_json,
+            } => {
+                let kafka_config = KafkaConsumerConfig {
+                    broker: broker.clone(),
+                    topic: topic.clone(),
+                    group_id: "query-engine-rust".to_string(),
+                    auto_offset_reset: "beginning".to_string(),
+                    input_format: input_format.clone(),
+                    decompress_json: *decompress_json,
+                    batch_size: 1000,
+                    poll_timeout_ms: 1000,
+                    streaming_engine: config.streaming_engine.clone(),
+                    dump_precomputes: config.precompute_engine.dump_precomputes,
+                    dump_output_dir: if config.precompute_engine.dump_precomputes {
+                        Some(config.output_dir.clone())
+                    } else {
+                        None
+                    },
+                };
+                match KafkaConsumer::new(kafka_config, store.clone(), streaming_config.clone()) {
+                    Ok(mut consumer) => {
+                        info!("Starting Kafka consumer for topic: {}", topic);
+                        Some(tokio::spawn(async move {
+                            if let Err(e) = consumer.run().await {
+                                error!("Kafka consumer error: {}", e);
+                            }
+                        }))
+                    }
+                    Err(e) => {
+                        error!("Failed to create Kafka consumer: {}", e);
+                        info!("Continuing without Kafka consumer");
+                        None
+                    }
+                }
+            }
+            // OTLP uses its own receiver started below; kafka_handle is not needed.
+            IngestConfig::Otlp { .. } => None,
+            _ => unreachable!("check_config enforces arroyo requires kafka"),
+        }
+    } else {
         info!("Using precompute engine as streaming backend — skipping Kafka consumer");
         None
-    } else {
-        let kafka_topic = args.kafka_topic.clone().unwrap_or_else(|| {
-            error!("--kafka-topic is required when --streaming-engine is not precompute");
-            std::process::exit(1);
-        });
-        let input_format = args.input_format.unwrap_or_else(|| {
-            error!("--input-format is required when --streaming-engine is not precompute");
-            std::process::exit(1);
-        });
-        let kafka_config = KafkaConsumerConfig {
-            broker: args.kafka_broker.clone(),
-            topic: kafka_topic.clone(),
-            group_id: "query-engine-rust".to_string(),
-            auto_offset_reset: "beginning".to_string(),
-            input_format,
-            decompress_json: args.decompress_json,
-            batch_size: 1000,
-            poll_timeout_ms: 1000,
-            streaming_engine: args.streaming_engine.clone(),
-            dump_precomputes: args.dump_precomputes,
-            dump_output_dir: if args.dump_precomputes {
-                Some(args.output_dir.clone())
-            } else {
-                None
-            },
-        };
-
-        let store_for_kafka = store.clone();
-        let kafka_consumer_result =
-            KafkaConsumer::new(kafka_config, store_for_kafka, streaming_config.clone());
-        match kafka_consumer_result {
-            Ok(mut consumer) => {
-                info!("Starting Kafka consumer for topic: {}", kafka_topic);
-                Some(tokio::spawn(async move {
-                    if let Err(e) = consumer.run().await {
-                        error!("Kafka consumer error: {}", e);
-                    }
-                }))
-            }
-            Err(e) => {
-                error!("Failed to create Kafka consumer: {}", e);
-                info!("Continuing without Kafka consumer");
-                None
-            }
-        }
     };
 
-    // Setup OTLP receiver
-    let otel_handle = if args.enable_otel_ingest {
-        let otel_config = OtlpReceiverConfig {
-            grpc_port: args.otel_grpc_port,
-            http_port: args.otel_http_port,
-        };
-        let receiver = OtlpReceiver::new(otel_config);
+    // OTLP receiver — only when ingest.type=otlp.
+    let otel_handle = if let IngestConfig::Otlp {
+        grpc_port,
+        http_port,
+    } = &config.ingest
+    {
+        let receiver = OtlpReceiver::new(OtlpReceiverConfig {
+            grpc_port: *grpc_port,
+            http_port: *http_port,
+        });
         info!(
             "Starting OTLP receiver (gRPC port {}, HTTP port {})",
-            args.otel_grpc_port, args.otel_http_port
+            grpc_port, http_port
         );
         Some(tokio::spawn(async move {
             if let Err(e) = receiver.run().await {
@@ -345,66 +190,59 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Setup precompute engine (replaces standalone Prometheus remote write server)
-    // Automatically enable when using precompute streaming engine or ingesting from a file
-    let enable_precompute = args.enable_prometheus_remote_write
-        || args.streaming_engine == StreamingEngine::Precompute
-        || args.input_file.is_some();
-
-    // Handle extracted before run() so the applier task can call update_streaming_config.
+    // Precompute engine — driven by streaming_engine=precompute.
+    // check_config() already enforces the ingest source is compatible (http_remote_write or csv).
     let mut pe_engine_handle: Option<PrecomputeEngineHandle> = None;
 
-    let precompute_handle = if enable_precompute {
+    let precompute_handle = if config.streaming_engine == StreamingEngine::Precompute {
         let precompute_config = PrecomputeEngineConfig {
-            num_workers: args.precompute_num_workers,
-            allowed_lateness_ms: args.precompute_allowed_lateness_ms,
-            max_buffer_per_series: args.precompute_max_buffer_per_series,
-            flush_interval_ms: args.precompute_flush_interval_ms,
-            channel_buffer_size: args.precompute_channel_buffer_size,
+            num_workers: config.precompute_engine.num_workers,
+            allowed_lateness_ms: config.precompute_engine.allowed_lateness_ms,
+            max_buffer_per_series: config.precompute_engine.max_buffer_per_series,
+            flush_interval_ms: config.precompute_engine.flush_interval_ms,
+            channel_buffer_size: config.precompute_engine.channel_buffer_size,
             pass_raw_samples: false,
             raw_mode_aggregation_id: 0,
             late_data_policy: LateDataPolicy::Drop,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
-        let sources: Vec<Box<dyn IngestSource>> = if let Some(ref path) = args.input_file {
-            let metric_name = args
-                .csv_metric_name
-                .clone()
-                .ok_or("--csv-metric-name is required with --input-file")?;
-            let value_col = args
-                .csv_value_col
-                .clone()
-                .ok_or("--csv-value-col is required with --input-file")?;
-            let ts_step_ms = if args.csv_timestamp_col.is_none() {
-                args.csv_ts_step_ms.ok_or(
-                    "--csv-ts-step-ms is required when --csv-timestamp-col is not specified",
-                )?
-            } else {
-                args.csv_ts_step_ms.unwrap_or(0)
-            };
-            let label_cols = if args.csv_label_cols.is_empty() {
-                vec![]
-            } else {
-                args.csv_label_cols
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect()
-            };
-            info!("File ingest mode: {}", path);
-            vec![Box::new(CsvFileIngestSource::new(CsvFileIngestConfig {
-                path: path.clone(),
+        let sources: Vec<Box<dyn IngestSource>> = match &config.ingest {
+            IngestConfig::Csv {
+                path,
                 metric_name,
                 value_col,
                 label_cols,
-                timestamp_col: args.csv_timestamp_col.clone(),
-                start_ts_ms: args.csv_start_ts_ms,
+                timestamp_col,
+                start_ts_ms,
                 ts_step_ms,
-                batch_size: args.csv_batch_size,
-            }))]
-        } else {
-            vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
-                port: args.prometheus_remote_write_port,
-            }))]
+                batch_size,
+            } => {
+                // ts_step_ms is only used for timestamp synthesis (when timestamp_col is absent).
+                // check_config ensures it is present in that case.
+                let ts_step = if timestamp_col.is_none() {
+                    ts_step_ms.unwrap()
+                } else {
+                    0
+                };
+                info!("File ingest mode: {}", path);
+                vec![Box::new(CsvFileIngestSource::new(CsvFileIngestConfig {
+                    path: path.clone(),
+                    metric_name: metric_name.clone(),
+                    value_col: value_col.clone(),
+                    label_cols: label_cols.clone(),
+                    timestamp_col: timestamp_col.clone(),
+                    start_ts_ms: *start_ts_ms,
+                    ts_step_ms: ts_step,
+                    batch_size: *batch_size,
+                }))]
+            }
+            IngestConfig::HttpRemoteWrite { port } => {
+                info!("Starting precompute engine on port {}", port);
+                vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
+                    port: *port,
+                }))]
+            }
+            _ => unreachable!("check_config enforces precompute requires http_remote_write or csv"),
         };
         let pe = PrecomputeEngine::new(
             precompute_config,
@@ -413,14 +251,8 @@ async fn main() -> Result<()> {
             sources,
         );
         let worker_diagnostics = pe.diagnostics();
-        // Extract the handle before run() consumes the engine.
         pe_engine_handle = Some(pe.handle());
-        info!(
-            "Starting precompute engine on port {}",
-            args.prometheus_remote_write_port
-        );
 
-        // Spawn periodic memory diagnostics logger
         let diag_store = store.clone();
         tokio::spawn(async move {
             spawn_memory_diagnostics(diag_store, Some(worker_diagnostics)).await;
@@ -432,7 +264,6 @@ async fn main() -> Result<()> {
             }
         }))
     } else {
-        // Even without precompute, log store diagnostics
         let diag_store = store.clone();
         tokio::spawn(async move {
             spawn_memory_diagnostics(diag_store, None).await;
@@ -440,34 +271,22 @@ async fn main() -> Result<()> {
         None
     };
 
-    //info!("=== TEMPORARY: Using ClickHouse HTTP adapter ===");
-    //info!("ClickHouse endpoint will be available at: /clickhouse/query");
-    //info!("ClickHouse fallback URL: http://localhost:8123/?database=default");
-
-    //let adapter_config = AdapterConfig::clickhouse_sql(
-    //    "http://localhost:8123".to_string(), // ClickHouse server URL
-    //    "default".to_string(),               // Database name
-    //    true,                                // Always forward (fallback for every query)
-    //);
-
-    // Original Prometheus config (commented out temporarily):
     let adapter_config = AdapterConfig::prometheus_promql(
-        args.prometheus_server.clone(),
-        args.forward_unsupported_queries,
+        config.http_server.prometheus_server.clone(),
+        config.http_server.forward_unsupported_queries,
     );
 
     let http_config = HttpServerConfig {
-        port: args.http_port,
+        port: config.http_server.port,
         handle_http_requests: true,
         adapter_config,
     };
 
-    // Verify Prometheus is reachable before starting (only needed when forwarding queries)
-    if args.forward_unsupported_queries {
+    if config.http_server.forward_unsupported_queries {
         let client = reqwest::Client::new();
         let health_url = format!(
             "{}/api/v1/status/runtimeinfo",
-            args.prometheus_server.trim_end_matches('/')
+            config.http_server.prometheus_server.trim_end_matches('/')
         );
         match client
             .get(&health_url)
@@ -476,12 +295,15 @@ async fn main() -> Result<()> {
             .await
         {
             Ok(resp) if resp.status().is_success() => {
-                info!("Prometheus reachable at {}", args.prometheus_server);
+                info!(
+                    "Prometheus reachable at {}",
+                    config.http_server.prometheus_server
+                );
             }
             Ok(resp) => {
                 error!(
                     "Prometheus at {} returned HTTP {} — cannot start",
-                    args.prometheus_server,
+                    config.http_server.prometheus_server,
                     resp.status()
                 );
                 std::process::exit(1);
@@ -489,32 +311,32 @@ async fn main() -> Result<()> {
             Err(e) => {
                 error!(
                     "Cannot reach Prometheus at {}: {}",
-                    args.prometheus_server, e
+                    config.http_server.prometheus_server, e
                 );
                 std::process::exit(1);
             }
         }
     }
 
-    let query_tracker = if args.enable_query_tracker {
+    let query_tracker = if config.query_tracker.enabled {
         use query_engine_rust::planner_client::{LocalPlannerClient, PlannerResult};
         use query_engine_rust::QueryTrackerConfig;
 
         let tracker_config = QueryTrackerConfig {
-            observation_window_secs: args.tracker_observation_window_secs,
-            prometheus_scrape_interval: args.prometheus_scrape_interval,
+            observation_window_secs: config.query_tracker.observation_window_secs,
+            prometheus_scrape_interval: config.prometheus_scrape_interval,
         };
         let runtime_options = asap_planner::RuntimeOptions {
-            prometheus_scrape_interval: args.prometheus_scrape_interval,
+            prometheus_scrape_interval: config.prometheus_scrape_interval,
             streaming_engine: asap_planner::StreamingEngine::Precompute,
             enable_punting: false,
             range_duration: 300,
-            step: args.prometheus_scrape_interval,
+            step: config.prometheus_scrape_interval,
         };
         let planner_client = Arc::new(LocalPlannerClient::new(
             runtime_options,
-            args.query_language,
-            args.prometheus_server.clone(),
+            config.query_language,
+            config.http_server.prometheus_server.clone(),
         ));
 
         let (plan_tx, plan_rx) = tokio::sync::watch::channel(None::<PlannerResult>);
@@ -526,12 +348,11 @@ async fn main() -> Result<()> {
         ));
         let _tracker_handle = tracker.start_background_loop(planner_client, plan_tx);
 
-        // Applier task: watches for the first plan result and applies it to all
-        // running components.
-        // NOTE: streaming_config and inference_config are not applied atomically
-        // across components. A brief window may exist where one component has the
-        // new config and another still has the old one, causing query misses that
-        // fall back to Prometheus. This is acceptable for a one-shot first-plan apply.
+        // Applier task: watches for plan results and applies them to all running components.
+        // NOTE: streaming_config and inference_config are not applied atomically across
+        // components. A brief window may exist where one component has the new config and
+        // another still has the old one, causing query misses that fall back to Prometheus.
+        // This is acceptable for a one-shot first-plan apply.
         let engine_for_applier = engine.clone();
         let store_for_applier = store.clone();
         let streaming_config_ref_for_applier = streaming_config_ref.clone();
@@ -544,7 +365,6 @@ async fn main() -> Result<()> {
                 }
                 let result = rx.borrow().clone();
                 if let Some(result) = result {
-                    // 1. Apply to precompute engine (lock-free ArcSwap + worker broadcast).
                     if let Some(ref handle) = pe_engine_handle {
                         if let Err(e) = handle
                             .update_streaming_config(&result.streaming_config)
@@ -553,13 +373,10 @@ async fn main() -> Result<()> {
                             warn!("Applier: failed to update precompute engine: {}", e);
                         }
                     }
-                    // 2. Apply to query engine.
                     engine_for_applier
                         .update_streaming_config(Arc::new(result.streaming_config.clone()));
                     engine_for_applier.update_inference_config(result.inference_config.clone());
-                    // 3. Apply to store.
                     store_for_applier.update_streaming_config(result.streaming_config.clone());
-                    // 4. Update shared config refs so future tracker windows see the new state.
                     *streaming_config_ref_for_applier.write().unwrap() =
                         Arc::new(result.streaming_config);
                     *inference_config_ref_for_applier.write().unwrap() =
@@ -571,7 +388,7 @@ async fn main() -> Result<()> {
 
         info!(
             "Query tracker enabled (observation window: {}s)",
-            args.tracker_observation_window_secs
+            config.query_tracker.observation_window_secs
         );
         Some(tracker)
     } else {
@@ -579,7 +396,7 @@ async fn main() -> Result<()> {
     };
 
     let server = HttpServer::new(http_config, engine, store, query_tracker);
-    info!("Starting HTTP server on port {}", args.http_port);
+    info!("Starting HTTP server on port {}", config.http_server.port);
 
     // Wait for shutdown signal
     tokio::select! {
