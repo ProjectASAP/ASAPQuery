@@ -391,9 +391,11 @@ def main(cfg: DictConfig):
                     pipeline_id=arroyosketch_pipeline_id,
                     experiment_output_dir=experiment_output_dir,
                 )
+        elif args.streaming_engine == "precompute":
+            pass  # precompute engine handles sketch computation internally; no external pipeline needed
         else:
             raise ValueError(
-                "Invalid streaming engine: {}. Supported engines are 'flink' and 'arroyo'".format(
+                "Invalid streaming engine: {}. Supported engines are 'flink', 'arroyo', and 'precompute'".format(
                     args.streaming_engine
                 )
             )
@@ -411,9 +413,12 @@ def main(cfg: DictConfig):
         if not cfg.flow.replace_query_engine_with_dumb_consumer:
             # Get prometheus port from prometheus service
             prometheus_port = prometheus_service.get_query_endpoint_port()
+            # Get http port from query engine service
+            http_port = query_engine_service.get_http_port()
 
             query_engine_service.start(
                 experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
                 flink_output_format=args.flink_output_format,
                 prometheus_scrape_interval=prometheus_scrape_interval,
                 log_level=args.log_level,
@@ -427,6 +432,8 @@ def main(cfg: DictConfig):
                 lock_strategy=args.lock_strategy,
                 query_language=args.query_language,
                 prometheus_port=prometheus_port,
+                http_port=http_port,
+                remote_write_port=args.remote_write_base_port,
             )
 
     # Start system exporters (node_exporter, blackbox_exporter, cadvisor)

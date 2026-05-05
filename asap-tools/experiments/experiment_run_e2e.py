@@ -359,10 +359,11 @@ def main(cfg: DictConfig):
                 CONTROLLER_LOCAL_OUTPUT_DIR,
                 node_offset=args.node_offset,
             )
-            kafka_service.start()
-            kafka_service.wait_until_ready()
-            kafka_service.delete_topics()
-            kafka_service.create_topics()
+            if args.streaming_engine != "precompute":
+                kafka_service.start()
+                kafka_service.wait_until_ready()
+                kafka_service.delete_topics()
+                kafka_service.create_topics()
 
         if (
             config.check_exporter_and_queries_exist(
@@ -463,9 +464,11 @@ def main(cfg: DictConfig):
                         pipeline_id=arroyosketch_pipeline_id,
                         experiment_output_dir=experiment_output_dir,
                     )
+            elif args.streaming_engine == "precompute":
+                pass  # precompute engine handles sketch computation internally; no external pipeline needed
             else:
                 raise ValueError(
-                    "Invalid streaming engine: {}. Supported engines are 'flink' and 'arroyo'".format(
+                    "Invalid streaming engine: {}. Supported engines are 'flink', 'arroyo', and 'precompute'".format(
                         args.streaming_engine
                     )
                 )
@@ -479,6 +482,7 @@ def main(cfg: DictConfig):
 
                 query_engine_service.start(
                     experiment_output_dir=experiment_output_dir,
+                    local_experiment_dir=local_experiment_dir,
                     flink_output_format=args.flink_output_format,
                     prometheus_scrape_interval=prometheus_scrape_interval,
                     log_level=args.log_level,
@@ -493,6 +497,7 @@ def main(cfg: DictConfig):
                     query_language=args.query_language,
                     prometheus_port=prometheus_port,
                     http_port=http_port,
+                    remote_write_port=args.remote_write_base_port,
                 )
 
         # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
@@ -660,8 +665,9 @@ def main(cfg: DictConfig):
                     arroyo_service.stop()
                 if args.use_kafka_ingest:
                     prometheus_kafka_adapter_service.stop()
-                kafka_service.delete_topics()
-                kafka_service.stop()
+                if args.streaming_engine != "precompute":
+                    kafka_service.delete_topics()
+                    kafka_service.stop()
 
             system_exporters_service.stop()
             prometheus_service.stop()

@@ -47,7 +47,7 @@ flow:
 
 # Streaming engine configuration
 streaming:
-  engine: "arroyo"  # choices: ["flink", "arroyo"]
+  engine: "precompute"  # choices: ["flink", "arroyo", "precompute"]
   parallelism: 1  # Default parallelism for streaming pipelines
   flink_input_format: "json"  # choices: ["json", "avro-json", "avro-binary"]
   flink_output_format: "json"  # choices: ["json", "byte"]
