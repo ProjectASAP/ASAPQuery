@@ -16,6 +16,6 @@ services:
   queryengine:
     image: ghcr.io/projectasap/asap-query-engine:${ASAP_IMAGE_TAG}
     volumes:
-      - ./config/engine_config.yaml:/config/engine_config.yaml:ro
+      - ../benchmarks/config/engine_config.yaml:/config/engine_config.yaml:ro
     command:
       - "--config-file=/config/engine_config.yaml"
