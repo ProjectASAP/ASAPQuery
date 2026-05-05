@@ -1,7 +1,7 @@
 mod engine_config;
 
 use clap::Parser;
-use engine_config::{EngineConfig, IngestConfig};
+use engine_config::{BackendConfig, EngineConfig, IngestConfig};
 use figment::{
     providers::{Format, Yaml},
     Figment,
@@ -67,14 +67,16 @@ async fn main() -> Result<()> {
     info!("Starting Query Engine Rust");
     info!("Output directory: {}", config.output_dir);
 
+    let query_language = config.backend.query_language();
+
     let inference_config = match &config.inference_config {
         Some(path) => {
             info!("Config file: {}", path);
-            read_inference_config(path, config.query_language)?
+            read_inference_config(path, query_language)?
         }
         None => {
             info!("No config file provided; starting with empty inference config");
-            InferenceConfig::new(config.query_language, CleanupPolicy::NoCleanup)
+            InferenceConfig::new(query_language, CleanupPolicy::NoCleanup)
         }
     };
     info!(
@@ -113,7 +115,7 @@ async fn main() -> Result<()> {
         inference_config,
         streaming_config.clone(),
         config.prometheus_scrape_interval,
-        config.query_language,
+        query_language,
     ));
 
     // Kafka consumer — only when streaming_engine=arroyo and ingest.type=kafka.
@@ -271,10 +273,35 @@ async fn main() -> Result<()> {
         None
     };
 
-    let adapter_config = AdapterConfig::prometheus_promql(
-        config.http_server.prometheus_server.clone(),
-        config.http_server.forward_unsupported_queries,
-    );
+    let adapter_config = match &config.backend {
+        BackendConfig::Prometheus {
+            server,
+            forward_unsupported_queries,
+        } => AdapterConfig::prometheus_promql(server.clone(), *forward_unsupported_queries),
+        BackendConfig::Clickhouse {
+            url,
+            database,
+            forward_unsupported_queries,
+        } => AdapterConfig::clickhouse_sql(
+            url.clone(),
+            database.clone(),
+            *forward_unsupported_queries,
+        ),
+        BackendConfig::ElasticQuerydsl {
+            url,
+            index,
+            forward_unsupported_queries,
+        } => AdapterConfig::elastic_querydsl(
+            url.clone(),
+            index.clone(),
+            *forward_unsupported_queries,
+        ),
+        BackendConfig::ElasticSql {
+            url,
+            index,
+            forward_unsupported_queries,
+        } => AdapterConfig::elastic_sql(url.clone(), index.clone(), *forward_unsupported_queries),
+    };
 
     let http_config = HttpServerConfig {
         port: config.http_server.port,
@@ -282,12 +309,21 @@ async fn main() -> Result<()> {
         adapter_config,
     };
 
-    if config.http_server.forward_unsupported_queries {
+    if config.backend.forward_unsupported_queries() {
         let client = reqwest::Client::new();
-        let health_url = format!(
-            "{}/api/v1/status/runtimeinfo",
-            config.http_server.prometheus_server.trim_end_matches('/')
-        );
+        let (health_url, backend_label) = match &config.backend {
+            BackendConfig::Prometheus { server, .. } => (
+                format!("{}/api/v1/status/runtimeinfo", server.trim_end_matches('/')),
+                server.clone(),
+            ),
+            BackendConfig::Clickhouse { url, .. } => {
+                (format!("{}/ping", url.trim_end_matches('/')), url.clone())
+            }
+            BackendConfig::ElasticQuerydsl { url, .. } | BackendConfig::ElasticSql { url, .. } => (
+                format!("{}/_cluster/health", url.trim_end_matches('/')),
+                url.clone(),
+            ),
+        };
         match client
             .get(&health_url)
             .timeout(std::time::Duration::from_secs(5))
@@ -295,24 +331,18 @@ async fn main() -> Result<()> {
             .await
         {
             Ok(resp) if resp.status().is_success() => {
-                info!(
-                    "Prometheus reachable at {}",
-                    config.http_server.prometheus_server
-                );
+                info!("Backend reachable at {}", backend_label);
             }
             Ok(resp) => {
                 error!(
-                    "Prometheus at {} returned HTTP {} — cannot start",
-                    config.http_server.prometheus_server,
+                    "Backend at {} returned HTTP {} — cannot start",
+                    backend_label,
                     resp.status()
                 );
                 std::process::exit(1);
             }
             Err(e) => {
-                error!(
-                    "Cannot reach Prometheus at {}: {}",
-                    config.http_server.prometheus_server, e
-                );
+                error!("Cannot reach backend at {}: {}", backend_label, e);
                 std::process::exit(1);
             }
         }
@@ -333,10 +363,14 @@ async fn main() -> Result<()> {
             range_duration: 300,
             step: config.prometheus_scrape_interval,
         };
+        let prometheus_url = match &config.backend {
+            BackendConfig::Prometheus { server, .. } => server.clone(),
+            _ => unreachable!("check_config rejects non-prometheus backends with query_tracker"),
+        };
         let planner_client = Arc::new(LocalPlannerClient::new(
             runtime_options,
-            config.query_language,
-            config.http_server.prometheus_server.clone(),
+            query_language,
+            prometheus_url,
         ));
 
         let (plan_tx, plan_rx) = tokio::sync::watch::channel(None::<PlannerResult>);
