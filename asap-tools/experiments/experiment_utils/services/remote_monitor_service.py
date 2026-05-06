@@ -81,7 +81,7 @@ class RemoteMonitorService(BaseService):
                 if query_engine_service is not None:
                     keywords.append(query_engine_service.get_monitoring_keyword())
                 else:
-                    keywords.append(constants.QUERY_ENGINE_PROCESS_KEYWORD)
+                    keywords.append(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
 
                 if streaming_engine == "flink":
                     keywords.append("sketch-0.1.jar")
@@ -152,7 +152,7 @@ class RemoteMonitorService(BaseService):
             if query_engine_service is not None:
                 keywords.append(query_engine_service.get_monitoring_keyword())
             else:
-                keywords.append(constants.QUERY_ENGINE_PROCESS_KEYWORD)
+                keywords.append(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
 
             if streaming_engine == "flink":
                 keywords.append("sketch-0.1.jar")  # flinksketch jar

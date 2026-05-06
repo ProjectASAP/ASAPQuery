@@ -12,7 +12,7 @@ from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
     FlinkService,
-    QueryEngineServiceFactory,
+    QueryEngineRustService,
     ExporterServiceFactory,
     PrometheusKafkaAdapterService,
     ArroyoService,
@@ -135,9 +135,7 @@ def main(cfg: DictConfig):
     # Initialize services
     kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
     flink_service = FlinkService(provider, args.node_offset)
-    # Initialize query engine service based on language
-    query_engine_service = QueryEngineServiceFactory.create_query_engine_service(
-        args.query_engine_language,
+    query_engine_service = QueryEngineRustService(
         provider,
         use_container=args.use_container_query_engine,
         node_offset=args.node_offset,

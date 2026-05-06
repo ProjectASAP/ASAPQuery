@@ -11,7 +11,7 @@ from experiment_utils import sync, config
 from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
-    QueryEngineServiceFactory,
+    QueryEngineRustService,
     ExporterServiceFactory,
     ArroyoService,
     ArroyoThroughputMonitor,
@@ -120,9 +120,7 @@ def main(cfg: DictConfig):
 
     # Initialize services
     kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
-    # Initialize query engine service based on language
-    query_engine_service = QueryEngineServiceFactory.create_query_engine_service(
-        args.query_engine_language,
+    query_engine_service = QueryEngineRustService(
         provider,
         use_container=args.use_container_query_engine,
         node_offset=args.node_offset,
@@ -289,12 +287,16 @@ def main(cfg: DictConfig):
 
     # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
     if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        prometheus_url = (
+            f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
+        )
         controller_service.start(
             controller_input_file=controller_client_config,
             prometheus_scrape_interval=prometheus_scrape_interval,
             streaming_engine=args.streaming_engine,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             punting=args.controller_punting,
+            prometheus_url=prometheus_url,
         )
         sync.rsync_controller_config_remote_to_local(
             provider,
@@ -302,10 +304,11 @@ def main(cfg: DictConfig):
             CONTROLLER_LOCAL_OUTPUT_DIR,
             node_offset=args.node_offset,
         )
-        kafka_service.start()
-        kafka_service.wait_until_ready()
-        kafka_service.delete_topics()
-        kafka_service.create_topics()
+        if args.streaming_engine != "precompute":
+            kafka_service.start()
+            kafka_service.wait_until_ready()
+            kafka_service.delete_topics()
+            kafka_service.create_topics()
 
     if config.check_exporter_and_queries_exist("fake_exporter", cfg.experiment_params):
         # this DOES NOT block

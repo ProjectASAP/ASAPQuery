@@ -236,14 +236,6 @@ def main(args):
     profile_query_engine_pid = None
     if args.profile_query_engine:
         if (
-            constants.QUERY_ENGINE_PY_PROCESS_KEYWORD in args.keywords
-            or constants.QUERY_ENGINE_PY_CONTAINER_NAME in args.keywords
-        ):
-            query_engine_pids = get_pids(constants.QUERY_ENGINE_PY_PROCESS_KEYWORD)
-            profile_query_engine_pid = query_engine_pids[
-                0
-            ]  # Take first PID for profiling
-        elif (
             constants.QUERY_ENGINE_RS_PROCESS_KEYWORD in args.keywords
             or constants.QUERY_ENGINE_RS_CONTAINER_NAME in args.keywords
         ):

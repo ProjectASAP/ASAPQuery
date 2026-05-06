@@ -9,9 +9,7 @@ from .base import BaseService, DockerServiceBase
 from .kafka import KafkaService
 from .flink import FlinkService
 from .query_engine import (
-    QueryEngineService,
     QueryEngineRustService,
-    QueryEngineServiceFactory,
 )
 from .monitoring import MonitoringService
 from .fake_exporters import (
@@ -131,9 +129,7 @@ __all__ = [
     "DockerServiceBase",
     "KafkaService",
     "FlinkService",
-    "QueryEngineService",
     "QueryEngineRustService",
-    "QueryEngineServiceFactory",
     "MonitoringService",
     "ExporterServiceFactory",
     "PythonExporterService",

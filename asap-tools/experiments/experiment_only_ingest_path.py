@@ -242,12 +242,16 @@ def main(cfg: DictConfig):
             "controller_client_configs",
             f"{experiment_mode}.yaml",
         )
+        prometheus_url = (
+            f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
+        )
         controller_service.start(
             controller_input_file=controller_client_config,
             prometheus_scrape_interval=prometheus_scrape_interval,
             streaming_engine=args.streaming_engine,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             punting=args.controller_punting,
+            prometheus_url=prometheus_url,
         )
         sync.rsync_controller_config_remote_to_local(
             provider,
@@ -257,19 +261,21 @@ def main(cfg: DictConfig):
         )
 
         # Start Kafka
-        kafka_service.start()
-        kafka_service.wait_until_ready()
-        kafka_service.delete_topics()
-        kafka_service.create_topics()
+        if args.streaming_engine != "precompute":
+            kafka_service.start()
+            kafka_service.wait_until_ready()
+            kafka_service.delete_topics()
+            kafka_service.create_topics()
 
         # Start Arroyo
-        arroyo_service.stop()
-        time.sleep(10)
-        arroyo_service.start(
-            experiment_output_dir=experiment_output_dir,
-            remote_write_base_port=args.remote_write_base_port,
-            parallelism=args.parallelism,
-        )
+        if args.streaming_engine != "precompute":
+            arroyo_service.stop()
+            time.sleep(10)
+            arroyo_service.start(
+                experiment_output_dir=experiment_output_dir,
+                remote_write_base_port=args.remote_write_base_port,
+                parallelism=args.parallelism,
+            )
 
     # Start fake exporter if configured
     if config.check_exporter_and_queries_exist("fake_exporter", cfg.experiment_params):
@@ -317,7 +323,7 @@ def main(cfg: DictConfig):
         prometheus_service.start(experiment_output_dir)
 
     # Start V2-specific: Run ArroyoSketch pipeline
-    if is_v2:
+    if is_v2 and args.streaming_engine != "precompute":
         print("Starting ArroyoSketch pipeline...")
         arroyosketch_pipeline_id = arroyo_service.run_arroyosketch(
             experiment_name=args.experiment_name,
@@ -405,8 +411,9 @@ def main(cfg: DictConfig):
         if arroyosketch_pipeline_id:
             arroyo_service.stop_arroyosketch(arroyosketch_pipeline_id)
         arroyo_service.stop()
-        kafka_service.delete_topics()
-        kafka_service.stop()
+        if args.streaming_engine != "precompute":
+            kafka_service.delete_topics()
+            kafka_service.stop()
         controller_service.stop()
 
     # Stop core services

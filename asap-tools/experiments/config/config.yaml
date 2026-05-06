@@ -78,10 +78,7 @@ fake_exporter_language: "rust"  # choices: ["python", "rust"]
 # Cluster data exporter configuration
 cluster_data_directory: "/data/cluster_traces"  # Path to directory containing Google/Alibaba cluster trace data
 
-# Query engine language
-query_engine_language: "rust"  # choices: ["python", "rust"]
-
-# Query language (SQL vs PROMQL) - only used by Rust query engine
+# Query language (SQL vs PROMQL)
 query_language: "PROMQL"  # choices: ["SQL", "PROMQL"]
 
 # Query engine options
@@ -120,7 +117,7 @@ prometheus_client:
 
 # Container deployment settings
 use_container:
-  query_engine: true       # QueryEngineService - containerized query engine
+  query_engine: true       # QueryEngineRustService - containerized query engine
   arroyo: true            # ArroyoService - containerized Arroyo streaming engine
   controller: true        # ControllerService - containerized controller
   fake_exporter: true     # ExporterServiceFactory - containerized fake exporters

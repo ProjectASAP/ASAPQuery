@@ -413,9 +413,6 @@ class Args:
         # Fake exporter language
         self.fake_exporter_language = cfg.fake_exporter_language
 
-        # Query engine language
-        self.query_engine_language = cfg.query_engine_language
-
         # Query language (SQL vs PROMQL) - only used by Rust query engine
         self.query_language = cfg.query_language
 
@@ -509,17 +506,6 @@ def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
             raise ValueError(
                 f"Invalid aggregate_cleanup.policy: '{policy}'. "
                 f"Valid options: {valid_policies}"
-            )
-
-        # Validate Python query engine only supports no_cleanup
-        if (
-            hasattr(cfg, "query_engine_language")
-            and cfg.query_engine_language == "python"
-            and policy != "no_cleanup"
-        ):
-            raise ValueError(
-                f"aggregate_cleanup.policy='{policy}' is not supported by the Python query engine. "
-                "Either use query_engine_language='rust' or set aggregate_cleanup.policy='no_cleanup'"
             )
 
 
