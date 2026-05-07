@@ -430,5 +430,27 @@ metrics:
         agg_configs[0].validate(metric_config, query_language="promql")
 
 
+class TestKllUdfTemplates:
+    """Tests for KLL UDF template rendering."""
+
+    @pytest.fixture
+    def udf_template_dir(self):
+        """Load the UDF template directory."""
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "templates",
+            "udfs",
+        )
+
+    def test_hydra_kll_template_renders(self, udf_template_dir):
+        """Test rendering the Hydra KLL UDF template."""
+        template = jinja_utils.load_template(udf_template_dir, "hydrakll_.rs.j2")
+        rendered = template.render(row_num=3, col_num=128, k=200)
+
+        assert "KLL::init_kll(DEFAULT_K as i32)" in rendered
+        assert "asap_sketchlib" in rendered
+        assert "{{" not in rendered
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

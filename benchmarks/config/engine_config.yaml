@@ -1,0 +1,36 @@
+output_dir: "/app/outputs"
+log_level: "INFO"
+prometheus_scrape_interval: 1
+streaming_engine: "precompute"
+do_profiling: false
+
+http_server:
+  port: 8088
+
+backend:
+  type: "prometheus"
+  server: "http://prometheus:9090"
+  forward_unsupported_queries: true
+
+store:
+  lock_strategy: "per-key"
+
+ingest:
+  type: "http_remote_write"
+  port: 9091
+
+precompute_engine:
+  num_workers: 4
+  allowed_lateness_ms: 5000
+  max_buffer_per_series: 10000
+  flush_interval_ms: 1000
+  channel_buffer_size: 10000
+  dump_precomputes: false
+
+query_tracker:
+  enabled: false
+  observation_window_secs: 100
+
+inference_config: "/asap-planner-output/inference_config.yaml"
+streaming_config: "/asap-planner-output/streaming_config.yaml"
+promsketch_config: null

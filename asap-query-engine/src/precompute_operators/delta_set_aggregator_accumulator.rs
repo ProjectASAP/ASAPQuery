@@ -2,15 +2,15 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
+use asap_sketchlib::sketches::delta_set_aggregator::{deserialize_msgpack, serialize_msgpack};
 use serde_json::Value;
-use sketch_core::delta_set_aggregator::{deserialize_msgpack, serialize_msgpack};
 use std::collections::{HashMap, HashSet};
 
 use promql_utilities::query_logics::enums::Statistic;
 
 /// Accumulator that tracks sets of added and removed keys.
 /// Used for delta aggregation to track changes in cardinality.
-/// Wire format (DeltaResult) and msgpack serde live in sketch-core.
+/// Wire format (DeltaResult) and msgpack serde live in `asap_sketchlib::sketches`.
 #[derive(Debug, Clone)]
 pub struct DeltaSetAggregatorAccumulator {
     pub added: HashSet<KeyByLabelValues>,
@@ -153,7 +153,8 @@ impl DeltaSetAggregatorAccumulator {
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Delegate to sketch-core canonical DeltaResult msgpack format
-        let delta = deserialize_msgpack(buffer)?;
+        let delta = deserialize_msgpack(buffer)
+            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
 
         let mut added = HashSet::new();
         for item in &delta.added {
@@ -202,7 +203,7 @@ impl SerializableToSink for DeltaSetAggregatorAccumulator {
             .iter()
             .map(|key| key.to_semicolon_str())
             .collect();
-        serialize_msgpack(&added, &removed)
+        serialize_msgpack(&added, &removed).unwrap_or_default()
     }
 }
 

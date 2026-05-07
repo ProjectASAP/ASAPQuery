@@ -339,10 +339,11 @@ query_groups:
 aggregate_cleanup:
   policy: "not_a_real_policy"
 "#;
-    let c = Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts()).unwrap();
+    // Invalid policy is now caught at deserialization time (YamlParse) rather than at
+    // generate() time (PlannerError), since the field is typed as Option<CleanupPolicy>.
     assert!(matches!(
-        c.generate(),
-        Err(ControllerError::PlannerError(_))
+        Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts()),
+        Err(ControllerError::YamlParse(_))
     ));
 }
 

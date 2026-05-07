@@ -1,0 +1,23 @@
+output_dir: "/app/outputs"
+log_level: "INFO"
+prometheus_scrape_interval: 15
+streaming_engine: "precompute"
+
+http_server:
+  port: 8088
+
+backend:
+  type: "prometheus"
+  server: "http://localhost:9090"
+  forward_unsupported_queries: true
+
+store:
+  lock_strategy: "per-key"
+
+ingest:
+  type: "http_remote_write"
+  port: 9091
+
+query_tracker:
+  enabled: true
+  observation_window_secs: 60

@@ -6,7 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::input::SQLControllerConfig;
 use crate::error::ControllerError;
-use crate::output::generator::{build_aggregation_entry, build_queries_yaml, GeneratorOutput};
+use crate::output::generator::{
+    build_aggregation_entry, build_queries_yaml, GeneratorOutput, KEY_AGGREGATIONS,
+    KEY_CLEANUP_POLICY, KEY_METADATA_COLUMNS, KEY_NAME, KEY_QUERIES, KEY_TABLES, KEY_TIME_COLUMN,
+    KEY_VALUE_COLUMNS,
+};
 use crate::planner::single_query::IntermediateAggConfig;
 use crate::planner::sql_single_query::SQLSingleQueryProcessor;
 use crate::StreamingEngine;
@@ -28,14 +32,11 @@ pub fn generate_sql_plan(
             .as_secs_f64()
     });
 
-    let cleanup_policy_str = config
+    let cleanup_policy = config
         .aggregate_cleanup
         .as_ref()
-        .and_then(|c| c.policy.as_deref())
-        .unwrap_or("read_based");
-    let cleanup_policy = cleanup_policy_str.parse::<CleanupPolicy>().map_err(|_| {
-        ControllerError::PlannerError(format!("Unknown cleanup policy: {}", cleanup_policy_str))
-    })?;
+        .and_then(|c| c.policy)
+        .unwrap_or(CleanupPolicy::ReadBased);
 
     // Validate T % data_ingestion_interval == 0
     for qg in &config.query_groups {
@@ -94,13 +95,8 @@ pub fn generate_sql_plan(
     }
 
     let streaming_yaml = build_sql_streaming_yaml(config, &dedup_map, &id_map)?;
-    let inference_yaml = build_sql_inference_yaml(
-        config,
-        cleanup_policy,
-        cleanup_policy_str,
-        &query_keys_map,
-        &id_map,
-    )?;
+    let inference_yaml =
+        build_sql_inference_yaml(config, cleanup_policy, &query_keys_map, &id_map)?;
 
     Ok(GeneratorOutput {
         punted_queries: Vec::new(),
@@ -118,15 +114,15 @@ fn build_tables_yaml(config: &SQLControllerConfig) -> Vec<YamlValue> {
         .map(|t| {
             let mut map = serde_yaml::Mapping::new();
             map.insert(
-                YamlValue::String("name".to_string()),
+                YamlValue::String(KEY_NAME.to_string()),
                 YamlValue::String(t.name.clone()),
             );
             map.insert(
-                YamlValue::String("time_column".to_string()),
+                YamlValue::String(KEY_TIME_COLUMN.to_string()),
                 YamlValue::String(t.time_column.clone()),
             );
             map.insert(
-                YamlValue::String("value_columns".to_string()),
+                YamlValue::String(KEY_VALUE_COLUMNS.to_string()),
                 YamlValue::Sequence(
                     t.value_columns
                         .iter()
@@ -135,7 +131,7 @@ fn build_tables_yaml(config: &SQLControllerConfig) -> Vec<YamlValue> {
                 ),
             );
             map.insert(
-                YamlValue::String("metadata_columns".to_string()),
+                YamlValue::String(KEY_METADATA_COLUMNS.to_string()),
                 YamlValue::Sequence(
                     t.metadata_columns
                         .iter()
@@ -160,11 +156,11 @@ fn build_sql_streaming_yaml(
 
     let mut root = serde_yaml::Mapping::new();
     root.insert(
-        YamlValue::String("aggregations".to_string()),
+        YamlValue::String(KEY_AGGREGATIONS.to_string()),
         YamlValue::Sequence(aggregations),
     );
     root.insert(
-        YamlValue::String("tables".to_string()),
+        YamlValue::String(KEY_TABLES.to_string()),
         YamlValue::Sequence(build_tables_yaml(config)),
     );
 
@@ -174,27 +170,26 @@ fn build_sql_streaming_yaml(
 fn build_sql_inference_yaml(
     config: &SQLControllerConfig,
     cleanup_policy: CleanupPolicy,
-    cleanup_policy_str: &str,
     query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
     id_map: &HashMap<String, u32>,
 ) -> Result<YamlValue, ControllerError> {
     let mut cleanup_map = serde_yaml::Mapping::new();
     cleanup_map.insert(
-        YamlValue::String("name".to_string()),
-        YamlValue::String(cleanup_policy_str.to_string()),
+        YamlValue::String(KEY_NAME.to_string()),
+        YamlValue::String(cleanup_policy.to_string()),
     );
 
     let mut root = serde_yaml::Mapping::new();
     root.insert(
-        YamlValue::String("cleanup_policy".to_string()),
+        YamlValue::String(KEY_CLEANUP_POLICY.to_string()),
         YamlValue::Mapping(cleanup_map),
     );
     root.insert(
-        YamlValue::String("queries".to_string()),
+        YamlValue::String(KEY_QUERIES.to_string()),
         YamlValue::Sequence(build_queries_yaml(cleanup_policy, query_keys_map, id_map)),
     );
     root.insert(
-        YamlValue::String("tables".to_string()),
+        YamlValue::String(KEY_TABLES.to_string()),
         YamlValue::Sequence(build_tables_yaml(config)),
     );
 

@@ -16,5 +16,3 @@ experiments/config/*
 !experiments/config/config.yaml
 
 experiments/post_experiment/**/*.png
-
-asap-cli/target

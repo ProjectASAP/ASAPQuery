@@ -2,25 +2,22 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
+use asap_sketchlib::sketches::countminsketch_topk::{CmsHeapItem, CountMinSketchWithHeap};
 use serde_json::Value;
-use sketch_core::count_min_with_heap::{CountMinSketchWithHeap, HeapItem};
 use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// Count-Min Sketch with Heap accumulator — wraps sketch_core::CountMinSketchWithHeap.
-/// Core struct, update/merge/serde logic live in sketch-core.
+/// Count-Min Sketch with Heap accumulator — wraps `asap_sketchlib::sketches::CountMinSketchWithHeap`.
+/// Core struct, update/merge/serde logic live in `asap_sketchlib::sketches::countminsketch_topk`.
 /// This file retains QE-specific trait impls, legacy deserializers, and JSON output.
-///
-/// NOTE (bug, do not fix): QueryEngineRust uses xxhash-rust::xxh32; the Arroyo template uses
-/// twox-hash::XxHash32. Bucket assignments differ. Tracked separately.
 #[derive(Debug, Clone)]
 pub struct CountMinSketchWithHeapAccumulator {
     pub inner: CountMinSketchWithHeap,
 }
 
 // Re-export HeapItem so existing code using CountMinSketchWithHeapAccumulator::HeapItem still works.
-pub use sketch_core::count_min_with_heap::HeapItem as HeapItemReexport;
+pub use asap_sketchlib::sketches::countminsketch_topk::CmsHeapItem as HeapItemReexport;
 
 impl CountMinSketchWithHeapAccumulator {
     pub fn new(row_num: usize, col_num: usize, heap_size: usize) -> Self {
@@ -31,7 +28,7 @@ impl CountMinSketchWithHeapAccumulator {
 
     pub fn query_key(&self, key: &KeyByLabelValues) -> f64 {
         let key_string = key.labels.join(";");
-        self.inner.query_key(&key_string)
+        self.inner.estimate(&key_string)
     }
 
     /// This function seems will never be used anymore. Keep it for possible future use.
@@ -74,7 +71,7 @@ impl CountMinSketchWithHeapAccumulator {
             let value = item["value"]
                 .as_f64()
                 .ok_or("Missing or invalid 'value' in heap item")?;
-            topk_heap.push(HeapItem { key, value });
+            topk_heap.push(CmsHeapItem { key, value });
         }
 
         Ok(Self {
@@ -88,7 +85,8 @@ impl CountMinSketchWithHeapAccumulator {
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            inner: CountMinSketchWithHeap::deserialize_msgpack(buffer)?,
+            inner: CountMinSketchWithHeap::deserialize_msgpack(buffer)
+                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
         })
     }
 
@@ -124,8 +122,8 @@ impl SerializableToSink for CountMinSketchWithHeapAccumulator {
             .collect();
 
         serde_json::json!({
-            "row_num": self.inner.row_num,
-            "col_num": self.inner.col_num,
+            "row_num": self.inner.rows(),
+            "col_num": self.inner.cols(),
             "heap_size": self.inner.heap_size,
             "sketch": self.inner.sketch_matrix(),
             "topk_heap": heap_items
@@ -133,7 +131,7 @@ impl SerializableToSink for CountMinSketchWithHeapAccumulator {
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.serialize_msgpack()
+        self.inner.serialize_msgpack().unwrap_or_default()
     }
 }
 
@@ -215,12 +213,12 @@ impl MergeableAccumulator<CountMinSketchWithHeapAccumulator> for CountMinSketchW
         if accumulators.is_empty() {
             return Err("No accumulators to merge".into());
         }
-        let inners: Vec<CountMinSketchWithHeap> =
-            accumulators.into_iter().map(|acc| acc.inner).collect();
-        let merged_inner = CountMinSketchWithHeap::merge(inners)?;
-        Ok(Self {
-            inner: merged_inner,
-        })
+        let mut iter = accumulators.into_iter();
+        let mut merged = iter.next().unwrap();
+        for acc in iter {
+            merged.inner.merge(&acc.inner)?;
+        }
+        Ok(merged)
     }
 }
 
@@ -231,8 +229,8 @@ mod tests {
     #[test]
     fn test_count_min_sketch_with_heap_creation() {
         let cms = CountMinSketchWithHeapAccumulator::new(4, 1000, 20);
-        assert_eq!(cms.inner.row_num, 4);
-        assert_eq!(cms.inner.col_num, 1000);
+        assert_eq!(cms.inner.rows(), 4);
+        assert_eq!(cms.inner.cols(), 1000);
         assert_eq!(cms.inner.heap_size, 20);
         assert_eq!(cms.inner.topk_heap_items().len(), 0);
     }
@@ -255,11 +253,11 @@ mod tests {
             vec![0.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         ];
         let heap1 = vec![
-            HeapItem {
+            CmsHeapItem {
                 key: "key1".to_string(),
                 value: 100.0,
             },
-            HeapItem {
+            CmsHeapItem {
                 key: "key2".to_string(),
                 value: 50.0,
             },
@@ -269,11 +267,11 @@ mod tests {
             vec![0.0, 15.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         ];
         let heap2 = vec![
-            HeapItem {
+            CmsHeapItem {
                 key: "key3".to_string(),
                 value: 75.0,
             },
-            HeapItem {
+            CmsHeapItem {
                 key: "key1".to_string(),
                 value: 80.0,
             },
@@ -301,8 +299,8 @@ mod tests {
         let result = CountMinSketchWithHeapAccumulator::merge_accumulators(vec![cms.clone()]);
         assert!(result.is_ok());
         let merged = result.unwrap();
-        assert_eq!(merged.inner.row_num, cms.inner.row_num);
-        assert_eq!(merged.inner.col_num, cms.inner.col_num);
+        assert_eq!(merged.inner.rows(), cms.inner.rows());
+        assert_eq!(merged.inner.cols(), cms.inner.cols());
         assert_eq!(merged.inner.heap_size, cms.inner.heap_size);
     }
 
@@ -312,17 +310,14 @@ mod tests {
         let cms2 = CountMinSketchWithHeapAccumulator::new(3, 10, 5);
         let result = CountMinSketchWithHeapAccumulator::merge_accumulators(vec![cms1, cms2]);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("different dimensions"));
+        assert!(result.unwrap_err().to_string().contains("dimension"));
     }
 
     #[test]
     fn test_count_min_sketch_with_heap_serialization() {
         // Use from_legacy_matrix for a controlled state that round-trips correctly with both backends.
         let sketch = vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]];
-        let topk_heap = vec![HeapItem {
+        let topk_heap = vec![CmsHeapItem {
             key: "test_key".to_string(),
             value: 99.0,
         }];
@@ -334,8 +329,8 @@ mod tests {
         let deserialized =
             CountMinSketchWithHeapAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
 
-        assert_eq!(deserialized.inner.row_num, 2);
-        assert_eq!(deserialized.inner.col_num, 3);
+        assert_eq!(deserialized.inner.rows(), 2);
+        assert_eq!(deserialized.inner.cols(), 3);
         assert_eq!(deserialized.inner.heap_size, 5);
         assert_eq!(deserialized.inner.sketch_matrix()[0][1], 42.0);
         // [1][2] may be 100 (legacy, no hash collision) or 199 (100+99 when test_key hashes there)

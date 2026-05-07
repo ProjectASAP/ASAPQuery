@@ -746,10 +746,12 @@ aggregate_cleanup:
   policy: not_a_real_policy
 "#
     );
-    let result = SQLController::from_yaml(&yaml, sql_opts())
-        .unwrap()
-        .generate();
-    assert!(matches!(result, Err(ControllerError::PlannerError(_))));
+    // Invalid policy is now caught at deserialization time (YamlParse) rather than at
+    // generate() time (PlannerError), since the field is typed as Option<CleanupPolicy>.
+    assert!(matches!(
+        SQLController::from_yaml(&yaml, sql_opts()),
+        Err(ControllerError::YamlParse(_))
+    ));
 }
 
 /// T that is not a multiple of data_ingestion_interval is invalid: sketch windows

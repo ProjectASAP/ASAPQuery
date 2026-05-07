@@ -100,10 +100,10 @@ mod tests {
 
     #[test]
     fn test_esdsl_single_label_groupby_aggregation_quantile() {
-        // let _ = tracing_subscriber::fmt()
-        //     .with_max_level(tracing::Level::DEBUG)
-        //     .with_test_writer() // Routes output through the test runner's capture mechanism
-        //     .try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer() // Routes output through the test runner's capture mechanism
+            .try_init();
 
         // Elastic DSL query (batch filtered).
         let elastic_query = json!({
@@ -173,10 +173,10 @@ mod tests {
 
     #[test]
     fn test_esdsl_multi_label_groupby_aggregation_quantile() {
-        // let _ = tracing_subscriber::fmt()
-        //     .with_max_level(tracing::Level::DEBUG)
-        //     .with_test_writer() // Routes output through the test runner's capture mechanism
-        //     .try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer() // Routes output through the test runner's capture mechanism
+            .try_init();
 
         // Elastic DSL query (batch filtered).
         let elastic_query = json!({
@@ -320,10 +320,10 @@ mod tests {
 
     #[test]
     fn test_esdsl_time_range_query() {
-        // let _ = tracing_subscriber::fmt()
-        //     .with_max_level(tracing::Level::DEBUG)
-        //     .with_test_writer() // Routes output through the test runner's capture mechanism
-        //     .try_init();
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_test_writer() // Routes output through the test runner's capture mechanism
+            .try_init();
 
         // Elastic DSL query (batch filtered).
         let elastic_query = json!({
@@ -369,7 +369,14 @@ mod tests {
                     assert_eq!(instant.values.len(), 1);
                     let sample = &instant.values[0];
                     assert_eq!(sample.labels, KeyByLabelValues::new()); // No labels expected
-                    assert_eq!(sample.value, 291.0); // 90th percentile of 200..300 as reported by KLL (skip first two KLL buckets which are outside the resolved time range)
+                                                                        // 90th percentile of 200..300 from KLL. Allow ±1 tolerance:
+                                                                        // datasketches-rs and asap_sketchlib's KLL differ by ≤1 rank
+                                                                        // on this distribution (asap_sketchlib reports 290).
+                    assert!(
+                        (sample.value - 291.0).abs() <= 1.0,
+                        "expected ~291.0 (±1), got {}",
+                        sample.value,
+                    );
                 }
                 _ => {
                     panic!("Expected Vector result");

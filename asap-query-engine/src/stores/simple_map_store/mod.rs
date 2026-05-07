@@ -64,6 +64,14 @@ impl SimpleMapStore {
             }
         }
     }
+
+    /// Replace the streaming config at runtime. Delegates to the active variant.
+    pub fn update_streaming_config(&self, new_config: StreamingConfig) {
+        match self {
+            SimpleMapStore::Global(store) => store.update_streaming_config(new_config),
+            SimpleMapStore::PerKey(store) => store.update_streaming_config(new_config),
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -136,6 +144,87 @@ impl Store for SimpleMapStore {
         match self {
             SimpleMapStore::Global(store) => store.close(),
             SimpleMapStore::PerKey(store) => store.close(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_model::{AggregationType, PrecomputedOutput};
+    use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::stores::Store;
+    use asap_types::aggregation_config::AggregationConfig;
+    use asap_types::enums::WindowType;
+    use promql_utilities::data_model::key_by_label_names::KeyByLabelNames;
+    use std::collections::HashMap;
+
+    fn make_agg_config(id: u64, metric: &str) -> AggregationConfig {
+        AggregationConfig::new(
+            id,
+            AggregationType::SingleSubpopulation,
+            "Sum".to_string(),
+            HashMap::new(),
+            KeyByLabelNames::new(vec![]),
+            KeyByLabelNames::new(vec![]),
+            KeyByLabelNames::new(vec![]),
+            String::new(),
+            10,
+            0,
+            WindowType::Tumbling,
+            metric.to_string(),
+            metric.to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Verify that `update_streaming_config` makes newly added aggregation IDs visible
+    /// to the store. Inserts for an unknown agg_id are silently dropped; after a config
+    /// update that adds the agg_id, inserts are accepted and queryable.
+    ///
+    /// Tested for both the Global and PerKey variants.
+    #[test]
+    fn test_update_streaming_config_accepts_new_agg_insert() {
+        for strategy in [LockStrategy::Global, LockStrategy::PerKey] {
+            let store = SimpleMapStore::new_with_strategy(
+                Arc::new(StreamingConfig::new(HashMap::new())),
+                CleanupPolicy::NoCleanup,
+                strategy,
+            );
+
+            // Insert for unknown agg_id=1 — should be silently dropped.
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(0, 10_000, None, 1),
+                    Box::new(SumAccumulator::with_sum(99.0)),
+                )
+                .unwrap();
+            let result = store.query_precomputed_output("cpu", 1, 0, 20_000).unwrap();
+            assert!(
+                result.is_empty(),
+                "insert for unknown agg_id should be silently dropped ({strategy:?})"
+            );
+
+            // Update streaming config to include agg_id=1.
+            let mut agg_configs = HashMap::new();
+            agg_configs.insert(1, make_agg_config(1, "cpu"));
+            store.update_streaming_config(StreamingConfig::new(agg_configs));
+
+            // Insert again — now accepted.
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(0, 10_000, None, 1),
+                    Box::new(SumAccumulator::with_sum(42.0)),
+                )
+                .unwrap();
+            let result = store.query_precomputed_output("cpu", 1, 0, 20_000).unwrap();
+            assert!(
+                !result.is_empty(),
+                "insert after config update should be accepted ({strategy:?})"
+            );
         }
     }
 }

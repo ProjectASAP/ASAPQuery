@@ -13,8 +13,30 @@ services:
   asap-planner-rs:
     image: ghcr.io/projectasap/asap-planner-rs:${ASAP_IMAGE_TAG}
 
-  asap-summary-ingest:
-    image: ghcr.io/projectasap/asap-summary-ingest:${ASAP_IMAGE_TAG}
-
   queryengine:
     image: ghcr.io/projectasap/asap-query-engine:${ASAP_IMAGE_TAG}
+    volumes:
+      - ../benchmarks/config/engine_config.yaml:/config/engine_config.yaml:ro
+    command:
+      - "--config-file=/config/engine_config.yaml"
+
+  fake-exporter-constant:
+    image: ghcr.io/projectasap/asap-fake-exporter:${ASAP_IMAGE_TAG}
+
+  fake-exporter-linear-up:
+    image: ghcr.io/projectasap/asap-fake-exporter:${ASAP_IMAGE_TAG}
+
+  fake-exporter-linear-down:
+    image: ghcr.io/projectasap/asap-fake-exporter:${ASAP_IMAGE_TAG}
+
+  fake-exporter-sine:
+    image: ghcr.io/projectasap/asap-fake-exporter:${ASAP_IMAGE_TAG}
+
+  fake-exporter-sine-noise:
+    image: ghcr.io/projectasap/asap-fake-exporter:${ASAP_IMAGE_TAG}
+
+  fake-exporter-step:
+    image: ghcr.io/projectasap/asap-fake-exporter:${ASAP_IMAGE_TAG}
+
+  fake-exporter-exp-up:
+    image: ghcr.io/projectasap/asap-fake-exporter:${ASAP_IMAGE_TAG}

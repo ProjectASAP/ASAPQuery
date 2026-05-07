@@ -104,9 +104,10 @@ fn main() -> anyhow::Result<()> {
                          (query logs have no metrics hint to fall back on)"
                     )
                 }
-                _ => anyhow::bail!(
-                    "exactly one of --input_config or --query-log must be provided for PromQL mode"
-                ),
+                (None, None, _) => {
+                    anyhow::bail!("provide one of --input_config or --query-log")
+                }
+                _ => unreachable!("clap conflicts_with prevents this combination"),
             };
             controller.generate_to_dir(&args.output_dir)?;
         }

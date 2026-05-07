@@ -6,8 +6,7 @@ use crate::stores::simple_map_store::common::{
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 use tracing::{debug, error, info};
 
@@ -135,8 +134,10 @@ pub struct SimpleMapStoreGlobal {
     // Single global mutex protecting all data structures
     lock: Mutex<StoreData>,
 
-    // Store the streaming configuration
-    streaming_config: Arc<StreamingConfig>,
+    // Store the streaming configuration.
+    // RwLock<Arc<StreamingConfig>>: readers briefly lock to clone the Arc pointer,
+    // then use the Arc without holding the lock.
+    streaming_config: RwLock<Arc<StreamingConfig>>,
 
     // Policy for cleaning up old aggregates
     cleanup_policy: CleanupPolicy,
@@ -152,9 +153,14 @@ impl SimpleMapStoreGlobal {
                 earliest_timestamp_per_aggregation_id: HashMap::new(),
                 read_counts: HashMap::new(),
             }),
-            streaming_config,
+            streaming_config: RwLock::new(streaming_config),
             cleanup_policy,
         }
+    }
+
+    /// Replace the streaming config at runtime.
+    pub fn update_streaming_config(&self, new_config: StreamingConfig) {
+        *self.streaming_config.write().unwrap() = Arc::new(new_config);
     }
 
     /// Collect diagnostic info about store contents.
@@ -246,10 +252,9 @@ impl Store for SimpleMapStoreGlobal {
         // Also pre-compute batch_min_ts per group to collapse N earliest-ts updates into 1.
         let mut grouped: GroupedBatch = HashMap::new();
 
+        let sc = self.streaming_config.read().unwrap().clone();
         for (output, precompute) in outputs {
-            let aggregation_config = self
-                .streaming_config
-                .get_aggregation_config(output.aggregation_id);
+            let aggregation_config = sc.get_aggregation_config(output.aggregation_id);
 
             if aggregation_config.is_none() {
                 error!(

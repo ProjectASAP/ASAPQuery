@@ -17,7 +17,9 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 };
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::StoreOutputSink;
-use query_engine_rust::precompute_engine::PrecomputeEngine;
+use query_engine_rust::precompute_engine::{
+    HttpIngestConfig, HttpIngestSource, IngestSource, PrecomputeEngine,
+};
 use query_engine_rust::stores::{SimpleMapStore, Store};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -225,7 +227,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let engine_config = PrecomputeEngineConfig {
         num_workers: NUM_WORKERS,
-        ingest_port: INGEST_PORT,
         allowed_lateness_ms: 5_000,
         max_buffer_per_series: 10_000,
         flush_interval_ms: 1_000,
@@ -235,7 +236,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         late_data_policy: LateDataPolicy::Drop,
     };
     let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
-    let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink);
+    let sources: Vec<Box<dyn IngestSource>> =
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
+            port: INGEST_PORT,
+        }))];
+    let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink, sources);
     tokio::spawn(async move {
         if let Err(e) = engine.run().await {
             eprintln!("Precompute engine error: {e}");

@@ -1,18 +1,18 @@
 //! End-to-end integration tests: precompute engine output equivalence
-//! with ArroYo sketch format.
+//! with the wire-format sketch encoding.
 //!
 //! Each test:
 //!  1. Starts a PrecomputeEngine backed by a CapturingOutputSink
 //!  2. Sends Prometheus remote write samples via HTTP (Snappy-compressed protobuf)
 //!  3. Advances the watermark past the window boundary to close it
-//!  4. Drains captured outputs and verifies equivalence with ArroYo-format accumulators
+//!  4. Drains captured outputs and verifies equivalence with wire-format accumulators
 
+use asap_sketchlib::sketches::kll::KllSketch;
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::enums::{AggregationType, WindowType};
 use flate2::{write::GzEncoder, Compression};
 use prost::Message;
 use serde_json::json;
-use sketch_core::kll::KllSketch;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
@@ -23,7 +23,9 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 };
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::CapturingOutputSink;
-use query_engine_rust::precompute_engine::PrecomputeEngine;
+use query_engine_rust::precompute_engine::{
+    HttpIngestConfig, HttpIngestSource, IngestSource, PrecomputeEngine,
+};
 use query_engine_rust::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 use query_engine_rust::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
 
@@ -141,10 +143,9 @@ async fn send_remote_write(client: &reqwest::Client, port: u16, timeseries: Vec<
     );
 }
 
-fn engine_config(port: u16) -> PrecomputeEngineConfig {
+fn engine_config() -> PrecomputeEngineConfig {
     PrecomputeEngineConfig {
         num_workers: 2,
-        ingest_port: port,
         allowed_lateness_ms: 0,
         max_buffer_per_series: 10_000,
         flush_interval_ms: 100,
@@ -161,10 +162,10 @@ fn gzip_hex(bytes: &[u8]) -> String {
     hex::encode(encoder.finish().unwrap())
 }
 
-// ─── test 1: DatasketchesKLL output matches ArroYo KLL ──────────────────────
+// ─── test 1: DatasketchesKLL output matches wire-format KLL ─────────────────
 
 /// Full e2e: send KLL samples through the HTTP ingest → PrecomputeEngine stack,
-/// then verify the emitted DatasketchesKLLAccumulator matches what ArroYo's
+/// then verify the emitted DatasketchesKLLAccumulator matches what the wire-format
 /// KllSketch::aggregate_kll would produce for the same values.
 #[tokio::test]
 async fn e2e_kll_output_matches_arroyo() {
@@ -191,7 +192,9 @@ async fn e2e_kll_output_matches_arroyo() {
     let streaming_config = Arc::new(StreamingConfig::new(agg_map.clone()));
 
     let sink = Arc::new(CapturingOutputSink::new());
-    let engine = PrecomputeEngine::new(engine_config(port), streaming_config, sink.clone());
+    let sources: Vec<Box<dyn IngestSource>> =
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))];
+    let engine = PrecomputeEngine::new(engine_config(), streaming_config, sink.clone(), sources);
     tokio::spawn(async move {
         let _ = engine.run().await;
     });
@@ -237,7 +240,7 @@ async fn e2e_kll_output_matches_arroyo() {
         .downcast_ref::<DatasketchesKLLAccumulator>()
         .expect("captured accumulator should be DatasketchesKLLAccumulator");
 
-    // Build the ArroYo-format equivalent and deserialize it
+    // Build the wire-format equivalent and deserialize it
     let arroyo_bytes =
         KllSketch::aggregate_kll(k, &values).expect("KllSketch::aggregate_kll failed");
     let arroyo_json = json!({
@@ -249,11 +252,11 @@ async fn e2e_kll_output_matches_arroyo() {
     let streaming_config_for_deser = StreamingConfig::new(agg_map);
     let (_arroyo_output, arroyo_acc_box) =
         PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config_for_deser)
-            .expect("ArroYo KLL deserialization failed");
+            .expect("wire-format KLL deserialization failed");
     let arroyo_acc = arroyo_acc_box
         .as_any()
         .downcast_ref::<DatasketchesKLLAccumulator>()
-        .expect("ArroYo payload should deserialize to DatasketchesKLLAccumulator");
+        .expect("wire-format payload should deserialize to DatasketchesKLLAccumulator");
 
     // Window metadata
     assert_eq!(handcrafted_output.aggregation_id, agg_id);
@@ -279,11 +282,11 @@ async fn e2e_kll_output_matches_arroyo() {
     }
 }
 
-// ─── test 2: MultipleSum output matches ArroYo MultipleSum ──────────────────
+// ─── test 2: MultipleSum output matches wire-format MultipleSum ─────────────
 
 /// Full e2e: send MultipleSum samples (grouped by "host") through the HTTP
 /// ingest → PrecomputeEngine stack, then verify the emitted
-/// MultipleSumAccumulator matches the ArroYo MessagePack-encoded sums map.
+/// MultipleSumAccumulator matches the wire-format MessagePack-encoded sums map.
 #[tokio::test]
 async fn e2e_multiple_sum_output_matches_arroyo() {
     let port = 19401u16;
@@ -305,7 +308,9 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     let streaming_config = Arc::new(StreamingConfig::new(agg_map.clone()));
 
     let sink = Arc::new(CapturingOutputSink::new());
-    let engine = PrecomputeEngine::new(engine_config(port), streaming_config, sink.clone());
+    let sources: Vec<Box<dyn IngestSource>> =
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))];
+    let engine = PrecomputeEngine::new(engine_config(), streaming_config, sink.clone(), sources);
     tokio::spawn(async move {
         let _ = engine.run().await;
     });
@@ -347,7 +352,7 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
         .downcast_ref::<MultipleSumAccumulator>()
         .expect("captured accumulator should be MultipleSumAccumulator");
 
-    // Build the ArroYo-format equivalent and deserialize it
+    // Build the wire-format equivalent and deserialize it
     let mut expected_sums: HashMap<String, f64> = HashMap::new();
     expected_sums.insert("A".to_string(), 6.0);
     let arroyo_bytes = rmp_serde::to_vec(&expected_sums).expect("msgpack encoding failed");
@@ -360,11 +365,11 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     let streaming_config_for_deser = StreamingConfig::new(agg_map);
     let (_arroyo_output, arroyo_acc_box) =
         PrecomputedOutput::deserialize_from_json_arroyo(&arroyo_json, &streaming_config_for_deser)
-            .expect("ArroYo MultipleSum deserialization failed");
+            .expect("wire-format MultipleSum deserialization failed");
     let arroyo_acc = arroyo_acc_box
         .as_any()
         .downcast_ref::<MultipleSumAccumulator>()
-        .expect("ArroYo payload should deserialize to MultipleSumAccumulator");
+        .expect("wire-format payload should deserialize to MultipleSumAccumulator");
 
     // Window metadata
     assert_eq!(handcrafted_output.aggregation_id, agg_id);

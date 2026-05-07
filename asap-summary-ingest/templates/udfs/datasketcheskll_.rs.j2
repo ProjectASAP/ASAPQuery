@@ -8,7 +8,7 @@ serde = { version = "1.0", features = ["derive"] }
 
 use arroyo_udf_plugin::udf;
 use serde::{Deserialize, Serialize};
-use asap_sketchlib::{KLL, SketchInput};
+use asap_sketchlib::KLL;
 
 const DEFAULT_K: u16 = {{ k }};
 
@@ -22,7 +22,7 @@ struct KllSketchData {
 fn datasketcheskll_(values: Vec<f64>) -> Option<Vec<u8>> {
     let mut sketch = KLL::init_kll(DEFAULT_K as i32);
     for &value in &values {
-        let _ = sketch.update(&SketchInput::F64(value));
+        sketch.update(&value);
     }
     let sketch_bytes = sketch.serialize_to_bytes().ok()?;
     let serialized = KllSketchData {

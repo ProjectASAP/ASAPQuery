@@ -1,17 +1,39 @@
 #!/bin/bash
-# Add a git worktree for a branch
+# Add a git worktree for an issue number (uses gh to resolve the branch)
 
 if [ -z "$1" ]; then
-  echo "Usage: gwt.sh <branch-name>"
-  echo "Example: gwt.sh 97-add-option-to-record-prometheus-scrape-duration"
+  echo "Usage: gwt.sh <issue-number>"
+  echo "Example: gwt.sh 97"
   exit 1
 fi
 
-branch_name="$1"
-issue_num="${branch_name%%-*}"  # Extract issue number (everything before first hyphen)
+issue_num="$1"
 
-echo "Fetching branch $branch_name from origin..."
+branches=$(gh issue develop "$issue_num" --list 2>/dev/null | awk '{print $1}')
+
+if [ -z "$branches" ]; then
+  echo "No branch found for issue #$issue_num. Creating one via gh..."
+  gh issue develop "$issue_num"
+  branches=$(gh issue develop "$issue_num" --list 2>/dev/null | awk '{print $1}')
+  if [ -z "$branches" ]; then
+    echo "Failed to create branch for issue #$issue_num."
+    exit 1
+  fi
+fi
+
+branch_count=$(echo "$branches" | wc -l)
+
+if [ "$branch_count" -gt 1 ]; then
+  echo "Multiple branches found for issue #$issue_num:"
+  echo "$branches"
+  exit 1
+fi
+
+branch_name="$branches"
+
+echo "Found branch: $branch_name"
+echo "Fetching from origin..."
 git fetch origin "$branch_name"
 
-echo "Creating worktree at ../worktrees/$issue_num for branch $branch_name..."
+echo "Creating worktree at ../worktrees/$issue_num..."
 git worktree add --track -b "$branch_name" "../worktrees/$issue_num" "origin/$branch_name"

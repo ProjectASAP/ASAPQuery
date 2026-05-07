@@ -14,8 +14,6 @@ pub enum LateDataPolicy {
 pub struct PrecomputeEngineConfig {
     /// Number of worker threads for parallel processing.
     pub num_workers: usize,
-    /// Port for the Prometheus remote write ingest endpoint.
-    pub ingest_port: u16,
     /// Maximum allowed lateness for out-of-order samples (milliseconds).
     /// Samples arriving later than this behind the watermark are dropped.
     pub allowed_lateness_ms: i64,
@@ -38,7 +36,6 @@ impl Default for PrecomputeEngineConfig {
     fn default() -> Self {
         Self {
             num_workers: 4,
-            ingest_port: 9090,
             allowed_lateness_ms: 5_000,
             max_buffer_per_series: 10_000,
             flush_interval_ms: 1_000,
@@ -58,7 +55,6 @@ mod tests {
     fn test_default_config() {
         let config = PrecomputeEngineConfig::default();
         assert_eq!(config.num_workers, 4);
-        assert_eq!(config.ingest_port, 9090);
         assert_eq!(config.allowed_lateness_ms, 5_000);
         assert_eq!(config.max_buffer_per_series, 10_000);
         assert_eq!(config.flush_interval_ms, 1_000);

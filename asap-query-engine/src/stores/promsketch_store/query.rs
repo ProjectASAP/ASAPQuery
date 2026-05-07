@@ -1,4 +1,4 @@
-use asap_sketchlib::{EHSketchList, SketchInput, UniformSampling};
+use asap_sketchlib::{DataInput, EHSketchList, UniformSampling};
 
 use super::series::PromSketchMemSeries;
 
@@ -80,7 +80,7 @@ fn eval_kll_quantile(
         .ok_or("no volumes cover the requested time range for KLL")?;
 
     merged
-        .query(&SketchInput::F64(phi))
+        .query(&DataInput::F64(phi))
         .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e.into() })
 }
 
@@ -174,7 +174,7 @@ mod tests {
 
         // Insert values 1..=100 at successive timestamps
         for i in 1..=100u64 {
-            let input = SketchInput::F64(i as f64);
+            let input = DataInput::F64(i as f64);
             if let Some(ref mut eh) = series.sketch_instances.eh_kll {
                 eh.update(i, &input);
             }
@@ -190,7 +190,7 @@ mod tests {
             .ensure_initialized(PromSketchType::USampling, &config);
 
         for i in 1..=1000u64 {
-            let input = SketchInput::F64(i as f64);
+            let input = DataInput::F64(i as f64);
             if let Some(ref mut eh) = series.sketch_instances.eh_sampling {
                 eh.update(i, &input);
             }
@@ -206,7 +206,7 @@ mod tests {
             .ensure_initialized(PromSketchType::EHUniv, &config);
 
         for i in 1..=100u64 {
-            let input = SketchInput::F64(i as f64);
+            let input = DataInput::F64(i as f64);
             if let Some(ref mut eh) = series.sketch_instances.eh_univ {
                 eh.update(i, &input, 1);
             }

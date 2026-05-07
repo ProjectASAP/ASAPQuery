@@ -6,8 +6,9 @@ use query_engine_rust::data_model::{
 use query_engine_rust::drivers::query::adapters::AdapterConfig;
 use query_engine_rust::engines::SimpleEngine;
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
+use query_engine_rust::precompute_engine::csv_ingest::{CsvFileIngestConfig, CsvFileIngestSource};
 use query_engine_rust::precompute_engine::output_sink::{RawPassthroughSink, StoreOutputSink};
-use query_engine_rust::precompute_engine::PrecomputeEngine;
+use query_engine_rust::precompute_engine::{HttpIngestConfig, HttpIngestSource, PrecomputeEngine};
 use query_engine_rust::stores::SimpleMapStore;
 use query_engine_rust::{HttpServer, HttpServerConfig};
 use std::sync::Arc;
@@ -65,6 +66,40 @@ struct Args {
     /// Policy for handling late samples that arrive after their window has closed
     #[arg(long, value_enum, default_value_t = LateDataPolicy::Drop)]
     late_data_policy: LateDataPolicy,
+
+    // --- CSV file ingest (alternative to HTTP) ---
+    /// Path to a local CSV file to ingest instead of listening for HTTP writes
+    #[arg(long)]
+    input_file: Option<String>,
+
+    /// Metric name to assign to every row (required with --input_file)
+    #[arg(long)]
+    csv_metric_name: Option<String>,
+
+    /// CSV column to use as the float value (required with --input_file)
+    #[arg(long)]
+    csv_value_col: Option<String>,
+
+    /// Comma-separated CSV columns to include as labels (e.g. "id1,id2,id3")
+    #[arg(long, default_value = "")]
+    csv_label_cols: String,
+
+    /// CSV column containing timestamps in milliseconds; omit to synthesize timestamps
+    #[arg(long)]
+    csv_timestamp_col: Option<String>,
+
+    /// Start timestamp (ms) for synthesized timestamps when --csv_timestamp_col is absent
+    #[arg(long, default_value_t = 0)]
+    csv_start_ts_ms: i64,
+
+    /// Milliseconds between consecutive rows for synthesized timestamps
+    /// (required when --csv_timestamp_col is absent)
+    #[arg(long)]
+    csv_ts_step_ms: Option<i64>,
+
+    /// Number of CSV rows per batch sent to workers
+    #[arg(long, default_value_t = 1000)]
+    csv_batch_size: usize,
 }
 
 #[tokio::main]
@@ -128,7 +163,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Build the precompute engine config
     let engine_config = PrecomputeEngineConfig {
         num_workers: args.num_workers,
-        ingest_port: args.ingest_port,
         allowed_lateness_ms: args.allowed_lateness_ms,
         max_buffer_per_series: args.max_buffer_per_series,
         flush_interval_ms: args.flush_interval_ms,
@@ -146,8 +180,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Arc::new(StoreOutputSink::new(store))
         };
 
+    let sources: Vec<Box<dyn query_engine_rust::precompute_engine::IngestSource>> =
+        if let Some(path) = args.input_file {
+            let metric_name = args
+                .csv_metric_name
+                .ok_or("--csv_metric_name is required with --input_file")?;
+            let value_col = args
+                .csv_value_col
+                .ok_or("--csv_value_col is required with --input_file")?;
+            let ts_step_ms = if args.csv_timestamp_col.is_none() {
+                args.csv_ts_step_ms.ok_or(
+                    "--csv_ts_step_ms is required when --csv_timestamp_col is not specified",
+                )?
+            } else {
+                args.csv_ts_step_ms.unwrap_or(0)
+            };
+            let label_cols = if args.csv_label_cols.is_empty() {
+                vec![]
+            } else {
+                args.csv_label_cols
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect()
+            };
+            info!("File ingest mode: {}", path);
+            vec![Box::new(CsvFileIngestSource::new(CsvFileIngestConfig {
+                path,
+                metric_name,
+                value_col,
+                label_cols,
+                timestamp_col: args.csv_timestamp_col,
+                start_ts_ms: args.csv_start_ts_ms,
+                ts_step_ms,
+                batch_size: args.csv_batch_size,
+            }))]
+        } else {
+            vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
+                port: args.ingest_port,
+            }))]
+        };
+
     // Build and run the engine
-    let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink);
+    let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink, sources);
 
     info!("Starting precompute engine...");
     engine.run().await?;
