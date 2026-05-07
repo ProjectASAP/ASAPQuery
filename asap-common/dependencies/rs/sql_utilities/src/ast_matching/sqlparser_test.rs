@@ -496,6 +496,65 @@ mod tests {
         );
     }
 
+    // ── ClickHouse parametric syntax + explicit BETWEEN timestamps ────────────
+    // These verify that a fully ClickHouse-compatible query (no DATEADD, no NOW())
+    // is parseable by ASAP: quantile(q)(col) + BETWEEN 'start' AND 'end'.
+
+    #[test]
+    fn test_clickhouse_explicit_datetime_temporal_quantile() {
+        check_query(
+            "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01 00:00:00' AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4",
+            vec![QueryType::TemporalQuantile],
+            None,
+        );
+    }
+
+    #[test]
+    // ASAP-only: parse_datetime accepts the Z suffix (interprets as UTC), but ClickHouse
+    // rejects it with TYPE_MISMATCH when comparing against a DateTime column.
+    // Do not use Z-suffix strings in queries intended for both systems.
+    fn test_asap_only_iso_z_temporal_quantile() {
+        check_query(
+            "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01T00:00:00Z' AND '2025-10-01T00:00:10Z' GROUP BY L1, L2, L3, L4",
+            vec![QueryType::TemporalQuantile],
+            None,
+        );
+    }
+
+    #[test]
+    // Both ASAP (parse_datetime) and ClickHouse treat ISO-without-Z as local server time.
+    // They agree only when running in the same timezone; prefer 'YYYY-MM-DD HH:MM:SS'
+    // (space format) to avoid this implicit dependency.
+    fn test_iso_no_z_treated_as_local_time_temporal_quantile() {
+        check_query(
+            "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01T00:00:00' AND '2025-10-01T00:00:10' GROUP BY L1, L2, L3, L4",
+            vec![QueryType::TemporalQuantile],
+            None,
+        );
+    }
+
+    #[test]
+    fn test_clickhouse_explicit_datetime_spatial_quantile() {
+        check_query(
+            "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01 00:00:00' AND '2025-10-01 00:00:01' GROUP BY L1",
+            vec![QueryType::Spatial],
+            None,
+        );
+    }
+
+    #[test]
+    fn test_clickhouse_explicit_matches_now_template() {
+        // A ClickHouse-style query (explicit timestamps, parametric quantile) must
+        // match a stored DATEADD(NOW()) template of the same shape.
+        let template = parse_sql_query(
+            "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        let incoming = parse_sql_query(
+            "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01 00:00:00' AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4"
+        ).unwrap();
+        assert!(incoming.matches_sql_pattern(&template));
+    }
+
     // ── Error cases ──────────────────────────────────────────────────────────
 
     #[test]

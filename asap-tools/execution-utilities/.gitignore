@@ -7,6 +7,9 @@
 
 clickhouse-benchmark-pipeline/benchmark_results/
 **/data/
+benchmark/arroyo_outputs/
+benchmark/queries/
+benchmark/results/
 
 **/*.csv
 **/*.png

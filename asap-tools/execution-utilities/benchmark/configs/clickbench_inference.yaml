@@ -1,0 +1,21 @@
+# ASAP Inference Config for ClickBench Hits Dataset
+# Source: asap_query_latency/inference_config.yaml
+
+tables:
+  - name: hits
+    time_column: EventTime
+    metadata_columns: [RegionID, OS, UserAgent, TraficSourceID]
+    value_columns: [ResolutionWidth]
+
+cleanup_policy:
+  name: read_based
+
+queries:
+  # Temporal queries (10s window, all labels) - QUANTILE
+  - aggregations:
+      - aggregation_id: 12
+        read_count_threshold: 999999
+    query: |
+      SELECT QUANTILE(0.95, ResolutionWidth) FROM hits
+      WHERE EventTime BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+      GROUP BY RegionID, OS, UserAgent, TraficSourceID
