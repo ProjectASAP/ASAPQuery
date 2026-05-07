@@ -344,7 +344,6 @@ def main(cfg: DictConfig):
         ), f"Expected PrometheusService but got {type(prometheus_service).__name__}"
         prometheus_service.start(experiment_output_dir)
 
-    # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
     if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
         prometheus_url = (
             f"http://localhost:{prometheus_service.get_query_endpoint_port()}"

@@ -416,9 +416,10 @@ def main(cfg: DictConfig):
     # Stop V2-specific services
     if is_v2:
         print("Stopping V2 services...")
-        if arroyosketch_pipeline_id:
-            arroyo_service.stop_arroyosketch(arroyosketch_pipeline_id)
-        arroyo_service.stop()
+        if args.streaming_engine != "precompute":
+            if arroyosketch_pipeline_id:
+                arroyo_service.stop_arroyosketch(arroyosketch_pipeline_id)
+            arroyo_service.stop()
         if args.streaming_engine != "precompute":
             kafka_service.delete_topics()
             kafka_service.stop()
