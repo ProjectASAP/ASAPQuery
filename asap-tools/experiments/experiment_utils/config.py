@@ -253,12 +253,23 @@ def generate_controller_client_configs(
         server_name = server_config["name"]
         experiment_to_server_config_map[server_name] = server_config
 
+    # Fields accepted by ControllerConfig (deny_unknown_fields in asap-planner-rs).
+    # Everything else (exporters, monitoring, servers, …) is experiment-only and
+    # must not appear in the file passed to the controller binary.
+    CONTROLLER_ALLOWED_KEYS = {
+        "query_groups",
+        "sketch_parameters",
+        "aggregate_cleanup",
+        "metrics",
+        "existing_streaming_config",
+    }
+
     for experiment_mode in experiment_modes:
-        controller_client_config = copy.deepcopy(experiment_config)
-        del controller_client_config["experiment"]
-        if "workloads" in controller_client_config:
-            del controller_client_config["workloads"]
-        controller_client_config["servers"] = [
+        full_config = copy.deepcopy(experiment_config)
+        del full_config["experiment"]
+        if "workloads" in full_config:
+            del full_config["workloads"]
+        full_config["servers"] = [
             experiment_to_server_config_map[experiment_mode["server"]]
         ]
 
@@ -267,12 +278,25 @@ def generate_controller_client_configs(
             and "query_prometheus_too" in experiment_mode
             and experiment_mode["query_prometheus_too"]
         ):
-            controller_client_config["servers"] = servers_config
+            full_config["servers"] = servers_config
 
+        # Full config — used by prometheus_client (needs "servers", etc.)
         with open(
             os.path.join(output_dir, "{}.yaml".format(experiment_mode["mode"])), "w"
         ) as f:
-            yaml.dump(controller_client_config, f)
+            yaml.dump(full_config, f)
+
+        # Controller-only config — stripped to the fields ControllerConfig accepts.
+        controller_only_config = {
+            k: v for k, v in full_config.items() if k in CONTROLLER_ALLOWED_KEYS
+        }
+        with open(
+            os.path.join(
+                output_dir, "{}_controller_input.yaml".format(experiment_mode["mode"])
+            ),
+            "w",
+        ) as f:
+            yaml.dump(controller_only_config, f)
 
     metrics_to_remote_write = [
         metric_config["metric"] for metric_config in experiment_config["metrics"]

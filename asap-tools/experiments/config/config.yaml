@@ -59,7 +59,7 @@ streaming:
   remote_write:
     ip: "${remote_write_ip:${cloudlab.node_offset}}"
     base_port: 8080
-    path: "/receive"
+    path: "/api/v1/write"
     enable_optimized_source: true # Use optimized Prometheus remote_write source (10-20x faster)
 
 # Prometheus configuration

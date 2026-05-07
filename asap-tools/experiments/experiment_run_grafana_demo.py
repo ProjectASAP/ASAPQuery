@@ -211,10 +211,10 @@ def main(cfg: DictConfig):
         wait=True,
     )
 
-    controller_client_config = os.path.join(
+    controller_input_config = os.path.join(
         experiment_root_output_dir,
         "controller_client_configs",
-        f"{experiment_mode}.yaml",
+        f"{experiment_mode}_controller_input.yaml",
     )
 
     if args.streaming_engine == "flink":
@@ -285,31 +285,6 @@ def main(cfg: DictConfig):
     )
     prometheus_scrape_interval = config.get_prometheus_scrape_interval(cfg.prometheus)
 
-    # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
-    if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-        prometheus_url = (
-            f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
-        )
-        controller_service.start(
-            controller_input_file=controller_client_config,
-            prometheus_scrape_interval=prometheus_scrape_interval,
-            streaming_engine=args.streaming_engine,
-            controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
-            punting=args.controller_punting,
-            prometheus_url=prometheus_url,
-        )
-        sync.rsync_controller_config_remote_to_local(
-            provider,
-            CONTROLLER_REMOTE_OUTPUT_DIR,
-            CONTROLLER_LOCAL_OUTPUT_DIR,
-            node_offset=args.node_offset,
-        )
-        if args.streaming_engine != "precompute":
-            kafka_service.start()
-            kafka_service.wait_until_ready()
-            kafka_service.delete_topics()
-            kafka_service.create_topics()
-
     if config.check_exporter_and_queries_exist("fake_exporter", cfg.experiment_params):
         # this DOES NOT block
         exporter_service.start(
@@ -333,6 +308,85 @@ def main(cfg: DictConfig):
         and workloads_config["deathstar"]["use"] is True
     ):
         deathstar_service.start()
+
+    # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
+    system_exporters_service.start(cfg.experiment_params)
+
+    # Start Prometheus service based on deployment mode
+    monitoring = cfg.experiment_params.monitoring
+
+    if monitoring.deployment_mode == "containerized":
+        # Containerized deployment (DockerPrometheusService or DockerVictoriaMetricsService)
+        assert isinstance(
+            prometheus_service, (DockerPrometheusService, DockerVictoriaMetricsService)
+        ), f"Expected Docker-based service but got {type(prometheus_service).__name__}"
+
+        # Check if resource limits are specified
+        if hasattr(monitoring, "resource_limits"):
+            prometheus_service.start(
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                experiment_mode=experiment_mode,
+                cpu_limit=monitoring.resource_limits.cpu_limit,
+                memory_limit=monitoring.resource_limits.memory_limit,
+            )
+        else:
+            # Containerized without resource limits
+            prometheus_service.start(
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                experiment_mode=experiment_mode,
+            )
+    else:  # bare_metal
+        # Bare-metal deployment (PrometheusService)
+        assert isinstance(
+            prometheus_service, PrometheusService
+        ), f"Expected PrometheusService but got {type(prometheus_service).__name__}"
+        prometheus_service.start(experiment_output_dir)
+
+    # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
+    if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        prometheus_url = (
+            f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
+        )
+
+        print("Waiting for Prometheus to become ready...")
+        prometheus_ready_timeout = 60
+        prometheus_ready_start = time.time()
+        while not prometheus_service.is_healthy():
+            if time.time() - prometheus_ready_start > prometheus_ready_timeout:
+                raise RuntimeError(
+                    f"Prometheus did not become ready within {prometheus_ready_timeout}s"
+                )
+            time.sleep(2)
+        print("Prometheus is ready.")
+
+        label_discovery_wait = prometheus_scrape_interval * 2
+        print(
+            f"Waiting {label_discovery_wait}s for Prometheus to scrape initial data "
+            f"before running controller label inference..."
+        )
+        time.sleep(label_discovery_wait)
+
+        controller_service.start(
+            controller_input_file=controller_input_config,
+            prometheus_scrape_interval=prometheus_scrape_interval,
+            streaming_engine=args.streaming_engine,
+            controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
+            punting=args.controller_punting,
+            prometheus_url=prometheus_url,
+        )
+        sync.rsync_controller_config_remote_to_local(
+            provider,
+            CONTROLLER_REMOTE_OUTPUT_DIR,
+            CONTROLLER_LOCAL_OUTPUT_DIR,
+            node_offset=args.node_offset,
+        )
+        if args.streaming_engine != "precompute":
+            kafka_service.start()
+            kafka_service.wait_until_ready()
+            kafka_service.delete_topics()
+            kafka_service.create_topics()
 
     if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
         if args.use_kafka_ingest:
@@ -439,40 +493,6 @@ def main(cfg: DictConfig):
                 remote_write_port=args.remote_write_base_port,
             )
 
-    # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
-    system_exporters_service.start(cfg.experiment_params)
-
-    # Start Prometheus service based on deployment mode
-    monitoring = cfg.experiment_params.monitoring
-
-    if monitoring.deployment_mode == "containerized":
-        # Containerized deployment (DockerPrometheusService or DockerVictoriaMetricsService)
-        assert isinstance(
-            prometheus_service, (DockerPrometheusService, DockerVictoriaMetricsService)
-        ), f"Expected Docker-based service but got {type(prometheus_service).__name__}"
-
-        # Check if resource limits are specified
-        if hasattr(monitoring, "resource_limits"):
-            prometheus_service.start(
-                experiment_output_dir=experiment_output_dir,
-                local_experiment_dir=local_experiment_dir,
-                experiment_mode=experiment_mode,
-                cpu_limit=monitoring.resource_limits.cpu_limit,
-                memory_limit=monitoring.resource_limits.memory_limit,
-            )
-        else:
-            # Containerized without resource limits
-            prometheus_service.start(
-                experiment_output_dir=experiment_output_dir,
-                local_experiment_dir=local_experiment_dir,
-                experiment_mode=experiment_mode,
-            )
-    else:  # bare_metal
-        # Bare-metal deployment (PrometheusService)
-        assert isinstance(
-            prometheus_service, PrometheusService
-        ), f"Expected PrometheusService but got {type(prometheus_service).__name__}"
-        prometheus_service.start(experiment_output_dir)
     # this DOES NOT block
     if (
         workloads_config is not None

@@ -240,6 +240,13 @@ def main(cfg: DictConfig):
             "controller_client_configs",
             f"{experiment_mode}.yaml",
         )
+        # Stripped to the fields ControllerConfig accepts (deny_unknown_fields).
+        # The full config above is still used by the prometheus_client.
+        controller_input_config = os.path.join(
+            experiment_root_output_dir,
+            "controller_client_configs",
+            f"{experiment_mode}_controller_input.yaml",
+        )
 
         if (
             experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
@@ -332,6 +339,21 @@ def main(cfg: DictConfig):
                 local_experiment_dir=local_experiment_dir,
                 experiment_mode=experiment_mode,
             )
+            # Poll until Prometheus is actually accepting connections before sleeping
+            # for scrape data. Prometheus takes a few seconds to bind the port after
+            # its process starts, so a fixed sleep alone can race.
+            print("Waiting for Prometheus to become ready...")
+            prometheus_ready_timeout = 60
+            prometheus_ready_start = time.time()
+            while not prometheus_service.is_healthy():
+                if time.time() - prometheus_ready_start > prometheus_ready_timeout:
+                    raise RuntimeError(
+                        "Prometheus did not become ready within "
+                        f"{prometheus_ready_timeout}s"
+                    )
+                time.sleep(2)
+            print("Prometheus is ready.")
+
             # Wait for two scrape intervals so Prometheus has series to return.
             label_discovery_wait = prometheus_scrape_interval * 2
             print(
@@ -344,7 +366,7 @@ def main(cfg: DictConfig):
                 f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
             )
             controller_service.start(
-                controller_input_file=controller_client_config,
+                controller_input_file=controller_input_config,
                 prometheus_scrape_interval=prometheus_scrape_interval,
                 streaming_engine=args.streaming_engine,
                 controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
