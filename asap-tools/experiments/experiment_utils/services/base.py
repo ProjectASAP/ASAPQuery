@@ -57,6 +57,18 @@ class BaseService(ABC):
         """
         return True
 
+    def wait_until_ready(self, timeout: int = 60) -> None:
+        """Block until is_healthy() returns True, or raise RuntimeError on timeout."""
+        print(f"Waiting for {self.__class__.__name__} to become ready...")
+        start = time.time()
+        while not self.is_healthy():
+            if time.time() - start > timeout:
+                raise RuntimeError(
+                    f"{self.__class__.__name__} did not become ready within {timeout}s"
+                )
+            time.sleep(2)
+        print(f"{self.__class__.__name__} is ready.")
+
     def restart(self, **kwargs) -> None:
         """
         Restart the service. Default implementation stops then starts.

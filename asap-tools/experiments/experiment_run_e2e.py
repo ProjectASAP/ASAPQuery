@@ -342,17 +342,7 @@ def main(cfg: DictConfig):
             # Poll until Prometheus is actually accepting connections before sleeping
             # for scrape data. Prometheus takes a few seconds to bind the port after
             # its process starts, so a fixed sleep alone can race.
-            print("Waiting for Prometheus to become ready...")
-            prometheus_ready_timeout = 60
-            prometheus_ready_start = time.time()
-            while not prometheus_service.is_healthy():
-                if time.time() - prometheus_ready_start > prometheus_ready_timeout:
-                    raise RuntimeError(
-                        "Prometheus did not become ready within "
-                        f"{prometheus_ready_timeout}s"
-                    )
-                time.sleep(2)
-            print("Prometheus is ready.")
+            prometheus_service.wait_until_ready()
 
             # Wait for two scrape intervals so Prometheus has series to return.
             label_discovery_wait = prometheus_scrape_interval * 2
@@ -484,9 +474,7 @@ def main(cfg: DictConfig):
                         pipeline_id=arroyosketch_pipeline_id,
                         experiment_output_dir=experiment_output_dir,
                     )
-            elif args.streaming_engine == "precompute":
-                pass  # precompute engine handles sketch computation internally; no external pipeline needed
-            else:
+            elif args.streaming_engine not in ("precompute",):
                 raise ValueError(
                     "Invalid streaming engine: {}. Supported engines are 'flink', 'arroyo', and 'precompute'".format(
                         args.streaming_engine

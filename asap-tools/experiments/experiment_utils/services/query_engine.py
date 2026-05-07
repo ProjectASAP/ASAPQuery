@@ -8,6 +8,7 @@ import subprocess
 import yaml
 
 import constants
+import utils
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
@@ -126,8 +127,9 @@ class QueryEngineRustService(BaseQueryEngineService):
                 "forward_unsupported_queries": forward_unsupported_queries,
             }
 
-        # Ingest config depends on the streaming engine
-        if streaming_engine == "arroyo":
+        # Ingest config depends on the streaming engine.
+        # Both flink and arroyo produce to the same Kafka topic.
+        if streaming_engine in ("arroyo", "flink"):
             ingest: dict = {
                 "type": "kafka",
                 "broker": kafka_broker,
@@ -143,7 +145,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         else:
             raise ValueError(
                 f"streaming_engine='{streaming_engine}' is not supported by the Rust query engine. "
-                "Use 'arroyo' or 'precompute'."
+                "Use 'flink', 'arroyo', or 'precompute'."
             )
 
         return {
@@ -179,8 +181,6 @@ class QueryEngineRustService(BaseQueryEngineService):
             local_path: Local path to write the YAML file to
             remote_path: Absolute path on the remote node where the file should land
         """
-        import utils  # top-level module in the experiments/ tree
-
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
         config_yaml = yaml.dump(
             config_dict, default_flow_style=False, allow_unicode=True
