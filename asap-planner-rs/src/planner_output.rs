@@ -4,7 +4,7 @@ use asap_types::enums::QueryLanguage;
 use asap_types::inference_config::InferenceConfig;
 use asap_types::streaming_config::StreamingConfig;
 
-use crate::promql::generator::{
+use crate::generator::{
     GeneratorOutput, PuntedQuery, KEY_AGGREGATIONS, KEY_AGG_SUB_TYPE, KEY_AGG_TYPE, KEY_LABELS,
     KEY_NUM_AGG_TO_RETAIN, KEY_QUERIES, KEY_QUERY, KEY_READ_COUNT_THRESHOLD, KEY_TABLE_NAME,
     KEY_VALUE_COLUMN, KEY_WINDOW_SIZE,
