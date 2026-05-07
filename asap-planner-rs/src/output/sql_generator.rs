@@ -11,8 +11,8 @@ use crate::output::generator::{
     KEY_CLEANUP_POLICY, KEY_METADATA_COLUMNS, KEY_NAME, KEY_QUERIES, KEY_TABLES, KEY_TIME_COLUMN,
     KEY_VALUE_COLUMNS,
 };
-use crate::planner::single_query::IntermediateAggConfig;
-use crate::planner::sql_single_query::SQLSingleQueryProcessor;
+use crate::planner::agg_config::IntermediateAggConfig;
+use crate::planner::sql::SQLSingleQueryProcessor;
 use crate::StreamingEngine;
 
 pub struct SQLRuntimeOptions {
