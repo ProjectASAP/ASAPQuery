@@ -6,13 +6,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::input::SQLControllerConfig;
 use crate::error::ControllerError;
-use crate::output::generator::{
+// Shared YAML helpers and types live in promql::generator until PR #235 extracts them.
+use crate::planner::agg_config::IntermediateAggConfig;
+use crate::planner::sql::SQLSingleQueryProcessor;
+use crate::promql::generator::{
     build_aggregation_entry, build_queries_yaml, GeneratorOutput, KEY_AGGREGATIONS,
     KEY_CLEANUP_POLICY, KEY_METADATA_COLUMNS, KEY_NAME, KEY_QUERIES, KEY_TABLES, KEY_TIME_COLUMN,
     KEY_VALUE_COLUMNS,
 };
-use crate::planner::single_query::IntermediateAggConfig;
-use crate::planner::sql_single_query::SQLSingleQueryProcessor;
 use crate::StreamingEngine;
 
 pub struct SQLRuntimeOptions {

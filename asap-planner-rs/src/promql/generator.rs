@@ -9,7 +9,8 @@ use promql_utilities::data_model::KeyByLabelNames;
 
 use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
-use crate::planner::single_query::{BinaryArm, IntermediateAggConfig, SingleQueryProcessor};
+use crate::planner::agg_config::IntermediateAggConfig;
+use crate::planner::promql::{BinaryArm, SingleQueryProcessor};
 use crate::RuntimeOptions;
 
 // YAML key constants — shared with sql_generator.rs and lib.rs via pub(crate)
