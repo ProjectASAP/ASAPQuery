@@ -1,10 +1,10 @@
 use std::path::Path;
 
+use super::generator;
 use crate::config::input::SQLControllerConfig;
 use crate::error::ControllerError;
-use crate::output;
-use crate::output::sql_generator::SQLRuntimeOptions;
 use crate::planner_output::PlannerOutput;
+use crate::sql::generator::SQLRuntimeOptions;
 
 pub struct SQLController {
     config: SQLControllerConfig,
@@ -30,7 +30,7 @@ impl SQLController {
     }
 
     pub fn generate(&self) -> Result<PlannerOutput, ControllerError> {
-        let output = output::sql_generator::generate_sql_plan(&self.config, &self.options)?;
+        let output = generator::generate_sql_plan(&self.config, &self.options)?;
         Ok(PlannerOutput::from_output(output))
     }
 

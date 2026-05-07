@@ -4,11 +4,12 @@ use tracing::debug;
 use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
 
+use super::generator;
 use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
 use crate::planner_output::PlannerOutput;
 use crate::RuntimeOptions;
-use crate::{output, prometheus_client, query_log};
+use crate::{prometheus_client, query_log};
 
 pub struct Controller {
     config: ControllerConfig,
@@ -145,7 +146,7 @@ impl Controller {
     }
 
     pub fn generate(&self) -> Result<PlannerOutput, ControllerError> {
-        let output = output::generator::generate_plan(&self.config, &self.schema, &self.options)?;
+        let output = generator::generate_plan(&self.config, &self.schema, &self.options)?;
         Ok(PlannerOutput::from_output(output))
     }
 
