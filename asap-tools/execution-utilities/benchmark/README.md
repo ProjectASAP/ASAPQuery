@@ -35,6 +35,12 @@ pip3 install --user -r requirements.txt
 cd ~/ASAPQuery/asap-query-engine && cargo build --release
 ```
 
+> **UTC requirement:** Both ASAP and ClickHouse must run in UTC so that bare
+> datetime strings (`'YYYY-MM-DD HH:MM:SS'`) are interpreted identically by both
+> systems. Set `TZ=UTC` in the environment for ASAP processes and ensure
+> ClickHouse's `timezone` config is set to `UTC`. If the two systems run in
+> different timezones, queries will target different time windows on each side.
+
 ---
 
 ## ClickBench + ClickHouse End-to-End Example
@@ -115,8 +121,7 @@ python generate_queries.py \
 ```
 
 This writes:
-- `queries/clickbench_asap.sql` — ASAP queries (ISO timestamps)
-- `queries/clickbench_clickhouse.sql` — ClickHouse queries (datetime timestamps)
+- `queries/clickbench.sql` — shared query file for both ASAP and ClickHouse
 - `queries/clickbench_streaming.yaml` — Arroyo streaming config
 - `queries/clickbench_inference.yaml` — QueryEngineRust inference config
 
@@ -166,8 +171,8 @@ Verify: `$INSTALL_DIR/clickhouse client --query "SELECT count(*) FROM hits"`
 ```bash
 python run_benchmark.py \
     --mode both \
-    --asap-sql-file ./queries/clickbench_asap.sql \
-    --baseline-sql-file ./queries/clickbench_clickhouse.sql \
+    --asap-sql-file ./queries/clickbench.sql \
+    --baseline-sql-file ./queries/clickbench.sql \
     --asap-url "http://localhost:8088/api/v1/query" \
     --output-dir ./results \
     --output-prefix clickbench
@@ -258,8 +263,8 @@ python export_to_database.py \
 ```bash
 python run_benchmark.py \
     --mode both \
-    --asap-sql-file ./queries/h2o_asap.sql \
-    --baseline-sql-file ./queries/h2o_clickhouse.sql \
+    --asap-sql-file ./queries/h2o.sql \
+    --baseline-sql-file ./queries/h2o.sql \
     --asap-url "http://localhost:8088/api/v1/query" \
     --output-dir ./results \
     --output-prefix h2o
@@ -290,7 +295,7 @@ python export_to_arroyo.py \
 cd ~/ASAPQuery/asap-query-engine
 
 ./target/release/query_engine_rust \
-    --kafka-topic sketch_topic 
+    --kafka-topic sketch_topic
     --input-format json \
     --config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/h2o_inference.yaml \
     --streaming-config ~/ASAPQuery/asap-tools/execution-utilities/benchmark/configs/h2o_streaming.yaml \
@@ -303,12 +308,12 @@ cd ~/ASAPQuery/asap-query-engine
 ### Step 8 — Load data into Elasticsearch (baseline)
 
 ```bash
-python export_to_database.py 
-    --dataset h2o 
-    --file-path ./data/G1_1e7_1e2_0_0.csv 
-    --es-host localhost 
-    --es-port 9200 
-    --es-index h2o_groupby 
+python export_to_database.py
+    --dataset h2o
+    --file-path ./data/G1_1e7_1e2_0_0.csv
+    --es-host localhost
+    --es-port 9200
+    --es-index h2o_groupby
     --es-api-key your-api-key
     --es-bulk-size 5000
 ```
@@ -316,12 +321,12 @@ python export_to_database.py
 ### Step 9 — Run benchmark
 
 ```bash
-python run_benchmark.py 
-    --mode asap 
-    --asap-sql-file ./queries/h2o_asap.sql 
-    --baseline-sql-file ./queries/h2o_elasticsearch.sql 
-    --elastic-host localhost 
-    --elastic-port 9200 
+python run_benchmark.py
+    --mode asap
+    --asap-sql-file ./queries/h2o.sql
+    --baseline-sql-file ./queries/h2o.sql
+    --elastic-host localhost
+    --elastic-port 9200
     --elastic-api-key your-api-key
     --output-dir ./results --output-prefix h2o
 ```
@@ -370,8 +375,8 @@ python export_to_database.py \
 # 6. Run benchmark
 python run_benchmark.py \
     --mode both \
-    --asap-sql-file ./queries/my_dataset_asap.sql \
-    --baseline-sql-file ./queries/my_dataset_clickhouse.sql \
+    --asap-sql-file ./queries/my_dataset.sql \
+    --baseline-sql-file ./queries/my_dataset.sql \
     --asap-url "http://localhost:8088/api/v1/query" \
     --output-dir ./results
 ```
@@ -407,6 +412,6 @@ $INSTALL_DIR/clickhouse client --query "TRUNCATE TABLE hits"
 | `prepare_data.py` | Convert raw data to Arroyo file source format (RFC3339, string columns) |
 | `export_to_arroyo.py` | Launch Arroyo sketch pipeline (file or kafka source) |
 | `export_to_database.py` | Load data into ClickHouse for baseline |
-| `generate_queries.py` | Generate paired ASAP + ClickHouse SQL query files and streaming/inference YAML configs |
+| `generate_queries.py` | Generate a shared SQL query file (ClickHouse-compatible syntax, used for both ASAP and ClickHouse) and optional streaming/inference YAML configs |
 | `run_benchmark.py` | Run queries and produce CSV results + plots |
 | `configs/` | ClickHouse init SQL (CREATE TABLE statements) |

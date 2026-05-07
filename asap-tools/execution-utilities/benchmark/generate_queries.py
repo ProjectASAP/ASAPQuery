@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """
-Generate paired ASAP and ClickHouse SQL query files for benchmarking,
+Generate ASAP/ClickHouse SQL query files for benchmarking,
 and optionally generate streaming/inference YAML configs.
+
+Both ASAP and ClickHouse receive identical queries using native ClickHouse syntax:
+  - quantile(q)(col)  parametric aggregate
+  - 'YYYY-MM-DD HH:MM:SS'  datetime timestamps (no Z suffix)
+
+This works because after PR #166 ASAP's parser accepts ClickHouse parametric syntax,
+and both systems interpret bare datetime strings as local server time — which is
+unambiguous only when both run in UTC. See README for the UTC requirement.
 
 Each query targets a fixed time window (window-end timestamp) and matches the
 annotation format `-- T{NNN}: description` expected by run_benchmark.py.
 
 Output (always):
-  {prefix}_asap.sql            QUANTILE(q, col) syntax for QueryEngineRust
-  {prefix}_clickhouse.sql      quantile(q)(col) syntax for ClickHouse baseline
+  {prefix}.sql                  shared query file for both ASAP and ClickHouse
 
 Output (with --generate-configs):
   {prefix}_streaming.yaml      Arroyo streaming config
@@ -42,7 +49,7 @@ Usage:
         --data-file-format json.gz \\
         --output-prefix ./queries/clickbench
 
-    # Override timestamp format for both outputs
+    # Use a pre-built timestamps file
     python generate_queries.py \\
         --table-name h2o_groupby \\
         --ts-column timestamp \\
@@ -50,7 +57,6 @@ Usage:
         --group-by-columns id1,id2 \\
         --window-size 10 \\
         --num-queries 50 \\
-        --ts-format iso \\
         --timestamps-file ./my_timestamps.txt \\
         --output-prefix ./queries/h2o
 """
@@ -210,15 +216,7 @@ def generate_window_ends(
     return ends
 
 
-def format_ts(ts: datetime, ts_format: str) -> str:
-    """Format a timestamp for SQL injection."""
-    if ts_format == "iso":
-        return ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-    else:  # datetime
-        return ts.strftime("%Y-%m-%d %H:%M:%S")
-
-
-def generate_sql_files(
+def generate_sql_file(
     table_name: str,
     ts_column: str,
     value_column: str,
@@ -226,60 +224,42 @@ def generate_sql_files(
     quantile: float,
     window_size: int,
     window_ends: List[datetime],
-    ts_format_asap: str,
-    ts_format_db: str,
     window_form: str,
     output_prefix: str,
 ):
-    """Write the paired ASAP and ClickHouse SQL files."""
+    """Write a single SQL file using ClickHouse-compatible syntax.
+
+    Uses quantile(q)(col) and 'YYYY-MM-DD HH:MM:SS' datetime strings.
+    Both ASAP and ClickHouse accept this format when running in UTC.
+    """
     group_by_clause = ", ".join(group_by_columns)
-    asap_lines = []
-    ch_lines = []
+    lines = []
 
     for i, end_ts in enumerate(window_ends):
-        asap_end = format_ts(end_ts, ts_format_asap)
-        asap_start = format_ts(end_ts - timedelta(seconds=window_size), ts_format_asap)
-        db_end = format_ts(end_ts, ts_format_db)
-        db_start = format_ts(end_ts - timedelta(seconds=window_size), ts_format_db)
+        end_str = end_ts.strftime("%Y-%m-%d %H:%M:%S")
+        start_str = (end_ts - timedelta(seconds=window_size)).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
         label = f"T{i:03d}"
-        desc_asap = f"quantile window ending at {asap_end}"
-        desc_db = f"quantile window ending at {db_end}"
 
         if window_form == "dateadd":
-            asap_where = f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{asap_end}') AND '{asap_end}'"
-            db_where = f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{db_end}') AND '{db_end}'"
+            where = f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{end_str}') AND '{end_str}'"
         else:
-            asap_where = f"{ts_column} BETWEEN '{asap_start}' AND '{asap_end}'"
-            db_where = f"{ts_column} BETWEEN '{db_start}' AND '{db_end}'"
+            where = f"{ts_column} BETWEEN '{start_str}' AND '{end_str}'"
 
-        asap_sql = (
-            f"-- {label}: {desc_asap}\n"
-            f"SELECT QUANTILE({quantile}, {value_column}) FROM {table_name} "
-            f"WHERE {asap_where} GROUP BY {group_by_clause};"
-        )
-        ch_sql = (
-            f"-- {label}: {desc_db}\n"
+        lines.append(
+            f"-- {label}: quantile window ending at {end_str}\n"
             f"SELECT quantile({quantile})({value_column}) FROM {table_name} "
-            f"WHERE {db_where} GROUP BY {group_by_clause};"
+            f"WHERE {where} GROUP BY {group_by_clause};"
         )
 
-        asap_lines.append(asap_sql)
-        ch_lines.append(ch_sql)
+    sql_file = f"{output_prefix}.sql"
+    Path(sql_file).parent.mkdir(parents=True, exist_ok=True)
 
-    asap_file = f"{output_prefix}_asap.sql"
-    ch_file = f"{output_prefix}_clickhouse.sql"
+    with open(sql_file, "w") as f:
+        f.write("\n".join(lines) + "\n")
 
-    Path(asap_file).parent.mkdir(parents=True, exist_ok=True)
-
-    with open(asap_file, "w") as f:
-        f.write("\n".join(asap_lines) + "\n")
-
-    with open(ch_file, "w") as f:
-        f.write("\n".join(ch_lines) + "\n")
-
-    print(f"Generated {len(window_ends)} queries:")
-    print(f"  ASAP:       {asap_file}")
-    print(f"  ClickHouse: {ch_file}")
+    print(f"Generated {len(window_ends)} queries → {sql_file}")
 
 
 def generate_config_files(
@@ -337,7 +317,7 @@ queries:
     - aggregation_id: {aggregation_id}
       read_count_threshold: 999999
     query: |-
-      SELECT QUANTILE({quantile}, {value_column}) FROM {table_name}
+      SELECT quantile({quantile})({value_column}) FROM {table_name}
       WHERE {ts_column} BETWEEN DATEADD(s, -{window_size}, NOW()) AND NOW()
       GROUP BY {group_by_clause};
 """
@@ -353,14 +333,14 @@ queries:
     with open(inference_file, "w") as f:
         f.write(inference_content)
 
-    print(f"Generated configs:")
+    print("Generated configs:")
     print(f"  Streaming: {streaming_file}")
     print(f"  Inference: {inference_file}")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate paired ASAP + ClickHouse SQL query files",
+        description="Generate ASAP + ClickHouse SQL query files (shared syntax)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -382,24 +362,6 @@ def main():
     )
     parser.add_argument("--num-queries", type=int, default=50)
     parser.add_argument(
-        "--ts-format-asap",
-        choices=["iso", "datetime"],
-        default="iso",
-        help="Timestamp format for ASAP SQL: iso='YYYY-MM-DDTHH:MM:SSZ', datetime='YYYY-MM-DD HH:MM:SS' (default: iso)",
-    )
-    parser.add_argument(
-        "--ts-format-db",
-        choices=["iso", "datetime"],
-        default="datetime",
-        help="Timestamp format for ClickHouse SQL: iso='YYYY-MM-DDTHH:MM:SSZ', datetime='YYYY-MM-DD HH:MM:SS' (default: datetime)",
-    )
-    parser.add_argument(
-        "--ts-format",
-        choices=["iso", "datetime"],
-        default=None,
-        help="Set both --ts-format-asap and --ts-format-db to the same value (overrides individual flags)",
-    )
-    parser.add_argument(
         "--window-form",
         choices=["explicit", "dateadd"],
         default="explicit",
@@ -408,7 +370,7 @@ def main():
     parser.add_argument(
         "--output-prefix",
         required=True,
-        help="Output file prefix (e.g. ./queries/clickbench → clickbench_asap.sql + clickbench_clickhouse.sql)",
+        help="Output file prefix (e.g. ./queries/clickbench → clickbench.sql)",
     )
     # Timestamp sources (mutually exclusive)
     ts_group = parser.add_mutually_exclusive_group(required=True)
@@ -502,10 +464,7 @@ def main():
             f"(stride={stride}s, window={args.window_size}s)"
         )
 
-    ts_format_asap = args.ts_format if args.ts_format else args.ts_format_asap
-    ts_format_db = args.ts_format if args.ts_format else args.ts_format_db
-
-    generate_sql_files(
+    generate_sql_file(
         table_name=args.table_name,
         ts_column=args.ts_column,
         value_column=args.value_column,
@@ -513,8 +472,6 @@ def main():
         quantile=args.quantile,
         window_size=args.window_size,
         window_ends=window_ends,
-        ts_format_asap=ts_format_asap,
-        ts_format_db=ts_format_db,
         window_form=args.window_form,
         output_prefix=args.output_prefix,
     )
