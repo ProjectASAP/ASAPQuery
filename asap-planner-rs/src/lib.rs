@@ -1,5 +1,6 @@
 pub mod config;
 pub mod error;
+pub mod generator;
 pub mod planner;
 pub mod planner_output;
 pub mod prometheus_client;
@@ -11,9 +12,9 @@ pub use asap_types::PromQLSchema;
 pub use config::input::ControllerConfig;
 pub use config::input::SQLControllerConfig;
 pub use error::ControllerError;
+pub use generator::{GeneratorOutput, PuntedQuery};
 pub use planner_output::PlannerOutput;
 pub use prometheus_client::build_schema_from_prometheus;
-pub use promql::generator::{GeneratorOutput, PuntedQuery};
 pub use promql::Controller;
 pub use sql::SQLController;
 pub use sql::SQLRuntimeOptions;
