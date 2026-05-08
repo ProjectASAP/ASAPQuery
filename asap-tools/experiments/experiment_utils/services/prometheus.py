@@ -140,9 +140,23 @@ class PrometheusService(BaseService):
 
     def is_healthy(self) -> bool:
         """
-        Check if Prometheus service is healthy.
+        Check if Prometheus is ready to serve queries.
 
         Returns:
-            True if service is running
+            True if Prometheus /-/ready returns HTTP 200
         """
-        return True
+        try:
+            port = self.get_query_endpoint_port()
+            cmd = f"curl -sf http://localhost:{port}/-/ready"
+            result = self.provider.execute_command(
+                node_idx=self.node_offset,
+                cmd=cmd,
+                cmd_dir=None,
+                nohup=False,
+                popen=False,
+                ignore_errors=True,
+            )
+            assert isinstance(result, subprocess.CompletedProcess)
+            return result.returncode == 0
+        except Exception:
+            return False

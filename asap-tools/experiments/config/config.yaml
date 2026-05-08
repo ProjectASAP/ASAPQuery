@@ -47,7 +47,7 @@ flow:
 
 # Streaming engine configuration
 streaming:
-  engine: "arroyo"  # choices: ["flink", "arroyo"]
+  engine: "precompute"  # choices: ["flink", "arroyo", "precompute"]
   parallelism: 1  # Default parallelism for streaming pipelines
   flink_input_format: "json"  # choices: ["json", "avro-json", "avro-binary"]
   flink_output_format: "json"  # choices: ["json", "byte"]
@@ -59,7 +59,7 @@ streaming:
   remote_write:
     ip: "${remote_write_ip:${cloudlab.node_offset}}"
     base_port: 8080
-    path: "/receive"
+    path: "/api/v1/write"
     enable_optimized_source: true # Use optimized Prometheus remote_write source (10-20x faster)
 
 # Prometheus configuration
@@ -78,10 +78,7 @@ fake_exporter_language: "rust"  # choices: ["python", "rust"]
 # Cluster data exporter configuration
 cluster_data_directory: "/data/cluster_traces"  # Path to directory containing Google/Alibaba cluster trace data
 
-# Query engine language
-query_engine_language: "rust"  # choices: ["python", "rust"]
-
-# Query language (SQL vs PROMQL) - only used by Rust query engine
+# Query language (SQL vs PROMQL)
 query_language: "PROMQL"  # choices: ["SQL", "PROMQL"]
 
 # Query engine options
@@ -120,7 +117,7 @@ prometheus_client:
 
 # Container deployment settings
 use_container:
-  query_engine: true       # QueryEngineService - containerized query engine
+  query_engine: true       # QueryEngineRustService - containerized query engine
   arroyo: true            # ArroyoService - containerized Arroyo streaming engine
   controller: true        # ControllerService - containerized controller
   fake_exporter: true     # ExporterServiceFactory - containerized fake exporters

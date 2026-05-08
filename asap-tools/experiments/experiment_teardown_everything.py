@@ -18,7 +18,7 @@ from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
     FlinkService,
-    QueryEngineServiceFactory,
+    QueryEngineRustService,
     ExporterServiceFactory,
     PrometheusKafkaAdapterService,
     ArroyoService,
@@ -72,22 +72,11 @@ def main(cfg: DictConfig):
     kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
     flink_service = FlinkService(provider, args.node_offset)
 
-    # Initialize both query engine languages
-    query_engine_service_rust = QueryEngineServiceFactory.create_query_engine_service(
-        "rust", provider, use_container=True, node_offset=args.node_offset
+    query_engine_service_container = QueryEngineRustService(
+        provider, use_container=True, node_offset=args.node_offset
     )
-    query_engine_service_python = QueryEngineServiceFactory.create_query_engine_service(
-        "python", provider, use_container=True, node_offset=args.node_offset
-    )
-    query_engine_service_rust_native = (
-        QueryEngineServiceFactory.create_query_engine_service(
-            "rust", provider, use_container=False, node_offset=args.node_offset
-        )
-    )
-    query_engine_service_python_native = (
-        QueryEngineServiceFactory.create_query_engine_service(
-            "python", provider, use_container=False, node_offset=args.node_offset
-        )
+    query_engine_service_native = QueryEngineRustService(
+        provider, use_container=False, node_offset=args.node_offset
     )
 
     system_exporters_service = SystemExportersService(
@@ -176,10 +165,8 @@ def main(cfg: DictConfig):
         ("Prometheus Client (container)", prometheus_client_service_container),
         ("Prometheus Client (native)", prometheus_client_service_native),
         ("Remote Monitor", remote_monitor_service),
-        ("Query Engine Rust (container)", query_engine_service_rust),
-        ("Query Engine Python (container)", query_engine_service_python),
-        ("Query Engine Rust (native)", query_engine_service_rust_native),
-        ("Query Engine Python (native)", query_engine_service_python_native),
+        ("Query Engine (container)", query_engine_service_container),
+        ("Query Engine (native)", query_engine_service_native),
         ("Kafka", kafka_service),
         ("Prometheus-Kafka Adapter", prometheus_kafka_adapter_service),
         ("System Exporters", system_exporters_service),

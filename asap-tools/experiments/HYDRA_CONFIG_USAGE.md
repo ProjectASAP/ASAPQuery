@@ -52,7 +52,7 @@ flow.no_teardown: true/false
 flow.steady_state_wait: 300  # seconds
 
 # Streaming engine
-streaming.engine: flink|arroyo
+streaming.engine: flink|arroyo|precompute
 streaming.flink_input_format: json|avro-json|avro-binary
 streaming.flink_output_format: json|byte
 streaming.enable_object_reuse: true/false

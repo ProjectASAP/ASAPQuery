@@ -12,7 +12,7 @@ from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
     FlinkService,
-    QueryEngineServiceFactory,
+    QueryEngineRustService,
     ExporterServiceFactory,
     PrometheusKafkaAdapterService,
     ArroyoService,
@@ -135,9 +135,7 @@ def main(cfg: DictConfig):
     # Initialize services
     kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
     flink_service = FlinkService(provider, args.node_offset)
-    # Initialize query engine service based on language
-    query_engine_service = QueryEngineServiceFactory.create_query_engine_service(
-        args.query_engine_language,
+    query_engine_service = QueryEngineRustService(
         provider,
         use_container=args.use_container_query_engine,
         node_offset=args.node_offset,
@@ -242,6 +240,13 @@ def main(cfg: DictConfig):
             "controller_client_configs",
             f"{experiment_mode}.yaml",
         )
+        # Stripped to the fields ControllerConfig accepts (deny_unknown_fields).
+        # The full config above is still used by the prometheus_client.
+        controller_input_config = os.path.join(
+            experiment_root_output_dir,
+            "controller_client_configs",
+            f"{experiment_mode}_controller_input.yaml",
+        )
 
         if (
             experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
@@ -334,6 +339,11 @@ def main(cfg: DictConfig):
                 local_experiment_dir=local_experiment_dir,
                 experiment_mode=experiment_mode,
             )
+            # Poll until Prometheus is actually accepting connections before sleeping
+            # for scrape data. Prometheus takes a few seconds to bind the port after
+            # its process starts, so a fixed sleep alone can race.
+            prometheus_service.wait_until_ready()
+
             # Wait for two scrape intervals so Prometheus has series to return.
             label_discovery_wait = prometheus_scrape_interval * 2
             print(
@@ -346,7 +356,7 @@ def main(cfg: DictConfig):
                 f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
             )
             controller_service.start(
-                controller_input_file=controller_client_config,
+                controller_input_file=controller_input_config,
                 prometheus_scrape_interval=prometheus_scrape_interval,
                 streaming_engine=args.streaming_engine,
                 controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
@@ -359,10 +369,11 @@ def main(cfg: DictConfig):
                 CONTROLLER_LOCAL_OUTPUT_DIR,
                 node_offset=args.node_offset,
             )
-            kafka_service.start()
-            kafka_service.wait_until_ready()
-            kafka_service.delete_topics()
-            kafka_service.create_topics()
+            if args.streaming_engine != "precompute":
+                kafka_service.start()
+                kafka_service.wait_until_ready()
+                kafka_service.delete_topics()
+                kafka_service.create_topics()
 
         if (
             config.check_exporter_and_queries_exist(
@@ -463,9 +474,9 @@ def main(cfg: DictConfig):
                         pipeline_id=arroyosketch_pipeline_id,
                         experiment_output_dir=experiment_output_dir,
                     )
-            else:
+            elif args.streaming_engine not in ("precompute",):
                 raise ValueError(
-                    "Invalid streaming engine: {}. Supported engines are 'flink' and 'arroyo'".format(
+                    "Invalid streaming engine: {}. Supported engines are 'flink', 'arroyo', and 'precompute'".format(
                         args.streaming_engine
                     )
                 )
@@ -479,6 +490,7 @@ def main(cfg: DictConfig):
 
                 query_engine_service.start(
                     experiment_output_dir=experiment_output_dir,
+                    local_experiment_dir=local_experiment_dir,
                     flink_output_format=args.flink_output_format,
                     prometheus_scrape_interval=prometheus_scrape_interval,
                     log_level=args.log_level,
@@ -493,6 +505,7 @@ def main(cfg: DictConfig):
                     query_language=args.query_language,
                     prometheus_port=prometheus_port,
                     http_port=http_port,
+                    remote_write_port=args.remote_write_base_port,
                 )
 
         # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
@@ -660,8 +673,9 @@ def main(cfg: DictConfig):
                     arroyo_service.stop()
                 if args.use_kafka_ingest:
                     prometheus_kafka_adapter_service.stop()
-                kafka_service.delete_topics()
-                kafka_service.stop()
+                if args.streaming_engine != "precompute":
+                    kafka_service.delete_topics()
+                    kafka_service.stop()
 
             system_exporters_service.stop()
             prometheus_service.stop()
