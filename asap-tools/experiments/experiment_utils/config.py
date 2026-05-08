@@ -437,8 +437,7 @@ class Args:
         # Fake exporter language
         self.fake_exporter_language = cfg.fake_exporter_language
 
-        # Query language (SQL vs PROMQL) - only used by Rust query engine
-        self.query_language = cfg.query_language
+        self.backend = OmegaConf.to_container(cfg.backend, resolve=True)
 
         # Query engine options
         self.dump_precomputes = cfg.query_engine.dump_precomputes

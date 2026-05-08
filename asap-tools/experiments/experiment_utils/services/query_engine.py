@@ -75,14 +75,12 @@ class QueryEngineRustService(BaseQueryEngineService):
         prometheus_scrape_interval: int,
         log_level: str,
         streaming_engine: str,
-        forward_unsupported_queries: bool,
         controller_config_dir: str,
         compress_json: bool,
-        prometheus_server: str,
+        backend: dict,
         http_port: int,
         remote_write_port: int,
         dump_precomputes: bool,
-        query_language: str,
         lock_strategy: str,
         profile_query_engine: bool,
         kafka_broker: str,
@@ -96,15 +94,17 @@ class QueryEngineRustService(BaseQueryEngineService):
             prometheus_scrape_interval: Prometheus scraping interval in seconds
             log_level: Logging level
             streaming_engine: 'arroyo' (Kafka ingest) or 'precompute' (HTTP remote write)
-            forward_unsupported_queries: Whether to forward unsupported queries to backend
             controller_config_dir: Directory containing inference_config.yaml and streaming_config.yaml
             compress_json: Whether incoming JSON is gzip-compressed (arroyo/Kafka only)
-            prometheus_server: Full Prometheus URL, e.g. http://host:9090
+            backend: BackendConfig dict with type tag and backend-specific fields.
+                     For prometheus: {"type": "prometheus", "server": "http://...", ...}
+                     For clickhouse: {"type": "clickhouse", "url": "...", "database": "...", ...}
+                     For elastic_querydsl/elastic_sql: {"type": "...", "url": "...", "index": "...", ...}
+                     Must include "forward_unsupported_queries" key.
             http_port: Port for the query engine's HTTP API server
             remote_write_port: Port to listen on for Prometheus remote write (precompute only);
                                should match streaming.remote_write.base_port in the Hydra config
             dump_precomputes: Whether to dump received precomputes to output_dir for debugging
-            query_language: 'PROMQL' → prometheus backend, 'SQL' → clickhouse backend
             lock_strategy: Lock strategy for SimpleMapStore ('global' or 'per-key')
             profile_query_engine: Whether to enable do_profiling in the engine
             kafka_broker: Kafka broker address, e.g. '10.10.1.1:9092' (arroyo only)
@@ -112,21 +112,6 @@ class QueryEngineRustService(BaseQueryEngineService):
         Returns:
             Dict matching the EngineConfig YAML schema
         """
-        # Map query_language to the backend type (determines PromQL vs SQL API)
-        if query_language.upper() == "PROMQL":
-            backend: dict = {
-                "type": "prometheus",
-                "server": prometheus_server,
-                "forward_unsupported_queries": forward_unsupported_queries,
-            }
-        else:
-            # SQL mode: use clickhouse backend with the same host as prometheus_server
-            backend = {
-                "type": "clickhouse",
-                "url": prometheus_server,
-                "forward_unsupported_queries": forward_unsupported_queries,
-            }
-
         # Ingest config depends on the streaming engine.
         # Both flink and arroyo produce to the same Kafka topic.
         if streaming_engine in ("arroyo", "flink"):
@@ -155,7 +140,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             "streaming_engine": streaming_engine,
             "do_profiling": profile_query_engine,
             "http_server": {"port": http_port},
-            "backend": backend,
+            "backend": backend,  # already fully resolved by caller
             "store": {"lock_strategy": lock_strategy},
             "ingest": ingest,
             "precompute_engine": {"dump_precomputes": dump_precomputes},
@@ -217,13 +202,13 @@ class QueryEngineRustService(BaseQueryEngineService):
         profile_query_engine: bool,
         manual: bool,
         streaming_engine: str,
-        forward_unsupported_queries: bool,
         controller_remote_output_dir: str,
         compress_json: bool,
         dump_precomputes: bool,
         lock_strategy: str,
-        query_language: str = "PROMQL",
-        **kwargs,
+        backend_config: dict,
+        http_port: int,
+        remote_write_port: int = 8080,
     ) -> None:
         """
         Start the Rust query engine.
@@ -239,29 +224,18 @@ class QueryEngineRustService(BaseQueryEngineService):
             profile_query_engine: Whether to enable profiling
             manual: Whether to run in manual mode
             streaming_engine: Type of streaming engine ('arroyo' or 'precompute')
-            forward_unsupported_queries: Whether to forward unsupported queries
             controller_remote_output_dir: Controller output directory
             compress_json: Whether JSON is compressed (arroyo/Kafka only)
             dump_precomputes: Whether to dump precomputed values
             lock_strategy: Lock strategy for SimpleMapStore (global or per-key)
-            query_language: Query language (SQL or PROMQL), defaults to PROMQL
-            **kwargs: Additional configuration.
-                      Required: prometheus_port, http_port.
-                      Optional: prometheus_host (defaults to coordinator node IP),
-                                remote_write_port (port the precompute engine listens on
-                                for Prometheus remote write; should match
-                                streaming.remote_write.base_port, defaults to 8080).
+            backend_config: Fully resolved BackendConfig dict with type tag and all
+                            backend-specific fields (url/server/database/index as needed)
+                            plus forward_unsupported_queries. Matches the BackendConfig
+                            tagged union in asap-query-engine/src/engine_config.rs.
+            http_port: Port for the query engine's HTTP API server
+            remote_write_port: Port the precompute engine listens on for Prometheus remote
+                               write; should match streaming.remote_write.base_port (default 8080)
         """
-        # Extract prometheus configuration
-        prometheus_host = kwargs.get(
-            "prometheus_host", self.provider.get_node_ip(self.node_offset)
-        )
-        prometheus_port = kwargs["prometheus_port"]  # Required, no default
-        http_port = kwargs["http_port"]  # Required, no default
-        # Port the precompute engine listens on for Prometheus remote write.
-        # Should match streaming.remote_write.base_port in the Hydra config.
-        remote_write_port = kwargs.get("remote_write_port", 8080)
-
         if self.use_container:
             self._start_containerized(
                 experiment_output_dir,
@@ -272,15 +246,12 @@ class QueryEngineRustService(BaseQueryEngineService):
                 profile_query_engine,
                 manual,
                 streaming_engine,
-                forward_unsupported_queries,
                 controller_remote_output_dir,
                 compress_json,
-                prometheus_host,
-                prometheus_port,
+                backend_config,
                 http_port,
                 remote_write_port,
                 dump_precomputes,
-                query_language,
                 lock_strategy,
             )
         else:
@@ -293,15 +264,12 @@ class QueryEngineRustService(BaseQueryEngineService):
                 profile_query_engine,
                 manual,
                 streaming_engine,
-                forward_unsupported_queries,
                 controller_remote_output_dir,
                 compress_json,
-                prometheus_host,
-                prometheus_port,
+                backend_config,
                 http_port,
                 remote_write_port,
                 dump_precomputes,
-                query_language,
                 lock_strategy,
             )
 
@@ -315,15 +283,12 @@ class QueryEngineRustService(BaseQueryEngineService):
         profile_query_engine: bool,
         manual: bool,
         streaming_engine: str,
-        forward_unsupported_queries: bool,
         controller_remote_output_dir: str,
         compress_json: bool,
-        prometheus_host: str,
-        prometheus_port: int,
+        backend_config: dict,
         http_port: int,
         remote_write_port: int,
         dump_precomputes: bool,
-        query_language: str,
         lock_strategy: str,
     ) -> None:
         """Start Rust QueryEngine using bare metal deployment."""
@@ -336,14 +301,12 @@ class QueryEngineRustService(BaseQueryEngineService):
             prometheus_scrape_interval=prometheus_scrape_interval,
             log_level=log_level,
             streaming_engine=streaming_engine,
-            forward_unsupported_queries=forward_unsupported_queries,
             controller_config_dir=controller_remote_output_dir,
             compress_json=compress_json,
-            prometheus_server=f"http://{prometheus_host}:{prometheus_port}",
+            backend=backend_config,
             http_port=http_port,
             remote_write_port=remote_write_port,
             dump_precomputes=dump_precomputes,
-            query_language=query_language,
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
             kafka_broker=f"{self.provider.get_node_ip(self.node_offset)}:9092",
@@ -382,15 +345,12 @@ class QueryEngineRustService(BaseQueryEngineService):
         profile_query_engine: bool,
         manual: bool,
         streaming_engine: str,
-        forward_unsupported_queries: bool,
         controller_remote_output_dir: str,
         compress_json: bool,
-        prometheus_host: str,
-        prometheus_port: int,
+        backend_config: dict,
         http_port: int,
         remote_write_port: int,
         dump_precomputes: bool,
-        query_language: str,
         lock_strategy: str,
     ) -> None:
         """Start Rust QueryEngine using containerized deployment with Jinja template."""
@@ -409,14 +369,12 @@ class QueryEngineRustService(BaseQueryEngineService):
             prometheus_scrape_interval=prometheus_scrape_interval,
             log_level=log_level,
             streaming_engine=streaming_engine,
-            forward_unsupported_queries=forward_unsupported_queries,
             controller_config_dir=container_controller_dir,
             compress_json=compress_json,
-            prometheus_server=f"http://{prometheus_host}:{prometheus_port}",
+            backend=backend_config,
             http_port=http_port,
             remote_write_port=remote_write_port,
             dump_precomputes=dump_precomputes,
-            query_language=query_language,
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
             kafka_broker=f"{self.provider.get_node_ip(self.node_offset)}:9092",
