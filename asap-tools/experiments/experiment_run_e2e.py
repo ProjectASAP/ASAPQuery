@@ -488,6 +488,19 @@ def main(cfg: DictConfig):
                 # Get http port from query engine service
                 http_port = query_engine_service.get_http_port()
 
+                # Build a fully resolved BackendConfig dict.  For the prometheus
+                # backend the server URL depends on the runtime node IP, so we
+                # fill it in here rather than in config.yaml.
+                backend_config = dict(args.backend)
+                if backend_config["type"] == "prometheus":
+                    prometheus_host = provider.get_node_ip(args.node_offset)
+                    backend_config["server"] = (
+                        f"http://{prometheus_host}:{prometheus_port}"
+                    )
+                backend_config["forward_unsupported_queries"] = (
+                    args.forward_unsupported_queries
+                )
+
                 query_engine_service.start(
                     experiment_output_dir=experiment_output_dir,
                     local_experiment_dir=local_experiment_dir,
@@ -497,13 +510,11 @@ def main(cfg: DictConfig):
                     profile_query_engine=args.profile_query_engine,
                     manual=args.manual_query_engine,
                     streaming_engine=args.streaming_engine,
-                    forward_unsupported_queries=args.forward_unsupported_queries,
                     controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
                     compress_json=COMPRESS_JSON,
                     dump_precomputes=args.dump_precomputes,
                     lock_strategy=args.lock_strategy,
-                    query_language=args.query_language,
-                    prometheus_port=prometheus_port,
+                    backend_config=backend_config,
                     http_port=http_port,
                     remote_write_port=args.remote_write_base_port,
                 )

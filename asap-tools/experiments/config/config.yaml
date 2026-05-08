@@ -78,8 +78,12 @@ fake_exporter_language: "rust"  # choices: ["python", "rust"]
 # Cluster data exporter configuration
 cluster_data_directory: "/data/cluster_traces"  # Path to directory containing Google/Alibaba cluster trace data
 
-# Query language (SQL vs PROMQL)
-query_language: "PROMQL"  # choices: ["SQL", "PROMQL"]
+# Backend configuration for the query engine (aligned with BackendConfig in asap-query-engine/src/engine_config.rs)
+backend:
+  type: "prometheus"  # choices: ["prometheus", "clickhouse", "elastic_querydsl", "elastic_sql"]
+  # prometheus: server URL is built at runtime from the Prometheus service (no extra fields needed here)
+  # clickhouse: url (e.g. "http://ch-host:8123"), database (e.g. "default")
+  # elastic_querydsl / elastic_sql: url (e.g. "http://es-host:9200"), index (e.g. "metrics-*")
 
 # Query engine options
 query_engine:
