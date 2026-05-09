@@ -6,6 +6,7 @@ pub type FieldName = String;
 pub struct ElasticDSLQueryInfo {
     // A distilled representation of an ElasticSearch DSL query, capturing the essential logic and structure.
     pub target_field: FieldName,    // List of metrics being queried
+    pub time_field: FieldName,      // Time field used by the query's range filter
     pub predicates: Vec<Predicate>, // Predicates applied to the query (e.g. filters in bool.filter)
     pub group_by_buckets: Option<GroupBySpec>, // Grouping specification if the query includes a group by clause
     pub aggregation: AggregationType, // The statistic being computed (e.g. avg, sum, percentiles)
@@ -16,12 +17,14 @@ impl ElasticDSLQueryInfo {
 
     pub fn new(
         target_field: FieldName,
+        time_field: FieldName,
         predicates: Vec<Predicate>,
         group_by_buckets: Option<GroupBySpec>,
         aggregation: AggregationType,
     ) -> Self {
         Self {
             target_field,
+            time_field,
             predicates,
             group_by_buckets,
             aggregation,

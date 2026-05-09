@@ -1,5 +1,6 @@
 use asap_types::enums::CleanupPolicy;
 use indexmap::IndexMap;
+use indexmap::IndexSet;
 use serde_yaml::Value as YamlValue;
 use std::collections::HashMap;
 
@@ -9,9 +10,43 @@ use crate::output::generator::{
     build_aggregation_entry, build_queries_yaml, GeneratorOutput, KEY_AGGREGATIONS,
     KEY_CLEANUP_POLICY, KEY_NAME, KEY_QUERIES,
 };
+use elastic_dsl_utilities::ast_parsing::{extract_query_info, GroupBySpec, Predicate};
 use crate::planner::single_query::IntermediateAggConfig;
 use crate::planner::elastic_single_query::ElasticSingleQueryProcessor;
 use crate::StreamingEngine;
+
+#[derive(Default)]
+struct ElasticIndexSchemaBuilder {
+    time_field: Option<String>,
+    metric_columns: IndexSet<String>,
+    metadata_columns: IndexSet<String>,
+}
+
+impl ElasticIndexSchemaBuilder {
+    fn update_from_query_info(
+        &mut self,
+        query_info: &elastic_dsl_utilities::ast_parsing::ElasticDSLQueryInfo,
+    ) -> Result<(), ControllerError> {
+        match &self.time_field {
+            Some(existing) if existing != &query_info.time_field => {
+                return Err(ControllerError::PlannerError(format!(
+                    "conflicting time fields for Elasticsearch index: '{}' vs '{}'",
+                    existing, query_info.time_field
+                )));
+            }
+            None => self.time_field = Some(query_info.time_field.clone()),
+            _ => {}
+        }
+
+        self.metric_columns.insert(query_info.target_field.clone());
+
+        for field in collect_elastic_metadata_fields(query_info) {
+            self.metadata_columns.insert(field);
+        }
+
+        Ok(())
+    }
+}
 
 pub struct ElasticRuntimeOptions {
     pub streaming_engine: StreamingEngine,
@@ -52,14 +87,29 @@ pub fn generate_elastic_plan(
     let mut dedup_map: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
     // query_string -> Vec<(key, cleanup_param)>
     let mut query_keys_map: IndexMap<String, Vec<(String, Option<u64>)>> = IndexMap::new();
+    // index -> schema builder derived from the queries targeting that index
+    let mut index_schema_builders: IndexMap<String, ElasticIndexSchemaBuilder> = IndexMap::new();
 
     for qg in &config.query_groups {
+        let index = resolve_elastic_index(config, qg)?;
         for query_string in &qg.queries {
+            let query_info = extract_query_info(query_string).ok_or_else(|| {
+                ControllerError::ElasticDSLParse(format!(
+                    "Failed to parse Elasticsearch DSL query: {}",
+                    query_string
+                ))
+            })?;
+
+            index_schema_builders
+                .entry(index.clone())
+                .or_default()
+                .update_from_query_info(&query_info)?;
+
             let processor = ElasticSingleQueryProcessor::new(
                 query_string.clone(),
                 qg.repetition_delay,
                 opts.data_ingestion_interval,
-                config.index.clone(),
+                index.clone(),
                 opts.streaming_engine,
                 config.sketch_parameters.clone(),
                 cleanup_policy,
@@ -84,7 +134,13 @@ pub fn generate_elastic_plan(
     }
 
     let streaming_yaml = build_elastic_streaming_yaml(config, &dedup_map, &id_map)?;
-    let inference_yaml = build_elastic_inference_yaml(config, cleanup_policy, &query_keys_map, &id_map)?;
+    let inference_yaml = build_elastic_inference_yaml(
+        config,
+        cleanup_policy,
+        &query_keys_map,
+        &id_map,
+        &index_schema_builders,
+    )?;
 
     Ok(GeneratorOutput {
         punted_queries: Vec::new(),
@@ -119,6 +175,7 @@ fn build_elastic_inference_yaml(
     cleanup_policy: CleanupPolicy,
     query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
     id_map: &HashMap<String, u32>,
+    index_schema_builders: &IndexMap<String, ElasticIndexSchemaBuilder>,
 ) -> Result<YamlValue, ControllerError> {
     let mut cleanup_map = serde_yaml::Mapping::new();
     cleanup_map.insert(
@@ -135,6 +192,118 @@ fn build_elastic_inference_yaml(
         YamlValue::String(KEY_QUERIES.to_string()),
         YamlValue::Sequence(build_queries_yaml(cleanup_policy, query_keys_map, id_map)),
     );
+    root.insert(
+        YamlValue::String("indices".to_string()),
+        YamlValue::Sequence(
+            index_schema_builders
+                .iter()
+                .map(|(index_name, builder)| build_elastic_index_yaml(index_name, builder))
+                .collect(),
+        ),
+    );
 
     Ok(YamlValue::Mapping(root))
+}
+
+fn build_elastic_index_yaml(index_name: &str, builder: &ElasticIndexSchemaBuilder) -> YamlValue {
+    let mut map = serde_yaml::Mapping::new();
+    map.insert(
+        YamlValue::String("name".to_string()),
+        YamlValue::String(index_name.to_string()),
+    );
+    map.insert(
+        YamlValue::String("time_field".to_string()),
+        YamlValue::String(
+            builder
+                .time_field
+                .clone()
+                .unwrap_or_else(|| "@timestamp".to_string()),
+        ),
+    );
+    map.insert(
+        YamlValue::String("metric_columns".to_string()),
+        YamlValue::Sequence(
+            builder
+                .metric_columns
+                .iter()
+                .cloned()
+                .map(YamlValue::String)
+                .collect(),
+        ),
+    );
+    map.insert(
+        YamlValue::String("metadata_columns".to_string()),
+        YamlValue::Sequence(
+            builder
+                .metadata_columns
+                .iter()
+                .cloned()
+                .map(YamlValue::String)
+                .collect(),
+        ),
+    );
+
+    YamlValue::Mapping(map)
+}
+
+fn resolve_elastic_index(
+    config: &ElasticDSLControllerConfig,
+    query_group: &crate::config::input::ElasticDSLQueryGroup,
+) -> Result<String, ControllerError> {
+    query_group
+        .index
+        .clone()
+        .or_else(|| config.index.clone())
+        .ok_or_else(|| {
+            ControllerError::PlannerError(
+                "each Elasticsearch query group must specify an index (or inherit one from the controller config)"
+                    .to_string(),
+            )
+        })
+}
+
+fn collect_elastic_metadata_fields(
+    query_info: &elastic_dsl_utilities::ast_parsing::ElasticDSLQueryInfo,
+) -> IndexSet<String> {
+    let mut fields = IndexSet::new();
+
+    for predicate in &query_info.predicates {
+        match predicate {
+            Predicate::Term { field, .. } => {
+                if field != &query_info.time_field {
+                    fields.insert(field.clone());
+                }
+            }
+            Predicate::Range { field, .. } => {
+                if field != &query_info.time_field {
+                    fields.insert(field.clone());
+                }
+            }
+        }
+    }
+
+    if let Some(group_by_buckets) = &query_info.group_by_buckets {
+        match group_by_buckets {
+            GroupBySpec::Fields(group_fields) => {
+                for field in group_fields {
+                    if field != &query_info.time_field {
+                        fields.insert(field.clone());
+                    }
+                }
+            }
+            GroupBySpec::Filters(predicates) => {
+                for predicate in predicates {
+                    match predicate {
+                        Predicate::Term { field, .. } | Predicate::Range { field, .. } => {
+                            if field != &query_info.time_field {
+                                fields.insert(field.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fields
 }

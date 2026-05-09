@@ -434,6 +434,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap 4.6.0",
+ "elastic_dsl_utilities",
  "promql_utilities",
  "serde",
  "serde_json",

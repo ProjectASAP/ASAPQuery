@@ -10,13 +10,14 @@ use crate::promql_schema::PromQLSchema;
 use crate::query_config::QueryConfig;
 use promql_utilities::data_model::KeyByLabelNames;
 use sql_utilities::sqlhelper::{SQLSchema, Table};
+use elastic_dsl_utilities::{ElasticIndexSchema, ElasticMappingSchema};
 
 /// Schema configuration that can be either PromQL or SQL format
 #[derive(Debug, Clone)]
 pub enum SchemaConfig {
     PromQL(PromQLSchema),
     SQL(SQLSchema),
-    ElasticQueryDSL,
+    ElasticQueryDSL(ElasticMappingSchema),
     ElasticSQL(SQLSchema),
 }
 
@@ -32,7 +33,9 @@ impl InferenceConfig {
         let schema = match query_language {
             QueryLanguage::promql => SchemaConfig::PromQL(PromQLSchema::new()),
             QueryLanguage::sql => SchemaConfig::SQL(SQLSchema::new(Vec::new())),
-            QueryLanguage::elastic_querydsl => SchemaConfig::ElasticQueryDSL,
+            QueryLanguage::elastic_querydsl => {
+                SchemaConfig::ElasticQueryDSL(ElasticMappingSchema::new(Vec::new()))
+            }
             QueryLanguage::elastic_sql => SchemaConfig::ElasticSQL(SQLSchema::new(Vec::new())),
         };
         Self {
@@ -60,7 +63,10 @@ impl InferenceConfig {
                 let sql_schema = Self::parse_sql_schema(data)?;
                 SchemaConfig::SQL(sql_schema)
             }
-            QueryLanguage::elastic_querydsl => SchemaConfig::ElasticQueryDSL,
+            QueryLanguage::elastic_querydsl => {
+                let elastic_schema = Self::parse_elastic_querydsl_schema(data)?;
+                SchemaConfig::ElasticQueryDSL(elastic_schema)
+            }
             QueryLanguage::elastic_sql => {
                 let sql_schema = Self::parse_sql_schema(data)?;
                 SchemaConfig::SQL(sql_schema)
@@ -151,6 +157,53 @@ impl InferenceConfig {
         }
 
         Ok(SQLSchema::new(tables))
+    }
+
+    /// Parse Elasticsearch mapping schema from YAML data (indices: key at top level).
+    fn parse_elastic_querydsl_schema(data: &Value) -> Result<ElasticMappingSchema> {
+        let Some(indices_data) = data.get("indices").and_then(|v| v.as_sequence()) else {
+            return Ok(ElasticMappingSchema::new(Vec::new()));
+        };
+
+        let mut indices = Vec::new();
+        for index_data in indices_data {
+            let name = index_data
+                .get("name")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing name field in elastic index"))?
+                .to_string();
+
+            let time_field = index_data
+                .get("time_field")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Missing time_field field in elastic index {name}"))?
+                .to_string();
+
+            let metric_columns: HashSet<String> = index_data
+                .get("metric_columns")
+                .and_then(|v| v.as_sequence())
+                .ok_or_else(|| anyhow::anyhow!("Missing metric_columns field in elastic index {name}"))?
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect();
+
+            let metadata_columns: HashSet<String> = index_data
+                .get("metadata_columns")
+                .and_then(|v| v.as_sequence())
+                .ok_or_else(|| anyhow::anyhow!("Missing metadata_columns field in elastic index {name}"))?
+                .iter()
+                .filter_map(|v| v.as_str())
+                .map(|s| s.to_string())
+                .collect();
+
+            indices.push((
+                name,
+                ElasticIndexSchema::new(time_field, metric_columns, metadata_columns),
+            ));
+        }
+
+        Ok(ElasticMappingSchema::new(indices))
     }
 
     /// Parse cleanup policy from YAML data. Errors if not specified.

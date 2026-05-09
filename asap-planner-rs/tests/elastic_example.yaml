@@ -1,0 +1,34 @@
+query_groups:
+  - id: 1
+    index: metrics
+    queries:
+      - |
+        {
+          "aggs": {
+            "avg_cpu": {
+              "avg": {
+                "field": "cpu_usage"
+              }
+            }
+          },
+          "query": {
+            "bool": {
+              "filter": [
+                {
+                  "range": {
+                    "@timestamp": {
+                      "gte": "now-5m",
+                      "lte": "now"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+    repetition_delay: 300
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 1.0
+aggregate_cleanup:
+  policy: read_based
