@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::countminsketch_topk::{CmsHeapItem, CountMinSketchWithHeap};
+use asap_sketchlib::{CmsHeapItem, CountMinSketchWithHeap};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -17,7 +17,7 @@ pub struct CountMinSketchWithHeapAccumulator {
 }
 
 // Re-export HeapItem so existing code using CountMinSketchWithHeapAccumulator::HeapItem still works.
-pub use asap_sketchlib::sketches::countminsketch_topk::CmsHeapItem as HeapItemReexport;
+pub use asap_sketchlib::CmsHeapItem as HeapItemReexport;
 
 impl CountMinSketchWithHeapAccumulator {
     pub fn new(row_num: usize, col_num: usize, heap_size: usize) -> Self {

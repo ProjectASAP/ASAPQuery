@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::set_aggregator::SetAggregator;
+use asap_sketchlib::SetAggregator;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 

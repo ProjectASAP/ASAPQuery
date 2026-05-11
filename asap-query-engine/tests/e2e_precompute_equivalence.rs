@@ -7,7 +7,7 @@
 //!  3. Advances the watermark past the window boundary to close it
 //!  4. Drains captured outputs and verifies equivalence with wire-format accumulators
 
-use asap_sketchlib::sketches::kll::KllSketch;
+use asap_sketchlib::KllSketch;
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::enums::{AggregationType, WindowType};
 use flate2::{write::GzEncoder, Compression};

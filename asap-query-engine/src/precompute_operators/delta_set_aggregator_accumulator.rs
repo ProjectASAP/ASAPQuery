@@ -2,7 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::delta_set_aggregator::{deserialize_msgpack, serialize_msgpack};
+use asap_sketchlib::DeltaResult;
+use asap_sketchlib::message_pack_format::MessagePackCodec;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -153,7 +154,7 @@ impl DeltaSetAggregatorAccumulator {
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         // Delegate to sketch-core canonical DeltaResult msgpack format
-        let delta = deserialize_msgpack(buffer)
+        let delta = DeltaResult::from_msgpack(buffer)
             .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
 
         let mut added = HashSet::new();
@@ -203,7 +204,9 @@ impl SerializableToSink for DeltaSetAggregatorAccumulator {
             .iter()
             .map(|key| key.to_semicolon_str())
             .collect();
-        serialize_msgpack(&added, &removed).unwrap_or_default()
+        DeltaResult { added, removed }
+            .to_msgpack()
+            .unwrap_or_default()
     }
 }
 

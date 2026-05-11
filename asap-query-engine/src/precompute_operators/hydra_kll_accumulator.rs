@@ -5,7 +5,7 @@ use crate::{
     },
     KeyByLabelValues,
 };
-use asap_sketchlib::sketches::hydra_kll::HydraKllSketch;
+use asap_sketchlib::HydraKllSketch;
 use base64::{engine::general_purpose, Engine as _};
 use std::collections::HashMap;
 

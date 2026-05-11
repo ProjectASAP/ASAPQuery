@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::countminsketch::CountMinSketch;
+use asap_sketchlib::CountMinSketch;
 use serde_json::Value;
 use std::collections::HashMap;
 
