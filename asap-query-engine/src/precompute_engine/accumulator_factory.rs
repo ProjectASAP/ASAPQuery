@@ -464,7 +464,11 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
     }
 
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, _timestamp_ms: i64) {
-        self.acc.inner.update(&key.to_semicolon_str(), value);
+        crate::precompute_operators::sketchlib_runtime::cms_update(
+            &mut self.acc.inner,
+            &key.to_semicolon_str(),
+            value,
+        );
     }
 
     impl_clone_accumulator_methods!(acc);
@@ -855,6 +859,6 @@ mod tests {
             .as_any()
             .downcast_ref::<crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator>()
             .expect("should be KLL");
-        assert_eq!(kll.inner.k, 50, "k should be 50 from capital-K param");
+        assert_eq!(kll.inner.k(), 50, "k should be 50 from capital-K param");
     }
 }

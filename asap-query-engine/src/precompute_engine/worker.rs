@@ -1511,7 +1511,7 @@ mod tests {
             handcrafted_output.end_timestamp,
             arroyo_output.end_timestamp
         );
-        assert_eq!(handcrafted_acc.inner.k, arroyo_acc.inner.k);
+        assert_eq!(handcrafted_acc.inner.k(), arroyo_acc.inner.k());
         assert_eq!(handcrafted_acc.inner.count(), arroyo_acc.inner.count());
 
         for quantile in [0.0, 0.5, 1.0] {

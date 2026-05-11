@@ -9,6 +9,7 @@ pub mod multiple_increase_accumulator;
 pub mod multiple_min_max_accumulator;
 pub mod multiple_sum_accumulator;
 pub mod set_aggregator_accumulator;
+pub mod sketchlib_runtime;
 pub mod sum_accumulator;
 
 pub use count_min_sketch_accumulator::*;

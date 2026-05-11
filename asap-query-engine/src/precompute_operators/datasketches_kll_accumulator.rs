@@ -2,9 +2,11 @@ use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate,
 };
-use asap_sketchlib::KllSketch;
-use asap_sketchlib::message_pack_format::MessagePackCodec;
-use base64::{engine::general_purpose, Engine as _};
+use crate::precompute_operators::sketchlib_runtime::{
+    RuntimeKll, kll_from_msgpack, kll_merge_refs, kll_new, kll_quantile, kll_sketch_bytes,
+    kll_to_msgpack, kll_update,
+};
+use base64::{Engine as _, engine::general_purpose};
 use serde_json::Value;
 use std::collections::HashMap;
 #[cfg(feature = "extra_debugging")]
@@ -13,26 +15,26 @@ use tracing::debug;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// KLL sketch accumulator — wraps asap_sketchlib::sketches::KllSketch.
-/// Core struct, update/merge/serde logic live in `asap_sketchlib::sketches`.
-/// This file retains QE-specific trait impls and JSON output.
+/// KLL sketch accumulator — holds `sketches::KLL<f64>` directly. Wire
+/// format (`KllSketchData { k, sketch_bytes }`) and base64-JSON output
+/// live in `sketchlib_runtime`.
 pub struct DatasketchesKLLAccumulator {
-    pub inner: KllSketch,
+    pub inner: RuntimeKll,
 }
 
 impl DatasketchesKLLAccumulator {
     pub fn new(k: u16) -> Self {
         Self {
-            inner: KllSketch::new(k),
+            inner: kll_new(k),
         }
     }
 
     pub fn update(&mut self, value: f64) {
-        self.inner.update(value);
+        kll_update(&mut self.inner, value);
     }
 
     pub fn get_quantile(&self, quantile: f64) -> f64 {
-        self.inner.quantile(quantile)
+        kll_quantile(&self.inner, quantile)
     }
 
     pub fn deserialize_from_bytes_arroyo(
@@ -43,8 +45,7 @@ impl DatasketchesKLLAccumulator {
             buffer.len()
         );
         Ok(Self {
-            inner: KllSketch::from_msgpack(buffer)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
+            inner: kll_from_msgpack(buffer)?,
         })
     }
 
@@ -72,15 +73,14 @@ impl DatasketchesKLLAccumulator {
             kll_accumulators.push(kll_acc);
         }
 
-        let inner_refs: Vec<&KllSketch> = kll_accumulators.iter().map(|acc| &acc.inner).collect();
-        let merged_inner = KllSketch::merge_refs(&inner_refs)?;
+        let inner_refs: Vec<&RuntimeKll> = kll_accumulators.iter().map(|acc| &acc.inner).collect();
+        let merged_inner = kll_merge_refs(&inner_refs)?;
         Ok(Self {
             inner: merged_inner,
         })
     }
 }
 
-// Manual trait implementations since the C++ library doesn't provide them
 impl Clone for DatasketchesKLLAccumulator {
     fn clone(&self) -> Self {
         Self {
@@ -92,29 +92,27 @@ impl Clone for DatasketchesKLLAccumulator {
 impl std::fmt::Debug for DatasketchesKLLAccumulator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DatasketchesKLLAccumulator")
-            .field("k", &self.inner.k)
+            .field("k", &self.inner.k())
             .field("sketch_n", &self.inner.count())
             .finish()
     }
 }
 
-// TODO: verify this
-// Thread safety: The C++ library is not thread-safe by default, but since we're using it
-// in a single-threaded context per accumulator instance and only sharing read-only operations,
-// this should be safe.
+// Thread safety: each accumulator is used in single-threaded contexts;
+// only read-only methods are shared across threads.
 unsafe impl Send for DatasketchesKLLAccumulator {}
 unsafe impl Sync for DatasketchesKLLAccumulator {}
 
 impl SerializableToSink for DatasketchesKLLAccumulator {
     fn serialize_to_json(&self) -> Value {
         // Mirror Python implementation: {"sketch": base64_encoded_string}
-        let sketch_bytes = self.inner.sketch_bytes();
+        let sketch_bytes = kll_sketch_bytes(&self.inner);
         let sketch_b64 = general_purpose::STANDARD.encode(&sketch_bytes);
         serde_json::json!({ "sketch": sketch_b64 })
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.to_msgpack().unwrap_or_default()
+        kll_to_msgpack(&self.inner)
     }
 }
 
@@ -140,7 +138,7 @@ impl AggregateCore for DatasketchesKLLAccumulator {
         #[cfg(feature = "extra_debugging")]
         debug!(
             "[PERF] DatasketchesKLLAccumulator::merge_with() started - self.k={}, self.n={}",
-            self.inner.k,
+            self.inner.k(),
             self.inner.count()
         );
 
@@ -157,7 +155,7 @@ impl AggregateCore for DatasketchesKLLAccumulator {
             .downcast_ref::<DatasketchesKLLAccumulator>()
             .ok_or("Failed to downcast to DatasketchesKLLAccumulator")?;
 
-        let merged_inner = KllSketch::merge_refs(&[&self.inner, &other_kll.inner])?;
+        let merged_inner = kll_merge_refs(&[&self.inner, &other_kll.inner])?;
         let merged = Self {
             inner: merged_inner,
         };
@@ -233,12 +231,11 @@ impl MergeableAccumulator<DatasketchesKLLAccumulator> for DatasketchesKLLAccumul
         if accumulators.is_empty() {
             return Err("No accumulators to merge".into());
         }
-        let mut iter = accumulators.into_iter();
-        let mut merged = iter.next().unwrap();
-        for acc in iter {
-            merged.inner.merge(&acc.inner)?;
-        }
-        Ok(merged)
+        let inner_refs: Vec<&RuntimeKll> = accumulators.iter().map(|acc| &acc.inner).collect();
+        let merged_inner = kll_merge_refs(&inner_refs)?;
+        Ok(Self {
+            inner: merged_inner,
+        })
     }
 }
 
@@ -250,7 +247,7 @@ mod tests {
     fn test_datasketches_kll_creation() {
         let kll = DatasketchesKLLAccumulator::new(200);
         assert!(kll.inner.count() == 0);
-        assert_eq!(kll.inner.k, 200);
+        assert_eq!(kll.inner.k(), 200);
     }
 
     #[test]
@@ -270,7 +267,6 @@ mod tests {
         }
         assert_eq!(kll.get_quantile(0.0), 1.0);
         assert_eq!(kll.get_quantile(1.0), 10.0);
-        // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
         let q50 = kll.get_quantile(0.5);
         assert!((q50 - 6.0).abs() <= 1.0, "expected median ~6, got {q50}");
     }
@@ -285,7 +281,6 @@ mod tests {
         let mut query_kwargs = HashMap::new();
         query_kwargs.insert("quantile".to_string(), "0.5".to_string());
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
-        // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
         assert!(
             (result - 6.0).abs() <= 1.0,
             "expected median ~6, got {result}"
@@ -323,7 +318,7 @@ mod tests {
         let deserialized =
             DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
 
-        assert_eq!(deserialized.inner.k, 200);
+        assert_eq!(deserialized.inner.k(), 200);
         assert_eq!(deserialized.inner.count(), 5);
         assert_eq!(deserialized.get_quantile(0.0), 1.0);
         assert_eq!(deserialized.get_quantile(1.0), 5.0);
@@ -353,7 +348,6 @@ mod tests {
         let mut query_kwargs = HashMap::new();
         query_kwargs.insert("quantile".to_string(), "0.5".to_string());
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
-        // Sketchlib KLL is approximate; 0.5 quantile of 1..10 may be 5, 6, or 7.
         assert!(
             (result - 6.0).abs() <= 1.0,
             "expected median ~6, got {result}"
@@ -361,7 +355,6 @@ mod tests {
 
         query_kwargs.insert("quantile".to_string(), "0.9".to_string());
         let result = kll.query(Statistic::Quantile, Some(&query_kwargs)).unwrap();
-        // Sketchlib KLL is approximate; 0.9 quantile of 1..10 may be 9 or 10.
         assert!(
             (9.0..=10.0).contains(&result),
             "expected 0.9 quantile in [9,10], got {result}"
