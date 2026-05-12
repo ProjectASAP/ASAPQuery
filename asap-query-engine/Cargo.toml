@@ -59,7 +59,7 @@ figment = { version = "0.10", features = ["yaml"] }
 arc-swap = "1"
 csv = "1"
 elastic_dsl_utilities.workspace = true
-asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", branch = "refactor/module-restructure" }
+asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib" }
 
 [[bin]]
 name = "precompute_engine"
