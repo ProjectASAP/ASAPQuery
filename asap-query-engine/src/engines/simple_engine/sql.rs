@@ -59,22 +59,22 @@ impl SimpleEngine {
     ) -> u64 {
         match query_pattern_type {
             QueryPatternType::OnlyTemporal => {
-                let scrape_intervals = match_result
+                let duration_secs = match_result
                     .outer_data()
                     .expect("OnlyTemporal pattern guarantees outer_data is present")
                     .time_info
                     .clone()
                     .get_duration() as u64;
-                end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000)
+                end_timestamp - (duration_secs * 1000)
             }
             QueryPatternType::OneTemporalOneSpatial => {
-                let scrape_intervals = match_result
+                let duration_secs = match_result
                     .inner_data()
                     .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
                     .time_info
                     .clone()
                     .get_duration() as u64;
-                end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000)
+                end_timestamp - (duration_secs * 1000)
             }
             QueryPatternType::OnlySpatial => {
                 end_timestamp - (self.prometheus_scrape_interval * 1000)
@@ -172,17 +172,17 @@ impl SimpleEngine {
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
             QueryPatternType::OnlyTemporal => {
-                let scrape_intervals = query_data.time_info.clone().get_duration() as u64;
-                Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
+                let duration_secs = query_data.time_info.clone().get_duration() as u64;
+                Some(duration_secs * 1000)
             }
             QueryPatternType::OneTemporalOneSpatial => {
-                let scrape_intervals = match_result
+                let duration_secs = match_result
                     .inner_data()
                     .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
                     .time_info
                     .clone()
                     .get_duration() as u64;
-                Some(scrape_intervals * self.prometheus_scrape_interval * 1000)
+                Some(duration_secs * 1000)
             }
         };
 
@@ -519,9 +519,8 @@ impl SimpleEngine {
         // Calculate timestamps - similar to OnlyTemporal
         let end_timestamp =
             self.validate_and_align_end_timestamp(query_time, QueryPatternType::OnlyTemporal);
-        let scrape_intervals = match_result.outer_data()?.time_info.get_duration() as u64;
-        let start_timestamp =
-            end_timestamp - (scrape_intervals * self.prometheus_scrape_interval * 1000);
+        let duration_secs = match_result.outer_data()?.time_info.get_duration() as u64;
+        let start_timestamp = end_timestamp - (duration_secs * 1000);
 
         let timestamps = QueryTimestamps {
             start_timestamp,

@@ -183,6 +183,55 @@ mod tests {
         assert_execution_context_equivalent(&promql_context, &sql_context, "spatial_avg");
     }
 
+    /// Regression test for issue #202.
+    /// With scrape_interval=15s, a 150s SQL temporal query must produce a 150_000ms window.
+    /// Bug: start = end - (150 * 15 * 1000) = end - 2_250_000ms (15× too wide).
+    #[test]
+    fn test_bug_sql_start_timestamp_multiplied_by_scrape_interval() {
+        let scrape_interval = 15u64;
+        let window_seconds = 150u64;
+        let sql_query = "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -150, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4";
+
+        let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
+            .with_scrape_interval(scrape_interval) // USED: propagated to SimpleEngine::prometheus_scrape_interval
+            .add_temporal_query(
+                "sum_over_time(cpu_usage[150s])", // NOT USED: TestConfigBuilder requires a PromQL string; timestamp calculation is SQL-only
+                sql_query,                        // USED: parsed to extract the 150s duration
+                1, // NOT USED: agg_id just satisfies the builder; calculate_start_timestamp_sql never consults it
+                window_seconds, // NOT USED: stored in AggregationConfig, not read by timestamp calculation
+                WindowType::Tumbling, // NOT USED: same as above
+            )
+            .build_both();
+
+        let sql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            sql_config,
+            streaming_config,
+            scrape_interval,
+            QueryLanguage::sql,
+        );
+
+        // query_time_sec is ignored for fixed-date SQL (only used for NOW() resolution)
+        let sql_context = sql_engine
+            .build_query_execution_context_sql(sql_query.to_string(), 0.0)
+            .expect("Failed to build SQL context");
+
+        let start_ms = sql_context.store_plan.values_query.start_timestamp;
+        let end_ms = sql_context.store_plan.values_query.end_timestamp;
+        let actual_window_ms = end_ms - start_ms;
+        let expected_window_ms = window_seconds * 1000;
+
+        assert_eq!(
+            actual_window_ms, expected_window_ms,
+            "SQL window is {}ms but should be {}ms — \
+             get_duration() returns seconds, not a count of scrape intervals",
+            actual_window_ms, expected_window_ms
+        );
+    }
+
     #[test]
     fn test_spatial_of_temporal_sum_equivalence() {
         let scrape_interval = 1;

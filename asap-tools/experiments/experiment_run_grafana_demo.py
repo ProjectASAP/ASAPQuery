@@ -11,7 +11,7 @@ from experiment_utils import sync, config
 from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
-    QueryEngineServiceFactory,
+    QueryEngineRustService,
     ExporterServiceFactory,
     ArroyoService,
     ArroyoThroughputMonitor,
@@ -120,9 +120,7 @@ def main(cfg: DictConfig):
 
     # Initialize services
     kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
-    # Initialize query engine service based on language
-    query_engine_service = QueryEngineServiceFactory.create_query_engine_service(
-        args.query_engine_language,
+    query_engine_service = QueryEngineRustService(
         provider,
         use_container=args.use_container_query_engine,
         node_offset=args.node_offset,
@@ -213,10 +211,10 @@ def main(cfg: DictConfig):
         wait=True,
     )
 
-    controller_client_config = os.path.join(
+    controller_input_config = os.path.join(
         experiment_root_output_dir,
         "controller_client_configs",
-        f"{experiment_mode}.yaml",
+        f"{experiment_mode}_controller_input.yaml",
     )
 
     if args.streaming_engine == "flink":
@@ -287,26 +285,6 @@ def main(cfg: DictConfig):
     )
     prometheus_scrape_interval = config.get_prometheus_scrape_interval(cfg.prometheus)
 
-    # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
-    if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-        controller_service.start(
-            controller_input_file=controller_client_config,
-            prometheus_scrape_interval=prometheus_scrape_interval,
-            streaming_engine=args.streaming_engine,
-            controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
-            punting=args.controller_punting,
-        )
-        sync.rsync_controller_config_remote_to_local(
-            provider,
-            CONTROLLER_REMOTE_OUTPUT_DIR,
-            CONTROLLER_LOCAL_OUTPUT_DIR,
-            node_offset=args.node_offset,
-        )
-        kafka_service.start()
-        kafka_service.wait_until_ready()
-        kafka_service.delete_topics()
-        kafka_service.create_topics()
-
     if config.check_exporter_and_queries_exist("fake_exporter", cfg.experiment_params):
         # this DOES NOT block
         exporter_service.start(
@@ -330,6 +308,75 @@ def main(cfg: DictConfig):
         and workloads_config["deathstar"]["use"] is True
     ):
         deathstar_service.start()
+
+    # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
+    system_exporters_service.start(cfg.experiment_params)
+
+    # Start Prometheus service based on deployment mode
+    monitoring = cfg.experiment_params.monitoring
+
+    if monitoring.deployment_mode == "containerized":
+        # Containerized deployment (DockerPrometheusService or DockerVictoriaMetricsService)
+        assert isinstance(
+            prometheus_service, (DockerPrometheusService, DockerVictoriaMetricsService)
+        ), f"Expected Docker-based service but got {type(prometheus_service).__name__}"
+
+        # Check if resource limits are specified
+        if hasattr(monitoring, "resource_limits"):
+            prometheus_service.start(
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                experiment_mode=experiment_mode,
+                cpu_limit=monitoring.resource_limits.cpu_limit,
+                memory_limit=monitoring.resource_limits.memory_limit,
+            )
+        else:
+            # Containerized without resource limits
+            prometheus_service.start(
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                experiment_mode=experiment_mode,
+            )
+    else:  # bare_metal
+        # Bare-metal deployment (PrometheusService)
+        assert isinstance(
+            prometheus_service, PrometheusService
+        ), f"Expected PrometheusService but got {type(prometheus_service).__name__}"
+        prometheus_service.start(experiment_output_dir)
+
+    if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        prometheus_url = (
+            f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
+        )
+
+        prometheus_service.wait_until_ready()
+
+        label_discovery_wait = prometheus_scrape_interval * 2
+        print(
+            f"Waiting {label_discovery_wait}s for Prometheus to scrape initial data "
+            f"before running controller label inference..."
+        )
+        time.sleep(label_discovery_wait)
+
+        controller_service.start(
+            controller_input_file=controller_input_config,
+            prometheus_scrape_interval=prometheus_scrape_interval,
+            streaming_engine=args.streaming_engine,
+            controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
+            punting=args.controller_punting,
+            prometheus_url=prometheus_url,
+        )
+        sync.rsync_controller_config_remote_to_local(
+            provider,
+            CONTROLLER_REMOTE_OUTPUT_DIR,
+            CONTROLLER_LOCAL_OUTPUT_DIR,
+            node_offset=args.node_offset,
+        )
+        if args.streaming_engine != "precompute":
+            kafka_service.start()
+            kafka_service.wait_until_ready()
+            kafka_service.delete_topics()
+            kafka_service.create_topics()
 
     if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
         if args.use_kafka_ingest:
@@ -391,9 +438,9 @@ def main(cfg: DictConfig):
                     pipeline_id=arroyosketch_pipeline_id,
                     experiment_output_dir=experiment_output_dir,
                 )
-        else:
+        elif args.streaming_engine not in ("precompute",):
             raise ValueError(
-                "Invalid streaming engine: {}. Supported engines are 'flink' and 'arroyo'".format(
+                "Invalid streaming engine: {}. Supported engines are 'flink', 'arroyo', and 'precompute'".format(
                     args.streaming_engine
                 )
             )
@@ -411,58 +458,39 @@ def main(cfg: DictConfig):
         if not cfg.flow.replace_query_engine_with_dumb_consumer:
             # Get prometheus port from prometheus service
             prometheus_port = prometheus_service.get_query_endpoint_port()
+            # Get http port from query engine service
+            http_port = query_engine_service.get_http_port()
+
+            # Build a fully resolved BackendConfig dict.  For the prometheus
+            # backend the server URL depends on the runtime node IP, so we
+            # fill it in here rather than in config.yaml.
+            backend_config = dict(args.backend)
+            if backend_config["type"] == "prometheus":
+                prometheus_host = provider.get_node_ip(args.node_offset)
+                backend_config["server"] = f"http://{prometheus_host}:{prometheus_port}"
+            # forward_unsupported_queries is forced True for the Grafana demo (line 63)
+            backend_config["forward_unsupported_queries"] = (
+                args.forward_unsupported_queries
+            )
 
             query_engine_service.start(
                 experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
                 flink_output_format=args.flink_output_format,
                 prometheus_scrape_interval=prometheus_scrape_interval,
                 log_level=args.log_level,
                 profile_query_engine=args.profile_query_engine,
                 manual=args.manual_query_engine,
                 streaming_engine=args.streaming_engine,
-                forward_unsupported_queries=args.forward_unsupported_queries,
                 controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
                 compress_json=COMPRESS_JSON,
                 dump_precomputes=args.dump_precomputes,
                 lock_strategy=args.lock_strategy,
-                query_language=args.query_language,
-                prometheus_port=prometheus_port,
+                backend_config=backend_config,
+                http_port=http_port,
+                remote_write_port=args.remote_write_base_port,
             )
 
-    # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
-    system_exporters_service.start(cfg.experiment_params)
-
-    # Start Prometheus service based on deployment mode
-    monitoring = cfg.experiment_params.monitoring
-
-    if monitoring.deployment_mode == "containerized":
-        # Containerized deployment (DockerPrometheusService or DockerVictoriaMetricsService)
-        assert isinstance(
-            prometheus_service, (DockerPrometheusService, DockerVictoriaMetricsService)
-        ), f"Expected Docker-based service but got {type(prometheus_service).__name__}"
-
-        # Check if resource limits are specified
-        if hasattr(monitoring, "resource_limits"):
-            prometheus_service.start(
-                experiment_output_dir=experiment_output_dir,
-                local_experiment_dir=local_experiment_dir,
-                experiment_mode=experiment_mode,
-                cpu_limit=monitoring.resource_limits.cpu_limit,
-                memory_limit=monitoring.resource_limits.memory_limit,
-            )
-        else:
-            # Containerized without resource limits
-            prometheus_service.start(
-                experiment_output_dir=experiment_output_dir,
-                local_experiment_dir=local_experiment_dir,
-                experiment_mode=experiment_mode,
-            )
-    else:  # bare_metal
-        # Bare-metal deployment (PrometheusService)
-        assert isinstance(
-            prometheus_service, PrometheusService
-        ), f"Expected PrometheusService but got {type(prometheus_service).__name__}"
-        prometheus_service.start(experiment_output_dir)
     # this DOES NOT block
     if (
         workloads_config is not None

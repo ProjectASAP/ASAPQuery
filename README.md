@@ -73,6 +73,22 @@ ASAPQuery has two main components: **asap-planner-rs** analyzes your PromQL quer
 └── asap-query-engine/       # Query serving and sketch precomputation engine
 ```
 
+## Supported Queries
+
+ASAPQuery accelerates PromQL queries that match the following patterns. Queries that don't match are transparently forwarded to Prometheus.
+
+**Temporal range functions** (no label selectors):
+- `rate(metric[range])`
+- `increase(metric[range])`
+- `sum_over_time(metric[range])`, `count_over_time(metric[range])`, `avg_over_time(metric[range])`, `min_over_time(metric[range])`, `max_over_time(metric[range])`
+- `quantile_over_time(φ, metric[range])`
+
+**Aggregation operators** (with optional `by (label, ...)` clause, no label selectors):
+- `sum(...)`, `count(...)`, `avg(...)`, `min(...)`, `max(...)`, `quantile(φ, ...)`, `topk(k, ...)`
+
+**Binary arithmetic** — arithmetic combinations of the above patterns:
+- e.g. `rate(errors_total[5m]) / rate(requests_total[5m])`
+
 ## Coming soon
 
 1. Drop-in ASAPQuery artifact that accelerates Clickhouse queries

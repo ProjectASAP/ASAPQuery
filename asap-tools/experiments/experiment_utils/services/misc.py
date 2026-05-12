@@ -241,7 +241,12 @@ class ControllerService(BaseService):
         punting: bool,
         prometheus_url: str,
     ) -> None:
-        cmd = "./target/release/asap-planner --input_config {} --prometheus_scrape_interval {} --output_dir {} --streaming_engine {} --prometheus-url {}".format(
+        controller_log = os.path.join(controller_remote_output_dir, "controller.log")
+        cmd = (
+            "./target/release/asap-planner"
+            " --input_config {} --prometheus_scrape_interval {} --output_dir {}"
+            " --streaming_engine {} --prometheus-url {}"
+        ).format(
             controller_input_file,
             prometheus_scrape_interval,
             controller_remote_output_dir,
@@ -250,6 +255,7 @@ class ControllerService(BaseService):
         )
         if punting:
             cmd += " --enable-punting"
+        cmd += f" > {controller_log} 2>&1"
         cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-planner-rs")
         self.provider.execute_command(
             node_idx=self.node_offset,
@@ -299,7 +305,11 @@ class ControllerService(BaseService):
         if punting:
             generate_cmd += " --punting"
 
-        cmd = f"mkdir -p {controller_remote_output_dir}; {generate_cmd}; docker compose -f {remote_compose_file} up --no-build -d"
+        controller_log = os.path.join(controller_remote_output_dir, "controller.log")
+        cmd = (
+            f"mkdir -p {controller_remote_output_dir}; {generate_cmd}; "
+            f"docker compose -f {remote_compose_file} up --no-build > {controller_log} 2>&1"
+        )
         try:
             self.provider.execute_command(
                 node_idx=self.node_offset,
@@ -311,6 +321,7 @@ class ControllerService(BaseService):
             )
         except Exception as e:
             print(f"Failed to start Controller container: {e}")
+            print(f"Check controller logs at: {controller_log}")
             raise
 
         return None

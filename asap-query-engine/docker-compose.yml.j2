@@ -18,26 +18,5 @@ services:
       - "{{ experiment_output_dir }}:/app/outputs"
       # Mount controller output directory for configuration files (read-only)
       - "{{ controller_remote_output_dir }}:/app/controller_output:ro"
-    command: [
-      "--kafka-topic", "{{ kafka_topic }}",
-      "--kafka-broker", "{{ kafka_host }}:9092",
-      "--input-format", "{{ input_format }}",
-      "--config", "/app/controller_output/inference_config.yaml",
-      "--streaming-config", "/app/controller_output/streaming_config.yaml",
-      "--prometheus-server", "http://{{ prometheus_host }}:{{ prometheus_port }}",
-      "--prometheus-scrape-interval", "{{ prometheus_scrape_interval }}",
-      "--delete-existing-db",
-      "--log-level", "{{ log_level }}",
-      "--output-dir", "/app/outputs",
-      "--streaming-engine", "{{ streaming_engine }}",
-      "--query-language", "{{ query_language }}",
-      "--lock-strategy", "{{ lock_strategy }}"{% if compress_json %},
-      "--decompress-json"{% endif %}{% if profile_query_engine %},
-      "--do-profiling"{% endif %}{% if forward_unsupported_queries %},
-      "--forward-unsupported-queries"{% endif %}{% if dump_precomputes %},
-      "--dump-precomputes"{% endif %}
-    ]
-    extra_hosts:
-      - "kafka:{{ kafka_host }}"
-      - "prometheus:{{ prometheus_host }}"
+    command: ["--config-file", "/app/outputs/engine_config.yaml"]
     restart: no

@@ -55,6 +55,7 @@ lazy_static = "1.4"
 zstd = "0.13"
 reqwest = { version = "0.11", features = ["json"] }
 tracing-appender = "0.2"
+figment = { version = "0.10", features = ["yaml"] }
 arc-swap = "1"
 csv = "1"
 elastic_dsl_utilities.workspace = true

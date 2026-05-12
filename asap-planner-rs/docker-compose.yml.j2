@@ -13,4 +13,5 @@ services:
       "--prometheus-url", "{{ prometheus_url }}"{% if punting %},
       "--enable-punting"{% endif %}
     ]
+    network_mode: "host"
     restart: no

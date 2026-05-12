@@ -136,9 +136,9 @@ These parameters must be provided for all experiment scripts:
 
 #### `streaming.engine` (string, optional)
 - **Description**: Which streaming engine to use
-- **Default**: `"flink"`
-- **Choices**: `"flink"`, `"arroyo"`
-- **Example**: `"arroyo"`
+- **Default**: `"precompute"`
+- **Choices**: `"flink"`, `"arroyo"`, `"precompute"`
+- **Example**: `"precompute"`
 - **Usage**: Selects streaming processing framework
 
 #### `streaming.flink_input_format` (string, optional)

@@ -325,6 +325,11 @@ impl SQLPatternParser {
     }
 
     fn get_timestamp_from_datetime_str(datetime_str: &str) -> Option<f64> {
+        // parse_datetime treats timezone-naive strings (e.g. "2025-10-01 00:00:00",
+        // "2025-10-01T00:00:00") as local server time, matching ClickHouse's behavior —
+        // but only when both run in the same timezone. Z-suffix strings (e.g.
+        // "2025-10-01T00:00:00Z") are interpreted as UTC here but rejected by ClickHouse.
+        // Use space-format datetime strings ("YYYY-MM-DD HH:MM:SS") for portability.
         let parsed_datetime = parse_datetime(datetime_str).ok()?;
         Some(parsed_datetime.timestamp().as_second() as f64)
     }
