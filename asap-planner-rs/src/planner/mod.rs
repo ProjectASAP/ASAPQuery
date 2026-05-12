@@ -1,11 +1,11 @@
 pub mod agg_config;
 pub mod cleanup;
+pub mod elastic_dsl;
 pub mod labels;
 pub mod patterns;
 pub mod promql;
 pub mod sketch;
 pub mod sql;
 pub mod window;
-pub mod elastic_dsl;
 pub use agg_config::*;
 pub use promql::*;

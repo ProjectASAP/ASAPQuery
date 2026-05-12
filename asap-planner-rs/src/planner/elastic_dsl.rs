@@ -7,10 +7,10 @@ use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType,
 
 use crate::config::input::SketchParameterOverrides;
 use crate::error::ControllerError;
-use crate::planner::sketch::build_sketch_parameters;
-use crate::planner::window::IntermediateWindowConfig;
 use crate::planner::agg_config::{build_agg_configs_for_statistics, IntermediateAggConfig};
 use crate::planner::cleanup::get_sql_cleanup_param;
+use crate::planner::sketch::build_sketch_parameters;
+use crate::planner::window::IntermediateWindowConfig;
 use crate::StreamingEngine;
 
 pub struct ElasticSingleQueryProcessor {
@@ -126,7 +126,10 @@ fn get_elastic_statistics(
     match agg_type {
         ElasticAggregationType::Avg => {
             // AVG requires SUM and COUNT
-            Ok((QueryTreatmentType::Exact, vec![Statistic::Sum, Statistic::Count]))
+            Ok((
+                QueryTreatmentType::Exact,
+                vec![Statistic::Sum, Statistic::Count],
+            ))
         }
         ElasticAggregationType::Sum => Ok((QueryTreatmentType::Approximate, vec![Statistic::Sum])),
         ElasticAggregationType::Min => Ok((QueryTreatmentType::Exact, vec![Statistic::Min])),
@@ -145,7 +148,9 @@ fn get_elastic_statistics(
 }
 
 /// Extract field names from group by specification
-fn get_group_by_fields(bucket_spec: &elastic_dsl_utilities::ast_parsing::GroupBySpec) -> Vec<String> {
+fn get_group_by_fields(
+    bucket_spec: &elastic_dsl_utilities::ast_parsing::GroupBySpec,
+) -> Vec<String> {
     use elastic_dsl_utilities::ast_parsing::GroupBySpec;
     match bucket_spec {
         GroupBySpec::Fields(fields) => fields.clone(),

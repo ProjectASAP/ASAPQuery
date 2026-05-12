@@ -1,10 +1,9 @@
-
 use std::path::Path;
 
 use crate::config::input::ElasticDSLControllerConfig;
+use crate::elastic_dsl::generator::{generate_elastic_plan, ElasticRuntimeOptions};
 use crate::error::ControllerError;
 use crate::planner_output::PlannerOutput;
-use crate::elastic_dsl::generator::{ElasticRuntimeOptions, generate_elastic_plan};
 
 pub struct ElasticController {
     config: ElasticDSLControllerConfig,

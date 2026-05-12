@@ -10,10 +10,10 @@ use crate::generator::{
     build_aggregation_entry, build_queries_yaml, GeneratorOutput, KEY_AGGREGATIONS,
     KEY_CLEANUP_POLICY, KEY_NAME, KEY_QUERIES,
 };
-use elastic_dsl_utilities::ast_parsing::{extract_query_info, GroupBySpec, Predicate};
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::elastic_dsl::ElasticSingleQueryProcessor;
 use crate::StreamingEngine;
+use elastic_dsl_utilities::ast_parsing::{extract_query_info, GroupBySpec, Predicate};
 
 #[derive(Default)]
 struct ElasticIndexSchemaBuilder {

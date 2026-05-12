@@ -8,7 +8,6 @@ pub use helpers::*;
 
 use std::collections::{HashMap, HashSet};
 
-
 #[derive(Debug, Clone)]
 pub struct ElasticIndexSchema {
     pub time_field: String,
@@ -58,7 +57,9 @@ impl ElasticMappingSchema {
     }
 
     pub fn get_metadata_columns(&self, index: &str) -> Option<&HashSet<String>> {
-        self.config.get(index).map(|schema| &schema.metadata_columns)
+        self.config
+            .get(index)
+            .map(|schema| &schema.metadata_columns)
     }
 
     pub fn is_valid_metric_column(&self, index: &str, metric_column: &str) -> bool {

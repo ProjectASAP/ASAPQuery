@@ -8,9 +8,9 @@ use crate::aggregation_reference::AggregationReference;
 use crate::enums::{CleanupPolicy, QueryLanguage};
 use crate::promql_schema::PromQLSchema;
 use crate::query_config::QueryConfig;
+use elastic_dsl_utilities::{ElasticIndexSchema, ElasticMappingSchema};
 use promql_utilities::data_model::KeyByLabelNames;
 use sql_utilities::sqlhelper::{SQLSchema, Table};
-use elastic_dsl_utilities::{ElasticIndexSchema, ElasticMappingSchema};
 
 /// Schema configuration that can be either PromQL or SQL format
 #[derive(Debug, Clone)]
@@ -182,7 +182,9 @@ impl InferenceConfig {
             let metric_columns: HashSet<String> = index_data
                 .get("metric_columns")
                 .and_then(|v| v.as_sequence())
-                .ok_or_else(|| anyhow::anyhow!("Missing metric_columns field in elastic index {name}"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Missing metric_columns field in elastic index {name}")
+                })?
                 .iter()
                 .filter_map(|v| v.as_str())
                 .map(|s| s.to_string())
@@ -191,7 +193,9 @@ impl InferenceConfig {
             let metadata_columns: HashSet<String> = index_data
                 .get("metadata_columns")
                 .and_then(|v| v.as_sequence())
-                .ok_or_else(|| anyhow::anyhow!("Missing metadata_columns field in elastic index {name}"))?
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Missing metadata_columns field in elastic index {name}")
+                })?
                 .iter()
                 .filter_map(|v| v.as_str())
                 .map(|s| s.to_string())
