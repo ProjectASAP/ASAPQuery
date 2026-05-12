@@ -46,10 +46,10 @@ pub fn cms_matrix(sk: &RuntimeCountMin) -> Vec<Vec<f64>> {
     let rows = storage.rows();
     let cols = storage.cols();
     let mut out = vec![vec![0.0f64; cols]; rows];
-    for r in 0..rows {
-        for c in 0..cols {
+    for (r, row) in out.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
             if let Some(v) = storage.get(r, c) {
-                out[r][c] = *v;
+                *cell = *v;
             }
         }
     }
