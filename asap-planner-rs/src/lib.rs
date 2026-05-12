@@ -7,6 +7,7 @@ pub mod prometheus_client;
 pub mod promql;
 pub mod query_log;
 pub mod sql;
+pub mod elastic_dsl;
 
 pub use asap_types::PromQLSchema;
 pub use config::input::ControllerConfig;
@@ -19,6 +20,8 @@ pub use prometheus_client::build_schema_from_prometheus;
 pub use promql::Controller;
 pub use sql::SQLController;
 pub use sql::SQLRuntimeOptions;
+pub use elastic_dsl::ElasticController;
+pub use elastic_dsl::ElasticRuntimeOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamingEngine {

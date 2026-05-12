@@ -6,13 +6,13 @@ use std::collections::HashMap;
 
 use crate::config::input::ElasticDSLControllerConfig;
 use crate::error::ControllerError;
-use crate::output::generator::{
+use crate::generator::{
     build_aggregation_entry, build_queries_yaml, GeneratorOutput, KEY_AGGREGATIONS,
     KEY_CLEANUP_POLICY, KEY_NAME, KEY_QUERIES,
 };
 use elastic_dsl_utilities::ast_parsing::{extract_query_info, GroupBySpec, Predicate};
-use crate::planner::single_query::IntermediateAggConfig;
-use crate::planner::elastic_single_query::ElasticSingleQueryProcessor;
+use crate::planner::agg_config::IntermediateAggConfig;
+use crate::planner::elastic_dsl::ElasticSingleQueryProcessor;
 use crate::StreamingEngine;
 
 #[derive(Default)]

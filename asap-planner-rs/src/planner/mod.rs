@@ -6,5 +6,6 @@ pub mod promql;
 pub mod sketch;
 pub mod sql;
 pub mod window;
+pub mod elastic_dsl;
 pub use agg_config::*;
 pub use promql::*;

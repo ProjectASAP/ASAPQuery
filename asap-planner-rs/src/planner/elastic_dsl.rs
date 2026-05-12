@@ -7,8 +7,10 @@ use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType,
 
 use crate::config::input::SketchParameterOverrides;
 use crate::error::ControllerError;
-use crate::planner::logics::{build_sketch_parameters, get_sql_cleanup_param, IntermediateWindowConfig};
-use crate::planner::single_query::{build_agg_configs_for_statistics, IntermediateAggConfig};
+use crate::planner::sketch::build_sketch_parameters;
+use crate::planner::window::IntermediateWindowConfig;
+use crate::planner::agg_config::{build_agg_configs_for_statistics, IntermediateAggConfig};
+use crate::planner::cleanup::get_sql_cleanup_param;
 use crate::StreamingEngine;
 
 pub struct ElasticSingleQueryProcessor {
