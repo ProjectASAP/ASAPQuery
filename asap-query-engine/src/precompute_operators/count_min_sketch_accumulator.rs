@@ -3,8 +3,8 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, SerializableToSink,
 };
 use crate::precompute_operators::sketchlib_runtime::{
-    RuntimeCountMin, cms_estimate, cms_from_matrix, cms_from_msgpack, cms_matrix,
-    cms_merge_refs, cms_new, cms_to_msgpack, cms_update,
+    cms_estimate, cms_from_matrix, cms_from_msgpack, cms_matrix, cms_merge_refs, cms_new,
+    cms_to_msgpack, cms_update, RuntimeCountMin,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -241,8 +241,7 @@ impl MergeableAccumulator<CountMinSketchAccumulator> for CountMinSketchAccumulat
         if accumulators.is_empty() {
             return Err("No accumulators to merge".into());
         }
-        let inner_refs: Vec<&RuntimeCountMin> =
-            accumulators.iter().map(|acc| &acc.inner).collect();
+        let inner_refs: Vec<&RuntimeCountMin> = accumulators.iter().map(|acc| &acc.inner).collect();
         let merged_inner = cms_merge_refs(&inner_refs)?;
         Ok(Self {
             inner: merged_inner,
@@ -292,18 +291,10 @@ mod tests {
     #[test]
     fn test_count_min_sketch_merge() {
         let cms1 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(
-                vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]],
-                2,
-                3,
-            ),
+            inner: cms_from_matrix(vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]], 2, 3),
         };
         let cms2 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(
-                vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]],
-                2,
-                3,
-            ),
+            inner: cms_from_matrix(vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]], 2, 3),
         };
 
         let merged = CountMinSketchAccumulator::merge_accumulators(vec![cms1, cms2]).unwrap();
@@ -325,11 +316,7 @@ mod tests {
     #[test]
     fn test_count_min_sketch_serialization() {
         let cms = CountMinSketchAccumulator {
-            inner: cms_from_matrix(
-                vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]],
-                2,
-                3,
-            ),
+            inner: cms_from_matrix(vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]], 2, 3),
         };
 
         let bytes = cms.serialize_to_bytes();
@@ -402,25 +389,13 @@ mod tests {
     #[test]
     fn test_count_min_sketch_merge_multiple() {
         let cms1 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(
-                vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]],
-                2,
-                3,
-            ),
+            inner: cms_from_matrix(vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]], 2, 3),
         };
         let cms2 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(
-                vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]],
-                2,
-                3,
-            ),
+            inner: cms_from_matrix(vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]], 2, 3),
         };
         let cms3 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(
-                vec![vec![2.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]],
-                2,
-                3,
-            ),
+            inner: cms_from_matrix(vec![vec![2.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]], 2, 3),
         };
 
         let boxed_accs: Vec<Box<dyn AggregateCore>> =

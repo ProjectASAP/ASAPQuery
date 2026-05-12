@@ -166,11 +166,7 @@ pub fn kll_merge_refs(
     let k = first.k();
     for s in sketches {
         if s.k() != k {
-            return Err(format!(
-                "KLL k mismatch in merge: expected {k}, got {}",
-                s.k()
-            )
-            .into());
+            return Err(format!("KLL k mismatch in merge: expected {k}, got {}", s.k()).into());
         }
     }
     let mut merged = kll_new(k as u16);

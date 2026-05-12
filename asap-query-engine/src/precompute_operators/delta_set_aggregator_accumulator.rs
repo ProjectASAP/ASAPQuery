@@ -2,8 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::DeltaResult;
 use asap_sketchlib::message_pack_format::MessagePackCodec;
+use asap_sketchlib::DeltaResult;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 

@@ -265,7 +265,8 @@ async fn e2e_kll_output_matches_arroyo() {
 
     // Sketch contents
     assert_eq!(
-        handcrafted_acc.inner.k(), arroyo_acc.inner.k(),
+        handcrafted_acc.inner.k(),
+        arroyo_acc.inner.k(),
         "KLL k mismatch"
     );
     assert_eq!(
