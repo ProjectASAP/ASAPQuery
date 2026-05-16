@@ -518,6 +518,12 @@ def main(cfg: DictConfig):
                     http_port=http_port,
                     remote_write_port=args.remote_write_base_port,
                 )
+                # For precompute mode the query engine IS the Prometheus remote-write
+                # target (port remote_write_base_port). Prometheus is already running
+                # and retrying writes against that port, so block until the query
+                # engine's HTTP server is accepting connections before proceeding.
+                if args.streaming_engine == "precompute":
+                    query_engine_service.wait_until_ready()
 
         # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
         system_exporters_service.start(cfg.experiment_params)
