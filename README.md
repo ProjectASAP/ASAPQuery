@@ -4,9 +4,11 @@
 # ASAPQuery
 
 **ASAPQuery** is a drop-in query accelerator for queries in various languages like PromQL and SQL. ASAPQuery delivers:
-- **100x latency reduction** for various complex aggregate queries such as quantiles
-- **Configurable query accuracy**
-- **Ease-of-use with your existing tech stack**
+- 100x latency reduction for various complex aggregate queries such as quantiles
+- Lower CPU and memory usage during querying
+- Ease-of-use with your existing tech stack
+
+The current version of ASAPQuery works with a Prometheus-Grafana stack. We are extending it to work seamlessly with a Clickhouse-Grafana stack.
 
 ![ASAPQuery intercepts queries between Grafana and Prometheus, and accelerates them. It ingests data using Prometheus' remote_write interface](assets/img/asapquery_intro_figure.jpg)
 
@@ -14,9 +16,9 @@ ASAPQuery sits between Prometheus and Grafana. It intercepts queries from Grafan
 It ingests data using Prometheus' remote_write interface.
 ASAPQuery also targets other observability systems (e.g. VictoriaMetrics) and time-series databases (e.g. Clickhouse, Elastic).
 
-## Quick Start
+## Try ASAPQuery with our self-contained demo
 
-**Try ASAPQuery in 5 minutes** with our self-contained demo:
+Try ASAPQuery in 5 minutes with our self-contained demo:
 
 ```bash
 cd asap-quickstart
@@ -27,7 +29,9 @@ Open http://localhost:3000 and see ASAPQuery vs Prometheus side-by-side!
 
 Full quickstart instructions at [**Quickstart Guide**](asap-quickstart/README.md)
 
-**Already have Prometheus and Grafana running?** Use the drop-in instead:
+If you already have Prometheus and Grafana running, follow the instruction below for asap-dropin
+
+## Try ASAPQuery with your Prometheus-Grafana stack
 
 ```bash
 cd asap-dropin
@@ -36,42 +40,6 @@ docker compose up -d
 ```
 
 Full drop-in instructions at [**Drop-in Guide**](asap-dropin/README.md)
-
-## Why ASAPQuery?
-
-### The Problem
-
-Prometheus (and most time-series analytics) struggle with:
-- **High-cardinality metrics** that slow down queries
-- **Complex aggregations** such as percentiles
-- **Long time windows** - `quantile_over_time(...[1h])` can take seconds or fail
-- **Memory pressure** - Loading all raw timeseries required for query computation
-
-### The Solution
-
-ASAPQuery uses **streaming sketches** to:
-1. **Pre-compute approximate summaries** as data arrives
-2. **Answer queries in milliseconds** using compact sketches instead of raw data
-3. **Bound memory usage** - sketches are fixed-size regardless of data volume
-4. **Maintain high accuracy** - configurable error bounds (typically <1% error)
-
-## Architecture
-
-ASAPQuery has two main components: **asap-planner-rs** analyzes your PromQL query workload and generates sketch configurations, and **asap-query-engine** intercepts PromQL queries and serves them from pre-computed sketches. The query engine includes a built-in **precompute engine** that continuously builds sketches directly from live metrics via Prometheus `remote_write` — no external streaming infrastructure required.
-
-### Components
-
-- **[asap-planner-rs](asap-planner-rs/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-query-engine
-- **[asap-query-engine](asap-query-engine/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries; includes a built-in precompute engine that continuously builds sketches from live metrics via Prometheus `remote_write`
-
-### Repository Structure
-
-```
-├── asap-quickstart/         # Self-contained demo (start here!)
-├── asap-dropin/             # Drop-in for existing Prometheus-Grafana stacks
-├── asap-planner-rs/         # Auto-configuration service
-└── asap-query-engine/       # Query serving and sketch precomputation engine
-```
 
 ## Supported Queries
 
@@ -89,6 +57,32 @@ ASAPQuery accelerates PromQL queries that match the following patterns. Queries 
 **Binary arithmetic** — arithmetic combinations of the above patterns:
 - e.g. `rate(errors_total[5m]) / rate(requests_total[5m])`
 
+## Why ASAPQuery?
+
+### The Problem
+
+Prometheus (and most time-series analytics) struggle with:
+- High-cardinality metrics that slow down queries
+- Complex aggregations such as percentiles
+- Long time windows - `quantile_over_time(...[1h])` can take seconds or fail
+- Memory pressure - Loading all raw timeseries required for query computation
+
+### The Solution
+
+ASAPQuery uses streaming sketches to:
+1. Pre-compute approximate summaries as data arrives
+2. Answer queries in milliseconds using compact sketches instead of raw data
+3. Bound memory usage - sketches are fixed-size regardless of data volume
+
+## Architecture
+
+ASAPQuery has two main components: **asap-planner-rs** analyzes your PromQL query workload and generates sketch configurations, and **asap-query-engine** intercepts PromQL queries and serves them from pre-computed sketches. The query engine includes a built-in streaming engine that continuously builds sketches directly from live metrics via Prometheus `remote_write`.
+
+### Components
+
+- **[asap-planner-rs](asap-planner-rs/)** - Analyzes a PromQL query workload and auto-generates sketch configurations for asap-query-engine
+- **[asap-query-engine](asap-query-engine/)** - Intercepts incoming PromQL queries and serves them from pre-computed sketches, falling back to Prometheus for unsupported queries; includes a built-in precompute engine that continuously builds sketches from live metrics via Prometheus `remote_write`
+
 ## Coming soon
 
 1. Drop-in ASAPQuery artifact that accelerates Clickhouse queries
@@ -97,19 +91,16 @@ ASAPQuery accelerates PromQL queries that match the following patterns. Queries 
 
 ASAPQuery is currently alpha. There are missing features, known bugs, and possible performance issues. We will continue to work on these and create a more mature artifact.
 
+## Known limitations
+
+- Only supports a single Grafana dashboard at a time, configured to auto-refresh at a fixed interval
+- ASAPQuery ingests data via Prometheus `remote_write`, so the rightmost timestamps in Grafana may show no data even when data exists in Prometheus (data hasn't been ingested into ASAPQuery yet).
+
 ## Research
 
 ASAPQuery is part of [ProjectASAP](https://projectasap.github.io/), a joint effort by researchers at Carnegie Mellon University and University of Maryland.
 ASAPQuery is based on academic research on query processing and sketching algorithms.
 If you are a researcher interested in using or contributing to ASAPQuery, please [contact us](README.md#contact-us). We are happy to help you.
-
-## Development
-
-<instructions coming soon>
-
-## Contributing
-
-<instructions coming soon>
 
 ## License
 
