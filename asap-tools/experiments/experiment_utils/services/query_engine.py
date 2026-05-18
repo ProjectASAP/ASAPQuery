@@ -524,16 +524,17 @@ class QueryEngineRustService(BaseQueryEngineService):
     def _is_healthy_containerized(self) -> bool:
         """Check if Rust QueryEngine is healthy using containerized deployment."""
         try:
-            # Check if container is running
-            result = subprocess.run(
-                ["docker", "inspect", "-f", "{{.State.Running}}", self.container_name],
-                capture_output=True,
-                text=True,
-                check=True,
+            cmd = f"docker inspect -f '{{{{.State.Running}}}}' {self.container_name}"
+            result = self.provider.execute_command(
+                node_idx=self.node_offset,
+                cmd=cmd,
+                cmd_dir=None,
+                nohup=False,
+                popen=False,
+                ignore_errors=True,
             )
+            assert isinstance(result, subprocess.CompletedProcess)
             return result.stdout.strip() == "true"
-        except subprocess.CalledProcessError:
-            return False
         except Exception:
             return False
 
