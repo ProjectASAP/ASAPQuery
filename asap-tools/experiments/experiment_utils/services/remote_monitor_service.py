@@ -105,6 +105,7 @@ class RemoteMonitorService(BaseService):
                 "--monitor_output_file {} "
                 "--time_to_run {} "
                 "--node_offset {} "
+                "--streaming_engine {} "
             ).format(
                 experiment_mode,
                 ",".join(keywords),
@@ -117,6 +118,7 @@ class RemoteMonitorService(BaseService):
                 "monitor_output.json",
                 timed_duration,
                 self.node_offset,
+                streaming_engine,
             )
 
             cmd_dir = os.path.join(
@@ -176,6 +178,7 @@ class RemoteMonitorService(BaseService):
             "--monitor_output_file {} "
             "--prometheus_client_output_file {} "
             "--node_offset {} "
+            "--streaming_engine {} "
         ).format(
             experiment_mode,
             ",".join(keywords),
@@ -188,6 +191,7 @@ class RemoteMonitorService(BaseService):
             "monitor_output.json",
             "prometheus_client_output.txt",
             self.node_offset,
+            streaming_engine,
         )
 
         # Add container flag if enabled

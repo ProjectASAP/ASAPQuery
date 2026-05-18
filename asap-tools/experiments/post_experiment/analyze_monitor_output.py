@@ -61,17 +61,34 @@ def plot_resource_usage(data, file_path, args):
         keyword_to_pids[keyword].append(pid)
         get_line_style_for_keyword(keyword, keyword_to_style)
 
-    # Create plots for each resource type
+    # Create plots for each resource type; add thread-attributed CPU if present
     resources = [
         ("cpu_percent", "CPU Usage (%)", "cpu"),
         ("memory_info", "Memory Usage (MB)", "memory"),
     ]
+    if any("precompute_cpu_percent" in pid_info for pid_info in data.values()):
+        resources.append(
+            (
+                "precompute_cpu_percent",
+                "Precompute CPU Usage (%) [pc-worker threads]",
+                "precompute_cpu",
+            )
+        )
+        resources.append(
+            (
+                "query_cpu_percent",
+                "Query CPU Usage (%) [non-precompute threads]",
+                "query_cpu",
+            )
+        )
 
     for resource_key, resource_label, resource_name in resources:
         plt.figure(figsize=(20, 8))
 
         # Plot data for each PID
         for pid, pid_info in data.items():
+            if resource_key not in pid_info:
+                continue
             keyword = pid_info["keyword"]
             line_style = keyword_to_style[keyword]
 
@@ -144,6 +161,10 @@ def analyze_monitor_output(file_path: str, args=None):
             keyword_data[keyword] = {"cpu_percent": [], "memory_info": []}
         keyword_data[keyword]["cpu_percent"].append(pid_info["cpu_percent"])
         keyword_data[keyword]["memory_info"].append(pid_info["memory_info"])
+        for thread_field in ("precompute_cpu_percent", "query_cpu_percent"):
+            if thread_field in pid_info:
+                keyword_data[keyword].setdefault(thread_field, [])
+                keyword_data[keyword][thread_field].append(pid_info[thread_field])
 
     # Skip printing if --print not specified
     if not args or not args.print:
@@ -219,6 +240,26 @@ def analyze_monitor_output(file_path: str, args=None):
             print(f"  Last 10 values: {mem_sum_mb[-10:]}")
         else:
             print(f"  All values: {mem_sum_mb}")
+
+        # Thread-attributed CPU stats (only present for precompute engine PIDs)
+        for thread_field, label in [
+            ("precompute_cpu_percent", "Precompute CPU (pc-worker threads)"),
+            ("query_cpu_percent", "Query CPU (non-precompute threads)"),
+        ]:
+            if thread_field not in metrics:
+                continue
+            arrays = [np.array(a) for a in metrics[thread_field]]
+            max_len = max(len(a) for a in arrays)
+            padded = np.zeros((len(arrays), max_len))
+            for i, a in enumerate(arrays):
+                padded[i, : len(a)] = a
+            summed = np.sum(padded, axis=0)
+
+            print(f"\n{label} (sum across {len(arrays)} PIDs):")
+            print(f"  Median: {np.median(summed):.2f}%")
+            print(f"  P95:    {np.percentile(summed, 95):.2f}%")
+            print(f"  P99:    {np.percentile(summed, 99):.2f}%")
+            print(f"  Max:    {np.max(summed):.2f}%")
 
         # Optional: Print full time series to a separate file
         # output_dir = Path(file_path).parent

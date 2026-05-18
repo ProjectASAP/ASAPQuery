@@ -196,7 +196,7 @@ async fn main() -> Result<()> {
     // check_config() already enforces the ingest source is compatible (http_remote_write or csv).
     let mut pe_engine_handle: Option<PrecomputeEngineHandle> = None;
 
-    let precompute_handle = if config.streaming_engine == StreamingEngine::Precompute {
+    let _precompute_runtime = if config.streaming_engine == StreamingEngine::Precompute {
         let precompute_config = PrecomputeEngineConfig {
             num_workers: config.precompute_engine.num_workers,
             allowed_lateness_ms: config.precompute_engine.allowed_lateness_ms,
@@ -260,11 +260,18 @@ async fn main() -> Result<()> {
             spawn_memory_diagnostics(diag_store, Some(worker_diagnostics)).await;
         });
 
-        Some(tokio::spawn(async move {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .thread_name("pc-worker")
+            .worker_threads(config.precompute_engine.num_workers)
+            .enable_all()
+            .build()
+            .expect("failed to build precompute runtime");
+        rt.spawn(async move {
             if let Err(e) = pe.run().await {
                 error!("Precompute engine error: {}", e);
             }
-        }))
+        });
+        Some(rt)
     } else {
         let diag_store = store.clone();
         tokio::spawn(async move {
@@ -453,12 +460,6 @@ async fn main() -> Result<()> {
 
     if let Some(handle) = otel_handle {
         info!("Shutting down OTLP receiver...");
-        handle.abort();
-        let _ = handle.await;
-    }
-
-    if let Some(handle) = precompute_handle {
-        info!("Shutting down precompute engine...");
         handle.abort();
         let _ = handle.await;
     }

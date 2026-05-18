@@ -387,6 +387,7 @@ def main(cfg: DictConfig):
         local_experiment_dir,
         experiment_duration,
         is_v2,
+        args.streaming_engine,
     )
 
     print("-" * 60)
@@ -457,6 +458,7 @@ def start_resource_monitoring(
     local_experiment_dir: str,
     duration: int,
     is_v2: bool,
+    streaming_engine: str,
 ):
     """
     Start resource monitoring using remote_monitor.py in timed mode.
@@ -520,6 +522,7 @@ def start_resource_monitoring(
         "--monitor_output_file monitor_output.json "
         f"--time_to_run {duration} "
         f"--node_offset {node_offset} "
+        f"--streaming_engine {streaming_engine} "
     )
 
     cmd_dir = os.path.join(provider.get_home_dir(), "code", "asap-tools", "experiments")
