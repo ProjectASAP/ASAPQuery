@@ -44,14 +44,17 @@ def calculate_query_cpu(monitor_info, experiment_mode):
     pids = [pid for pid in monitor_info.keys() if pid != "all"]
 
     if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-        # Sum CPU across all PIDs except those with keyword="prometheus"
-        query_cpu = [0 for _ in range(len(monitor_info[pids[0]]["cpu_percent"]))]
+        # Use query_cpu_percent (thread-attributed) when available; fall back to cpu_percent.
+        query_cpu = [0.0 for _ in range(len(monitor_info[pids[0]]["cpu_percent"]))]
 
         for pid in pids:
             keyword = monitor_info[pid]["keyword"]
             if keyword != PROMETHEUS_PROCESS_KEYWORD:
-                for i in range(len(monitor_info[pid]["cpu_percent"])):
-                    query_cpu[i] += monitor_info[pid]["cpu_percent"][i]
+                source = monitor_info[pid].get(
+                    "query_cpu_percent", monitor_info[pid]["cpu_percent"]
+                )
+                for i in range(len(source)):
+                    query_cpu[i] += source[i]
 
         return query_cpu
 
@@ -78,6 +81,24 @@ def calculate_query_cpu(monitor_info, experiment_mode):
         raise AssertionError(
             f"Query CPU calculation not supported for mode: {experiment_mode}"
         )
+
+
+def calculate_precompute_cpu(monitor_info):
+    """
+    Sum precompute_cpu_percent across all PIDs that have thread attribution data.
+    Returns None if no thread attribution data is present.
+    """
+    pids = [pid for pid in monitor_info.keys() if pid != "all"]
+    precompute_cpu = None
+    for pid in pids:
+        if "precompute_cpu_percent" in monitor_info[pid]:
+            if precompute_cpu is None:
+                precompute_cpu = [0.0] * len(
+                    monitor_info[pid]["precompute_cpu_percent"]
+                )
+            for i, v in enumerate(monitor_info[pid]["precompute_cpu_percent"]):
+                precompute_cpu[i] += v
+    return precompute_cpu
 
 
 def plot_resource_usage(monitor_info, experiment_mode, args):
@@ -265,6 +286,7 @@ def main(args):
 
     experiment_mode_to_overall_resource_usage = {}
     experiment_mode_to_query_cpu = {}
+    experiment_mode_to_precompute_cpu = {}
 
     for experiment_mode in experiment_modes:
         if not args.machine_readable:
@@ -329,6 +351,11 @@ def main(args):
         except (AssertionError, ValueError) as e:
             if not args.machine_readable:
                 print(f"Skipping Query CPU calculation for {experiment_mode}: {e}")
+
+        # Calculate Precompute CPU (thread-attributed, sketchdb only)
+        precompute_cpu = calculate_precompute_cpu(monitor_info)
+        if precompute_cpu is not None:
+            experiment_mode_to_precompute_cpu[experiment_mode] = precompute_cpu
 
         # Initialize mode data for machine-readable output
         if args.machine_readable:
@@ -455,6 +482,31 @@ def main(args):
 
             if args.machine_readable:
                 machine_readable_output["query_cpu_benefit"] = query_cpu_benefit
+
+    # Handle Precompute CPU statistics
+    if experiment_mode_to_precompute_cpu:
+        if not args.machine_readable and args.print:
+            print("\n" + "=" * 60)
+            print("Precompute CPU Statistics (pc-worker threads)")
+            print("=" * 60)
+
+        precompute_cpu_stats = {}
+        for (
+            experiment_mode,
+            precompute_cpu,
+        ) in experiment_mode_to_precompute_cpu.items():
+            precompute_cpu_stats[experiment_mode] = {}
+            if not args.machine_readable and args.print:
+                print(f"\n{experiment_mode}:")
+
+            for stat, agg_func in relevant_stats.items():
+                value = agg_func(precompute_cpu)
+                precompute_cpu_stats[experiment_mode][stat] = value
+                if not args.machine_readable and args.print:
+                    print(f"  {stat}: {round(value, 2)}%")
+
+        if args.machine_readable:
+            machine_readable_output["precompute_cpu"] = precompute_cpu_stats
 
     # Output machine-readable results
     if args.machine_readable:

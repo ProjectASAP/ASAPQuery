@@ -270,6 +270,12 @@ def main(args):
         ["memory_info", "cpu_percent"],
         include_children=True,
         hooks=monitor_hooks,
+        thread_attribution_keyword=(
+            constants.QUERY_ENGINE_RS_CONTAINER_NAME
+            if args.streaming_engine == "precompute"
+            and args.experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
+            else None
+        ),
     )
 
     if args.profile_flink_pids:
@@ -416,6 +422,12 @@ if __name__ == "__main__":
         "--node_offset",
         type=int,
         required=True,
+    )
+    parser.add_argument(
+        "--streaming_engine",
+        type=str,
+        required=True,
+        help="Streaming engine type (e.g. precompute, arroyo)",
     )
     args = parser.parse_args()
     args.keywords = args.keywords.strip().split(",")

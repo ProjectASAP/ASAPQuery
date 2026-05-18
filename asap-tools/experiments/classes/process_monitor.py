@@ -2,7 +2,7 @@ import multiprocessing
 import time
 import psutil
 import traceback
-from typing import List, Any
+from typing import List, Any, Optional
 from classes.ProcessMonitorHook import ProcessMonitorHook, ProcessMetricSnapshot
 
 _PRECOMPUTE_THREAD_PREFIX = "pc-worker"
@@ -39,6 +39,7 @@ class MyMonitor(multiprocessing.Process):
         monitors,
         hooks: List[ProcessMonitorHook],
         include_children=False,
+        thread_attribution_keyword: Optional[str] = None,
     ):
         super(MyMonitor, self).__init__()
         self.pids_to_monitor = pids_to_monitor
@@ -48,6 +49,7 @@ class MyMonitor(multiprocessing.Process):
         self.monitors = monitors
         self.hooks = hooks
         self.include_children = include_children
+        self.thread_attribution_keyword = thread_attribution_keyword
 
         assert len(self.pids_to_monitor) == len(self.keywords)
 
@@ -58,20 +60,24 @@ class MyMonitor(multiprocessing.Process):
             self.pid_monitor_map[pid] = {m: [] for m in self.monitors}
             self.pid_monitor_map[pid]["keyword"] = keyword
 
-        self._prev_thread_jiffies: dict = {}
-        self._prev_poll_monotonic: float = 0.0
-
-        for pid in self.pids_to_monitor:
-            self.pid_monitor_map[pid]["precompute_cpu_percent"] = []
-            self.pid_monitor_map[pid]["query_cpu_percent"] = []
+        if self.thread_attribution_keyword is not None:
+            self._prev_thread_jiffies: dict = {}
+            self._prev_poll_monotonic: float = 0.0
+            for pid, keyword in zip(self.pids_to_monitor, self.keywords):
+                if keyword == self.thread_attribution_keyword:
+                    self.pid_monitor_map[pid]["precompute_cpu_percent"] = []
+                    self.pid_monitor_map[pid]["query_cpu_percent"] = []
 
     def add_child_pid_to_map(self, pid, child_pid):
         self.pid_monitor_map[child_pid] = {m: [] for m in self.monitors}
-        self.pid_monitor_map[child_pid]["keyword"] = self.pid_monitor_map[pid][
-            "keyword"
-        ]
-        self.pid_monitor_map[child_pid]["precompute_cpu_percent"] = []
-        self.pid_monitor_map[child_pid]["query_cpu_percent"] = []
+        keyword = self.pid_monitor_map[pid]["keyword"]
+        self.pid_monitor_map[child_pid]["keyword"] = keyword
+        if (
+            self.thread_attribution_keyword is not None
+            and keyword == self.thread_attribution_keyword
+        ):
+            self.pid_monitor_map[child_pid]["precompute_cpu_percent"] = []
+            self.pid_monitor_map[child_pid]["query_cpu_percent"] = []
 
     def init_hooks(self):
         """
@@ -170,26 +176,39 @@ class MyMonitor(multiprocessing.Process):
         self.init_hooks()
         self.pipe.send("ready")
 
-        self._prev_poll_monotonic = time.monotonic()
-        for pid in self.pids_to_monitor:
-            self._prev_thread_jiffies[pid] = _read_thread_cpu(pid)
+        if self.thread_attribution_keyword is not None:
+            self._prev_poll_monotonic = time.monotonic()
+            for pid, keyword in zip(self.pids_to_monitor, self.keywords):
+                if keyword == self.thread_attribution_keyword:
+                    self._prev_thread_jiffies[pid] = _read_thread_cpu(pid)
 
         try:
             while True:
-                now = time.monotonic()
-                elapsed = now - self._prev_poll_monotonic
-                self._prev_poll_monotonic = now
+                if self.thread_attribution_keyword is not None:
+                    now = time.monotonic()
+                    elapsed = now - self._prev_poll_monotonic
+                    self._prev_poll_monotonic = now
 
                 iteration_info = []
                 for pid, p in self.psutil_handles.items():
                     iteration_info += self.update_pid_monitor_map(p)
-                    self._compute_thread_group_cpu(pid, elapsed)
+                    if (
+                        self.thread_attribution_keyword is not None
+                        and self.pid_monitor_map[pid]["keyword"]
+                        == self.thread_attribution_keyword
+                    ):
+                        self._compute_thread_group_cpu(pid, elapsed)
                     if self.include_children:
                         for child in p.children(recursive=True):
                             if child.pid not in self.pid_monitor_map:
                                 self.add_child_pid_to_map(pid, child.pid)
                             iteration_info += self.update_pid_monitor_map(child)
-                            self._compute_thread_group_cpu(child.pid, elapsed)
+                            if (
+                                self.thread_attribution_keyword is not None
+                                and self.pid_monitor_map[child.pid]["keyword"]
+                                == self.thread_attribution_keyword
+                            ):
+                                self._compute_thread_group_cpu(child.pid, elapsed)
 
                 self.update_hooks(iteration_info)
                 stop = self.pipe.poll(self.interval)
@@ -213,6 +232,7 @@ def start_monitor(
     monitor_metrics,
     include_children,
     hooks: List[ProcessMonitorHook],
+    thread_attribution_keyword: Optional[str] = None,
 ):
     control_pipe, monitor_pipe = multiprocessing.Pipe()
     monitor = MyMonitor(
@@ -223,6 +243,7 @@ def start_monitor(
         monitor_metrics,
         hooks,
         include_children=include_children,
+        thread_attribution_keyword=thread_attribution_keyword,
     )
     monitor.start()
     control_pipe.recv()
