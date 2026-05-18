@@ -16,7 +16,7 @@ Then it adds ASAPQuery's components on top:
 - **Query Engine** - Prometheus-compatible API with sketch-based acceleration and built-in precompute engine
 - **asap-planner-rs** - Automatically configures sketches from PromQL queries
 
-Once you run the quickstart, you will see a pre-configured Grafana dashboard that compares Prometheues and ASAPQuery side-by-side. You will see **visually indistinguishable** results from Prometheus and ASAPQuery, with ASAPQuery being 100x faster
+Once you run the quickstart, you will see a pre-configured Grafana dashboard that compares Prometheues and ASAPQuery side-by-side. You will see almost indistinguishable results from Prometheus and ASAPQuery, with ASAPQuery's dashboard refreshing much faster.
 
 ## Prerequisites
 
