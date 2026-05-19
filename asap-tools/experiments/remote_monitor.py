@@ -162,6 +162,56 @@ def stop_profiling_arroyo_pids(
     logger.debug("Stopped profiling for arroyo pids")
 
 
+def start_profiling_query_engine_pids(qe_pids, experiment_output_dir):
+    qe_perf_procs = []
+    qe_profiles_dir = os.path.join(experiment_output_dir, "query_engine_profiles")
+    os.makedirs(qe_profiles_dir, exist_ok=True)
+
+    for pid in qe_pids:
+        output_file = os.path.join(qe_profiles_dir, f"perf_{pid}.data")
+        cmd = [
+            "perf",
+            "record",
+            "-g",
+            "--call-graph",
+            "dwarf",
+            "-F",
+            "997",
+            "-o",
+            output_file,
+            "--pid",
+            str(pid),
+        ]
+        logger.debug(f"Starting perf record for PID {pid} with command: {cmd}")
+        proc = subprocess.Popen(cmd)
+        qe_perf_procs.append(proc)
+
+    logger.debug(
+        f"Started perf record processes with PIDs: {[p.pid for p in qe_perf_procs]}"
+    )
+    return qe_perf_procs
+
+
+def stop_profiling_query_engine_pids(qe_perf_procs, store: bool):
+    for proc in qe_perf_procs:
+        try:
+            os.kill(proc.pid, signal.SIGTERM)
+            logger.debug(f"Stopped perf record process PID: {proc.pid}")
+        except ProcessLookupError:
+            logger.debug(f"Perf record process PID {proc.pid} already terminated")
+    for proc in qe_perf_procs:
+        try:
+            proc.wait(timeout=60)
+            logger.debug(
+                f"Perf record process PID {proc.pid} exited with code {proc.returncode}"
+            )
+        except subprocess.TimeoutExpired:
+            logger.debug(
+                f"Perf record process PID {proc.pid} did not terminate within 60s"
+            )
+    logger.debug("Stopped profiling for query engine pids")
+
+
 # TODO Provide some way of specifying which hooks will be used
 def get_process_monitor_hooks(
     export_cost: bool, provider, node_offset: int
@@ -233,14 +283,23 @@ def main(args):
         logger.error("No matching processes found.")
         return
 
-    profile_query_engine_pid = None
+    profile_query_engine_pid = (
+        None  # unused for Rust QE; kept for PrometheusClientService compat
+    )
+    qe_flamegraph_procs = None
     if args.profile_query_engine:
-        if (
-            constants.QUERY_ENGINE_RS_PROCESS_KEYWORD in args.keywords
-            or constants.QUERY_ENGINE_RS_CONTAINER_NAME in args.keywords
-        ):
-            raise NotImplementedError(
-                "Profiling for Rust query engine is not implemented yet"
+        if constants.QUERY_ENGINE_RS_CONTAINER_NAME in args.keywords:
+            raise ValueError(
+                "Rust query engine profiling requires bare-metal mode. "
+                "Set use_container.query_engine: false in config."
+            )
+        if constants.QUERY_ENGINE_RS_PROCESS_KEYWORD in args.keywords:
+            qe_pids = get_pids(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
+            stop_profiling_query_engine_pids(
+                [], store=False
+            )  # clear any stale profilers
+            qe_flamegraph_procs = start_profiling_query_engine_pids(
+                qe_pids, args.experiment_output_dir
             )
 
     logger.debug("Starting process monitors")
@@ -344,6 +403,10 @@ def main(args):
         stop_profiling_arroyo_pids(
             arroyo_flamegraph_pids, args.experiment_output_dir, store=True
         )
+
+    if qe_flamegraph_procs:
+        logger.debug("Stopping profiling for query engine pids")
+        stop_profiling_query_engine_pids(qe_flamegraph_procs, store=True)
 
     logger.debug("Stopping process monitors")
     monitor_info = process_monitor.stop_monitor(monitor, control_pipe, monitor_pipe)
