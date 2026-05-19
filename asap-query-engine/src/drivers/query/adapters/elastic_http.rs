@@ -91,7 +91,7 @@ impl QueryRequestAdapter for ElasticHttpAdapter {
         match self.config.language {
             QueryLanguage::elastic_sql => "/_sql",
             QueryLanguage::elastic_querydsl => "/_search",
-            _ => panic!("Invalid query language configured for Elastic"),
+            _ => unreachable!("Elastic adapter config is validated at startup"),
         }
     }
 

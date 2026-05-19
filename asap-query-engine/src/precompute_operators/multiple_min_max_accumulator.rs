@@ -17,31 +17,40 @@ pub struct MultipleMinMaxAccumulator {
 }
 
 impl MultipleMinMaxAccumulator {
-    pub fn new(sub_type: String) -> Self {
+    pub fn new(sub_type: String) -> Result<Self, String> {
         if sub_type != "min" && sub_type != "max" {
-            panic!("sub_type must be 'min' or 'max'");
+            return Err(format!("sub_type must be 'min' or 'max', got '{sub_type}'"));
         }
 
-        Self {
+        Ok(Self {
             values: HashMap::new(),
             sub_type,
-        }
+        })
     }
 
     pub fn new_min() -> Self {
-        Self::new("min".to_string())
+        Self {
+            values: HashMap::new(),
+            sub_type: "min".to_string(),
+        }
     }
 
     pub fn new_max() -> Self {
-        Self::new("max".to_string())
+        Self {
+            values: HashMap::new(),
+            sub_type: "max".to_string(),
+        }
     }
 
-    pub fn new_with_values(values: HashMap<KeyByLabelValues, f64>, sub_type: String) -> Self {
+    pub fn new_with_values(
+        values: HashMap<KeyByLabelValues, f64>,
+        sub_type: String,
+    ) -> Result<Self, String> {
         if sub_type != "min" && sub_type != "max" {
-            panic!("sub_type must be 'min' or 'max'");
+            return Err(format!("sub_type must be 'min' or 'max', got '{sub_type}'"));
         }
 
-        Self { values, sub_type }
+        Ok(Self { values, sub_type })
     }
 
     pub fn update(&mut self, key: KeyByLabelValues, value: f64) {
@@ -58,7 +67,7 @@ impl MultipleMinMaxAccumulator {
                     *current = value;
                 }
             }
-            _ => panic!("Invalid sub_type"),
+            _ => unreachable!("MultipleMinMaxAccumulator sub_type is always 'min' or 'max'"),
         }
     }
 
@@ -313,7 +322,7 @@ impl MergeableAccumulator<MultipleMinMaxAccumulator> for MultipleMinMaxAccumulat
             }
         }
 
-        let mut result = MultipleMinMaxAccumulator::new(sub_type.clone());
+        let mut result = MultipleMinMaxAccumulator::new(sub_type.clone())?;
 
         for acc in accumulators {
             for (key, value) in acc.values {

@@ -829,7 +829,7 @@ fn test_clone_fidelity_sum(strategy: LockStrategy) {
 }
 
 fn test_clone_fidelity_min_max(strategy: LockStrategy) {
-    let acc = MinMaxAccumulator::with_value(42.0, "max".to_string());
+    let acc = MinMaxAccumulator::with_value(42.0, "max".to_string()).unwrap();
     roundtrip(strategy, acc);
 }
 
@@ -858,7 +858,7 @@ fn test_clone_fidelity_multiple_min_max(strategy: LockStrategy) {
     let mut values = HashMap::new();
     values.insert(key(&["dc", "east"]), 77.7);
     values.insert(key(&["dc", "west"]), 33.3);
-    let acc = MultipleMinMaxAccumulator::new_with_values(values, "max".to_string());
+    let acc = MultipleMinMaxAccumulator::new_with_values(values, "max".to_string()).unwrap();
     roundtrip(strategy, acc);
 }
 

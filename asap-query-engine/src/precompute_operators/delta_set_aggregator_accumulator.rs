@@ -247,7 +247,7 @@ impl AggregateCore for DeltaSetAggregatorAccumulator {
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
         if !self.removed.is_empty() {
-            panic!("DeltaSetAggregatorAccumulator does not support get_keys when removed items are present");
+            return None;
         }
         Some(self.added.iter().cloned().collect())
     }
