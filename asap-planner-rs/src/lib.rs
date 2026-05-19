@@ -14,6 +14,7 @@ pub use config::input::ControllerConfig;
 pub use config::input::ElasticDSLControllerConfig;
 pub use config::input::SQLControllerConfig;
 pub use elastic_dsl::ElasticController;
+pub use elastic_dsl::ElasticIndexSchemaBuilder;
 pub use elastic_dsl::ElasticRuntimeOptions;
 pub use error::ControllerError;
 pub use generator::{GeneratorOutput, PuntedQuery};

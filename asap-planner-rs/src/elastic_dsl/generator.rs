@@ -15,14 +15,24 @@ use crate::planner::elastic_dsl::ElasticSingleQueryProcessor;
 use crate::StreamingEngine;
 use elastic_dsl_utilities::ast_parsing::{extract_query_info, GroupBySpec, Predicate};
 
-#[derive(Default)]
-struct ElasticIndexSchemaBuilder {
-    time_field: Option<String>,
-    metric_columns: IndexSet<String>,
-    metadata_columns: IndexSet<String>,
+#[derive(Default, Clone)]
+pub struct ElasticIndexSchemaBuilder {
+    pub index: String,
+    pub time_field: Option<String>,
+    pub metric_columns: IndexSet<String>,
+    pub metadata_columns: IndexSet<String>,
 }
 
 impl ElasticIndexSchemaBuilder {
+    fn new(index: String) -> Self {
+        Self {
+            index,
+            time_field: None,
+            metric_columns: IndexSet::new(),
+            metadata_columns: IndexSet::new(),
+        }
+    }
+
     fn update_from_query_info(
         &mut self,
         query_info: &elastic_dsl_utilities::ast_parsing::ElasticDSLQueryInfo,
@@ -90,6 +100,7 @@ pub fn generate_elastic_plan(
     // index -> schema builder derived from the queries targeting that index
     let mut index_schema_builders: IndexMap<String, ElasticIndexSchemaBuilder> = IndexMap::new();
 
+    // First pass to build index schema builders from query info.
     for qg in &config.query_groups {
         let index = resolve_elastic_index(config, qg)?;
         for query_string in &qg.queries {
@@ -102,14 +113,20 @@ pub fn generate_elastic_plan(
 
             index_schema_builders
                 .entry(index.clone())
-                .or_default()
+                .or_insert_with(|| ElasticIndexSchemaBuilder::new(index.clone()))
                 .update_from_query_info(&query_info)?;
+        }
+    }
 
+    // Second pass to build aggregation configs and query mappings.
+    for qg in &config.query_groups {
+        let index = resolve_elastic_index(config, qg)?;
+        for query_string in &qg.queries {
             let processor = ElasticSingleQueryProcessor::new(
                 query_string.clone(),
                 qg.repetition_delay,
                 opts.data_ingestion_interval,
-                index.clone(),
+                index_schema_builders[&index].clone(),
                 opts.streaming_engine,
                 config.sketch_parameters.clone(),
                 cleanup_policy,
@@ -133,9 +150,8 @@ pub fn generate_elastic_plan(
         id_map.insert(key.clone(), idx as u32 + 1);
     }
 
-    let streaming_yaml = build_elastic_streaming_yaml(config, &dedup_map, &id_map)?;
+    let streaming_yaml = build_elastic_streaming_yaml(&dedup_map, &id_map)?;
     let inference_yaml = build_elastic_inference_yaml(
-        config,
         cleanup_policy,
         &query_keys_map,
         &id_map,
@@ -152,7 +168,6 @@ pub fn generate_elastic_plan(
 }
 
 fn build_elastic_streaming_yaml(
-    _config: &ElasticDSLControllerConfig,
     dedup_map: &IndexMap<String, IntermediateAggConfig>,
     id_map: &HashMap<String, u32>,
 ) -> Result<YamlValue, ControllerError> {
@@ -171,7 +186,6 @@ fn build_elastic_streaming_yaml(
 }
 
 fn build_elastic_inference_yaml(
-    _config: &ElasticDSLControllerConfig,
     cleanup_policy: CleanupPolicy,
     query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
     id_map: &HashMap<String, u32>,

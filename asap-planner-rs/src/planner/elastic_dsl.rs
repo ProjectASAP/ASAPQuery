@@ -1,7 +1,9 @@
+use crate::ElasticIndexSchemaBuilder;
 use asap_types::enums::{CleanupPolicy, WindowType};
 use elastic_dsl_utilities::ast_parsing::{
     extract_query_info, AggregationType as ElasticAggregationType,
 };
+use elastic_dsl_utilities::range_query_to_time_range;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
 
@@ -18,7 +20,7 @@ pub struct ElasticSingleQueryProcessor {
     t_repeat: u64,
     #[allow(dead_code)]
     data_ingestion_interval: u64,
-    index: String,
+    index_schema: ElasticIndexSchemaBuilder,
     #[allow(dead_code)]
     streaming_engine: StreamingEngine,
     sketch_parameters: Option<SketchParameterOverrides>,
@@ -31,7 +33,7 @@ impl ElasticSingleQueryProcessor {
         query_string: String,
         t_repeat: u64,
         data_ingestion_interval: u64,
-        index: String,
+        index_schema: ElasticIndexSchemaBuilder,
         streaming_engine: StreamingEngine,
         sketch_parameters: Option<SketchParameterOverrides>,
         cleanup_policy: CleanupPolicy,
@@ -40,7 +42,7 @@ impl ElasticSingleQueryProcessor {
             query_string,
             t_repeat,
             data_ingestion_interval,
-            index,
+            index_schema,
             streaming_engine,
             sketch_parameters,
             cleanup_policy,
@@ -75,10 +77,19 @@ impl ElasticSingleQueryProcessor {
         let (spatial_output, rollup) = match &query_info.group_by_buckets {
             Some(bucket_spec) => {
                 let group_fields = get_group_by_fields(bucket_spec);
-                let spatial = KeyByLabelNames::new(group_fields);
-                // For Elasticsearch, all potentially available fields become rollup
-                // when they're not in the group by
-                (spatial.clone(), spatial)
+                let temp: indexmap::IndexSet<String> = group_fields.clone().into_iter().collect();
+                let rollup = self
+                    .index_schema
+                    .metadata_columns
+                    .difference(&temp)
+                    .cloned()
+                    .collect();
+                (
+                    KeyByLabelNames {
+                        labels: group_fields,
+                    },
+                    KeyByLabelNames { labels: rollup },
+                )
             }
             None => (KeyByLabelNames::empty(), KeyByLabelNames::empty()),
         };
@@ -90,7 +101,7 @@ impl ElasticSingleQueryProcessor {
             &rollup,
             &window_cfg,
             &query_info.target_field,
-            Some(&self.index),
+            Some(&self.index_schema.index),
             Some(&target_field),
             "", // Elasticsearch doesn't have spatial filters like SQL
             |agg_type: AggregationType, agg_sub_type: &str| {
@@ -104,8 +115,16 @@ impl ElasticSingleQueryProcessor {
         )
         .map_err(ControllerError::ElasticDSLParse)?;
 
+        let time_range = query_info
+            .predicates
+            .first()
+            .and_then(|p| range_query_to_time_range(p, 0));
+        let t_lookback = match time_range {
+            Some(tr) => tr.duration_ms().unwrap_or(self.t_repeat),
+            None => self.t_repeat, // Default to repetition delay if no time range found
+        };
+
         // Calculate cleanup param based on query's time window
-        let t_lookback = self.t_repeat; // Default to repetition delay
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {
             None
         } else {

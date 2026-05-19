@@ -214,10 +214,9 @@ fn infer_time_field(predicates: &[Predicate]) -> FieldName {
             let bound_is_time_like = gte.iter().chain(lte.iter()).any(|term| {
                 matches!(term, TermValue::String(value) if TimeRange::parse_date_math(value.as_str(), 0).is_some())
             });
-            let looks_like_time_field = field == "@timestamp"
-                || field.contains("time")
-                || field.contains("timestamp")
-                || bound_is_time_like;
+            let looks_like_time_field =
+                (field == "@timestamp" || field == "timestamp" || field.ends_with("_time"))
+                    && bound_is_time_like;
 
             if looks_like_time_field {
                 return field.clone();
