@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, warn};
 
+use crate::precompute_operators::AccumulatorError;
 use crate::AggregateCore;
 
 use asap_types::enums::WindowType;
@@ -1094,9 +1095,9 @@ impl SimpleEngine {
     fn merge_accumulators(
         &self,
         accumulators: &[Box<dyn crate::data_model::AggregateCore>],
-    ) -> Result<Box<dyn crate::data_model::AggregateCore>, String> {
+    ) -> Result<Box<dyn crate::data_model::AggregateCore>, AccumulatorError> {
         if accumulators.is_empty() {
-            return Err("merge_accumulators called with empty slice".to_string());
+            return Err(AccumulatorError::EmptySlice);
         }
 
         if accumulators.len() == 1 {

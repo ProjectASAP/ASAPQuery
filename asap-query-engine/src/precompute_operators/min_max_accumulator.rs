@@ -1,3 +1,4 @@
+use super::error::AccumulatorError;
 use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
@@ -29,17 +30,17 @@ impl MinMaxAccumulator {
         }
     }
 
-    pub fn new(sub_type: String) -> Result<Self, String> {
+    pub fn new(sub_type: String) -> Result<Self, AccumulatorError> {
         match sub_type.as_str() {
             "min" => Ok(Self::new_min()),
             "max" => Ok(Self::new_max()),
-            _ => Err(format!("sub_type must be 'min' or 'max', got '{sub_type}'")),
+            _ => Err(AccumulatorError::InvalidSubType(sub_type)),
         }
     }
 
-    pub fn with_value(value: f64, sub_type: String) -> Result<Self, String> {
+    pub fn with_value(value: f64, sub_type: String) -> Result<Self, AccumulatorError> {
         if sub_type != "min" && sub_type != "max" {
-            return Err(format!("sub_type must be 'min' or 'max', got '{sub_type}'"));
+            return Err(AccumulatorError::InvalidSubType(sub_type));
         }
         Ok(Self { value, sub_type })
     }
@@ -120,7 +121,7 @@ impl MergeableAccumulator<MinMaxAccumulator> for MinMaxAccumulator {
         accumulators: Vec<MinMaxAccumulator>,
     ) -> Result<MinMaxAccumulator, Box<dyn std::error::Error + Send + Sync>> {
         if accumulators.is_empty() {
-            return Err("No accumulators to merge".into());
+            return Err(AccumulatorError::EmptySlice.into());
         }
 
         let sub_type = &accumulators[0].sub_type;
@@ -128,7 +129,11 @@ impl MergeableAccumulator<MinMaxAccumulator> for MinMaxAccumulator {
         // Verify all accumulators have the same sub_type
         for acc in &accumulators {
             if acc.sub_type != *sub_type {
-                return Err("Cannot merge accumulators with different sub_types".into());
+                return Err(AccumulatorError::MergeTypeMismatch {
+                    expected: sub_type.clone(),
+                    got: acc.sub_type.clone(),
+                }
+                .into());
             }
         }
 
@@ -396,5 +401,17 @@ mod tests {
         assert_eq!(acc.query(Statistic::Max, None).unwrap(), 42.0);
         assert!(acc.query(Statistic::Min, None).is_err());
         assert_eq!(acc.type_name(), "MinMaxAccumulator");
+    }
+
+    #[test]
+    fn test_new_invalid_sub_type() {
+        let err = MinMaxAccumulator::new("mean".to_string()).unwrap_err();
+        assert!(matches!(err, AccumulatorError::InvalidSubType(s) if s == "mean"));
+    }
+
+    #[test]
+    fn test_with_value_invalid_sub_type() {
+        let err = MinMaxAccumulator::with_value(1.0, "sum".to_string()).unwrap_err();
+        assert!(matches!(err, AccumulatorError::InvalidSubType(s) if s == "sum"));
     }
 }
