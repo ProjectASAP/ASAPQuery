@@ -106,7 +106,6 @@ class QueryEngineRustService(BaseQueryEngineService):
                                should match streaming.remote_write.base_port in the Hydra config
             dump_precomputes: Whether to dump received precomputes to output_dir for debugging
             lock_strategy: Lock strategy for SimpleMapStore ('global' or 'per-key')
-            profile_query_engine: Whether to enable do_profiling in the engine
             kafka_broker: Kafka broker address, e.g. '10.10.1.1:9092' (arroyo only)
 
         Returns:
@@ -138,7 +137,6 @@ class QueryEngineRustService(BaseQueryEngineService):
             "log_level": log_level,
             "prometheus_scrape_interval": prometheus_scrape_interval,
             "streaming_engine": streaming_engine,
-            "do_profiling": profile_query_engine,
             "http_server": {"port": http_port},
             "backend": backend,  # already fully resolved by caller
             "store": {"lock_strategy": lock_strategy},

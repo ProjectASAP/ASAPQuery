@@ -521,6 +521,18 @@ def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
                 "--no_teardown can only be used with a single experiment mode"
             )
 
+    # Profiling the Rust query engine requires bare-metal mode (debug symbols unavailable in container)
+    if (
+        hasattr(cfg, "profiling")
+        and cfg.profiling.get("query_engine", False)
+        and hasattr(cfg, "use_container")
+        and cfg.use_container.get("query_engine", True)
+    ):
+        raise ValueError(
+            "profiling.query_engine=true requires use_container.query_engine=false. "
+            "Container builds discard debug symbols, making flamegraph output unreadable."
+        )
+
     # Validate aggregate cleanup policy
     valid_policies = ["circular_buffer", "read_based", "no_cleanup"]
     if hasattr(cfg, "aggregate_cleanup") and hasattr(cfg.aggregate_cleanup, "policy"):

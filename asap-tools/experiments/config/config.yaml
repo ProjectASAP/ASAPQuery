@@ -18,7 +18,7 @@ logging:
 
 # Profiling options
 profiling:
-  query_engine: false
+  query_engine: false  # Rust query engine only; requires use_container.query_engine: false
   prometheus_time: null  # Optional[int]
   flink: false
   arroyo: false

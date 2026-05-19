@@ -38,3 +38,6 @@ datafusion_summary_library = { path = "asap-common/dependencies/rs/datafusion_su
 elastic_dsl_utilities = { path = "asap-common/dependencies/rs/elastic_dsl_utilities" }
 asap_planner = { path = "asap-planner-rs" }
 indexmap = { version = "2.0", features = ["serde"] }
+
+[profile.release]
+debug = 1  # line table + symbol names for flamegraph; no effect on codegen or runtime perf
