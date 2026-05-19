@@ -43,9 +43,8 @@ impl ElasticMappingSchema {
         Self { config }
     }
 
-    pub fn add_index(mut self, index: String, schema: ElasticIndexSchema) -> Self {
+    pub fn add_index(&mut self, index: String, schema: ElasticIndexSchema) {
         self.config.insert(index, schema);
-        self
     }
 
     pub fn get_time_field(&self, index: &str) -> Option<&String> {
