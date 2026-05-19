@@ -1,3 +1,4 @@
+use super::error::AccumulatorError;
 use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
@@ -17,31 +18,40 @@ pub struct MultipleMinMaxAccumulator {
 }
 
 impl MultipleMinMaxAccumulator {
-    pub fn new(sub_type: String) -> Self {
+    pub fn new(sub_type: String) -> Result<Self, AccumulatorError> {
         if sub_type != "min" && sub_type != "max" {
-            panic!("sub_type must be 'min' or 'max'");
+            return Err(AccumulatorError::InvalidSubType(sub_type));
         }
 
-        Self {
+        Ok(Self {
             values: HashMap::new(),
             sub_type,
-        }
+        })
     }
 
     pub fn new_min() -> Self {
-        Self::new("min".to_string())
+        Self {
+            values: HashMap::new(),
+            sub_type: "min".to_string(),
+        }
     }
 
     pub fn new_max() -> Self {
-        Self::new("max".to_string())
+        Self {
+            values: HashMap::new(),
+            sub_type: "max".to_string(),
+        }
     }
 
-    pub fn new_with_values(values: HashMap<KeyByLabelValues, f64>, sub_type: String) -> Self {
+    pub fn new_with_values(
+        values: HashMap<KeyByLabelValues, f64>,
+        sub_type: String,
+    ) -> Result<Self, AccumulatorError> {
         if sub_type != "min" && sub_type != "max" {
-            panic!("sub_type must be 'min' or 'max'");
+            return Err(AccumulatorError::InvalidSubType(sub_type));
         }
 
-        Self { values, sub_type }
+        Ok(Self { values, sub_type })
     }
 
     pub fn update(&mut self, key: KeyByLabelValues, value: f64) {
@@ -58,7 +68,7 @@ impl MultipleMinMaxAccumulator {
                     *current = value;
                 }
             }
-            _ => panic!("Invalid sub_type"),
+            _ => unreachable!("MultipleMinMaxAccumulator sub_type is always 'min' or 'max'"),
         }
     }
 
@@ -301,7 +311,7 @@ impl MergeableAccumulator<MultipleMinMaxAccumulator> for MultipleMinMaxAccumulat
         accumulators: Vec<MultipleMinMaxAccumulator>,
     ) -> Result<MultipleMinMaxAccumulator, Box<dyn std::error::Error + Send + Sync>> {
         if accumulators.is_empty() {
-            return Err("No accumulators to merge".into());
+            return Err(AccumulatorError::EmptySlice.into());
         }
 
         let sub_type = accumulators[0].sub_type.clone();
@@ -309,11 +319,15 @@ impl MergeableAccumulator<MultipleMinMaxAccumulator> for MultipleMinMaxAccumulat
         // Verify all accumulators have the same sub_type
         for acc in &accumulators {
             if acc.sub_type != sub_type {
-                return Err("Cannot merge accumulators with different sub_types".into());
+                return Err(AccumulatorError::MergeTypeMismatch {
+                    expected: sub_type.clone(),
+                    got: acc.sub_type.clone(),
+                }
+                .into());
             }
         }
 
-        let mut result = MultipleMinMaxAccumulator::new(sub_type.clone());
+        let mut result = MultipleMinMaxAccumulator::new(sub_type.clone())?;
 
         for acc in accumulators {
             for (key, value) in acc.values {
@@ -480,5 +494,18 @@ mod tests {
 
         // Test type name through trait object
         assert_eq!(trait_obj.type_name(), "MultipleMinMaxAccumulator");
+    }
+
+    #[test]
+    fn test_new_invalid_sub_type() {
+        let err = MultipleMinMaxAccumulator::new("mean".to_string()).unwrap_err();
+        assert!(matches!(err, AccumulatorError::InvalidSubType(s) if s == "mean"));
+    }
+
+    #[test]
+    fn test_new_with_values_invalid_sub_type() {
+        let err = MultipleMinMaxAccumulator::new_with_values(HashMap::new(), "sum".to_string())
+            .unwrap_err();
+        assert!(matches!(err, AccumulatorError::InvalidSubType(s) if s == "sum"));
     }
 }

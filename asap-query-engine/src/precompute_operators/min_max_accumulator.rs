@@ -1,3 +1,4 @@
+use super::error::AccumulatorError;
 use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
@@ -29,19 +30,19 @@ impl MinMaxAccumulator {
         }
     }
 
-    pub fn new(sub_type: String) -> Self {
+    pub fn new(sub_type: String) -> Result<Self, AccumulatorError> {
         match sub_type.as_str() {
-            "min" => Self::new_min(),
-            "max" => Self::new_max(),
-            _ => panic!("sub_type must be 'min' or 'max'"),
+            "min" => Ok(Self::new_min()),
+            "max" => Ok(Self::new_max()),
+            _ => Err(AccumulatorError::InvalidSubType(sub_type)),
         }
     }
 
-    pub fn with_value(value: f64, sub_type: String) -> Self {
+    pub fn with_value(value: f64, sub_type: String) -> Result<Self, AccumulatorError> {
         if sub_type != "min" && sub_type != "max" {
-            panic!("sub_type must be 'min' or 'max'");
+            return Err(AccumulatorError::InvalidSubType(sub_type));
         }
-        Self { value, sub_type }
+        Ok(Self { value, sub_type })
     }
 
     pub fn update(&mut self, value: f64) {
@@ -56,7 +57,7 @@ impl MinMaxAccumulator {
                     self.value = value;
                 }
             }
-            _ => panic!("Invalid sub_type"),
+            _ => unreachable!("MinMaxAccumulator sub_type is always 'min' or 'max'"),
         }
     }
 
@@ -73,7 +74,7 @@ impl MinMaxAccumulator {
             return Err("sub_type must be 'min' or 'max'".into());
         }
 
-        Ok(Self::with_value(value, sub_type))
+        Ok(Self::with_value(value, sub_type)?)
     }
 
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
@@ -91,7 +92,7 @@ impl MinMaxAccumulator {
             _ => return Err("Invalid sub_type byte".into()),
         };
 
-        Ok(Self::with_value(value, sub_type))
+        Ok(Self::with_value(value, sub_type)?)
     }
 }
 
@@ -108,7 +109,7 @@ impl SerializableToSink for MinMaxAccumulator {
         let sub_type_byte = match self.sub_type.as_str() {
             "min" => 0u8,
             "max" => 1u8,
-            _ => panic!("Invalid sub_type"),
+            _ => unreachable!("MinMaxAccumulator sub_type is always 'min' or 'max'"),
         };
         bytes.push(sub_type_byte);
         bytes
@@ -120,7 +121,7 @@ impl MergeableAccumulator<MinMaxAccumulator> for MinMaxAccumulator {
         accumulators: Vec<MinMaxAccumulator>,
     ) -> Result<MinMaxAccumulator, Box<dyn std::error::Error + Send + Sync>> {
         if accumulators.is_empty() {
-            return Err("No accumulators to merge".into());
+            return Err(AccumulatorError::EmptySlice.into());
         }
 
         let sub_type = &accumulators[0].sub_type;
@@ -128,11 +129,15 @@ impl MergeableAccumulator<MinMaxAccumulator> for MinMaxAccumulator {
         // Verify all accumulators have the same sub_type
         for acc in &accumulators {
             if acc.sub_type != *sub_type {
-                return Err("Cannot merge accumulators with different sub_types".into());
+                return Err(AccumulatorError::MergeTypeMismatch {
+                    expected: sub_type.clone(),
+                    got: acc.sub_type.clone(),
+                }
+                .into());
             }
         }
 
-        let mut result = MinMaxAccumulator::new(sub_type.clone());
+        let mut result = MinMaxAccumulator::new(sub_type.clone())?;
 
         for acc in accumulators {
             result.update(acc.value);
@@ -282,7 +287,7 @@ impl SingleSubpopulationAggregateFactory for MinMaxAccumulatorFactory {
         Ok(Box::new(MinMaxAccumulator::with_value(
             result_value,
             self.sub_type.clone(),
-        )))
+        )?))
     }
 
     fn create_default(&self) -> Box<dyn SingleSubpopulationAggregate> {
@@ -330,9 +335,9 @@ mod tests {
 
     #[test]
     fn test_merge_min_accumulators() {
-        let acc1 = MinMaxAccumulator::with_value(10.0, "min".to_string());
-        let acc2 = MinMaxAccumulator::with_value(5.0, "min".to_string());
-        let acc3 = MinMaxAccumulator::with_value(15.0, "min".to_string());
+        let acc1 = MinMaxAccumulator::with_value(10.0, "min".to_string()).unwrap();
+        let acc2 = MinMaxAccumulator::with_value(5.0, "min".to_string()).unwrap();
+        let acc3 = MinMaxAccumulator::with_value(15.0, "min".to_string()).unwrap();
 
         let merged =
             <MinMaxAccumulator as MergeableAccumulator<MinMaxAccumulator>>::merge_accumulators(
@@ -345,9 +350,9 @@ mod tests {
 
     #[test]
     fn test_merge_max_accumulators() {
-        let acc1 = MinMaxAccumulator::with_value(10.0, "max".to_string());
-        let acc2 = MinMaxAccumulator::with_value(5.0, "max".to_string());
-        let acc3 = MinMaxAccumulator::with_value(15.0, "max".to_string());
+        let acc1 = MinMaxAccumulator::with_value(10.0, "max".to_string()).unwrap();
+        let acc2 = MinMaxAccumulator::with_value(5.0, "max".to_string()).unwrap();
+        let acc3 = MinMaxAccumulator::with_value(15.0, "max".to_string()).unwrap();
 
         let merged =
             <MinMaxAccumulator as MergeableAccumulator<MinMaxAccumulator>>::merge_accumulators(
@@ -360,8 +365,8 @@ mod tests {
 
     #[test]
     fn test_merge_different_types_error() {
-        let acc1 = MinMaxAccumulator::with_value(10.0, "min".to_string());
-        let acc2 = MinMaxAccumulator::with_value(5.0, "max".to_string());
+        let acc1 = MinMaxAccumulator::with_value(10.0, "min".to_string()).unwrap();
+        let acc2 = MinMaxAccumulator::with_value(5.0, "max".to_string()).unwrap();
 
         assert!(
             <MinMaxAccumulator as MergeableAccumulator<MinMaxAccumulator>>::merge_accumulators(
@@ -373,7 +378,7 @@ mod tests {
 
     #[test]
     fn test_serialization() {
-        let acc = MinMaxAccumulator::with_value(42.5, "min".to_string());
+        let acc = MinMaxAccumulator::with_value(42.5, "min".to_string()).unwrap();
 
         // Test JSON serialization
         let json = acc.serialize_to_json();
@@ -391,10 +396,22 @@ mod tests {
     #[test]
     fn test_single_subpopulation_aggregate_trait() {
         let acc: Box<dyn SingleSubpopulationAggregate> =
-            Box::new(MinMaxAccumulator::with_value(42.0, "max".to_string()));
+            Box::new(MinMaxAccumulator::with_value(42.0, "max".to_string()).unwrap());
 
         assert_eq!(acc.query(Statistic::Max, None).unwrap(), 42.0);
         assert!(acc.query(Statistic::Min, None).is_err());
         assert_eq!(acc.type_name(), "MinMaxAccumulator");
+    }
+
+    #[test]
+    fn test_new_invalid_sub_type() {
+        let err = MinMaxAccumulator::new("mean".to_string()).unwrap_err();
+        assert!(matches!(err, AccumulatorError::InvalidSubType(s) if s == "mean"));
+    }
+
+    #[test]
+    fn test_with_value_invalid_sub_type() {
+        let err = MinMaxAccumulator::with_value(1.0, "sum".to_string()).unwrap_err();
+        assert!(matches!(err, AccumulatorError::InvalidSubType(s) if s == "sum"));
     }
 }

@@ -333,8 +333,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Blocked: MinMaxAccumulator has no arroyo serde"]
     async fn test_old_vs_new_minmax_min() {
-        let mm_a = MinMaxAccumulator::with_value(10.0, "min".to_string());
-        let mm_b = MinMaxAccumulator::with_value(5.0, "min".to_string());
+        let mm_a = MinMaxAccumulator::with_value(10.0, "min".to_string()).unwrap();
+        let mm_b = MinMaxAccumulator::with_value(5.0, "min".to_string()).unwrap();
 
         let engine = create_engine_single_pop(
             "temperature",
@@ -353,8 +353,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Blocked: MinMaxAccumulator has no arroyo serde"]
     async fn test_old_vs_new_minmax_max() {
-        let mm_a = MinMaxAccumulator::with_value(90.0, "max".to_string());
-        let mm_b = MinMaxAccumulator::with_value(95.0, "max".to_string());
+        let mm_a = MinMaxAccumulator::with_value(90.0, "max".to_string()).unwrap();
+        let mm_b = MinMaxAccumulator::with_value(95.0, "max".to_string()).unwrap();
 
         let engine = create_engine_single_pop(
             "temperature",
@@ -392,7 +392,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Blocked: MultipleMinMaxAccumulator has no arroyo serde"]
     async fn test_old_vs_new_multiple_minmax() {
-        let mm = MultipleMinMaxAccumulator::new("min".to_string());
+        let mm = MultipleMinMaxAccumulator::new("min".to_string()).unwrap();
 
         let engine = create_engine_single_pop(
             "latency",
@@ -564,7 +564,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_plan_not_implemented_minmax() {
-        let mm = MinMaxAccumulator::with_value(42.0, "min".to_string());
+        let mm = MinMaxAccumulator::with_value(42.0, "min".to_string()).unwrap();
 
         let engine = create_engine_single_pop(
             "temperature",

@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, warn};
 
+use crate::precompute_operators::AccumulatorError;
 use crate::AggregateCore;
 
 use asap_types::enums::WindowType;
@@ -1050,16 +1051,22 @@ impl SimpleEngine {
                     debug!("  Merging accumulators (should_merge=true)");
                     #[cfg(feature = "extra_debugging")]
                     let merge_start = Instant::now();
-                    let merged_accumulator = self.merge_accumulators(&precomputes);
-                    #[cfg(feature = "extra_debugging")]
-                    let merge_duration = merge_start.elapsed();
-                    #[cfg(feature = "extra_debugging")]
-                    debug!(
-                        "  Merge completed in {:.2}ms, result type: {}",
-                        merge_duration.as_secs_f64() * 1000.0,
-                        merged_accumulator.get_accumulator_type()
-                    );
-                    merged.insert(key.clone(), merged_accumulator);
+                    match self.merge_accumulators(&precomputes) {
+                        Ok(merged_accumulator) => {
+                            #[cfg(feature = "extra_debugging")]
+                            let merge_duration = merge_start.elapsed();
+                            #[cfg(feature = "extra_debugging")]
+                            debug!(
+                                "  Merge completed in {:.2}ms, result type: {}",
+                                merge_duration.as_secs_f64() * 1000.0,
+                                merged_accumulator.get_accumulator_type()
+                            );
+                            merged.insert(key.clone(), merged_accumulator);
+                        }
+                        Err(e) => {
+                            warn!("Failed to merge accumulators for key {:?}: {}", key, e);
+                        }
+                    }
                 } else {
                     assert_eq!(
                         precomputes.len(),
@@ -1088,13 +1095,13 @@ impl SimpleEngine {
     fn merge_accumulators(
         &self,
         accumulators: &[Box<dyn crate::data_model::AggregateCore>],
-    ) -> Box<dyn crate::data_model::AggregateCore> {
+    ) -> Result<Box<dyn crate::data_model::AggregateCore>, AccumulatorError> {
         if accumulators.is_empty() {
-            panic!("No accumulators to merge");
+            return Err(AccumulatorError::EmptySlice);
         }
 
         if accumulators.len() == 1 {
-            return accumulators[0].clone_boxed_core();
+            return Ok(accumulators[0].clone_boxed_core());
         }
 
         // Try to use optimized batch merge for KLL accumulators
@@ -1102,7 +1109,7 @@ impl SimpleEngine {
             use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 
             match DatasketchesKLLAccumulator::merge_multiple(accumulators) {
-                Ok(merged) => return Box::new(merged),
+                Ok(merged) => return Ok(Box::new(merged)),
                 Err(e) => {
                     warn!(
                         "Batch merge failed: {}. Falling back to sequential merge.",
@@ -1118,7 +1125,7 @@ impl SimpleEngine {
             use crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator;
 
             match CountMinSketchAccumulator::merge_multiple(accumulators) {
-                Ok(merged) => return Box::new(merged),
+                Ok(merged) => return Ok(Box::new(merged)),
                 Err(e) => {
                     warn!(
                         "Batch merge failed: {}. Falling back to sequential merge.",
@@ -1145,7 +1152,7 @@ impl SimpleEngine {
             }
         }
 
-        result
+        Ok(result)
     }
 
     /// Collects results when key and value use different aggregations

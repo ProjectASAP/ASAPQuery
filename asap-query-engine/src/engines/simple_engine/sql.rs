@@ -265,9 +265,9 @@ impl SimpleEngine {
                 (QueryType::Spatial, QueryType::TemporalQuantile) => {
                     QueryPatternType::OneTemporalOneSpatial
                 }
-                _ => panic!("Unsupported query type found"),
+                _ => return None,
             },
-            _ => panic!("Unsupported query type found"),
+            _ => return None,
         };
 
         // For nested queries (spatial of temporal), the outer query has no time clause,

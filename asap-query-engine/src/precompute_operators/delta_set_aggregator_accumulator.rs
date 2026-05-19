@@ -5,6 +5,7 @@ use crate::data_model::{
 use asap_sketchlib::sketches::delta_set_aggregator::{deserialize_msgpack, serialize_msgpack};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use tracing::warn;
 
 use promql_utilities::query_logics::enums::Statistic;
 
@@ -247,7 +248,11 @@ impl AggregateCore for DeltaSetAggregatorAccumulator {
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
         if !self.removed.is_empty() {
-            panic!("DeltaSetAggregatorAccumulator does not support get_keys when removed items are present");
+            warn!(
+                "DeltaSetAggregatorAccumulator::get_keys called with {} removed items; returning None",
+                self.removed.len()
+            );
+            return None;
         }
         Some(self.added.iter().cloned().collect())
     }
