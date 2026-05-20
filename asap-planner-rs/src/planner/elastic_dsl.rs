@@ -15,6 +15,8 @@ use crate::planner::sketch::build_sketch_parameters;
 use crate::planner::window::IntermediateWindowConfig;
 use crate::StreamingEngine;
 
+use indexmap::IndexSet;
+
 pub struct ElasticSingleQueryProcessor {
     query_string: String,
     t_repeat: u64,
@@ -76,8 +78,11 @@ impl ElasticSingleQueryProcessor {
         // Determine spatial routing from group_by_buckets
         let (spatial_output, rollup) = match &query_info.group_by_buckets {
             Some(bucket_spec) => {
-                let group_fields = get_group_by_fields(bucket_spec);
-                let temp: indexmap::IndexSet<String> = group_fields.clone().into_iter().collect();
+                let group_fields =
+                    get_group_by_fields(bucket_spec).ok_or(ControllerError::ElasticDSLParse(
+                        "Only field-based grouping is supported in Elasticsearch DSL".to_string(),
+                    ))?;
+                let temp: IndexSet<String> = group_fields.clone().into_iter().collect();
                 let rollup = self
                     .index_schema
                     .metadata_columns
@@ -100,7 +105,7 @@ impl ElasticSingleQueryProcessor {
             &spatial_output,
             &rollup,
             &window_cfg,
-            &query_info.target_field,
+            &target_field,
             Some(&self.index_schema.index),
             Some(&target_field),
             "", // Elasticsearch doesn't have spatial filters like SQL
@@ -117,8 +122,9 @@ impl ElasticSingleQueryProcessor {
 
         let time_range = query_info
             .predicates
-            .first()
-            .and_then(|p| range_query_to_time_range(p, 0));
+            .iter()
+            .filter_map(|p| range_query_to_time_range(p, 0))
+            .next();
         let t_lookback = match time_range {
             Some(tr) => tr.duration_ms().unwrap_or(self.t_repeat),
             None => self.t_repeat, // Default to repetition delay if no time range found
@@ -169,28 +175,10 @@ fn get_elastic_statistics(
 /// Extract field names from group by specification
 fn get_group_by_fields(
     bucket_spec: &elastic_dsl_utilities::ast_parsing::GroupBySpec,
-) -> Vec<String> {
+) -> Option<Vec<String>> {
     use elastic_dsl_utilities::ast_parsing::GroupBySpec;
     match bucket_spec {
-        GroupBySpec::Fields(fields) => fields.clone(),
-        GroupBySpec::Filters(predicates) => {
-            // For filter-based grouping, we extract field names from predicates
-            let mut fields = Vec::new();
-            for predicate in predicates {
-                match predicate {
-                    elastic_dsl_utilities::ast_parsing::Predicate::Term { field, .. } => {
-                        if !fields.contains(field) {
-                            fields.push(field.clone());
-                        }
-                    }
-                    elastic_dsl_utilities::ast_parsing::Predicate::Range { field, .. } => {
-                        if !fields.contains(field) {
-                            fields.push(field.clone());
-                        }
-                    }
-                }
-            }
-            fields
-        }
+        GroupBySpec::Fields(fields) => Some(fields.clone()),
+        GroupBySpec::Filters(_) => None, // We don't support filter-based group by in ES DSL for now, so return None to indicate unsupported query pattern.
     }
 }
