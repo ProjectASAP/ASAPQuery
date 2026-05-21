@@ -1,7 +1,6 @@
 use crate::ast_parsing::query_info::{
     AggregationType, ElasticDSLQueryInfo, FieldName, GroupBySpec, Predicate, TermValue,
 };
-use crate::datemath::TimeRange;
 use crate::helpers::strip_keyword_suffix;
 use elasticsearch_dsl_ast::{self as dsl};
 use serde_json;
@@ -37,10 +36,8 @@ pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInf
     };
     let (target_field, aggregation_type, group_by_spec) =
         walk_aggregations_and_extract_info(&ast.aggs)?;
-    let time_field = infer_time_field(&predicates);
     Some(ElasticDSLQueryInfo::new(
         target_field,
-        time_field,
         predicates,
         group_by_spec,
         aggregation_type,
@@ -208,26 +205,6 @@ fn map_term_to_json_value(term: &dsl::Term) -> Option<TermValue> {
     }
 }
 
-fn infer_time_field(predicates: &[Predicate]) -> FieldName {
-    for predicate in predicates {
-        if let Predicate::Range { field, gte, lte } = predicate {
-            let bound_is_time_like = gte.iter().chain(lte.iter()).any(|term| {
-                matches!(term, TermValue::String(value) if TimeRange::parse_date_math(value.as_str(), 0).is_some())
-            });
-            let looks_like_time_field = field == "@timestamp"
-                || field == "timestamp"
-                || field.ends_with("_time")
-                || bound_is_time_like;
-
-            if looks_like_time_field {
-                return field.clone();
-            }
-        }
-    }
-
-    "@timestamp".to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,7 +350,6 @@ mod tests {
         let info = walk_ast_and_extract_info(&ast).expect("info should parse");
 
         assert_eq!(info.target_field, "latency_ms");
-        assert_eq!(info.time_field, "@timestamp");
         assert_eq!(info.aggregation, AggregationType::Max);
         assert_eq!(info.predicates.len(), 2);
         assert_eq!(

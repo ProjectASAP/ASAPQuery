@@ -141,7 +141,6 @@ pub struct TableDefinition {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ElasticDSLControllerConfig {
     pub query_groups: Vec<ElasticDSLQueryGroup>,
-    pub index: Option<String>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
     pub aggregate_cleanup: Option<AggregateCleanupConfig>,
 }
@@ -151,6 +150,7 @@ pub struct ElasticDSLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
     pub repetition_delay: u64,
-    pub index: Option<String>,
+    pub index: String,
+    pub time_field: String,
     pub controller_options: ControllerOptions,
 }

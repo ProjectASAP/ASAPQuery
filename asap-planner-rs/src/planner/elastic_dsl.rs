@@ -3,7 +3,7 @@ use asap_types::enums::{CleanupPolicy, WindowType};
 use elastic_dsl_utilities::ast_parsing::{
     extract_query_info, AggregationType as ElasticAggregationType,
 };
-use elastic_dsl_utilities::range_query_to_time_range;
+use elastic_dsl_utilities::{range_query_to_time_range, Predicate};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
 
@@ -120,11 +120,15 @@ impl ElasticSingleQueryProcessor {
         )
         .map_err(ControllerError::ElasticDSLParse)?;
 
+        let time_field = self.index_schema.time_field.clone();
         let time_range = query_info
             .predicates
             .iter()
-            .filter_map(|p| range_query_to_time_range(p, 0))
-            .next();
+            .find(|p| match p {
+                Predicate::Range { field, .. } => field == &time_field,
+                _ => false,
+            })
+            .and_then(|p| range_query_to_time_range(p, 0));
         let t_lookback = match time_range {
             Some(tr) => tr.duration_ms().unwrap_or(self.t_repeat),
             None => self.t_repeat, // Default to repetition delay if no time range found

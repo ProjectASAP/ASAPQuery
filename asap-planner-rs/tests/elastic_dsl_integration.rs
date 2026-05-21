@@ -13,12 +13,13 @@ fn indent_block(text: &str, indent: usize) -> String {
         .join("\n")
 }
 
-fn elastic_yaml(index: &str, query: &str, t_repeat: u64) -> String {
+fn elastic_yaml(index: &str, time_field: &str, query: &str, t_repeat: u64) -> String {
     format!(
         r#"
 query_groups:
   - id: 1
     index: {index}
+    time_field: {time_field}
     queries:
       - |
 {query}
@@ -30,13 +31,14 @@ aggregate_cleanup:
   policy: read_based
 "#,
         index = index,
+        time_field = time_field,
         query = indent_block(query, 8),
         t_repeat = t_repeat,
     )
 }
 
-fn elastic_output(index: &str, query: &str, t_repeat: u64) -> PlannerOutput {
-    let yaml = elastic_yaml(index, query, t_repeat);
+fn elastic_output(index: &str, time_field: &str, query: &str, t_repeat: u64) -> PlannerOutput {
+    let yaml = elastic_yaml(index, time_field, query, t_repeat);
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(yaml.as_bytes()).unwrap();
 
@@ -141,7 +143,7 @@ fn elastic_sum_produces_basic_plan_and_schema() {
     }
 }
 "#;
-    let out = elastic_output("metrics", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
 
     assert_eq!(out.streaming_aggregation_count(), 2);
     assert_eq!(out.inference_query_count(), 1);
@@ -193,7 +195,7 @@ fn elastic_avg_produces_three_configs() {
     }
 }
 "#;
-    let out = elastic_output("metrics", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
 
     assert_eq!(out.streaming_aggregation_count(), 2);
     assert_eq!(out.inference_query_count(), 1);
@@ -246,7 +248,7 @@ fn elastic_min_produces_exact_plan() {
     }
 }
 "#;
-    let out = elastic_output("metrics", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
 
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
@@ -299,7 +301,7 @@ fn elastic_percentiles_produce_kll_plan() {
     }
 }
 "#;
-    let out = elastic_output("metrics", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
 
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
@@ -323,6 +325,7 @@ fn elastic_multi_index_schema_inference() {
 query_groups:
   - id: 1
     index: metrics
+    time_field: "@timestamp"
     queries:
             - |
                 {
@@ -361,6 +364,7 @@ query_groups:
       latency_sla: 1.0
   - id: 2
     index: other_metrics
+    time_field: "timestamp"
     queries:
             - |
                 {
@@ -383,7 +387,7 @@ query_groups:
                             "filter": [
                                 {
                                     "range": {
-                                        "@timestamp": {
+                                        "timestamp": {
                                             "gte": "now-5m",
                                             "lte": "now"
                                         }
@@ -435,7 +439,7 @@ aggregate_cleanup:
 
             assert_eq!(
                 schema.get_time_field("other_metrics"),
-                Some(&"@timestamp".to_string())
+                Some(&"timestamp".to_string())
             );
             let other_metric_columns = schema.get_metric_columns("other_metrics").unwrap();
             assert!(other_metric_columns.contains("memory_usage"));

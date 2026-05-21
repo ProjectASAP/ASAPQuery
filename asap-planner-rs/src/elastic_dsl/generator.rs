@@ -18,16 +18,16 @@ use elastic_dsl_utilities::ast_parsing::{extract_query_info, GroupBySpec, Predic
 #[derive(Default, Clone)]
 pub struct ElasticIndexSchemaBuilder {
     pub index: String,
-    pub time_field: Option<String>,
+    pub time_field: String,
     pub metric_columns: IndexSet<String>,
     pub metadata_columns: IndexSet<String>,
 }
 
 impl ElasticIndexSchemaBuilder {
-    fn new(index: String) -> Self {
+    fn new(index: String, time_field: String) -> Self {
         Self {
             index,
-            time_field: None,
+            time_field,
             metric_columns: IndexSet::new(),
             metadata_columns: IndexSet::new(),
         }
@@ -37,23 +37,10 @@ impl ElasticIndexSchemaBuilder {
         &mut self,
         query_info: &elastic_dsl_utilities::ast_parsing::ElasticDSLQueryInfo,
     ) -> Result<(), ControllerError> {
-        match &self.time_field {
-            Some(existing) if existing != &query_info.time_field => {
-                return Err(ControllerError::PlannerError(format!(
-                    "conflicting time fields for Elasticsearch index: '{}' vs '{}'",
-                    existing, query_info.time_field
-                )));
-            }
-            None => self.time_field = Some(query_info.time_field.clone()),
-            _ => {}
-        }
-
         self.metric_columns.insert(query_info.target_field.clone());
-
-        for field in collect_elastic_metadata_fields(query_info) {
+        for field in collect_elastic_metadata_fields(query_info, &self.time_field) {
             self.metadata_columns.insert(field);
         }
-
         Ok(())
     }
 }
@@ -102,7 +89,6 @@ pub fn generate_elastic_plan(
 
     // First pass to build index schema builders from query info.
     for qg in &config.query_groups {
-        let index = resolve_elastic_index(config, qg)?;
         for query_string in &qg.queries {
             let query_info = extract_query_info(query_string).ok_or_else(|| {
                 ControllerError::ElasticDSLParse(format!(
@@ -112,21 +98,22 @@ pub fn generate_elastic_plan(
             })?;
 
             index_schema_builders
-                .entry(index.clone())
-                .or_insert_with(|| ElasticIndexSchemaBuilder::new(index.clone()))
+                .entry(qg.index.clone())
+                .or_insert_with(|| {
+                    ElasticIndexSchemaBuilder::new(qg.index.clone(), qg.time_field.clone())
+                })
                 .update_from_query_info(&query_info)?;
         }
     }
 
     // Second pass to build aggregation configs and query mappings.
     for qg in &config.query_groups {
-        let index = resolve_elastic_index(config, qg)?;
         for query_string in &qg.queries {
             let processor = ElasticSingleQueryProcessor::new(
                 query_string.clone(),
                 qg.repetition_delay,
                 opts.data_ingestion_interval,
-                index_schema_builders[&index].clone(),
+                index_schema_builders[&qg.index].clone(),
                 opts.streaming_engine,
                 config.sketch_parameters.clone(),
                 cleanup_policy,
@@ -227,12 +214,7 @@ fn build_elastic_index_yaml(index_name: &str, builder: &ElasticIndexSchemaBuilde
     );
     map.insert(
         YamlValue::String("time_field".to_string()),
-        YamlValue::String(
-            builder
-                .time_field
-                .clone()
-                .unwrap_or_else(|| "@timestamp".to_string()),
-        ),
+        YamlValue::String(builder.time_field.clone()),
     );
     map.insert(
         YamlValue::String("metric_columns".to_string()),
@@ -260,36 +242,21 @@ fn build_elastic_index_yaml(index_name: &str, builder: &ElasticIndexSchemaBuilde
     YamlValue::Mapping(map)
 }
 
-fn resolve_elastic_index(
-    config: &ElasticDSLControllerConfig,
-    query_group: &crate::config::input::ElasticDSLQueryGroup,
-) -> Result<String, ControllerError> {
-    query_group
-        .index
-        .clone()
-        .or_else(|| config.index.clone())
-        .ok_or_else(|| {
-            ControllerError::PlannerError(
-                "each Elasticsearch query group must specify an index (or inherit one from the controller config)"
-                    .to_string(),
-            )
-        })
-}
-
 fn collect_elastic_metadata_fields(
     query_info: &elastic_dsl_utilities::ast_parsing::ElasticDSLQueryInfo,
+    time_field: &str,
 ) -> IndexSet<String> {
     let mut fields = IndexSet::new();
 
     for predicate in &query_info.predicates {
         match predicate {
             Predicate::Term { field, .. } => {
-                if field != &query_info.time_field {
+                if field != time_field {
                     fields.insert(field.clone());
                 }
             }
             Predicate::Range { field, .. } => {
-                if field != &query_info.time_field {
+                if field != time_field {
                     fields.insert(field.clone());
                 }
             }
@@ -300,7 +267,7 @@ fn collect_elastic_metadata_fields(
         match group_by_buckets {
             GroupBySpec::Fields(group_fields) => {
                 for field in group_fields {
-                    if field != &query_info.time_field {
+                    if field != time_field {
                         fields.insert(field.clone());
                     }
                 }
@@ -309,7 +276,7 @@ fn collect_elastic_metadata_fields(
                 for predicate in predicates {
                     match predicate {
                         Predicate::Term { field, .. } | Predicate::Range { field, .. } => {
-                            if field != &query_info.time_field {
+                            if field != time_field {
                                 fields.insert(field.clone());
                             }
                         }
