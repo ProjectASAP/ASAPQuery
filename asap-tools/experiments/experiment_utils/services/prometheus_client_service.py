@@ -39,6 +39,7 @@ class PrometheusClientService(BaseService):
         profile_query_engine_pid: Optional[int],
         profile_prometheus_time: Optional[int],
         parallel: bool,
+        sql_mode: bool,
         **kwargs,
     ):
         if self.use_container:
@@ -52,6 +53,7 @@ class PrometheusClientService(BaseService):
                 profile_query_engine_pid,
                 profile_prometheus_time,
                 parallel,
+                sql_mode,
             )
         else:
             return self._start_bare_metal(
@@ -64,6 +66,7 @@ class PrometheusClientService(BaseService):
                 profile_query_engine_pid,
                 profile_prometheus_time,
                 parallel,
+                sql_mode,
             )
 
     def _start_containerized(
@@ -77,6 +80,7 @@ class PrometheusClientService(BaseService):
         profile_query_engine_pid: Optional[int],
         profile_prometheus_time: Optional[int],
         parallel: bool,
+        sql_mode: bool,
     ):
         prometheus_client_dir = os.path.join(
             self.provider.get_home_dir(),
@@ -116,7 +120,7 @@ class PrometheusClientService(BaseService):
         if parallel:
             gen_compose_cmd += " --parallel"
 
-        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME and not sql_mode:
             assert query_engine_config_file is not None
             gen_compose_cmd += f" --align-query-time --server-for-alignment sketchdb --query-engine-config-file {query_engine_config_file}"
 
@@ -150,12 +154,13 @@ class PrometheusClientService(BaseService):
         profile_query_engine_pid: Optional[int],
         profile_prometheus_time: Optional[int],
         parallel: bool,
+        sql_mode: bool,
     ):
         cmd = "python3 -u main_prometheus_client.py --config_file {} --output_dir {} --output_file {}{}".format(
             config_file, output_dir, output_file, " --parallel" if parallel else ""
         )
 
-        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME and not sql_mode:
             assert query_engine_config_file is not None
             cmd += " --align_query_time --server_for_alignment sketchdb --query_engine_config_file {}".format(
                 query_engine_config_file
