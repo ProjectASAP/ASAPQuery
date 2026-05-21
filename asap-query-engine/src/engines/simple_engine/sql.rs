@@ -218,7 +218,7 @@ impl SimpleEngine {
                 warn!("SQL query requested but config has PromQL schema");
                 return None;
             }
-            &SchemaConfig::ElasticQueryDSL => todo!(),
+            &SchemaConfig::ElasticQueryDSL(_) => todo!(),
             SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
         };
 

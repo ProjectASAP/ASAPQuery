@@ -9,6 +9,16 @@ pub struct ResolvedTimeRange {
     pub lte_ms: Option<i64>,
 }
 
+impl ResolvedTimeRange {
+    /// Calculate the duration of the time range in milliseconds, if both bounds are present.
+    pub fn duration_ms(&self) -> Option<u64> {
+        match (self.gte_ms, self.lte_ms) {
+            (Some(gte), Some(lte)) if lte >= gte => Some((lte - gte) as u64),
+            _ => None,
+        }
+    }
+}
+
 /// An optional time range applied to a timestamp field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TimeRange {

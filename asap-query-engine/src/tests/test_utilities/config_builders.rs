@@ -306,7 +306,7 @@ mod tests {
                 assert!(promql_schema.get_labels("cpu_usage").is_some());
             }
             SchemaConfig::SQL(_) => panic!("Expected PromQL schema"),
-            SchemaConfig::ElasticQueryDSL => panic!("Expected PromQL schema"),
+            SchemaConfig::ElasticQueryDSL(_) => panic!("Expected PromQL schema"),
             SchemaConfig::ElasticSQL(_) => panic!("Expected PromQL schema"),
         }
 

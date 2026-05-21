@@ -1,4 +1,5 @@
 pub mod config;
+pub mod elastic_dsl;
 pub mod error;
 pub mod generator;
 pub mod planner;
@@ -10,7 +11,11 @@ pub mod sql;
 
 pub use asap_types::PromQLSchema;
 pub use config::input::ControllerConfig;
+pub use config::input::ElasticDSLControllerConfig;
 pub use config::input::SQLControllerConfig;
+pub use elastic_dsl::ElasticController;
+pub use elastic_dsl::ElasticIndexSchemaBuilder;
+pub use elastic_dsl::ElasticRuntimeOptions;
 pub use error::ControllerError;
 pub use generator::{GeneratorOutput, PuntedQuery};
 pub use planner_output::PlannerOutput;
