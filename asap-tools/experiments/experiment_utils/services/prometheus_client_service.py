@@ -12,7 +12,7 @@ from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
 
-class PrometheusClientService(BaseService):
+class QueryClientService(BaseService):
     def __init__(
         self,
         provider: InfrastructureProvider,
@@ -39,7 +39,7 @@ class PrometheusClientService(BaseService):
         profile_query_engine_pid: Optional[int],
         profile_prometheus_time: Optional[int],
         parallel: bool,
-        sql_mode: bool,
+        backend_type: str,
         **kwargs,
     ):
         if self.use_container:
@@ -53,7 +53,7 @@ class PrometheusClientService(BaseService):
                 profile_query_engine_pid,
                 profile_prometheus_time,
                 parallel,
-                sql_mode,
+                backend_type,
             )
         else:
             return self._start_bare_metal(
@@ -66,7 +66,7 @@ class PrometheusClientService(BaseService):
                 profile_query_engine_pid,
                 profile_prometheus_time,
                 parallel,
-                sql_mode,
+                backend_type,
             )
 
     def _start_containerized(
@@ -80,7 +80,7 @@ class PrometheusClientService(BaseService):
         profile_query_engine_pid: Optional[int],
         profile_prometheus_time: Optional[int],
         parallel: bool,
-        sql_mode: bool,
+        backend_type: str,
     ):
         prometheus_client_dir = os.path.join(
             self.provider.get_home_dir(),
@@ -120,7 +120,10 @@ class PrometheusClientService(BaseService):
         if parallel:
             gen_compose_cmd += " --parallel"
 
-        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME and not sql_mode:
+        if (
+            experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
+            and backend_type != "clickhouse"
+        ):
             assert query_engine_config_file is not None
             gen_compose_cmd += f" --align-query-time --server-for-alignment sketchdb --query-engine-config-file {query_engine_config_file}"
 
@@ -154,13 +157,16 @@ class PrometheusClientService(BaseService):
         profile_query_engine_pid: Optional[int],
         profile_prometheus_time: Optional[int],
         parallel: bool,
-        sql_mode: bool,
+        backend_type: str,
     ):
         cmd = "python3 -u main_prometheus_client.py --config_file {} --output_dir {} --output_file {}{}".format(
             config_file, output_dir, output_file, " --parallel" if parallel else ""
         )
 
-        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME and not sql_mode:
+        if (
+            experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
+            and backend_type != "clickhouse"
+        ):
             assert query_engine_config_file is not None
             cmd += " --align_query_time --server_for_alignment sketchdb --query_engine_config_file {}".format(
                 query_engine_config_file
@@ -286,3 +292,7 @@ class PrometheusClientService(BaseService):
             return False
         except Exception:
             return False
+
+
+# Backward-compatible alias
+PrometheusClientService = QueryClientService
