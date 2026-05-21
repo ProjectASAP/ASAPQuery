@@ -34,12 +34,12 @@ from promql_utilities.query_results.classes import QueryResult, QueryResultAcros
 from promql_utilities.query_results.serializers import SerializerFactory
 
 
-class PrometheusDebugRetry(Retry):
+class DebugRetry(Retry):
     def __init__(self, *args: Any, server_name: str = "", **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.server_name = server_name
 
-    def new(self, **kw: Any) -> "PrometheusDebugRetry":
+    def new(self, **kw: Any) -> "DebugRetry":
         """Override new() to preserve server_name when creating new instances."""
         new_retry = super().new(**kw)
         new_retry.server_name = self.server_name
@@ -53,7 +53,7 @@ class PrometheusDebugRetry(Retry):
         error: Optional[Exception] = None,
         _pool: Optional[Any] = None,
         _stacktrace: Optional[Any] = None,
-    ) -> "PrometheusDebugRetry":
+    ) -> "DebugRetry":
         # Calculate current attempt number
         assert self.total is not None
         current_retries = self.total - (
@@ -74,11 +74,11 @@ class PrometheusDebugRetry(Retry):
             )
 
         result = super().increment(method, url, response, error, _pool, _stacktrace)
-        assert isinstance(result, PrometheusDebugRetry)
+        assert isinstance(result, DebugRetry)
         return result
 
 
-class PrometheusDebugHTTPAdapter(HTTPAdapter):
+class DebugHTTPAdapter(HTTPAdapter):
     def __init__(self, server_name: str, *args: Any, **kwargs: Any) -> None:
         self.server_name = server_name
         super().__init__(*args, **kwargs)
@@ -609,7 +609,7 @@ def main(args: Any) -> None:
 
         if protocol == "prometheus":
             # Create custom retry adapter with debug logging
-            debug_retry = PrometheusDebugRetry(
+            debug_retry = DebugRetry(
                 server_name=server.name,
                 total=3,
                 backoff_factor=1,
@@ -625,7 +625,7 @@ def main(args: Any) -> None:
             )
 
             # Mount debug adapter for HTTP request logging
-            debug_adapter = PrometheusDebugHTTPAdapter(server.name)
+            debug_adapter = DebugHTTPAdapter(server.name)
             client.session.mount("http://", debug_adapter)
             client.session.mount("https://", debug_adapter)
         else:
@@ -640,7 +640,7 @@ def main(args: Any) -> None:
             )
 
             # Mount debug adapter for HTTP request logging
-            debug_adapter = PrometheusDebugHTTPAdapter(server.name)
+            debug_adapter = DebugHTTPAdapter(server.name)
             client.session.mount("http://", debug_adapter)
             client.session.mount("https://", debug_adapter)
 
@@ -653,6 +653,15 @@ def main(args: Any) -> None:
 
         if args.align_query_time and server.name == args.server_for_alignment:
             server_url_for_alignment = server.url
+
+    # ClickHouse does not expose /api/v1/status/runtimeinfo — skip alignment silently
+    if args.align_query_time and any(
+        (s.protocol or "prometheus") == "clickhouse" for s in config.servers
+    ):
+        logger.info(
+            "Skipping query-time alignment: ClickHouse protocol has no runtimeinfo endpoint"
+        )
+        args.align_query_time = False
 
     query_start_times = None
     if args.align_query_time:

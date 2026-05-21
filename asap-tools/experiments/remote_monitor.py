@@ -373,6 +373,7 @@ def main(args):
             profile_query_engine_pid,
             args.profile_prometheus_time,
             args.prometheus_client_parallel,
+            backend_type="prometheus",
         )
 
         if prometheus_client_service.use_container:

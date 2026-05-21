@@ -25,7 +25,7 @@ from .cluster_data_exporter import (
 from .system_exporters import SystemExportersService
 from .prometheus import PrometheusService
 from .prometheus_kafka_adapter import PrometheusKafkaAdapterService
-from .prometheus_client_service import PrometheusClientService
+from .prometheus_client_service import QueryClientService, PrometheusClientService
 from .remote_monitor_service import RemoteMonitorService
 from .docker_prometheus import DockerPrometheusService
 from .docker_victoriametrics import DockerVictoriaMetricsService
@@ -141,6 +141,7 @@ __all__ = [
     "SystemExportersService",
     "PrometheusService",
     "PrometheusKafkaAdapterService",
+    "QueryClientService",
     "PrometheusClientService",
     "RemoteMonitorService",
     "DockerPrometheusService",

@@ -6,9 +6,9 @@ Contains functions for validating configs, generating controller configs, etc.
 import os
 import copy
 import yaml
-from typing import List, Tuple
+from typing import Any, Dict, List, Tuple
 
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 import constants
 
@@ -542,6 +542,103 @@ def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
                 f"Invalid aggregate_cleanup.policy: '{policy}'. "
                 f"Valid options: {valid_policies}"
             )
+
+
+def _load_sql_queries(sql_file: str) -> List[str]:
+    """Read a SQL file and return individual statements, preserving comment lines."""
+    with open(sql_file) as f:
+        content = f.read()
+    return [stmt.strip() for stmt in content.split(";") if stmt.strip()]
+
+
+def generate_clickhouse_client_configs(
+    query_groups: Any,
+    local_experiment_dir: str,
+    mode_server_urls: Dict[str, str],
+    clickhouse_database: str = "default",
+    clickhouse_user: str = "default",
+    clickhouse_password: str = "",
+) -> List[str]:
+    """Generate prometheus-client config YAMLs for ClickHouse experiment modes.
+
+    SQL queries are read from the ``sql_file`` paths in each query group and
+    inlined into the YAML, so no separate SQL file rsync is required.
+
+    For each mode in ``mode_server_urls`` a file is written to
+    ``{local_experiment_dir}/controller_client_configs/{mode}.yaml`` — the same
+    directory that ``rsync_controller_client_configs`` already syncs.
+
+    Args:
+        query_groups: Iterable of query-group dicts (or DictConfig/ListConfig).
+            Each entry must have ``sql_file`` and may have ``client_options``
+            (``starting_delay``, ``repetitions``) and ``repetition_delay``.
+        local_experiment_dir: Local directory under which
+            ``controller_client_configs/`` is created.
+        mode_server_urls: Mapping of mode name to ClickHouse server URL, e.g.
+            ``{"baseline": "http://localhost:8123"}``.  One YAML file is
+            written per entry.
+        clickhouse_database: ClickHouse database name (default ``"default"``).
+        clickhouse_user: ClickHouse user (default ``"default"``).
+        clickhouse_password: ClickHouse password (default ``""``).
+
+    Returns:
+        List of mode names for which configs were generated.
+    """
+    output_dir = os.path.join(local_experiment_dir, "controller_client_configs")
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Normalise OmegaConf containers to plain Python structures
+    if isinstance(query_groups, (DictConfig, ListConfig)):
+        query_groups_list: List[Dict] = OmegaConf.to_container(query_groups, resolve=True)  # type: ignore[assignment]
+    else:
+        query_groups_list = list(query_groups)
+
+    # Build query groups with SQL inlined from files
+    built_groups = []
+    for idx, group in enumerate(query_groups_list):
+        sql_file = group.get("sql_file")
+        if not sql_file:
+            name = group.get("name", str(idx))
+            raise ValueError(f"Query group {idx!r} ({name!r}) missing 'sql_file'")
+
+        queries = _load_sql_queries(sql_file)
+        if not queries:
+            raise ValueError(f"No SQL statements found in {sql_file!r}")
+
+        client_opts = dict(group.get("client_options") or {})
+        client_opts.setdefault("starting_delay", 0)
+        client_opts.setdefault("repetitions", 1)
+
+        built_groups.append(
+            {
+                "id": idx,
+                "queries": queries,
+                "repetition_delay": group.get("repetition_delay", 0),
+                "client_options": client_opts,
+                "time_window_seconds": group.get("time_window_seconds"),
+            }
+        )
+
+    modes = list(mode_server_urls.keys())
+    for mode, url in mode_server_urls.items():
+        config: Dict[str, Any] = {
+            "servers": [
+                {
+                    "name": mode,
+                    "url": url,
+                    "protocol": "clickhouse",
+                    "database": clickhouse_database,
+                    "user": clickhouse_user,
+                    "password": clickhouse_password,
+                }
+            ],
+            "query_groups": built_groups,
+        }
+        config_path = os.path.join(output_dir, f"{mode}.yaml")
+        with open(config_path, "w") as f:
+            yaml.dump(config, f)
+
+    return modes
 
 
 def generate_and_copy_prometheus_config(
