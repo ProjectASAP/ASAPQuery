@@ -39,6 +39,7 @@ from .misc import (
     DumbKafkaConsumerService,
 )
 from .grafana import GrafanaService
+from .clickhouse_service import ClickHouseService
 
 
 def create_prometheus_service(cfg, provider, num_nodes: int, node_offset: int):
@@ -153,4 +154,5 @@ __all__ = [
     "DumbKafkaConsumerService",
     "GrafanaService",
     "create_prometheus_service",
+    "ClickHouseService",
 ]
