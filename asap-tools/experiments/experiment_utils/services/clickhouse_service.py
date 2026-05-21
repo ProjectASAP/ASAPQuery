@@ -185,12 +185,12 @@ class ClickHouseDataLoaderService(BaseService):
 
     # Built-in DDL file names (relative to _ASSETS_DIR).
     BUILTIN_DDL_FILES = {
-        "clickbench": "clickbench_init.sql",
-        "h2o": "h2o_init.sql",
+        "clickbench": "clickbench/init.sql",
+        "h2o": "h2o/init.sql",
     }
 
     # H2O loader script (relative to _ASSETS_DIR).
-    H2O_LOADER_SCRIPT = "h2o_clickhouse_loader.py"
+    H2O_LOADER_SCRIPT = "h2o/loader.py"
 
     H2O_BATCH_SIZE = 50_000
 
