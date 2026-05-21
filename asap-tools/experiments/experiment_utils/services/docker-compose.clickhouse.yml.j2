@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:{{ image_tag }}
+    container_name: {{ container_name }}
+    network_mode: host
+    volumes:
+      - {{ data_dir }}:/var/lib/clickhouse
+      - {{ log_dir }}:/var/log/clickhouse-server
+    environment:
+      - CLICKHOUSE_DB={{ database }}
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    {% if cpu_limit or memory_limit -%}
+    deploy:
+      resources:
+        limits:
+          {% if cpu_limit -%}
+          cpus: '{{ cpu_limit }}'
+          {% endif -%}
+          {% if memory_limit -%}
+          memory: {{ memory_limit }}
+          {% endif -%}
+    {% endif -%}
+    restart: "no"
