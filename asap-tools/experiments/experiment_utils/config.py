@@ -55,6 +55,74 @@ def validate_basic_config(
         raise ValueError(error_msg)
 
 
+def _is_clickhouse_experiment(experiment_params: DictConfig) -> bool:
+    """Return True if experiment_params describes a ClickHouse (SQL) experiment."""
+    return "dataset" in experiment_params
+
+
+def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> None:
+    """Validate experiment_params for a ClickHouse experiment."""
+    skip_querying = experiment_params.get("skip_querying", False)
+
+    # Validate dataset section
+    if "dataset" not in experiment_params:
+        raise ValueError(
+            "ClickHouse experiments require a 'dataset' section in experiment config. "
+            "Add dataset.name and dataset.local_data_file."
+        )
+    dataset = experiment_params.dataset
+    valid_dataset_names = {"clickbench", "h2o", "custom"}
+    dataset_name = dataset.get("name")
+    if not dataset_name or dataset_name == "???":
+        raise ValueError(
+            "dataset.name is required. " f"Valid choices: {valid_dataset_names}"
+        )
+    if dataset_name not in valid_dataset_names:
+        raise ValueError(
+            f"dataset.name={dataset_name!r} is not valid. "
+            f"Valid choices: {valid_dataset_names}"
+        )
+
+    local_data_file = dataset.get("local_data_file")
+    if not local_data_file or local_data_file == "???":
+        raise ValueError(
+            "dataset.local_data_file is required. "
+            "Provide the path to the JSON-lines data file on this machine."
+        )
+    if not os.path.exists(local_data_file):
+        raise ValueError(
+            f"dataset.local_data_file={local_data_file!r} does not exist. "
+            "Run benchmark/prepare_data.py first to produce the JSON-lines file."
+        )
+
+    # Validate query_groups (required unless skip_querying)
+    if not skip_querying:
+        if (
+            "query_groups" not in experiment_params
+            or not experiment_params.query_groups
+        ):
+            raise ValueError(
+                "At least one query group must be defined in experiment config "
+                "when skip_querying=False"
+            )
+        for i, group in enumerate(experiment_params.query_groups):
+            sql_file = group.get("sql_file")
+            if not sql_file or sql_file == "???":
+                raise ValueError(
+                    f"Query group {i} missing 'sql_file'. "
+                    "Generate SQL files with benchmark/generate_queries.py first."
+                )
+            if not os.path.exists(sql_file):
+                raise ValueError(
+                    f"Query group {i} sql_file={sql_file!r} does not exist."
+                )
+    elif "query_groups" in experiment_params and experiment_params.query_groups:
+        print("-" * 60)
+        print("WARNING: query_groups is present but will be IGNORED")
+        print("         skip_querying=True means no queries will be executed")
+        print("-" * 60)
+
+
 def validate_experiment_config(
     experiment_params: DictConfig, require_queries: bool = True
 ):
@@ -65,6 +133,11 @@ def validate_experiment_config(
         experiment_params: The experiment parameters configuration
         require_queries: Whether to require query_groups to be non-empty (default: True)
     """
+    # ClickHouse experiments have a different required structure
+    if _is_clickhouse_experiment(experiment_params):
+        _validate_clickhouse_experiment_config(experiment_params)
+        return
+
     # Check for skip_querying mode
     skip_querying = experiment_params.get("skip_querying", False)
 
@@ -352,6 +425,26 @@ def check_exporter_and_queries_exist(
     return False
 
 
+def read_sql_queries(cfg: DictConfig) -> List[Tuple[str, str]]:
+    """Return list of (name, sql_file_path) pairs from a ClickHouse experiment config.
+
+    Args:
+        cfg: Top-level Hydra config (cfg.experiment_params.query_groups is used).
+
+    Returns:
+        List of (group_name, sql_file_path) tuples.
+    """
+    query_groups = cfg.experiment_params.query_groups
+    result = []
+    for i, group in enumerate(query_groups):
+        name = group.get("name", str(i))
+        sql_file = group.get("sql_file")
+        if not sql_file:
+            raise ValueError(f"Query group {i!r} ({name!r}) missing 'sql_file'")
+        result.append((name, sql_file))
+    return result
+
+
 def read_workloads_config(experiment_params: DictConfig):
     """Read and validate workloads configuration."""
     if "workloads" not in experiment_params:
@@ -542,6 +635,18 @@ def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
                 f"Invalid aggregate_cleanup.policy: '{policy}'. "
                 f"Valid options: {valid_policies}"
             )
+
+    # ClickHouse backend requires dataset config in experiment_params
+    if (
+        hasattr(cfg, "backend")
+        and cfg.backend.get("type") == "clickhouse"
+        and hasattr(cfg, "experiment_params")
+        and "dataset" not in cfg.experiment_params
+    ):
+        raise ValueError(
+            "backend.type=clickhouse requires experiment_params.dataset to be set. "
+            "Use experiment_type=clickhouse or add a dataset section to your experiment config."
+        )
 
 
 def _load_sql_queries(sql_file: str) -> List[str]:
