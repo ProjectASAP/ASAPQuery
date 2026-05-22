@@ -92,6 +92,10 @@ impl SQLPatternParser {
 
         let group_bys = self.get_groupbys(select)?;
 
+        if !self.select_identifiers_subset_of(select, &group_bys) {
+            return None;
+        }
+
         if !has_subquery {
             let time_info = self.get_time_info(select, &metric)?;
 
@@ -126,6 +130,9 @@ impl SQLPatternParser {
                     SetExpr::Select(inner_select) => {
                         let inner_aggregation = self.get_aggregation(inner_select)?;
                         let inner_group_bys = self.get_groupbys(inner_select)?;
+                        if !self.select_identifiers_subset_of(inner_select, &inner_group_bys) {
+                            return None;
+                        }
                         let time_info = self.get_time_info(inner_select, &metric)?;
 
                         Some(Box::new(SQLQueryData {
@@ -208,6 +215,27 @@ impl SQLPatternParser {
             }
             _ => Vec::new(),
         }
+    }
+
+    /// Returns true iff every non-aggregate identifier in `select.projection` is
+    /// also present in `group_bys`. Used to reject queries like
+    /// `SELECT srcip, SUM(v) FROM t GROUP BY proto`, where standard SQL would
+    /// require `srcip` to appear in the GROUP BY clause; without this check the
+    /// pattern parser would silently drop `srcip` from the output.
+    fn select_identifiers_subset_of(&self, select: &Select, group_bys: &HashSet<String>) -> bool {
+        for item in &select.projection {
+            let expr = match item {
+                SelectItem::UnnamedExpr(expr) => expr,
+                SelectItem::ExprWithAlias { expr, .. } => expr,
+                _ => continue,
+            };
+            if let Expr::Identifier(ident) = expr {
+                if !group_bys.contains(&ident.value) {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     fn get_aggregation(&self, select: &Select) -> Option<AggregationInfo> {
