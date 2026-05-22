@@ -58,15 +58,32 @@ pub fn cms_matrix(sk: &RuntimeCountMin) -> Vec<Vec<f64>> {
 
 /// Build a CountMin from an existing matrix (used by JSON / legacy
 /// byte-format decoders).
-pub fn cms_from_matrix(matrix: Vec<Vec<f64>>, rows: usize, cols: usize) -> RuntimeCountMin {
-    let storage = Vector2D::from_fn(rows, cols, |r, c| {
-        matrix
-            .get(r)
-            .and_then(|row| row.get(c))
-            .copied()
-            .unwrap_or(0.0)
-    });
-    CountMin::from_storage(storage)
+///
+/// `rows`/`cols` arrive from the envelope while `matrix` is parsed
+/// separately, so a malformed payload can disagree. We reject the
+/// mismatch instead of silently padding/truncating with `0.0`, which
+/// would be invisible corruption.
+pub fn cms_from_matrix(
+    matrix: Vec<Vec<f64>>,
+    rows: usize,
+    cols: usize,
+) -> Result<RuntimeCountMin, Box<dyn std::error::Error>> {
+    if matrix.len() != rows {
+        return Err(format!(
+            "CountMin matrix shape mismatch: envelope declares {rows} rows, matrix has {}",
+            matrix.len()
+        )
+        .into());
+    }
+    if let Some(bad) = matrix.iter().position(|row| row.len() != cols) {
+        return Err(format!(
+            "CountMin matrix shape mismatch: envelope declares {cols} cols, row {bad} has {}",
+            matrix[bad].len()
+        )
+        .into());
+    }
+    let storage = Vector2D::from_fn(rows, cols, |r, c| matrix[r][c]);
+    Ok(CountMin::from_storage(storage))
 }
 
 /// Serialize to the Go-compatible MessagePack envelope.
@@ -76,13 +93,16 @@ pub fn cms_to_msgpack(sk: &RuntimeCountMin) -> Vec<u8> {
         rows: sk.rows(),
         cols: sk.cols(),
     };
-    rmp_serde::to_vec(&wire).unwrap_or_default()
+    // A `Vec<Vec<f64>>` + two `usize`s has no unrepresentable state, so
+    // failure here is a bug, not bad input. Panic loudly rather than emit
+    // empty bytes that surface downstream as a misleading "buffer too short".
+    rmp_serde::to_vec(&wire).expect("CountMinSketchWire msgpack serialization is infallible")
 }
 
 /// Deserialize from the Go-compatible MessagePack envelope.
 pub fn cms_from_msgpack(bytes: &[u8]) -> Result<RuntimeCountMin, Box<dyn std::error::Error>> {
     let wire: CountMinSketchWire = rmp_serde::from_slice(bytes)?;
-    Ok(cms_from_matrix(wire.sketch, wire.rows, wire.cols))
+    Ok(cms_from_matrix(wire.sketch, wire.rows, wire.cols)?)
 }
 
 /// Merge a slice of CMS references into a single new sketch.

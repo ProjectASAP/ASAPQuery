@@ -59,7 +59,7 @@ impl CountMinSketchAccumulator {
         }
 
         Ok(Self {
-            inner: cms_from_matrix(sketch, row_num, col_num),
+            inner: cms_from_matrix(sketch, row_num, col_num)?,
         })
     }
 
@@ -110,7 +110,7 @@ impl CountMinSketchAccumulator {
         }
 
         Ok(Self {
-            inner: cms_from_matrix(sketch, row_num, col_num),
+            inner: cms_from_matrix(sketch, row_num, col_num)?,
         })
     }
 
@@ -291,10 +291,10 @@ mod tests {
     #[test]
     fn test_count_min_sketch_merge() {
         let cms1 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]], 2, 3),
+            inner: cms_from_matrix(vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]], 2, 3).unwrap(),
         };
         let cms2 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]], 2, 3),
+            inner: cms_from_matrix(vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]], 2, 3).unwrap(),
         };
 
         let merged = CountMinSketchAccumulator::merge_accumulators(vec![cms1, cms2]).unwrap();
@@ -316,7 +316,7 @@ mod tests {
     #[test]
     fn test_count_min_sketch_serialization() {
         let cms = CountMinSketchAccumulator {
-            inner: cms_from_matrix(vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]], 2, 3),
+            inner: cms_from_matrix(vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]], 2, 3).unwrap(),
         };
 
         let bytes = cms.serialize_to_bytes();
@@ -355,6 +355,10 @@ mod tests {
 
     #[test]
     fn test_update_and_query_use_same_key_encoding() {
+        // Regression test: _update and query_key must hash the same key string.
+        // Previously _update went through serialize_to_json (which returns a JSON
+        // array, so as_object() is always None) and always stored under key "".
+        // query_key correctly used key.labels.join(";"), so they never matched.
         let mut cms = CountMinSketchAccumulator::new(4, 1000);
         let key = KeyByLabelValues::new_with_labels(vec!["web".to_string(), "prod".to_string()]);
         cms._update(&key, 5.0);
@@ -364,7 +368,10 @@ mod tests {
             "_update and query_key used different key encodings: got {result}"
         );
 
+        // Also verify a different key does not interfere.
         let other_key = KeyByLabelValues::new_with_labels(vec!["api".to_string()]);
+        // other_key was never updated; in a sketch this large there should be no
+        // collision, so its estimate should be exactly 0.
         let other_result = cms.query_key(&other_key);
         assert_eq!(
             other_result, 0.0,
@@ -389,13 +396,13 @@ mod tests {
     #[test]
     fn test_count_min_sketch_merge_multiple() {
         let cms1 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]], 2, 3),
+            inner: cms_from_matrix(vec![vec![5.0, 0.0, 0.0], vec![0.0, 0.0, 10.0]], 2, 3).unwrap(),
         };
         let cms2 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]], 2, 3),
+            inner: cms_from_matrix(vec![vec![3.0, 7.0, 0.0], vec![0.0, 0.0, 0.0]], 2, 3).unwrap(),
         };
         let cms3 = CountMinSketchAccumulator {
-            inner: cms_from_matrix(vec![vec![2.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]], 2, 3),
+            inner: cms_from_matrix(vec![vec![2.0, 0.0, 0.0], vec![0.0, 0.0, 5.0]], 2, 3).unwrap(),
         };
 
         let boxed_accs: Vec<Box<dyn AggregateCore>> =
