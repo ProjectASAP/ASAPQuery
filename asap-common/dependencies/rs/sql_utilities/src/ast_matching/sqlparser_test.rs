@@ -891,4 +891,32 @@ mod tests {
         )
         .is_none());
     }
+
+    #[test]
+    fn test_multi_projection_rejects_select_col_not_in_groupby() {
+        // L2 is in SELECT but not in GROUP BY. Standard SQL rejects this; we must too,
+        // otherwise the column would be silently dropped from the output.
+        assert!(parse_sql_query(
+            "SELECT L2, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_multi_projection_accepts_select_subset_of_groupby() {
+        // SELECT lists a subset of group-by keys (L1) while the GROUP BY uses two
+        // (L1, L2). Allowed: every SELECT identifier is in GROUP BY; the remaining
+        // group-by key is just absent from the projection.
+        let query = parse_sql_query(
+            "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2",
+        )
+        .expect("SELECT subset of GROUP BY should parse");
+        assert!(query.labels.contains("L1"));
+        assert!(query.labels.contains("L2"));
+        assert_eq!(query.aggregation_info.get_name(), "SUM");
+    }
 }
