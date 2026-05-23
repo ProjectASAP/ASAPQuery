@@ -316,7 +316,8 @@ mod tests {
     #[test]
     fn test_count_min_sketch_serialization() {
         let cms = CountMinSketchAccumulator {
-            inner: cms_from_matrix(vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]], 2, 3).unwrap(),
+            inner: cms_from_matrix(vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]], 2, 3)
+                .unwrap(),
         };
 
         let bytes = cms.serialize_to_bytes();
