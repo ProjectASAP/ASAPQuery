@@ -5,18 +5,137 @@
 use super::SimpleEngine;
 use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps};
 use crate::data_model::{AggregationIdInfo, QueryConfig, SchemaConfig};
-use crate::engines::query_result::QueryResult;
+use crate::engines::query_result::{InstantVector, InstantVectorElement, QueryResult};
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
 use sql_utilities::ast_matching::QueryType;
 use sql_utilities::ast_matching::{SQLPatternMatcher, SQLPatternParser, SQLQuery};
-use sql_utilities::sqlhelper::{AggregationInfo, SQLQueryData};
+use sql_utilities::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
 use std::collections::HashMap;
 use tracing::{debug, warn};
+
+/// SQL-only post-processing produced alongside a `QueryExecutionContext`:
+/// rules for ordering and truncating the final result vector.
+///
+/// Lives outside `QueryExecutionContext` so that PromQL/Elastic engines —
+/// which share that context but have no SQL-level ORDER BY / LIMIT — never
+/// have to know about these fields.
+#[derive(Debug, Clone, Default)]
+pub struct SqlPostProcessing {
+    /// Alias of the aggregate function in SELECT, e.g. `agg(v) AS p99`.
+    /// Used so `ORDER BY p99` resolves to `element.value`.
+    pub aggregation_alias: Option<String>,
+    /// `ORDER BY` items in source order. Empty when no ORDER BY clause is present.
+    pub order_by: Vec<OrderByItem>,
+    /// `LIMIT N`. None when no LIMIT clause is present.
+    pub limit: Option<u64>,
+}
+
+impl SqlPostProcessing {
+    fn from_query_data(query_data: &SQLQueryData) -> Self {
+        Self {
+            aggregation_alias: query_data.aggregation_alias.clone(),
+            order_by: query_data.order_by.clone(),
+            limit: query_data.limit,
+        }
+    }
+
+    /// Returns `true` when there's no ordering or truncation to apply, so the
+    /// caller can short-circuit any deconstruction of the result.
+    fn is_noop(&self) -> bool {
+        self.order_by.is_empty() && self.limit.is_none()
+    }
+
+    /// Apply ORDER BY + LIMIT to a `QueryResult`. Only `QueryResult::Vector`
+    /// is rewritten; matrices pass through unchanged (range queries don't
+    /// flow through `handle_query_sql`).
+    pub fn apply(&self, output_labels: &KeyByLabelNames, result: QueryResult) -> QueryResult {
+        if self.is_noop() {
+            return result;
+        }
+        match result {
+            QueryResult::Vector(InstantVector { values, timestamp }) => {
+                let values = sort_and_truncate_instant_vector(
+                    values,
+                    &output_labels.labels,
+                    self.aggregation_alias.as_deref(),
+                    &self.order_by,
+                    self.limit,
+                );
+                QueryResult::Vector(InstantVector { values, timestamp })
+            }
+            other => other,
+        }
+    }
+}
+
+/// Sort and truncate a `Vec<InstantVectorElement>` per `ORDER BY` / `LIMIT`.
+///
+/// Each `OrderByItem.column` resolves to either:
+///   * the aggregate alias → compare by `element.value`
+///   * a `label_names` entry → compare lexicographically by `element.labels[idx]`
+///
+/// Items that don't match either category are silently skipped (the SQL parser
+/// already rejects unknown identifiers, so reaching this branch indicates only
+/// a mismatch between schema config and runtime labels). When `order_by` is
+/// empty and `limit` is `None`, the result vector is returned unchanged.
+fn sort_and_truncate_instant_vector(
+    mut results: Vec<InstantVectorElement>,
+    label_names: &[String],
+    aggregation_alias: Option<&str>,
+    order_by: &[OrderByItem],
+    limit: Option<u64>,
+) -> Vec<InstantVectorElement> {
+    if !order_by.is_empty() {
+        // Pre-resolve each ORDER BY key once. KeyByLabelNames::new sorts the names
+        // alphabetically and InstantVectorElement.labels is parallel to that vector,
+        // so positional indexing is sound.
+        let resolved: Vec<(Option<usize>, bool)> = order_by
+            .iter()
+            .filter_map(|item| {
+                if aggregation_alias == Some(item.column.as_str()) {
+                    Some((None, item.ascending))
+                } else {
+                    label_names
+                        .iter()
+                        .position(|n| n == &item.column)
+                        .map(|i| (Some(i), item.ascending))
+                }
+            })
+            .collect();
+
+        results.sort_by(|a, b| {
+            for &(target, asc) in &resolved {
+                let ord = match target {
+                    None => a
+                        .value
+                        .partial_cmp(&b.value)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                    Some(idx) => {
+                        let av = a.labels.labels.get(idx).map(String::as_str).unwrap_or("");
+                        let bv = b.labels.labels.get(idx).map(String::as_str).unwrap_or("");
+                        av.cmp(bv)
+                    }
+                };
+                let ord = if asc { ord } else { ord.reverse() };
+                if ord != std::cmp::Ordering::Equal {
+                    return ord;
+                }
+            }
+            std::cmp::Ordering::Equal
+        });
+    }
+
+    if let Some(limit) = limit {
+        results.truncate(limit as usize);
+    }
+
+    results
+}
 
 impl SimpleEngine {
     /// Finds the query configuration for a SQL query using structural pattern matching.
@@ -202,15 +321,33 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let context = self.build_query_execution_context_sql(query, time)?;
-        self.execute_context(context, false)
+        let (context, post) = self.build_sql_query_pieces(query, time)?;
+        let (output_labels, result) = self.execute_context(context, false)?;
+        let result = post.apply(&output_labels, result);
+        Some((output_labels, result))
     }
 
+    /// Public entry point retained for tests that only need the execution
+    /// context (e.g. assertions on `agg_info` or `metadata`). Discards the
+    /// SQL post-processing side-channel since it isn't applied without a
+    /// `QueryResult` to operate on.
     pub fn build_query_execution_context_sql(
         &self,
         query: String,
         time: f64,
     ) -> Option<QueryExecutionContext> {
+        self.build_sql_query_pieces(query, time)
+            .map(|(ctx, _)| ctx)
+    }
+
+    /// Internal: parses + plans a SQL query and returns both the execution
+    /// context (shared with PromQL/Elastic engines) and the SQL-only
+    /// post-processing rules (ORDER BY / LIMIT / alias resolution).
+    fn build_sql_query_pieces(
+        &self,
+        query: String,
+        time: f64,
+    ) -> Option<(QueryExecutionContext, SqlPostProcessing)> {
         // Get SQL schema from inference config
         let schema = match &self.inference_config.read().unwrap().schema {
             SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
@@ -243,12 +380,19 @@ impl SimpleEngine {
             return None;
         }
 
+        // ORDER BY / LIMIT / aggregate alias are presentational and SQL-specific.
+        // They live alongside the (engine-shared) `QueryExecutionContext` rather than
+        // inside it. Built once here from the parsed `query_data` and returned with
+        // every successful path below.
+        let post = SqlPostProcessing::from_query_data(&query_data);
+
         // Handle SpatioTemporal queries separately - they bypass QueryPatternType mapping
         if match_result.query_type == vec![QueryType::SpatioTemporal] {
             let query_time = Self::convert_query_time_to_data_time(
                 query_data.time_info.get_start() + query_data.time_info.get_duration(),
             );
-            return self.build_spatiotemporal_context(&match_result, query_time, &query_data);
+            let ctx = self.build_spatiotemporal_context(&match_result, query_time, &query_data)?;
+            return Some((ctx, post));
         }
 
         let query_pattern_type = match &match_result.query_type[..] {
@@ -415,7 +559,7 @@ impl SimpleEngine {
         let do_merge = query_pattern_type == QueryPatternType::OnlyTemporal
             || query_pattern_type == QueryPatternType::OneTemporalOneSpatial;
 
-        self.build_sql_execution_context_tail(
+        let ctx = self.build_sql_execution_context_tail(
             metric,
             &timestamps,
             metadata,
@@ -423,7 +567,8 @@ impl SimpleEngine {
             do_merge,
             spatial_filter,
             query_time,
-        )
+        )?;
+        Some((ctx, post))
     }
 
     /// Shared context-building tail for both SQL context builders.
@@ -432,7 +577,6 @@ impl SimpleEngine {
     /// after labels, statistic, metadata, timestamps, and `agg_info` are resolved.
     /// Builds the query plan, derives grouping/aggregated labels, and returns the
     /// final `QueryExecutionContext`.
-    #[allow(clippy::too_many_arguments)]
     fn build_sql_execution_context_tail(
         &self,
         metric: &str,
@@ -560,5 +704,213 @@ impl SimpleEngine {
             String::new(),
             query_time,
         )
+    }
+}
+
+#[cfg(test)]
+mod sort_and_truncate_tests {
+    use super::sort_and_truncate_instant_vector;
+    use super::SqlPostProcessing;
+    use crate::data_model::KeyByLabelValues;
+    use crate::engines::query_result::{InstantVector, InstantVectorElement, QueryResult};
+    use promql_utilities::data_model::KeyByLabelNames;
+    use sql_utilities::sqlhelper::OrderByItem;
+
+    fn elem(labels: &[&str], value: f64) -> InstantVectorElement {
+        InstantVectorElement {
+            labels: KeyByLabelValues::new_with_labels(
+                labels.iter().map(|s| s.to_string()).collect(),
+            ),
+            value,
+        }
+    }
+
+    fn label_names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn no_orderby_no_limit_returns_unchanged() {
+        let input = vec![elem(&["a"], 1.0), elem(&["b"], 2.0)];
+        let result =
+            sort_and_truncate_instant_vector(input.clone(), &label_names(&["L"]), None, &[], None);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].labels.labels, input[0].labels.labels);
+        assert_eq!(result[1].labels.labels, input[1].labels.labels);
+    }
+
+    #[test]
+    fn order_by_aggregate_desc_with_limit() {
+        // Mirrors the user's netflow query shape: ORDER BY <agg alias> DESC LIMIT N.
+        // Build 5 rows with values 1..=5 and assert top-3 in descending order.
+        let input = vec![
+            elem(&["a"], 1.0),
+            elem(&["b"], 5.0),
+            elem(&["c"], 3.0),
+            elem(&["d"], 2.0),
+            elem(&["e"], 4.0),
+        ];
+        let order_by = vec![OrderByItem {
+            column: "p99".to_string(),
+            ascending: false,
+        }];
+        let result = sort_and_truncate_instant_vector(
+            input,
+            &label_names(&["L"]),
+            Some("p99"),
+            &order_by,
+            Some(3),
+        );
+        assert_eq!(result.len(), 3);
+        let values: Vec<f64> = result.iter().map(|e| e.value).collect();
+        assert_eq!(values, vec![5.0, 4.0, 3.0]);
+    }
+
+    #[test]
+    fn order_by_label_ascending_default() {
+        // ORDER BY <group-by column> with no ASC/DESC defaults to ascending.
+        let input = vec![
+            elem(&["c"], 1.0),
+            elem(&["a"], 2.0),
+            elem(&["b"], 3.0),
+        ];
+        let order_by = vec![OrderByItem {
+            column: "L".to_string(),
+            ascending: true,
+        }];
+        let result =
+            sort_and_truncate_instant_vector(input, &label_names(&["L"]), None, &order_by, None);
+        let labels: Vec<&str> = result
+            .iter()
+            .map(|e| e.labels.labels[0].as_str())
+            .collect();
+        assert_eq!(labels, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn order_by_multi_key_uses_secondary_for_ties() {
+        // Primary: L1 ASC. Secondary: value DESC. Tied L1 values should be
+        // broken by descending value. labels are [L1, L2] alphabetical ⇒ index 0 = L1.
+        let input = vec![
+            elem(&["x", "i"], 1.0),
+            elem(&["x", "j"], 5.0),
+            elem(&["a", "k"], 3.0),
+            elem(&["a", "l"], 7.0),
+        ];
+        let order_by = vec![
+            OrderByItem {
+                column: "L1".to_string(),
+                ascending: true,
+            },
+            OrderByItem {
+                column: "p99".to_string(),
+                ascending: false,
+            },
+        ];
+        let result = sort_and_truncate_instant_vector(
+            input,
+            &label_names(&["L1", "L2"]),
+            Some("p99"),
+            &order_by,
+            None,
+        );
+        let expected: Vec<(&str, f64)> = vec![("a", 7.0), ("a", 3.0), ("x", 5.0), ("x", 1.0)];
+        let actual: Vec<(&str, f64)> = result
+            .iter()
+            .map(|e| (e.labels.labels[0].as_str(), e.value))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn limit_only_no_orderby_truncates_in_place() {
+        let input = vec![
+            elem(&["a"], 1.0),
+            elem(&["b"], 2.0),
+            elem(&["c"], 3.0),
+        ];
+        let result =
+            sort_and_truncate_instant_vector(input, &label_names(&["L"]), None, &[], Some(2));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].labels.labels[0], "a");
+        assert_eq!(result[1].labels.labels[0], "b");
+    }
+
+    #[test]
+    fn nan_values_do_not_panic() {
+        // partial_cmp returns None for NaN; we map to Equal to keep the comparator total.
+        let input = vec![
+            elem(&["a"], f64::NAN),
+            elem(&["b"], 1.0),
+            elem(&["c"], 2.0),
+        ];
+        let order_by = vec![OrderByItem {
+            column: "p99".to_string(),
+            ascending: false,
+        }];
+        let result = sort_and_truncate_instant_vector(
+            input,
+            &label_names(&["L"]),
+            Some("p99"),
+            &order_by,
+            None,
+        );
+        assert_eq!(result.len(), 3);
+    }
+
+    #[test]
+    fn sql_post_processing_default_is_noop() {
+        // Default == no ORDER BY, no LIMIT, no alias. apply() must hand back the
+        // exact QueryResult unchanged (no allocation, no reorder).
+        let post = SqlPostProcessing::default();
+        let input = vec![elem(&["c"], 3.0), elem(&["a"], 1.0), elem(&["b"], 2.0)];
+        let labels = KeyByLabelNames::new(vec!["L".to_string()]);
+        let result = QueryResult::Vector(InstantVector {
+            values: input.clone(),
+            timestamp: 1234,
+        });
+        let out = post.apply(&labels, result);
+        let QueryResult::Vector(v) = out else {
+            panic!("expected vector");
+        };
+        let values: Vec<&str> = v
+            .values
+            .iter()
+            .map(|e| e.labels.labels[0].as_str())
+            .collect();
+        assert_eq!(values, vec!["c", "a", "b"]);
+        assert_eq!(v.timestamp, 1234);
+    }
+
+    #[test]
+    fn sql_post_processing_applies_orderby_desc_limit() {
+        // End-to-end check at the SqlPostProcessing layer: the wrapper unpacks
+        // the vector, sorts and truncates, and re-wraps preserving timestamp.
+        let post = SqlPostProcessing {
+            aggregation_alias: Some("p99".to_string()),
+            order_by: vec![OrderByItem {
+                column: "p99".to_string(),
+                ascending: false,
+            }],
+            limit: Some(2),
+        };
+        let labels = KeyByLabelNames::new(vec!["L".to_string()]);
+        let input = vec![
+            elem(&["a"], 1.0),
+            elem(&["b"], 5.0),
+            elem(&["c"], 3.0),
+            elem(&["d"], 2.0),
+        ];
+        let result = QueryResult::Vector(InstantVector {
+            values: input,
+            timestamp: 9999,
+        });
+        let out = post.apply(&labels, result);
+        let QueryResult::Vector(v) = out else {
+            panic!("expected vector");
+        };
+        assert_eq!(v.timestamp, 9999);
+        let values: Vec<f64> = v.values.iter().map(|e| e.value).collect();
+        assert_eq!(values, vec![5.0, 3.0]);
     }
 }

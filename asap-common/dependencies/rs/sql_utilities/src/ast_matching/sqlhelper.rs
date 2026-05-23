@@ -89,10 +89,28 @@ impl SQLSchema {
 #[derive(Debug, Clone)]
 pub struct SQLQueryData {
     pub aggregation_info: AggregationInfo,
+    /// Alias of the aggregate function in SELECT, e.g. `agg(v) AS p99` → `Some("p99")`.
+    /// Captured separately from `aggregation_info` because it's presentational only:
+    /// two queries that differ solely in alias must still match the same template.
+    pub aggregation_alias: Option<String>,
     pub metric: String,
     pub labels: HashSet<String>,
     pub time_info: TimeInfo,
     pub subquery: Option<Box<SQLQueryData>>,
+    /// `ORDER BY` items in source order. Empty when no ORDER BY is present.
+    /// Excluded from `matches_sql_pattern` since ordering is post-aggregation.
+    pub order_by: Vec<OrderByItem>,
+    /// `LIMIT N`. None when no LIMIT is present. Excluded from `matches_sql_pattern`.
+    pub limit: Option<u64>,
+}
+
+/// Single `ORDER BY` clause item: a column reference plus sort direction.
+/// `column` is either a GROUP BY identifier or the aggregate alias.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderByItem {
+    pub column: String,
+    /// `true` for ASC (the default when neither ASC nor DESC is specified), `false` for DESC.
+    pub ascending: bool,
 }
 
 #[derive(Debug, Clone)]

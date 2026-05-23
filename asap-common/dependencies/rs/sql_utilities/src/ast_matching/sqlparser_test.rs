@@ -700,10 +700,17 @@ mod tests {
     }
 
     #[test]
-    fn test_order_by_is_rejected() {
-        assert!(parse_sql_query(
-            "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2 ORDER BY L1"
-        ).is_none());
+    fn test_order_by_groupby_column_default_ascending() {
+        // Bare `ORDER BY L1` (no ASC/DESC) defaults to ascending. The order_by item
+        // must reflect that the column is a GROUP BY key.
+        let q = parse_sql_query(
+            "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2 ORDER BY L1",
+        )
+        .expect("ORDER BY group-by column should parse");
+        assert_eq!(q.order_by.len(), 1);
+        assert_eq!(q.order_by[0].column, "L1");
+        assert!(q.order_by[0].ascending);
+        assert_eq!(q.limit, None);
     }
 
     // ── scrape_interval > 1s regression tests (issue #201) ───────────────────
@@ -918,5 +925,113 @@ mod tests {
         assert!(query.labels.contains("L1"));
         assert!(query.labels.contains("L2"));
         assert_eq!(query.aggregation_info.get_name(), "SUM");
+    }
+
+    // ── ORDER BY / LIMIT support ─────────────────────────────────────────────
+    //
+    // The parser must accept ORDER BY (possibly multi-column, with optional ASC/DESC)
+    // and LIMIT N, capturing them in SQLQueryData for the engine to apply post-aggregation.
+    // ORDER BY columns must reference either the aggregate alias or a GROUP BY column.
+    // The aggregate alias is captured separately so `ORDER BY <alias>` can resolve.
+
+    #[test]
+    fn test_order_by_aggregate_alias_desc_limit_n() {
+        // Top-N user case: ORDER BY <agg alias> DESC LIMIT 10.
+        let q = parse_sql_query(
+            "SELECT L1, L2, QUANTILE(0.99, value) AS p99 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
+             GROUP BY L1, L2 \
+             ORDER BY p99 DESC LIMIT 10",
+        )
+        .expect("ORDER BY <agg alias> DESC LIMIT N should parse");
+        assert_eq!(q.aggregation_alias.as_deref(), Some("p99"));
+        assert_eq!(q.order_by.len(), 1);
+        assert_eq!(q.order_by[0].column, "p99");
+        assert!(!q.order_by[0].ascending);
+        assert_eq!(q.limit, Some(10));
+    }
+
+    #[test]
+    fn test_order_by_multiple_columns_mixed_directions() {
+        let q = parse_sql_query(
+            "SELECT QUANTILE(0.99, value) AS p99 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() \
+             GROUP BY L1, L2 \
+             ORDER BY L1 ASC, p99 DESC",
+        )
+        .expect("multi-column ORDER BY with mixed directions should parse");
+        assert_eq!(q.order_by.len(), 2);
+        assert_eq!(q.order_by[0].column, "L1");
+        assert!(q.order_by[0].ascending);
+        assert_eq!(q.order_by[1].column, "p99");
+        assert!(!q.order_by[1].ascending);
+    }
+
+    #[test]
+    fn test_limit_only_no_orderby() {
+        let q = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1 \
+             LIMIT 5",
+        )
+        .expect("LIMIT without ORDER BY should parse");
+        assert!(q.order_by.is_empty());
+        assert_eq!(q.limit, Some(5));
+    }
+
+    #[test]
+    fn test_order_by_unknown_column_rejected() {
+        // mystery_col is neither the aggregate alias nor a GROUP BY column.
+        assert!(parse_sql_query(
+            "SELECT QUANTILE(0.99, value) AS p99 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1 \
+             ORDER BY mystery_col",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_order_by_expression_rejected() {
+        assert!(parse_sql_query(
+            "SELECT QUANTILE(0.99, value) AS p99 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1 \
+             ORDER BY p99 + 1",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_limit_with_offset_rejected() {
+        // OFFSET is not supported (no pagination semantics in the precompute model).
+        assert!(parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1 \
+             LIMIT 5 OFFSET 3",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_matches_template_ignores_order_by_and_limit() {
+        // A registered template without ORDER BY / LIMIT must still match an incoming
+        // query that adds them — they're presentational, not structural.
+        let template = parse_sql_query(
+            "SELECT QUANTILE(0.99, value) AS p99 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2",
+        )
+        .unwrap();
+        let incoming = parse_sql_query(
+            "SELECT QUANTILE(0.99, value) AS top FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY L1, L2 \
+             ORDER BY top DESC LIMIT 25",
+        )
+        .unwrap();
+        assert!(incoming.matches_sql_pattern(&template));
     }
 }
