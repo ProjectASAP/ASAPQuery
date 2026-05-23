@@ -102,7 +102,7 @@ pub fn cms_to_msgpack(sk: &RuntimeCountMin) -> Vec<u8> {
 /// Deserialize from the Go-compatible MessagePack envelope.
 pub fn cms_from_msgpack(bytes: &[u8]) -> Result<RuntimeCountMin, Box<dyn std::error::Error>> {
     let wire: CountMinSketchWire = rmp_serde::from_slice(bytes)?;
-    Ok(cms_from_matrix(wire.sketch, wire.rows, wire.cols)?)
+    cms_from_matrix(wire.sketch, wire.rows, wire.cols)
 }
 
 /// Merge a slice of CMS references into a single new sketch.
