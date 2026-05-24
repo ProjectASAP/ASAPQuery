@@ -576,6 +576,7 @@ impl SimpleEngine {
     /// after labels, statistic, metadata, timestamps, and `agg_info` are resolved.
     /// Builds the query plan, derives grouping/aggregated labels, and returns the
     /// final `QueryExecutionContext`.
+    #[allow(clippy::too_many_arguments)]
     fn build_sql_execution_context_tail(
         &self,
         metric: &str,
