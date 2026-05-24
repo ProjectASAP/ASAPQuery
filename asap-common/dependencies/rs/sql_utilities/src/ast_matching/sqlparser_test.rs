@@ -802,4 +802,121 @@ mod tests {
             Some(QueryError::SpatialDurationSmall),
         );
     }
+
+    // ── Multi-projection SELECT (group cols + aggregate) ─────────────────────
+    //
+    // ClickHouse and standard SQL allow `SELECT g1, g2, agg(v) FROM t GROUP BY g1, g2`
+    // (one row per group with the grouping keys included alongside the aggregate).
+    // The pattern parser must also accept this shape and produce the same structural
+    // SQLQueryData as the single-projection form `SELECT agg(v) FROM t GROUP BY g1, g2`.
+
+    #[test]
+    fn test_multi_projection_groupcols_then_aggregate() {
+        let query = parse_sql_query(
+            "SELECT L1, L2, L3, L4, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .expect("multi-projection SELECT with group cols + aggregate should parse");
+        assert_eq!(query.metric, "cpu_usage");
+        assert_eq!(query.aggregation_info.get_name(), "SUM");
+        assert!(query.labels.contains("L1"));
+        assert!(query.labels.contains("L4"));
+    }
+
+    #[test]
+    fn test_multi_projection_aggregate_first() {
+        let query = parse_sql_query(
+            "SELECT SUM(value), L1, L2, L3, L4 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .expect("aggregate-first multi-projection SELECT should parse");
+        assert_eq!(query.aggregation_info.get_name(), "SUM");
+    }
+
+    #[test]
+    fn test_multi_projection_quantile_clickhouse_syntax() {
+        // The exact shape of the user's netflow query: ClickHouse parametric quantile
+        // with grouping columns alongside the aggregate in SELECT.
+        let query = parse_sql_query(
+            "SELECT L1, L2, quantile(0.99)(value) AS p99 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
+             GROUP BY L1, L2",
+        )
+        .expect("multi-projection ClickHouse parametric quantile should parse");
+        assert_eq!(query.aggregation_info.get_name(), "QUANTILE");
+        assert_eq!(query.aggregation_info.get_args()[0], "0.99");
+    }
+
+    #[test]
+    fn test_multi_projection_matches_single_projection_template() {
+        // A template registered as single-projection should structurally match an
+        // incoming query that lists the group cols in SELECT alongside the aggregate.
+        let template = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .expect("single-projection template should parse");
+        let incoming = parse_sql_query(
+            "SELECT L1, L2, L3, L4, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .expect("multi-projection incoming should parse");
+        assert!(incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_multi_projection_rejects_two_aggregates() {
+        // Two aggregate functions in the projection list — the parser only tracks one
+        // statistic so this must be rejected to avoid silently dropping one.
+        assert!(parse_sql_query(
+            "SELECT SUM(value), AVG(value), L1 FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_multi_projection_rejects_arbitrary_expr() {
+        // Non-identifier, non-function projection items (computed expressions, literals, …)
+        // are not supported by the pattern model and must be rejected.
+        assert!(parse_sql_query(
+            "SELECT (L1 + 1), SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_multi_projection_rejects_select_col_not_in_groupby() {
+        // L2 is in SELECT but not in GROUP BY. Standard SQL rejects this; we must too,
+        // otherwise the column would be silently dropped from the output.
+        assert!(parse_sql_query(
+            "SELECT L2, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_multi_projection_accepts_select_subset_of_groupby() {
+        // SELECT lists a subset of group-by keys (L1) while the GROUP BY uses two
+        // (L1, L2). Allowed: every SELECT identifier is in GROUP BY; the remaining
+        // group-by key is just absent from the projection.
+        let query = parse_sql_query(
+            "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2",
+        )
+        .expect("SELECT subset of GROUP BY should parse");
+        assert!(query.labels.contains("L1"));
+        assert!(query.labels.contains("L2"));
+        assert_eq!(query.aggregation_info.get_name(), "SUM");
+    }
 }
