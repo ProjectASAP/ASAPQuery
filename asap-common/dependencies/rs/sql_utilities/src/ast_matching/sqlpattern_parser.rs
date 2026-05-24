@@ -217,7 +217,8 @@ impl SQLPatternParser {
             let subquery = match &select.from[0].relation {
                 TableFactor::Derived { subquery, .. } => match subquery.body.as_ref() {
                     SetExpr::Select(inner_select) => {
-                        let (inner_aggregation, inner_alias) = self.get_aggregation(inner_select)?;
+                        let (inner_aggregation, inner_alias) =
+                            self.get_aggregation(inner_select)?;
                         let inner_group_bys = self.get_groupbys(inner_select)?;
                         if !self.select_identifiers_subset_of(inner_select, &inner_group_bys) {
                             return None;

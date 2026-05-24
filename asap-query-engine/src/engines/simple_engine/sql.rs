@@ -336,8 +336,7 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<QueryExecutionContext> {
-        self.build_sql_query_pieces(query, time)
-            .map(|(ctx, _)| ctx)
+        self.build_sql_query_pieces(query, time).map(|(ctx, _)| ctx)
     }
 
     /// Internal: parses + plans a SQL query and returns both the execution
@@ -769,21 +768,14 @@ mod sort_and_truncate_tests {
     #[test]
     fn order_by_label_ascending_default() {
         // ORDER BY <group-by column> with no ASC/DESC defaults to ascending.
-        let input = vec![
-            elem(&["c"], 1.0),
-            elem(&["a"], 2.0),
-            elem(&["b"], 3.0),
-        ];
+        let input = vec![elem(&["c"], 1.0), elem(&["a"], 2.0), elem(&["b"], 3.0)];
         let order_by = vec![OrderByItem {
             column: "L".to_string(),
             ascending: true,
         }];
         let result =
             sort_and_truncate_instant_vector(input, &label_names(&["L"]), None, &order_by, None);
-        let labels: Vec<&str> = result
-            .iter()
-            .map(|e| e.labels.labels[0].as_str())
-            .collect();
+        let labels: Vec<&str> = result.iter().map(|e| e.labels.labels[0].as_str()).collect();
         assert_eq!(labels, vec!["a", "b", "c"]);
     }
 
@@ -824,11 +816,7 @@ mod sort_and_truncate_tests {
 
     #[test]
     fn limit_only_no_orderby_truncates_in_place() {
-        let input = vec![
-            elem(&["a"], 1.0),
-            elem(&["b"], 2.0),
-            elem(&["c"], 3.0),
-        ];
+        let input = vec![elem(&["a"], 1.0), elem(&["b"], 2.0), elem(&["c"], 3.0)];
         let result =
             sort_and_truncate_instant_vector(input, &label_names(&["L"]), None, &[], Some(2));
         assert_eq!(result.len(), 2);
@@ -839,11 +827,7 @@ mod sort_and_truncate_tests {
     #[test]
     fn nan_values_do_not_panic() {
         // partial_cmp returns None for NaN; we map to Equal to keep the comparator total.
-        let input = vec![
-            elem(&["a"], f64::NAN),
-            elem(&["b"], 1.0),
-            elem(&["c"], 2.0),
-        ];
+        let input = vec![elem(&["a"], f64::NAN), elem(&["b"], 1.0), elem(&["c"], 2.0)];
         let order_by = vec![OrderByItem {
             column: "p99".to_string(),
             ascending: false,
