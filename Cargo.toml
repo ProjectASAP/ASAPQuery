@@ -41,3 +41,4 @@ indexmap = { version = "2.0", features = ["serde"] }
 
 [profile.release]
 debug = 1  # line table + symbol names for flamegraph; no effect on codegen or runtime perf
+strip = "none"
