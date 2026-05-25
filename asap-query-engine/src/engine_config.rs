@@ -102,6 +102,9 @@ pub enum BackendConfig {
         /// The server must be reachable at startup.
         #[serde(default)]
         forward_unsupported_queries: bool,
+        /// HTTP timeout in seconds for forwarded queries. Increase for long-range Thanos queries.
+        #[serde(default = "default_fallback_timeout_secs")]
+        fallback_timeout_secs: u64,
     },
     Clickhouse {
         /// ClickHouse HTTP interface base URL.
@@ -141,6 +144,7 @@ impl Default for BackendConfig {
         BackendConfig::Prometheus {
             server: default_prometheus_server(),
             forward_unsupported_queries: false,
+            fallback_timeout_secs: default_fallback_timeout_secs(),
         }
     }
 }
@@ -179,6 +183,10 @@ impl BackendConfig {
 
 fn default_prometheus_server() -> String {
     "http://localhost:9090".to_string()
+}
+
+fn default_fallback_timeout_secs() -> u64 {
+    30
 }
 
 fn default_clickhouse_url() -> String {
@@ -583,6 +591,7 @@ backend:
         if let BackendConfig::Prometheus {
             server,
             forward_unsupported_queries,
+            ..
         } = &config.backend
         {
             assert_eq!(server, "http://prom:9090");

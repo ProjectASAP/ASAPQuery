@@ -106,6 +106,7 @@ async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
         adapter_config: AdapterConfig::prometheus_promql(
             format!("http://127.0.0.1:{prometheus_port}"),
             true,
+            30,
         ),
     };
 
@@ -199,6 +200,7 @@ async fn test_forwarding_disabled() {
         adapter_config: AdapterConfig::prometheus_promql(
             "http://127.0.0.1:19093".to_string(),
             false, // Forwarding disabled
+            30,
         ),
     };
 
@@ -255,6 +257,7 @@ async fn test_prometheus_server_unreachable() {
         adapter_config: AdapterConfig::prometheus_promql(
             "http://127.0.0.1:99999".to_string(), // Unreachable port
             true,
+            30,
         ),
     };
 
@@ -347,6 +350,7 @@ async fn test_range_query_forwarding_disabled() {
         adapter_config: AdapterConfig::prometheus_promql(
             "http://127.0.0.1:19095".to_string(),
             false, // Forwarding disabled
+            30,
         ),
     };
 
@@ -398,6 +402,7 @@ async fn test_range_query_server_unreachable() {
         adapter_config: AdapterConfig::prometheus_promql(
             "http://127.0.0.1:99998".to_string(), // Unreachable port
             true,
+            30,
         ),
     };
 
