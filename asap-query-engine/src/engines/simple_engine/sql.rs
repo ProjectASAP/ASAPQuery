@@ -321,7 +321,8 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let (context, post) = self.build_sql_query_pieces(query, time)?;
+        let (context, post) =
+            self.build_query_execution_context_sql_with_post_processing(query, time)?;
         let (output_labels, result) = self.execute_context(context, false)?;
         let result = post.apply(&output_labels, result);
         Some((output_labels, result))
@@ -336,13 +337,14 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<QueryExecutionContext> {
-        self.build_sql_query_pieces(query, time).map(|(ctx, _)| ctx)
+        self.build_query_execution_context_sql_with_post_processing(query, time)
+            .map(|(ctx, _)| ctx)
     }
 
     /// Internal: parses + plans a SQL query and returns both the execution
     /// context (shared with PromQL/Elastic engines) and the SQL-only
     /// post-processing rules (ORDER BY / LIMIT / alias resolution).
-    fn build_sql_query_pieces(
+    fn build_query_execution_context_sql_with_post_processing(
         &self,
         query: String,
         time: f64,
