@@ -1,8 +1,8 @@
 use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
-    CountMinSketchAccumulator, DatasketchesKLLAccumulator, HydraKllSketchAccumulator,
+    CountMinSketchAccumulator, DatasketchesKLLAccumulator, HllAccumulator, HydraKllSketchAccumulator,
     IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
-    MultipleSumAccumulator, SumAccumulator,
+    MultipleSumAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
 };
 use asap_types::aggregation_config::AggregationConfig;
 
@@ -263,6 +263,55 @@ impl AccumulatorUpdater for KllAccumulatorUpdater {
     fn memory_usage_bytes(&self) -> usize {
         // KLL sketch size is hard to estimate precisely; use a rough estimate
         std::mem::size_of::<DatasketchesKLLAccumulator>() + 4096
+    }
+}
+
+// ---------------------------------------------------------------------------
+// HllAccumulatorUpdater
+// ---------------------------------------------------------------------------
+
+/// Updater for `AggregationType::HLL`. Single-population per grouping key —
+/// behaves like `KllAccumulatorUpdater` from the worker's perspective: feed
+/// raw f64 values, ignore the key argument. Internally hashes each value's
+/// little-endian bytes into the wrapped HLL sketch.
+pub struct HllAccumulatorUpdater {
+    acc: HllAccumulator,
+    precision: u32,
+}
+
+impl HllAccumulatorUpdater {
+    pub fn new(precision: u32) -> Self {
+        Self {
+            acc: HllAccumulator::new(precision),
+            precision,
+        }
+    }
+}
+
+impl AccumulatorUpdater for HllAccumulatorUpdater {
+    fn update_single(&mut self, value: f64, _timestamp_ms: i64) {
+        self.acc.update(value);
+    }
+
+    fn update_keyed(&mut self, _key: &KeyByLabelValues, value: f64, timestamp_ms: i64) {
+        self.update_single(value, timestamp_ms);
+    }
+
+    impl_clone_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc = HllAccumulator::new(self.precision);
+    }
+
+    fn is_keyed(&self) -> bool {
+        false
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        // 1 byte per register; register count = 2^precision. Add a small fixed
+        // overhead for the HllSketch wrapper (variant, precision, HIP fields).
+        let registers = 1usize << self.precision;
+        std::mem::size_of::<HllAccumulator>() + registers
     }
 }
 
@@ -589,6 +638,28 @@ fn hydra_kll_params(config: &AggregationConfig) -> (usize, usize, u16) {
     (row_num, col_num, kll_k_param(config))
 }
 
+/// Extract the HLL `precision` parameter from a config. Falls back to
+/// `DEFAULT_HLL_PRECISION` (14) when absent or non-numeric. The valid range is
+/// 4..=18 per the underlying `HllSketch` storage; out-of-range values are
+/// clamped and warned about so a typo doesn't crash the streaming worker.
+fn hll_precision_param(config: &AggregationConfig) -> u32 {
+    let raw = config
+        .parameters
+        .get("precision")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    match raw {
+        Some(p) if (4..=18).contains(&p) => p,
+        Some(p) => {
+            tracing::warn!(
+                "HLL precision {p} is out of range (4..=18); using default {DEFAULT_HLL_PRECISION}"
+            );
+            DEFAULT_HLL_PRECISION
+        }
+        None => DEFAULT_HLL_PRECISION,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Factory function
 // ---------------------------------------------------------------------------
@@ -656,6 +727,7 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
             let (row_num, col_num, k) = hydra_kll_params(config);
             Box::new(HydraKllAccumulatorUpdater::new(row_num, col_num, k))
         }
+        AggregationType::HLL => Box::new(HllAccumulatorUpdater::new(hll_precision_param(config))),
         other => {
             tracing::warn!(
                 "Unknown aggregation_type '{:?}', defaulting to SingleSubpopulation Sum",
@@ -822,6 +894,174 @@ mod tests {
                 agg_type
             );
         }
+    }
+
+    // ── HLL updater ──────────────────────────────────────────────────────
+    //
+    // `COUNT(DISTINCT col)` queries flow through `AggregationType::HLL`. The
+    // factory must produce an `HllAccumulatorUpdater` (not the silent
+    // `SumAccumulatorUpdater` fallback that the old default arm gave) so the
+    // streaming layer actually hashes incoming samples into an HLL register
+    // array rather than summing them.
+
+    #[test]
+    fn test_hll_updater_via_factory_routes_to_hll_accumulator() {
+        use std::collections::HashMap;
+        let config = AggregationConfig::new(
+            42,
+            AggregationType::HLL,
+            String::new(),
+            HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60,
+            0,
+            WindowType::Tumbling,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut updater = create_accumulator_updater(&config);
+        assert!(
+            !updater.is_keyed(),
+            "HLL is single-population per grouping key (like KLL), not keyed",
+        );
+
+        // Feed 100 distinct values; the resulting accumulator should report an
+        // estimate near 100 (not a sum of 0+1+…+99 ≈ 4950, which is what the
+        // old SumAccumulatorUpdater fallback would have produced).
+        for i in 0..100 {
+            updater.update_single(i as f64, i * 1000);
+        }
+        let acc = updater.take_accumulator();
+        assert_eq!(acc.type_name(), "HllAccumulator");
+        assert_eq!(acc.get_accumulator_type(), AggregationType::HLL);
+
+        let hll = acc
+            .as_any()
+            .downcast_ref::<crate::precompute_operators::HllAccumulator>()
+            .expect("factory must produce HllAccumulator for AggregationType::HLL");
+        let est = hll.estimate();
+        assert!(
+            est > 90.0 && est < 110.0,
+            "100 distinct inserts should yield estimate near 100, got {est}",
+        );
+    }
+
+    #[test]
+    fn test_hll_updater_precision_param_propagates() {
+        // `parameters: { precision: 12 }` must flow into the HllAccumulator, not
+        // be silently dropped. 12-bit precision yields a 4 KiB register array,
+        // serialising to a noticeably smaller msgpack body than the 16 KiB
+        // default — that's the property we check (no need to assert exact size).
+        use std::collections::HashMap;
+        let mut params = HashMap::new();
+        params.insert(
+            "precision".to_string(),
+            serde_json::Value::from(12_u64),
+        );
+        let config = AggregationConfig::new(
+            7,
+            AggregationType::HLL,
+            String::new(),
+            params,
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60,
+            0,
+            WindowType::Tumbling,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let updater = create_accumulator_updater(&config);
+        let acc = updater.snapshot_accumulator();
+        let hll = acc
+            .as_any()
+            .downcast_ref::<crate::precompute_operators::HllAccumulator>()
+            .expect("AggregationType::HLL → HllAccumulator");
+        assert_eq!(hll.precision(), 12);
+    }
+
+    #[test]
+    fn test_hll_updater_default_precision_is_14() {
+        // When no `precision` parameter is supplied, the factory must use the
+        // documented default (14) — not whatever the type default resolves to.
+        use std::collections::HashMap;
+        let config = AggregationConfig::new(
+            7,
+            AggregationType::HLL,
+            String::new(),
+            HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60,
+            0,
+            WindowType::Tumbling,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let updater = create_accumulator_updater(&config);
+        let acc = updater.snapshot_accumulator();
+        let hll = acc
+            .as_any()
+            .downcast_ref::<crate::precompute_operators::HllAccumulator>()
+            .expect("AggregationType::HLL → HllAccumulator");
+        assert_eq!(hll.precision(), 14);
+    }
+
+    #[test]
+    fn test_hll_updater_reset_clears_state() {
+        // After reset(), a freshly-taken accumulator must produce an empty (0.0)
+        // estimate — otherwise pane reuse across tumbling windows would leak
+        // distinct values from the previous pane into the next.
+        use std::collections::HashMap;
+        let config = AggregationConfig::new(
+            7,
+            AggregationType::HLL,
+            String::new(),
+            HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60,
+            0,
+            WindowType::Tumbling,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let mut updater = create_accumulator_updater(&config);
+        for i in 0..50 {
+            updater.update_single(i as f64, 0);
+        }
+        updater.reset();
+        let acc = updater.take_accumulator();
+        let hll = acc
+            .as_any()
+            .downcast_ref::<crate::precompute_operators::HllAccumulator>()
+            .unwrap();
+        assert_eq!(hll.estimate(), 0.0);
     }
 
     #[test]

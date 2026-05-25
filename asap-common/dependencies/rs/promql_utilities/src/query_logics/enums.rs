@@ -185,6 +185,9 @@ pub enum AggregationOperator {
     Min,
     Max,
     Topk,
+    /// Distinct-value count. SQL-side normalisation maps `COUNT(DISTINCT col)` to
+    /// the aggregation name "CARDINALITY", which lands here.
+    Cardinality,
 }
 
 impl AggregationOperator {
@@ -197,6 +200,7 @@ impl AggregationOperator {
             AggregationOperator::Min => "min",
             AggregationOperator::Max => "max",
             AggregationOperator::Topk => "topk",
+            AggregationOperator::Cardinality => "cardinality",
         }
     }
 
@@ -211,11 +215,21 @@ impl AggregationOperator {
             AggregationOperator::Min => vec![Statistic::Min],
             AggregationOperator::Max => vec![Statistic::Max],
             AggregationOperator::Topk => vec![Statistic::Topk],
+            AggregationOperator::Cardinality => vec![Statistic::Cardinality],
         }
     }
 
     pub fn as_str_slice() -> &'static [&'static str] {
-        &["sum", "count", "avg", "quantile", "min", "max", "topk"]
+        &[
+            "sum",
+            "count",
+            "avg",
+            "quantile",
+            "min",
+            "max",
+            "topk",
+            "cardinality",
+        ]
     }
 }
 
@@ -236,6 +250,7 @@ impl FromStr for AggregationOperator {
             "min" => Ok(AggregationOperator::Min),
             "max" => Ok(AggregationOperator::Max),
             "topk" => Ok(AggregationOperator::Topk),
+            "cardinality" => Ok(AggregationOperator::Cardinality),
             other => Err(format!("Unknown aggregation operator: '{other}'")),
         }
     }
@@ -251,6 +266,7 @@ impl AggregationOperator {
                 | AggregationOperator::Count
                 | AggregationOperator::Avg
                 | AggregationOperator::Topk
+                | AggregationOperator::Cardinality
         )
     }
 }
@@ -431,5 +447,21 @@ mod tests {
 
         assert_eq!(exact_back, QueryTreatmentType::Exact);
         assert_eq!(approximate_back, QueryTreatmentType::Approximate);
+    }
+
+    #[test]
+    fn test_aggregation_operator_cardinality_round_trip() {
+        // The SQL parser normalises `COUNT(DISTINCT col)` to the aggregation name
+        // "CARDINALITY"; `parse_single_statistic` then routes it through
+        // `AggregationOperator::FromStr`. Without a Cardinality variant the lookup
+        // returns Err and the query is rejected as "Unsupported statistic name".
+        let op: AggregationOperator = "cardinality".parse().expect("cardinality should parse");
+        assert_eq!(op, AggregationOperator::Cardinality);
+        assert_eq!(op.to_statistics(), vec![Statistic::Cardinality]);
+        assert_eq!(op.as_str(), "cardinality");
+        // Case-insensitive (matches the existing pattern for all other operators).
+        let op_upper: AggregationOperator =
+            "CARDINALITY".parse().expect("CARDINALITY should parse");
+        assert_eq!(op_upper, AggregationOperator::Cardinality);
     }
 }

@@ -595,6 +595,73 @@ mod tests {
         );
     }
 
+    /// Regression for three matcher-side gaps that surface together when the
+    /// simple_engine SQL path runs an HLL `COUNT(DISTINCT)` query end-to-end:
+    ///
+    /// 1. The parser correctly normalises `COUNT(DISTINCT col)` to the
+    ///    aggregation name `"CARDINALITY"`, but
+    ///    `SQLPatternMatcher::is_valid_aggregation` never gained `CARDINALITY`
+    ///    in its `legal_aggregations` set, so the validator rejected the query
+    ///    with `IllegalAggregationFn` before pattern matching ran.
+    ///
+    /// 2. After fixing (1), `flatten_query_info` validates the aggregation's
+    ///    "value column" against `schema.is_valid_value_column`, which only
+    ///    knows table value columns. `COUNT(DISTINCT col)` legitimately targets
+    ///    metadata/label columns (e.g. `COUNT(DISTINCT dstip)`), so the
+    ///    validator rejected it with `InvalidValueCol`. The fix accepts
+    ///    metadata columns *only* for CARDINALITY.
+    ///
+    /// 3. With both fixed, the query classifies as `SpatioTemporal` because
+    ///    `GROUP BY` only covers a subset of metadata columns — exactly the
+    ///    shape of the user's real `COUNT(DISTINCT dstip) GROUP BY srcip`
+    ///    query, which selects on `srcip` and aggregates over `dstip` (so
+    ///    labels ⊊ metadata_columns).
+    ///
+    /// Observed log line that motivated this test:
+    ///   error: Some(IllegalAggregationFn),
+    ///   msg: Some("attempt to use illegal aggregation function CARDINALITY")
+    #[test]
+    fn test_count_distinct_passes_aggregation_allowlist() {
+        check_query(
+            "SELECT COUNT(DISTINCT L4) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3",
+            vec![QueryType::SpatioTemporal],
+            None,
+        );
+    }
+
+    /// Companion: when `GROUP BY` covers all metadata columns *except* the
+    /// distinct-target itself, the query is still SpatioTemporal — the
+    /// distinct-target is the value column, not a grouping label, so labels
+    /// always form a strict subset of metadata_columns. Guards against future
+    /// "treat L4 as both label and value" regressions in the classifier.
+    #[test]
+    fn test_count_distinct_with_full_remaining_labels_is_spatiotemporal() {
+        check_query(
+            "SELECT COUNT(DISTINCT L4) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3",
+            vec![QueryType::SpatioTemporal],
+            None,
+        );
+    }
+
+    /// Negative case: `COUNT(DISTINCT not_in_schema)` against a column that's
+    /// neither a value_column nor a metadata_column must still be rejected as
+    /// `InvalidValueCol`. The CARDINALITY relaxation widens what's *allowed*
+    /// (metadata columns) but doesn't disable the schema check entirely.
+    #[test]
+    fn test_count_distinct_unknown_column_still_rejected() {
+        check_query(
+            "SELECT COUNT(DISTINCT bogus_column) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3",
+            vec![],
+            Some(QueryError::InvalidValueCol),
+        );
+    }
+
     #[test]
     fn test_error_spatial_scrape_duration_too_small() {
         check_query(
@@ -1033,5 +1100,144 @@ mod tests {
         )
         .unwrap();
         assert!(incoming.matches_sql_pattern(&template));
+    }
+
+    // ── COUNT(DISTINCT col) support ──────────────────────────────────────────
+    //
+    // `COUNT(DISTINCT col)` must be normalised to a cardinality aggregation
+    // (`AggregationInfo.name == "CARDINALITY"`) so the engine routes it to a
+    // distinct-tracking sketch (SetAggregator / HLL) instead of a plain Count
+    // sketch. The parser today drops `DISTINCT` silently — a parser-level bug
+    // that would dispatch streaming counts as totals.
+
+    #[test]
+    fn test_count_distinct_single_column_maps_to_cardinality() {
+        // The structural signature of the user's COUNT(DISTINCT) query.
+        let q = parse_sql_query(
+            "SELECT L1, COUNT(DISTINCT L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .expect("COUNT(DISTINCT col) should parse");
+        assert_eq!(q.aggregation_info.get_name(), "CARDINALITY");
+        assert_eq!(q.aggregation_info.get_value_column_name(), "L2");
+        assert!(q.aggregation_info.get_args().is_empty());
+        assert!(q.labels.contains("L1"));
+    }
+
+    #[test]
+    fn test_count_distinct_full_user_query_with_order_by_limit() {
+        // The exact shape of the user's HLL netflow query, ported to the test schema.
+        let q = parse_sql_query(
+            "SELECT L1, COUNT(DISTINCT L2) AS unique_peers FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
+             GROUP BY L1 \
+             ORDER BY unique_peers DESC LIMIT 20",
+        )
+        .expect("COUNT(DISTINCT col) + ORDER BY + LIMIT should parse");
+        assert_eq!(q.aggregation_info.get_name(), "CARDINALITY");
+        assert_eq!(q.aggregation_info.get_value_column_name(), "L2");
+        assert_eq!(q.aggregation_alias.as_deref(), Some("unique_peers"));
+        assert_eq!(q.order_by.len(), 1);
+        assert_eq!(q.order_by[0].column, "unique_peers");
+        assert!(!q.order_by[0].ascending);
+        assert_eq!(q.limit, Some(20));
+    }
+
+    #[test]
+    fn test_count_distinct_matches_count_distinct_template() {
+        // Pattern matching: incoming COUNT(DISTINCT col) with absolute timestamps must
+        // match a NOW()-relative COUNT(DISTINCT col) template.
+        let template = parse_sql_query(
+            "SELECT COUNT(DISTINCT L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .unwrap();
+        let incoming = parse_sql_query(
+            "SELECT COUNT(DISTINCT L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY L1",
+        )
+        .unwrap();
+        assert!(incoming.matches_sql_pattern(&template));
+    }
+
+    #[test]
+    fn test_count_distinct_does_not_match_plain_count_template() {
+        // CARDINALITY and COUNT are distinct aggregations — a COUNT(DISTINCT col)
+        // template must not be served by an incoming COUNT(col) query (and vice versa).
+        let count_distinct = parse_sql_query(
+            "SELECT COUNT(DISTINCT L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .unwrap();
+        let plain_count = parse_sql_query(
+            "SELECT COUNT(L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .unwrap();
+        assert!(!plain_count.matches_sql_pattern(&count_distinct));
+        assert!(!count_distinct.matches_sql_pattern(&plain_count));
+    }
+
+    #[test]
+    fn test_count_all_treated_as_plain_count() {
+        // The redundant explicit `ALL` modifier (the SQL default) must NOT switch the
+        // aggregation to CARDINALITY; only `DISTINCT` triggers cardinality semantics.
+        let q = parse_sql_query(
+            "SELECT COUNT(ALL L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .expect("COUNT(ALL col) should parse as plain COUNT");
+        assert_eq!(q.aggregation_info.get_name(), "COUNT");
+    }
+
+    #[test]
+    fn test_count_without_distinct_remains_count() {
+        // Regression guard: ensure the DISTINCT-aware path doesn't accidentally rewrite
+        // `COUNT(col)` (without any duplicate_treatment).
+        let q = parse_sql_query(
+            "SELECT COUNT(L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .expect("COUNT(col) should parse");
+        assert_eq!(q.aggregation_info.get_name(), "COUNT");
+    }
+
+    #[test]
+    fn test_count_distinct_multiple_columns_rejected() {
+        // Multi-column DISTINCT (`COUNT(DISTINCT a, b)`) is a compound-key cardinality
+        // that the structural model can't represent with a single value_column. Reject
+        // it explicitly rather than silently keeping only the first argument.
+        assert!(parse_sql_query(
+            "SELECT COUNT(DISTINCT L1, L2) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L3",
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn test_distinct_on_non_count_aggregate_rejected() {
+        // DISTINCT on aggregates other than COUNT (e.g. `SUM(DISTINCT v)`, `AVG(DISTINCT v)`)
+        // is not modelled by any precompute sketch type; reject rather than silently
+        // dropping the modifier and dispatching to a plain Sum.
+        assert!(parse_sql_query(
+            "SELECT SUM(DISTINCT value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .is_none());
+        assert!(parse_sql_query(
+            "SELECT AVG(DISTINCT value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1",
+        )
+        .is_none());
     }
 }

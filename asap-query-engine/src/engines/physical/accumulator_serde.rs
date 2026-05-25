@@ -12,7 +12,7 @@ use datafusion_summary_library::SketchType;
 use crate::data_model::{MultipleSubpopulationAggregate, SingleSubpopulationAggregate};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, DatasketchesKLLAccumulator, DeltaSetAggregatorAccumulator,
-    HydraKllSketchAccumulator, MultipleIncreaseAccumulator, MultipleSumAccumulator,
+    HllAccumulator, HydraKllSketchAccumulator, MultipleIncreaseAccumulator, MultipleSumAccumulator,
     SetAggregatorAccumulator, SumAccumulator,
 };
 use crate::AggregateCore;
@@ -114,6 +114,14 @@ pub fn deserialize_accumulator(
             Ok(Box::new(acc))
         }
 
+        // Cardinality sketches
+        SketchType::HLL => {
+            let acc = HllAccumulator::deserialize_from_bytes_arroyo(bytes).map_err(|e| {
+                DataFusionError::Internal(format!("Failed to deserialize HLL: {}", e))
+            })?;
+            Ok(Box::new(acc))
+        }
+
         // Sketches that aren't implemented yet
         _ => Err(DataFusionError::NotImplemented(format!(
             "Accumulator deserialization not implemented for: {:?}",
@@ -181,6 +189,12 @@ pub fn deserialize_single_subpopulation(
                 DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(bytes).map_err(|e| {
                     DataFusionError::Internal(format!("Failed to deserialize KLL: {}", e))
                 })?;
+            Ok(Box::new(acc))
+        }
+        SketchType::HLL => {
+            let acc = HllAccumulator::deserialize_from_bytes_arroyo(bytes).map_err(|e| {
+                DataFusionError::Internal(format!("Failed to deserialize HLL: {}", e))
+            })?;
             Ok(Box::new(acc))
         }
         _ => Err(DataFusionError::NotImplemented(format!(
@@ -305,9 +319,41 @@ mod tests {
     }
 
     #[test]
+    fn test_deserialize_hll_round_trip() {
+        // HLL is now a supported path. Build a real accumulator, serialize it,
+        // then verify deserialize_accumulator and deserialize_single_subpopulation
+        // both reconstruct a working accumulator that reports the same estimate.
+        use crate::data_model::SerializableToSink;
+        use crate::precompute_operators::HllAccumulator;
+        let mut acc = HllAccumulator::new(14);
+        for i in 0..500 {
+            acc.update(i as f64);
+        }
+        let bytes = acc.serialize_to_bytes();
+        let want = acc.estimate();
+
+        let core = deserialize_accumulator(&bytes, &SketchType::HLL).expect("HLL deserialize");
+        assert_eq!(core.get_accumulator_type(), AggregationType::HLL);
+        let core_hll = core
+            .as_any()
+            .downcast_ref::<HllAccumulator>()
+            .expect("downcast HllAccumulator");
+        assert_eq!(core_hll.estimate(), want);
+
+        let single =
+            deserialize_single_subpopulation(&bytes, &SketchType::HLL).expect("HLL single-pop");
+        let via_query = single
+            .query(promql_utilities::query_logics::enums::Statistic::Cardinality, None)
+            .expect("Cardinality query");
+        assert_eq!(via_query, want);
+    }
+
+    #[test]
     fn test_deserialize_unsupported_type() {
+        // MinMax keys-accumulator path remains unimplemented; ensure the generic
+        // dispatch still errors out cleanly for sketch types we haven't wired.
         let bytes = vec![1, 2, 3, 4];
-        let result = deserialize_accumulator(&bytes, &SketchType::HLL);
+        let result = deserialize_accumulator(&bytes, &SketchType::MinMax);
 
         assert!(result.is_err());
     }
