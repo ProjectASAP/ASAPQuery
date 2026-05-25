@@ -10,13 +10,15 @@ use tracing::{debug, error};
 pub struct PrometheusHttpFallback {
     client: Client,
     base_url: String,
+    timeout: std::time::Duration,
 }
 
 impl PrometheusHttpFallback {
-    pub fn new(base_url: String) -> Self {
+    pub fn new(base_url: String, timeout_secs: u64) -> Self {
         Self {
             client: Client::new(),
             base_url,
+            timeout: std::time::Duration::from_secs(timeout_secs),
         }
     }
 }
@@ -52,7 +54,7 @@ impl FallbackClient for PrometheusHttpFallback {
             .client
             .get(&full_url)
             .query(&query_params)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(self.timeout)
             .send()
             .await
         {
@@ -118,7 +120,7 @@ impl FallbackClient for PrometheusHttpFallback {
             .client
             .get(&full_url)
             .query(&query_params)
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(self.timeout)
             .send()
             .await
         {
@@ -171,13 +173,7 @@ impl FallbackClient for PrometheusHttpFallback {
         debug!("Runtime info URL: {}", url);
 
         // Send request to Prometheus
-        match self
-            .client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .await
-        {
+        match self.client.get(&url).timeout(self.timeout).send().await {
             Ok(response) => {
                 match response.text().await {
                     Ok(text) => {

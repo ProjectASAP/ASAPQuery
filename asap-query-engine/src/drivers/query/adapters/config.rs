@@ -44,11 +44,18 @@ impl AdapterConfig {
 
     /// Create a configuration for Prometheus HTTP with PromQL
     /// Convenience constructor for backward compatibility
-    pub fn prometheus_promql(fallback_url: String, forward_unsupported: bool) -> Self {
+    pub fn prometheus_promql(
+        fallback_url: String,
+        forward_unsupported: bool,
+        timeout_secs: u64,
+    ) -> Self {
         use crate::drivers::query::fallback::PrometheusHttpFallback;
 
         let fallback = if forward_unsupported {
-            Some(Arc::new(PrometheusHttpFallback::new(fallback_url)) as Arc<dyn FallbackClient>)
+            Some(
+                Arc::new(PrometheusHttpFallback::new(fallback_url, timeout_secs))
+                    as Arc<dyn FallbackClient>,
+            )
         } else {
             None
         };

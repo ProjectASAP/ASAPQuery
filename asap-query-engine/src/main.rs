@@ -284,7 +284,12 @@ async fn main() -> Result<()> {
         BackendConfig::Prometheus {
             server,
             forward_unsupported_queries,
-        } => AdapterConfig::prometheus_promql(server.clone(), *forward_unsupported_queries),
+            fallback_timeout_secs,
+        } => AdapterConfig::prometheus_promql(
+            server.clone(),
+            *forward_unsupported_queries,
+            *fallback_timeout_secs,
+        ),
         BackendConfig::Clickhouse {
             url,
             database,

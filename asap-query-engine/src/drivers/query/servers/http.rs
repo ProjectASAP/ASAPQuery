@@ -678,6 +678,7 @@ mod tests {
         let adapter_config = AdapterConfig::prometheus_promql(
             "http://127.0.0.1:9999".to_string(), // Unused for this test
             false,                               // forward_unsupported_queries
+            30,
         );
 
         let config = HttpServerConfig {
