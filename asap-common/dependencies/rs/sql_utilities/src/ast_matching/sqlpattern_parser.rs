@@ -1,5 +1,5 @@
 use crate::sqlhelper::SQLSchema;
-use crate::sqlhelper::{AggregationInfo, SQLQueryData, TimeInfo};
+use crate::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData, TimeInfo};
 use sqlparser::ast::*;
 use std::collections::HashSet;
 
@@ -36,20 +36,106 @@ impl SQLPatternParser {
     }
 
     fn parse_query_node(&self, query: &Query) -> Option<SQLQueryData> {
-        if query.order_by.is_some() {
-            println!("ORDER BY is not supported");
-            return None;
-        }
+        // Parse ORDER BY / LIMIT before walking into the SELECT body. Both are properties
+        // of the outer Query, not of the inner Select. Any unsupported sub-shape (positional
+        // refs, expressions, OFFSET, NULLS FIRST/LAST, ClickHouse `ORDER BY ALL`, etc.)
+        // bails the whole query rather than silently dropping it.
+        let order_by_items = self.parse_order_by_items(query)?;
+        let limit = self.parse_limit_value(query)?;
 
         // Convert CTE to subquery if present
         let query = self.cte_to_subquery(query);
 
-        match &query.body.as_ref() {
-            SetExpr::Select(select) => self.parse_select(select),
+        let mut data = match &query.body.as_ref() {
+            SetExpr::Select(select) => self.parse_select(select)?,
             _ => {
                 println!("Not a SELECT statement");
-                None
+                return None;
             }
+        };
+
+        // ORDER BY columns must reference either the aggregate alias or a group-by key.
+        // Anything else (e.g. `ORDER BY some_other_column`) is rejected to avoid the
+        // engine returning an arbitrary order in cases where the user assumed the
+        // column would resolve.
+        for item in &order_by_items {
+            let valid = data.aggregation_alias.as_deref() == Some(item.column.as_str())
+                || data.labels.contains(&item.column);
+            if !valid {
+                return None;
+            }
+        }
+
+        data.order_by = order_by_items;
+        data.limit = limit;
+        Some(data)
+    }
+
+    /// Convert `query.order_by` into a flat `Vec<OrderByItem>`.
+    /// Returns `Some(vec![])` when no ORDER BY is present.
+    /// Returns `None` for any unsupported shape (positional refs, expressions,
+    /// `WITH FILL`, `NULLS FIRST/LAST`, ClickHouse `ORDER BY ALL`, `INTERPOLATE`).
+    fn parse_order_by_items(&self, query: &Query) -> Option<Vec<OrderByItem>> {
+        let order_by = match &query.order_by {
+            None => return Some(Vec::new()),
+            Some(ob) => ob,
+        };
+        if order_by.interpolate.is_some() {
+            return None;
+        }
+        let exprs = match &order_by.kind {
+            OrderByKind::Expressions(e) => e,
+            // `ORDER BY ALL` (DuckDB / ClickHouse extension) is not supported.
+            OrderByKind::All(_) => return None,
+        };
+        let mut items = Vec::with_capacity(exprs.len());
+        for ob in exprs {
+            if ob.with_fill.is_some() || ob.options.nulls_first.is_some() {
+                return None;
+            }
+            let column = match &ob.expr {
+                Expr::Identifier(ident) => ident.value.clone(),
+                _ => return None,
+            };
+            // Default direction is ASC when neither ASC nor DESC is written.
+            let ascending = ob.options.asc.unwrap_or(true);
+            items.push(OrderByItem { column, ascending });
+        }
+        Some(items)
+    }
+
+    /// Convert `query.limit_clause` into an `Option<u64>`.
+    /// Returns `Some(None)` when no LIMIT is present.
+    /// Returns `None` for any unsupported shape (OFFSET, `LIMIT BY`, MySQL `LIMIT a, b`,
+    /// non-literal expressions, `LIMIT ALL`).
+    fn parse_limit_value(&self, query: &Query) -> Option<Option<u64>> {
+        let clause = match &query.limit_clause {
+            None => return Some(None),
+            Some(c) => c,
+        };
+        let limit_expr = match clause {
+            // MySQL-style `LIMIT a, b` (offset-comma-limit) is not supported.
+            LimitClause::OffsetCommaLimit { .. } => return None,
+            LimitClause::LimitOffset {
+                limit,
+                offset,
+                limit_by,
+            } => {
+                if offset.is_some() || !limit_by.is_empty() {
+                    return None;
+                }
+                match limit {
+                    None => return Some(None), // `LIMIT ALL` or no LIMIT
+                    Some(e) => e,
+                }
+            }
+        };
+        match limit_expr {
+            Expr::Value(ValueWithSpan {
+                value: Value::Number(n, _),
+                ..
+            }) => n.parse::<u64>().ok().map(Some),
+            _ => None,
         }
     }
 
@@ -88,7 +174,7 @@ impl SQLPatternParser {
     fn parse_select(&self, select: &Select) -> Option<SQLQueryData> {
         let (metric, has_subquery) = self.get_metric(select)?;
 
-        let aggregation = self.get_aggregation(select)?;
+        let (aggregation, aggregation_alias) = self.get_aggregation(select)?;
 
         let group_bys = self.get_groupbys(select)?;
 
@@ -118,17 +204,21 @@ impl SQLPatternParser {
 
             Some(SQLQueryData {
                 aggregation_info: aggregation,
+                aggregation_alias,
                 metric,
                 labels: group_bys,
                 time_info,
                 subquery: None,
+                order_by: Vec::new(),
+                limit: None,
             })
         } else {
             // Parse subquery
             let subquery = match &select.from[0].relation {
                 TableFactor::Derived { subquery, .. } => match subquery.body.as_ref() {
                     SetExpr::Select(inner_select) => {
-                        let inner_aggregation = self.get_aggregation(inner_select)?;
+                        let (inner_aggregation, inner_alias) =
+                            self.get_aggregation(inner_select)?;
                         let inner_group_bys = self.get_groupbys(inner_select)?;
                         if !self.select_identifiers_subset_of(inner_select, &inner_group_bys) {
                             return None;
@@ -137,10 +227,13 @@ impl SQLPatternParser {
 
                         Some(Box::new(SQLQueryData {
                             aggregation_info: inner_aggregation,
+                            aggregation_alias: inner_alias,
                             metric: metric.clone(),
                             labels: inner_group_bys,
                             time_info,
                             subquery: None,
+                            order_by: Vec::new(),
+                            limit: None,
                         }))
                     }
                     _ => None,
@@ -150,10 +243,13 @@ impl SQLPatternParser {
 
             Some(SQLQueryData {
                 aggregation_info: aggregation,
+                aggregation_alias,
                 metric,
                 labels: group_bys,
                 time_info: TimeInfo::new("UNUSED".to_string(), -1.0, -1_f64),
                 subquery: Some(subquery),
+                order_by: Vec::new(),
+                limit: None,
             })
         }
     }
@@ -238,17 +334,20 @@ impl SQLPatternParser {
         true
     }
 
-    fn get_aggregation(&self, select: &Select) -> Option<AggregationInfo> {
+    fn get_aggregation(&self, select: &Select) -> Option<(AggregationInfo, Option<String>)> {
         // Find the (single) aggregate function in the projection list. Other
         // projection items must be plain column references — these are expected to
         // be group-by keys (e.g. `SELECT g1, g2, SUM(v) FROM t GROUP BY g1, g2`).
         // Anything else (multiple aggregates, computed expressions, literals, *)
         // is rejected since the structural pattern model only tracks one statistic.
+        // Also captures the aggregate's alias if the SELECT writes `agg(v) AS <alias>`,
+        // so `ORDER BY <alias>` can resolve later.
         let mut agg_func: Option<&Function> = None;
+        let mut agg_alias: Option<String> = None;
         for item in &select.projection {
-            let expr = match item {
-                SelectItem::UnnamedExpr(expr) => expr,
-                SelectItem::ExprWithAlias { expr, .. } => expr,
+            let (expr, alias) = match item {
+                SelectItem::UnnamedExpr(expr) => (expr, None),
+                SelectItem::ExprWithAlias { expr, alias } => (expr, Some(alias.value.clone())),
                 _ => return None,
             };
             match expr {
@@ -257,6 +356,7 @@ impl SQLPatternParser {
                         return None;
                     }
                     agg_func = Some(f);
+                    agg_alias = alias;
                 }
                 Expr::Identifier(_) | Expr::CompoundIdentifier(_) => {}
                 _ => return None,
@@ -332,7 +432,7 @@ impl SQLPatternParser {
             name
         };
 
-        Some(AggregationInfo::new(normalized_name, col, args))
+        Some((AggregationInfo::new(normalized_name, col, args), agg_alias))
     }
 
     fn get_metric(&self, select: &Select) -> Option<(String, bool)> {

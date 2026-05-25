@@ -53,10 +53,13 @@ impl SQLQuery {
 
         let query_data = SQLQueryData {
             aggregation_info: aggregation,
+            aggregation_alias: None,
             metric,
             labels,
             time_info: time,
             subquery: None,
+            order_by: Vec::new(),
+            limit: None,
         };
 
         self.query_data.push(query_data);
