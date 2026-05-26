@@ -595,73 +595,6 @@ mod tests {
         );
     }
 
-    /// Regression for three matcher-side gaps that surface together when the
-    /// simple_engine SQL path runs an HLL `COUNT(DISTINCT)` query end-to-end:
-    ///
-    /// 1. The parser correctly normalises `COUNT(DISTINCT col)` to the
-    ///    aggregation name `"CARDINALITY"`, but
-    ///    `SQLPatternMatcher::is_valid_aggregation` never gained `CARDINALITY`
-    ///    in its `legal_aggregations` set, so the validator rejected the query
-    ///    with `IllegalAggregationFn` before pattern matching ran.
-    ///
-    /// 2. After fixing (1), `flatten_query_info` validates the aggregation's
-    ///    "value column" against `schema.is_valid_value_column`, which only
-    ///    knows table value columns. `COUNT(DISTINCT col)` legitimately targets
-    ///    metadata/label columns (e.g. `COUNT(DISTINCT dstip)`), so the
-    ///    validator rejected it with `InvalidValueCol`. The fix accepts
-    ///    metadata columns *only* for CARDINALITY.
-    ///
-    /// 3. With both fixed, the query classifies as `SpatioTemporal` because
-    ///    `GROUP BY` only covers a subset of metadata columns — exactly the
-    ///    shape of the user's real `COUNT(DISTINCT dstip) GROUP BY srcip`
-    ///    query, which selects on `srcip` and aggregates over `dstip` (so
-    ///    labels ⊊ metadata_columns).
-    ///
-    /// Observed log line that motivated this test:
-    ///   error: Some(IllegalAggregationFn),
-    ///   msg: Some("attempt to use illegal aggregation function CARDINALITY")
-    #[test]
-    fn test_count_distinct_passes_aggregation_allowlist() {
-        check_query(
-            "SELECT COUNT(DISTINCT L4) FROM cpu_usage \
-             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
-             GROUP BY L1, L2, L3",
-            vec![QueryType::SpatioTemporal],
-            None,
-        );
-    }
-
-    /// Companion: when `GROUP BY` covers all metadata columns *except* the
-    /// distinct-target itself, the query is still SpatioTemporal — the
-    /// distinct-target is the value column, not a grouping label, so labels
-    /// always form a strict subset of metadata_columns. Guards against future
-    /// "treat L4 as both label and value" regressions in the classifier.
-    #[test]
-    fn test_count_distinct_with_full_remaining_labels_is_spatiotemporal() {
-        check_query(
-            "SELECT COUNT(DISTINCT L4) FROM cpu_usage \
-             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
-             GROUP BY L1, L2, L3",
-            vec![QueryType::SpatioTemporal],
-            None,
-        );
-    }
-
-    /// Negative case: `COUNT(DISTINCT not_in_schema)` against a column that's
-    /// neither a value_column nor a metadata_column must still be rejected as
-    /// `InvalidValueCol`. The CARDINALITY relaxation widens what's *allowed*
-    /// (metadata columns) but doesn't disable the schema check entirely.
-    #[test]
-    fn test_count_distinct_unknown_column_still_rejected() {
-        check_query(
-            "SELECT COUNT(DISTINCT bogus_column) FROM cpu_usage \
-             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
-             GROUP BY L1, L2, L3",
-            vec![],
-            Some(QueryError::InvalidValueCol),
-        );
-    }
-
     #[test]
     fn test_error_spatial_scrape_duration_too_small() {
         check_query(
@@ -1107,8 +1040,7 @@ mod tests {
     // `COUNT(DISTINCT col)` must be normalised to a cardinality aggregation
     // (`AggregationInfo.name == "CARDINALITY"`) so the engine routes it to a
     // distinct-tracking sketch (SetAggregator / HLL) instead of a plain Count
-    // sketch. The parser today drops `DISTINCT` silently — a parser-level bug
-    // that would dispatch streaming counts as totals.
+    // sketch. 
 
     #[test]
     fn test_count_distinct_single_column_maps_to_cardinality() {
@@ -1239,5 +1171,50 @@ mod tests {
              GROUP BY L1",
         )
         .is_none());
+    }
+
+    /// Matcher must accept parser-normalised `CARDINALITY` (not `IllegalAggregationFn`),
+    /// allow distinct targets in metadata_columns (e.g. `dstip`), and classify
+    /// `COUNT(DISTINCT col) GROUP BY <label subset>` as `SpatioTemporal`.
+    #[test]
+    fn test_count_distinct_passes_aggregation_allowlist() {
+        check_query(
+            "SELECT COUNT(DISTINCT L4) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3",
+            vec![QueryType::SpatioTemporal],
+            None,
+        );
+    }
+
+    /// Companion: when `GROUP BY` covers all metadata columns *except* the
+    /// distinct-target itself, the query is still SpatioTemporal — the
+    /// distinct-target is the value column, not a grouping label, so labels
+    /// always form a strict subset of metadata_columns. Guards against future
+    /// "treat L4 as both label and value" regressions in the classifier.
+    #[test]
+    fn test_count_distinct_with_full_remaining_labels_is_spatiotemporal() {
+        check_query(
+            "SELECT COUNT(DISTINCT L4) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3",
+            vec![QueryType::SpatioTemporal],
+            None,
+        );
+    }
+
+    /// Negative case: `COUNT(DISTINCT not_in_schema)` against a column that's
+    /// neither a value_column nor a metadata_column must still be rejected as
+    /// `InvalidValueCol`. The CARDINALITY relaxation widens what's *allowed*
+    /// (metadata columns) but doesn't disable the schema check entirely.
+    #[test]
+    fn test_count_distinct_unknown_column_still_rejected() {
+        check_query(
+            "SELECT COUNT(DISTINCT bogus_column) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() \
+             GROUP BY L1, L2, L3",
+            vec![],
+            Some(QueryError::InvalidValueCol),
+        );
     }
 }

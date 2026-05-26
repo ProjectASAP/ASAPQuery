@@ -185,8 +185,6 @@ pub enum AggregationOperator {
     Min,
     Max,
     Topk,
-    /// Distinct-value count. SQL-side normalisation maps `COUNT(DISTINCT col)` to
-    /// the aggregation name "CARDINALITY", which lands here.
     Cardinality,
 }
 
@@ -453,8 +451,7 @@ mod tests {
     fn test_aggregation_operator_cardinality_round_trip() {
         // The SQL parser normalises `COUNT(DISTINCT col)` to the aggregation name
         // "CARDINALITY"; `parse_single_statistic` then routes it through
-        // `AggregationOperator::FromStr`. Without a Cardinality variant the lookup
-        // returns Err and the query is rejected as "Unsupported statistic name".
+        // `AggregationOperator::FromStr`. 
         let op: AggregationOperator = "cardinality".parse().expect("cardinality should parse");
         assert_eq!(op, AggregationOperator::Cardinality);
         assert_eq!(op.to_statistics(), vec![Statistic::Cardinality]);

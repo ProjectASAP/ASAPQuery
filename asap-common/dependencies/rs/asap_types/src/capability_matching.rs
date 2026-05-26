@@ -33,10 +33,6 @@ pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
         Statistic::Cardinality => &[
             AggregationType::SetAggregator,
             AggregationType::DeltaSetAggregator,
-            // HLL is the single-population probabilistic alternative used by
-            // `COUNT(DISTINCT col) GROUP BY …` queries. It backs the per-bucket
-            // sketch directly (no paired key aggregation required) — see
-            // `is_multi_population_value_type`, which excludes HLL.
             AggregationType::HLL,
         ],
         Statistic::Topk => &[AggregationType::CountMinSketchWithHeap],

@@ -896,13 +896,8 @@ mod tests {
         }
     }
 
-    // ── HLL updater ──────────────────────────────────────────────────────
-    //
-    // `COUNT(DISTINCT col)` queries flow through `AggregationType::HLL`. The
-    // factory must produce an `HllAccumulatorUpdater` (not the silent
-    // `SumAccumulatorUpdater` fallback that the old default arm gave) so the
-    // streaming layer actually hashes incoming samples into an HLL register
-    // array rather than summing them.
+    // HLL: `AggregationType::HLL` must build `HllAccumulatorUpdater` (hashes samples
+    // into a sketch), not fall through to the default `SumAccumulatorUpdater`.
 
     #[test]
     fn test_hll_updater_via_factory_routes_to_hll_accumulator() {

@@ -1,25 +1,3 @@
-//! HyperLogLog accumulator for `COUNT(DISTINCT col)` queries.
-//!
-//! Wraps `asap_sketchlib::HllSketch` (precision-14 `HllVariant::Regular` by default)
-//! and exposes it through the precompute-engine accumulator traits so the streaming
-//! worker can feed values into it and the query path can dispatch `Cardinality`
-//! against the resulting sketch.
-//!
-//! Mirrors the `DatasketchesKLLAccumulator` layout: a single subpopulation per
-//! grouping key, msgpack-encoded byte serialization (round-trippable, unlike the
-//! lossy `datafusion_summary_library::physical::hll::HllSketch::to_bytes`).
-//!
-//! End-to-end pipeline for `COUNT(DISTINCT col)`:
-//! 1. SQL parser normalises the call to `name="CARDINALITY", value_column=col`.
-//! 2. `AggregationOperator::Cardinality.to_statistics()` → `[Statistic::Cardinality]`.
-//! 3. Capability matching pairs the query with an `AggregationType::HLL` config.
-//! 4. The precompute worker feeds `col`'s f64 samples through
-//!    `HllAccumulatorUpdater::update_single`, which calls `HllAccumulator::update`.
-//! 5. Query path: `plan_builder` maps `Statistic::Cardinality → InferOperation::CountDistinct`;
-//!    `SummaryInferExec` deserializes the stored sketch and calls
-//!    `SingleSubpopulationAggregate::query(Cardinality)`, which returns
-//!    `HllSketch::estimate()`.
-
 use std::collections::HashMap;
 
 use asap_sketchlib::sketches::hll::{HllSketch, HllVariant};
@@ -33,15 +11,12 @@ use crate::data_model::{
     SingleSubpopulationAggregate,
 };
 
-/// Default precision when none is supplied via streaming-config parameters.
-/// Matches `datafusion_summary_library::physical::hll::HllSketch` (~0.8% std error,
-/// ~16 KiB per sketch).
+/// Default HLL precision when streaming config omits `parameters.precision`.
 pub const DEFAULT_HLL_PRECISION: u32 = 14;
 
 /// HLL sketch accumulator — wraps `asap_sketchlib::HllSketch`.
 /// Core insert/merge/serde logic lives in `asap_sketchlib`; this file retains
-/// the QE-specific trait impls (`AggregateCore`, `SingleSubpopulationAggregate`,
-/// `SerializableToSink`, `MergeableAccumulator`).
+/// QE-specific trait impls.
 #[derive(Debug, Clone)]
 pub struct HllAccumulator {
     pub inner: HllSketch,
@@ -58,19 +33,10 @@ impl HllAccumulator {
         Self::new(DEFAULT_HLL_PRECISION)
     }
 
-    /// Feed a value into the sketch. The streaming layer surfaces all column
-    /// values as `f64`; we hash their little-endian bytes via `HllSketch::update`,
-    /// which goes through the canonical sketchlib hash (`hash64_seeded` with
-    /// `CANONICAL_HASH_SEED`). That makes the on-disk sketch byte-identical to
-    /// what `sketchlib-go` would produce for the same stream — cross-language
-    /// parity is locked in by upstream's golden-byte test.
     pub fn update(&mut self, value: f64) {
         self.inner.update(&value.to_le_bytes());
     }
 
-    /// Current cardinality estimate. Returned as `f64` so callers don't lose the
-    /// fractional small-range correction; the engine truncates to an integer in
-    /// the final result column when needed.
     pub fn estimate(&self) -> f64 {
         self.inner.estimate()
     }
@@ -96,9 +62,6 @@ impl Default for HllAccumulator {
 
 impl SerializableToSink for HllAccumulator {
     fn serialize_to_json(&self) -> Value {
-        // Mirrors KLL's JSON shape: opaque base64 of the canonical msgpack body so
-        // downstream consumers can round-trip through any serde-capable channel
-        // without losing the register array.
         let bytes = self.inner.serialize_msgpack().unwrap_or_default();
         let b64 = general_purpose::STANDARD.encode(&bytes);
         serde_json::json!({
@@ -152,8 +115,6 @@ impl AggregateCore for HllAccumulator {
     }
 
     fn get_keys(&self) -> Option<Vec<crate::KeyByLabelValues>> {
-        // HLL is a probabilistic counter, not a set: it estimates |S| without
-        // retaining the individual members of S. There are no keys to enumerate.
         None
     }
 
@@ -163,8 +124,6 @@ impl AggregateCore for HllAccumulator {
         _key: &Option<crate::KeyByLabelValues>,
         query_kwargs: &HashMap<String, String>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-        // HLL is a single-population accumulator (one sketch per grouping key
-        // partition), so `key` is unused — same shape as KllAccumulator.
         SingleSubpopulationAggregate::query(self, statistic, Some(query_kwargs))
     }
 }

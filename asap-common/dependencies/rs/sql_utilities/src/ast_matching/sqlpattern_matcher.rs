@@ -102,11 +102,7 @@ impl SQLPatternMatcher {
         legal_aggregations.insert("MIN");
         legal_aggregations.insert("MAX");
         legal_aggregations.insert("QUANTILE");
-        // `COUNT(DISTINCT col)` is normalised by the parser to the aggregation
-        // name "CARDINALITY" (see `SQLPatternParser::get_aggregation`). Without
-        // this entry the simple_engine SQL handler rejects every COUNT(DISTINCT)
-        // query with `IllegalAggregationFn` before pattern matching runs, which
-        // in turn blocks routing to the precompute engine's HLL accumulator.
+        // COUNT(DISTINCT col) is normalised by the parser to the aggregationname "CARDINALITY"
         legal_aggregations.insert("CARDINALITY");
 
         Self {
