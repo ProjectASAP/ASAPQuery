@@ -1,6 +1,6 @@
 [package]
 name = "sql_utilities"
-version.workspace = true
+version = "0.4.0"
 edition.workspace = true
 authors = ["SketchDB Team"]
 description = "A standalone SQL pattern matching and query analysis library for Rust"

@@ -1,6 +1,6 @@
 [package]
 name = "compare_patterns_runner"
-version.workspace = true
+version = "0.4.0"
 edition.workspace = true
 
 [[bin]]
