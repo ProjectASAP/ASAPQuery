@@ -176,7 +176,7 @@ def start_profiling_query_engine_pids(qe_pids, experiment_output_dir):
             "--call-graph",
             "dwarf",
             "-F",
-            "997",
+            "99",
             "-o",
             output_file,
             "--pid",
@@ -210,6 +210,28 @@ def stop_profiling_query_engine_pids(qe_perf_procs, store: bool):
                 f"Perf record process PID {proc.pid} did not terminate within 60s"
             )
     logger.debug("Stopped profiling for query engine pids")
+
+
+def convert_query_engine_perf_data(experiment_output_dir):
+    qe_profiles_dir = os.path.join(experiment_output_dir, "query_engine_profiles")
+    data_files = [
+        os.path.join(qe_profiles_dir, f)
+        for f in os.listdir(qe_profiles_dir)
+        if f.startswith("perf_") and f.endswith(".data")
+    ]
+    for data_file in data_files:
+        script_file = data_file.replace(".data", ".script")
+        logger.debug(f"Converting {data_file} to {script_file}")
+        try:
+            with open(script_file, "w") as f:
+                subprocess.run(
+                    ["perf", "script", "-i", data_file],
+                    stdout=f,
+                    check=True,
+                )
+            logger.debug(f"Finished converting {data_file}")
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"perf script failed for {data_file}: {e}")
 
 
 # TODO Provide some way of specifying which hooks will be used
@@ -408,6 +430,7 @@ def main(args):
     if qe_flamegraph_procs:
         logger.debug("Stopping profiling for query engine pids")
         stop_profiling_query_engine_pids(qe_flamegraph_procs, store=True)
+        convert_query_engine_perf_data(args.experiment_output_dir)
 
     logger.debug("Stopping process monitors")
     monitor_info = process_monitor.stop_monitor(monitor, control_pipe, monitor_pipe)

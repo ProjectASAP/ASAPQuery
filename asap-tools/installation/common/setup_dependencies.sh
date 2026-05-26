@@ -5,7 +5,7 @@ THIS_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 sudo apt-get update
 sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt-get update
-sudo apt-get install -y python3-pip ipython3 golang-go python3.11 htop
+sudo apt-get install -y python3-pip ipython3 golang-go python3.11 htop linux-tools-common linux-tools-"$(uname -r)"
 pip3 install --user pandas 'scipy==1.15' numpy matplotlib psutil loguru pyarrow hydra-core omegaconf
 pip3 install --user plotnine
 
