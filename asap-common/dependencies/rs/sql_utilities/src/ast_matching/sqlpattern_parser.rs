@@ -366,6 +366,29 @@ impl SQLPatternParser {
 
         let name = func.name.to_string().to_uppercase();
 
+        // DISTINCT handling. The structural model tracks at most one value column,
+        // so we only support DISTINCT in its single-column COUNT form, which we
+        // normalise to a cardinality aggregation:
+        //   COUNT(DISTINCT col)          → name="CARDINALITY", value_column=col
+        //   COUNT(DISTINCT col1, col2)   → rejected (compound-key distinct)
+        //   COUNT(ALL col), COUNT(col)   → unchanged (plain COUNT)
+        //   SUM/AVG/...(DISTINCT col)    → rejected (no sketch backs distinct-sum)
+        let has_distinct = matches!(
+            &func.args,
+            FunctionArguments::List(list)
+                if list.duplicate_treatment == Some(DuplicateTreatment::Distinct)
+        );
+        if has_distinct {
+            if name != "COUNT" {
+                return None;
+            }
+            if let FunctionArguments::List(list) = &func.args {
+                if list.args.len() != 1 {
+                    return None;
+                }
+            }
+        }
+
         let args = self.get_quantile_args(func);
 
         // Get the column being aggregated
@@ -425,9 +448,13 @@ impl SQLPatternParser {
             }
         };
 
-        // Always store PERCENTILE as QUANTILE internally
+        // Normalisation:
+        //   - PERCENTILE → QUANTILE (legacy alias).
+        //   - COUNT(DISTINCT col) → CARDINALITY (validated above to be single-arg).
         let normalized_name = if name == "PERCENTILE" {
             "QUANTILE".to_string()
+        } else if has_distinct {
+            "CARDINALITY".to_string()
         } else {
             name
         };

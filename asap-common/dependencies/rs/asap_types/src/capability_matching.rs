@@ -33,6 +33,7 @@ pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
         Statistic::Cardinality => &[
             AggregationType::SetAggregator,
             AggregationType::DeltaSetAggregator,
+            AggregationType::HLL,
         ],
         Statistic::Topk => &[AggregationType::CountMinSketchWithHeap],
     }
@@ -751,6 +752,58 @@ mod tests {
             ),
         );
         assert!(result.is_some());
+    }
+
+    // --- cardinality / HLL ---
+
+    #[test]
+    fn cardinality_matches_hll_single_population() {
+        // `COUNT(DISTINCT col)` flows in as `Statistic::Cardinality`. An HLL config
+        // alone must satisfy it without requiring any paired key aggregation —
+        // HLL is a single-population value type (per grouping key bucket), unlike
+        // SetAggregator which is a multi-population key tracker.
+        let configs = single_config(make_config(
+            42,
+            "peers",
+            "HLL",
+            "",
+            1,
+            "tumbling",
+            &["srcip"],
+            "",
+        ));
+        let result = find_compatible_aggregation(
+            &configs,
+            &req(
+                "peers",
+                &[Statistic::Cardinality],
+                Some(1_000),
+                &["srcip"],
+                "",
+            ),
+        );
+        let info = result.expect("HLL should serve Cardinality");
+        assert_eq!(info.aggregation_id_for_value, 42);
+        assert_eq!(info.aggregation_type_for_value, AggregationType::HLL);
+        // Single-population: key agg falls through to the value config itself,
+        // matching the KLL / Sum / MinMax pattern (no separate SetAggregator needed).
+        assert_eq!(info.aggregation_id_for_key, 42);
+        assert_eq!(info.aggregation_type_for_key, AggregationType::HLL);
+    }
+
+    #[test]
+    fn compatible_agg_types_cardinality_includes_hll() {
+        // Direct unit test on the capability table: HLL must appear alongside the
+        // existing exact-cardinality types so the SQL→engine path picks it up
+        // without any further plumbing changes.
+        let types = compatible_agg_types(Statistic::Cardinality);
+        assert!(
+            types.contains(&AggregationType::HLL),
+            "compatible_agg_types(Cardinality) must include HLL; got {types:?}",
+        );
+        // Backwards compat: existing exact types stay supported.
+        assert!(types.contains(&AggregationType::SetAggregator));
+        assert!(types.contains(&AggregationType::DeltaSetAggregator));
     }
 
     #[test]

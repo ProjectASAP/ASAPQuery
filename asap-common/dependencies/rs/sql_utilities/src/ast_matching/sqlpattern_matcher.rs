@@ -102,6 +102,8 @@ impl SQLPatternMatcher {
         legal_aggregations.insert("MIN");
         legal_aggregations.insert("MAX");
         legal_aggregations.insert("QUANTILE");
+        // COUNT(DISTINCT col) is normalised by the parser to the aggregationname "CARDINALITY"
+        legal_aggregations.insert("CARDINALITY");
 
         Self {
             schema,
@@ -176,10 +178,23 @@ impl SQLPatternMatcher {
                 }
 
                 let value_column_name = query.aggregation_info.get_value_column_name();
-                if !self
-                    .schema
-                    .is_valid_value_column(&query.metric, value_column_name)
-                {
+                // `COUNT(DISTINCT col)` (normalised to "CARDINALITY") legitimately
+                // targets metadata/label columns (e.g. `COUNT(DISTINCT dstip)`),
+                // which the schema lists under metadata_columns rather than
+                // value_columns. Accept either bucket for CARDINALITY; for all
+                // other aggregations keep the strict value_columns-only check.
+                let column_is_known = if query.aggregation_info.get_name() == "CARDINALITY" {
+                    self.schema
+                        .is_valid_value_column(&query.metric, value_column_name)
+                        || self
+                            .schema
+                            .get_metadata_columns(&query.metric)
+                            .is_some_and(|cols| cols.contains(value_column_name))
+                } else {
+                    self.schema
+                        .is_valid_value_column(&query.metric, value_column_name)
+                };
+                if !column_is_known {
                     println!("Returned QueryError::InvalidValueCol");
 
                     return Err((
