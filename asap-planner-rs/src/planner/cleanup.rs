@@ -76,6 +76,13 @@ pub fn get_sql_cleanup_param(
 ) -> Result<u64, String> {
     match cleanup_policy {
         CleanupPolicy::CircularBuffer | CleanupPolicy::ReadBased => {
+            if t_repeat == 0 {
+                return Err(
+                    "repetition_delay must be > 0 for cleanup param calculation; \
+                     set a non-zero repetition_delay in your query group config"
+                        .to_string(),
+                );
+            }
             Ok(t_lookback.div_ceil(t_repeat))
         }
         CleanupPolicy::NoCleanup => {
