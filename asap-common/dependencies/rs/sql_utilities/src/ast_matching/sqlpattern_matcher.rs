@@ -186,9 +186,10 @@ impl SQLPatternMatcher {
                 let column_is_known = if query.aggregation_info.get_name() == "CARDINALITY" {
                     self.schema
                         .is_valid_value_column(&query.metric, value_column_name)
-                        || self.schema.get_metadata_columns(&query.metric).is_some_and(
-                            |cols| cols.contains(value_column_name),
-                        )
+                        || self
+                            .schema
+                            .get_metadata_columns(&query.metric)
+                            .is_some_and(|cols| cols.contains(value_column_name))
                 } else {
                     self.schema
                         .is_valid_value_column(&query.metric, value_column_name)

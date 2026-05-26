@@ -1040,7 +1040,7 @@ mod tests {
     // `COUNT(DISTINCT col)` must be normalised to a cardinality aggregation
     // (`AggregationInfo.name == "CARDINALITY"`) so the engine routes it to a
     // distinct-tracking sketch (SetAggregator / HLL) instead of a plain Count
-    // sketch. 
+    // sketch.
 
     #[test]
     fn test_count_distinct_single_column_maps_to_cardinality() {

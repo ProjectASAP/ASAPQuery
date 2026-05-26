@@ -1,8 +1,8 @@
 use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
-    CountMinSketchAccumulator, DatasketchesKLLAccumulator, HllAccumulator, HydraKllSketchAccumulator,
-    IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
-    MultipleSumAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
+    CountMinSketchAccumulator, DatasketchesKLLAccumulator, HllAccumulator,
+    HydraKllSketchAccumulator, IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator,
+    MultipleMinMaxAccumulator, MultipleSumAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
 };
 use asap_types::aggregation_config::AggregationConfig;
 
@@ -956,10 +956,7 @@ mod tests {
         // default — that's the property we check (no need to assert exact size).
         use std::collections::HashMap;
         let mut params = HashMap::new();
-        params.insert(
-            "precision".to_string(),
-            serde_json::Value::from(12_u64),
-        );
+        params.insert("precision".to_string(), serde_json::Value::from(12_u64));
         let config = AggregationConfig::new(
             7,
             AggregationType::HLL,

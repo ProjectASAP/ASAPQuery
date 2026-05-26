@@ -451,7 +451,7 @@ mod tests {
     fn test_aggregation_operator_cardinality_round_trip() {
         // The SQL parser normalises `COUNT(DISTINCT col)` to the aggregation name
         // "CARDINALITY"; `parse_single_statistic` then routes it through
-        // `AggregationOperator::FromStr`. 
+        // `AggregationOperator::FromStr`.
         let op: AggregationOperator = "cardinality".parse().expect("cardinality should parse");
         assert_eq!(op, AggregationOperator::Cardinality);
         assert_eq!(op.to_statistics(), vec![Statistic::Cardinality]);

@@ -343,7 +343,10 @@ mod tests {
         let single =
             deserialize_single_subpopulation(&bytes, &SketchType::HLL).expect("HLL single-pop");
         let via_query = single
-            .query(promql_utilities::query_logics::enums::Statistic::Cardinality, None)
+            .query(
+                promql_utilities::query_logics::enums::Statistic::Cardinality,
+                None,
+            )
             .expect("Cardinality query");
         assert_eq!(via_query, want);
     }

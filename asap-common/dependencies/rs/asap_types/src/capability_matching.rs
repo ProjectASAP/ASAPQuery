@@ -763,7 +763,14 @@ mod tests {
         // HLL is a single-population value type (per grouping key bucket), unlike
         // SetAggregator which is a multi-population key tracker.
         let configs = single_config(make_config(
-            42, "peers", "HLL", "", 1, "tumbling", &["srcip"], "",
+            42,
+            "peers",
+            "HLL",
+            "",
+            1,
+            "tumbling",
+            &["srcip"],
+            "",
         ));
         let result = find_compatible_aggregation(
             &configs,
