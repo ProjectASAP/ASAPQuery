@@ -79,9 +79,7 @@ def main(cfg: DictConfig):
         provider, use_container=False, node_offset=args.node_offset
     )
 
-    system_exporters_service = SystemExportersService(
-        provider, num_nodes_in_experiment, args.node_offset
-    )
+    system_exporters_service = SystemExportersService(provider, args)
     prometheus_service = create_prometheus_service(
         cfg, provider, num_nodes_in_experiment, args.node_offset
     )
@@ -96,9 +94,7 @@ def main(cfg: DictConfig):
         provider, use_container=False, node_offset=args.node_offset
     )
 
-    deathstar_service = DeathstarService(
-        provider, num_nodes_in_experiment, args.node_offset
-    )
+    deathstar_service = DeathstarService(provider, args)
 
     controller_service_container = ControllerService(
         provider, use_container=True, node_offset=args.node_offset
@@ -122,42 +118,21 @@ def main(cfg: DictConfig):
         provider, num_nodes_in_experiment, args.node_offset
     )
 
-    avalanche_service = AvalancheExporterService(
-        provider,
-        num_nodes_in_experiment,
-        use_container=False,
-        node_offset=args.node_offset,
-    )
+    avalanche_service = AvalancheExporterService(provider, args, use_container=False)
 
     # Initialize both exporter languages
     fake_exporter_service_rust = ExporterServiceFactory.create_exporter_service(
-        "rust",
-        provider,
-        num_nodes_in_experiment,
-        use_container=True,
-        node_offset=args.node_offset,
+        "rust", provider, args, use_container=True
     )
     fake_exporter_service_python = ExporterServiceFactory.create_exporter_service(
-        "python",
-        provider,
-        num_nodes_in_experiment,
-        use_container=True,
-        node_offset=args.node_offset,
+        "python", provider, args, use_container=True
     )
     fake_exporter_service_rust_native = ExporterServiceFactory.create_exporter_service(
-        "rust",
-        provider,
-        num_nodes_in_experiment,
-        use_container=False,
-        node_offset=args.node_offset,
+        "rust", provider, args, use_container=False
     )
     fake_exporter_service_python_native = (
         ExporterServiceFactory.create_exporter_service(
-            "python",
-            provider,
-            num_nodes_in_experiment,
-            use_container=False,
-            node_offset=args.node_offset,
+            "python", provider, args, use_container=False
         )
     )
 

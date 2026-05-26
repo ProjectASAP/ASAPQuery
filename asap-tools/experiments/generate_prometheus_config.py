@@ -5,6 +5,7 @@ import argparse
 from omegaconf import DictConfig
 
 import experiment_utils
+from utils import get_node_range
 
 
 def get_metrics_for_exporter(exporter_name, experiment_config):
@@ -184,9 +185,10 @@ def main(args, experiment_config=None):
                     {
                         "targets": [
                             f"{args.node_ip_prefix}.{i + 1}:{port}"
-                            for i in range(
-                                args.node_offset + 1,
-                                args.node_offset + args.num_nodes + 1,
+                            for i in get_node_range(
+                                args.node_offset,
+                                args.num_nodes,
+                                include_coordinator=False,
                             )
                         ]
                     }
@@ -217,8 +219,8 @@ def main(args, experiment_config=None):
         ]
         for exporter, ports in fake_exporters:
             targets = []
-            for target_ip in range(
-                args.node_offset + 1, args.node_offset + args.num_nodes + 1
+            for target_ip in get_node_range(
+                args.node_offset, args.num_nodes, include_coordinator=False
             ):
                 for port in ports:
                     targets.append(f"{args.node_ip_prefix}.{target_ip + 1}:{port}")

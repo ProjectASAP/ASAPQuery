@@ -12,20 +12,16 @@ from experiment_utils.providers.base import InfrastructureProvider
 class SystemExportersService(BaseService):
     """Service for managing system exporters (node_exporter, blackbox_exporter, cadvisor)."""
 
-    def __init__(
-        self, provider: InfrastructureProvider, num_nodes: int, node_offset: int
-    ):
+    def __init__(self, provider: InfrastructureProvider, args):
         """
         Initialize System Exporters service.
 
         Args:
             provider: Infrastructure provider for node communication and management
-            num_nodes: Number of nodes to manage
-            node_offset: Starting node index offset
+            args: Experiment args object providing get_node_range() and get_coordinator_node()
         """
         super().__init__(provider)
-        self.num_nodes = num_nodes
-        self.node_offset = node_offset
+        self.args = args
 
     def start(self, experiment_params: DictConfig, **kwargs) -> None:
         """
@@ -36,9 +32,7 @@ class SystemExportersService(BaseService):
             **kwargs: Additional configuration
         """
         # Start exporters on worker nodes
-        for node_idx in range(
-            self.node_offset + 1, self.node_offset + self.num_nodes + 1
-        ):
+        for node_idx in self.args.get_node_range(include_coordinator=False):
             local_ip = self.provider.get_node_ip(node_idx)
 
             # Start node_exporter
@@ -67,7 +61,7 @@ class SystemExportersService(BaseService):
             )
 
         # Start blackbox_exporter on controller node
-        coordinator_node = self.node_offset
+        coordinator_node = self.args.get_coordinator_node()
         cmd, cmd_dir = self._get_blackbox_exporter_cmd(
             local_ip=self.provider.get_node_ip(coordinator_node)
         )
@@ -88,9 +82,7 @@ class SystemExportersService(BaseService):
         """
         cmd = "killall node_exporter; killall blackbox_exporter; docker stop cadvisor; docker rm cadvisor"
         self.provider.execute_command_parallel(
-            node_idxs=list(
-                range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-            ),
+            node_idxs=self.args.get_node_range(include_coordinator=False),
             cmd=cmd,
             cmd_dir=None,
             nohup=False,

@@ -20,23 +20,20 @@ class BaseExporterService(BaseService):
     def __init__(
         self,
         provider: InfrastructureProvider,
-        num_nodes: int,
+        args,
         use_container: bool,
-        node_offset: int,
     ):
         """
         Initialize base exporter service.
 
         Args:
             provider: Infrastructure provider for node communication and management
-            num_nodes: Number of nodes to run exporters on
+            args: Experiment args object providing get_node_range() and get_coordinator_node()
             use_container: Whether to use containerized deployment
-            node_offset: Starting node index offset
         """
         super().__init__(provider)
-        self.num_nodes: int = num_nodes
+        self.args = args
         self.use_container: bool = use_container
-        self.node_offset: int = node_offset
         self.container_names: List[str] = []
         self.compose_files: List[str] = []
 
@@ -157,9 +154,7 @@ class PythonExporterService(BaseExporterService):
         # Run commands in parallel across nodes
         for cmd in cmds:
             self.provider.execute_command_parallel(
-                node_idxs=list(
-                    range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-                ),
+                node_idxs=self.args.get_node_range(include_coordinator=False),
                 cmd=cmd,
                 cmd_dir=cmd_dir,
                 nohup=False,
@@ -225,9 +220,7 @@ class PythonExporterService(BaseExporterService):
         # Create output directory first
         mkdir_cmd = f"mkdir -p {output_dir}"
         self.provider.execute_command_parallel(
-            node_idxs=list(
-                range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-            ),
+            node_idxs=self.args.get_node_range(include_coordinator=False),
             cmd=mkdir_cmd,
             cmd_dir="",
             nohup=False,
@@ -244,9 +237,7 @@ class PythonExporterService(BaseExporterService):
             batch_cmd = "; ".join(batch)
 
             self.provider.execute_command_parallel(
-                node_idxs=list(
-                    range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-                ),
+                node_idxs=self.args.get_node_range(include_coordinator=False),
                 cmd=batch_cmd,
                 cmd_dir="",
                 nohup=False,
@@ -278,9 +269,7 @@ class PythonExporterService(BaseExporterService):
         """
         cmd = "pkill -f fake_exporter.py"
         self.provider.execute_command_parallel(
-            node_idxs=list(
-                range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-            ),
+            node_idxs=self.args.get_node_range(include_coordinator=False),
             cmd=cmd,
             cmd_dir=None,
             nohup=False,
@@ -301,12 +290,7 @@ class PythonExporterService(BaseExporterService):
                     cmd = f"docker stop {container_list} 2>/dev/null || true; docker rm {container_list} 2>/dev/null || true"
 
                     self.provider.execute_command_parallel(
-                        node_idxs=list(
-                            range(
-                                self.node_offset + 1,
-                                self.node_offset + self.num_nodes + 1,
-                            )
-                        ),
+                        node_idxs=self.args.get_node_range(include_coordinator=False),
                         cmd=cmd,
                         cmd_dir=None,
                         nohup=False,
@@ -317,12 +301,7 @@ class PythonExporterService(BaseExporterService):
                 # Fallback: stop all containers matching the base name pattern
                 cmd = f"docker ps -a --filter name={BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME} --format '{{{{.Names}}}}' | xargs -r docker stop; docker ps -a --filter name={BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME} --format '{{{{.Names}}}}' | xargs -r docker rm"
                 self.provider.execute_command_parallel(
-                    node_idxs=list(
-                        range(
-                            self.node_offset + 1,
-                            self.node_offset + self.num_nodes + 1,
-                        )
-                    ),
+                    node_idxs=self.args.get_node_range(include_coordinator=False),
                     cmd=cmd,
                     cmd_dir=None,
                     nohup=False,
@@ -410,9 +389,7 @@ class RustExporterService(BaseExporterService):
         # Run commands in parallel across nodes
         for cmd in cmds:
             self.provider.execute_command_parallel(
-                node_idxs=list(
-                    range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-                ),
+                node_idxs=self.args.get_node_range(include_coordinator=False),
                 cmd=cmd,
                 cmd_dir=cmd_dir,
                 nohup=False,
@@ -481,9 +458,7 @@ class RustExporterService(BaseExporterService):
             batch_cmd = "; ".join(batch)
 
             self.provider.execute_command_parallel(
-                node_idxs=list(
-                    range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-                ),
+                node_idxs=self.args.get_node_range(include_coordinator=False),
                 cmd=batch_cmd,
                 cmd_dir="",
                 nohup=False,
@@ -515,9 +490,7 @@ class RustExporterService(BaseExporterService):
         """
         cmd = "pkill -f fake_exporter"
         self.provider.execute_command_parallel(
-            node_idxs=list(
-                range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-            ),
+            node_idxs=self.args.get_node_range(include_coordinator=False),
             cmd=cmd,
             cmd_dir=None,
             nohup=False,
@@ -538,12 +511,7 @@ class RustExporterService(BaseExporterService):
                     cmd = f"docker stop {container_list} 2>/dev/null || true; docker rm {container_list} 2>/dev/null || true"
 
                     self.provider.execute_command_parallel(
-                        node_idxs=list(
-                            range(
-                                self.node_offset + 1,
-                                self.node_offset + self.num_nodes + 1,
-                            )
-                        ),
+                        node_idxs=self.args.get_node_range(include_coordinator=False),
                         cmd=cmd,
                         cmd_dir=None,
                         nohup=False,
@@ -554,12 +522,7 @@ class RustExporterService(BaseExporterService):
                 # Fallback: stop all containers matching the base name pattern
                 cmd = f"docker ps -a --filter name={BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME} --format '{{{{.Names}}}}' | xargs -r docker stop; docker ps -a --filter name={BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME} --format '{{{{.Names}}}}' | xargs -r docker rm"
                 self.provider.execute_command_parallel(
-                    node_idxs=list(
-                        range(
-                            self.node_offset + 1,
-                            self.node_offset + self.num_nodes + 1,
-                        )
-                    ),
+                    node_idxs=self.args.get_node_range(include_coordinator=False),
                     cmd=cmd,
                     cmd_dir=None,
                     nohup=False,
@@ -630,7 +593,7 @@ class AvalancheExporterService(BaseExporterService):
 
         # Run on the first node (avalanche generates enough load from single instance)
         self.provider.execute_command(
-            node_idx=self.node_offset,
+            node_idx=self.args.get_coordinator_node(),
             cmd=docker_cmd,
             cmd_dir=None,
             nohup=False,
@@ -647,7 +610,7 @@ class AvalancheExporterService(BaseExporterService):
         # Stop avalanche containers (common naming pattern)
         cmd = "docker ps --filter name=avalanche-exporter --format '{{.Names}}' | xargs -r docker stop"
         self.provider.execute_command(
-            node_idx=self.node_offset,
+            node_idx=self.args.get_coordinator_node(),
             cmd=cmd,
             cmd_dir=None,
             nohup=False,
@@ -657,7 +620,7 @@ class AvalancheExporterService(BaseExporterService):
         # Remove containers
         cmd = "docker ps -a --filter name=avalanche-exporter --format '{{.Names}}' | xargs -r docker rm"
         self.provider.execute_command(
-            node_idx=self.node_offset,
+            node_idx=self.args.get_coordinator_node(),
             cmd=cmd,
             cmd_dir=None,
             nohup=False,
@@ -686,9 +649,8 @@ class ExporterServiceFactory:
     def create_exporter_service(
         language: str,
         provider: "InfrastructureProvider",
-        num_nodes: int,
+        args,
         use_container: bool,
-        node_offset: int,
     ) -> BaseExporterService:
         """
         Create an exporter service based on language.
@@ -696,9 +658,8 @@ class ExporterServiceFactory:
         Args:
             language: Programming language ("python" or "rust")
             provider: Infrastructure provider for node communication and management
-            num_nodes: Number of nodes
+            args: Experiment args object providing get_node_range() and get_coordinator_node()
             use_container: Whether to use containerized deployment
-            node_offset: Starting node index offset
 
         Returns:
             Appropriate exporter service instance
@@ -707,11 +668,9 @@ class ExporterServiceFactory:
             ValueError: If language is not supported
         """
         if language == "python":
-            return PythonExporterService(
-                provider, num_nodes, use_container, node_offset
-            )
+            return PythonExporterService(provider, args, use_container)
         elif language == "rust":
-            return RustExporterService(provider, num_nodes, use_container, node_offset)
+            return RustExporterService(provider, args, use_container)
         else:
             raise ValueError(
                 f"Invalid fake exporter language: {language}. Supported languages are 'python' and 'rust'"

@@ -4,6 +4,7 @@ import argparse
 from omegaconf import DictConfig
 
 import experiment_utils
+from utils import get_node_range
 from constants import (
     VMAGENT_SCRAPE_CONFIG_FILE,
     VMAGENT_REMOTE_WRITE_CONFIG_FILE,
@@ -227,7 +228,9 @@ def main(args, experiment_config=None):
         start_port = fake_exporter_config["start_port"]
 
         targets = []
-        for i in range(args.node_offset + 1, args.node_offset + args.num_nodes + 1):
+        for i in get_node_range(
+            args.node_offset, args.num_nodes, include_coordinator=False
+        ):
             for j in range(num_ports_per_server):
                 targets.append(f"{args.node_ip_prefix}.{i + 1}:{start_port + j}")
 
@@ -248,7 +251,9 @@ def main(args, experiment_config=None):
         avalanche_port = avalanche_config.get("port", 9001)
 
         targets = []
-        for i in range(args.node_offset + 1, args.node_offset + args.num_nodes + 1):
+        for i in get_node_range(
+            args.node_offset, args.num_nodes, include_coordinator=False
+        ):
             targets.append(f"{args.node_ip_prefix}.{i + 1}:{avalanche_port}")
 
         scrape_job = {
@@ -270,7 +275,9 @@ def main(args, experiment_config=None):
         cluster_data_port = cluster_data_config.get("port", 9010)
 
         targets = []
-        for i in range(args.node_offset + 1, args.node_offset + args.num_nodes + 1):
+        for i in get_node_range(
+            args.node_offset, args.num_nodes, include_coordinator=False
+        ):
             targets.append(f"{args.node_ip_prefix}.{i + 1}:{cluster_data_port}")
 
         scrape_job = {

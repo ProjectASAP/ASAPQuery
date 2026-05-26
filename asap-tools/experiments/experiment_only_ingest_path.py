@@ -119,9 +119,7 @@ def main(cfg: DictConfig):
         raise ValueError("Invalid exporter config: {}".format(rejection_reason))
 
     # Initialize services
-    system_exporters_service = SystemExportersService(
-        provider, args.num_nodes, args.node_offset
-    )
+    system_exporters_service = SystemExportersService(provider, args)
     prometheus_service = create_prometheus_service(
         cfg, provider, args.num_nodes, args.node_offset
     )
@@ -130,9 +128,8 @@ def main(cfg: DictConfig):
     exporter_service = ExporterServiceFactory.create_exporter_service(
         args.fake_exporter_language,
         provider,
-        num_nodes_in_experiment,
+        args,
         use_container=args.use_container_fake_exporter,
-        node_offset=args.node_offset,
     )
 
     # Initialize V2-specific services (always initialize to allow cleanup from previous runs)
