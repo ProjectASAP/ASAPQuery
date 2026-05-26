@@ -21,6 +21,15 @@ macro_rules! impl_clone_accumulator_methods {
         fn snapshot_accumulator(&self) -> Box<dyn AggregateCore> {
             Box::new(self.$acc_field.clone())
         }
+
+        fn into_accumulator(self: Box<Self>) -> Box<dyn AggregateCore> {
+            // Consume the updater and MOVE the accumulator out — no clone.
+            // Avoids the expensive `Clone` (a full msgpack serialize/deserialize
+            // round-trip for sketch accumulators) when a pane is evicted at
+            // window close.
+            let this = *self;
+            Box::new(this.$acc_field)
+        }
     };
 }
 
@@ -41,6 +50,16 @@ pub trait AccumulatorUpdater: Send {
     /// Non-destructive read of the current accumulator state (clone without reset).
     /// Used by pane-based sliding windows to read shared panes.
     fn snapshot_accumulator(&self) -> Box<dyn AggregateCore>;
+
+    /// Consume the updater and return its accumulator BY MOVE, avoiding the
+    /// `Clone` that `take_accumulator`/`snapshot_accumulator` pay (for sketch
+    /// accumulators that clone is a full msgpack serialize/deserialize
+    /// round-trip). Used by `merge_panes_for_window` when a pane is evicted at
+    /// window close. Default falls back to a clone for updaters that can't
+    /// cheaply move their inner accumulator out.
+    fn into_accumulator(self: Box<Self>) -> Box<dyn AggregateCore> {
+        self.snapshot_accumulator()
+    }
 
     /// Reset internal state for reuse (avoids re-allocation).
     fn reset(&mut self);
