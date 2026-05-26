@@ -1,6 +1,6 @@
 [package]
 name = "promql_utilities"
-version = "0.4.0"
+version.workspace = true
 edition.workspace = true
 authors = ["SketchDB Team"]
 description = "A standalone PromQL pattern matching and query analysis library for Rust"

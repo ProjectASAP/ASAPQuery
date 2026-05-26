@@ -1,6 +1,6 @@
 [package]
 name = "query_engine_rust"
-version = "0.4.0"
+version.workspace = true
 edition.workspace = true
 
 [dependencies]
