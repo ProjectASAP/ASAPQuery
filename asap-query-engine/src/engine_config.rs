@@ -5,7 +5,9 @@ pub fn check_config(config: &EngineConfig) -> Result<(), String> {
     match (&config.ingest, &config.streaming_engine) {
         (IngestConfig::Kafka { .. }, StreamingEngine::Arroyo) => {}
         (
-            IngestConfig::HttpRemoteWrite { .. } | IngestConfig::Csv { .. },
+            IngestConfig::HttpRemoteWrite { .. }
+            | IngestConfig::Csv { .. }
+            | IngestConfig::Json { .. },
             StreamingEngine::Precompute,
         ) => {}
         (IngestConfig::Otlp { .. }, StreamingEngine::Arroyo) => {}
@@ -241,6 +243,18 @@ pub enum IngestConfig {
         #[serde(default = "default_otlp_http_port")]
         http_port: u16,
     },
+    Json {
+        path: String,
+        metric_name: String,
+        value_col: String,
+        #[serde(default)]
+        label_cols: Vec<String>,
+        timestamp_col: String,
+        #[serde(default = "default_timestamp_unit")]
+        timestamp_unit: String,
+        #[serde(default = "default_json_batch_size")]
+        batch_size: usize,
+    },
 }
 
 impl Default for IngestConfig {
@@ -269,6 +283,14 @@ fn default_otlp_grpc_port() -> u16 {
 
 fn default_otlp_http_port() -> u16 {
     4318
+}
+
+fn default_timestamp_unit() -> String {
+    "seconds".to_string()
+}
+
+fn default_json_batch_size() -> usize {
+    1000
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -429,6 +451,24 @@ ingest:
   metric_name: "m"
   value_col: "v"
   timestamp_col: "ts"
+output_dir: "./output"
+"#;
+        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
+        assert!(check_config(&config).is_ok());
+    }
+
+    #[test]
+    fn check_config_valid_json_precompute() {
+        let yaml = r#"
+streaming_engine: "precompute"
+ingest:
+  type: "json"
+  path: "hits.json"
+  metric_name: "hits"
+  value_col: "ResolutionWidth"
+  label_cols: ["OS", "RegionID"]
+  timestamp_col: "EventTime"
+  timestamp_unit: "seconds"
 output_dir: "./output"
 "#;
         let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();

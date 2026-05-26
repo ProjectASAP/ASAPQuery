@@ -16,6 +16,9 @@ use query_engine_rust::data_model::enums::{CleanupPolicy, StreamingEngine};
 use query_engine_rust::drivers::AdapterConfig;
 use query_engine_rust::precompute_engine::config::LateDataPolicy;
 use query_engine_rust::precompute_engine::csv_ingest::{CsvFileIngestConfig, CsvFileIngestSource};
+use query_engine_rust::precompute_engine::json_ingest::{
+    JsonFileIngestConfig, JsonFileIngestSource, TimestampUnit,
+};
 use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::InferenceConfig;
@@ -238,13 +241,38 @@ async fn main() -> Result<()> {
                     batch_size: *batch_size,
                 }))]
             }
+            IngestConfig::Json {
+                path,
+                metric_name,
+                value_col,
+                label_cols,
+                timestamp_col,
+                timestamp_unit,
+                batch_size,
+            } => {
+                let unit = timestamp_unit
+                    .parse::<TimestampUnit>()
+                    .map_err(|e| format!("Invalid timestamp_unit: {e}"))?;
+                info!("JSON file ingest mode: {}", path);
+                vec![Box::new(JsonFileIngestSource::new(JsonFileIngestConfig {
+                    path: path.clone(),
+                    metric_name: metric_name.clone(),
+                    value_col: value_col.clone(),
+                    label_cols: label_cols.clone(),
+                    timestamp_col: timestamp_col.clone(),
+                    timestamp_unit: unit,
+                    batch_size: *batch_size,
+                }))]
+            }
             IngestConfig::HttpRemoteWrite { port } => {
                 info!("Starting precompute engine on port {}", port);
                 vec![Box::new(HttpIngestSource::new(HttpIngestConfig {
                     port: *port,
                 }))]
             }
-            _ => unreachable!("check_config enforces precompute requires http_remote_write or csv"),
+            _ => unreachable!(
+                "check_config enforces precompute requires http_remote_write, csv, or json"
+            ),
         };
         let pe = PrecomputeEngine::new(
             precompute_config,
