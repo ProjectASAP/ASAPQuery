@@ -1,6 +1,6 @@
 [package]
 name = "datafusion_summary_library"
-version = "0.4.0"
+version.workspace = true
 edition.workspace = true
 authors = ["ProjectASAP Team"]
 
