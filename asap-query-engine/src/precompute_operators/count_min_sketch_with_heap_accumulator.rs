@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::countminsketch_topk::{CmsHeapItem, CountMinSketchWithHeap};
+use asap_sketchlib::{message_pack_format::MessagePackCodec, CmsHeapItem, CountMinSketchWithHeap};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -17,7 +17,7 @@ pub struct CountMinSketchWithHeapAccumulator {
 }
 
 // Re-export HeapItem so existing code using CountMinSketchWithHeapAccumulator::HeapItem still works.
-pub use asap_sketchlib::sketches::countminsketch_topk::CmsHeapItem as HeapItemReexport;
+pub use asap_sketchlib::CmsHeapItem as HeapItemReexport;
 
 impl CountMinSketchWithHeapAccumulator {
     pub fn new(row_num: usize, col_num: usize, heap_size: usize) -> Self {
@@ -85,7 +85,7 @@ impl CountMinSketchWithHeapAccumulator {
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            inner: CountMinSketchWithHeap::deserialize_msgpack(buffer)
+            inner: CountMinSketchWithHeap::from_msgpack(buffer)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
         })
     }
@@ -131,7 +131,7 @@ impl SerializableToSink for CountMinSketchWithHeapAccumulator {
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.serialize_msgpack().unwrap_or_default()
+        self.inner.to_msgpack().unwrap_or_default()
     }
 }
 

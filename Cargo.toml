@@ -37,6 +37,7 @@ asap_types = { path = "asap-common/dependencies/rs/asap_types" }
 datafusion_summary_library = { path = "asap-common/dependencies/rs/datafusion_summary_library" }
 elastic_dsl_utilities = { path = "asap-common/dependencies/rs/elastic_dsl_utilities" }
 asap_planner = { path = "asap-planner-rs" }
+asap_sketchlib = "0.2.2"
 indexmap = { version = "2.0", features = ["serde"] }
 
 [profile.release]
