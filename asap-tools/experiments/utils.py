@@ -5,6 +5,20 @@ import time
 import constants
 
 
+def get_node_range(
+    node_offset: int, num_nodes: int, include_coordinator: bool = True
+) -> list:
+    """Return the list of node indices for an experiment.
+
+    Mirrors Args.get_node_range() for use in argparse-based scripts that don't
+    have an Args object.
+    """
+    if include_coordinator:
+        return list(range(node_offset, node_offset + num_nodes + 1))
+    else:
+        return list(range(node_offset + 1, node_offset + num_nodes + 1))
+
+
 def run_cmd_with_retry(
     cmd, popen, ignore_errors=False, max_retries=3, retry_delay=5
 ) -> Union[subprocess.Popen, subprocess.CompletedProcess]:

@@ -14,20 +14,16 @@ from experiment_utils.providers.base import InfrastructureProvider
 class DeathstarService(BaseService):
     """Service for managing DeathStar benchmark."""
 
-    def __init__(
-        self, provider: InfrastructureProvider, num_nodes: int, node_offset: int
-    ):
+    def __init__(self, provider: InfrastructureProvider, args):
         """
         Initialize DeathStar service.
 
         Args:
             provider: Infrastructure provider for node communication and management
-            num_nodes: Number of nodes to run DeathStar on
-            node_offset: Starting node index offset
+            args: Experiment args object providing get_node_range() and get_coordinator_node()
         """
         super().__init__(provider)
-        self.num_nodes = num_nodes
-        self.node_offset = node_offset
+        self.args = args
 
     def start(self, **kwargs) -> None:
         """
@@ -41,9 +37,7 @@ class DeathstarService(BaseService):
             f"{self.provider.get_home_dir()}/benchmarks/DeathStarBench/socialNetwork"
         )
         self.provider.execute_command_parallel(
-            node_idxs=list(
-                range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-            ),
+            node_idxs=self.args.get_node_range(include_coordinator=False),
             cmd=cmd,
             cmd_dir=cmd_dir,
             nohup=False,
@@ -64,9 +58,7 @@ class DeathstarService(BaseService):
             f"{self.provider.get_home_dir()}/benchmarks/DeathStarBench/socialNetwork"
         )
         self.provider.execute_command_parallel(
-            node_idxs=list(
-                range(self.node_offset + 1, self.node_offset + self.num_nodes + 1)
-            ),
+            node_idxs=self.args.get_node_range(include_coordinator=False),
             cmd=cmd,
             cmd_dir=cmd_dir,
             nohup=False,
@@ -97,22 +89,22 @@ class DeathstarService(BaseService):
         TOTAL_CONNECTIONS = 480
         TOTAL_REQUESTS = 1200
 
-        connections = TOTAL_CONNECTIONS // self.num_nodes
-        requests = TOTAL_REQUESTS // self.num_nodes
+        connections = TOTAL_CONNECTIONS // self.args.num_nodes
+        requests = TOTAL_REQUESTS // self.args.num_nodes
         output_file_template = (
             "{}/deathstar_logs/connections_{}_requests_{}_nodes_{}_ip_{}.txt"
         )
 
         ips = []
         output_files = []
-        for i in range(self.node_offset + 1, self.node_offset + self.num_nodes + 1):
+        for i in self.args.get_node_range(include_coordinator=False):
             ips.append(self.provider.get_node_ip(i))
             output_files.append(
                 output_file_template.format(
                     experiment_output_dir,
                     TOTAL_CONNECTIONS,
                     TOTAL_REQUESTS,
-                    self.num_nodes,
+                    self.args.num_nodes,
                     i,
                 )
             )

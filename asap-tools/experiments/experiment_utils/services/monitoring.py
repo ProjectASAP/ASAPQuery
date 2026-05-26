@@ -11,24 +11,19 @@ from experiment_utils.providers.base import InfrastructureProvider
 class MonitoringService(BaseService):
     """Service for managing monitoring across nodes."""
 
-    def __init__(
-        self, provider: InfrastructureProvider, num_nodes: int, node_offset: int
-    ):
+    def __init__(self, provider: InfrastructureProvider, args):
         """
         Initialize Monitoring service.
 
         Args:
             provider: Infrastructure provider for node communication and management
-            num_nodes: Number of nodes to monitor
-            node_offset: Starting node index offset
+            args: Experiment args object providing get_node_range() and get_coordinator_node()
         """
         super().__init__(provider)
-        self.num_nodes = num_nodes
-        self.node_offset = node_offset
-        self.system_exporters_service = SystemExportersService(
-            provider, num_nodes, node_offset
+        self.system_exporters_service = SystemExportersService(provider, args)
+        self.prometheus_service = PrometheusService(
+            provider, args.num_nodes, args.node_offset
         )
-        self.prometheus_service = PrometheusService(provider, num_nodes, node_offset)
 
     def start(self, experiment_params, experiment_output_dir: str, **kwargs) -> None:
         """
