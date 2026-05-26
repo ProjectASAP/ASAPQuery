@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::set_aggregator::SetAggregator;
+use asap_sketchlib::{message_pack_format::MessagePackCodec, SetAggregator};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -92,7 +92,7 @@ impl SetAggregatorAccumulator {
     pub fn deserialize_from_bytes_arroyo(
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let sa = SetAggregator::deserialize_msgpack(buffer)
+        let sa = SetAggregator::from_msgpack(buffer)
             .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
         let added = sa
             .values
@@ -109,7 +109,7 @@ impl SetAggregatorAccumulator {
         for key in &self.added {
             sa.update(&key.to_semicolon_str());
         }
-        sa.serialize_msgpack().unwrap_or_default()
+        sa.to_msgpack().unwrap_or_default()
     }
 }
 

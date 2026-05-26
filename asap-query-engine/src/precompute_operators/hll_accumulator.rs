@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use asap_sketchlib::sketches::hll::{HllSketch, HllVariant};
+use asap_sketchlib::{message_pack_format::MessagePackCodec, HllSketch, HllVariant};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 
@@ -48,7 +48,7 @@ impl HllAccumulator {
     pub fn deserialize_from_bytes_arroyo(
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let inner = HllSketch::deserialize_msgpack(buffer)
+        let inner = HllSketch::from_msgpack(buffer)
             .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
         Ok(Self { inner })
     }
@@ -62,7 +62,7 @@ impl Default for HllAccumulator {
 
 impl SerializableToSink for HllAccumulator {
     fn serialize_to_json(&self) -> Value {
-        let bytes = self.inner.serialize_msgpack().unwrap_or_default();
+        let bytes = self.inner.to_msgpack().unwrap_or_default();
         let b64 = general_purpose::STANDARD.encode(&bytes);
         serde_json::json!({
             "sketch": b64,
@@ -72,7 +72,7 @@ impl SerializableToSink for HllAccumulator {
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.serialize_msgpack().unwrap_or_default()
+        self.inner.to_msgpack().unwrap_or_default()
     }
 }
 

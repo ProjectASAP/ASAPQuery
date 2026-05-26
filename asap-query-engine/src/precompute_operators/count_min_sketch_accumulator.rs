@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::sketches::countminsketch::CountMinSketch;
+use asap_sketchlib::{message_pack_format::MessagePackCodec, CountMinSketch};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -64,7 +64,7 @@ impl CountMinSketchAccumulator {
         buffer: &[u8],
     ) -> Result<Self, Box<dyn std::error::Error>> {
         Ok(Self {
-            inner: CountMinSketch::deserialize_msgpack(buffer)
+            inner: CountMinSketch::from_msgpack(buffer)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
         })
     }
@@ -166,7 +166,7 @@ impl SerializableToSink for CountMinSketchAccumulator {
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.serialize_msgpack().unwrap_or_default()
+        self.inner.to_msgpack().unwrap_or_default()
     }
 }
 

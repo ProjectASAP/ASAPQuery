@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate,
 };
-use asap_sketchlib::sketches::kll::KllSketch;
+use asap_sketchlib::{message_pack_format::MessagePackCodec, KllSketch};
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -42,7 +42,7 @@ impl DatasketchesKLLAccumulator {
             buffer.len()
         );
         Ok(Self {
-            inner: KllSketch::deserialize_msgpack(buffer)
+            inner: KllSketch::from_msgpack(buffer)
                 .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
         })
     }
@@ -113,7 +113,7 @@ impl SerializableToSink for DatasketchesKLLAccumulator {
     }
 
     fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.serialize_msgpack().unwrap_or_default()
+        self.inner.to_msgpack().unwrap_or_default()
     }
 }
 
