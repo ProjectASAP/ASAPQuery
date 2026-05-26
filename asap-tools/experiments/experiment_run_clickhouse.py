@@ -1,30 +1,95 @@
 """
-Experiment runner for ClickHouse/SQL experiments — baseline mode.
+Experiment runner for ClickHouse/SQL experiments.
 
-Flow:
+Supports two modes, selected automatically based on config:
+
+  baseline  — queries go directly to ClickHouse (:8123).
+  sketchdb  — queries go to the ASAP precompute engine (:8088), which serves
+              approximate results from KLL sketches and forwards unsupported
+              queries to ClickHouse as a fallback.
+
+────────────────────────────────────────────────────────────
+Baseline-only flow
+────────────────────────────────────────────────────────────
   rsync dataset file → node
   ClickHouseService.start()
-  ClickHouseDataLoaderService.start()   (once, before mode loop; DROP + reload)
+  ClickHouseDataLoaderService.start()   (DROP + reload)
 
   for experiment_mode in ["baseline"]:
-      run prometheus-client in ClickHouse SQL mode (blocking)
+      run prometheus-client → ClickHouse :8123
       rsync results back
-      teardown if not no_teardown
 
-Usage:
+────────────────────────────────────────────────────────────
+Sketchdb flow  (enabled when sketchdb_query_groups is set in config)
+────────────────────────────────────────────────────────────
+  (same rsync + ClickHouse start + data load as above)
+
+  for experiment_mode in ["baseline", "sketchdb"]:
+      if sketchdb:
+          rsync streaming_config.yaml → node
+          query_engine_rust starts (precompute engine + JSON ingest + CH fallback)
+          wait until process is up
+          sleep flow.steady_state_wait  (ingest completes during this window)
+          run prometheus-client → ASAP :8088
+          rsync results back
+          stop query_engine_rust
+
+────────────────────────────────────────────────────────────
+Pre-run steps for sketchdb mode
+────────────────────────────────────────────────────────────
+1. Generate the SQL query file (once per dataset/window configuration):
+
+     python asap-tools/execution-utilities/benchmark/generate_queries.py \\
+       --table-name hits \\
+       --ts-column EventTime \\
+       --value-column ResolutionWidth \\
+       --group-by-columns OS,RegionID,TraficSourceID,UserAgent \\
+       --window-size 10 \\
+       --output-prefix /path/to/output/clickbench \\
+       --auto-detect-timestamps \\
+       --data-file /path/to/hits.json \\
+       --data-file-format jsonl
+
+   The same SQL file is used for both baseline (load tester) and sketchdb
+   (load tester + planner input).
+
+2. Ensure the release binaries are built on the CloudLab node:
+     cargo build --release   (in ~/code/asap-query-engine)
+     cargo build --release   (in ~/code/asap-planner-rs)
+
+   asap-planner runs automatically in SQL mode during the experiment to
+   generate streaming_config.yaml and inference_config.yaml — no manual
+   config file authoring needed.
+
+────────────────────────────────────────────────────────────
+Usage
+────────────────────────────────────────────────────────────
+Baseline only:
   python experiment_run_clickhouse.py \\
     experiment_type=clickhouse \\
     experiment.name=my_bench \\
     cloudlab.num_nodes=1 \\
     cloudlab.username=myuser \\
     cloudlab.hostname_suffix=myexp.cloudlab.us \\
-    experiment_params.dataset.name=clickbench \\
     experiment_params.dataset.local_data_file=/path/to/hits.json \\
-    'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
+    'experiment_params.query_groups[0].sql_file=/path/to/clickbench.sql'
+
+Baseline + sketchdb:
+  python experiment_run_clickhouse.py \\
+    experiment_type=clickhouse \\
+    experiment.name=my_bench \\
+    cloudlab.num_nodes=1 \\
+    cloudlab.username=myuser \\
+    cloudlab.hostname_suffix=myexp.cloudlab.us \\
+    experiment_params.dataset.local_data_file=/path/to/hits.json \\
+    'experiment_params.query_groups[0].sql_file=/path/to/clickbench.sql' \\
+    'experiment_params.sketchdb_query_groups[0].sql_file=/path/to/clickbench_asap.sql' \\
+    experiment_params.streaming_config_file=/path/to/clickbench_streaming.yaml
 """
 
 import json
 import os
+import time
 from urllib.parse import urlparse
 
 import hydra
@@ -33,7 +98,13 @@ from omegaconf import DictConfig, OmegaConf
 import constants
 from experiment_utils import config, sync
 from experiment_utils.providers.factory import create_provider
-from experiment_utils.services import ClickHouseDataLoaderService, ClickHouseService
+from experiment_utils.services import (
+    ClickHouseDataLoaderService,
+    ClickHouseService,
+    PrometheusClientService,
+)
+from experiment_utils.services.misc import ControllerService
+from experiment_utils.services.query_engine import QueryEngineRustService
 
 # Register resolvers used by config.yaml interpolation.
 OmegaConf.register_new_resolver(
@@ -178,6 +249,11 @@ def main(cfg: DictConfig) -> None:
     clickhouse_database = str(cfg.clickhouse.database)
     clickhouse_http_port = urlparse(clickhouse_url).port or 8123
 
+    # --- sketchdb config (optional) ---
+    sketchdb_query_groups = ep.get("sketchdb_query_groups") or None
+    data_ingestion_interval = int(ep.get("data_ingestion_interval", 15))
+    asap_http_port = 8088
+
     # --- generate prometheus-client config YAMLs for each experiment mode ---
     if not skip_querying:
         mode_server_urls = {constants.BASELINE_EXPERIMENT_NAME: clickhouse_url}
@@ -186,6 +262,8 @@ def main(cfg: DictConfig) -> None:
             local_experiment_dir=local_experiment_root_dir,
             mode_server_urls=mode_server_urls,
             clickhouse_database=clickhouse_database,
+            sketchdb_query_groups=sketchdb_query_groups,
+            sketchdb_server_url=f"http://localhost:{asap_http_port}/clickhouse/query",
         )
         sync.rsync_controller_client_configs(
             provider,
@@ -198,6 +276,8 @@ def main(cfg: DictConfig) -> None:
         print("skip_querying=True: no SQL queries will be executed")
         print("-" * 40)
         experiment_modes = [constants.BASELINE_EXPERIMENT_NAME]
+        if sketchdb_query_groups:
+            experiment_modes.append(constants.SKETCHDB_EXPERIMENT_NAME)
 
     # --- rsync dataset file to node ---
     remote_data_dir = os.path.join(experiment_root_output_dir, "data")
@@ -232,8 +312,17 @@ def main(cfg: DictConfig) -> None:
     )
 
     # --- mode loop ---
+    prometheus_client_service = PrometheusClientService(
+        provider, use_container=use_container, node_offset=node_offset
+    )
+
     for experiment_mode in experiment_modes:
         print(f"Running experiment mode: {experiment_mode}")
+
+        # Clean up any leftover prometheus-client container from the previous mode,
+        # mirroring the prometheus_client_service.stop() call at the top of the
+        # e2e mode loop.
+        prometheus_client_service.stop()
 
         experiment_output_dir = os.path.join(
             experiment_root_output_dir, experiment_mode
@@ -248,27 +337,145 @@ def main(cfg: DictConfig) -> None:
         )
         os.makedirs(local_experiment_dir, exist_ok=True)
 
-        if not skip_querying:
-            controller_client_config = os.path.join(
-                experiment_root_output_dir,
-                "controller_client_configs",
-                f"{experiment_mode}.yaml",
+        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            # --- sketchdb mode: precompute engine + JSON ingest + ClickHouse fallback ---
+            # Mirrors experiment_run_e2e.py: planner runs first and generates
+            # streaming_config.yaml + inference_config.yaml into controller_output_dir,
+            # then the query engine starts reading from that same directory.
+
+            local_controller_dir = os.path.join(
+                local_experiment_root_dir, "controller_output"
             )
-            _run_query_client(
-                provider=provider,
-                node_offset=node_offset,
-                config_file=controller_client_config,
-                output_dir=experiment_output_dir,
-                use_container=use_container,
-                parallel=parallel,
+            remote_controller_dir = os.path.join(
+                experiment_root_output_dir, "controller_output"
+            )
+            os.makedirs(local_controller_dir, exist_ok=True)
+
+            # Generate and rsync the planner input config to the node
+            planner_input_yaml = config.generate_sql_planner_input(
+                sketchdb_query_groups, dataset_cfg
+            )
+            local_planner_input = os.path.join(
+                local_controller_dir, "planner_input.yaml"
+            )
+            with open(local_planner_input, "w") as _f:
+                _f.write(planner_input_yaml)
+            sync.rsync_streaming_configs(
+                provider, local_controller_dir, remote_controller_dir, node_offset
             )
 
-        sync.rsync_experiment_data(
-            provider,
-            experiment_output_dir,
-            local_experiment_dir,
-            node_offset=node_offset,
-        )
+            # Run asap-planner (SQL mode) — writes streaming_config.yaml + inference_config.yaml
+            controller_service = ControllerService(
+                provider=provider, use_container=False, node_offset=node_offset
+            )
+            controller_service.start(
+                controller_input_file=os.path.join(
+                    remote_controller_dir, "planner_input.yaml"
+                ),
+                streaming_engine="precompute",
+                controller_remote_output_dir=remote_controller_dir,
+                punting=False,
+                query_language="sql",
+                data_ingestion_interval=data_ingestion_interval,
+            )
+            sync.rsync_controller_config_remote_to_local(
+                provider, remote_controller_dir, local_controller_dir, node_offset
+            )
+
+            # Start query engine (precompute + JSON ingest + ClickHouse fallback)
+            query_engine_service = QueryEngineRustService(
+                provider=provider,
+                use_container=False,
+                node_offset=node_offset,
+            )
+            dataset_precompute_cfg = dataset_cfg.precompute
+            query_engine_service.start(
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                flink_output_format="json",
+                prometheus_scrape_interval=15,
+                log_level="INFO",
+                profile_query_engine=False,
+                manual=False,
+                streaming_engine="precompute",
+                controller_remote_output_dir=remote_controller_dir,
+                compress_json=False,
+                dump_precomputes=False,
+                lock_strategy="per-key",
+                backend_config={
+                    "type": "clickhouse",
+                    "url": clickhouse_url,
+                    "database": clickhouse_database,
+                    "forward_unsupported_queries": True,
+                },
+                http_port=asap_http_port,
+                ingest_json_config={
+                    "path": remote_data_file,
+                    "metric_name": str(dataset_cfg.metric_name),
+                    "value_col": str(dataset_precompute_cfg.value_col),
+                    "label_cols": list(dataset_precompute_cfg.label_cols),
+                    "timestamp_col": str(dataset_precompute_cfg.timestamp_col),
+                    "timestamp_unit": "seconds",
+                    "batch_size": 1000,
+                },
+            )
+
+            query_engine_service.wait_until_ready()
+
+            if not skip_querying:
+                steady_state_wait = int(cfg.flow.steady_state_wait)
+                print(
+                    f"Waiting {steady_state_wait}s for precompute ingest to complete..."
+                )
+                time.sleep(steady_state_wait)
+
+                controller_client_config = os.path.join(
+                    experiment_root_output_dir,
+                    "controller_client_configs",
+                    f"{experiment_mode}.yaml",
+                )
+                _run_query_client(
+                    provider=provider,
+                    node_offset=node_offset,
+                    config_file=controller_client_config,
+                    output_dir=experiment_output_dir,
+                    use_container=use_container,
+                    parallel=parallel,
+                )
+
+            sync.rsync_experiment_data(
+                provider,
+                experiment_output_dir,
+                local_experiment_dir,
+                node_offset=node_offset,
+            )
+
+            if not no_teardown:
+                query_engine_service.stop()
+
+        else:
+            # --- baseline mode ---
+            if not skip_querying:
+                controller_client_config = os.path.join(
+                    experiment_root_output_dir,
+                    "controller_client_configs",
+                    f"{experiment_mode}.yaml",
+                )
+                _run_query_client(
+                    provider=provider,
+                    node_offset=node_offset,
+                    config_file=controller_client_config,
+                    output_dir=experiment_output_dir,
+                    use_container=use_container,
+                    parallel=parallel,
+                )
+
+            sync.rsync_experiment_data(
+                provider,
+                experiment_output_dir,
+                local_experiment_dir,
+                node_offset=node_offset,
+            )
 
     # --- teardown ---
     if not no_teardown:

@@ -408,30 +408,28 @@ class ClickHouseDataLoaderService(BaseService):
     ) -> None:
         """Stream a JSON-lines file (optionally gzipped) into ClickHouse."""
         print(f"Loading ClickBench data from {remote_data_file!r}...")
-        insert_url = "{}?query=INSERT+INTO+{}+FORMAT+JSONEachRow".format(
-            url.rstrip("/") + "/", table
-        )
         file_lower = remote_data_file.lower()
         is_gz = file_lower.endswith(".json.gz") or file_lower.endswith(".jsonl.gz")
+        insert_sql = shlex.quote(f"INSERT INTO {table} FORMAT JSONEachRow")
 
         if is_gz:
             if max_rows > 0:
-                cmd = "zcat {} | head -n {} | curl -sS {} --data-binary @-".format(
-                    shlex.quote(remote_data_file), max_rows, shlex.quote(insert_url)
+                reader = "zcat {} | head -n {}".format(
+                    shlex.quote(remote_data_file), max_rows
                 )
             else:
-                cmd = "zcat {} | curl -sS {} --data-binary @-".format(
-                    shlex.quote(remote_data_file), shlex.quote(insert_url)
-                )
+                reader = "zcat {}".format(shlex.quote(remote_data_file))
         else:
             if max_rows > 0:
-                cmd = "head -n {} {} | curl -sS {} --data-binary @-".format(
-                    max_rows, shlex.quote(remote_data_file), shlex.quote(insert_url)
-                )
+                reader = "head -n {} {}".format(max_rows, shlex.quote(remote_data_file))
             else:
-                cmd = "curl -sS {} --data-binary @{}".format(
-                    shlex.quote(insert_url), shlex.quote(remote_data_file)
-                )
+                reader = "cat {}".format(shlex.quote(remote_data_file))
+
+        cmd = (
+            "{} | docker exec -i clickhouse-server clickhouse-client --query {}".format(
+                reader, insert_sql
+            )
+        )
 
         result = self.provider.execute_command(
             node_idx=self.node_offset,
@@ -483,36 +481,34 @@ class ClickHouseDataLoaderService(BaseService):
     ) -> None:
         """Stream a custom JSON-lines file (plain or gzipped) into ClickHouse."""
         print(f"Loading custom data from {remote_data_file!r} into {table!r}...")
-        insert_url = "{}?query=INSERT+INTO+{}+FORMAT+JSONEachRow".format(
-            url.rstrip("/") + "/", table
-        )
         file_lower = remote_data_file.lower()
         is_gz = file_lower.endswith(".json.gz") or file_lower.endswith(".jsonl.gz")
         is_json = file_lower.endswith(".json") or file_lower.endswith(".jsonl")
+        insert_sql = shlex.quote(f"INSERT INTO {table} FORMAT JSONEachRow")
 
         if is_gz:
             if max_rows > 0:
-                cmd = "zcat {} | head -n {} | curl -sS {} --data-binary @-".format(
-                    shlex.quote(remote_data_file), max_rows, shlex.quote(insert_url)
+                reader = "zcat {} | head -n {}".format(
+                    shlex.quote(remote_data_file), max_rows
                 )
             else:
-                cmd = "zcat {} | curl -sS {} --data-binary @-".format(
-                    shlex.quote(remote_data_file), shlex.quote(insert_url)
-                )
+                reader = "zcat {}".format(shlex.quote(remote_data_file))
         elif is_json:
             if max_rows > 0:
-                cmd = "head -n {} {} | curl -sS {} --data-binary @-".format(
-                    max_rows, shlex.quote(remote_data_file), shlex.quote(insert_url)
-                )
+                reader = "head -n {} {}".format(max_rows, shlex.quote(remote_data_file))
             else:
-                cmd = "curl -sS {} --data-binary @{}".format(
-                    shlex.quote(insert_url), shlex.quote(remote_data_file)
-                )
+                reader = "cat {}".format(shlex.quote(remote_data_file))
         else:
             raise ValueError(
                 f"Unsupported file format for {remote_data_file!r}. "
                 "Use dataset_name='h2o' for CSV files."
             )
+
+        cmd = (
+            "{} | docker exec -i clickhouse-server clickhouse-client --query {}".format(
+                reader, insert_sql
+            )
+        )
 
         result = self.provider.execute_command(
             node_idx=self.node_offset,
