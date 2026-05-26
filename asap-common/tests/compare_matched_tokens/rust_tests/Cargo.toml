@@ -1,6 +1,6 @@
 [package]
 name = "promql_token_matching_tests"
-version.workspace = true
+version = "0.4.0"
 edition.workspace = true
 
 [[bin]]
