@@ -1,5 +1,6 @@
 use crate::drivers::ingest::prometheus_remote_write::DecodedSample;
 use crate::precompute_engine::ingest_source::{route_decoded_samples, IngestContext, IngestSource};
+use chrono::NaiveDateTime;
 use std::time::Instant;
 use tracing::info;
 
@@ -110,23 +111,38 @@ impl IngestSource for JsonFileIngestSource {
                             .into()
                         })?;
 
-                    let raw_ts: i64 = obj
-                        .get(&config.timestamp_col)
-                        .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
+                    let ts_val = obj.get(&config.timestamp_col).ok_or_else(
+                        || -> Box<dyn std::error::Error + Send + Sync> {
                             std::io::Error::other(format!(
                                 "timestamp column '{}' not found in JSON object",
                                 config.timestamp_col
                             ))
                             .into()
-                        })?
-                        .as_i64()
-                        .ok_or_else(|| -> Box<dyn std::error::Error + Send + Sync> {
-                            std::io::Error::other(format!(
-                                "timestamp column '{}' is not an integer",
-                                config.timestamp_col
-                            ))
-                            .into()
-                        })?;
+                        },
+                    )?;
+
+                    // Accept integer (Unix epoch) or string datetime "YYYY-MM-DD HH:MM:SS".
+                    let raw_ts: i64 = if let Some(i) = ts_val.as_i64() {
+                        i
+                    } else if let Some(s) = ts_val.as_str() {
+                        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
+                            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                                std::io::Error::other(format!(
+                                    "timestamp column '{}' value {:?} is not an integer or \
+                                     a parseable datetime string: {}",
+                                    config.timestamp_col, s, e
+                                ))
+                                .into()
+                            })?
+                            .and_utc()
+                            .timestamp()
+                    } else {
+                        return Err(std::io::Error::other(format!(
+                            "timestamp column '{}' is not an integer or string",
+                            config.timestamp_col
+                        ))
+                        .into());
+                    };
 
                     let timestamp_ms = config.timestamp_unit.to_ms(raw_ts);
 
@@ -140,7 +156,20 @@ impl IngestSource for JsonFileIngestSource {
                             if i > 0 {
                                 s.push(',');
                             }
-                            let val = obj.get(col).and_then(|v| v.as_str()).unwrap_or("");
+                            let val_owned;
+                            let val = if let Some(s) = obj.get(col).and_then(|v| v.as_str()) {
+                                s
+                            } else if let Some(v) = obj.get(col) {
+                                val_owned = v.to_string();
+                                val_owned.as_str()
+                            } else {
+                                return Err(std::io::Error::other(format!(
+                                    "label column '{}' not found in JSON object (row {})",
+                                    col,
+                                    row_count + 1
+                                ))
+                                .into());
+                            };
                             s.push_str(col);
                             s.push_str("=\"");
                             s.push_str(val);

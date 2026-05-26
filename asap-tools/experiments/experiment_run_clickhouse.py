@@ -93,6 +93,7 @@ import time
 from urllib.parse import urlparse
 
 import hydra
+import yaml
 from omegaconf import DictConfig, OmegaConf
 
 import constants
@@ -105,6 +106,39 @@ from experiment_utils.services import (
 )
 from experiment_utils.services.misc import ControllerService
 from experiment_utils.services.query_engine import QueryEngineRustService
+
+
+def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> None:
+    """Enrich the saved experiment_params.yaml by inlining SQL from sql_file references.
+
+    Downstream analysis scripts expect query_groups[i]["queries"] to be a list
+    of query strings.  The clickhouse config stores sql_file paths instead, so
+    we read each file and add the queries in-place before the scripts run.
+    """
+    config_path = os.path.join(
+        local_experiment_root_dir, "experiment_config", "experiment_params.yaml"
+    )
+    if not os.path.exists(config_path):
+        return
+    with open(config_path) as f:
+        data = yaml.safe_load(f)
+
+    def _expand_groups(groups):
+        if not groups:
+            return
+        for group in groups:
+            sql_file = group.get("sql_file")
+            if sql_file and "queries" not in group:
+                with open(sql_file) as fq:
+                    content = fq.read()
+                group["queries"] = [s.strip() for s in content.split(";") if s.strip()]
+
+    _expand_groups(data.get("query_groups"))
+    _expand_groups(data.get("sketchdb_query_groups"))
+
+    with open(config_path, "w") as f:
+        yaml.dump(data, f, allow_unicode=True)
+
 
 # Register resolvers used by config.yaml interpolation.
 OmegaConf.register_new_resolver(
@@ -234,6 +268,7 @@ def main(cfg: DictConfig) -> None:
     )
 
     sync.copy_experiment_config(cfg.experiment_params, local_experiment_root_dir)
+    _inline_sql_queries_in_experiment_config(local_experiment_root_dir)
 
     # --- dataset config ---
     ep = cfg.experiment_params
@@ -339,6 +374,11 @@ def main(cfg: DictConfig) -> None:
 
         if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
             # --- sketchdb mode: precompute engine + JSON ingest + ClickHouse fallback ---
+            # Kill any leftover query_engine_rust from a previous run (mirrors
+            # query_engine_service.stop() at the top of the e2e mode loop).
+            QueryEngineRustService(
+                provider=provider, use_container=False, node_offset=node_offset
+            ).stop()
             # Mirrors experiment_run_e2e.py: planner runs first and generates
             # streaming_config.yaml + inference_config.yaml into controller_output_dir,
             # then the query engine starts reading from that same directory.
@@ -438,7 +478,9 @@ def main(cfg: DictConfig) -> None:
                     provider=provider,
                     node_offset=node_offset,
                     config_file=controller_client_config,
-                    output_dir=experiment_output_dir,
+                    output_dir=os.path.join(
+                        experiment_output_dir, "prometheus_client_output"
+                    ),
                     use_container=use_container,
                     parallel=parallel,
                 )
@@ -465,7 +507,9 @@ def main(cfg: DictConfig) -> None:
                     provider=provider,
                     node_offset=node_offset,
                     config_file=controller_client_config,
-                    output_dir=experiment_output_dir,
+                    output_dir=os.path.join(
+                        experiment_output_dir, "prometheus_client_output"
+                    ),
                     use_container=use_container,
                     parallel=parallel,
                 )

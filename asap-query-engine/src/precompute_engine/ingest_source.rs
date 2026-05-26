@@ -4,8 +4,10 @@ use crate::precompute_engine::worker::{extract_metric_name, parse_labels_from_se
 use arc_swap::ArcSwap;
 use asap_types::aggregation_config::AggregationConfig;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+use tracing::{debug, warn};
 
 /// Everything a source needs to push decoded samples into the worker pool.
 #[derive(Clone)]
@@ -89,15 +91,42 @@ pub(crate) async fn route_decoded_samples(
 
     // Load agg_configs once per request (lock-free ArcSwap read).
     let agg_configs = ctx.agg_configs.load();
+
+    // On first batch: log config metrics vs sample metric to diagnose mismatches.
+    static FIRST_BATCH_LOGGED: AtomicBool = AtomicBool::new(false);
+    if !FIRST_BATCH_LOGGED.swap(true, Ordering::Relaxed) {
+        if let Some(first) = samples.first() {
+            let sample_metric = extract_metric_name(&first.labels);
+            warn!(
+                sample_metric,
+                sample_labels = %first.labels,
+                num_agg_configs = agg_configs.len(),
+                "routing: first batch diagnostic"
+            );
+            for cfg in agg_configs.iter() {
+                warn!(
+                    agg_id = cfg.aggregation_id,
+                    config_metric = %cfg.metric,
+                    config_spatial_filter = %cfg.spatial_filter,
+                    table_name = ?cfg.table_name,
+                    "routing: agg config metric"
+                );
+            }
+        }
+    }
+
+    let mut matched_samples: usize = 0;
     for s in &samples {
         let metric_name = extract_metric_name(&s.labels);
         for config in agg_configs.iter() {
             if config.metric != metric_name
                 && config.spatial_filter_normalized != metric_name
                 && config.spatial_filter != metric_name
+                && config.table_name.as_deref() != Some(metric_name)
             {
                 continue;
             }
+            matched_samples += 1;
             let group_key = extract_group_key(&s.labels, config);
             by_group
                 .entry((config.aggregation_id, group_key))
@@ -105,6 +134,13 @@ pub(crate) async fn route_decoded_samples(
                 .push((s.labels.clone(), s.timestamp_ms, s.value));
         }
     }
+
+    debug!(
+        total_samples = samples.len(),
+        matched_samples,
+        groups_formed = by_group.len(),
+        "routing: batch match summary"
+    );
 
     let messages: Vec<WorkerMessage> = by_group
         .into_iter()
