@@ -62,8 +62,6 @@ def _is_clickhouse_experiment(experiment_params: DictConfig) -> bool:
 
 def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> None:
     """Validate experiment_params for a ClickHouse experiment."""
-    skip_querying = experiment_params.get("skip_querying", False)
-
     # Validate dataset section
     if "dataset" not in experiment_params:
         raise ValueError(
@@ -95,32 +93,20 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
             "Run benchmark/prepare_data.py first to produce the JSON-lines file."
         )
 
-    # Validate query_groups (required unless skip_querying)
-    if not skip_querying:
-        if (
-            "query_groups" not in experiment_params
-            or not experiment_params.query_groups
-        ):
+    # Validate query_groups
+    if "query_groups" not in experiment_params or not experiment_params.query_groups:
+        raise ValueError(
+            "At least one query group must be defined in experiment config."
+        )
+    for i, group in enumerate(experiment_params.query_groups):
+        sql_file = group.get("sql_file")
+        if not sql_file or sql_file == "???":
             raise ValueError(
-                "At least one query group must be defined in experiment config "
-                "when skip_querying=False"
+                f"Query group {i} missing 'sql_file'. "
+                "Generate SQL files with benchmark/generate_queries.py first."
             )
-        for i, group in enumerate(experiment_params.query_groups):
-            sql_file = group.get("sql_file")
-            if not sql_file or sql_file == "???":
-                raise ValueError(
-                    f"Query group {i} missing 'sql_file'. "
-                    "Generate SQL files with benchmark/generate_queries.py first."
-                )
-            if not os.path.exists(sql_file):
-                raise ValueError(
-                    f"Query group {i} sql_file={sql_file!r} does not exist."
-                )
-    elif "query_groups" in experiment_params and experiment_params.query_groups:
-        print("-" * 60)
-        print("WARNING: query_groups is present but will be IGNORED")
-        print("         skip_querying=True means no queries will be executed")
-        print("-" * 60)
+        if not os.path.exists(sql_file):
+            raise ValueError(f"Query group {i} sql_file={sql_file!r} does not exist.")
 
 
 def validate_experiment_config(
@@ -744,6 +730,74 @@ def generate_clickhouse_client_configs(
             yaml.dump(config, f)
 
     return modes
+
+
+def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
+    """Generate the YAML input file for asap-planner in SQL mode.
+
+    The planner (``asap-planner --query-language sql``) reads a
+    ``SQLControllerConfig`` YAML that contains:
+      - ``tables``: schema of the tables being queried
+      - ``query_groups``: SQL queries with controller options
+
+    This function builds that YAML from the experiment config so the runner
+    does not need a hand-authored planner input file.
+
+    Args:
+        query_groups: ListConfig of query group dicts.
+            Each entry must have ``sql_file``, ``repetition_delay``, and
+            ``controller_options`` (``accuracy_sla``, ``latency_sla``).
+        dataset_cfg: DictConfig with ``table``/``name``, and ``precompute``
+            sub-config (``timestamp_col``, ``value_col``, ``label_cols``).
+
+    Returns:
+        YAML string ready to write to disk and pass to asap-planner.
+    """
+    precompute_cfg = dataset_cfg.precompute
+    table_name = str(dataset_cfg.get("table") or dataset_cfg.name)
+    value_col = str(precompute_cfg.value_col)
+    tables = [
+        {
+            "name": table_name,
+            "time_column": str(precompute_cfg.timestamp_col),
+            "value_columns": [value_col],
+            "metadata_columns": list(precompute_cfg.label_cols),
+        }
+    ]
+
+    if isinstance(query_groups, (DictConfig, ListConfig)):
+        groups_list = OmegaConf.to_container(query_groups, resolve=True)
+    else:
+        groups_list = list(query_groups)
+
+    planner_query_groups = []
+    for idx, group in enumerate(groups_list):
+        sql_file = group.get("sql_file")
+        if not sql_file:
+            raise ValueError(f"query_groups[{idx}] missing 'sql_file'")
+        queries = _load_sql_queries(sql_file)
+        if not queries:
+            raise ValueError(f"No SQL statements found in {sql_file!r}")
+
+        ctrl_opts = dict(group.get("controller_options") or {})
+        planner_query_groups.append(
+            {
+                "id": idx + 1,
+                "repetition_delay": int(group.get("repetition_delay", 0)),
+                "queries": queries,
+                "controller_options": {
+                    "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),
+                    "latency_sla": float(ctrl_opts.get("latency_sla", 100.0)),
+                },
+            }
+        )
+
+    planner_input = {
+        "tables": tables,
+        "query_groups": planner_query_groups,
+        "aggregate_cleanup": {"policy": "read_based"},
+    }
+    return yaml.dump(planner_input, default_flow_style=False, allow_unicode=True)
 
 
 def generate_and_copy_prometheus_config(

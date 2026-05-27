@@ -5,6 +5,7 @@ Miscellaneous service classes for smaller services.
 import os
 import random
 import subprocess
+from typing import Optional
 
 import constants
 from .base import BaseService
@@ -186,65 +187,77 @@ class ControllerService(BaseService):
     def start(
         self,
         controller_input_file: str,
-        prometheus_scrape_interval: int,
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
-        prometheus_url: str,
+        prometheus_scrape_interval: Optional[int] = None,
+        prometheus_url: Optional[str] = None,
+        query_language: str = "promql",
+        data_ingestion_interval: Optional[int] = None,
         **kwargs,
     ) -> None:
         """
-        Start the controller.
+        Start the controller (asap-planner).
 
         Args:
             controller_input_file: Path to controller input configuration
-            prometheus_scrape_interval: Prometheus scraping interval
             streaming_engine: Type of streaming engine
             controller_remote_output_dir: Controller output directory
             punting: Enable query punting based on performance heuristics
-            prometheus_url: Base URL of the Prometheus instance for metric label inference
+            prometheus_scrape_interval: Required for PromQL mode
+            prometheus_url: Prometheus URL for label discovery (PromQL mode only)
+            query_language: 'promql' (default) or 'sql'
+            data_ingestion_interval: Required for SQL mode (seconds)
             **kwargs: Additional configuration
         """
         if self.use_container:
             return self._start_containerized(
                 controller_input_file,
-                prometheus_scrape_interval,
                 streaming_engine,
                 controller_remote_output_dir,
                 punting,
+                prometheus_scrape_interval,
                 prometheus_url,
+                query_language,
+                data_ingestion_interval,
             )
         else:
             return self._start_bare_metal(
                 controller_input_file,
-                prometheus_scrape_interval,
                 streaming_engine,
                 controller_remote_output_dir,
                 punting,
+                prometheus_scrape_interval,
                 prometheus_url,
+                query_language,
+                data_ingestion_interval,
             )
 
     def _start_bare_metal(
         self,
         controller_input_file: str,
-        prometheus_scrape_interval: int,
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
-        prometheus_url: str,
+        prometheus_scrape_interval: Optional[int],
+        prometheus_url: Optional[str],
+        query_language: str,
+        data_ingestion_interval: Optional[int],
     ) -> None:
         controller_log = os.path.join(controller_remote_output_dir, "controller.log")
         cmd = (
-            "./target/release/asap-planner"
-            " --input_config {} --prometheus_scrape_interval {} --output_dir {}"
-            " --streaming_engine {} --prometheus-url {}"
-        ).format(
-            controller_input_file,
-            prometheus_scrape_interval,
-            controller_remote_output_dir,
-            streaming_engine,
-            prometheus_url,
+            f"../target/release/asap-planner"
+            f" --input_config {controller_input_file}"
+            f" --output_dir {controller_remote_output_dir}"
+            f" --streaming_engine {streaming_engine}"
+            f" --query-language {query_language}"
         )
+        if prometheus_scrape_interval is not None:
+            cmd += f" --prometheus_scrape_interval {prometheus_scrape_interval}"
+        if prometheus_url:
+            cmd += f" --prometheus-url {prometheus_url}"
+        if data_ingestion_interval is not None:
+            cmd += f" --data-ingestion-interval {data_ingestion_interval}"
         if punting:
             cmd += " --enable-punting"
         cmd += f" > {controller_log} 2>&1"
@@ -261,11 +274,13 @@ class ControllerService(BaseService):
     def _start_containerized(
         self,
         controller_input_file: str,
-        prometheus_scrape_interval: int,
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
-        prometheus_url: str,
+        prometheus_scrape_interval: Optional[int],
+        prometheus_url: Optional[str],
+        query_language: str,
+        data_ingestion_interval: Optional[int],
     ):
         controller_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-planner-rs"
@@ -291,9 +306,16 @@ class ControllerService(BaseService):
         generate_cmd += f" --container-name {self.container_name}"
         generate_cmd += f" --input-config-path {controller_input_file}"
         generate_cmd += f" --controller-output-dir {controller_remote_output_dir}"
-        generate_cmd += f" --prometheus-scrape-interval {prometheus_scrape_interval}"
         generate_cmd += f" --streaming-engine {streaming_engine}"
-        generate_cmd += f" --prometheus-url {prometheus_url}"
+        generate_cmd += f" --query-language {query_language}"
+        if prometheus_scrape_interval is not None:
+            generate_cmd += (
+                f" --prometheus-scrape-interval {prometheus_scrape_interval}"
+            )
+        if prometheus_url:
+            generate_cmd += f" --prometheus-url {prometheus_url}"
+        if data_ingestion_interval is not None:
+            generate_cmd += f" --data-ingestion-interval {data_ingestion_interval}"
         if punting:
             generate_cmd += " --punting"
 

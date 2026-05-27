@@ -324,7 +324,7 @@ async fn handle_instant_query_post(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    debug!("Content-Type: {}", content_type);
+    debug!("POST content-type: '{}'", content_type);
 
     let parsed_request = if content_type.contains("application/json") {
         // Handle JSON POST (Elasticsearch)
@@ -369,11 +369,24 @@ async fn handle_instant_query_post(
             }
         };
 
-        // Parse form parameters
-        let params: HashMap<String, String> = form_urlencoded::parse(body_str.as_bytes())
+        debug!(
+            "POST body prefix (first 200 chars): '{}'",
+            &body_str.chars().take(200).collect::<String>()
+        );
+
+        // Parse form parameters, falling back to treating the raw body as the
+        // SQL query if no "query" key is found (ClickHouse native HTTP style).
+        let mut params: HashMap<String, String> = form_urlencoded::parse(body_str.as_bytes())
             .into_owned()
             .collect();
-        debug!("Form params extracted: {:?}", params);
+        if !params.contains_key("query") && !body_str.is_empty() {
+            params.clear();
+            params.insert("query".to_string(), body_str.clone());
+        }
+        debug!(
+            "POST form params keys: {:?}",
+            params.keys().collect::<Vec<_>>()
+        );
 
         // Use adapter to parse POST request (handles form-encoded parameters)
         match state.adapter.parse_post_request(Form(params)).await {
@@ -385,7 +398,7 @@ async fn handle_instant_query_post(
                 req
             }
             Err(parse_error) => {
-                debug!("Failed to parse POST request: {:?}", parse_error);
+                debug!("POST parse failed: {}", parse_error);
                 return match state.adapter.format_error_response(&parse_error).await {
                     Ok(json) => json.into_response(),
                     Err(status) => status.into_response(),

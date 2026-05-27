@@ -4,6 +4,7 @@ Query Engine service management for experiments.
 
 import os
 import subprocess
+from typing import Optional
 
 import yaml
 
@@ -84,6 +85,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         lock_strategy: str,
         profile_query_engine: bool,
         kafka_broker: str,
+        ingest_json_config: Optional[dict],
     ) -> dict:
         """
         Build an EngineConfig dict matching asap-query-engine's engine_config.rs schema.
@@ -122,10 +124,13 @@ class QueryEngineRustService(BaseQueryEngineService):
                 "decompress_json": compress_json,
             }
         elif streaming_engine == "precompute":
-            ingest = {
-                "type": "http_remote_write",
-                "port": remote_write_port,
-            }
+            if ingest_json_config is not None:
+                ingest = {"type": "json", **ingest_json_config}
+            else:
+                ingest = {
+                    "type": "http_remote_write",
+                    "port": remote_write_port,
+                }
         else:
             raise ValueError(
                 f"streaming_engine='{streaming_engine}' is not supported by the Rust query engine. "
@@ -207,6 +212,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         backend_config: dict,
         http_port: int,
         remote_write_port: int = 8080,
+        ingest_json_config: Optional[dict] = None,
     ) -> None:
         """
         Start the Rust query engine.
@@ -251,6 +257,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                 remote_write_port,
                 dump_precomputes,
                 lock_strategy,
+                ingest_json_config,
             )
         else:
             self._start_bare_metal(
@@ -269,6 +276,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                 remote_write_port,
                 dump_precomputes,
                 lock_strategy,
+                ingest_json_config,
             )
 
     def _start_bare_metal(
@@ -288,6 +296,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         remote_write_port: int,
         dump_precomputes: bool,
         lock_strategy: str,
+        ingest_json_config: Optional[dict],
     ) -> None:
         """Start Rust QueryEngine using bare metal deployment."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
@@ -308,6 +317,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
             kafka_broker=f"{self.provider.get_node_ip(self.node_offset)}:9092",
+            ingest_json_config=ingest_json_config,
         )
         self._write_engine_config_to_remote(
             config_dict=config,
@@ -350,6 +360,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         remote_write_port: int,
         dump_precomputes: bool,
         lock_strategy: str,
+        ingest_json_config: Optional[dict],
     ) -> None:
         """Start Rust QueryEngine using containerized deployment with Jinja template."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
@@ -376,6 +387,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
             kafka_broker=f"{self.provider.get_node_ip(self.node_offset)}:9092",
+            ingest_json_config=ingest_json_config,
         )
         # Write the config to the host path that is volume-mounted as /app/outputs,
         # so the container finds it at /app/outputs/engine_config.yaml.

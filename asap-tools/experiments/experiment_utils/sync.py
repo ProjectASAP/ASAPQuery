@@ -153,6 +153,41 @@ def rsync_dataset_file(
     return os.path.join(remote_dir, os.path.basename(local_data_file))
 
 
+def rsync_streaming_configs(
+    provider: InfrastructureProvider,
+    local_dir: str,
+    remote_dir: str,
+    node_offset: int,
+) -> None:
+    """Rsync a local directory of streaming config files (streaming_config.yaml,
+    inference_config.yaml) to a remote node.
+
+    Follows the same pattern as rsync_controller_client_configs.
+
+    Args:
+        provider: Infrastructure provider.
+        local_dir: Local directory containing the config files.
+        remote_dir: Absolute remote directory path (created if absent).
+        node_offset: Index of the target node.
+    """
+    hostname = f"node{node_offset}.{provider.hostname_suffix}"
+    provider.execute_command(
+        node_idx=node_offset,
+        cmd=f"mkdir -p {remote_dir}",
+        cmd_dir=None,
+        nohup=False,
+        popen=False,
+    )
+    cmd = 'rsync -azh -e "ssh {}" {}/ {}@{}:{}/'.format(
+        constants.SSH_OPTIONS,
+        local_dir,
+        provider.username,
+        hostname,
+        remote_dir,
+    )
+    utils.run_cmd_with_retry(cmd, popen=False, ignore_errors=False)
+
+
 def copy_experiment_config(experiment_params, local_experiment_dir: str):
     """Save the experiment config to local directory for reference."""
     os.makedirs(os.path.join(local_experiment_dir, "experiment_config"), exist_ok=True)

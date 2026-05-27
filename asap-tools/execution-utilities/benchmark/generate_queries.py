@@ -240,15 +240,12 @@ def generate_sql_file(
         start_str = (end_ts - timedelta(seconds=window_size)).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
-        label = f"T{i:03d}"
-
         if window_form == "dateadd":
             where = f"{ts_column} BETWEEN DATEADD(s, -{window_size}, '{end_str}') AND '{end_str}'"
         else:
             where = f"{ts_column} BETWEEN '{start_str}' AND '{end_str}'"
 
         lines.append(
-            f"-- {label}: quantile window ending at {end_str}\n"
             f"SELECT quantile({quantile})({value_column}) FROM {table_name} "
             f"WHERE {where} GROUP BY {group_by_clause};"
         )
