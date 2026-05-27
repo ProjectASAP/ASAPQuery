@@ -78,11 +78,6 @@ fake_exporter_language: "rust"  # choices: ["python", "rust"]
 # Cluster data exporter configuration
 cluster_data_directory: "/data/cluster_traces"  # Path to directory containing Google/Alibaba cluster trace data
 
-# ClickHouse connection defaults (overridden per experiment_type config or CLI)
-clickhouse:
-  url: "http://localhost:8123"
-  database: "default"
-
 # Backend configuration for the query engine (aligned with BackendConfig in asap-query-engine/src/engine_config.rs)
 backend:
   type: "prometheus"  # choices: ["prometheus", "clickhouse", "elastic_querydsl", "elastic_sql"]
