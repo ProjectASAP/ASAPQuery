@@ -704,10 +704,10 @@ fn merge_panes_for_window(
 
     for (i, &ps) in pane_starts.iter().enumerate() {
         let pane_acc = if i == 0 {
-            // Oldest pane: destructive take + evict
+            // Oldest pane: evict and MOVE the accumulator out (no clone).
             active_panes
                 .remove(&ps)
-                .map(|mut updater| updater.take_accumulator())
+                .map(|updater| updater.into_accumulator())
         } else {
             // Shared pane: non-destructive snapshot
             active_panes
