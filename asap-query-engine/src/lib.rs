@@ -1,3 +1,11 @@
+// Use jemalloc as the global allocator when the `jemalloc` feature is on
+// (default). The precompute engine's hot path is dominated by malloc/free
+// churn (per-sample/per-window sketch buffers and group-key allocations);
+// jemalloc's per-thread arenas and size-class caching cut that overhead.
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 pub mod data_model;
 pub mod drivers;
 pub mod engines;
