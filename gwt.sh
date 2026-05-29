@@ -36,4 +36,8 @@ echo "Fetching from origin..."
 git fetch origin "$branch_name"
 
 echo "Creating worktree at ../worktrees/$issue_num..."
-git worktree add --track -b "$branch_name" "../worktrees/$issue_num" "origin/$branch_name"
+if git show-ref --verify --quiet "refs/heads/$branch_name"; then
+  git worktree add "../worktrees/$issue_num" "$branch_name"
+else
+  git worktree add --track -b "$branch_name" "../worktrees/$issue_num" "origin/$branch_name"
+fi
