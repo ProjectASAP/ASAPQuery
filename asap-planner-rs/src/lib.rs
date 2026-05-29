@@ -1,3 +1,4 @@
+pub mod clickhouse_client;
 pub mod config;
 pub mod elastic_dsl;
 pub mod error;

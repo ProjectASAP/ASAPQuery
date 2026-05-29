@@ -20,6 +20,8 @@ pub enum ControllerError {
     UnknownTable(String),
     #[error("Prometheus client error: {0}")]
     PrometheusClient(String),
+    #[error("ClickHouse client error: {0}")]
+    ClickHouseClient(String),
     #[error("Elasticsearch DSL parse error: {0}")]
     ElasticDSLParse(String),
     #[error("Unsupported Elasticsearch DSL query: {0}")]

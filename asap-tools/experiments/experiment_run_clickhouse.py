@@ -107,7 +107,7 @@ from experiment_utils.services import (
     ClickHouseService,
     PrometheusClientService,
 )
-from experiment_utils.services.misc import ControllerService
+from experiment_utils.services.misc import ControllerService, DiscoveryBackend
 from experiment_utils.services.query_engine import QueryEngineRustService
 
 CLICKHOUSE_DATABASE = "default"
@@ -408,6 +408,11 @@ def main(cfg: DictConfig) -> None:
                 streaming_engine="precompute",
                 controller_remote_output_dir=remote_controller_dir,
                 punting=False,
+                discovery_backend=DiscoveryBackend(
+                    type="clickhouse",
+                    url=clickhouse_url,
+                    database=CLICKHOUSE_DATABASE,
+                ),
                 query_language="sql",
                 data_ingestion_interval=data_ingestion_interval,
             )

@@ -48,6 +48,14 @@ struct Args {
     #[arg(long = "data-ingestion-interval", required = false)]
     data_ingestion_interval: Option<u64>,
 
+    /// ClickHouse base URL for auto-inferring metadata_columns when not listed
+    /// in the config file. Example: http://localhost:8123
+    #[arg(long = "clickhouse-url", required = false)]
+    clickhouse_url: Option<String>,
+
+    #[arg(long = "clickhouse-database", required = false)]
+    clickhouse_database: Option<String>,
+
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 }
@@ -126,7 +134,16 @@ fn main() -> anyhow::Result<()> {
                 query_evaluation_time: None,
                 data_ingestion_interval: interval,
             };
-            SQLController::from_file(&config_path, opts)?.generate_to_dir(&args.output_dir)?;
+            let controller = match args.clickhouse_url {
+                Some(ref url) => SQLController::from_file_with_discovery(
+                    &config_path,
+                    url,
+                    args.clickhouse_database.as_deref().unwrap_or("default"),
+                    opts,
+                )?,
+                None => SQLController::from_file(&config_path, opts)?,
+            };
+            controller.generate_to_dir(&args.output_dir)?;
         }
         QueryLanguage::elastic_querydsl => {
             let interval = args.data_ingestion_interval.ok_or_else(|| {
