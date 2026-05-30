@@ -5,6 +5,7 @@ Helper script to generate docker-compose.yml for Controller from Jinja2 template
 import argparse
 import os
 import sys
+from typing import Optional
 from jinja2 import Template
 
 
@@ -19,6 +20,8 @@ def generate_compose_file(
     streaming_engine: str,
     punting: bool,
     prometheus_url: str,
+    query_language: str,
+    data_ingestion_interval: Optional[int],
 ):
     """Generate docker-compose.yml from template with provided variables."""
 
@@ -43,6 +46,8 @@ def generate_compose_file(
         "streaming_engine": streaming_engine,
         "punting": punting,
         "prometheus_url": prometheus_url,
+        "query_language": query_language,
+        "data_ingestion_interval": data_ingestion_interval,
     }
 
     # Render the template
@@ -124,6 +129,18 @@ def main():
         required=True,
         help="Base URL of the Prometheus instance for metric label inference (e.g. http://localhost:9090)",
     )
+    parser.add_argument(
+        "--query-language",
+        required=True,
+        choices=["promql", "sql"],
+        help="Query language for the controller",
+    )
+    parser.add_argument(
+        "--data-ingestion-interval",
+        type=int,
+        default=None,
+        help="Data ingestion interval in seconds (SQL mode only)",
+    )
 
     args = parser.parse_args()
 
@@ -138,6 +155,8 @@ def main():
         streaming_engine=args.streaming_engine,
         punting=args.punting,
         prometheus_url=args.prometheus_url,
+        query_language=args.query_language,
+        data_ingestion_interval=args.data_ingestion_interval,
     )
 
 
