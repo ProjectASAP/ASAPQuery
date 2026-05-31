@@ -50,6 +50,7 @@ pub fn map_statistic_to_precompute_operator(
             Ok((AggregationType::MultipleIncrease, "".to_string()))
         }
         Statistic::Topk => Ok((AggregationType::CountMinSketchWithHeap, "topk".to_string())),
+        Statistic::Cardinality => Ok((AggregationType::HLL, "".to_string())),
         _ => Err(format!("Statistic {statistic:?} not supported")),
     }
 }
@@ -81,6 +82,8 @@ pub fn does_precompute_operator_support_subpopulations(
 
         // CountMinSketchWithHeap is only supported for Topk — does not support subpopulations
         AggregationType::CountMinSketchWithHeap if matches!(statistic, Statistic::Topk) => false,
+
+        AggregationType::HLL => false,
 
         // Default: not supported
         _ => panic!("Unexpected precompute operator: {}", precompute_operator),
@@ -167,6 +170,16 @@ mod tests {
             Statistic::Sum,
             AggregationType::CountMinSketch,
         ));
+    }
+
+    #[test]
+    fn test_cardinality_maps_to_hll() {
+        let result = map_statistic_to_precompute_operator(
+            Statistic::Cardinality,
+            QueryTreatmentType::Approximate,
+        )
+        .unwrap();
+        assert_eq!(result, (AggregationType::HLL, "".to_string()));
     }
 
     #[test]

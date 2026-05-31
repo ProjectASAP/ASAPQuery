@@ -105,7 +105,12 @@ impl SQLSingleQueryProcessor {
 
         // Label routing
         let spatial_output = KeyByLabelNames::new(labels.iter().cloned().collect::<Vec<_>>());
-        let rollup = all_metadata.difference(&spatial_output);
+        let rollup = if agg_info.get_name().eq_ignore_ascii_case("CARDINALITY") {
+            // Distinct target is value_column, not a rollup label dimension.
+            KeyByLabelNames::empty()
+        } else {
+            all_metadata.difference(&spatial_output)
+        };
 
         let treatment_type = get_sql_treatment_type(agg_info.get_name());
         let statistics = get_sql_statistics(agg_info.get_name())?;
@@ -179,6 +184,7 @@ fn get_sql_statistics(name: &str) -> Result<Vec<Statistic>, ControllerError> {
         "AVG" => Ok(vec![Statistic::Sum, Statistic::Count]),
         "MIN" => Ok(vec![Statistic::Min]),
         "MAX" => Ok(vec![Statistic::Max]),
+        "CARDINALITY" => Ok(vec![Statistic::Cardinality]),
         other => Err(ControllerError::SqlParse(format!(
             "Unsupported aggregation: {}",
             other
