@@ -466,8 +466,14 @@ fn spatial_count_distinct_hll() {
         out.aggregation_labels("HLL", "grouping"),
         vec!["srcip".to_string()]
     );
-    assert_eq!(out.aggregation_labels("HLL", "rollup"), Vec::<String>::new());
-    assert_eq!(out.aggregation_labels("HLL", "aggregated"), Vec::<String>::new());
+    assert_eq!(
+        out.aggregation_labels("HLL", "rollup"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        out.aggregation_labels("HLL", "aggregated"),
+        Vec::<String>::new()
+    );
 }
 
 // ── T-value variants for SUM (range = 300 s fixed) ───────────────────────────
