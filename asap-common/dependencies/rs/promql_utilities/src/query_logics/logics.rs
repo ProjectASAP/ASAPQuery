@@ -51,8 +51,6 @@ pub fn map_statistic_to_precompute_operator(
         }
         Statistic::Topk => Ok((AggregationType::CountMinSketchWithHeap, "topk".to_string())),
         Statistic::Cardinality => Ok((AggregationType::HLL, "".to_string())),
-        #[allow(unreachable_patterns)]
-        _ => Err(format!("Statistic {statistic:?} not supported")),
     }
 }
 
