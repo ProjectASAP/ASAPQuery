@@ -105,15 +105,14 @@ impl SQLSingleQueryProcessor {
 
         // Label routing
         let spatial_output = KeyByLabelNames::new(labels.iter().cloned().collect::<Vec<_>>());
-        let rollup = if agg_info.get_name().eq_ignore_ascii_case("CARDINALITY") {
+        let treatment_type = get_sql_treatment_type(agg_info.get_name());
+        let statistics = get_sql_statistics(agg_info.get_name())?;
+        let rollup = if statistics.contains(&Statistic::Cardinality) {
             // Distinct target is value_column, not a rollup label dimension.
             KeyByLabelNames::empty()
         } else {
             all_metadata.difference(&spatial_output)
         };
-
-        let treatment_type = get_sql_treatment_type(agg_info.get_name());
-        let statistics = get_sql_statistics(agg_info.get_name())?;
 
         let configs = build_agg_configs_for_statistics(
             &statistics,
