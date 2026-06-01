@@ -11,6 +11,7 @@ const DEFAULT_KLL_K: u64 = 500;
 const DEFAULT_HYDRA_ROW: u64 = 3;
 const DEFAULT_HYDRA_COL: u64 = 1024;
 const DEFAULT_HYDRA_K: u64 = 20;
+const DEFAULT_HLL_PRECISION: u64 = 14;
 
 /// Shared sketch parameter builder used by both PromQL and SQL paths.
 ///
@@ -86,6 +87,19 @@ pub fn build_sketch_parameters(
                 .unwrap_or(DEFAULT_KLL_K);
             let mut m = HashMap::new();
             m.insert("K".to_string(), serde_json::Value::Number(k.into()));
+            Ok(m)
+        }
+
+        AggregationType::HLL => {
+            let precision = sketch_params
+                .and_then(|p| p.hll.as_ref())
+                .map(|p| p.precision)
+                .unwrap_or(DEFAULT_HLL_PRECISION);
+            let mut m = HashMap::new();
+            m.insert(
+                "precision".to_string(),
+                serde_json::Value::Number(precision.into()),
+            );
             Ok(m)
         }
 
