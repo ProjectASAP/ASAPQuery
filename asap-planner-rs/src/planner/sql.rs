@@ -114,7 +114,7 @@ impl SQLSingleQueryProcessor {
             all_metadata.difference(&spatial_output)
         };
 
-        let configs = build_agg_configs_for_statistics(
+        let mut configs = build_agg_configs_for_statistics(
             &statistics,
             treatment_type,
             &spatial_output,
@@ -134,6 +134,23 @@ impl SQLSingleQueryProcessor {
             },
         )
         .map_err(ControllerError::SqlParse)?;
+
+        // 1s spatial MIN/MAX: single MinMax per GROUP BY key (not MultipleMinMax subpopulations).
+        if matches!(query_type, QueryType::Spatial) {
+            match agg_info.get_name().to_uppercase().as_str() {
+                "MIN" | "MAX" => {
+                    let sub_type = agg_info.get_name().to_lowercase();
+                    for cfg in &mut configs {
+                        cfg.aggregation_type = AggregationType::MinMax;
+                        cfg.aggregation_sub_type = sub_type.clone();
+                        cfg.grouping_labels = spatial_output.clone();
+                        cfg.aggregated_labels = KeyByLabelNames::empty();
+                        cfg.rollup_labels = KeyByLabelNames::empty();
+                    }
+                }
+                _ => {}
+            }
+        }
 
         let t_lookback = match query_type {
             QueryType::Spatial => self.data_ingestion_interval,

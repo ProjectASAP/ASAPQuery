@@ -476,6 +476,39 @@ fn spatial_count_distinct_hll() {
     );
 }
 
+/// 1s spatial MAX(pkt_len) GROUP BY dstip → MinMax (max), grouping [dstip], empty rollup.
+#[test]
+fn spatial_max_pkt_len() {
+    let q = "SELECT dstip, MAX(pkt_len) AS max_pkt_len FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY dstip";
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("MinMax"));
+    assert!(out.has_aggregation_type_and_sub_type("MinMax", "max"));
+    assert!(!out.has_aggregation_type("MultipleMinMax"));
+    assert!(out.all_tumbling_window_sizes_eq(1));
+    assert_eq!(
+        out.aggregation_value_column("MinMax"),
+        Some("pkt_len".to_string())
+    );
+    assert_eq!(
+        out.aggregation_labels("MinMax", "grouping"),
+        vec!["dstip".to_string()]
+    );
+    assert_eq!(
+        out.aggregation_labels("MinMax", "rollup"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        out.aggregation_labels("MinMax", "aggregated"),
+        Vec::<String>::new()
+    );
+}
+
 // ── T-value variants for SUM (range = 300 s fixed) ───────────────────────────
 //
 // These three tests use the same query and differ only in repetition_delay (T).
