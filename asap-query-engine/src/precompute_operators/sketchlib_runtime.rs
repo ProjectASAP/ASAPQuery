@@ -30,6 +30,15 @@ pub fn cms_new(rows: usize, cols: usize) -> RuntimeCountMin {
 }
 
 pub fn cms_update(sk: &mut RuntimeCountMin, key: &str, value: f64) {
+    // Count-min sketches model non-negative frequencies: every cell is a
+    // monotonically increasing counter and `estimate` returns the row-wise
+    // minimum. A zero update is a no-op, and a negative update would corrupt
+    // the estimate for `key` *and* for every other key colliding in any of
+    // its rows (collisions only ever inflate, never deflate, an estimate).
+    // The accumulator contract upstream only ever feeds counts/durations,
+    // which are >= 0, so dropping `value <= 0.0` preserves the invariant
+    // rather than changing intended behavior. See the regression test
+    // `cms_update_drops_non_positive_values`.
     if value <= 0.0 {
         return;
     }
@@ -212,4 +221,42 @@ pub fn kll_merge_refs(
         merged.merge(s);
     }
     Ok(merged)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cms_update_drops_non_positive_values() {
+        // The `value <= 0.0` guard in `cms_update` must be a no-op: a
+        // count-min sketch only ever accumulates non-negative frequencies,
+        // so zero and negative updates leave the estimate untouched.
+        let mut sk = cms_new(4, 1000);
+        cms_update(&mut sk, "k", 0.0);
+        cms_update(&mut sk, "k", -5.0);
+        assert_eq!(cms_estimate(&sk, "k"), 0.0);
+
+        // A positive update is still recorded after the dropped ones.
+        cms_update(&mut sk, "k", 3.0);
+        assert_eq!(cms_estimate(&sk, "k"), 3.0);
+    }
+
+    #[test]
+    fn kll_merge_refs_rejects_k_mismatch() {
+        let a = kll_new(200);
+        let b = kll_new(100);
+        let err = kll_merge_refs(&[&a, &b])
+            .expect_err("merging KLL sketches with different k must error");
+        assert!(
+            err.to_string().contains("KLL k mismatch"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn kll_merge_refs_rejects_empty_input() {
+        let err = kll_merge_refs(&[]).expect_err("empty merge input must error");
+        assert!(err.to_string().contains("empty input"), "unexpected error: {err}");
+    }
 }

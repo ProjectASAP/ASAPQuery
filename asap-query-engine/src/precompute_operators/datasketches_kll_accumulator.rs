@@ -96,10 +96,11 @@ impl std::fmt::Debug for DatasketchesKLLAccumulator {
     }
 }
 
-// Thread safety: each accumulator is used in single-threaded contexts;
-// only read-only methods are shared across threads.
-unsafe impl Send for DatasketchesKLLAccumulator {}
-unsafe impl Sync for DatasketchesKLLAccumulator {}
+// `RuntimeKll` (= `KLL<f64>`) is a pure-Rust type with no interior FFI
+// handles, so `DatasketchesKLLAccumulator` auto-derives `Send + Sync`. The
+// hand-written `unsafe impl`s that were needed when the backend wrapped a
+// C++ sketch are gone; `tests::accumulator_is_send_sync` statically pins the
+// auto-derivation so a future field can't silently regress it.
 
 impl SerializableToSink for DatasketchesKLLAccumulator {
     fn serialize_to_json(&self) -> Value {
@@ -240,6 +241,16 @@ impl MergeableAccumulator<DatasketchesKLLAccumulator> for DatasketchesKLLAccumul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Pins the auto-derived thread-safety that replaced the old `unsafe impl
+    // Send/Sync`. If a future field makes the accumulator non-`Send`/`Sync`,
+    // this stops compiling instead of silently breaking callers that require
+    // the bounds.
+    #[test]
+    fn accumulator_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<DatasketchesKLLAccumulator>();
+    }
 
     #[test]
     fn test_datasketches_kll_creation() {
