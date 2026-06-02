@@ -48,9 +48,12 @@ pub fn cms_matrix(sk: &RuntimeCountMin) -> Vec<Vec<f64>> {
     let mut out = vec![vec![0.0f64; cols]; rows];
     for (r, row) in out.iter_mut().enumerate() {
         for (c, cell) in row.iter_mut().enumerate() {
-            if let Some(v) = storage.get(r, c) {
-                *cell = *v;
-            }
+            // `storage.get` only returns `None` for out-of-bounds access; we
+            // iterate within the dimensions storage just reported, so this is
+            // a programmer error if it ever fires.
+            *cell = *storage
+                .get(r, c)
+                .expect("cms_matrix indexed within reported storage dimensions");
         }
     }
     out
@@ -63,6 +66,13 @@ pub fn cms_matrix(sk: &RuntimeCountMin) -> Vec<Vec<f64>> {
 /// separately, so a malformed payload can disagree. We reject the
 /// mismatch instead of silently padding/truncating with `0.0`, which
 /// would be invisible corruption.
+// Note on error types in this module: the `*_merge_refs` helpers return
+// `Box<dyn Error + Send + Sync>` because their callers feed into
+// `AggregateCore::merge_with` (and friends), whose trait signature requires
+// the `Send + Sync` bound. The `*_from_*` decoders return plain
+// `Box<dyn Error>` because the `deserialize_from_*` methods on the
+// accumulators (and their callers across the crate) use that shape and
+// bumping the bound would ripple through every accumulator's API.
 pub fn cms_from_matrix(
     matrix: Vec<Vec<f64>>,
     rows: usize,
@@ -155,8 +165,14 @@ pub fn kll_quantile(sk: &RuntimeKll, q: f64) -> f64 {
 
 /// Raw msgpack bytes of the KLL backend (sans the `k`-envelope outer
 /// wrapper). Used by JSON output (base64-encoded) and the wire codec.
+///
+/// `serialize_to_bytes` failure is a bug, not bad input: a `KLL<f64>`
+/// holding only finite samples has no unrepresentable state. Panic
+/// loudly rather than emit empty bytes that surface downstream as a
+/// misleading "buffer too short".
 pub fn kll_sketch_bytes(sk: &RuntimeKll) -> Vec<u8> {
-    sk.serialize_to_bytes().unwrap_or_default()
+    sk.serialize_to_bytes()
+        .expect("KLL<f64> serialize_to_bytes is infallible for finite samples")
 }
 
 /// Serialize to the Go-compatible `KllSketchData { k, sketch_bytes }`
@@ -166,7 +182,9 @@ pub fn kll_to_msgpack(sk: &RuntimeKll) -> Vec<u8> {
         k: sk.k() as u16,
         sketch_bytes: kll_sketch_bytes(sk),
     };
-    rmp_serde::to_vec(&wire).unwrap_or_default()
+    // Same reasoning as `cms_to_msgpack`: the wire struct has no
+    // unrepresentable state, so failure is a bug.
+    rmp_serde::to_vec(&wire).expect("KllSketchData msgpack serialization is infallible")
 }
 
 /// Deserialize from the Go-compatible `KllSketchData` envelope.

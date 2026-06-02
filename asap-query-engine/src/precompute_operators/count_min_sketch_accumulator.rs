@@ -4,8 +4,10 @@ use crate::data_model::{
 };
 use crate::precompute_operators::sketchlib_runtime::{
     cms_estimate, cms_from_matrix, cms_from_msgpack, cms_matrix, cms_merge_refs, cms_new,
-    cms_to_msgpack, cms_update, RuntimeCountMin,
+    cms_to_msgpack, RuntimeCountMin,
 };
+#[cfg(test)]
+use crate::precompute_operators::sketchlib_runtime::cms_update;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -26,7 +28,12 @@ impl CountMinSketchAccumulator {
         }
     }
 
-    // Marked as _update and kept private; only called internally.
+    // Test-only helper. Production goes straight through
+    // `sketchlib_runtime::cms_update` in `CmsAccumulatorUpdater::update_keyed`;
+    // this wrapper exists so the regression test
+    // `test_update_and_query_use_same_key_encoding` exercises the same
+    // `key.to_semicolon_str()` encoding path that production uses.
+    #[cfg(test)]
     fn _update(&mut self, key: &KeyByLabelValues, value: f64) {
         cms_update(&mut self.inner, &key.to_semicolon_str(), value);
     }
