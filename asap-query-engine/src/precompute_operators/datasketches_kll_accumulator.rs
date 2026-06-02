@@ -3,8 +3,7 @@ use crate::data_model::{
     SingleSubpopulationAggregate,
 };
 use crate::precompute_operators::sketchlib_runtime::{
-    kll_from_msgpack, kll_merge_refs, kll_new, kll_quantile, kll_sketch_bytes, kll_to_msgpack,
-    kll_update, RuntimeKll,
+    kll_from_msgpack, kll_merge_refs, kll_quantile, kll_sketch_bytes, kll_to_msgpack, RuntimeKll,
 };
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
@@ -24,11 +23,13 @@ pub struct DatasketchesKLLAccumulator {
 
 impl DatasketchesKLLAccumulator {
     pub fn new(k: u16) -> Self {
-        Self { inner: kll_new(k) }
+        Self {
+            inner: RuntimeKll::init_kll(k as i32),
+        }
     }
 
     pub fn update(&mut self, value: f64) {
-        kll_update(&mut self.inner, value);
+        self.inner.update(&value);
     }
 
     pub fn get_quantile(&self, quantile: f64) -> f64 {

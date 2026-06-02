@@ -1,14 +1,18 @@
-//! Thin runtime adapters over `asap_sketchlib::sketches::*`.
+//! Shared sketch logic for ASAPQuery's accumulators.
 //!
-//! ASAPQuery accumulators hold the pure-Rust runtime sketch types
-//! directly (`sketches::CountMin<Vector2D<f64>, FastPath, DefaultXxHasher>`,
-//! `sketches::KLL<f64>`) and reach for these helpers to translate the
-//! accumulator surface (string keys, `Vec<Vec<f64>>` matrices,
-//! Go-compatible msgpack envelopes) onto those underlying types.
+//! This is **not** an isolation layer: accumulators hold the concrete
+//! runtime types (`RuntimeCountMin`, `RuntimeKll`) and call their inherent
+//! API (`with_dimensions`, `update`, `estimate`, `rows`, `cols`, `k`, …)
+//! directly. This module only owns the operations that carry real logic
+//! and shouldn't be duplicated across callers:
+//!   - wire codec: the Go-compatible MessagePack envelopes
+//!     (`*_to_msgpack` / `*_from_msgpack`) and the `Vec<Vec<f64>>` matrix
+//!     snapshot / shape-validated reconstruction,
+//!   - validated merge (`*_merge_refs`): dimension / `k` agreement checks,
+//!   - the non-negative `cms_update` guard, which two callers share.
 //!
-//! Cross-language byte parity for the underlying `sketches::*` paths
-//! is locked in by
-//! `asap_sketchlib::tests::sketches_go_parity_probe`.
+//! Cross-language byte parity for the underlying `sketches::*` paths is
+//! locked in by `asap_sketchlib::tests::sketches_go_parity_probe`.
 
 use asap_sketchlib::message_pack_format::portable::countminsketch::CountMinSketchWire;
 use asap_sketchlib::message_pack_format::portable::kll::KllSketchData;
@@ -25,10 +29,6 @@ use asap_sketchlib::{DataInput, DefaultXxHasher, FastPath, Vector2D};
 /// `CountMinSketch` facade, so the on-the-wire byte shape is identical.
 pub type RuntimeCountMin = CountMin<Vector2D<f64>, FastPath, DefaultXxHasher>;
 
-pub fn cms_new(rows: usize, cols: usize) -> RuntimeCountMin {
-    CountMin::with_dimensions(rows, cols)
-}
-
 pub fn cms_update(sk: &mut RuntimeCountMin, key: &str, value: f64) {
     // Count-min sketches model non-negative frequencies: every cell is a
     // monotonically increasing counter and `estimate` returns the row-wise
@@ -43,10 +43,6 @@ pub fn cms_update(sk: &mut RuntimeCountMin, key: &str, value: f64) {
         return;
     }
     sk.insert_many(&DataInput::String(key.to_owned()), value);
-}
-
-pub fn cms_estimate(sk: &RuntimeCountMin, key: &str) -> f64 {
-    sk.estimate(&DataInput::String(key.to_owned()))
 }
 
 /// Snapshot the storage as `Vec<Vec<f64>>` (used for JSON output + wire DTO).
@@ -143,7 +139,7 @@ pub fn cms_merge_refs(
             .into());
         }
     }
-    let mut merged = cms_new(rows, cols);
+    let mut merged = CountMin::with_dimensions(rows, cols);
     for s in sketches {
         merged.merge(s);
     }
@@ -156,14 +152,6 @@ pub fn cms_merge_refs(
 
 /// Concrete runtime KLL type used by `DatasketchesKLLAccumulator`.
 pub type RuntimeKll = KLL<f64>;
-
-pub fn kll_new(k: u16) -> RuntimeKll {
-    KLL::init_kll(k as i32)
-}
-
-pub fn kll_update(sk: &mut RuntimeKll, value: f64) {
-    sk.update(&value);
-}
 
 pub fn kll_quantile(sk: &RuntimeKll, q: f64) -> f64 {
     if sk.count() == 0 {
@@ -216,7 +204,7 @@ pub fn kll_merge_refs(
             return Err(format!("KLL k mismatch in merge: expected {k}, got {}", s.k()).into());
         }
     }
-    let mut merged = kll_new(k as u16);
+    let mut merged = KLL::init_kll(k as i32);
     for s in sketches {
         merged.merge(s);
     }
@@ -232,20 +220,21 @@ mod tests {
         // The `value <= 0.0` guard in `cms_update` must be a no-op: a
         // count-min sketch only ever accumulates non-negative frequencies,
         // so zero and negative updates leave the estimate untouched.
-        let mut sk = cms_new(4, 1000);
+        let mut sk = CountMin::with_dimensions(4, 1000);
+        let estimate = |sk: &RuntimeCountMin| sk.estimate(&DataInput::String("k".to_owned()));
         cms_update(&mut sk, "k", 0.0);
         cms_update(&mut sk, "k", -5.0);
-        assert_eq!(cms_estimate(&sk, "k"), 0.0);
+        assert_eq!(estimate(&sk), 0.0);
 
         // A positive update is still recorded after the dropped ones.
         cms_update(&mut sk, "k", 3.0);
-        assert_eq!(cms_estimate(&sk, "k"), 3.0);
+        assert_eq!(estimate(&sk), 3.0);
     }
 
     #[test]
     fn kll_merge_refs_rejects_k_mismatch() {
-        let a = kll_new(200);
-        let b = kll_new(100);
+        let a = KLL::init_kll(200);
+        let b = KLL::init_kll(100);
         let err = kll_merge_refs(&[&a, &b])
             .expect_err("merging KLL sketches with different k must error");
         assert!(

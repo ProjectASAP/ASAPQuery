@@ -3,11 +3,11 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, SerializableToSink,
 };
 use crate::precompute_operators::sketchlib_runtime::{
-    cms_estimate, cms_from_matrix, cms_from_msgpack, cms_matrix, cms_merge_refs, cms_new,
-    cms_to_msgpack, RuntimeCountMin,
+    cms_from_matrix, cms_from_msgpack, cms_matrix, cms_merge_refs, cms_to_msgpack, RuntimeCountMin,
 };
 #[cfg(test)]
 use crate::precompute_operators::sketchlib_runtime::cms_update;
+use asap_sketchlib::DataInput;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -24,7 +24,7 @@ pub struct CountMinSketchAccumulator {
 impl CountMinSketchAccumulator {
     pub fn new(row_num: usize, col_num: usize) -> Self {
         Self {
-            inner: cms_new(row_num, col_num),
+            inner: RuntimeCountMin::with_dimensions(row_num, col_num),
         }
     }
 
@@ -39,7 +39,8 @@ impl CountMinSketchAccumulator {
     }
 
     pub fn query_key(&self, key: &KeyByLabelValues) -> f64 {
-        cms_estimate(&self.inner, &key.to_semicolon_str())
+        self.inner
+            .estimate(&DataInput::String(key.to_semicolon_str()))
     }
 
     pub fn deserialize_from_json(data: &Value) -> Result<Self, Box<dyn std::error::Error>> {
