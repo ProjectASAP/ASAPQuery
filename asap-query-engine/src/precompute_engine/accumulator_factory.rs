@@ -733,7 +733,7 @@ fn hydra_kll_params(config: &AggregationConfig) -> (usize, usize, u16) {
 
 /// Extract `(row_num, col_num, heap_size)` for CountMinSketchWithHeap configs.
 ///
-/// Accepts the planner/Arroyo-canonical `depth`/`width`/`heapsize` names first,
+/// Accepts the planner `depth`/`width`/`heapsize` names first,
 /// then falls back to the `row_num`/`col_num`/`heap_size` aliases. Defaults
 /// mirror the planner sketch defaults (depth 3, width 1024) with a heap of 32.
 fn cms_heap_params(config: &AggregationConfig) -> (usize, usize, usize) {
@@ -1221,7 +1221,9 @@ mod tests {
         assert_eq!(kll.inner.k, 50, "k should be 50 from capital-K param");
     }
 
-    fn cms_heap_config(parameters: std::collections::HashMap<String, serde_json::Value>) -> AggregationConfig {
+    fn cms_heap_config(
+        parameters: std::collections::HashMap<String, serde_json::Value>,
+    ) -> AggregationConfig {
         AggregationConfig::new(
             101,
             AggregationType::CountMinSketchWithHeap,
@@ -1229,7 +1231,7 @@ mod tests {
             parameters,
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
-                "srcip".to_string(),
+                "srcip".to_string()
             ]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             String::new(),

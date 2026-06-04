@@ -602,25 +602,24 @@ impl SimpleEngine {
             self.calculate_query_timestamps_sql(query_time, query_pattern_type, &match_result);
 
         // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
-        let agg_info: AggregationIdInfo = if let Some(config) =
-            self.find_query_config_sql(&query_data)
-        {
-            self.get_aggregation_id_info(&config)
-                .map_err(|e| {
-                    warn!("{}", e);
-                    e
-                })
-                .ok()?
-        } else {
-            warn!("No query_config entry for SQL query. Attempting capability-based matching.");
-            let requirements =
-                self.build_query_requirements_sql(&match_result, query_pattern_type, topk_k);
-            self.streaming_config
-                .read()
-                .unwrap()
-                .clone()
-                .find_compatible_aggregation(&requirements)?
-        };
+        let agg_info: AggregationIdInfo =
+            if let Some(config) = self.find_query_config_sql(&query_data) {
+                self.get_aggregation_id_info(&config)
+                    .map_err(|e| {
+                        warn!("{}", e);
+                        e
+                    })
+                    .ok()?
+            } else {
+                warn!("No query_config entry for SQL query. Attempting capability-based matching.");
+                let requirements =
+                    self.build_query_requirements_sql(&match_result, query_pattern_type, topk_k);
+                self.streaming_config
+                    .read()
+                    .unwrap()
+                    .clone()
+                    .find_compatible_aggregation(&requirements)?
+            };
 
         let metric = &match_result.outer_data()?.metric;
 
@@ -766,8 +765,11 @@ impl SimpleEngine {
             warn!(
                     "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
                 );
-            let requirements =
-                self.build_query_requirements_sql(match_result, QueryPatternType::OnlyTemporal, None);
+            let requirements = self.build_query_requirements_sql(
+                match_result,
+                QueryPatternType::OnlyTemporal,
+                None,
+            );
             self.streaming_config
                 .read()
                 .unwrap()
@@ -846,7 +848,11 @@ mod detect_topk_tests {
              GROUP BY srcip ORDER BY transfer_events ASC LIMIT 10"
         );
         let qd = parse(&sql).expect("query should parse");
-        assert_eq!(detect_sql_topk(&qd), None, "ASC ordering is bottom-k, not top-k");
+        assert_eq!(
+            detect_sql_topk(&qd),
+            None,
+            "ASC ordering is bottom-k, not top-k"
+        );
     }
 
     #[test]
@@ -856,7 +862,11 @@ mod detect_topk_tests {
              GROUP BY srcip LIMIT 10"
         );
         let qd = parse(&sql).expect("query should parse");
-        assert_eq!(detect_sql_topk(&qd), None, "LIMIT without ORDER BY is not top-k");
+        assert_eq!(
+            detect_sql_topk(&qd),
+            None,
+            "LIMIT without ORDER BY is not top-k"
+        );
     }
 
     #[test]
@@ -866,7 +876,11 @@ mod detect_topk_tests {
              GROUP BY srcip ORDER BY total DESC LIMIT 10"
         );
         let qd = parse(&sql).expect("query should parse");
-        assert_eq!(detect_sql_topk(&qd), None, "only COUNT maps to CMS-with-heap top-k");
+        assert_eq!(
+            detect_sql_topk(&qd),
+            None,
+            "only COUNT maps to CMS-with-heap top-k"
+        );
     }
 
     #[test]
@@ -1240,12 +1254,8 @@ mod topk_pipeline_tests {
             sketch.inner.update(&srcip, (i * 10) as f64);
         }
 
-        let output = PrecomputedOutput::new(
-            window.start_timestamp,
-            window.end_timestamp,
-            None,
-            AGG_ID,
-        );
+        let output =
+            PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);
         store
             .insert_precomputed_output(output, Box::new(sketch))
             .expect("insert should succeed");
@@ -1280,10 +1290,8 @@ mod topk_pipeline_tests {
         }
 
         // The returned set is exactly the 10 largest srcips (6..=15).
-        let returned: HashSet<String> = results
-            .iter()
-            .map(|e| e.labels.labels[0].clone())
-            .collect();
+        let returned: HashSet<String> =
+            results.iter().map(|e| e.labels.labels[0].clone()).collect();
         let expected: HashSet<String> = (6..=15u64).map(|i| format!("10.0.0.{i}")).collect();
         assert_eq!(returned, expected);
     }
