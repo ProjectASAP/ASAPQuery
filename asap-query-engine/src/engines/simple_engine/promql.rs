@@ -919,7 +919,7 @@ impl SimpleEngine {
             context.store_plan.values_query.end_timestamp
         );
 
-        let result = self.execute_context(context, true);
+        let result = self.execute_context(context, true, true);
 
         // Determine query routing order based on function type.
         // USampling functions prefer the precomputed path first (sketch fallback),

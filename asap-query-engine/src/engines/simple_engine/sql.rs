@@ -323,7 +323,7 @@ impl SimpleEngine {
     ) -> Option<(KeyByLabelNames, QueryResult)> {
         let (context, post) =
             self.build_query_execution_context_sql_with_post_processing(query, time)?;
-        let (output_labels, result) = self.execute_context(context, false)?;
+        let (output_labels, result) = self.execute_context(context, false, false)?;
         let result = post.apply(&output_labels, result);
         Some((output_labels, result))
     }
