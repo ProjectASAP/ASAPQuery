@@ -1438,10 +1438,8 @@ mod topk_pipeline_tests {
         // Wire format: zip label names with values into Prometheus instant-vector JSON.
         let output_labels = context.metadata.query_output_labels.clone();
         let query_result = QueryResult::vector(results, context.query_time);
-        let prometheus_data =
-            convert_query_result_to_prometheus(&query_result, &output_labels).expect(
-                "pipeline output should convert to Prometheus instant-vector JSON",
-            );
+        let prometheus_data = convert_query_result_to_prometheus(&query_result, &output_labels)
+            .expect("pipeline output should convert to Prometheus instant-vector JSON");
 
         assert_eq!(prometheus_data["resultType"], "vector");
         let wire_rows = prometheus_data["result"]
