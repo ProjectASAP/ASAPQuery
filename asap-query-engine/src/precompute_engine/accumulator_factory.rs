@@ -733,7 +733,7 @@ fn hydra_kll_params(config: &AggregationConfig) -> (usize, usize, u16) {
 
 /// Extract `(row_num, col_num, heap_size)` for CountMinSketchWithHeap configs.
 ///
-/// Accepts the planner `depth`/`width`/`heapsize` names first,
+/// Accepts the planner/Arroyo-canonical `depth`/`width`/`heapsize` names first,
 /// then falls back to the `row_num`/`col_num`/`heap_size` aliases. Defaults
 /// mirror the planner sketch defaults (depth 3, width 1024) with a heap of 32.
 fn cms_heap_params(config: &AggregationConfig) -> (usize, usize, usize) {
