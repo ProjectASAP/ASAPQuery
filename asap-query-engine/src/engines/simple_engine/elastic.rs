@@ -25,7 +25,7 @@ impl SimpleEngine {
             "Built execution context for ElasticSearch query {:?}",
             context
         );
-        self.execute_context(context, false)
+        self.execute_context(context, false, false)
     }
 
     pub fn build_query_execution_context_elastic(
