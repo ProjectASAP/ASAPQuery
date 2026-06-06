@@ -386,7 +386,7 @@ impl SimpleEngine {
         // metric-name formatting; the sketch heap already produces the ranked
         // `(group-by key, count)` rows, so SQL ORDER BY / LIMIT post-processing
         // would be redundant and is skipped.
-        let (output_labels, result) = self.execute_context(context, is_topk, false)?;
+        let (output_labels, result) = self.execute_context(context, is_topk, false, false)?;
         let result = if is_topk {
             result
         } else {
