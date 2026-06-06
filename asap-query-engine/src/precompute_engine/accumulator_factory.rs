@@ -1,8 +1,9 @@
 use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
-    CountMinSketchAccumulator, DatasketchesKLLAccumulator, HllAccumulator,
-    HydraKllSketchAccumulator, IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator,
-    MultipleMinMaxAccumulator, MultipleSumAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
+    CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
+    HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator, MinMaxAccumulator,
+    MultipleIncreaseAccumulator, MultipleMinMaxAccumulator, MultipleSumAccumulator, SumAccumulator,
+    DEFAULT_HLL_PRECISION,
 };
 use asap_types::aggregation_config::AggregationConfig;
 
@@ -564,6 +565,67 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
 }
 
 // ---------------------------------------------------------------------------
+// CmsWithHeapAccumulatorUpdater (CountMinSketchWithHeap — top-k)
+// ---------------------------------------------------------------------------
+
+/// Keyed updater backing `Statistic::Topk`. Wraps a `CountMinSketchWithHeap`
+/// (CMS + heavy-hitter heap) so the query engine can enumerate the top-k keys
+/// from the heap and read each key's frequency estimate from the sketch.
+///
+/// `count_events` selects the per-sample weight fed into the sketch:
+///   * `true`  → weight 1 per observation (COUNT semantics, e.g. `COUNT(pkt_len)`),
+///   * `false` → the sample value itself (SUM-of-value semantics).
+pub struct CmsWithHeapAccumulatorUpdater {
+    acc: CountMinSketchWithHeapAccumulator,
+    row_num: usize,
+    col_num: usize,
+    heap_size: usize,
+    count_events: bool,
+}
+
+impl CmsWithHeapAccumulatorUpdater {
+    pub fn new(row_num: usize, col_num: usize, heap_size: usize, count_events: bool) -> Self {
+        Self {
+            acc: CountMinSketchWithHeapAccumulator::new(row_num, col_num, heap_size),
+            row_num,
+            col_num,
+            heap_size,
+            count_events,
+        }
+    }
+}
+
+impl AccumulatorUpdater for CmsWithHeapAccumulatorUpdater {
+    fn update_single(&mut self, _value: f64, _timestamp_ms: i64) {
+        debug_assert!(
+            false,
+            "update_single called on keyed updater; use update_keyed"
+        );
+    }
+
+    fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, _timestamp_ms: i64) {
+        let weight = if self.count_events { 1.0 } else { value };
+        self.acc.inner.update(&key.to_semicolon_str(), weight);
+    }
+
+    impl_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc =
+            CountMinSketchWithHeapAccumulator::new(self.row_num, self.col_num, self.heap_size);
+    }
+
+    fn is_keyed(&self) -> bool {
+        true
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        std::mem::size_of::<CountMinSketchWithHeapAccumulator>()
+            + self.row_num * self.col_num * std::mem::size_of::<f64>()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HydraKllAccumulatorUpdater
 // ---------------------------------------------------------------------------
 
@@ -669,6 +731,35 @@ fn hydra_kll_params(config: &AggregationConfig) -> (usize, usize, u16) {
     (row_num, col_num, kll_k_param(config))
 }
 
+/// Extract `(row_num, col_num, heap_size)` for CountMinSketchWithHeap configs.
+///
+/// Accepts the planner/Arroyo-canonical `depth`/`width`/`heapsize` names first,
+/// then falls back to the `row_num`/`col_num`/`heap_size` aliases. Defaults
+/// mirror the planner sketch defaults (depth 3, width 1024) with a heap of 32.
+fn cms_heap_params(config: &AggregationConfig) -> (usize, usize, usize) {
+    let read = |names: &[&str], default: u64| -> usize {
+        names
+            .iter()
+            .find_map(|n| config.parameters.get(*n).and_then(|v| v.as_u64()))
+            .unwrap_or(default) as usize
+    };
+    let row_num = read(&["depth", "row_num"], 3);
+    let col_num = read(&["width", "col_num"], 1024);
+    let heap_size = read(&["heapsize", "heap_size"], 32);
+    (row_num, col_num, heap_size)
+}
+
+/// Whether a CountMinSketchWithHeap config should count events (weight 1 per
+/// observation, COUNT semantics) rather than summing the sample value.
+/// Defaults to `true` so `COUNT(...)` top-k works out of the box.
+fn cms_count_events(config: &AggregationConfig) -> bool {
+    config
+        .parameters
+        .get("count_events")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
 /// Extract the HLL `precision` parameter from a config. Falls back to
 /// `DEFAULT_HLL_PRECISION` (14) when absent or non-numeric. The valid range is
 /// 4..=18 per the underlying `HllSketch` storage; out-of-range values are
@@ -750,9 +841,18 @@ pub fn create_accumulator_updater(config: &AggregationConfig) -> Box<dyn Accumul
             sub_type.eq_ignore_ascii_case("max"),
         )),
         AggregationType::Increase => Box::new(IncreaseAccumulatorUpdater::new()),
-        AggregationType::CountMinSketch | AggregationType::CountMinSketchWithHeap => {
+        AggregationType::CountMinSketch => {
             let (row_num, col_num) = cms_params(config);
             Box::new(CmsAccumulatorUpdater::new(row_num, col_num))
+        }
+        AggregationType::CountMinSketchWithHeap => {
+            let (row_num, col_num, heap_size) = cms_heap_params(config);
+            Box::new(CmsWithHeapAccumulatorUpdater::new(
+                row_num,
+                col_num,
+                heap_size,
+                cms_count_events(config),
+            ))
         }
         AggregationType::HydraKLL => {
             let (row_num, col_num, k) = hydra_kll_params(config);
@@ -1119,5 +1219,124 @@ mod tests {
             .downcast_ref::<crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator>()
             .expect("should be KLL");
         assert_eq!(kll.inner.k, 50, "k should be 50 from capital-K param");
+    }
+
+    fn cms_heap_config(
+        parameters: std::collections::HashMap<String, serde_json::Value>,
+    ) -> AggregationConfig {
+        AggregationConfig::new(
+            101,
+            AggregationType::CountMinSketchWithHeap,
+            "topk".to_string(),
+            parameters,
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+                "srcip".to_string()
+            ]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            1,
+            0,
+            WindowType::Tumbling,
+            "netflow_table".to_string(),
+            "netflow_table".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_cms_with_heap_factory_routes_to_heap_accumulator_and_is_keyed() {
+        // CountMinSketchWithHeap must build a CmsWithHeapAccumulatorUpdater whose
+        // accumulator exposes the heap (get_keys), NOT a plain CMS (no heap).
+        let config = cms_heap_config(std::collections::HashMap::new());
+        let updater = create_accumulator_updater(&config);
+        assert!(updater.is_keyed(), "CMS-with-heap top-k is keyed by srcip");
+
+        let acc = updater.snapshot_accumulator();
+        assert_eq!(acc.type_name(), "CountMinSketchWithHeapAccumulator");
+        assert_eq!(
+            acc.get_accumulator_type(),
+            AggregationType::CountMinSketchWithHeap
+        );
+        assert!(
+            acc.get_keys().is_some(),
+            "heap accumulator must enumerate top-k candidate keys"
+        );
+    }
+
+    #[test]
+    fn test_cms_with_heap_count_events_uses_unit_weight() {
+        // count_events (the default) → each observation contributes weight 1, so
+        // the per-key estimate is the EVENT COUNT, not the sum of sample values.
+        let config = cms_heap_config(std::collections::HashMap::new());
+        let mut updater = create_accumulator_updater(&config);
+
+        let key = KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]);
+        // Feed 5 events with large values; count semantics must yield ~5, not ~Σvalue.
+        for _ in 0..5 {
+            updater.update_keyed(&key, 1000.0, 0);
+        }
+        let acc = updater.take_accumulator();
+        let cms = acc
+            .as_any()
+            .downcast_ref::<CountMinSketchWithHeapAccumulator>()
+            .expect("CountMinSketchWithHeap accumulator");
+        assert_eq!(
+            cms.query_key(&key),
+            5.0,
+            "count_events should count events (5), not sum values (5000)"
+        );
+    }
+
+    #[test]
+    fn test_cms_with_heap_count_events_false_sums_values() {
+        // count_events=false → weight is the sample value, giving SUM semantics.
+        let mut params = std::collections::HashMap::new();
+        params.insert("count_events".to_string(), serde_json::json!(false));
+        let config = cms_heap_config(params);
+        let mut updater = create_accumulator_updater(&config);
+
+        let key = KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]);
+        for _ in 0..5 {
+            updater.update_keyed(&key, 10.0, 0);
+        }
+        let acc = updater.take_accumulator();
+        let cms = acc
+            .as_any()
+            .downcast_ref::<CountMinSketchWithHeapAccumulator>()
+            .unwrap();
+        assert_eq!(cms.query_key(&key), 50.0, "sum of 5×10 == 50");
+    }
+
+    #[test]
+    fn test_cms_heap_params_reads_depth_width_heapsize() {
+        let mut params = std::collections::HashMap::new();
+        params.insert("depth".to_string(), serde_json::json!(4));
+        params.insert("width".to_string(), serde_json::json!(2048));
+        params.insert("heapsize".to_string(), serde_json::json!(40));
+        let config = cms_heap_config(params);
+        assert_eq!(cms_heap_params(&config), (4, 2048, 40));
+        assert!(cms_count_events(&config), "count_events defaults to true");
+    }
+
+    #[test]
+    fn test_cms_with_heap_reset_clears_state() {
+        let config = cms_heap_config(std::collections::HashMap::new());
+        let mut updater = create_accumulator_updater(&config);
+        let key = KeyByLabelValues::new_with_labels(vec!["k".to_string()]);
+        for _ in 0..10 {
+            updater.update_keyed(&key, 1.0, 0);
+        }
+        updater.reset();
+        let acc = updater.take_accumulator();
+        let cms = acc
+            .as_any()
+            .downcast_ref::<CountMinSketchWithHeapAccumulator>()
+            .unwrap();
+        assert_eq!(cms.query_key(&key), 0.0, "reset must clear the sketch");
+        assert!(cms.get_topk_keys().is_empty(), "reset must clear the heap");
     }
 }
