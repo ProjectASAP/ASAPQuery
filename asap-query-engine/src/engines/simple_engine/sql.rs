@@ -606,12 +606,16 @@ impl SimpleEngine {
             }
         };
 
-        // Top-k detection takes precedence: `... ORDER BY <agg alias> DESC LIMIT k`
-        // is served by CountMinSketchWithHeap (Statistic::Topk) rather than the
-        // plain COUNT/SUM path, so the sketch heap drives the result set. Both
-        // COUNT(col) and SUM(col) map to Topk; they differ only in how the
-        // backing sketch is weighted (see TopkWeighting).
-        let topk = detect_sql_topk(&query_data);
+        // Top-k (CountMinSketchWithHeap) is defined only for flat temporal queries:
+        // one window, one GROUP BY key, COUNT/SUM ... ORDER BY <agg alias> DESC LIMIT k.
+        // Nested patterns attach ORDER BY / LIMIT to the outer SELECT; `query_data` from
+        // parse is the outer layer, while the temporal aggregate lives in `inner_data`
+        // for OneTemporalOneSpatial. Running detect_sql_topk on the outer layer would
+        // mis-classify spatial rollups as top-k.
+        let topk = match query_pattern_type {
+            QueryPatternType::OnlyTemporal => detect_sql_topk(&query_data),
+            QueryPatternType::OnlySpatial | QueryPatternType::OneTemporalOneSpatial => None,
+        };
         let statistic_to_compute = if topk.is_some() {
             Statistic::Topk
         } else {
@@ -960,6 +964,24 @@ mod detect_topk_tests {
         );
         let qd = parse(&sql).expect("query should parse");
         assert_eq!(detect_sql_topk(&qd), None);
+    }
+
+    #[test]
+    fn nested_outer_layer_would_match_detect_sql_topk() {
+        // Spatial-over-temporal: ORDER BY / LIMIT sit on the outer SELECT, so the
+        // parsed top-level `query_data` looks like SUM top-k even though the temporal
+        // aggregate is in the subquery. The engine must not promote this to Topk.
+        let sql = format!(
+            "SELECT srcip, SUM(bytes) AS rollup FROM ( \
+               SELECT srcip, dstip, SUM(pkt_len) AS bytes FROM netflow_table {WINDOW} \
+               GROUP BY srcip, dstip \
+             ) sub GROUP BY srcip ORDER BY rollup DESC LIMIT 10"
+        );
+        let qd = parse(&sql).expect("nested query should parse");
+        assert!(
+            detect_sql_topk(&qd).is_some(),
+            "outer SELECT alone matches the top-k shape (this is why OnlyTemporal is gated)",
+        );
     }
 }
 
