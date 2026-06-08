@@ -648,6 +648,9 @@ impl SimpleEngine {
             data_range_ms,
             grouping_labels,
             spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
+            // PromQL top-k does not constrain the sketch weighting; leave the
+            // count/sum discriminator unset so matching does not over-filter.
+            topk_count_events: None,
         }
     }
 

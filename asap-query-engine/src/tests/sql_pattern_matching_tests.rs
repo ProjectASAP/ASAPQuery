@@ -12,6 +12,7 @@ mod tests {
     use crate::engines::simple_engine::SimpleEngine;
     use crate::stores::simple_map_store::SimpleMapStore;
     use promql_utilities::data_model::KeyByLabelNames;
+    use promql_utilities::query_logics::enums::Statistic;
     use sql_utilities::sqlhelper::{SQLSchema, Table};
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -173,6 +174,26 @@ mod tests {
         assert!(
             context.is_some(),
             "Expected build_query_execution_context_sql to return Some for spatial-of-temporal subquery, got None."
+        );
+    }
+
+    #[test]
+    fn nested_order_by_limit_is_not_topk() {
+        // Outer ORDER BY + LIMIT on a spatial-over-temporal query must not be routed
+        // through CountMinSketchWithHeap; the inner temporal SUM is not a flat top-k.
+        let template = "SELECT L1, SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) sub GROUP BY L1";
+        let engine = build_sql_engine(template, 1, 10);
+
+        let incoming = "SELECT L1, SUM(result) AS rollup FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4) sub GROUP BY L1 ORDER BY rollup DESC LIMIT 10";
+        let query_time = 1727740810.0_f64;
+
+        let context = engine
+            .build_query_execution_context_sql(incoming.to_string(), query_time)
+            .expect("nested spatial-of-temporal query should build a context");
+        assert_ne!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "top-k detection skips nested OneTemporalOneSpatial; outer ORDER BY LIMIT must stay on the plain SUM path",
         );
     }
 

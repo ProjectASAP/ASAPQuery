@@ -137,12 +137,42 @@ fn sort_and_truncate_instant_vector(
     results
 }
 
-/// Detect a SQL top-k query and return its `k`.
+/// How a top-k query weights each observation fed into the heavy-hitter sketch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TopkWeighting {
+    /// `COUNT(col)`: every matching row contributes weight 1, so the heap ranks
+    /// keys by event frequency (`count_events: true`).
+    Count,
+    /// `SUM(col)`: every matching row contributes weight = `col`, so the heap
+    /// ranks keys by summed value (`count_events: false`).
+    ///
+    /// Assumes **non-negative** summands: `CountMinSketch` is a frequency sketch
+    /// and cannot represent negative weights, so a `SUM` over a column that can
+    /// go negative would produce meaningless estimates.
+    Sum,
+}
+
+/// A detected SQL top-k query: the `LIMIT k` plus how the sketch is weighted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SqlTopk {
+    pub k: u64,
+    pub weighting: TopkWeighting,
+}
+
+impl SqlTopk {
+    /// `count_events` flag the backing `CountMinSketchWithHeap` must use:
+    /// `true` for COUNT (unit weight), `false` for SUM (value weight).
+    pub fn count_events(&self) -> bool {
+        matches!(self.weighting, TopkWeighting::Count)
+    }
+}
+
+/// Detect a SQL top-k query and return its `k` plus sketch weighting.
 ///
 /// Recognises the heavy-hitter shape that `CountMinSketchWithHeap` serves:
 ///
 /// ```sql
-/// SELECT <key>, COUNT(<col>) AS <alias>
+/// SELECT <key>, COUNT(<col>) AS <alias>   -- or SUM(<col>)
 /// FROM <table> WHERE <1s window>
 /// GROUP BY <key>
 /// ORDER BY <alias> DESC
@@ -151,25 +181,28 @@ fn sort_and_truncate_instant_vector(
 ///
 /// The grouping key (`<key>`) becomes the *aggregated* dimension inside the
 /// sketch's heap — not a precompute partition key — so a single sketch per
-/// window tracks the top keys by event count.
+/// window tracks the top keys by event count (COUNT) or summed value (SUM).
 ///
 /// The SQL parser only accepts identifier ORDER BY targets, so the descending
 /// order must reference the aggregate's alias (e.g. `transfer_events`), not the
-/// `COUNT(col)` expression itself.
-pub(crate) fn detect_sql_topk(query_data: &SQLQueryData) -> Option<u64> {
+/// `COUNT(col)` / `SUM(col)` expression itself.
+pub(crate) fn detect_sql_topk(query_data: &SQLQueryData) -> Option<SqlTopk> {
     let k = query_data.limit?;
     // Need a GROUP BY key to rank and an ORDER BY to define "top".
     if query_data.labels.is_empty() || query_data.order_by.is_empty() {
         return None;
     }
-    // CountMinSketchWithHeap tracks heavy hitters by COUNT.
-    if !query_data
-        .aggregation_info
-        .get_name()
-        .eq_ignore_ascii_case("count")
-    {
+    // CountMinSketchWithHeap tracks heavy hitters by COUNT (unit weight) or
+    // SUM (value weight). Any other aggregate (MIN/MAX/quantile/...) cannot be
+    // served by the additive frequency sketch.
+    let name = query_data.aggregation_info.get_name();
+    let weighting = if name.eq_ignore_ascii_case("count") {
+        TopkWeighting::Count
+    } else if name.eq_ignore_ascii_case("sum") {
+        TopkWeighting::Sum
+    } else {
         return None;
-    }
+    };
     // Primary ordering must be the aggregate alias, descending (largest first).
     let primary = &query_data.order_by[0];
     if primary.ascending {
@@ -178,7 +211,7 @@ pub(crate) fn detect_sql_topk(query_data: &SQLQueryData) -> Option<u64> {
     if query_data.aggregation_alias.as_deref() != Some(primary.column.as_str()) {
         return None;
     }
-    Some(k)
+    Some(SqlTopk { k, weighting })
 }
 
 impl SimpleEngine {
@@ -312,7 +345,7 @@ impl SimpleEngine {
         &self,
         match_result: &SQLQuery,
         query_pattern_type: QueryPatternType,
-        topk_k: Option<u64>,
+        topk: Option<SqlTopk>,
     ) -> QueryRequirements {
         let query_data = match_result
             .outer_data()
@@ -333,7 +366,7 @@ impl SimpleEngine {
         // and the grouping is empty: the GROUP BY column is the sketch's
         // *aggregated* (heavy-hitter) dimension, held inside one sketch per
         // window, not a precompute partition key.
-        let is_topk = topk_k.is_some();
+        let is_topk = topk.is_some();
         let statistics: Vec<Statistic> = if is_topk {
             vec![Statistic::Topk]
         } else {
@@ -371,6 +404,10 @@ impl SimpleEngine {
             data_range_ms,
             grouping_labels,
             spatial_filter_normalized: normalize_spatial_filter(""),
+            // COUNT top-k needs a `count_events: true` sketch; SUM top-k needs a
+            // `count_events: false` (value-weighted) one. This disambiguates two
+            // CountMinSketchWithHeap configs on the same metric during matching.
+            topk_count_events: topk.map(|t| t.count_events()),
         }
     }
 
@@ -569,11 +606,28 @@ impl SimpleEngine {
             }
         };
 
-        // Top-k detection takes precedence: `... ORDER BY <agg alias> DESC LIMIT k`
-        // is served by CountMinSketchWithHeap (Statistic::Topk) rather than the
-        // plain COUNT path, so the sketch heap drives the result set.
-        let topk_k = detect_sql_topk(&query_data);
-        let statistic_to_compute = if topk_k.is_some() {
+        // Top-k (CountMinSketchWithHeap) applies to flat single-layer queries:
+        // COUNT/SUM ... GROUP BY <key> ORDER BY <agg alias> DESC LIMIT k.
+        // Nested patterns attach ORDER BY / LIMIT to the outer SELECT; `query_data`
+        // from parse is the outer layer, while the temporal aggregate lives in
+        // `inner_data` for OneTemporalOneSpatial. Running detect_sql_topk on the
+        // outer layer would mis-classify spatial rollups as top-k.
+        //
+        // Single-interval windows (duration == scrape interval) classify as
+        // `OnlySpatial` in the pattern matcher even though they are flat temporal
+        // reads, so both `OnlyTemporal` and `OnlySpatial` must run detection.
+        let topk = match query_pattern_type {
+            QueryPatternType::OnlyTemporal | QueryPatternType::OnlySpatial => {
+                detect_sql_topk(&query_data)
+            }
+            QueryPatternType::OneTemporalOneSpatial => None,
+        };
+        if topk.is_some_and(|t| t.weighting == TopkWeighting::Sum) {
+            warn!(
+                "SUM top-k assumes non-negative values; results are undefined for columns with negative entries"
+            );
+        }
+        let statistic_to_compute = if topk.is_some() {
             Statistic::Topk
         } else {
             Self::parse_single_statistic(&statistic_name)?
@@ -586,8 +640,8 @@ impl SimpleEngine {
                 e
             })
             .ok()?;
-        if let Some(k) = topk_k {
-            query_kwargs.insert("k".to_string(), k.to_string());
+        if let Some(topk) = topk {
+            query_kwargs.insert("k".to_string(), topk.k.to_string());
         }
 
         // Create query metadata
@@ -613,7 +667,7 @@ impl SimpleEngine {
             } else {
                 warn!("No query_config entry for SQL query. Attempting capability-based matching.");
                 let requirements =
-                    self.build_query_requirements_sql(&match_result, query_pattern_type, topk_k);
+                    self.build_query_requirements_sql(&match_result, query_pattern_type, topk);
                 self.streaming_config
                     .read()
                     .unwrap()
@@ -792,7 +846,7 @@ impl SimpleEngine {
 
 #[cfg(test)]
 mod detect_topk_tests {
-    use super::detect_sql_topk;
+    use super::{detect_sql_topk, SqlTopk, TopkWeighting};
     use sql_utilities::ast_matching::SQLPatternParser;
     use sql_utilities::sqlhelper::{SQLSchema, Table};
     use sqlparser::dialect::GenericDialect;
@@ -828,7 +882,34 @@ mod detect_topk_tests {
              GROUP BY srcip ORDER BY transfer_events DESC LIMIT 10"
         );
         let qd = parse(&sql).expect("valid topk query should parse");
-        assert_eq!(detect_sql_topk(&qd), Some(10));
+        assert_eq!(
+            detect_sql_topk(&qd),
+            Some(SqlTopk {
+                k: 10,
+                weighting: TopkWeighting::Count,
+            }),
+            "COUNT top-k must use unit (count_events) weighting",
+        );
+    }
+
+    #[test]
+    fn sum_order_by_alias_desc_limit_is_topk() {
+        let sql = format!(
+            "SELECT srcip, SUM(pkt_len) AS total FROM netflow_table {WINDOW} \
+             GROUP BY srcip ORDER BY total DESC LIMIT 10"
+        );
+        let qd = parse(&sql).expect("valid sum top-k query should parse");
+        let detected = detect_sql_topk(&qd).expect("SUM ORDER BY DESC LIMIT is top-k");
+        assert_eq!(detected.k, 10);
+        assert_eq!(
+            detected.weighting,
+            TopkWeighting::Sum,
+            "SUM top-k must use value (count_events=false) weighting",
+        );
+        assert!(
+            !detected.count_events(),
+            "SUM top-k maps to a count_events: false sketch",
+        );
     }
 
     #[test]
@@ -870,16 +951,18 @@ mod detect_topk_tests {
     }
 
     #[test]
-    fn sum_aggregate_is_not_topk() {
+    fn min_aggregate_is_not_topk() {
+        // Only the additive sketch-friendly aggregates (COUNT/SUM) are top-k;
+        // MIN/MAX/quantile cannot be served by CountMinSketchWithHeap.
         let sql = format!(
-            "SELECT srcip, SUM(pkt_len) AS total FROM netflow_table {WINDOW} \
-             GROUP BY srcip ORDER BY total DESC LIMIT 10"
+            "SELECT srcip, MIN(pkt_len) AS smallest FROM netflow_table {WINDOW} \
+             GROUP BY srcip ORDER BY smallest DESC LIMIT 10"
         );
         let qd = parse(&sql).expect("query should parse");
         assert_eq!(
             detect_sql_topk(&qd),
             None,
-            "only COUNT maps to CMS-with-heap top-k"
+            "only COUNT/SUM map to CMS-with-heap top-k"
         );
     }
 
@@ -892,6 +975,24 @@ mod detect_topk_tests {
         );
         let qd = parse(&sql).expect("query should parse");
         assert_eq!(detect_sql_topk(&qd), None);
+    }
+
+    #[test]
+    fn nested_outer_layer_would_match_detect_sql_topk() {
+        // Spatial-over-temporal: ORDER BY / LIMIT sit on the outer SELECT, so the
+        // parsed top-level `query_data` looks like SUM top-k even though the temporal
+        // aggregate is in the subquery. The engine must not promote this to Topk.
+        let sql = format!(
+            "SELECT srcip, SUM(bytes) AS rollup FROM ( \
+               SELECT srcip, dstip, SUM(pkt_len) AS bytes FROM netflow_table {WINDOW} \
+               GROUP BY srcip, dstip \
+             ) sub GROUP BY srcip ORDER BY rollup DESC LIMIT 10"
+        );
+        let qd = parse(&sql).expect("nested query should parse");
+        assert!(
+            detect_sql_topk(&qd).is_some(),
+            "outer SELECT alone matches the top-k shape (this is why OneTemporalOneSpatial is gated)",
+        );
     }
 }
 
@@ -1088,15 +1189,21 @@ mod sort_and_truncate_tests {
     }
 }
 
-/// End-to-end tests for SQL top-k queries served by `CountMinSketchWithHeap`.
+/// End-to-end SQL top-k pipeline tests for `CountMinSketchWithHeap`.
 ///
-/// Exercises the full path for `SELECT srcip, COUNT(pkt_len) AS k FROM
-/// netflow_table WHERE <1s window> GROUP BY srcip ORDER BY k DESC LIMIT n`:
-///   * SQL detection promotes it to `Statistic::Topk`.
-///   * The single `CountMinSketchWithHeap` aggregation resolves self-keyed
-///     (key id == value id), so the sketch heap enumerates candidate `srcip`s.
-///   * The pipeline sorts by count descending and truncates to `n`, without
-///     PromQL-style metric-name prefixing (rows stay bare `(srcip, count)`).
+/// Covers both resolution paths:
+///   * **query_config** — self-keyed single-aggregation reference
+///   * **capability matching** — heap + paired `DeltaSetAggregator`, no query_config
+///
+/// Example query shape:
+/// ```sql
+/// SELECT srcip, COUNT(pkt_len) AS transfer_events
+/// FROM netflow_table WHERE <1s window> GROUP BY srcip ORDER BY transfer_events DESC LIMIT n
+/// ```
+/// SQL detection promotes it to `Statistic::Topk`. On the query_config path the
+/// heap is self-keyed; on the capability path a separate key aggregation is paired.
+/// The pipeline sorts by value descending and truncates to `n`, without PromQL-style
+/// metric-name prefixing (rows stay bare `(srcip, count)`).
 ///
 /// Lives here alongside `detect_topk_tests` / `sort_and_truncate_tests` so all
 /// SQL top-k coverage is co-located in the SQL handler. Unlike those pure-fn
@@ -1208,6 +1315,210 @@ mod topk_pipeline_tests {
         )
     }
 
+    /// Incoming SUM top-k query over a 1-second absolute window.
+    fn sum_topk_query(limit: u64) -> String {
+        format!(
+            "SELECT srcip, SUM(pkt_len) AS total_bytes FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY srcip ORDER BY total_bytes DESC LIMIT {limit}"
+        )
+    }
+
+    /// Build a SQL engine whose only aggregation is a self-keyed, value-weighted
+    /// (`count_events: false`) `CountMinSketchWithHeap` over `netflow_table`,
+    /// referenced by a single-aggregation `SUM(pkt_len)` query_config. Mirrors
+    /// `build_topk_engine` but for SUM top-k, so the engine resolves it
+    /// self-keyed via the query_config path (the same path COUNT uses).
+    fn build_sum_topk_engine() -> SimpleEngine {
+        let template = "SELECT srcip, SUM(pkt_len) FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY srcip";
+
+        let value_cols: HashSet<String> = ["pkt_len"].iter().map(|s| s.to_string()).collect();
+        let labels: HashSet<String> = ["srcip", "dstip", "proto"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let table = Table::new(METRIC.to_string(), "time".to_string(), value_cols, labels);
+        let sql_schema = SQLSchema::new(vec![table]);
+
+        let query_config = QueryConfig::new(template.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(sql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        // count_events: false ⇒ the heap is weighted by the summed value rather
+        // than the event count (SUM semantics).
+        let mut parameters = HashMap::new();
+        parameters.insert("count_events".to_string(), serde_json::json!(false));
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters,
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size: 1,
+            slide_interval: 1,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1,
+            QueryLanguage::sql,
+        )
+    }
+
+    const HEAP_COUNT_ID: u64 = 111;
+    const HEAP_SUM_ID: u64 = 112;
+    const HEAP_DEFAULT_ID: u64 = 113;
+    const KEY_AGG_ID: u64 = 211;
+
+    fn netflow_sql_schema() -> SQLSchema {
+        let value_cols: HashSet<String> = ["pkt_len"].iter().map(|s| s.to_string()).collect();
+        let labels: HashSet<String> = ["srcip", "dstip", "proto"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let table = Table::new(METRIC.to_string(), "time".to_string(), value_cols, labels);
+        SQLSchema::new(vec![table])
+    }
+
+    /// `CountMinSketchWithHeap` for capability-matching tests. When `count_events`
+    /// is `None`, the parameter is omitted so the config relies on the default
+    /// (`count_events: true`).
+    fn make_heap_agg(id: u64, count_events: Option<bool>) -> AggregationConfig {
+        let mut parameters = HashMap::new();
+        if let Some(count_events) = count_events {
+            parameters.insert("count_events".to_string(), serde_json::json!(count_events));
+        }
+        AggregationConfig {
+            aggregation_id: id,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters,
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size: 1,
+            slide_interval: 1,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        }
+    }
+
+    fn make_delta_set_key_agg(id: u64) -> AggregationConfig {
+        AggregationConfig {
+            aggregation_id: id,
+            aggregation_type: AggregationType::DeltaSetAggregator,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::empty(),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size: 1,
+            slide_interval: 1,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        }
+    }
+
+    /// Engine with **no** query_configs so top-k resolves via capability matching.
+    /// Always provisions a paired `DeltaSetAggregator` key aggregation.
+    fn build_capability_fallback_engine(heap_configs: Vec<AggregationConfig>) -> SimpleEngine {
+        let mut agg_configs = HashMap::new();
+        for heap in &heap_configs {
+            agg_configs.insert(heap.aggregation_id, heap.clone());
+        }
+        agg_configs.insert(KEY_AGG_ID, make_delta_set_key_agg(KEY_AGG_ID));
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(netflow_sql_schema()),
+            query_configs: vec![],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1,
+            QueryLanguage::sql,
+        )
+    }
+
+    #[test]
+    fn sum_topk_resolves_self_keyed_heap() {
+        // SUM(col) ORDER BY DESC LIMIT k is a top-k query and, like COUNT,
+        // resolves self-keyed through the single-aggregation query_config path.
+        let engine = build_sum_topk_engine();
+        let context = engine
+            .build_query_execution_context_sql(sum_topk_query(5), QUERY_TIME)
+            .expect("SUM top-k should build a context via the query_config path");
+
+        assert_eq!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "SUM ... ORDER BY <alias> DESC LIMIT n must be promoted to Topk",
+        );
+        assert_eq!(
+            context.metadata.query_kwargs.get("k").map(String::as_str),
+            Some("5"),
+        );
+        // Self-keyed: heap supplies both keys and values, so key id == value id
+        // and no separate keys query is planned.
+        assert_eq!(
+            context.agg_info.aggregation_id_for_key,
+            context.agg_info.aggregation_id_for_value,
+        );
+        assert_eq!(context.agg_info.aggregation_id_for_value, AGG_ID);
+        assert!(context.store_plan.keys_query.is_none());
+    }
+
     #[test]
     fn detects_topk_and_resolves_self_keyed_heap() {
         let (engine, _store) = build_topk_engine();
@@ -1294,5 +1605,93 @@ mod topk_pipeline_tests {
             results.iter().map(|e| e.labels.labels[0].clone()).collect();
         let expected: HashSet<String> = (6..=15u64).map(|i| format!("10.0.0.{i}")).collect();
         assert_eq!(returned, expected);
+    }
+
+    #[test]
+    fn count_topk_capability_fallback_pairs_heap_with_key_agg() {
+        let engine =
+            build_capability_fallback_engine(vec![make_heap_agg(HEAP_COUNT_ID, Some(true))]);
+        let context = engine
+            .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
+            .expect("COUNT top-k should resolve via capability matching");
+
+        assert_eq!(context.metadata.statistic_to_compute, Statistic::Topk);
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value, HEAP_COUNT_ID,
+            "count-weighted heap must be the value aggregation",
+        );
+        assert_eq!(
+            context.agg_info.aggregation_id_for_key, KEY_AGG_ID,
+            "multi-population top-k must pair heap with DeltaSetAggregator",
+        );
+        assert_ne!(
+            context.agg_info.aggregation_id_for_key,
+            context.agg_info.aggregation_id_for_value,
+        );
+        assert!(
+            context.store_plan.keys_query.is_some(),
+            "capability fallback plans a separate keys query",
+        );
+    }
+
+    #[test]
+    fn count_topk_capability_fallback_picks_count_weighted_when_both_heaps_exist() {
+        let engine = build_capability_fallback_engine(vec![
+            make_heap_agg(HEAP_COUNT_ID, Some(true)),
+            make_heap_agg(HEAP_SUM_ID, Some(false)),
+        ]);
+        let context = engine
+            .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
+            .expect("COUNT top-k should pick the count_events: true sketch");
+
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value, HEAP_COUNT_ID,
+            "COUNT top-k must not pick the sum-weighted sketch when both exist",
+        );
+    }
+
+    #[test]
+    fn count_topk_capability_fallback_defaults_count_events_true() {
+        // Heap omits `count_events`; matcher treats that as count semantics.
+        let engine = build_capability_fallback_engine(vec![make_heap_agg(HEAP_DEFAULT_ID, None)]);
+        let context = engine
+            .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
+            .expect("COUNT top-k should match a sketch with default count_events");
+
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value, HEAP_DEFAULT_ID,
+            "default (no flag) heap must serve COUNT top-k",
+        );
+    }
+
+    #[test]
+    fn sum_topk_capability_fallback_picks_value_weighted_heap() {
+        let engine = build_capability_fallback_engine(vec![
+            make_heap_agg(HEAP_COUNT_ID, Some(true)),
+            make_heap_agg(HEAP_SUM_ID, Some(false)),
+        ]);
+        let context = engine
+            .build_query_execution_context_sql(sum_topk_query(5), QUERY_TIME)
+            .expect("SUM top-k should resolve via capability matching");
+
+        assert_eq!(context.metadata.statistic_to_compute, Statistic::Topk);
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value, HEAP_SUM_ID,
+            "SUM top-k must pick the count_events: false sketch",
+        );
+        assert_eq!(context.agg_info.aggregation_id_for_key, KEY_AGG_ID);
+        assert!(context.store_plan.keys_query.is_some());
+    }
+
+    #[test]
+    fn sum_topk_capability_fallback_rejects_count_only_default_heap() {
+        // Only a default (count-weighted) sketch exists; SUM top-k cannot be served.
+        let engine = build_capability_fallback_engine(vec![make_heap_agg(HEAP_DEFAULT_ID, None)]);
+        assert!(
+            engine
+                .build_query_execution_context_sql(sum_topk_query(5), QUERY_TIME)
+                .is_none(),
+            "SUM top-k must not fall back to a count_events-default sketch",
+        );
     }
 }
