@@ -18,4 +18,13 @@ pub struct QueryRequirements {
     pub grouping_labels: KeyByLabelNames,
     /// Normalized label filter (produced by normalize_spatial_filter).
     pub spatial_filter_normalized: String,
+    /// For `Statistic::Topk` requirements, the heavy-hitter weighting the query
+    /// needs, used to disambiguate two `CountMinSketchWithHeap` configs on the
+    /// same metric:
+    ///   * `Some(true)`  → COUNT semantics (`count_events: true`, weight 1/event),
+    ///   * `Some(false)` → SUM semantics (`count_events: false`, weight = value).
+    ///
+    /// `None` for non-top-k requirements (and for PromQL top-k, which does not
+    /// constrain the sketch weighting); matching ignores it when `None`.
+    pub topk_count_events: Option<bool>,
 }
