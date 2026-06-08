@@ -606,16 +606,27 @@ impl SimpleEngine {
             }
         };
 
-        // Top-k (CountMinSketchWithHeap) is defined only for flat temporal queries:
-        // one window, one GROUP BY key, COUNT/SUM ... ORDER BY <agg alias> DESC LIMIT k.
-        // Nested patterns attach ORDER BY / LIMIT to the outer SELECT; `query_data` from
-        // parse is the outer layer, while the temporal aggregate lives in `inner_data`
-        // for OneTemporalOneSpatial. Running detect_sql_topk on the outer layer would
-        // mis-classify spatial rollups as top-k.
+        // Top-k (CountMinSketchWithHeap) applies to flat single-layer queries:
+        // COUNT/SUM ... GROUP BY <key> ORDER BY <agg alias> DESC LIMIT k.
+        // Nested patterns attach ORDER BY / LIMIT to the outer SELECT; `query_data`
+        // from parse is the outer layer, while the temporal aggregate lives in
+        // `inner_data` for OneTemporalOneSpatial. Running detect_sql_topk on the
+        // outer layer would mis-classify spatial rollups as top-k.
+        //
+        // Single-interval windows (duration == scrape interval) classify as
+        // `OnlySpatial` in the pattern matcher even though they are flat temporal
+        // reads, so both `OnlyTemporal` and `OnlySpatial` must run detection.
         let topk = match query_pattern_type {
-            QueryPatternType::OnlyTemporal => detect_sql_topk(&query_data),
-            QueryPatternType::OnlySpatial | QueryPatternType::OneTemporalOneSpatial => None,
+            QueryPatternType::OnlyTemporal | QueryPatternType::OnlySpatial => {
+                detect_sql_topk(&query_data)
+            }
+            QueryPatternType::OneTemporalOneSpatial => None,
         };
+        if topk.is_some_and(|t| t.weighting == TopkWeighting::Sum) {
+            warn!(
+                "SUM top-k assumes non-negative values; results are undefined for columns with negative entries"
+            );
+        }
         let statistic_to_compute = if topk.is_some() {
             Statistic::Topk
         } else {
@@ -980,7 +991,7 @@ mod detect_topk_tests {
         let qd = parse(&sql).expect("nested query should parse");
         assert!(
             detect_sql_topk(&qd).is_some(),
-            "outer SELECT alone matches the top-k shape (this is why OnlyTemporal is gated)",
+            "outer SELECT alone matches the top-k shape (this is why OneTemporalOneSpatial is gated)",
         );
     }
 }

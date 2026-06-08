@@ -193,7 +193,7 @@ mod tests {
         assert_ne!(
             context.metadata.statistic_to_compute,
             Statistic::Topk,
-            "top-k detection is OnlyTemporal-only; nested outer ORDER BY LIMIT must stay on the plain SUM path",
+            "top-k detection skips nested OneTemporalOneSpatial; outer ORDER BY LIMIT must stay on the plain SUM path",
         );
     }
 
