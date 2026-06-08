@@ -114,6 +114,7 @@ impl ElasticSingleQueryProcessor {
                     agg_type,
                     agg_sub_type,
                     None,
+                    None,
                     self.sketch_parameters.as_ref(),
                 )
             },

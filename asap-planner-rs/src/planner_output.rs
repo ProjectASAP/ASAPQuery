@@ -6,8 +6,8 @@ use asap_types::streaming_config::StreamingConfig;
 
 use crate::generator::{
     GeneratorOutput, PuntedQuery, KEY_AGGREGATIONS, KEY_AGG_SUB_TYPE, KEY_AGG_TYPE, KEY_LABELS,
-    KEY_NUM_AGG_TO_RETAIN, KEY_QUERIES, KEY_QUERY, KEY_READ_COUNT_THRESHOLD, KEY_TABLE_NAME,
-    KEY_VALUE_COLUMN, KEY_WINDOW_SIZE,
+    KEY_NUM_AGG_TO_RETAIN, KEY_PARAMETERS, KEY_QUERIES, KEY_QUERY, KEY_READ_COUNT_THRESHOLD,
+    KEY_TABLE_NAME, KEY_VALUE_COLUMN, KEY_WINDOW_SIZE,
 };
 
 /// Output of the planning process — contains the two YAML configs
@@ -226,5 +226,18 @@ impl PlannerOutput {
                 })
             })
             .unwrap_or(false)
+    }
+
+    /// Returns a sketch parameter from the first aggregation matching `agg_type`.
+    pub fn aggregation_parameter(&self, agg_type: &str, key: &str) -> Option<YamlValue> {
+        self.find_aggregation_by_type(agg_type)
+            .and_then(|m| m.get(KEY_PARAMETERS))
+            .and_then(|v| {
+                if let YamlValue::Mapping(params) = v {
+                    params.get(key).cloned()
+                } else {
+                    None
+                }
+            })
     }
 }

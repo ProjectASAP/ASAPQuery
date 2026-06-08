@@ -11,7 +11,9 @@ use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
 use sql_utilities::ast_matching::QueryType;
-use sql_utilities::ast_matching::{SQLPatternMatcher, SQLPatternParser, SQLQuery};
+use sql_utilities::ast_matching::{
+    detect_sql_topk, SQLPatternMatcher, SQLPatternParser, SQLQuery, SqlTopk, TopkWeighting,
+};
 use sql_utilities::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
@@ -135,83 +137,6 @@ fn sort_and_truncate_instant_vector(
     }
 
     results
-}
-
-/// How a top-k query weights each observation fed into the heavy-hitter sketch.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TopkWeighting {
-    /// `COUNT(col)`: every matching row contributes weight 1, so the heap ranks
-    /// keys by event frequency (`count_events: true`).
-    Count,
-    /// `SUM(col)`: every matching row contributes weight = `col`, so the heap
-    /// ranks keys by summed value (`count_events: false`).
-    ///
-    /// Assumes **non-negative** summands: `CountMinSketch` is a frequency sketch
-    /// and cannot represent negative weights, so a `SUM` over a column that can
-    /// go negative would produce meaningless estimates.
-    Sum,
-}
-
-/// A detected SQL top-k query: the `LIMIT k` plus how the sketch is weighted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SqlTopk {
-    pub k: u64,
-    pub weighting: TopkWeighting,
-}
-
-impl SqlTopk {
-    /// `count_events` flag the backing `CountMinSketchWithHeap` must use:
-    /// `true` for COUNT (unit weight), `false` for SUM (value weight).
-    pub fn count_events(&self) -> bool {
-        matches!(self.weighting, TopkWeighting::Count)
-    }
-}
-
-/// Detect a SQL top-k query and return its `k` plus sketch weighting.
-///
-/// Recognises the heavy-hitter shape that `CountMinSketchWithHeap` serves:
-///
-/// ```sql
-/// SELECT <key>, COUNT(<col>) AS <alias>   -- or SUM(<col>)
-/// FROM <table> WHERE <1s window>
-/// GROUP BY <key>
-/// ORDER BY <alias> DESC
-/// LIMIT k
-/// ```
-///
-/// The grouping key (`<key>`) becomes the *aggregated* dimension inside the
-/// sketch's heap — not a precompute partition key — so a single sketch per
-/// window tracks the top keys by event count (COUNT) or summed value (SUM).
-///
-/// The SQL parser only accepts identifier ORDER BY targets, so the descending
-/// order must reference the aggregate's alias (e.g. `transfer_events`), not the
-/// `COUNT(col)` / `SUM(col)` expression itself.
-pub(crate) fn detect_sql_topk(query_data: &SQLQueryData) -> Option<SqlTopk> {
-    let k = query_data.limit?;
-    // Need a GROUP BY key to rank and an ORDER BY to define "top".
-    if query_data.labels.is_empty() || query_data.order_by.is_empty() {
-        return None;
-    }
-    // CountMinSketchWithHeap tracks heavy hitters by COUNT (unit weight) or
-    // SUM (value weight). Any other aggregate (MIN/MAX/quantile/...) cannot be
-    // served by the additive frequency sketch.
-    let name = query_data.aggregation_info.get_name();
-    let weighting = if name.eq_ignore_ascii_case("count") {
-        TopkWeighting::Count
-    } else if name.eq_ignore_ascii_case("sum") {
-        TopkWeighting::Sum
-    } else {
-        return None;
-    };
-    // Primary ordering must be the aggregate alias, descending (largest first).
-    let primary = &query_data.order_by[0];
-    if primary.ascending {
-        return None;
-    }
-    if query_data.aggregation_alias.as_deref() != Some(primary.column.as_str()) {
-        return None;
-    }
-    Some(SqlTopk { k, weighting })
 }
 
 impl SimpleEngine {
@@ -846,8 +771,7 @@ impl SimpleEngine {
 
 #[cfg(test)]
 mod detect_topk_tests {
-    use super::{detect_sql_topk, SqlTopk, TopkWeighting};
-    use sql_utilities::ast_matching::SQLPatternParser;
+    use sql_utilities::ast_matching::{detect_sql_topk, SQLPatternParser, SqlTopk, TopkWeighting};
     use sql_utilities::sqlhelper::{SQLSchema, Table};
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
