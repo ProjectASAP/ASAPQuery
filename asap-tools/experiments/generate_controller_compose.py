@@ -144,6 +144,11 @@ def main():
 
     args = parser.parse_args()
 
+    if args.data_ingestion_interval is not None and args.query_language != "sql":
+        parser.error(
+            "--data-ingestion-interval is only valid when --query-language is 'sql'"
+        )
+
     generate_compose_file(
         template_path=args.template_path,
         output_path=args.compose_output_path,
