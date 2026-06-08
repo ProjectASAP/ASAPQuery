@@ -1609,18 +1609,15 @@ mod topk_pipeline_tests {
 
     #[test]
     fn count_topk_capability_fallback_pairs_heap_with_key_agg() {
-        let engine = build_capability_fallback_engine(vec![make_heap_agg(
-            HEAP_COUNT_ID,
-            Some(true),
-        )]);
+        let engine =
+            build_capability_fallback_engine(vec![make_heap_agg(HEAP_COUNT_ID, Some(true))]);
         let context = engine
             .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
             .expect("COUNT top-k should resolve via capability matching");
 
         assert_eq!(context.metadata.statistic_to_compute, Statistic::Topk);
         assert_eq!(
-            context.agg_info.aggregation_id_for_value,
-            HEAP_COUNT_ID,
+            context.agg_info.aggregation_id_for_value, HEAP_COUNT_ID,
             "count-weighted heap must be the value aggregation",
         );
         assert_eq!(
@@ -1648,8 +1645,7 @@ mod topk_pipeline_tests {
             .expect("COUNT top-k should pick the count_events: true sketch");
 
         assert_eq!(
-            context.agg_info.aggregation_id_for_value,
-            HEAP_COUNT_ID,
+            context.agg_info.aggregation_id_for_value, HEAP_COUNT_ID,
             "COUNT top-k must not pick the sum-weighted sketch when both exist",
         );
     }
@@ -1657,17 +1653,13 @@ mod topk_pipeline_tests {
     #[test]
     fn count_topk_capability_fallback_defaults_count_events_true() {
         // Heap omits `count_events`; matcher treats that as count semantics.
-        let engine = build_capability_fallback_engine(vec![make_heap_agg(
-            HEAP_DEFAULT_ID,
-            None,
-        )]);
+        let engine = build_capability_fallback_engine(vec![make_heap_agg(HEAP_DEFAULT_ID, None)]);
         let context = engine
             .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
             .expect("COUNT top-k should match a sketch with default count_events");
 
         assert_eq!(
-            context.agg_info.aggregation_id_for_value,
-            HEAP_DEFAULT_ID,
+            context.agg_info.aggregation_id_for_value, HEAP_DEFAULT_ID,
             "default (no flag) heap must serve COUNT top-k",
         );
     }
@@ -1684,8 +1676,7 @@ mod topk_pipeline_tests {
 
         assert_eq!(context.metadata.statistic_to_compute, Statistic::Topk);
         assert_eq!(
-            context.agg_info.aggregation_id_for_value,
-            HEAP_SUM_ID,
+            context.agg_info.aggregation_id_for_value, HEAP_SUM_ID,
             "SUM top-k must pick the count_events: false sketch",
         );
         assert_eq!(context.agg_info.aggregation_id_for_key, KEY_AGG_ID);
@@ -1695,10 +1686,7 @@ mod topk_pipeline_tests {
     #[test]
     fn sum_topk_capability_fallback_rejects_count_only_default_heap() {
         // Only a default (count-weighted) sketch exists; SUM top-k cannot be served.
-        let engine = build_capability_fallback_engine(vec![make_heap_agg(
-            HEAP_DEFAULT_ID,
-            None,
-        )]);
+        let engine = build_capability_fallback_engine(vec![make_heap_agg(HEAP_DEFAULT_ID, None)]);
         assert!(
             engine
                 .build_query_execution_context_sql(sum_topk_query(5), QUERY_TIME)
