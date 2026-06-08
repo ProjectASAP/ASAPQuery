@@ -1189,15 +1189,21 @@ mod sort_and_truncate_tests {
     }
 }
 
-/// End-to-end tests for SQL top-k queries served by `CountMinSketchWithHeap`.
+/// End-to-end SQL top-k pipeline tests for `CountMinSketchWithHeap`.
 ///
-/// Exercises the full path for `SELECT srcip, COUNT(pkt_len) AS k FROM
-/// netflow_table WHERE <1s window> GROUP BY srcip ORDER BY k DESC LIMIT n`:
-///   * SQL detection promotes it to `Statistic::Topk`.
-///   * The single `CountMinSketchWithHeap` aggregation resolves self-keyed
-///     (key id == value id), so the sketch heap enumerates candidate `srcip`s.
-///   * The pipeline sorts by count descending and truncates to `n`, without
-///     PromQL-style metric-name prefixing (rows stay bare `(srcip, count)`).
+/// Covers both resolution paths:
+///   * **query_config** — self-keyed single-aggregation reference
+///   * **capability matching** — heap + paired `DeltaSetAggregator`, no query_config
+///
+/// Example query shape:
+/// ```sql
+/// SELECT srcip, COUNT(pkt_len) AS transfer_events
+/// FROM netflow_table WHERE <1s window> GROUP BY srcip ORDER BY transfer_events DESC LIMIT n
+/// ```
+/// SQL detection promotes it to `Statistic::Topk`. On the query_config path the
+/// heap is self-keyed; on the capability path a separate key aggregation is paired.
+/// The pipeline sorts by value descending and truncates to `n`, without PromQL-style
+/// metric-name prefixing (rows stay bare `(srcip, count)`).
 ///
 /// Lives here alongside `detect_topk_tests` / `sort_and_truncate_tests` so all
 /// SQL top-k coverage is co-located in the SQL handler. Unlike those pure-fn
@@ -1387,6 +1393,104 @@ mod topk_pipeline_tests {
         )
     }
 
+    const HEAP_COUNT_ID: u64 = 111;
+    const HEAP_SUM_ID: u64 = 112;
+    const HEAP_DEFAULT_ID: u64 = 113;
+    const KEY_AGG_ID: u64 = 211;
+
+    fn netflow_sql_schema() -> SQLSchema {
+        let value_cols: HashSet<String> = ["pkt_len"].iter().map(|s| s.to_string()).collect();
+        let labels: HashSet<String> = ["srcip", "dstip", "proto"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let table = Table::new(METRIC.to_string(), "time".to_string(), value_cols, labels);
+        SQLSchema::new(vec![table])
+    }
+
+    /// `CountMinSketchWithHeap` for capability-matching tests. When `count_events`
+    /// is `None`, the parameter is omitted so the config relies on the default
+    /// (`count_events: true`).
+    fn make_heap_agg(id: u64, count_events: Option<bool>) -> AggregationConfig {
+        let mut parameters = HashMap::new();
+        if let Some(count_events) = count_events {
+            parameters.insert("count_events".to_string(), serde_json::json!(count_events));
+        }
+        AggregationConfig {
+            aggregation_id: id,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters,
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size: 1,
+            slide_interval: 1,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        }
+    }
+
+    fn make_delta_set_key_agg(id: u64) -> AggregationConfig {
+        AggregationConfig {
+            aggregation_id: id,
+            aggregation_type: AggregationType::DeltaSetAggregator,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::empty(),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size: 1,
+            slide_interval: 1,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        }
+    }
+
+    /// Engine with **no** query_configs so top-k resolves via capability matching.
+    /// Always provisions a paired `DeltaSetAggregator` key aggregation.
+    fn build_capability_fallback_engine(heap_configs: Vec<AggregationConfig>) -> SimpleEngine {
+        let mut agg_configs = HashMap::new();
+        for heap in &heap_configs {
+            agg_configs.insert(heap.aggregation_id, heap.clone());
+        }
+        agg_configs.insert(KEY_AGG_ID, make_delta_set_key_agg(KEY_AGG_ID));
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(netflow_sql_schema()),
+            query_configs: vec![],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1,
+            QueryLanguage::sql,
+        )
+    }
+
     #[test]
     fn sum_topk_resolves_self_keyed_heap() {
         // SUM(col) ORDER BY DESC LIMIT k is a top-k query and, like COUNT,
@@ -1501,5 +1605,105 @@ mod topk_pipeline_tests {
             results.iter().map(|e| e.labels.labels[0].clone()).collect();
         let expected: HashSet<String> = (6..=15u64).map(|i| format!("10.0.0.{i}")).collect();
         assert_eq!(returned, expected);
+    }
+
+    #[test]
+    fn count_topk_capability_fallback_pairs_heap_with_key_agg() {
+        let engine = build_capability_fallback_engine(vec![make_heap_agg(
+            HEAP_COUNT_ID,
+            Some(true),
+        )]);
+        let context = engine
+            .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
+            .expect("COUNT top-k should resolve via capability matching");
+
+        assert_eq!(context.metadata.statistic_to_compute, Statistic::Topk);
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value,
+            HEAP_COUNT_ID,
+            "count-weighted heap must be the value aggregation",
+        );
+        assert_eq!(
+            context.agg_info.aggregation_id_for_key, KEY_AGG_ID,
+            "multi-population top-k must pair heap with DeltaSetAggregator",
+        );
+        assert_ne!(
+            context.agg_info.aggregation_id_for_key,
+            context.agg_info.aggregation_id_for_value,
+        );
+        assert!(
+            context.store_plan.keys_query.is_some(),
+            "capability fallback plans a separate keys query",
+        );
+    }
+
+    #[test]
+    fn count_topk_capability_fallback_picks_count_weighted_when_both_heaps_exist() {
+        let engine = build_capability_fallback_engine(vec![
+            make_heap_agg(HEAP_COUNT_ID, Some(true)),
+            make_heap_agg(HEAP_SUM_ID, Some(false)),
+        ]);
+        let context = engine
+            .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
+            .expect("COUNT top-k should pick the count_events: true sketch");
+
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value,
+            HEAP_COUNT_ID,
+            "COUNT top-k must not pick the sum-weighted sketch when both exist",
+        );
+    }
+
+    #[test]
+    fn count_topk_capability_fallback_defaults_count_events_true() {
+        // Heap omits `count_events`; matcher treats that as count semantics.
+        let engine = build_capability_fallback_engine(vec![make_heap_agg(
+            HEAP_DEFAULT_ID,
+            None,
+        )]);
+        let context = engine
+            .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
+            .expect("COUNT top-k should match a sketch with default count_events");
+
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value,
+            HEAP_DEFAULT_ID,
+            "default (no flag) heap must serve COUNT top-k",
+        );
+    }
+
+    #[test]
+    fn sum_topk_capability_fallback_picks_value_weighted_heap() {
+        let engine = build_capability_fallback_engine(vec![
+            make_heap_agg(HEAP_COUNT_ID, Some(true)),
+            make_heap_agg(HEAP_SUM_ID, Some(false)),
+        ]);
+        let context = engine
+            .build_query_execution_context_sql(sum_topk_query(5), QUERY_TIME)
+            .expect("SUM top-k should resolve via capability matching");
+
+        assert_eq!(context.metadata.statistic_to_compute, Statistic::Topk);
+        assert_eq!(
+            context.agg_info.aggregation_id_for_value,
+            HEAP_SUM_ID,
+            "SUM top-k must pick the count_events: false sketch",
+        );
+        assert_eq!(context.agg_info.aggregation_id_for_key, KEY_AGG_ID);
+        assert!(context.store_plan.keys_query.is_some());
+    }
+
+    #[test]
+    fn sum_topk_capability_fallback_rejects_count_only_default_heap() {
+        // Only a default (count-weighted) sketch exists; SUM top-k cannot be served.
+        let engine = build_capability_fallback_engine(vec![make_heap_agg(
+            HEAP_DEFAULT_ID,
+            None,
+        )]);
+        assert!(
+            engine
+                .build_query_execution_context_sql(sum_topk_query(5), QUERY_TIME)
+                .is_none(),
+            "SUM top-k must not fall back to a count_events-default sketch",
+        );
     }
 }
