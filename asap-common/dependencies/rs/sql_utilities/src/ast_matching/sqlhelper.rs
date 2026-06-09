@@ -311,4 +311,3 @@ pub fn detect_sql_topk(query_data: &SQLQueryData) -> Option<SqlTopk> {
     }
     Some(SqlTopk { k, weighting })
 }
-

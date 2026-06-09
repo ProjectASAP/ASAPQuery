@@ -772,7 +772,9 @@ impl SimpleEngine {
 #[cfg(test)]
 mod detect_topk_tests {
     use sql_utilities::ast_matching::{detect_sql_topk, SQLPatternParser, SqlTopk, TopkWeighting};
-    use sql_utilities::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData, SQLSchema, Table, TimeInfo};
+    use sql_utilities::sqlhelper::{
+        AggregationInfo, OrderByItem, SQLQueryData, SQLSchema, Table, TimeInfo,
+    };
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
     use std::collections::HashSet;
@@ -841,7 +843,11 @@ mod detect_topk_tests {
         // The parser path can normalize/canonicalize identifiers; verify directly on
         // SQLQueryData that alias matching in detect_sql_topk is case-insensitive.
         let qd = SQLQueryData {
-            aggregation_info: AggregationInfo::new("COUNT".to_string(), "pkt_len".to_string(), vec![]),
+            aggregation_info: AggregationInfo::new(
+                "COUNT".to_string(),
+                "pkt_len".to_string(),
+                vec![],
+            ),
             aggregation_alias: Some("transfer_events".to_string()),
             metric: "netflow_table".to_string(),
             labels: HashSet::from(["srcip".to_string()]),
