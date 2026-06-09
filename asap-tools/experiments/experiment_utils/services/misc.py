@@ -5,11 +5,25 @@ Miscellaneous service classes for smaller services.
 import os
 import random
 import subprocess
+from dataclasses import dataclass
 from typing import Optional
 
 import constants
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
+
+
+@dataclass
+class DiscoveryBackend:
+    """Backend connection for label/column auto-discovery by asap-planner.
+
+    PromQL mode:  DiscoveryBackend(type="prometheus", url=<url>, database=None)
+    SQL mode:     DiscoveryBackend(type="clickhouse", url=<url>, database=<db>)
+    """
+
+    type: str
+    url: str
+    database: Optional[str]
 
 
 class DeathstarService(BaseService):
@@ -190,8 +204,8 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
+        discovery_backend: DiscoveryBackend,
         prometheus_scrape_interval: Optional[int] = None,
-        prometheus_url: Optional[str] = None,
         query_language: str = "promql",
         data_ingestion_interval: Optional[int] = None,
         **kwargs,
@@ -204,8 +218,10 @@ class ControllerService(BaseService):
             streaming_engine: Type of streaming engine
             controller_remote_output_dir: Controller output directory
             punting: Enable query punting based on performance heuristics
+            discovery_backend: Backend used for label/column auto-discovery.
+                PromQL mode: DiscoveryBackend(type="prometheus", url=<url>, database=None)
+                SQL mode:    DiscoveryBackend(type="clickhouse", url=<url>, database=<db>)
             prometheus_scrape_interval: Required for PromQL mode
-            prometheus_url: Prometheus URL for label discovery (PromQL mode only)
             query_language: 'promql' (default) or 'sql'
             data_ingestion_interval: Required for SQL mode (seconds)
             **kwargs: Additional configuration
@@ -216,8 +232,8 @@ class ControllerService(BaseService):
                 streaming_engine,
                 controller_remote_output_dir,
                 punting,
+                discovery_backend,
                 prometheus_scrape_interval,
-                prometheus_url,
                 query_language,
                 data_ingestion_interval,
             )
@@ -227,8 +243,8 @@ class ControllerService(BaseService):
                 streaming_engine,
                 controller_remote_output_dir,
                 punting,
+                discovery_backend,
                 prometheus_scrape_interval,
-                prometheus_url,
                 query_language,
                 data_ingestion_interval,
             )
@@ -239,8 +255,8 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
+        discovery_backend: DiscoveryBackend,
         prometheus_scrape_interval: Optional[int],
-        prometheus_url: Optional[str],
         query_language: str,
         data_ingestion_interval: Optional[int],
     ) -> None:
@@ -254,12 +270,17 @@ class ControllerService(BaseService):
         )
         if prometheus_scrape_interval is not None:
             cmd += f" --prometheus_scrape_interval {prometheus_scrape_interval}"
-        if prometheus_url:
-            cmd += f" --prometheus-url {prometheus_url}"
         if data_ingestion_interval is not None:
             cmd += f" --data-ingestion-interval {data_ingestion_interval}"
+        if discovery_backend.type == "prometheus":
+            cmd += f" --prometheus-url {discovery_backend.url}"
+        elif discovery_backend.type == "clickhouse":
+            cmd += f" --clickhouse-url {discovery_backend.url}"
+            if discovery_backend.database:
+                cmd += f" --clickhouse-database {discovery_backend.database}"
         if punting:
             cmd += " --enable-punting"
+        cmd += " -v"
         cmd += f" > {controller_log} 2>&1"
         cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-planner-rs")
         self.provider.execute_command(
@@ -277,8 +298,8 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
+        discovery_backend: DiscoveryBackend,
         prometheus_scrape_interval: Optional[int],
-        prometheus_url: Optional[str],
         query_language: str,
         data_ingestion_interval: Optional[int],
     ):
@@ -312,10 +333,14 @@ class ControllerService(BaseService):
             generate_cmd += (
                 f" --prometheus-scrape-interval {prometheus_scrape_interval}"
             )
-        if prometheus_url:
-            generate_cmd += f" --prometheus-url {prometheus_url}"
         if data_ingestion_interval is not None:
             generate_cmd += f" --data-ingestion-interval {data_ingestion_interval}"
+        if discovery_backend.type == "prometheus":
+            generate_cmd += f" --prometheus-url {discovery_backend.url}"
+        elif discovery_backend.type == "clickhouse":
+            generate_cmd += f" --clickhouse-url {discovery_backend.url}"
+            if discovery_backend.database:
+                generate_cmd += f" --clickhouse-database {discovery_backend.database}"
         if punting:
             generate_cmd += " --punting"
 

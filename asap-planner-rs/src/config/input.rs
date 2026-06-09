@@ -142,6 +142,7 @@ pub struct TableDefinition {
     pub name: String,
     pub time_column: String,
     pub value_columns: Vec<String>,
+    #[serde(default)]
     pub metadata_columns: Vec<String>,
 }
 

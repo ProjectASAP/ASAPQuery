@@ -48,6 +48,18 @@ pub fn generate_sql_plan(
         }
     }
 
+    // Validate that all tables have metadata_columns populated (either from config
+    // or filled in by from_file_with_discovery before reaching here).
+    for t in &config.tables {
+        if t.metadata_columns.is_empty() {
+            return Err(ControllerError::PlannerError(format!(
+                "Table '{}' has no metadata_columns. List them in the config file \
+                 or pass --clickhouse-url for auto-discovery.",
+                t.name
+            )));
+        }
+    }
+
     // Check for duplicate queries
     let mut seen_queries = std::collections::HashSet::new();
     for qg in &config.query_groups {
