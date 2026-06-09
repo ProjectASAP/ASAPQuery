@@ -15,13 +15,16 @@ const DEFAULT_HLL_PRECISION: u64 = 14;
 
 /// Shared sketch parameter builder used by both PromQL and SQL paths.
 ///
-/// `topk_k` is only required for `CountMinSketchWithHeap`: PromQL supplies it
-/// from the `topk(k, …)` query argument; SQL passes `None` (SQL never produces
-/// this operator today, so the `None` branch is unreachable in practice).
+/// `topk_k` is required for `CountMinSketchWithHeap`. PromQL supplies it from
+/// the `topk(k, …)` query argument; SQL supplies it from `LIMIT k`.
+///
+/// `topk_count_events` disambiguates COUNT vs SUM SQL top-k (`true` / `false`).
+/// PromQL passes `None` and omits the parameter (defaults to count semantics).
 pub fn build_sketch_parameters(
     aggregation_type: AggregationType,
     aggregation_sub_type: &str,
     topk_k: Option<u64>,
+    topk_count_events: Option<bool>,
     sketch_params: Option<&SketchParameterOverrides>,
 ) -> Result<HashMap<String, serde_json::Value>, String> {
     match aggregation_type {
@@ -77,6 +80,12 @@ pub fn build_sketch_parameters(
                 "heapsize".to_string(),
                 serde_json::Value::Number((k * heap_mult).into()),
             );
+            if let Some(count_events) = topk_count_events {
+                m.insert(
+                    "count_events".to_string(),
+                    serde_json::Value::Bool(count_events),
+                );
+            }
             Ok(m)
         }
 
@@ -158,6 +167,7 @@ pub fn build_sketch_parameters_from_promql(
         aggregation_type,
         aggregation_sub_type,
         topk_k,
+        None,
         sketch_params,
     )
 }

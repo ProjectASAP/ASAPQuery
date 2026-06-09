@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
-use sql_utilities::ast_matching::sqlhelper::Table;
+use sql_utilities::ast_matching::sqlhelper::{detect_sql_topk, Table};
 use sql_utilities::ast_matching::sqlpattern_matcher::{QueryType, SQLPatternMatcher};
 use sql_utilities::ast_matching::sqlpattern_parser::SQLPatternParser;
 use sql_utilities::ast_matching::SQLSchema;
@@ -105,8 +105,15 @@ impl SQLSingleQueryProcessor {
 
         // Label routing
         let spatial_output = KeyByLabelNames::new(labels.iter().cloned().collect::<Vec<_>>());
+        // Top-k needs ORDER BY / LIMIT from the parser; SQLPatternMatcher drops them
+        // when building `sql_query.query_data[0]`, so use `qdata` not query_data[0].
+        let sql_topk = detect_sql_topk(&qdata);
         let treatment_type = get_sql_treatment_type(agg_info.get_name());
-        let statistics = get_sql_statistics(agg_info.get_name())?;
+        let statistics = if sql_topk.is_some() {
+            vec![Statistic::Topk]
+        } else {
+            get_sql_statistics(agg_info.get_name())?
+        };
         let rollup = if statistics.contains(&Statistic::Cardinality) {
             // Distinct target is value_column, not a rollup label dimension.
             KeyByLabelNames::empty()
@@ -114,7 +121,10 @@ impl SQLSingleQueryProcessor {
             all_metadata.difference(&spatial_output)
         };
 
-        let configs = build_agg_configs_for_statistics(
+        let topk_k = sql_topk.map(|t| t.k);
+        let topk_count_events = sql_topk.map(|t| t.count_events());
+
+        let mut configs = build_agg_configs_for_statistics(
             &statistics,
             treatment_type,
             &spatial_output,
@@ -128,12 +138,24 @@ impl SQLSingleQueryProcessor {
                 build_sketch_parameters(
                     agg_type,
                     agg_sub_type,
-                    None,
+                    topk_k,
+                    topk_count_events,
                     self.sketch_parameters.as_ref(),
                 )
             },
         )
         .map_err(ControllerError::SqlParse)?;
+
+        if sql_topk.is_some() {
+            for cfg in &mut configs {
+                if cfg.aggregation_type == AggregationType::CountMinSketchWithHeap {
+                    // Heap-only self-keyed layout: the GROUP BY column is tracked
+                    // inside the sketch's aggregated dimension, not as a partition key.
+                    cfg.grouping_labels = KeyByLabelNames::empty();
+                    cfg.aggregated_labels = spatial_output.clone();
+                }
+            }
+        }
 
         let t_lookback = match query_type {
             QueryType::Spatial => self.data_ingestion_interval,
