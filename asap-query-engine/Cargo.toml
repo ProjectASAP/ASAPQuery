@@ -61,6 +61,12 @@ csv = "1"
 elastic_dsl_utilities.workspace = true
 asap_sketchlib.workspace = true
 
+# jemalloc global allocator — cuts malloc/free churn in the precompute engine
+# hot path (per-sample/per-window sketch + key allocations). Optional so the
+# crate still builds where jemalloc is unavailable; not built on MSVC.
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.6", optional = true }
+
 [[bin]]
 name = "precompute_engine"
 path = "src/bin/precompute_engine.rs"
@@ -87,7 +93,9 @@ harness = false
 
 [features]
 #default = ["lock_profiling", "extra_debugging"]
-default = []
+default = ["jemalloc"]
+# Use jemalloc as the global allocator (see lib.rs). On by default.
+jemalloc = ["dep:tikv-jemallocator"]
 # Enable lock profiling instrumentation
 lock_profiling = []
 # Enable extra debugging output

@@ -407,6 +407,75 @@ fn temporal_quantile_cast_datetime_bounds() {
     assert_eq!(out.inference_cleanup_param(q), Some(1));
 }
 
+// ── COUNT(DISTINCT) / HLL (spatial 1 s) ───────────────────────────────────────
+
+fn netflow_one_query_config(query: &str, t_repeat: u64) -> String {
+    format!(
+        r#"
+tables:
+  - name: netflow_table
+    time_column: time
+    value_columns: [pkt_len, dstip]
+    metadata_columns: [srcip, dstip, proto]
+query_groups:
+  - id: 1
+    repetition_delay: {t_repeat}
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 100.0
+    queries:
+      - >-
+        {query}
+aggregate_cleanup:
+  policy: no_cleanup
+"#
+    )
+}
+
+fn sql_opts_1s_ingest() -> SQLRuntimeOptions {
+    SQLRuntimeOptions {
+        streaming_engine: StreamingEngine::Arroyo,
+        query_evaluation_time: Some(1_000_000.0),
+        data_ingestion_interval: 1,
+    }
+}
+
+/// COUNT(DISTINCT dstip) GROUP BY srcip, 1 s window → HLL, grouping [srcip], empty rollup.
+#[test]
+fn spatial_count_distinct_hll() {
+    let q = "SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip";
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("HLL"));
+    assert!(!out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(out.all_tumbling_window_sizes_eq(1));
+    assert_eq!(
+        out.aggregation_table_name("HLL"),
+        Some("netflow_table".to_string())
+    );
+    assert_eq!(
+        out.aggregation_value_column("HLL"),
+        Some("dstip".to_string())
+    );
+    assert_eq!(
+        out.aggregation_labels("HLL", "grouping"),
+        vec!["srcip".to_string()]
+    );
+    assert_eq!(
+        out.aggregation_labels("HLL", "rollup"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        out.aggregation_labels("HLL", "aggregated"),
+        Vec::<String>::new()
+    );
+}
+
 // ── T-value variants for SUM (range = 300 s fixed) ───────────────────────────
 //
 // These three tests use the same query and differ only in repetition_delay (T).

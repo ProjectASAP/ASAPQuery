@@ -50,7 +50,11 @@ pub struct Worker {
     receiver: mpsc::Receiver<WorkerMessage>,
     output_sink: Arc<dyn OutputSink>,
     /// Map from (agg_id, group_key) to per-group state.
-    group_states: HashMap<(u64, String), GroupState>,
+    /// Per-group state, keyed by `agg_id` then by an interned `Arc<str>`
+    /// group key. Nesting lets the per-sample hot path look up by `&str`
+    /// (no allocation); the group-key string is allocated once, on first
+    /// sight of the group, and shared via the `Arc`.
+    group_states: HashMap<u64, HashMap<Arc<str>, GroupState>>,
     /// Aggregation configs, keyed by aggregation_id.
     agg_configs: HashMap<u64, Arc<AggregationConfig>>,
     /// Allowed lateness in ms.
@@ -185,25 +189,18 @@ impl Worker {
                             Vec::new();
 
                         for agg_id in &removed_ids {
-                            // Drain all group states for this agg_id.
-                            let removed_keys: Vec<_> = self
-                                .group_states
-                                .keys()
-                                .filter(|(id, _)| id == agg_id)
-                                .cloned()
-                                .collect();
+                            // Drain all group states for this agg_id in one move.
+                            let Some(inner) = self.group_states.remove(agg_id) else {
+                                continue;
+                            };
 
-                            for key in removed_keys {
-                                let Some(state) = self.group_states.remove(&key) else {
-                                    continue;
-                                };
+                            for (group_key_str, state) in inner {
                                 if state.previous_watermark_ms == i64::MIN {
                                     continue; // No samples received — nothing to emit.
                                 }
                                 // Force-close all open windows by advancing the watermark
                                 // to i64::MAX. No new samples will arrive for this group.
-                                let (group_key_str, mut active_panes) =
-                                    (key.1.clone(), state.active_panes);
+                                let mut active_panes = state.active_panes;
                                 let closed = state
                                     .window_manager
                                     .closed_windows(state.previous_watermark_ms, i64::MAX);
@@ -240,7 +237,7 @@ impl Worker {
                         }
 
                         self.group_count
-                            .store(self.group_states.len(), Ordering::Relaxed);
+                            .store(self.total_groups(), Ordering::Relaxed);
                         info!(
                             "Worker {}: evicted {} removed agg_id(s) {:?}",
                             self.id,
@@ -264,8 +261,13 @@ impl Worker {
         info!(
             "Worker {} stopped, {} active groups",
             self.id,
-            self.group_states.len()
+            self.total_groups()
         );
+    }
+
+    /// Total number of live groups across all agg_ids.
+    fn total_groups(&self) -> usize {
+        self.group_states.values().map(|m| m.len()).sum()
     }
 
     /// Get or create the GroupState for a (agg_id, group_key) pair.
@@ -275,20 +277,28 @@ impl Worker {
         agg_id: u64,
         group_key: &str,
     ) -> Option<&mut GroupState> {
-        let key = (agg_id, group_key.to_string());
-        if !self.group_states.contains_key(&key) {
-            let config = self.agg_configs.get(&agg_id)?;
+        // Fast path: group already exists — borrow-based lookup, no allocation.
+        let exists = self
+            .group_states
+            .get(&agg_id)
+            .is_some_and(|m| m.contains_key(group_key));
+        if !exists {
+            // Creation path: requires a config, and allocates the interned key once.
+            let config = Arc::clone(self.agg_configs.get(&agg_id)?);
             let gs = GroupState {
                 window_manager: WindowManager::new(config.window_size, config.slide_interval),
-                config: Arc::clone(config),
+                config,
                 active_panes: BTreeMap::new(),
                 previous_watermark_ms: i64::MIN,
             };
-            self.group_states.insert(key.clone(), gs);
+            self.group_states
+                .entry(agg_id)
+                .or_default()
+                .insert(Arc::from(group_key), gs);
             self.group_count
-                .store(self.group_states.len(), Ordering::Relaxed);
+                .store(self.total_groups(), Ordering::Relaxed);
         }
-        self.group_states.get_mut(&key)
+        self.group_states.get_mut(&agg_id)?.get_mut(group_key)
     }
 
     /// Process a batch of samples for a specific (agg_id, group_key).
@@ -305,17 +315,16 @@ impl Worker {
         let allowed_lateness_ms = self.allowed_lateness_ms;
         let late_data_policy = self.late_data_policy;
 
-        if self.get_or_create_group_state(agg_id, group_key).is_none() {
-            warn!(
-                "Worker {} skipping samples for unknown agg_id={}, group_key={}",
-                self.id, agg_id, group_key
-            );
-            return Ok(());
-        }
-        let state = self
-            .group_states
-            .get_mut(&(agg_id, group_key.to_string()))
-            .unwrap();
+        let state = match self.get_or_create_group_state(agg_id, group_key) {
+            Some(state) => state,
+            None => {
+                warn!(
+                    "Worker {} skipping samples for unknown agg_id={}, group_key={}",
+                    self.id, agg_id, group_key
+                );
+                return Ok(());
+            }
+        };
 
         // Find the max timestamp in this batch to advance the watermark
         let batch_max_ts = samples
@@ -470,6 +479,7 @@ impl Worker {
         let worker_wm = self
             .group_states
             .values()
+            .flat_map(|m| m.values())
             .map(|s| s.previous_watermark_ms)
             .filter(|&wm| wm != i64::MIN)
             .max()
@@ -484,44 +494,46 @@ impl Worker {
         // Step 4: For each group, advance watermark and close due windows.
         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
 
-        for ((agg_id, group_key), state) in &mut self.group_states {
-            if state.previous_watermark_ms == i64::MIN {
-                continue; // No samples received yet — no panes to close.
-            }
-
-            // Effective watermark: max(group's own, global) + 1ms for boundary.
-            let propagated_wm = if global_wm != i64::MIN {
-                state.previous_watermark_ms.max(global_wm)
-            } else {
-                state.previous_watermark_ms
-            };
-            let effective_wm = propagated_wm.saturating_add(1);
-
-            let closed = state
-                .window_manager
-                .closed_windows(state.previous_watermark_ms, effective_wm);
-
-            for window_start in &closed {
-                let (_, window_end) = state.window_manager.window_bounds(*window_start);
-                let pane_starts = state.window_manager.panes_for_window(*window_start);
-
-                if let Some(accumulator) =
-                    merge_panes_for_window(&mut state.active_panes, &pane_starts)
-                {
-                    let key = build_group_key_label_values(group_key);
-                    let output = PrecomputedOutput::new(
-                        *window_start as u64,
-                        window_end as u64,
-                        Some(key),
-                        *agg_id,
-                    );
-                    emit_batch.push((output, accumulator));
+        for (agg_id, inner) in &mut self.group_states {
+            for (group_key, state) in inner.iter_mut() {
+                if state.previous_watermark_ms == i64::MIN {
+                    continue; // No samples received yet — no panes to close.
                 }
-            }
 
-            // Update group watermark to reflect the advancement.
-            if effective_wm > state.previous_watermark_ms {
-                state.previous_watermark_ms = effective_wm;
+                // Effective watermark: max(group's own, global) + 1ms for boundary.
+                let propagated_wm = if global_wm != i64::MIN {
+                    state.previous_watermark_ms.max(global_wm)
+                } else {
+                    state.previous_watermark_ms
+                };
+                let effective_wm = propagated_wm.saturating_add(1);
+
+                let closed = state
+                    .window_manager
+                    .closed_windows(state.previous_watermark_ms, effective_wm);
+
+                for window_start in &closed {
+                    let (_, window_end) = state.window_manager.window_bounds(*window_start);
+                    let pane_starts = state.window_manager.panes_for_window(*window_start);
+
+                    if let Some(accumulator) =
+                        merge_panes_for_window(&mut state.active_panes, &pane_starts)
+                    {
+                        let key = build_group_key_label_values(group_key);
+                        let output = PrecomputedOutput::new(
+                            *window_start as u64,
+                            window_end as u64,
+                            Some(key),
+                            *agg_id,
+                        );
+                        emit_batch.push((output, accumulator));
+                    }
+                }
+
+                // Update group watermark to reflect the advancement.
+                if effective_wm > state.previous_watermark_ms {
+                    state.previous_watermark_ms = effective_wm;
+                }
             }
         }
 
@@ -704,10 +716,10 @@ fn merge_panes_for_window(
 
     for (i, &ps) in pane_starts.iter().enumerate() {
         let pane_acc = if i == 0 {
-            // Oldest pane: destructive take + evict
+            // Oldest pane: evict and MOVE the accumulator out (no clone).
             active_panes
                 .remove(&ps)
-                .map(|mut updater| updater.take_accumulator())
+                .map(|updater| updater.into_accumulator())
         } else {
             // Shared pane: non-destructive snapshot
             active_panes

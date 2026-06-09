@@ -638,7 +638,7 @@ pub async fn assert_old_new_match(engine: &SimpleEngine, query: &str, query_time
         .expect("Failed to build context");
 
     let old_results = engine
-        .execute_query_pipeline(&context, false)
+        .execute_query_pipeline(&context, false, false)
         .expect("Old pipeline failed");
 
     let new_results = engine

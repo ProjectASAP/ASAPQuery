@@ -86,6 +86,8 @@ pub struct SketchParameterOverrides {
     pub datasketches_kll: Option<KllParams>,
     #[serde(rename = "HydraKLL")]
     pub hydra_kll: Option<HydraParams>,
+    #[serde(rename = "HLL")]
+    pub hll: Option<HllParams>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -112,6 +114,11 @@ pub struct HydraParams {
     pub row_num: u64,
     pub col_num: u64,
     pub k: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct HllParams {
+    pub precision: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]

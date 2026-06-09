@@ -919,7 +919,7 @@ impl SimpleEngine {
             context.store_plan.values_query.end_timestamp
         );
 
-        let result = self.execute_context(context, true);
+        let result = self.execute_context(context, true, true);
 
         // Determine query routing order based on function type.
         // USampling functions prefer the precomputed path first (sketch fallback),
@@ -1258,5 +1258,214 @@ impl SimpleEngine {
             context.base.metadata.query_output_labels,
             QueryResult::matrix(results),
         ))
+    }
+}
+
+/// End-to-end tests for PromQL `topk(k, …)` served by `CountMinSketchWithHeap`.
+///
+/// Exercises the PromQL half of the top-k flag split:
+/// `execute_query_pipeline(ctx, true, true)`. Unlike SQL (`true, false`), PromQL
+/// enables formatting so each result row carries the metric name as the first
+/// label value (Prometheus series shape).
+#[cfg(test)]
+mod topk_pipeline_tests {
+    use super::SimpleEngine;
+    use crate::data_model::{
+        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+        PrecomputedOutput, PromQLSchema, QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig,
+        WindowType,
+    };
+    use crate::engines::QueryResult;
+    use crate::precompute_operators::CountMinSketchWithHeapAccumulator;
+    use crate::stores::simple_map_store::SimpleMapStore;
+    use crate::stores::Store;
+    use crate::utils::http::convert_query_result_to_prometheus;
+    use promql_utilities::data_model::KeyByLabelNames;
+    use promql_utilities::query_logics::enums::Statistic;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    const AGG_ID: u64 = 101;
+    const METRIC: &str = "transfer_events";
+    // Aligned to the 1s scrape interval (multiple of 1000ms).
+    const QUERY_TIME: f64 = 1_759_276_810.0;
+    const TOPK_QUERY: &str = "topk(10, transfer_events)";
+
+    fn build_topk_engine() -> (SimpleEngine, Arc<SimpleMapStore>) {
+        let promql_schema = PromQLSchema::new().add_metric(
+            METRIC.to_string(),
+            KeyByLabelNames::new(vec!["srcip".to_string()]),
+        );
+
+        let query_config = QueryConfig::new(TOPK_QUERY.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size: 1,
+            slide_interval: 1,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        let engine = SimpleEngine::new(
+            store.clone(),
+            inference_config,
+            streaming_config,
+            1,
+            QueryLanguage::promql,
+        );
+        (engine, store)
+    }
+
+    #[test]
+    fn detects_topk_and_resolves_self_keyed_heap() {
+        let (engine, _store) = build_topk_engine();
+        let context = engine
+            .build_query_execution_context_promql(TOPK_QUERY.to_string(), QUERY_TIME)
+            .expect("topk(k, metric) should build a context via the query_config path");
+
+        assert_eq!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "topk(...) must resolve to Statistic::Topk",
+        );
+        assert_eq!(
+            context.metadata.query_kwargs.get("k").map(String::as_str),
+            Some("10"),
+            "the topk k argument should be threaded through as the `k` kwarg",
+        );
+        assert_eq!(
+            context.agg_info.aggregation_id_for_key,
+            context.agg_info.aggregation_id_for_value,
+        );
+        assert!(context.store_plan.keys_query.is_none());
+        assert_eq!(
+            context.metadata.query_output_labels.labels,
+            vec!["__name__".to_string(), "srcip".to_string()],
+            "topk PromQL rows zip to {{ __name__, srcip }} in the wire format",
+        );
+    }
+
+    #[test]
+    fn returns_top_k_srcips_sorted_descending_with_metric_prefix() {
+        let (engine, store) = build_topk_engine();
+
+        let context = engine
+            .build_query_execution_context_promql(TOPK_QUERY.to_string(), QUERY_TIME)
+            .expect("context should build");
+        let window = &context.store_plan.values_query;
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for i in 1..=15u64 {
+            let srcip = format!("10.0.0.{i}");
+            sketch.inner.update(&srcip, (i * 10) as f64);
+        }
+
+        let output =
+            PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .expect("insert should succeed");
+
+        let results = engine
+            .execute_query_pipeline(&context, true, true)
+            .expect("pipeline should produce results");
+
+        assert_eq!(results.len(), 10, "topk(10, ...) must truncate to 10 rows");
+
+        for pair in results.windows(2) {
+            assert!(
+                pair[0].value >= pair[1].value,
+                "results must be sorted by count descending: {} then {}",
+                pair[0].value,
+                pair[1].value,
+            );
+        }
+
+        assert_eq!(
+            results[0].labels.labels,
+            vec![METRIC.to_string(), "10.0.0.15".to_string()],
+        );
+        assert_eq!(results[0].value, 150.0);
+        for element in &results {
+            assert_eq!(
+                element.labels.labels.len(),
+                2,
+                "PromQL top-k rows carry the metric-name prefix plus the srcip",
+            );
+            assert_eq!(
+                element.labels.labels[0], METRIC,
+                "first label value must be the metric name (PromQL formatting)",
+            );
+        }
+
+        let returned: HashSet<String> =
+            results.iter().map(|e| e.labels.labels[1].clone()).collect();
+        let expected: HashSet<String> = (6..=15u64).map(|i| format!("10.0.0.{i}")).collect();
+        assert_eq!(returned, expected);
+
+        // Wire format: zip label names with values into Prometheus instant-vector JSON.
+        let output_labels = context.metadata.query_output_labels.clone();
+        let query_result = QueryResult::vector(results, context.query_time);
+        let prometheus_data = convert_query_result_to_prometheus(&query_result, &output_labels)
+            .expect("pipeline output should convert to Prometheus instant-vector JSON");
+
+        assert_eq!(prometheus_data["resultType"], "vector");
+        let wire_rows = prometheus_data["result"]
+            .as_array()
+            .expect("result must be an array");
+        assert_eq!(wire_rows.len(), 10);
+
+        let top_row = &wire_rows[0];
+        assert_eq!(top_row["metric"]["__name__"], METRIC);
+        assert_eq!(top_row["metric"]["srcip"], "10.0.0.15");
+        assert_eq!(top_row["value"][0], QUERY_TIME);
+        assert_eq!(top_row["value"][1], "150");
+
+        for row in wire_rows {
+            assert_eq!(row["metric"]["__name__"], METRIC);
+            assert!(row["metric"]["srcip"].is_string());
+            assert!(row["value"][1].is_string());
+        }
+
+        // Descending order is preserved in the wire format.
+        let wire_values: Vec<f64> = wire_rows
+            .iter()
+            .map(|row| row["value"][1].as_str().unwrap().parse::<f64>().unwrap())
+            .collect();
+        for pair in wire_values.windows(2) {
+            assert!(pair[0] >= pair[1]);
+        }
     }
 }
