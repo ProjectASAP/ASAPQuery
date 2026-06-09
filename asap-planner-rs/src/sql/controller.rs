@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use tracing::debug;
+
 use super::generator;
 use crate::clickhouse_client;
 use crate::config::input::SQLControllerConfig;
@@ -38,6 +40,10 @@ impl SQLController {
         let mut config: SQLControllerConfig = serde_yaml::from_str(&yaml_str)?;
         for table in &mut config.tables {
             if table.metadata_columns.is_empty() {
+                debug!(
+                    "Table '{}' has no metadata_columns; discovering via ClickHouse system.columns at {}",
+                    table.name, clickhouse_url
+                );
                 table.metadata_columns = clickhouse_client::infer_metadata_columns(
                     clickhouse_url,
                     clickhouse_database,
@@ -45,6 +51,12 @@ impl SQLController {
                     &table.time_column,
                     &table.value_columns,
                 )?;
+            } else {
+                debug!(
+                    "Table '{}' has {} metadata_columns in config; skipping discovery",
+                    table.name,
+                    table.metadata_columns.len()
+                );
             }
         }
         Ok(Self {

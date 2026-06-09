@@ -280,6 +280,7 @@ class ControllerService(BaseService):
                 cmd += f" --clickhouse-database {discovery_backend.database}"
         if punting:
             cmd += " --enable-punting"
+        cmd += " -v"
         cmd += f" > {controller_log} 2>&1"
         cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-planner-rs")
         self.provider.execute_command(
