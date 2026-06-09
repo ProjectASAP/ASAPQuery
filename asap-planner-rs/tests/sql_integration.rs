@@ -890,8 +890,28 @@ fn spatial_sum_topk_heap() {
         .unwrap();
 
     assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(!out.has_aggregation_type("CountMinSketch"));
+    assert!(out.all_tumbling_window_sizes_eq(1));
+    assert_eq!(
+        out.aggregation_labels("CountMinSketchWithHeap", "grouping"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        out.aggregation_labels("CountMinSketchWithHeap", "aggregated"),
+        vec!["srcip".to_string()]
+    );
+    let mut rollup = out.aggregation_labels("CountMinSketchWithHeap", "rollup");
+    rollup.sort();
+    assert_eq!(rollup, vec!["dstip".to_string(), "proto".to_string()]);
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "heapsize")
+            .and_then(|v| v.as_u64()),
+        Some(40)
+    );
     assert_eq!(
         out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
             .and_then(|v| v.as_bool()),
@@ -905,6 +925,40 @@ fn spatial_count_without_order_by_is_not_topk() {
     let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
              WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
              GROUP BY srcip";
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 2);
+    assert!(out.has_aggregation_type("CountMinSketch"));
+    assert!(out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(!out.has_aggregation_type("CountMinSketchWithHeap"));
+}
+
+/// ORDER BY aggregate alias ASC (bottom-k) stays on the CMS + DeltaSet path.
+#[test]
+fn spatial_count_order_by_asc_limit_is_not_topk() {
+    let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
+             GROUP BY srcip ORDER BY transfer_events ASC LIMIT 10";
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 2);
+    assert!(out.has_aggregation_type("CountMinSketch"));
+    assert!(out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(!out.has_aggregation_type("CountMinSketchWithHeap"));
+}
+
+/// LIMIT 0 is treated as non-top-k and uses the normal CMS + DeltaSet path.
+#[test]
+fn spatial_count_limit_zero_is_not_topk() {
+    let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
+             GROUP BY srcip ORDER BY transfer_events DESC LIMIT 0";
     let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
         .unwrap()
         .generate()

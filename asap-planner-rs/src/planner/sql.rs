@@ -105,6 +105,8 @@ impl SQLSingleQueryProcessor {
 
         // Label routing
         let spatial_output = KeyByLabelNames::new(labels.iter().cloned().collect::<Vec<_>>());
+        // Top-k needs ORDER BY / LIMIT from the parser; SQLPatternMatcher drops them
+        // when building `sql_query.query_data[0]`, so use `qdata` not query_data[0].
         let sql_topk = detect_sql_topk(&qdata);
         let treatment_type = get_sql_treatment_type(agg_info.get_name());
         let statistics = if sql_topk.is_some() {

@@ -280,6 +280,10 @@ impl SqlTopk {
 /// query pattern type; the planner rejects nested queries up front).
 pub fn detect_sql_topk(query_data: &SQLQueryData) -> Option<SqlTopk> {
     let k = query_data.limit?;
+    // LIMIT 0 is an empty-result query, not a top-k heavy-hitter request.
+    if k == 0 {
+        return None;
+    }
     // Need a GROUP BY key to rank and an ORDER BY to define "top".
     if query_data.labels.is_empty() || query_data.order_by.is_empty() {
         return None;
@@ -300,8 +304,11 @@ pub fn detect_sql_topk(query_data: &SQLQueryData) -> Option<SqlTopk> {
     if primary.ascending {
         return None;
     }
-    if query_data.aggregation_alias.as_deref() != Some(primary.column.as_str()) {
+    // ORDER BY may differ only by identifier case for unquoted aliases.
+    let alias = query_data.aggregation_alias.as_deref()?;
+    if !alias.eq_ignore_ascii_case(primary.column.as_str()) {
         return None;
     }
     Some(SqlTopk { k, weighting })
 }
+

@@ -772,7 +772,7 @@ impl SimpleEngine {
 #[cfg(test)]
 mod detect_topk_tests {
     use sql_utilities::ast_matching::{detect_sql_topk, SQLPatternParser, SqlTopk, TopkWeighting};
-    use sql_utilities::sqlhelper::{SQLSchema, Table};
+    use sql_utilities::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData, SQLSchema, Table, TimeInfo};
     use sqlparser::dialect::GenericDialect;
     use sqlparser::parser::Parser;
     use std::collections::HashSet;
@@ -834,6 +834,42 @@ mod detect_topk_tests {
             !detected.count_events(),
             "SUM top-k maps to a count_events: false sketch",
         );
+    }
+
+    #[test]
+    fn alias_case_mismatch_still_detects_topk() {
+        // The parser path can normalize/canonicalize identifiers; verify directly on
+        // SQLQueryData that alias matching in detect_sql_topk is case-insensitive.
+        let qd = SQLQueryData {
+            aggregation_info: AggregationInfo::new("COUNT".to_string(), "pkt_len".to_string(), vec![]),
+            aggregation_alias: Some("transfer_events".to_string()),
+            metric: "netflow_table".to_string(),
+            labels: HashSet::from(["srcip".to_string()]),
+            time_info: TimeInfo::new("time".to_string(), 0.0, 1.0),
+            subquery: None,
+            order_by: vec![OrderByItem {
+                column: "TRANSFER_EVENTS".to_string(),
+                ascending: false,
+            }],
+            limit: Some(10),
+        };
+        assert_eq!(
+            detect_sql_topk(&qd),
+            Some(SqlTopk {
+                k: 10,
+                weighting: TopkWeighting::Count,
+            }),
+        );
+    }
+
+    #[test]
+    fn zero_limit_is_not_topk() {
+        let sql = format!(
+            "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table {WINDOW} \
+             GROUP BY srcip ORDER BY transfer_events DESC LIMIT 0"
+        );
+        let qd = parse(&sql).expect("query should parse");
+        assert_eq!(detect_sql_topk(&qd), None, "LIMIT 0 is not top-k");
     }
 
     #[test]
