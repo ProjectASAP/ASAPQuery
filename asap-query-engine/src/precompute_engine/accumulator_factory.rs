@@ -700,35 +700,37 @@ pub fn config_is_keyed(config: &AggregationConfig) -> bool {
 
 /// Extract the KLL `k` parameter. Capital `"K"` takes precedence over lowercase
 /// `"k"` to match the convention used by the top-level aggregation type arms.
-fn kll_k_param(config: &AggregationConfig) -> u16 {
+fn kll_k_param(config: &AggregationConfig) -> Result<u16, String> {
     config
         .parameters
         .get("K")
         .or_else(|| config.parameters.get("k"))
         .and_then(|v| v.as_u64())
         .and_then(|v| u16::try_from(v).ok())
-        .unwrap_or(200)
+        .ok_or_else(|| "KLL config missing required parameter (tried: K, k)".to_string())
 }
 
 /// Extract `(row_num, col_num)` for CMS / HydraKLL configs.
-fn cms_params(config: &AggregationConfig) -> (usize, usize) {
+fn cms_params(config: &AggregationConfig) -> Result<(usize, usize), String> {
     let row_num = config
         .parameters
         .get("row_num")
         .and_then(|v| v.as_u64())
-        .unwrap_or(4) as usize;
+        .ok_or_else(|| "CMS config missing required parameter: row_num".to_string())?
+        as usize;
     let col_num = config
         .parameters
         .get("col_num")
         .and_then(|v| v.as_u64())
-        .unwrap_or(1000) as usize;
-    (row_num, col_num)
+        .ok_or_else(|| "CMS config missing required parameter: col_num".to_string())?
+        as usize;
+    Ok((row_num, col_num))
 }
 
 /// Extract `(row_num, col_num, k)` for HydraKLL configs.
-fn hydra_kll_params(config: &AggregationConfig) -> (usize, usize, u16) {
-    let (row_num, col_num) = cms_params(config);
-    (row_num, col_num, kll_k_param(config))
+fn hydra_kll_params(config: &AggregationConfig) -> Result<(usize, usize, u16), String> {
+    let (row_num, col_num) = cms_params(config)?;
+    Ok((row_num, col_num, kll_k_param(config)?))
 }
 
 /// Extract `(row_num, col_num, heap_size)` for CountMinSketchWithHeap configs.
@@ -796,7 +798,8 @@ fn hll_precision_param(config: &AggregationConfig) -> u32 {
 /// Create an appropriate `AccumulatorUpdater` from an `AggregationConfig`.
 ///
 /// Returns `Err` if the config is of a type that requires specific parameters
-/// (e.g. `CountMinSketchWithHeap`) but those parameters are absent or invalid.
+/// (e.g. `CountMinSketchWithHeap`, `CountMinSketch`, `HydraKLL`, KLL variants)
+/// but those parameters are absent or invalid.
 pub fn create_accumulator_updater(
     config: &AggregationConfig,
 ) -> Result<Box<dyn AccumulatorUpdater>, String> {
@@ -809,7 +812,7 @@ pub fn create_accumulator_updater(
             "Max" | "max" => Ok(Box::new(MinMaxAccumulatorUpdater::new(true))),
             "Increase" | "increase" => Ok(Box::new(IncreaseAccumulatorUpdater::new())),
             "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
-                Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config))))
+                Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
             }
             other => {
                 tracing::warn!(
@@ -825,11 +828,11 @@ pub fn create_accumulator_updater(
             "Max" | "max" => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(true))),
             "Increase" | "increase" => Ok(Box::new(MultipleIncreaseAccumulatorUpdater::new())),
             "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
-                let (row_num, col_num) = cms_params(config);
+                let (row_num, col_num) = cms_params(config)?;
                 Ok(Box::new(CmsAccumulatorUpdater::new(row_num, col_num)))
             }
             "HydraKLL" | "hydra_kll" => {
-                let (row_num, col_num, k) = hydra_kll_params(config);
+                let (row_num, col_num, k) = hydra_kll_params(config)?;
                 Ok(Box::new(HydraKllAccumulatorUpdater::new(
                     row_num, col_num, k,
                 )))
@@ -843,7 +846,7 @@ pub fn create_accumulator_updater(
             }
         },
         AggregationType::DatasketchesKLL => {
-            Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config))))
+            Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
         }
         AggregationType::MultipleSum => Ok(Box::new(MultipleSumAccumulatorUpdater::new())),
         AggregationType::MultipleIncrease => {
@@ -858,7 +861,7 @@ pub fn create_accumulator_updater(
         ))),
         AggregationType::Increase => Ok(Box::new(IncreaseAccumulatorUpdater::new())),
         AggregationType::CountMinSketch => {
-            let (row_num, col_num) = cms_params(config);
+            let (row_num, col_num) = cms_params(config)?;
             Ok(Box::new(CmsAccumulatorUpdater::new(row_num, col_num)))
         }
         AggregationType::CountMinSketchWithHeap => {
@@ -871,7 +874,7 @@ pub fn create_accumulator_updater(
             )))
         }
         AggregationType::HydraKLL => {
-            let (row_num, col_num, k) = hydra_kll_params(config);
+            let (row_num, col_num, k) = hydra_kll_params(config)?;
             Ok(Box::new(HydraKllAccumulatorUpdater::new(
                 row_num, col_num, k,
             )))
@@ -1028,15 +1031,52 @@ mod tests {
         )));
         assert!(config_is_keyed(&make_config(AggregationType::HydraKLL, "")));
 
-        // Verify agreement with updater.is_keyed()
+        // Verify agreement with updater.is_keyed() for types that need no sketch params.
         for (agg_type, sub_type) in &[
             (AggregationType::SingleSubpopulation, "Sum"),
             (AggregationType::MultipleSubpopulation, "Sum"),
             (AggregationType::MultipleSum, ""),
-            (AggregationType::DatasketchesKLL, ""),
-            (AggregationType::CountMinSketch, ""),
         ] {
             let config = make_config(*agg_type, sub_type);
+            let updater = create_accumulator_updater(&config).unwrap();
+            assert_eq!(
+                config_is_keyed(&config),
+                updater.is_keyed(),
+                "config_is_keyed disagrees with updater.is_keyed() for type={:?}",
+                agg_type
+            );
+        }
+
+        // Sketch types require params — build configs with the required parameters.
+        let make_config_with_params =
+            |agg_type: AggregationType,
+             sub_type: &str,
+             params: std::collections::HashMap<String, serde_json::Value>| {
+                AggregationConfig::new(
+                    1,
+                    agg_type,
+                    sub_type.to_string(),
+                    params,
+                    promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                    promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                    promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                    String::new(),
+                    60,
+                    0,
+                    WindowType::Tumbling,
+                    "m".to_string(),
+                    "m".to_string(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            };
+        for (agg_type, sub_type, params) in [
+            (AggregationType::DatasketchesKLL, "", kll_params_required()),
+            (AggregationType::CountMinSketch, "", cms_params_required()),
+        ] {
+            let config = make_config_with_params(agg_type, sub_type, params);
             let updater = create_accumulator_updater(&config).unwrap();
             assert_eq!(
                 config_is_keyed(&config),
@@ -1239,6 +1279,81 @@ mod tests {
             .downcast_ref::<crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator>()
             .expect("should be KLL");
         assert_eq!(kll.inner.k, 50, "k should be 50 from capital-K param");
+    }
+
+    #[test]
+    fn test_kll_missing_k_param_returns_err() {
+        use std::collections::HashMap;
+        let config = AggregationConfig::new(
+            1,
+            AggregationType::DatasketchesKLL,
+            String::new(),
+            HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60,
+            0,
+            WindowType::Tumbling,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let err = create_accumulator_updater(&config)
+            .err()
+            .expect("expected Err for missing K param");
+        assert!(
+            err.contains("K"),
+            "error should mention the missing parameter name"
+        );
+    }
+
+    #[test]
+    fn test_cms_missing_params_returns_err() {
+        use std::collections::HashMap;
+        let config = AggregationConfig::new(
+            1,
+            AggregationType::CountMinSketch,
+            String::new(),
+            HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60,
+            0,
+            WindowType::Tumbling,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let err = create_accumulator_updater(&config)
+            .err()
+            .expect("expected Err for missing row_num param");
+        assert!(
+            err.contains("row_num"),
+            "error should mention the missing parameter name"
+        );
+    }
+
+    fn kll_params_required() -> std::collections::HashMap<String, serde_json::Value> {
+        let mut p = std::collections::HashMap::new();
+        p.insert("K".to_string(), serde_json::json!(200_u64));
+        p
+    }
+
+    fn cms_params_required() -> std::collections::HashMap<String, serde_json::Value> {
+        let mut p = std::collections::HashMap::new();
+        p.insert("row_num".to_string(), serde_json::json!(4_u64));
+        p.insert("col_num".to_string(), serde_json::json!(1000_u64));
+        p
     }
 
     fn cms_heap_params_required() -> std::collections::HashMap<String, serde_json::Value> {
