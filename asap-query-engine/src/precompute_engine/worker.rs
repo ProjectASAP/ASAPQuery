@@ -425,7 +425,7 @@ impl Worker {
                         continue;
                     }
                     LateDataPolicy::ForwardToStore => {
-                        let mut updater = create_accumulator_updater(&state.config);
+                        let mut updater = create_accumulator_updater(&state.config)?;
                         apply_sample(&mut *updater, series_key, *val, *ts, &state.config);
                         let key = build_group_key_label_values(group_key);
                         let output = PrecomputedOutput::new(
@@ -452,10 +452,12 @@ impl Worker {
                 .pane_wall_clock_starts_ms
                 .entry(pane_start)
                 .or_insert(now_ms);
-            let updater = state
-                .active_panes
-                .entry(pane_start)
-                .or_insert_with(|| create_accumulator_updater(&state.config));
+            let updater = match state.active_panes.entry(pane_start) {
+                std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
+                std::collections::btree_map::Entry::Vacant(e) => {
+                    e.insert(create_accumulator_updater(&state.config)?)
+                }
+            };
 
             apply_sample(&mut **updater, series_key, *val, *ts, &state.config);
         }
