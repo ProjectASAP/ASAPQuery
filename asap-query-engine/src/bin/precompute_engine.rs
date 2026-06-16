@@ -67,6 +67,11 @@ struct Args {
     #[arg(long, value_enum, default_value_t = LateDataPolicy::Drop)]
     late_data_policy: LateDataPolicy,
 
+    /// Wall-clock grace period (ms) for the flush fallback that force-closes
+    /// idle windows when event-time stagnates. Set to <= 0 to disable.
+    #[arg(long, default_value_t = 5000)]
+    wall_clock_grace_period_ms: i64,
+
     // --- CSV file ingest (alternative to HTTP) ---
     /// Path to a local CSV file to ingest instead of listening for HTTP writes
     #[arg(long)]
@@ -170,6 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pass_raw_samples: args.pass_raw_samples,
         raw_mode_aggregation_id: args.raw_mode_aggregation_id,
         late_data_policy: args.late_data_policy,
+        wall_clock_grace_period_ms: args.wall_clock_grace_period_ms,
     };
 
     // Create the output sink (writes directly to the store)
