@@ -213,6 +213,15 @@ impl Worker {
                     if let Err(e) = self.flush_all() {
                         warn!("Worker {} final flush error: {}", self.id, e);
                     }
+                    // Force-close any windows still open after the final flush.
+                    // `flush_all` only advances the watermark by +1ms (plus the
+                    // wall-clock fallback, whose grace may not have elapsed for a
+                    // one-shot batch), so the trailing window can remain open and
+                    // its data would never reach the store. No more samples will
+                    // arrive after shutdown, so close every remaining pane.
+                    if let Err(e) = self.force_close_all() {
+                        warn!("Worker {} shutdown force-close error: {}", self.id, e);
+                    }
                     break;
                 }
                 WorkerMessage::UpdateAggConfigs(new_configs) => {
@@ -626,6 +635,85 @@ impl Worker {
         if !emit_batch.is_empty() {
             debug!(
                 "Worker {} flush emitting {} outputs",
+                self.id,
+                emit_batch.len()
+            );
+            self.output_sink.emit_batch(emit_batch)?;
+        }
+
+        Ok(())
+    }
+
+    /// Force-close every window still open on shutdown.
+    ///
+    /// Unlike `flush_all` — which only advances the watermark by `+1ms` (plus
+    /// the wall-clock fallback, gated on grace having elapsed) — this emits the
+    /// window for every remaining pane unconditionally, because no further
+    /// samples will arrive once the engine is shutting down. Without it, a
+    /// one-shot batch whose records all fall in a single window (so event-time
+    /// never advances past the window end) would leave that window open forever
+    /// and never write it to the store.
+    ///
+    /// To advance past the open windows we use a *finite* bound derived from
+    /// the largest open pane (`max_pane + window_size_ms`) rather than
+    /// `i64::MAX`: `WindowManager::closed_windows` enumerates window starts up
+    /// to `current_wm` one slide at a time, so passing `i64::MAX` would loop
+    /// ~`i64::MAX / slide` times and overflow. `max_pane + window_size_ms` is
+    /// the smallest watermark that closes the latest open window.
+    ///
+    /// Idempotent: closed panes are drained from `active_panes` and their
+    /// wall-clock bookkeeping is pruned, so a second call emits nothing.
+    fn force_close_all(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if self.pass_raw_samples {
+            return Ok(());
+        }
+
+        let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
+
+        for (agg_id, inner) in &mut self.group_states {
+            for (group_key, state) in inner.iter_mut() {
+                if state.previous_watermark_ms == i64::MIN {
+                    continue; // never received data — nothing to close
+                }
+                // The latest window start equals the largest open pane start;
+                // closing window `[start, start + size)` needs `wm >= start + size`.
+                let Some(&max_pane) = state.active_panes.keys().next_back() else {
+                    continue; // no open panes
+                };
+                let force_wm = max_pane.saturating_add(state.window_manager.window_size_ms());
+
+                let closed = state
+                    .window_manager
+                    .closed_windows(state.previous_watermark_ms, force_wm);
+
+                for window_start in &closed {
+                    let (_, window_end) = state.window_manager.window_bounds(*window_start);
+                    let pane_starts = state.window_manager.panes_for_window(*window_start);
+
+                    if let Some(accumulator) =
+                        merge_panes_for_window(&mut state.active_panes, &pane_starts)
+                    {
+                        let key = build_group_key_label_values(group_key);
+                        let output = PrecomputedOutput::new(
+                            *window_start as u64,
+                            window_end as u64,
+                            Some(key),
+                            *agg_id,
+                        );
+                        emit_batch.push((output, accumulator));
+                    }
+                }
+
+                if force_wm > state.previous_watermark_ms {
+                    state.previous_watermark_ms = force_wm;
+                }
+                state.prune_pane_wall_clock_starts();
+            }
+        }
+
+        if !emit_batch.is_empty() {
+            debug!(
+                "Worker {} shutdown force-close emitting {} outputs",
                 self.id,
                 emit_batch.len()
             );
@@ -2253,11 +2341,18 @@ aggregations:
         tx.send(WorkerMessage::Shutdown).await.unwrap();
         handle.await.unwrap();
 
-        let captured = sink.drain();
+        let mut captured = sink.drain();
+        // Two windows close:
+        //  1. [0, 10_000) — closed inline when the t=10_000 sample advanced
+        //     the watermark; contains only the post-update t=5_000 sample.
+        //  2. [10_000, 20_000) — left open by the watermark but force-closed on
+        //     shutdown; contains the t=10_000 sample. Before the shutdown
+        //     force-close this trailing window was silently lost.
+        captured.sort_by_key(|(o, _)| o.start_timestamp);
         assert_eq!(
             captured.len(),
-            1,
-            "one window should close after UpdateAggConfigs"
+            2,
+            "window [0,10_000) closes inline; [10_000,20_000) force-closes on shutdown"
         );
 
         let (output, acc) = &captured[0];
@@ -2270,11 +2365,26 @@ aggregations:
             .downcast_ref::<SumAccumulator>()
             .expect("should be SumAccumulator");
         // Pre-update sample (t=1000, val=1.0) was dropped — agg_id was unknown.
-        // Post-update sample (t=5000, val=2.0) is the only one aggregated.
+        // Post-update sample (t=5000, val=2.0) is the only one in this window.
         assert!(
             (sum_acc.sum - 2.0).abs() < 1e-10,
             "only post-update sample should be aggregated, got {}",
             sum_acc.sum
+        );
+
+        // The trailing window force-closed on shutdown holds the t=10_000
+        // sample (val=0.0).
+        let (trailing_output, trailing_acc) = &captured[1];
+        assert_eq!(trailing_output.start_timestamp, 10_000);
+        assert_eq!(trailing_output.end_timestamp, 20_000);
+        let trailing_sum = trailing_acc
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("should be SumAccumulator");
+        assert!(
+            trailing_sum.sum.abs() < 1e-10,
+            "trailing window should hold the t=10_000 sample (val=0.0), got {}",
+            trailing_sum.sum
         );
     }
 
@@ -2422,6 +2532,76 @@ aggregations:
             sink.len(),
             0,
             "grace=0 must disable the fallback — event-time-only semantics"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: shutdown force-close emits the trailing window
+    //
+    // The immediate-shutdown batch case: every record falls in one window and
+    // no later timestamp ever advances the watermark, so flush_all (with the
+    // wall-clock fallback disabled, grace=0) leaves the window open. On
+    // shutdown, force_close_all must close and emit it so the data reaches the
+    // store instead of being lost.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shutdown_force_close_emits_trailing_window() {
+        // 10s tumbling window; grace=0 isolates the force-close from the
+        // wall-clock fallback.
+        let cfg = make_agg_config(
+            7,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],
+        );
+        let agg_configs = HashMap::from([(7, cfg)]);
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker_with_grace(agg_configs, sink.clone(), 0);
+
+        // All samples land in window [0, 10_000); the watermark freezes below
+        // the window end because no later timestamp ever arrives.
+        for i in 0..5 {
+            worker
+                .process_group_samples(
+                    7,
+                    "",
+                    group_samples("cpu", vec![(1_000 + i as i64 * 100, 1.0)]),
+                )
+                .unwrap();
+        }
+
+        // A final flush must NOT close the window (event-time frozen, fallback
+        // disabled) — this is the bug the force-close fixes.
+        worker.flush_all().unwrap();
+        assert_eq!(
+            sink.len(),
+            0,
+            "trailing window must remain open after the final flush"
+        );
+
+        // Shutdown force-close closes and emits the trailing window.
+        worker.force_close_all().unwrap();
+        let captured = sink.drain();
+        assert_eq!(
+            captured.len(),
+            1,
+            "shutdown force-close must emit the trailing window"
+        );
+        let (output, _acc) = &captured[0];
+        assert_eq!(output.aggregation_id, 7);
+        assert_eq!(output.start_timestamp, 0);
+        assert_eq!(output.end_timestamp, 10_000);
+
+        // Idempotent: panes are drained, so a second force-close emits nothing.
+        worker.force_close_all().unwrap();
+        assert_eq!(
+            sink.len(),
+            0,
+            "force-close must be idempotent once panes are drained"
         );
     }
 }
