@@ -2495,11 +2495,7 @@ aggregations:
         // Idempotent: a window closed by the fallback drains its pane and its
         // wall-clock bookkeeping, so a subsequent flush must not re-emit.
         worker.flush_all().unwrap();
-        assert_eq!(
-            sink.len(),
-            0,
-            "already-closed window must not re-emit"
-        );
+        assert_eq!(sink.len(), 0, "already-closed window must not re-emit");
     }
 
     #[test]

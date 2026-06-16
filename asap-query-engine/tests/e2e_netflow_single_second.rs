@@ -111,8 +111,7 @@ async fn netflow_single_second_batch_is_not_lost_on_shutdown() {
     };
 
     let sink = Arc::new(CapturingOutputSink::new());
-    let sources: Vec<Box<dyn IngestSource>> =
-        vec![Box::new(JsonFileIngestSource::new(json_cfg))];
+    let sources: Vec<Box<dyn IngestSource>> = vec![Box::new(JsonFileIngestSource::new(json_cfg))];
     let engine = PrecomputeEngine::new(
         engine_config_grace_disabled(),
         streaming_config,
@@ -146,7 +145,11 @@ async fn netflow_single_second_batch_is_not_lost_on_shutdown() {
         output.start_timestamp,
         output.end_timestamp
     );
-    assert_eq!(output.start_timestamp % 1_000, 0, "window must be second-aligned");
+    assert_eq!(
+        output.start_timestamp % 1_000,
+        0,
+        "window must be second-aligned"
+    );
 
     let sum_acc = acc
         .as_any()
