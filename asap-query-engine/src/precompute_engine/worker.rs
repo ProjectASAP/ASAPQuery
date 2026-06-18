@@ -249,12 +249,23 @@ impl Worker {
                                 if state.previous_watermark_ms == i64::MIN {
                                     continue; // No samples received — nothing to emit.
                                 }
-                                // Force-close all open windows by advancing the watermark
-                                // to i64::MAX. No new samples will arrive for this group.
+                                // Force-close all open windows; no new samples will arrive
+                                // for this removed agg_id. Advance to a *finite* bound
+                                // (`max_pane + window_size_ms`), NOT `i64::MAX`:
+                                // `closed_windows` enumerates window starts one slide at a
+                                // time, so `i64::MAX` would loop ~`i64::MAX / slide` times
+                                // and overflow (see `force_close_all`).
                                 let mut active_panes = state.active_panes;
-                                let closed = state
-                                    .window_manager
-                                    .closed_windows(state.previous_watermark_ms, i64::MAX);
+                                let closed = match active_panes.keys().next_back() {
+                                    Some(&max_pane) => {
+                                        let force_wm = max_pane
+                                            .saturating_add(state.window_manager.window_size_ms());
+                                        state
+                                            .window_manager
+                                            .closed_windows(state.previous_watermark_ms, force_wm)
+                                    }
+                                    None => Vec::new(), // no open panes
+                                };
 
                                 for window_start in &closed {
                                     let (_, window_end) =
@@ -2387,6 +2398,102 @@ aggregations:
             trailing_sum.sum.abs() < 1e-10,
             "trailing window should hold the t=10_000 sample (val=0.0), got {}",
             trailing_sum.sum
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: removing an agg_id force-closes its open windows with a finite
+    // bound — at realistic (epoch-ms) timestamps.
+    //
+    // The removed-agg cleanup used to advance the watermark to `i64::MAX`.
+    // `closed_windows` enumerates window starts one slide at a time, so with a
+    // real epoch-ms watermark that loop runs ~`i64::MAX / slide` iterations and
+    // overflows `start + window_size_ms` (panics in debug) — the bug the
+    // reviewer flagged. With the finite `max_pane + window_size_ms` bound this
+    // completes instantly and emits exactly the open window.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_update_agg_configs_removed_id_force_closes_at_epoch_ms_timestamps() {
+        // Realistic event time: ~2023-11-14T22:13:20Z in ms. With the old
+        // i64::MAX code this is what made closed_windows blow up.
+        let base_ms: i64 = 1_700_000_000_000;
+        let window_secs = 10u64;
+
+        let config = make_agg_config(
+            1,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            window_secs,
+            0,
+            vec![],
+        );
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(1u64, Arc::new(config));
+        let worker = Worker::new(
+            0,
+            rx,
+            sink.clone(),
+            agg_configs,
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::Drop,
+                wall_clock_grace_period_ms: 0,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
+        );
+        let handle = tokio::spawn(async move { worker.run().await });
+
+        // Open a window at a large epoch-ms timestamp; nothing advances the
+        // watermark past it, so it's still open when the agg_id is removed.
+        tx.send(WorkerMessage::GroupSamples {
+            agg_id: 1,
+            group_key: String::new(),
+            samples: vec![("cpu".to_string(), base_ms, 7.0)],
+            ingest_received_at: std::time::Instant::now(),
+        })
+        .await
+        .unwrap();
+
+        // Remove agg_id=1 from the config → triggers the removed-agg force-close.
+        tx.send(WorkerMessage::UpdateAggConfigs(HashMap::new()))
+            .await
+            .unwrap();
+
+        tx.send(WorkerMessage::Shutdown).await.unwrap();
+        // If the finite bound regressed to i64::MAX this join would hang or
+        // panic on overflow instead of completing.
+        handle.await.unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(
+            captured.len(),
+            1,
+            "removing the agg_id must force-close the single open window"
+        );
+        let (output, acc) = &captured[0];
+        let window_ms = window_secs as i64 * 1_000;
+        let expected_start = base_ms - (base_ms % window_ms);
+        assert_eq!(output.start_timestamp as i64, expected_start);
+        assert_eq!(output.end_timestamp as i64, expected_start + window_ms);
+        let sum_acc = acc
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("should be SumAccumulator");
+        assert!(
+            (sum_acc.sum - 7.0).abs() < 1e-10,
+            "force-closed window should hold the ingested sample (val=7.0), got {}",
+            sum_acc.sum
         );
     }
 
