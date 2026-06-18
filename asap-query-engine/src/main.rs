@@ -209,6 +209,7 @@ async fn main() -> Result<()> {
             pass_raw_samples: false,
             raw_mode_aggregation_id: 0,
             late_data_policy: LateDataPolicy::Drop,
+            wall_clock_grace_period_ms: config.precompute_engine.wall_clock_grace_period_ms,
         };
         let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
         let sources: Vec<Box<dyn IngestSource>> = match &config.ingest {

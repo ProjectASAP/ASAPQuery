@@ -310,6 +310,12 @@ pub struct PrecomputeSettings {
     pub flush_interval_ms: u64,
     pub channel_buffer_size: usize,
     pub dump_precomputes: bool,
+    /// Wall-clock grace period (ms) for the flush fallback that force-closes
+    /// idle windows when event-time stagnates (e.g. one-shot batch ingest
+    /// where every record shares a timestamp). Set to <= 0 to disable and
+    /// keep strict event-time-only semantics. See
+    /// `PrecomputeEngineConfig::wall_clock_grace_period_ms`.
+    pub wall_clock_grace_period_ms: i64,
 }
 
 impl Default for PrecomputeSettings {
@@ -321,6 +327,7 @@ impl Default for PrecomputeSettings {
             flush_interval_ms: 1000,
             channel_buffer_size: 10000,
             dump_precomputes: false,
+            wall_clock_grace_period_ms: 5000,
         }
     }
 }

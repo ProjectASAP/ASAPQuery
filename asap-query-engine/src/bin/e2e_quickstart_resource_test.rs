@@ -234,6 +234,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pass_raw_samples: false,
         raw_mode_aggregation_id: 0,
         late_data_policy: LateDataPolicy::Drop,
+        wall_clock_grace_period_ms: 5_000,
     };
     let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
     let sources: Vec<Box<dyn IngestSource>> =

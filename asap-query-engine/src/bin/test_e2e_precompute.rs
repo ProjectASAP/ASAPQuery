@@ -151,6 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pass_raw_samples: false,
         raw_mode_aggregation_id: 0,
         late_data_policy: LateDataPolicy::Drop,
+        wall_clock_grace_period_ms: 5000,
     };
     let output_sink = Arc::new(StoreOutputSink::new(store.clone()));
     let sources: Vec<Box<dyn IngestSource>> =
@@ -299,6 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pass_raw_samples: true,
         raw_mode_aggregation_id: raw_agg_id,
         late_data_policy: LateDataPolicy::Drop,
+        wall_clock_grace_period_ms: 5000,
     };
     let raw_sink = Arc::new(RawPassthroughSink::new(store.clone()));
     let raw_sources: Vec<Box<dyn IngestSource>> =
@@ -655,6 +657,7 @@ async fn run_single_bench(
         pass_raw_samples: false,
         raw_mode_aggregation_id: 0,
         late_data_policy: LateDataPolicy::Drop,
+        wall_clock_grace_period_ms: 5000,
     };
     let sources: Vec<Box<dyn IngestSource>> =
         vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))];

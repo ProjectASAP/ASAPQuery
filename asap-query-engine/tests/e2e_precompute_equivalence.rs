@@ -153,6 +153,9 @@ fn engine_config() -> PrecomputeEngineConfig {
         pass_raw_samples: false,
         raw_mode_aggregation_id: 0,
         late_data_policy: LateDataPolicy::Drop,
+        // Strict event-time semantics for the equivalence comparison vs Arroyo
+        // (disable the wall-clock fallback so timing can't perturb output).
+        wall_clock_grace_period_ms: 0,
     }
 }
 
