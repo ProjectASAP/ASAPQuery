@@ -15,9 +15,24 @@ pub struct Aqe {
     pub query_strings: Vec<String>,
 
     /// Query frequency in Hz: f_a = Σ_{r ∈ R_a} 1/T_r.
-    /// Converts per-query cost into a rate so it is commensurate with the
-    /// continuously-accruing IngestCost when forming the MIP objective.
+    /// Used in the MIP objective to convert per-query QueryCost into a cost
+    /// rate (cost/sec) commensurate with the continuously-accruing IngestCost.
+    /// Represents the total query load from all dashboards independently
+    /// hitting the sketch.
     pub query_frequency_hz: f64,
+
+    /// Minimum repeat interval across all RQEs that reference this AQE (secs).
+    /// Determines the freshness constraint on the window size: W ≤ min_t_repeat
+    /// ensures a completed window is available for every dashboard's cycle.
+    /// When multiple RQEs share this AQE, the fastest dashboard is the binding
+    /// constraint.
+    pub min_t_repeat_secs: u64,
+
+    /// GCD of all repeat intervals across RQEs that reference this AQE (secs).
+    /// The natural candidate for the slide interval S: windows that complete
+    /// every GCD seconds align harmonically with all dashboard refresh cycles,
+    /// ensuring every dashboard can always be served a fresh result on-cycle.
+    pub t_repeat_gcd_secs: u64,
 }
 
 /// How an AQE is answered from its assigned streaming config.
