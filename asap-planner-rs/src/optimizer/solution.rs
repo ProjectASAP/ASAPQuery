@@ -1,0 +1,122 @@
+use std::collections::HashMap;
+
+use asap_types::aggregation_config::AggregationConfig;
+use asap_types::query_requirements::QueryRequirements;
+
+/// An atomic query expression: one leaf aggregation extracted from a QE tree,
+/// together with the optimizer-level metadata needed to assign it a config.
+#[derive(Debug, Clone)]
+pub struct Aqe {
+    /// What the query needs (metric, statistics, range, labels, spatial filter).
+    pub requirements: QueryRequirements,
+
+    /// Original PromQL/SQL query strings from all RQEs that contain this AQE.
+    /// Preserved for use by the translator when building InferenceConfig.
+    pub query_strings: Vec<String>,
+
+    /// Query frequency in Hz: f_a = Σ_{r ∈ R_a} 1/T_r.
+    /// Converts per-query cost into a rate so it is commensurate with the
+    /// continuously-accruing IngestCost when forming the MIP objective.
+    pub query_frequency_hz: f64,
+}
+
+/// How an AQE is answered from its assigned streaming config.
+///
+/// Determined by (ingest_type, W vs range_a, sketch algebra) — not a free
+/// decision variable. See the compatibility table in the design doc.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryMethod {
+    /// W = range_a: one completed window covers the query range exactly.
+    /// Direct read, no merge or subtract needed.
+    Neither,
+
+    /// W < range_a, sketch is mergeable: combine `num_windows` retained
+    /// tumbling sub-windows at query time. Cost scales linearly with num_windows.
+    Merge { num_windows: u64 },
+
+    /// W < range_a, sketch is subtractable: subtract two prefix-sum checkpoints.
+    /// O(1) cost regardless of range_a/W.
+    Subtract,
+
+    /// No streaming config deployed for this AQE — query raw/exact data at
+    /// query time. Corresponds to the EXACT_a fallback (IngestCost = 0, Error = 0).
+    Exact,
+}
+
+/// The assignment of a single AQE to a streaming config (or EXACT fallback).
+#[derive(Debug, Clone)]
+pub struct AqeAssignment {
+    pub aqe: Aqe,
+
+    /// ID of the deployed config that serves this AQE.
+    /// `None` means the EXACT_a fallback (no streaming config, raw query).
+    pub aggregation_id: Option<u64>,
+
+    /// How this AQE's answer is derived from the assigned config.
+    pub query_method: QueryMethod,
+
+    /// Estimated cost rate for this assignment: f_a * QueryCost(a, g).
+    /// Zero for Exact assignments (IngestCost is also zero).
+    pub estimated_query_cost_per_sec: f64,
+}
+
+/// The output of the optimizer: a complete plan for a given RQE workload.
+///
+/// Contains the set of streaming configs to deploy and the assignment of every
+/// AQE to one of those configs (or to the EXACT fallback). A thin translator
+/// converts this into `StreamingConfig + InferenceConfig` deployment artifacts.
+#[derive(Debug, Clone)]
+pub struct OptimizerSolution {
+    /// Deployed streaming configs (y_g = 1 in the MIP). Keyed by aggregation_id.
+    /// Empty for all-EXACT solutions (Phase 1 scaffolding).
+    pub deployed_configs: HashMap<u64, AggregationConfig>,
+
+    /// One entry per deduplicated AQE across the full RQE workload.
+    pub assignments: Vec<AqeAssignment>,
+
+    /// Estimated steady-state ingestion cost rate across all deployed configs
+    /// (Σ_{g: y_g=1} IngestCost(g)).
+    pub estimated_ingest_cost_per_sec: f64,
+
+    /// Estimated total cost rate: ingest + query components combined.
+    pub estimated_total_cost_per_sec: f64,
+}
+
+impl OptimizerSolution {
+    /// Construct an all-EXACT solution: every AQE falls back to raw data,
+    /// no streaming configs are deployed. Used as the Phase 1 scaffolding baseline.
+    pub fn all_exact(aqes: Vec<Aqe>) -> Self {
+        let assignments = aqes
+            .into_iter()
+            .map(|aqe| AqeAssignment {
+                aqe,
+                aggregation_id: None,
+                query_method: QueryMethod::Exact,
+                estimated_query_cost_per_sec: 0.0,
+            })
+            .collect();
+
+        Self {
+            deployed_configs: HashMap::new(),
+            assignments,
+            estimated_ingest_cost_per_sec: 0.0,
+            estimated_total_cost_per_sec: 0.0,
+        }
+    }
+
+    /// Number of AQEs served by an approximate sketch (not EXACT fallback).
+    pub fn num_sketch_served(&self) -> usize {
+        self.assignments
+            .iter()
+            .filter(|a| a.query_method != QueryMethod::Exact)
+            .count()
+    }
+
+    /// Number of AQEs falling back to exact/raw computation.
+    pub fn num_exact_fallback(&self) -> usize {
+        self.assignments
+            .iter()
+            .filter(|a| a.query_method == QueryMethod::Exact)
+            .count()
+    }
+}
