@@ -39,6 +39,7 @@ Task-oriented guides for common operations:
 - [Manual Stack Run for Prometheus](03-how-to-guides/operations/manual-stack-run-prometheus.md) - Run ASAP components manually to accelerate Prometheus
 - [Bootstrap Config from Query Log](03-how-to-guides/operations/bootstrap-config-from-query-log.md) - Auto-generate sketch configs from Prometheus query traffic
 - [Try asap-planner on a SQL Workload](03-how-to-guides/operations/try-asap-planner-sql.md) - Check SQL workload amenability without running the full stack
+- [Try asap-planner on a PromQL Workload](03-how-to-guides/operations/try-asap-planner-promql.md) - Check PromQL workload amenability without running the full stack
 - [Manual Stack Run for Clickhouse](03-how-to-guides/operations/manual-stack-run-clickhouse.md) - Run ASAP components manually to accelerate Clickhouse
 - [Deploy to CloudLab](03-how-to-guides/operations/deploy-cloudlab.md) - Deployment guide
 - [Troubleshooting](03-how-to-guides/operations/troubleshooting.md) - Common issues & solutions
