@@ -6,6 +6,28 @@ use std::collections::HashSet;
 use parse_datetime::parse_datetime;
 use sqlparser::ast::Value::SingleQuotedString;
 
+/// One side of a half-open `time >= A AND time < B` range, carrying its
+/// resolved timestamp (seconds).
+enum TimeBound {
+    /// `time >= ts` — inclusive lower bound.
+    Lower(f64),
+    /// `time < ts` — exclusive upper bound.
+    Upper(f64),
+}
+
+/// Mirror a comparison operator for operand swaps (`A <= time` ≡ `time >= A`).
+/// Only the operators relevant to half-open time ranges are mirrored; anything
+/// else returns `None` and is rejected upstream.
+fn mirror_operator(op: &BinaryOperator) -> Option<BinaryOperator> {
+    match op {
+        BinaryOperator::Lt => Some(BinaryOperator::Gt),
+        BinaryOperator::LtEq => Some(BinaryOperator::GtEq),
+        BinaryOperator::Gt => Some(BinaryOperator::Lt),
+        BinaryOperator::GtEq => Some(BinaryOperator::LtEq),
+        _ => None,
+    }
+}
+
 pub struct SQLPatternParser {
     #[allow(dead_code)]
     schema: SQLSchema,
@@ -523,9 +545,10 @@ impl SQLPatternParser {
                 _ => None,
             },
 
-            _ => {
-                panic!("invalid time syntax {:?}", highlow);
-            }
+            // Unrecognized time syntax: return None so the query is treated as
+            // unmatched (and forwarded / reported as unsupported) rather than
+            // crashing the engine or planner.
+            _ => None,
         }
     }
 
@@ -556,8 +579,86 @@ impl SQLPatternParser {
 
                 Some(TimeInfo::new(col_name, start, duration))
             }
+
+            // Half-open range: `time >= <start> AND time < <end>`.
+            //
+            // ClickHouse executes `>=`/`<` as a true half-open `[start, end)`
+            // scan, which is exactly how ASAP selects precompute windows — so a
+            // query written this way answers the same question on both backends
+            // (unlike inclusive `BETWEEN`). We accept STRICTLY `>=` for the lower
+            // bound and `<` for the upper bound; any other operator combination
+            // (`>`, `<=`) returns None and is treated as unmatched, to avoid a
+            // silent off-by-one against the ClickHouse baseline.
+            Expr::BinaryOp {
+                left,
+                op: BinaryOperator::And,
+                right,
+            } => self.get_time_info_from_half_open(left, right),
+
             _ => None,
         }
+    }
+
+    /// Parse a `time >= A AND time < B` conjunction into `TimeInfo`.
+    ///
+    /// The two comparisons may appear in either order, and the time column may
+    /// be on either side of each comparison. Both comparisons must reference the
+    /// same column. Returns `None` unless there is exactly one `>=` lower bound
+    /// and exactly one `<` upper bound.
+    fn get_time_info_from_half_open(&self, left: &Expr, right: &Expr) -> Option<TimeInfo> {
+        let (lcol, lbound) = self.parse_time_comparison(left)?;
+        let (rcol, rbound) = self.parse_time_comparison(right)?;
+
+        if lcol != rcol {
+            return None;
+        }
+
+        let (start, end) = match (lbound, rbound) {
+            (TimeBound::Lower(start), TimeBound::Upper(end)) => (start, end),
+            (TimeBound::Upper(end), TimeBound::Lower(start)) => (start, end),
+            // Two lower bounds or two upper bounds is not a valid range.
+            _ => return None,
+        };
+
+        let duration = end - start;
+
+        Some(TimeInfo::new(lcol, start, duration))
+    }
+
+    /// Parse a single comparison of the form `time >= <expr>` or `time < <expr>`
+    /// (column on either side) into `(column_name, TimeBound)`.
+    ///
+    /// Strictly accepts only `>=` (lower) and `<` (upper); every other operator
+    /// returns `None`.
+    fn parse_time_comparison(&self, expr: &Expr) -> Option<(String, TimeBound)> {
+        let Expr::BinaryOp { left, op, right } = expr else {
+            return None;
+        };
+
+        // Normalize so the column identifier is on the left. If the column is on
+        // the right instead, flip the operator to its mirror so the bound
+        // classification below stays correct (e.g. `A <= time` ≡ `time >= A`).
+        let (col_expr, op, ts_expr) = match (left.as_ref(), right.as_ref()) {
+            (Expr::Identifier(_), _) => (left.as_ref(), op.clone(), right.as_ref()),
+            (_, Expr::Identifier(_)) => (right.as_ref(), mirror_operator(op)?, left.as_ref()),
+            _ => return None,
+        };
+
+        let col_name = match col_expr {
+            Expr::Identifier(ident) => ident.value.clone(),
+            _ => return None,
+        };
+
+        let ts = self.get_timestamp_from_between_highlow(ts_expr)?;
+
+        let bound = match op {
+            BinaryOperator::GtEq => TimeBound::Lower(ts),
+            BinaryOperator::Lt => TimeBound::Upper(ts),
+            // `>` and `<=` are intentionally rejected (see get_time_info).
+            _ => return None,
+        };
+
+        Some((col_name, bound))
     }
 
     fn parse_dateadd(&self, func: &Function) -> Option<f64> {

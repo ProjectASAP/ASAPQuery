@@ -1217,4 +1217,158 @@ mod tests {
             Some(QueryError::InvalidValueCol),
         );
     }
+
+    // ── Half-open range: `time >= A AND time < B` ────────────────────────────
+    //
+    // ClickHouse runs `>=`/`<` as a true half-open `[start, end)` scan, which is
+    // how ASAP selects precompute windows — so a query written this way is
+    // semantically equivalent on both backends (issue #401). We accept STRICTLY
+    // `>=` (lower) + `<` (upper); any other operator combination is rejected.
+
+    /// A half-open `>=/<` clause must produce the same `(start, duration)` as the
+    /// equivalent inclusive-looking `BETWEEN` (downstream window selection is
+    /// identical because both reduce to the same TimeInfo).
+    #[test]
+    fn test_half_open_matches_between_time_info() {
+        let between = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .expect("BETWEEN query should parse");
+
+        let half_open = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -10, '2025-10-01 00:00:10') AND time < '2025-10-01 00:00:10' \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .expect("half-open query should parse");
+
+        assert_eq!(
+            half_open.time_info.get_time_col_name(),
+            between.time_info.get_time_col_name()
+        );
+        assert_eq!(
+            half_open.time_info.get_start(),
+            between.time_info.get_start()
+        );
+        assert_eq!(
+            half_open.time_info.get_duration(),
+            between.time_info.get_duration()
+        );
+        assert_eq!(half_open.time_info.get_duration(), 10.0);
+    }
+
+    /// The two comparisons may appear in either order.
+    #[test]
+    fn test_half_open_reversed_operand_order() {
+        let q = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time < '2025-10-01 00:00:10' AND time >= DATEADD(s, -10, '2025-10-01 00:00:10') \
+             GROUP BY L1",
+        )
+        .expect("reversed-order half-open query should parse");
+        assert_eq!(q.time_info.get_duration(), 10.0);
+    }
+
+    /// The time column may sit on the right-hand side of each comparison
+    /// (`A <= time AND B > time` ≡ `time >= A AND time < B`).
+    #[test]
+    fn test_half_open_column_on_right() {
+        let q = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE DATEADD(s, -10, '2025-10-01 00:00:10') <= time AND '2025-10-01 00:00:10' > time \
+             GROUP BY L1",
+        )
+        .expect("column-on-right half-open query should parse");
+        assert_eq!(q.time_info.get_duration(), 10.0);
+    }
+
+    /// NOW()-relative half-open ranges parse (used by query templates).
+    #[test]
+    fn test_half_open_now_relative() {
+        let q = parse_sql_query(
+            "SELECT AVG(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -1, NOW()) AND time < NOW() \
+             GROUP BY L1",
+        )
+        .expect("NOW()-relative half-open query should parse");
+        assert_eq!(q.time_info.get_duration(), 1.0);
+    }
+
+    /// A half-open query classifies through the matcher exactly like its BETWEEN
+    /// counterpart (1s span over a label subset ⇒ Spatial).
+    #[test]
+    fn test_half_open_pattern_matching() {
+        check_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -1, NOW()) AND time < NOW() \
+             GROUP BY L1",
+            vec![QueryType::Spatial],
+            None,
+        );
+    }
+
+    /// A half-open template and a half-open incoming query (absolute timestamps)
+    /// match via duration-based `TimeInfo::matches_pattern`.
+    #[test]
+    fn test_half_open_template_matches_absolute_query() {
+        let template = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -10, NOW()) AND time < NOW() \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .unwrap();
+        let incoming = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -10, '2025-10-01 00:00:10') AND time < '2025-10-01 00:00:10' \
+             GROUP BY L1, L2, L3, L4",
+        )
+        .unwrap();
+        assert!(incoming.matches_sql_pattern(&template));
+    }
+
+    /// Strict rejection: `>` lower bound is not accepted.
+    #[test]
+    fn test_half_open_rejects_gt_lower_bound() {
+        assert!(parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time > DATEADD(s, -10, '2025-10-01 00:00:10') AND time < '2025-10-01 00:00:10' \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
+
+    /// Strict rejection: `<=` upper bound is not accepted.
+    #[test]
+    fn test_half_open_rejects_lte_upper_bound() {
+        assert!(parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -10, '2025-10-01 00:00:10') AND time <= '2025-10-01 00:00:10' \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
+
+    /// Two lower bounds is not a valid range.
+    #[test]
+    fn test_half_open_rejects_two_lower_bounds() {
+        assert!(parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -10, '2025-10-01 00:00:10') AND time >= '2025-10-01 00:00:10' \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
+
+    /// Both comparisons must reference the same column.
+    #[test]
+    fn test_half_open_rejects_mismatched_columns() {
+        assert!(parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -10, '2025-10-01 00:00:10') AND L1 < '2025-10-01 00:00:10' \
+             GROUP BY L1",
+        )
+        .is_none());
+    }
 }

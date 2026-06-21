@@ -232,6 +232,90 @@ mod tests {
         );
     }
 
+    /// Issue #401: a half-open `time >= A AND time < B` SQL query must build the
+    /// exact same execution context (window timestamps + aggregation) as the
+    /// equivalent `BETWEEN A AND B` query. ClickHouse runs `>=`/`<` as a true
+    /// half-open `[A, B)` scan — matching ASAP's window selection — so the two
+    /// query forms answer the identical question.
+    #[test]
+    fn test_half_open_equivalent_to_between() {
+        let scrape_interval = 1;
+        let promql_query = "sum_over_time(cpu_usage[10s])";
+        let between_query = "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4";
+        let half_open_query = "SELECT SUM(value) FROM cpu_usage \
+             WHERE time >= DATEADD(s, -10, '2025-10-01 00:00:00') AND time < '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4";
+
+        // The inference config stores the BETWEEN form as the template; the
+        // half-open incoming query resolves against it (duration-based match).
+        let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
+            .with_scrape_interval(scrape_interval)
+            .add_temporal_query(promql_query, between_query, 1, 10, WindowType::Tumbling)
+            .build_both();
+
+        let sql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            sql_config,
+            streaming_config,
+            scrape_interval,
+            QueryLanguage::sql,
+        );
+
+        // Fixed-date queries ignore query_time_sec (only NOW() consults it).
+        let between_context = sql_engine
+            .build_query_execution_context_sql(between_query.to_string(), 0.0)
+            .expect("Failed to build BETWEEN context");
+        let half_open_context = sql_engine
+            .build_query_execution_context_sql(half_open_query.to_string(), 0.0)
+            .expect("Failed to build half-open context");
+
+        assert_execution_context_equivalent(
+            &between_context,
+            &half_open_context,
+            "half_open_vs_between",
+        );
+    }
+
+    /// Strict rejection at the engine boundary: a `>`/`<=` combination is not a
+    /// recognized half-open range, so context building returns None (the engine
+    /// then forwards or reports unsupported, rather than silently using a
+    /// half-open window that wouldn't match the ClickHouse baseline).
+    #[test]
+    fn test_gt_lte_combination_not_matched() {
+        let scrape_interval = 1;
+        let promql_query = "sum_over_time(cpu_usage[10s])";
+        let between_query = "SELECT SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4";
+        let gt_lte_query = "SELECT SUM(value) FROM cpu_usage \
+             WHERE time > DATEADD(s, -10, '2025-10-01 00:00:00') AND time <= '2025-10-01 00:00:00' \
+             GROUP BY L1, L2, L3, L4";
+
+        let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
+            .with_scrape_interval(scrape_interval)
+            .add_temporal_query(promql_query, between_query, 1, 10, WindowType::Tumbling)
+            .build_both();
+
+        let sql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            sql_config,
+            streaming_config,
+            scrape_interval,
+            QueryLanguage::sql,
+        );
+
+        assert!(
+            sql_engine
+                .build_query_execution_context_sql(gt_lte_query.to_string(), 0.0)
+                .is_none(),
+            "`>`/`<=` must not be treated as a half-open range"
+        );
+    }
+
     #[test]
     fn test_spatial_of_temporal_sum_equivalence() {
         let scrape_interval = 1;
