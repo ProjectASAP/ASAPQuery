@@ -5,6 +5,8 @@ use asap_types::PromQLSchema;
 use crate::config::input::ControllerConfig;
 
 use super::aqe_extractor::{extract_aqes, Rqe};
+use super::cost_model::{AtomicCosts, CostWeights};
+use super::greedy::greedy_assign;
 use super::solution::OptimizerSolution;
 use super::translator::{translate, TranslationSummary};
 
@@ -30,6 +32,44 @@ pub fn run_all_exact_pipeline(
         num_sketch_assignments = summary.num_sketch_assignments,
         num_exact_fallbacks = summary.num_exact_fallbacks,
         "optimizer pipeline: all-EXACT solution produced"
+    );
+
+    translate(&solution)
+}
+
+/// Run the greedy optimizer pipeline (Phase 2): each AQE is assigned, independently,
+/// to its cheapest feasible candidate config (or to the EXACT fallback).
+///
+/// No cross-AQE sharing — every deployed sketch serves exactly one AQE, even
+/// if two AQEs could share one. The Phase 3 MIP finds sharing opportunities.
+///
+/// `rho_g` is a placeholder arrival rate applied uniformly to every candidate's
+/// IngestCost; real per-config rates need Prometheus scrape-rate × series-count
+/// data, which isn't wired up yet (see implementation plan TODOs).
+pub fn run_greedy_pipeline(
+    config: &ControllerConfig,
+    schema: &PromQLSchema,
+    scrape_interval_secs: u64,
+    rho_g: f64,
+) -> (StreamingConfig, InferenceConfig) {
+    let rqes = config_to_rqes(config);
+    let aqes = extract_aqes(&rqes, schema);
+    let solution = greedy_assign(
+        aqes,
+        scrape_interval_secs,
+        rho_g,
+        &AtomicCosts::default(),
+        &CostWeights::default(),
+    );
+
+    let summary = TranslationSummary::from_solution(&solution);
+    tracing::info!(
+        num_deployed_configs = summary.num_deployed_configs,
+        num_sketch_assignments = summary.num_sketch_assignments,
+        num_exact_fallbacks = summary.num_exact_fallbacks,
+        estimated_ingest_cost_per_sec = solution.estimated_ingest_cost_per_sec,
+        estimated_total_cost_per_sec = solution.estimated_total_cost_per_sec,
+        "optimizer pipeline: greedy solution produced"
     );
 
     translate(&solution)
@@ -86,6 +126,15 @@ mod tests {
         let (streaming, _inference) = run_all_exact_pipeline(&config, &schema);
         // All-EXACT: no streaming configs deployed.
         assert!(streaming.get_all_aggregation_configs().is_empty());
+    }
+
+    #[test]
+    fn greedy_pipeline_deploys_a_config_for_a_mergeable_aqe() {
+        let config = make_config(&[("min_over_time(metric[5m])", 60)]);
+        let schema = PromQLSchema::new();
+        let (streaming, inference) = run_greedy_pipeline(&config, &schema, 60, 1.0);
+        assert!(!streaming.get_all_aggregation_configs().is_empty());
+        assert!(!inference.query_configs.is_empty());
     }
 
     #[test]

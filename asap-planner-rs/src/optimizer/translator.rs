@@ -1,4 +1,6 @@
+use asap_types::aggregation_reference::AggregationReference;
 use asap_types::inference_config::InferenceConfig;
+use asap_types::query_config::QueryConfig;
 use asap_types::streaming_config::StreamingConfig;
 
 use super::solution::{OptimizerSolution, QueryMethod};
@@ -23,22 +25,26 @@ fn build_streaming_config(solution: &OptimizerSolution) -> StreamingConfig {
 fn build_inference_config(solution: &OptimizerSolution) -> InferenceConfig {
     use asap_types::enums::{CleanupPolicy, QueryLanguage};
 
-    // TODO (Phase 2+): populate query_configs from non-Exact assignments.
-    // For each assignment with a real aggregation_id, emit a QueryConfig that
-    // maps the original query strings to that aggregation_id, with the
-    // appropriate num_aggregates_to_retain derived from QueryMethod::Merge
-    // { num_windows } or 1 for Neither/Subtract.
-    //
-    // For Phase 1 (all-EXACT), all assignments have QueryMethod::Exact and
-    // aggregation_id = None, so no query_configs are emitted — the inference
-    // engine will fall back to raw querying for all AQEs.
-    let _ = solution
-        .assignments
-        .iter()
-        .filter(|a| a.query_method != QueryMethod::Exact)
-        .count(); // placeholder to suppress unused-variable warnings
+    let mut inference = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup);
 
-    InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup)
+    // For Phase 1 (all-EXACT), every assignment has aggregation_id = None, so
+    // this loop emits nothing — the inference engine falls back to raw
+    // querying for all AQEs, matching the all-EXACT solution.
+    for assignment in &solution.assignments {
+        let Some(aggregation_id) = assignment.aggregation_id else {
+            continue;
+        };
+        let retain = retention_count_for_assignment(&assignment.query_method);
+        let agg_ref = AggregationReference::new(aggregation_id, Some(retain));
+
+        for query_string in &assignment.aqe.query_strings {
+            inference
+                .query_configs
+                .push(QueryConfig::new(query_string.clone()).add_aggregation(agg_ref.clone()));
+        }
+    }
+
+    inference
 }
 
 /// For a Merge assignment, the number of retained windows to configure in the

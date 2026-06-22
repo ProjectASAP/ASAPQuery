@@ -32,7 +32,12 @@ impl Default for AtomicCosts {
     }
 }
 
-/// Global objective weights (w1..w4 in the design doc). Calibration punted post-v1.
+/// Global objective weights (w1..w4 in the design doc). Real calibration (from
+/// actual cloud $/byte-sec and $/cpu-sec) is punted post-v1; defaults below
+/// just reflect that RAM-held-over-time is several orders of magnitude
+/// cheaper per unit than CPU-time (e.g. ~$5/GB-month vs ~$0.04/vCPU-hour is
+/// roughly a 1e6 ratio), so memory weights are scaled down accordingly rather
+/// than left equal to CPU weights.
 #[derive(Debug, Clone, Copy)]
 pub struct CostWeights {
     pub ingest_mem: f64,
@@ -44,9 +49,9 @@ pub struct CostWeights {
 impl Default for CostWeights {
     fn default() -> Self {
         Self {
-            ingest_mem: 1.0,
+            ingest_mem: 1e-9,
             ingest_cpu: 1.0,
-            query_mem: 1.0,
+            query_mem: 1e-9,
             query_cpu: 1.0,
         }
     }
