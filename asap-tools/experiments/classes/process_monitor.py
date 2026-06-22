@@ -54,6 +54,11 @@ class MyMonitor(multiprocessing.Process):
         assert len(self.pids_to_monitor) == len(self.keywords)
 
         self.psutil_handles = {pid: psutil.Process(pid) for pid in self.pids_to_monitor}
+        # children() returns a fresh Process object each call, which would reset
+        # cpu_percent()'s internal delta tracking every poll. Cache one handle per
+        # child pid so cpu_percent() deltas accumulate across polls like they do
+        # for the seed pids above.
+        self.child_handles = {}
 
         self.pid_monitor_map = {}
         for pid, keyword in zip(self.pids_to_monitor, self.keywords):
@@ -202,13 +207,15 @@ class MyMonitor(multiprocessing.Process):
                         for child in p.children(recursive=True):
                             if child.pid not in self.pid_monitor_map:
                                 self.add_child_pid_to_map(pid, child.pid)
-                            iteration_info += self.update_pid_monitor_map(child)
+                                self.child_handles[child.pid] = child
+                            handle = self.child_handles[child.pid]
+                            iteration_info += self.update_pid_monitor_map(handle)
                             if (
                                 self.thread_attribution_keyword is not None
-                                and self.pid_monitor_map[child.pid]["keyword"]
+                                and self.pid_monitor_map[handle.pid]["keyword"]
                                 == self.thread_attribution_keyword
                             ):
-                                self._compute_thread_group_cpu(child.pid, elapsed)
+                                self._compute_thread_group_cpu(handle.pid, elapsed)
 
                 self.update_hooks(iteration_info)
                 stop = self.pipe.poll(self.interval)
