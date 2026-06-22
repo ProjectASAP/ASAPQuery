@@ -12,6 +12,11 @@ A framework for running end-to-end distributed systems experiments on CloudLab, 
   - Ubuntu
   - Python 3.8+
   - Local clone of `ASAPQuery` repo (at `$REPO_ROOT`)
+  - Dependencies for running the experiment orchestrators (`experiment_run_e2e.py`, `experiment_run_clickhouse.py`, etc.):
+    ```bash
+    cd $REPO_ROOT/asap-tools/experiments
+    ./setup_dependencies.sh
+    ```
 
 - **CloudLab:**
   - Active experiment with N nodes
