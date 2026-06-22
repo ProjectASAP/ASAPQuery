@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "asap-planner"
 path = "src/main.rs"
 
+[[bin]]
+name = "asap-optimizer-cli"
+path = "src/bin/optimizer_cli.rs"
+
 [dependencies]
 asap_types.workspace = true
 promql_utilities.workspace = true
