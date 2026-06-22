@@ -285,6 +285,65 @@ fn temporal_quantile() {
     assert_eq!(out.inference_cleanup_param(q), Some(1));
 }
 
+// ── Half-open time range: `time >= A AND time < B` (issue #408) ───────────────
+//
+// The planner shares the SQL time-clause parser with the query engine, so the
+// half-open form must produce a plan identical to the equivalent `BETWEEN`.
+// These tests close the end-to-end loop at the planner layer and guard against
+// future parser refactors silently dropping half-open support.
+
+/// Half-open `time >= DATEADD(s, -300, NOW()) AND time < NOW()` must generate
+/// the exact same plan as the `BETWEEN`-based `temporal_quantile` test
+/// (DatasketchesKLL, window = 300 s, grouping = [datacenter],
+/// rollup = [hostname, region], cleanup = 1).
+#[test]
+fn temporal_quantile_half_open() {
+    let q = "SELECT quantile(0.95)(cpu_usage) FROM metrics_table WHERE time >= DATEADD(s, -300, NOW()) AND time < NOW() GROUP BY datacenter";
+    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("DatasketchesKLL"));
+    assert!(!out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert_eq!(
+        out.aggregation_table_name("DatasketchesKLL"),
+        Some("metrics_table".to_string())
+    );
+    assert_eq!(
+        out.aggregation_value_column("DatasketchesKLL"),
+        Some("cpu_usage".to_string())
+    );
+    let mut rollup = out.aggregation_labels("DatasketchesKLL", "rollup");
+    rollup.sort();
+    assert_eq!(rollup, vec!["hostname".to_string(), "region".to_string()]);
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "grouping"),
+        vec!["datacenter".to_string()]
+    );
+    assert_eq!(
+        out.aggregation_labels("DatasketchesKLL", "aggregated"),
+        Vec::<String>::new()
+    );
+    assert_eq!(out.inference_cleanup_param(q), Some(1));
+}
+
+/// Strict operator policy at the planner layer: a `>` lower bound / `<=` upper
+/// bound combination is not a recognized half-open range, so the time clause
+/// fails to parse and the controller surfaces a `SqlParse` error rather than
+/// generating a plan with the wrong (silently half-open) window.
+#[test]
+fn half_open_gt_lte_returns_sql_parse_error() {
+    let q = "SELECT quantile(0.95)(cpu_usage) FROM metrics_table WHERE time > DATEADD(s, -300, NOW()) AND time <= NOW() GROUP BY datacenter";
+    let result = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+        .unwrap()
+        .generate();
+    assert!(matches!(result, Err(ControllerError::SqlParse(_))));
+}
+
 // ── Elastic SQL syntax variants ───────────────────────────────────────────────
 //
 // These three tests exercise syntactic forms used by Elastic:
