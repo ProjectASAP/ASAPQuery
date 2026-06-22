@@ -13,3 +13,6 @@ THIS_DIR=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")
 sudo apt-get update
 sudo apt-get install -y python3-pip rsync openssh-client
 pip3 install --user -r "${THIS_DIR}/requirements.txt"
+
+# promql_utilities (used by post_experiment/) isn't on PyPI, install local editable copy
+pip3 install --user -e "${THIS_DIR}/../../asap-common/dependencies/py/promql_utilities"
