@@ -14,7 +14,7 @@ pub struct AQE {
     /// Preserved for use by the translator when building InferenceConfig.
     pub query_strings: Vec<String>,
 
-    /// Query frequency in Hz: f_a (this field) = Σ_{r ∈ R_a} 1/T_r.
+    /// Query frequency in Hz: this field = Σ_{r ∈ R_a} 1/T_r.
     /// Used in the MIP objective to convert per-query QueryCost into a cost
     /// rate (cost/sec) commensurate with the continuously-accruing IngestCost.
     /// Represents the total query load from all dashboards independently
@@ -70,8 +70,7 @@ pub struct AQEAssignment {
     /// How this AQE's answer is derived from the assigned config.
     pub query_method: QueryMethod,
 
-    /// Estimated cost rate for this assignment: f_a * QueryCost(a, g), where
-    /// f_a is `aqe.query_frequency_hz`.
+    /// Estimated cost rate for this assignment: QueryCost(a, g) * `aqe.query_frequency_hz`.
     /// Zero for Exact assignments (IngestCost is also zero).
     pub estimated_query_cost_per_sec: f64,
 }
