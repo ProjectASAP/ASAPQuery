@@ -1789,6 +1789,103 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Test: keyed accumulator with a numeric (non-label) value_column.
+    // Regression guard for the value_column resolution change — existing keyed
+    // aggregations (MultipleSum/top-k) set value_column to the wire scalar
+    // (e.g. pkt_len), which is NOT carried as a label, so the wire value must
+    // still flow through unchanged while the key comes from aggregated labels.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_keyed_accumulator_numeric_value_column_uses_wire_value() {
+        // Like planner output for `SUM(pkt_len) GROUP BY dstip`:
+        // grouping=[] (one output group), aggregated=[dstip] (key inside sketch),
+        // value_column=pkt_len (the wire scalar, never sent as a label).
+        let mut config = make_agg_config_full(
+            5,
+            "netflow_table",
+            AggregationType::MultipleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],        // grouping: empty — one output group
+            vec!["dstip"], // aggregated: dstip is the key INSIDE the sketch
+        );
+        config.value_column = Some("pkt_len".to_string());
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(5, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        // Two samples with the same dstip and one with a different dstip. The
+        // summed values are the WIRE scalars (100+200 for A, 50 for B); if
+        // resolution wrongly substituted dstip, the sums would be garbage.
+        worker
+            .process_group_samples(
+                5,
+                "",
+                vec![
+                    ("netflow_table{dstip=\"A\"}".to_string(), 1000, 100.0),
+                    ("netflow_table{dstip=\"A\"}".to_string(), 2000, 200.0),
+                    ("netflow_table{dstip=\"B\"}".to_string(), 3000, 50.0),
+                ],
+            )
+            .unwrap();
+
+        // Close the window [0, 10000).
+        worker
+            .process_group_samples(
+                5,
+                "",
+                group_samples("netflow_table{dstip=\"A\"}", vec![(10000, 0.0)]),
+            )
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1, "one group → one output");
+
+        let (_output, acc) = &captured[0];
+        let ms_acc = acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("should be MultipleSumAccumulator");
+
+        assert_eq!(
+            ms_acc.sums.len(),
+            2,
+            "two dstip keys inside one accumulator"
+        );
+
+        let mut found_a = false;
+        let mut found_b = false;
+        for (key, &sum) in &ms_acc.sums {
+            if key.labels == vec!["A".to_string()] {
+                assert!(
+                    (sum - 300.0).abs() < 1e-10,
+                    "dstip=A must sum the wire pkt_len values (100+200), got {sum}"
+                );
+                found_a = true;
+            }
+            if key.labels == vec!["B".to_string()] {
+                assert!(
+                    (sum - 50.0).abs() < 1e-10,
+                    "dstip=B must sum the wire pkt_len value (50), got {sum}"
+                );
+                found_b = true;
+            }
+        }
+        assert!(found_a, "expected key A inside accumulator");
+        assert!(found_b, "expected key B inside accumulator");
+    }
+
+    // -----------------------------------------------------------------------
     // Test: Arroyo KLL equivalence — same output as Arroyo pipeline
     // -----------------------------------------------------------------------
     #[test]
