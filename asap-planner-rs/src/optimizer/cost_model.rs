@@ -141,9 +141,9 @@ pub fn query_cost(
     weights.query_cpu * cpu + weights.query_mem * mem
 }
 
-/// Total cost rate contributed by assigning AQE `a` (with frequency `f_a`) to
-/// `candidate`: IngestCost(g) + f_a * QueryCost(a,g). This is the per-(a,g)
-/// term the greedy/MIP solver minimizes.
+/// Total cost rate contributed by assigning AQE `a` (with frequency `f_a` =
+/// `a.query_frequency_hz`) to `candidate`: IngestCost(g) + f_a * QueryCost(a,g).
+/// This is the per-(a,g) term the greedy/MIP solver minimizes.
 pub fn total_cost_rate(
     a: &AQE,
     candidate: &CandidateConfig,
