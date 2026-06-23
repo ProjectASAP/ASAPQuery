@@ -13,13 +13,13 @@ use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 /// two AQEs could share one. The Phase 3 MIP finds sharing opportunities; this
 /// is the v1 baseline.
 ///
-/// `rho_g` is the per-item arrival rate used for every candidate's IngestCost.
+/// `arrival_rate_hz` is the per-item arrival rate used for every candidate's IngestCost.
 /// Real per-config rates need Prometheus scrape-rate × series-count data,
 /// which isn't wired up yet — a single placeholder value is applied uniformly.
 pub fn greedy_assign(
     aqes: Vec<AQE>,
     scrape_interval_secs: u64,
-    rho_g: f64,
+    arrival_rate_hz: f64,
     costs: &AtomicCosts,
     weights: &CostWeights,
 ) -> OptimizerSolution {
@@ -35,7 +35,7 @@ pub fn greedy_assign(
         let best = candidates
             .into_iter()
             .map(|c| {
-                let cost = total_cost_rate(&aqe, &c, rho_g, costs, weights);
+                let cost = total_cost_rate(&aqe, &c, arrival_rate_hz, costs, weights);
                 (c, cost)
             })
             // total_cmp (not partial_cmp().unwrap()) so a stray NaN cost can't panic.
@@ -43,7 +43,7 @@ pub fn greedy_assign(
             .map(|(c, _)| c)
             .expect("enumerate_candidates always returns at least the EXACT fallback");
 
-        let ingest = ingest_cost(&best, rho_g, costs, weights);
+        let ingest = ingest_cost(&best, arrival_rate_hz, costs, weights);
         let query_rate = aqe.query_frequency_hz * query_cost(&aqe, &best, costs, weights);
         let query_method = best.query_method.clone();
 

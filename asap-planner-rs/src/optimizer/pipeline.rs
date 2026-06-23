@@ -57,20 +57,20 @@ pub fn run_all_exact_pipeline(
 /// No cross-AQE sharing — every deployed sketch serves exactly one AQE, even
 /// if two AQEs could share one. The Phase 3 MIP finds sharing opportunities.
 ///
-/// `rho_g` is a placeholder arrival rate applied uniformly to every candidate's
-/// IngestCost; real per-config rates need Prometheus scrape-rate × series-count
-/// data, which isn't wired up yet (see implementation plan TODOs).
+/// `arrival_rate_hz` is a placeholder arrival rate applied uniformly to every
+/// candidate's IngestCost; real per-config rates need Prometheus scrape-rate ×
+/// series-count data, which isn't wired up yet (see implementation plan TODOs).
 pub fn run_greedy_pipeline(
     config: &ControllerConfig,
     schema: &PromQLSchema,
     scrape_interval_secs: u64,
-    rho_g: f64,
+    arrival_rate_hz: f64,
 ) -> (StreamingConfig, InferenceConfig) {
     run_pipeline(config, schema, "greedy", |aqes| {
         greedy_assign(
             aqes,
             scrape_interval_secs,
-            rho_g,
+            arrival_rate_hz,
             &AtomicCosts::default(),
             &CostWeights::default(),
         )

@@ -222,7 +222,7 @@ mod tests {
         ];
         let aqes = extract_aqes(&rqes, &empty_schema());
         assert_eq!(aqes.len(), 1);
-        // f_a = sum of rates (total query load for the MIP objective)
+        // query_frequency_hz = sum of rates (total query load for the MIP objective)
         let expected_freq = 1.0 / 60.0 + 1.0 / 30.0;
         assert!((aqes[0].query_frequency_hz - expected_freq).abs() < 1e-9);
         // min_t and gcd_t used for windowing constraints
