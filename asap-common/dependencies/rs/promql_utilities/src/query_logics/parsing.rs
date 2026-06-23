@@ -1,5 +1,3 @@
-use core::panic;
-
 use promql_parser::parser::Expr;
 use tracing::debug;
 
@@ -7,6 +5,30 @@ use crate::ast_matching::promql_pattern::AggregationModifierType;
 use crate::ast_matching::PromQLMatchResult;
 use crate::data_model::KeyByLabelNames;
 use crate::query_logics::enums::{AggregationOperator, QueryPatternType, Statistic};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatisticExtractionError {
+    MissingStatistic { pattern_type: QueryPatternType },
+    UnsupportedStatistic { statistic: String },
+}
+
+impl std::fmt::Display for StatisticExtractionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingStatistic { pattern_type } => {
+                write!(
+                    f,
+                    "No statistic found for query pattern type {pattern_type:?}"
+                )
+            }
+            Self::UnsupportedStatistic { statistic } => {
+                write!(f, "Unsupported statistic: {statistic}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StatisticExtractionError {}
 
 pub fn get_metric_and_spatial_filter(match_result: &PromQLMatchResult) -> (String, String) {
     debug!("Extracting metric and spatial filter from match result");
@@ -50,38 +72,39 @@ pub fn get_metric_and_spatial_filter(match_result: &PromQLMatchResult) -> (Strin
     (metric_name, spatial_filter)
 }
 
-/// Get statistics to compute based on pattern type and tokens
+/// Get statistics to compute based on pattern type and tokens.
+/// Returns a typed error if the matched statistic/function name is not
+/// recognized, so callers can decide whether to skip or fail the query.
 pub fn get_statistics_to_compute(
     pattern_type: QueryPatternType,
     match_result: &PromQLMatchResult,
-) -> Vec<Statistic> {
+) -> Result<Vec<Statistic>, StatisticExtractionError> {
     debug!("Computing statistics for pattern type {:?}", pattern_type);
-    let statistic_to_compute: Option<String> = if pattern_type == QueryPatternType::OnlyTemporal
-        || pattern_type == QueryPatternType::OneTemporalOneSpatial
-    {
-        match_result.get_function_name().map(|function_name| {
-            let name = function_name.to_lowercase();
-            name.split('_').next().unwrap_or(&name).to_string()
-        })
-    } else if pattern_type == QueryPatternType::OnlySpatial {
-        match_result
+    let statistic_to_compute: Option<String> = match pattern_type {
+        QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
+            match_result.get_function_name().map(|function_name| {
+                let name = function_name.to_lowercase();
+                name.split('_').next().unwrap_or(&name).to_string()
+            })
+        }
+        QueryPatternType::OnlySpatial => match_result
             .get_aggregation_op()
-            .map(|agg| agg.to_lowercase())
-    } else {
-        panic!("Unsupported query pattern type");
+            .map(|agg| agg.to_lowercase()),
     };
 
-    if let Some(statistic_to_compute) = statistic_to_compute {
-        debug!("Found statistic to compute: {}", statistic_to_compute);
-        if statistic_to_compute.parse::<AggregationOperator>() == Ok(AggregationOperator::Avg) {
-            vec![Statistic::Sum, Statistic::Count]
-        } else if let Ok(stat) = statistic_to_compute.parse::<Statistic>() {
-            vec![stat]
-        } else {
-            panic!("Unsupported statistic: {}", statistic_to_compute);
-        }
+    let Some(statistic_to_compute) = statistic_to_compute else {
+        return Err(StatisticExtractionError::MissingStatistic { pattern_type });
+    };
+
+    debug!("Found statistic to compute: {}", statistic_to_compute);
+    if statistic_to_compute.parse::<AggregationOperator>() == Ok(AggregationOperator::Avg) {
+        Ok(vec![Statistic::Sum, Statistic::Count])
+    } else if let Ok(stat) = statistic_to_compute.parse::<Statistic>() {
+        Ok(vec![stat])
     } else {
-        panic!("No statistic found in the query");
+        Err(StatisticExtractionError::UnsupportedStatistic {
+            statistic: statistic_to_compute,
+        })
     }
 }
 
@@ -131,5 +154,71 @@ pub fn get_spatial_aggregation_output_labels(
             let without_labels = KeyByLabelNames::new(modifier.labels.clone());
             all_labels.difference(&without_labels)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use crate::ast_matching::{FunctionToken, TokenData};
+
+    use super::*;
+
+    fn empty_token() -> TokenData {
+        TokenData {
+            metric: None,
+            function: None,
+            aggregation: None,
+            range_vector: None,
+            subquery: None,
+            binary_op: None,
+            number: None,
+        }
+    }
+
+    fn temporal_match(function_name: &str) -> PromQLMatchResult {
+        let mut tokens = HashMap::new();
+        tokens.insert(
+            "function".to_string(),
+            TokenData {
+                function: Some(FunctionToken {
+                    name: function_name.to_string(),
+                    args: vec![],
+                }),
+                ..empty_token()
+            },
+        );
+        PromQLMatchResult::with_tokens(tokens)
+    }
+
+    #[test]
+    fn unsupported_matched_temporal_statistic_returns_typed_error() {
+        let err =
+            get_statistics_to_compute(QueryPatternType::OnlyTemporal, &temporal_match("stddev"))
+                .unwrap_err();
+
+        assert_eq!(
+            err,
+            StatisticExtractionError::UnsupportedStatistic {
+                statistic: "stddev".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn missing_statistic_returns_typed_error() {
+        let err = get_statistics_to_compute(
+            QueryPatternType::OnlyTemporal,
+            &PromQLMatchResult::with_tokens(HashMap::new()),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            err,
+            StatisticExtractionError::MissingStatistic {
+                pattern_type: QueryPatternType::OnlyTemporal
+            }
+        );
     }
 }

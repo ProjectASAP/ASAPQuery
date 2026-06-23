@@ -204,7 +204,16 @@ fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<Que
     })?;
 
     let (metric, spatial_filter) = get_metric_and_spatial_filter(&match_result);
-    let statistics = get_statistics_to_compute(pattern_type, &match_result);
+    let statistics = get_statistics_to_compute(pattern_type, &match_result)
+        .map_err(|err| {
+            warn!(
+                query = %query,
+                error = %err,
+                "aqe_extractor: skipping matched leaf query with unsupported statistics"
+            );
+            err
+        })
+        .ok()?;
 
     let data_range_ms = match pattern_type {
         QueryPatternType::OnlySpatial => None,
