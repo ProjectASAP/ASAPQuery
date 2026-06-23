@@ -17,10 +17,10 @@ pub fn to_controller_config(
         query_groups.push(QueryGroup {
             id: None,
             queries: vec![info.query],
-            repetition_delay: info.repetition_delay,
+            repetition_delay_ms: info.repetition_delay_ms,
             controller_options: Default::default(),
-            step: None,
-            range_duration: None,
+            step_ms: None,
+            range_duration_ms: None,
         });
     }
 
@@ -28,10 +28,10 @@ pub fn to_controller_config(
         query_groups.push(QueryGroup {
             id: None,
             queries: vec![info.query],
-            repetition_delay: info.repetition_delay,
+            repetition_delay_ms: info.repetition_delay_ms,
             controller_options: Default::default(),
-            step: Some(info.step),
-            range_duration: Some(info.range_duration),
+            step_ms: Some(info.step_ms),
+            range_duration_ms: Some(info.range_duration_ms),
         });
     }
 

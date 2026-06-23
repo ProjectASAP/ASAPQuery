@@ -20,8 +20,8 @@ struct Args {
     #[arg(long = "output_dir")]
     output_dir: PathBuf,
 
-    #[arg(long = "prometheus_scrape_interval", required = false)]
-    prometheus_scrape_interval: Option<u64>,
+    #[arg(long = "prometheus_scrape_interval_ms", required = false)]
+    prometheus_scrape_interval_ms: Option<u64>,
 
     /// Base URL of the Prometheus instance used to auto-infer metric label sets.
     /// Optional: when provided, the planner queries Prometheus for label discovery.
@@ -36,11 +36,11 @@ struct Args {
     #[arg(long = "enable-punting", default_value = "false")]
     enable_punting: bool,
 
-    #[arg(long = "range-duration", default_value = "0")]
-    range_duration: u64,
+    #[arg(long = "range-duration-ms", default_value = "0")]
+    range_duration_ms: u64,
 
-    #[arg(long = "step", default_value = "0")]
-    step: u64,
+    #[arg(long = "step-ms", default_value = "0")]
+    step_ms: u64,
 
     #[arg(long = "query-language", value_enum, default_value = "promql")]
     query_language: QueryLanguage,
@@ -86,15 +86,15 @@ fn main() -> anyhow::Result<()> {
 
     match args.query_language {
         QueryLanguage::promql => {
-            let scrape_interval = args.prometheus_scrape_interval.ok_or_else(|| {
-                anyhow::anyhow!("--prometheus_scrape_interval is required for PromQL mode")
+            let scrape_interval_ms = args.prometheus_scrape_interval_ms.ok_or_else(|| {
+                anyhow::anyhow!("--prometheus_scrape_interval_ms is required for PromQL mode")
             })?;
             let opts = RuntimeOptions {
-                prometheus_scrape_interval: scrape_interval,
+                prometheus_scrape_interval_ms: scrape_interval_ms,
                 streaming_engine: engine,
                 enable_punting: args.enable_punting,
-                range_duration: args.range_duration,
-                step: args.step,
+                range_duration_ms: args.range_duration_ms,
+                step_ms: args.step_ms,
             };
             let controller = match (args.input_config, args.query_log, args.prometheus_url) {
                 (Some(config_path), None, Some(url)) => {
