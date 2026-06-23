@@ -7,8 +7,34 @@ use crate::config::input::ControllerConfig;
 use super::aqe_extractor::{extract_aqes, RQE};
 use super::cost_model::{AtomicCosts, CostWeights};
 use super::greedy::greedy_assign;
-use super::solution::OptimizerSolution;
+use super::solution::{OptimizerSolution, AQE};
 use super::translator::{translate, TranslationSummary};
+
+/// Shared shell for optimizer pipelines: RQEs → AQEs → `solve` → deployment
+/// artifacts, with a uniform log line. `solver_name` only affects the log.
+fn run_pipeline(
+    config: &ControllerConfig,
+    schema: &PromQLSchema,
+    solver_name: &str,
+    solve: impl FnOnce(Vec<AQE>) -> OptimizerSolution,
+) -> (StreamingConfig, InferenceConfig) {
+    let rqes = config_to_rqes(config);
+    let aqes = extract_aqes(&rqes, schema);
+    let solution = solve(aqes);
+
+    let summary = TranslationSummary::from_solution(&solution);
+    tracing::info!(
+        solver = solver_name,
+        num_deployed_configs = summary.num_deployed_configs,
+        num_sketch_assignments = summary.num_sketch_assignments,
+        num_exact_fallbacks = summary.num_exact_fallbacks,
+        estimated_ingest_cost_per_sec = solution.estimated_ingest_cost_per_sec,
+        estimated_total_cost_per_sec = solution.estimated_total_cost_per_sec,
+        "optimizer pipeline: solution produced"
+    );
+
+    translate(&solution)
+}
 
 /// Run the all-EXACT optimizer pipeline (Phase 1 scaffolding).
 ///
@@ -22,19 +48,7 @@ pub fn run_all_exact_pipeline(
     config: &ControllerConfig,
     schema: &PromQLSchema,
 ) -> (StreamingConfig, InferenceConfig) {
-    let rqes = config_to_rqes(config);
-    let aqes = extract_aqes(&rqes, schema);
-    let solution = OptimizerSolution::all_exact(aqes);
-
-    let summary = TranslationSummary::from_solution(&solution);
-    tracing::info!(
-        num_deployed_configs = summary.num_deployed_configs,
-        num_sketch_assignments = summary.num_sketch_assignments,
-        num_exact_fallbacks = summary.num_exact_fallbacks,
-        "optimizer pipeline: all-EXACT solution produced"
-    );
-
-    translate(&solution)
+    run_pipeline(config, schema, "all-EXACT", OptimizerSolution::all_exact)
 }
 
 /// Run the greedy optimizer pipeline (Phase 2): each AQE is assigned, independently,
@@ -52,27 +66,15 @@ pub fn run_greedy_pipeline(
     scrape_interval_secs: u64,
     rho_g: f64,
 ) -> (StreamingConfig, InferenceConfig) {
-    let rqes = config_to_rqes(config);
-    let aqes = extract_aqes(&rqes, schema);
-    let solution = greedy_assign(
-        aqes,
-        scrape_interval_secs,
-        rho_g,
-        &AtomicCosts::default(),
-        &CostWeights::default(),
-    );
-
-    let summary = TranslationSummary::from_solution(&solution);
-    tracing::info!(
-        num_deployed_configs = summary.num_deployed_configs,
-        num_sketch_assignments = summary.num_sketch_assignments,
-        num_exact_fallbacks = summary.num_exact_fallbacks,
-        estimated_ingest_cost_per_sec = solution.estimated_ingest_cost_per_sec,
-        estimated_total_cost_per_sec = solution.estimated_total_cost_per_sec,
-        "optimizer pipeline: greedy solution produced"
-    );
-
-    translate(&solution)
+    run_pipeline(config, schema, "greedy", |aqes| {
+        greedy_assign(
+            aqes,
+            scrape_interval_secs,
+            rho_g,
+            &AtomicCosts::default(),
+            &CostWeights::default(),
+        )
+    })
 }
 
 /// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
