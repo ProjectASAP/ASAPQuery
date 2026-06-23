@@ -9,7 +9,7 @@ use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, debug_span, info, warn};
@@ -872,9 +872,20 @@ fn apply_sample(
     ts: i64,
     config: &AggregationConfig,
 ) {
-    let value = resolve_sample_value(series_key, val, config);
-    if updater.is_keyed() {
-        let key = extract_aggregated_key_from_series(series_key, config);
+    // Parse the series labels at most once and share them across value resolution
+    // and key extraction — both walk the same label string. Skip parsing entirely
+    // when neither path needs labels (non-keyed accumulator with no value_column),
+    // which is the common SUM/quantile case on the per-sample ingest hot path.
+    let keyed = updater.is_keyed();
+    let labels = if keyed || config.value_column.is_some() {
+        parse_labels_from_series_key(series_key)
+    } else {
+        HashMap::new()
+    };
+
+    let value = resolve_sample_value(&labels, val, config);
+    if keyed {
+        let key = extract_aggregated_key_from_series(&labels, config);
         updater.update_keyed(&key, value, ts);
     } else {
         updater.update_single(value, ts);
@@ -896,18 +907,25 @@ fn apply_sample(
 /// sent as labels, so SUM / quantile / top-k transparently keep using the wire
 /// scalar, while label-present distinct targets such as `dstip` get substituted.
 ///
+/// `labels` is the already-parsed label map for the sample's series key (parsed
+/// once by `apply_sample` and shared with key extraction), so this is allocation-
+/// free on the hot path.
+///
 /// The label value is parsed as `f64`. This is lossless for the netflow IPv4
 /// `u32` columns (≤ 2^32 < 2^53) and consistent with the replay's int→f64
 /// convention; cardinality only requires distinct inputs to map to distinct
 /// hashes, so the exact hash need not match the baseline engine. Non-numeric
 /// distinct targets (e.g. `proto`) are not yet supported — they fall back to
 /// `wire_val` (see the follow-up for a byte/string hashing path).
-fn resolve_sample_value(series_key: &str, wire_val: f64, config: &AggregationConfig) -> f64 {
+fn resolve_sample_value(
+    labels: &HashMap<&str, &str>,
+    wire_val: f64,
+    config: &AggregationConfig,
+) -> f64 {
     let Some(col) = config.value_column.as_deref() else {
         return wire_val;
     };
 
-    let labels = parse_labels_from_series_key(series_key);
     let Some(raw) = labels.get(col) else {
         return wire_val;
     };
@@ -915,11 +933,21 @@ fn resolve_sample_value(series_key: &str, wire_val: f64, config: &AggregationCon
     match raw.parse::<f64>() {
         Ok(v) => v,
         Err(_) => {
-            debug!(
-                "value_column '{}' label value {:?} is not numeric; \
-                 falling back to wire value (non-numeric distinct targets are not yet supported)",
-                col, raw
-            );
+            // Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are not yet
+            // supported: falling back to the wire value silently produces an INCORRECT
+            // aggregate, so surface it as a warning. Warn-once (process-global guard)
+            // keeps this off the per-sample hot path — otherwise a single misconfigured
+            // aggregation would emit a warning for every ingested sample.
+            static NON_NUMERIC_WARNED: AtomicBool = AtomicBool::new(false);
+            if !NON_NUMERIC_WARNED.swap(true, Ordering::Relaxed) {
+                warn!(
+                    "value_column '{}' label value {:?} is not numeric; falling back to the \
+                     wire value. Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are \
+                     not yet supported and will produce INCORRECT results. \
+                     (This warning is logged once per process.)",
+                    col, raw
+                );
+            }
             wire_val
         }
     }
@@ -929,10 +957,9 @@ fn resolve_sample_value(series_key: &str, wire_val: f64, config: &AggregationCon
 /// These are the labels that form the key dimension *inside* keyed accumulators
 /// (MultipleSum, CMS, HydraKLL), matching Arroyo's `agg_columns`.
 fn extract_aggregated_key_from_series(
-    series_key: &str,
+    labels: &HashMap<&str, &str>,
     config: &AggregationConfig,
 ) -> KeyByLabelValues {
-    let labels = parse_labels_from_series_key(series_key);
     let mut values = Vec::new();
 
     for label_name in &config.aggregated_labels.labels {
@@ -1031,39 +1058,73 @@ mod tests {
     fn resolve_sample_value_uses_label_when_value_column_present() {
         // COUNT(DISTINCT dstip): the wire scalar is pkt_len, but the HLL must
         // hash dstip, which is carried as a series label.
-        let mut config = make_agg_config(4, "netflow_table", AggregationType::HLL, "", 1, 1, vec!["srcip"]);
+        let mut config = make_agg_config(
+            4,
+            "netflow_table",
+            AggregationType::HLL,
+            "",
+            1,
+            1,
+            vec!["srcip"],
+        );
         config.value_column = Some("dstip".to_string());
         let series = "netflow_table{srcip=\"10\",dstip=\"4242\",proto=\"TCP\"}";
-        assert_eq!(resolve_sample_value(series, 1400.0, &config), 4242.0);
+        let labels = parse_labels_from_series_key(series);
+        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 4242.0);
     }
 
     #[test]
     fn resolve_sample_value_falls_back_when_column_not_a_label() {
         // Numeric value columns like pkt_len are sent as the wire scalar, never
         // as a label, so resolution must transparently keep the wire value.
-        let mut config =
-            make_agg_config(1, "netflow_table", AggregationType::SingleSubpopulation, "Sum", 1, 1, vec!["srcip"]);
+        let mut config = make_agg_config(
+            1,
+            "netflow_table",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            1,
+            1,
+            vec!["srcip"],
+        );
         config.value_column = Some("pkt_len".to_string());
         let series = "netflow_table{srcip=\"10\",dstip=\"4242\"}";
-        assert_eq!(resolve_sample_value(series, 1400.0, &config), 1400.0);
+        let labels = parse_labels_from_series_key(series);
+        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 1400.0);
     }
 
     #[test]
     fn resolve_sample_value_none_value_column_uses_wire_value() {
-        let config =
-            make_agg_config(1, "netflow_table", AggregationType::SingleSubpopulation, "Sum", 1, 1, vec!["srcip"]);
+        let config = make_agg_config(
+            1,
+            "netflow_table",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            1,
+            1,
+            vec!["srcip"],
+        );
         let series = "netflow_table{srcip=\"10\",dstip=\"4242\"}";
-        assert_eq!(resolve_sample_value(series, 1400.0, &config), 1400.0);
+        let labels = parse_labels_from_series_key(series);
+        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 1400.0);
     }
 
     #[test]
     fn resolve_sample_value_non_numeric_label_falls_back() {
         // Non-numeric distinct targets are a follow-up; for now we fall back to
         // the wire value rather than panicking on a parse failure.
-        let mut config = make_agg_config(4, "netflow_table", AggregationType::HLL, "", 1, 1, vec!["srcip"]);
+        let mut config = make_agg_config(
+            4,
+            "netflow_table",
+            AggregationType::HLL,
+            "",
+            1,
+            1,
+            vec!["srcip"],
+        );
         config.value_column = Some("proto".to_string());
         let series = "netflow_table{srcip=\"10\",proto=\"TCP\"}";
-        assert_eq!(resolve_sample_value(series, 1400.0, &config), 1400.0);
+        let labels = parse_labels_from_series_key(series);
+        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 1400.0);
     }
 
     #[test]
@@ -1071,7 +1132,15 @@ mod tests {
         use crate::precompute_operators::hll_accumulator::HllAccumulator;
 
         // COUNT(DISTINCT dstip) GROUP BY srcip, 1s tumbling window.
-        let mut config = make_agg_config(4, "netflow_table", AggregationType::HLL, "", 1, 1, vec!["srcip"]);
+        let mut config = make_agg_config(
+            4,
+            "netflow_table",
+            AggregationType::HLL,
+            "",
+            1,
+            1,
+            vec!["srcip"],
+        );
         config.value_column = Some("dstip".to_string());
         let mut agg_configs = HashMap::new();
         agg_configs.insert(4, config);
