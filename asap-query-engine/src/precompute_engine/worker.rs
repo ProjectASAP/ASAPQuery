@@ -872,11 +872,56 @@ fn apply_sample(
     ts: i64,
     config: &AggregationConfig,
 ) {
+    let value = resolve_sample_value(series_key, val, config);
     if updater.is_keyed() {
         let key = extract_aggregated_key_from_series(series_key, config);
-        updater.update_keyed(&key, val, ts);
+        updater.update_keyed(&key, value, ts);
     } else {
-        updater.update_single(val, ts);
+        updater.update_single(value, ts);
+    }
+}
+
+/// Resolve which scalar to aggregate for a sample.
+///
+/// The wire format collapses each sample to a single scalar (`wire_val`) plus a
+/// set of labels carried in `series_key`. `wire_val` is whatever the source
+/// considered the default value column (e.g. `pkt_len` for the netflow dataset).
+/// But an aggregation may target a *different* column via `config.value_column`
+/// — most importantly `COUNT(DISTINCT dstip)`, where the HLL sketch must hash
+/// `dstip`, not the wire `pkt_len`.
+///
+/// Rule (general, self-correcting): if `config.value_column` names a column that
+/// is present among the series labels, aggregate that label's value; otherwise
+/// fall back to `wire_val`. Numeric value columns such as `pkt_len` are never
+/// sent as labels, so SUM / quantile / top-k transparently keep using the wire
+/// scalar, while label-present distinct targets such as `dstip` get substituted.
+///
+/// The label value is parsed as `f64`. This is lossless for the netflow IPv4
+/// `u32` columns (≤ 2^32 < 2^53) and consistent with the replay's int→f64
+/// convention; cardinality only requires distinct inputs to map to distinct
+/// hashes, so the exact hash need not match the baseline engine. Non-numeric
+/// distinct targets (e.g. `proto`) are not yet supported — they fall back to
+/// `wire_val` (see the follow-up for a byte/string hashing path).
+fn resolve_sample_value(series_key: &str, wire_val: f64, config: &AggregationConfig) -> f64 {
+    let Some(col) = config.value_column.as_deref() else {
+        return wire_val;
+    };
+
+    let labels = parse_labels_from_series_key(series_key);
+    let Some(raw) = labels.get(col) else {
+        return wire_val;
+    };
+
+    match raw.parse::<f64>() {
+        Ok(v) => v,
+        Err(_) => {
+            debug!(
+                "value_column '{}' label value {:?} is not numeric; \
+                 falling back to wire value (non-numeric distinct targets are not yet supported)",
+                col, raw
+            );
+            wire_val
+        }
     }
 }
 
@@ -976,6 +1021,119 @@ mod tests {
     fn test_parse_labels_empty_braces() {
         let labels = parse_labels_from_series_key("metric{}");
         assert!(labels.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_sample_value: choose value_column label over the wire scalar
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_sample_value_uses_label_when_value_column_present() {
+        // COUNT(DISTINCT dstip): the wire scalar is pkt_len, but the HLL must
+        // hash dstip, which is carried as a series label.
+        let mut config = make_agg_config(4, "netflow_table", AggregationType::HLL, "", 1, 1, vec!["srcip"]);
+        config.value_column = Some("dstip".to_string());
+        let series = "netflow_table{srcip=\"10\",dstip=\"4242\",proto=\"TCP\"}";
+        assert_eq!(resolve_sample_value(series, 1400.0, &config), 4242.0);
+    }
+
+    #[test]
+    fn resolve_sample_value_falls_back_when_column_not_a_label() {
+        // Numeric value columns like pkt_len are sent as the wire scalar, never
+        // as a label, so resolution must transparently keep the wire value.
+        let mut config =
+            make_agg_config(1, "netflow_table", AggregationType::SingleSubpopulation, "Sum", 1, 1, vec!["srcip"]);
+        config.value_column = Some("pkt_len".to_string());
+        let series = "netflow_table{srcip=\"10\",dstip=\"4242\"}";
+        assert_eq!(resolve_sample_value(series, 1400.0, &config), 1400.0);
+    }
+
+    #[test]
+    fn resolve_sample_value_none_value_column_uses_wire_value() {
+        let config =
+            make_agg_config(1, "netflow_table", AggregationType::SingleSubpopulation, "Sum", 1, 1, vec!["srcip"]);
+        let series = "netflow_table{srcip=\"10\",dstip=\"4242\"}";
+        assert_eq!(resolve_sample_value(series, 1400.0, &config), 1400.0);
+    }
+
+    #[test]
+    fn resolve_sample_value_non_numeric_label_falls_back() {
+        // Non-numeric distinct targets are a follow-up; for now we fall back to
+        // the wire value rather than panicking on a parse failure.
+        let mut config = make_agg_config(4, "netflow_table", AggregationType::HLL, "", 1, 1, vec!["srcip"]);
+        config.value_column = Some("proto".to_string());
+        let series = "netflow_table{srcip=\"10\",proto=\"TCP\"}";
+        assert_eq!(resolve_sample_value(series, 1400.0, &config), 1400.0);
+    }
+
+    #[test]
+    fn hll_counts_distinct_value_column_not_wire_value() {
+        use crate::precompute_operators::hll_accumulator::HllAccumulator;
+
+        // COUNT(DISTINCT dstip) GROUP BY srcip, 1s tumbling window.
+        let mut config = make_agg_config(4, "netflow_table", AggregationType::HLL, "", 1, 1, vec!["srcip"]);
+        config.value_column = Some("dstip".to_string());
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(4, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        // Two samples, same srcip, DIFFERENT dstip, IDENTICAL wire value
+        // (pkt_len). Window [0, 1000).
+        worker
+            .process_group_samples(
+                4,
+                "10",
+                vec![
+                    (
+                        "netflow_table{srcip=\"10\",dstip=\"100\",proto=\"TCP\"}".to_string(),
+                        100,
+                        1400.0,
+                    ),
+                    (
+                        "netflow_table{srcip=\"10\",dstip=\"200\",proto=\"TCP\"}".to_string(),
+                        200,
+                        1400.0,
+                    ),
+                ],
+            )
+            .unwrap();
+
+        // Advance the watermark past the window end to close [0, 1000).
+        worker
+            .process_group_samples(
+                4,
+                "10",
+                vec![(
+                    "netflow_table{srcip=\"10\",dstip=\"300\",proto=\"TCP\"}".to_string(),
+                    5000,
+                    1400.0,
+                )],
+            )
+            .unwrap();
+
+        let captured = sink.drain();
+        let (_output, acc) = captured
+            .iter()
+            .find(|(o, _)| o.start_timestamp == 0)
+            .expect("window [0, 1000) should emit a closed HLL pane");
+        let hll = acc
+            .as_any()
+            .downcast_ref::<HllAccumulator>()
+            .expect("should be HllAccumulator");
+        let est = hll.estimate();
+        assert!(
+            est > 1.5 && est < 3.0,
+            "HLL should count 2 distinct dstip (got {est}); \
+             with the bug it would count 1 distinct pkt_len"
+        );
     }
 
     // -----------------------------------------------------------------------
