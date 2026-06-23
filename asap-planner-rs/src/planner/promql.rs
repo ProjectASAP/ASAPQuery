@@ -226,7 +226,12 @@ impl SingleQueryProcessor {
             .ok_or_else(|| ControllerError::UnknownMetric(metric.clone()))?
             .clone();
 
-        let statistics = get_statistics_to_compute(pattern_type, &match_result);
+        let statistics = get_statistics_to_compute(pattern_type, &match_result).map_err(|err| {
+            ControllerError::PlannerError(format!(
+                "Unsupported statistic for query '{}': {}",
+                self.query, err
+            ))
+        })?;
 
         let mut window_cfg = IntermediateWindowConfig::default();
         set_window_parameters(

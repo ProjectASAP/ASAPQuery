@@ -265,7 +265,12 @@ impl SimpleEngine {
         let timestamps =
             self.calculate_query_timestamps_promql(query_time, query_pattern_type, match_result);
 
-        let statistics_to_compute = get_statistics_to_compute(query_pattern_type, match_result);
+        let statistics_to_compute = get_statistics_to_compute(query_pattern_type, match_result)
+            .map_err(|err| {
+                warn!("{}", err);
+                err
+            })
+            .ok()?;
         if statistics_to_compute.len() != 1 {
             warn!(
                 "Expected exactly one statistic to compute, found {}",
@@ -615,10 +620,15 @@ impl SimpleEngine {
         &self,
         match_result: &PromQLMatchResult,
         query_pattern_type: QueryPatternType,
-    ) -> QueryRequirements {
+    ) -> Option<QueryRequirements> {
         let (metric, spatial_filter) = get_metric_and_spatial_filter(match_result);
 
-        let statistics = get_statistics_to_compute(query_pattern_type, match_result);
+        let statistics = get_statistics_to_compute(query_pattern_type, match_result)
+            .map_err(|err| {
+                warn!("{}", err);
+                err
+            })
+            .ok()?;
 
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
@@ -642,7 +652,7 @@ impl SimpleEngine {
             }
         };
 
-        QueryRequirements {
+        Some(QueryRequirements {
             metric,
             statistics,
             data_range_ms,
@@ -651,7 +661,7 @@ impl SimpleEngine {
             // PromQL top-k does not constrain the sketch weighting; leave the
             // count/sum discriminator unset so matching does not over-filter.
             topk_count_events: None,
-        }
+        })
     }
 
     // /// Try to extract sketch query components from a PromQL query string.
@@ -1076,7 +1086,7 @@ impl SimpleEngine {
                 query
             );
             let requirements =
-                self.build_query_requirements_promql(&match_result, query_pattern_type);
+                self.build_query_requirements_promql(&match_result, query_pattern_type)?;
             self.streaming_config
                 .read()
                 .unwrap()
