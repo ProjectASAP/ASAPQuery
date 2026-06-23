@@ -11,6 +11,7 @@ use promql_utilities::query_logics::parsing::{
 use tracing::warn;
 
 use crate::planner::patterns::build_patterns;
+use crate::planner::promql::{parse_binary_arms, BinaryArm};
 
 use super::solution::AQE;
 
@@ -143,43 +144,18 @@ fn gcd(a: u64, b: u64) -> u64 {
 /// dropped — they contribute no AQE. Only arithmetic operators are split;
 /// comparison and set operators are left as-is (treated as opaque leaves).
 fn decompose_to_leaves(query: &str) -> Vec<String> {
-    let ast = match promql_parser::parser::parse(query) {
-        Ok(a) => a,
-        Err(_) => return vec![query.to_string()],
+    let (lhs, rhs) = match parse_binary_arms(query) {
+        Some(arms) => arms,
+        None => return vec![query.to_string()],
     };
 
-    if let promql_parser::parser::Expr::Binary(binary) = &ast {
-        if !binary.op.is_comparison_operator() && !binary.op.is_set_operator() {
-            let mut leaves = Vec::new();
-            if let Some(lhs_str) = arm_to_query_string(binary.lhs.as_ref()) {
-                leaves.extend(decompose_to_leaves(&lhs_str));
-            }
-            if let Some(rhs_str) = arm_to_query_string(binary.rhs.as_ref()) {
-                leaves.extend(decompose_to_leaves(&rhs_str));
-            }
-            return leaves;
+    let mut leaves = Vec::new();
+    for arm in [lhs, rhs] {
+        if let BinaryArm::Query(arm_query) = arm {
+            leaves.extend(decompose_to_leaves(&arm_query));
         }
     }
-
-    vec![query.to_string()]
-}
-
-/// Convert one arm of a binary expression to a query string, returning `None`
-/// for scalar literals (they don't map to AQEs).
-fn arm_to_query_string(expr: &promql_parser::parser::Expr) -> Option<String> {
-    let inner = strip_parens(expr);
-    match inner {
-        promql_parser::parser::Expr::NumberLiteral(_) => None,
-        other => Some(format!("{}", other)),
-    }
-}
-
-fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::Expr {
-    if let promql_parser::parser::Expr::Paren(paren) = expr {
-        strip_parens(&paren.expr)
-    } else {
-        expr
-    }
+    leaves
 }
 
 /// Try to extract `QueryRequirements` from a single leaf PromQL query string.
