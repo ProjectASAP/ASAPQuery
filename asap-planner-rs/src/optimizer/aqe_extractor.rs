@@ -1,13 +1,9 @@
 use std::collections::HashMap;
 
-use asap_types::query_requirements::QueryRequirements;
-use asap_types::utils::normalize_spatial_filter;
+use asap_types::query_requirements::{build_query_requirements_promql, QueryRequirements};
 use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
-use promql_utilities::query_logics::parsing::{
-    get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
-};
+use promql_utilities::query_logics::enums::Statistic;
 use tracing::warn;
 
 use crate::planner::patterns::build_patterns;
@@ -160,12 +156,6 @@ fn decompose_to_leaves(query: &str) -> Vec<String> {
 
 /// Try to extract `QueryRequirements` from a single leaf PromQL query string.
 /// Returns `None` if the query cannot be parsed or does not match any pattern.
-///
-/// TODO: this duplicates `build_query_requirements_promql` in
-/// `asap-query-engine/src/engines/simple_engine/promql.rs:614`. That function
-/// is a private `&self` method tied to `SimplePromQLEngine`. The shared logic
-/// should be extracted into a free function in `asap_types::query_requirements`
-/// and called from both sites.
 fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<QueryRequirements> {
     let ast = promql_parser::parser::parse(query).ok()?;
     let patterns = build_patterns();
@@ -179,52 +169,7 @@ fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<Que
         }
     })?;
 
-    let (metric, spatial_filter) = get_metric_and_spatial_filter(&match_result);
-    let statistics = get_statistics_to_compute(pattern_type, &match_result)
-        .map_err(|err| {
-            warn!(
-                query = %query,
-                error = %err,
-                "aqe_extractor: skipping matched leaf query with unsupported statistics"
-            );
-            err
-        })
-        .ok()?;
-
-    let data_range_ms = match pattern_type {
-        QueryPatternType::OnlySpatial => None,
-        _ => match_result
-            .get_range_duration()
-            .map(|d| d.num_seconds() as u64 * 1000),
-    };
-
-    let grouping_labels = match pattern_type {
-        // OnlyTemporal preserves all labels — look them up in the schema.
-        // If the metric is unknown, fall back to empty (dedup still works; cost
-        // model will treat it as a zero-group-count sketch).
-        QueryPatternType::OnlyTemporal => metric_schema
-            .get_labels(&metric)
-            .cloned()
-            .unwrap_or_else(KeyByLabelNames::empty),
-        // OnlySpatial and OneTemporalOneSpatial encode their output labels in
-        // the AST's `by (...)` / `without (...)` clause.
-        QueryPatternType::OnlySpatial | QueryPatternType::OneTemporalOneSpatial => {
-            let all_labels = metric_schema
-                .get_labels(&metric)
-                .cloned()
-                .unwrap_or_else(KeyByLabelNames::empty);
-            get_spatial_aggregation_output_labels(&match_result, &all_labels)
-        }
-    };
-
-    Some(QueryRequirements {
-        metric,
-        statistics,
-        data_range_ms,
-        grouping_labels,
-        spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
-        topk_count_events: None,
-    })
+    build_query_requirements_promql(query, &match_result, pattern_type, metric_schema)
 }
 
 #[cfg(test)]
