@@ -12,12 +12,12 @@ use tracing::warn;
 
 use crate::planner::patterns::build_patterns;
 
-use super::solution::Aqe;
+use super::solution::AQE;
 
 /// One repeating query expression: a PromQL query string and its repetition
 /// interval (e.g. the refresh interval of the dashboard panel it belongs to).
 #[derive(Debug, Clone)]
-pub struct Rqe {
+pub struct RQE {
     pub query_string: String,
     pub t_repeat_secs: u64,
 }
@@ -26,7 +26,7 @@ pub struct Rqe {
 /// Two leaf queries that produce identical requirements are treated as the same
 /// AQE regardless of which RQE they came from.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-struct AqeKey {
+struct AQEKey {
     metric: String,
     /// Statistics are produced in a stable order by get_statistics_to_compute.
     statistics: Vec<Statistic>,
@@ -36,7 +36,7 @@ struct AqeKey {
     topk_count_events: Option<bool>,
 }
 
-impl AqeKey {
+impl AQEKey {
     fn from_requirements(req: &QueryRequirements) -> Self {
         Self {
             metric: req.metric.clone(),
@@ -63,17 +63,26 @@ impl AqeKey {
 ///
 /// Leaf queries that do not match any supported pattern (e.g. unsupported
 /// functions, parse errors) are skipped with a warning.
-pub fn extract_aqes(rqes: &[Rqe], metric_schema: &PromQLSchema) -> Vec<Aqe> {
+pub fn extract_aqes(rqes: &[RQE], metric_schema: &PromQLSchema) -> Vec<AQE> {
     // (key) -> (requirements, query_strings, sum_freq, min_t, gcd_t)
-    let mut acc: HashMap<AqeKey, (QueryRequirements, Vec<String>, f64, u64, u64)> = HashMap::new();
+    let mut acc: HashMap<AQEKey, (QueryRequirements, Vec<String>, f64, u64, u64)> = HashMap::new();
 
     for rqe in rqes {
+        if rqe.t_repeat_secs == 0 {
+            warn!(
+                query = %rqe.query_string,
+                "aqe_extractor: skipping RQE with repetition_delay=0 \
+                 (would produce infinite query frequency and corrupt GCD)"
+            );
+            continue;
+        }
+
         let leaves = decompose_to_leaves(&rqe.query_string);
 
         for leaf in leaves {
             match extract_requirements(&leaf, metric_schema) {
                 Some(req) => {
-                    let key = AqeKey::from_requirements(&req);
+                    let key = AQEKey::from_requirements(&req);
                     let entry = acc
                         .entry(key)
                         .or_insert_with(|| (req, Vec::new(), 0.0, u64::MAX, 0));
@@ -106,7 +115,7 @@ pub fn extract_aqes(rqes: &[Rqe], metric_schema: &PromQLSchema) -> Vec<Aqe> {
                 query_frequency_hz,
                 min_t_repeat_secs,
                 t_repeat_gcd_secs,
-            )| Aqe {
+            )| AQE {
                 requirements,
                 query_strings,
                 query_frequency_hz,
@@ -241,8 +250,8 @@ mod tests {
         PromQLSchema::new()
     }
 
-    fn rqe(query: &str, t: u64) -> Rqe {
-        Rqe {
+    fn rqe(query: &str, t: u64) -> RQE {
+        RQE {
             query_string: query.to_string(),
             t_repeat_secs: t,
         }

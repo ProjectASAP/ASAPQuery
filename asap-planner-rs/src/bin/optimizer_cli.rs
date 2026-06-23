@@ -26,11 +26,19 @@ struct Args {
     /// Placeholder arrival rate (items/sec) applied uniformly to every candidate's
     /// IngestCost. Real per-config rates aren't wired up yet — see the open TODOs
     /// in .design_docs/optimizer-v1-implementation-plan.md.
-    #[arg(long = "rho", default_value = "1.0")]
+    #[arg(long = "rho", default_value = "1.0", value_parser = parse_positive_finite)]
     rho: f64,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+}
+
+fn parse_positive_finite(s: &str) -> Result<f64, String> {
+    let v: f64 = s.parse().map_err(|_| format!("not a valid number: {s}"))?;
+    if !v.is_finite() || v <= 0.0 {
+        return Err(format!("--rho must be a positive finite number, got {v}"));
+    }
+    Ok(v)
 }
 
 fn main() -> anyhow::Result<()> {

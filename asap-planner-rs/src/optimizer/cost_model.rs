@@ -1,8 +1,13 @@
 use asap_types::enums::WindowType;
 
 use super::candidate_gen::CandidateConfig;
+use super::constants::{
+    EXACT_QUERY_CPU_SECS, INGEST_CPU_WEIGHT, INGEST_MEM_WEIGHT, INSERT_CPU_SECS,
+    MEM_BYTES_PER_INSTANCE, MERGE_CPU_SECS, QUERY_CPU_SECS, QUERY_CPU_WEIGHT, QUERY_MEM_WEIGHT,
+    SUBTRACT_CPU_SECS,
+};
 use super::sketch_properties::sketch_properties;
-use super::solution::{Aqe, QueryMethod};
+use super::solution::{QueryMethod, AQE};
 
 /// Per-operation costs for one sketch instance. Stub defaults for v1 — real
 /// values come from sketch-bench in Phase 3 (see implementation plan, 3c).
@@ -22,12 +27,12 @@ pub struct AtomicCosts {
 impl Default for AtomicCosts {
     fn default() -> Self {
         Self {
-            mem_bytes_per_instance: 1024.0,
-            insert_cpu_secs: 1e-7,
-            merge_cpu_secs: 1e-5,
-            subtract_cpu_secs: 1e-6,
-            query_cpu_secs: 1e-5,
-            exact_query_cpu_secs: 1e-3,
+            mem_bytes_per_instance: MEM_BYTES_PER_INSTANCE,
+            insert_cpu_secs: INSERT_CPU_SECS,
+            merge_cpu_secs: MERGE_CPU_SECS,
+            subtract_cpu_secs: SUBTRACT_CPU_SECS,
+            query_cpu_secs: QUERY_CPU_SECS,
+            exact_query_cpu_secs: EXACT_QUERY_CPU_SECS,
         }
     }
 }
@@ -49,10 +54,10 @@ pub struct CostWeights {
 impl Default for CostWeights {
     fn default() -> Self {
         Self {
-            ingest_mem: 1e-9,
-            ingest_cpu: 1.0,
-            query_mem: 1e-9,
-            query_cpu: 1.0,
+            ingest_mem: INGEST_MEM_WEIGHT,
+            ingest_cpu: INGEST_CPU_WEIGHT,
+            query_mem: QUERY_MEM_WEIGHT,
+            query_cpu: QUERY_CPU_WEIGHT,
         }
     }
 }
@@ -98,7 +103,7 @@ pub fn ingest_cost(
 
 /// QueryCost(a,g): cost of answering one query for `a` from `candidate`.
 pub fn query_cost(
-    _a: &Aqe,
+    _a: &AQE,
     candidate: &CandidateConfig,
     costs: &AtomicCosts,
     weights: &CostWeights,
@@ -111,7 +116,7 @@ pub fn query_cost(
     let props = sketch_properties(g.aggregation_type);
 
     let (cpu, mem) = match &candidate.query_method {
-        QueryMethod::Neither => (n * costs.query_cpu_secs, n * costs.mem_bytes_per_instance),
+        QueryMethod::Direct => (n * costs.query_cpu_secs, n * costs.mem_bytes_per_instance),
         QueryMethod::Merge { num_windows } => {
             debug_assert!(props.mergeable);
             let merges = (*num_windows).saturating_sub(1) as f64;
@@ -140,7 +145,7 @@ pub fn query_cost(
 /// `candidate`: IngestCost(g) + f_a * QueryCost(a,g). This is the per-(a,g)
 /// term the greedy/MIP solver minimizes.
 pub fn total_cost_rate(
-    a: &Aqe,
+    a: &AQE,
     candidate: &CandidateConfig,
     rho_g: f64,
     costs: &AtomicCosts,
@@ -158,8 +163,8 @@ mod tests {
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::Statistic;
 
-    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64) -> Aqe {
-        Aqe {
+    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64) -> AQE {
+        AQE {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![stat],

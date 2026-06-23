@@ -4,7 +4,7 @@ use asap_types::PromQLSchema;
 
 use crate::config::input::ControllerConfig;
 
-use super::aqe_extractor::{extract_aqes, Rqe};
+use super::aqe_extractor::{extract_aqes, RQE};
 use super::cost_model::{AtomicCosts, CostWeights};
 use super::greedy::greedy_assign;
 use super::solution::OptimizerSolution;
@@ -77,12 +77,12 @@ pub fn run_greedy_pipeline(
 
 /// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
 /// Each (query, repetition_delay) pair becomes one RQE.
-fn config_to_rqes(config: &ControllerConfig) -> Vec<Rqe> {
+fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
     config
         .query_groups
         .iter()
         .flat_map(|qg| {
-            qg.queries.iter().map(|q| Rqe {
+            qg.queries.iter().map(|q| RQE {
                 query_string: q.clone(),
                 t_repeat_secs: qg.repetition_delay,
             })

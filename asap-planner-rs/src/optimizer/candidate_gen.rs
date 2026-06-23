@@ -7,8 +7,11 @@ use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 use serde_json::Value;
 
+use super::constants::{
+    CMS_DEPTHS, CMS_HEAP_SIZES, CMS_WIDTHS, HLL_PRECISIONS, HYDRA_COLS, HYDRA_K, HYDRA_ROWS, KLL_KS,
+};
 use super::sketch_properties::sketch_properties;
-use super::solution::{Aqe, QueryMethod};
+use super::solution::{QueryMethod, AQE};
 
 /// A candidate streaming config for a single AQE, ready for cost evaluation.
 #[derive(Debug, Clone)]
@@ -17,19 +20,9 @@ pub struct CandidateConfig {
     pub config: Option<AggregationConfig>,
     /// Query method derived from (ingest type × W vs range_a × sketch algebra).
     pub query_method: QueryMethod,
-    /// Number of retained windows used at query time (n for Merge, 1 for Neither/Subtract, 0 for Exact).
+    /// Number of retained windows used at query time (n for Merge, 1 for Direct/Subtract, 0 for Exact).
     pub n_windows: u64,
 }
-
-// ponytail: small representative grids; replace with sketch-bench sweep results in Phase 3.
-const CMS_DEPTHS: &[u64] = &[3, 5];
-const CMS_WIDTHS: &[u64] = &[512, 1024, 2048];
-const CMS_HEAP_SIZES: &[u64] = &[40, 200, 1000];
-const KLL_KS: &[u64] = &[200, 500];
-const HYDRA_ROWS: &[u64] = &[3, 5];
-const HYDRA_COLS: &[u64] = &[512, 1024];
-const HYDRA_K: u64 = 20;
-const HLL_PRECISIONS: &[u64] = &[12, 14];
 
 /// Enumerate all candidate configs for an AQE.
 ///
@@ -38,7 +31,7 @@ const HLL_PRECISIONS: &[u64] = &[12, 14];
 ///
 /// Multi-statistic AQEs (e.g. avg = [Sum, Count]) return only EXACT — a single
 /// sketch family cannot serve two incompatible statistics simultaneously.
-pub fn enumerate_candidates(aqe: &Aqe, scrape_interval_secs: u64) -> Vec<CandidateConfig> {
+pub fn enumerate_candidates(aqe: &AQE, scrape_interval_secs: u64) -> Vec<CandidateConfig> {
     let mut candidates = Vec::new();
 
     if aqe.requirements.statistics.len() != 1 {
@@ -157,13 +150,14 @@ fn determine_query_method(
 ) -> Option<QueryMethod> {
     if n_windows == 1 {
         // W = range_a (or spatial-only): one completed window covers the query range exactly.
-        return Some(QueryMethod::Neither);
+        return Some(QueryMethod::Direct);
     }
     // n > 1 means W < range_a; sliding is excluded (sliding enforces W = range_a above).
     debug_assert_eq!(window_type, WindowType::Tumbling);
     if props.subtractable {
         Some(QueryMethod::Subtract)
     } else if props.mergeable {
+        debug_assert!(n_windows > 1, "Merge requires merging >1 window");
         Some(QueryMethod::Merge {
             num_windows: n_windows,
         })
@@ -175,7 +169,7 @@ fn determine_query_method(
 /// Build an AggregationConfig from candidate parameters. aggregation_id = 0 (placeholder).
 #[allow(clippy::too_many_arguments)]
 fn build_config(
-    aqe: &Aqe,
+    aqe: &AQE,
     agg_type: AggregationType,
     sub_type: &str,
     params: &HashMap<String, Value>,
@@ -307,9 +301,9 @@ mod tests {
     use super::*;
     use promql_utilities::data_model::KeyByLabelNames;
 
-    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64) -> Aqe {
+    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64) -> AQE {
         use asap_types::query_requirements::QueryRequirements;
-        Aqe {
+        AQE {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![stat],
@@ -338,19 +332,19 @@ mod tests {
     fn spatial_only_produces_neither_candidates() {
         let aqe = make_aqe(Statistic::Sum, None, 60);
         let candidates = enumerate_candidates(&aqe, 15);
-        // All non-EXACT candidates should be Neither (no temporal range to cover).
+        // All non-EXACT candidates should be Direct (no temporal range to cover).
         for c in candidates.iter().filter(|c| c.config.is_some()) {
-            assert_eq!(c.query_method, QueryMethod::Neither);
+            assert_eq!(c.query_method, QueryMethod::Direct);
         }
     }
 
     #[test]
     fn tumbling_w_equals_range_produces_neither() {
-        // range_a = 60s, scrape = 60s → only W=60, n=1 → Neither
+        // range_a = 60s, scrape = 60s → only W=60, n=1 → Direct
         let aqe = make_aqe(Statistic::Sum, Some(60_000), 60);
         let candidates = enumerate_candidates(&aqe, 60);
         for c in candidates.iter().filter(|c| c.config.is_some()) {
-            assert_eq!(c.query_method, QueryMethod::Neither);
+            assert_eq!(c.query_method, QueryMethod::Direct);
         }
     }
 
@@ -372,14 +366,14 @@ mod tests {
 
     #[test]
     fn cms_with_heap_only_neither_no_merge() {
-        // CMS+Heap is neither mergeable nor subtractable → only n=1 (Neither) valid.
+        // CMS+Heap is neither mergeable nor subtractable → only n=1 (Direct) valid.
         let aqe = make_aqe(Statistic::Topk, Some(300_000), 300);
         let candidates = enumerate_candidates(&aqe, 60);
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(
                 c.query_method,
-                QueryMethod::Neither,
-                "CMS+Heap should only produce Neither candidates"
+                QueryMethod::Direct,
+                "CMS+Heap should only produce Direct candidates"
             );
         }
     }

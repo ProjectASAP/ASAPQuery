@@ -6,7 +6,7 @@ use asap_types::query_requirements::QueryRequirements;
 /// An atomic query expression: one leaf aggregation extracted from a QE tree,
 /// together with the optimizer-level metadata needed to assign it a config.
 #[derive(Debug, Clone)]
-pub struct Aqe {
+pub struct AQE {
     /// What the query needs (metric, statistics, range, labels, spatial filter).
     pub requirements: QueryRequirements,
 
@@ -43,7 +43,7 @@ pub struct Aqe {
 pub enum QueryMethod {
     /// W = range_a: one completed window covers the query range exactly.
     /// Direct read, no merge or subtract needed.
-    Neither,
+    Direct,
 
     /// W < range_a, sketch is mergeable: combine `num_windows` retained
     /// tumbling sub-windows at query time. Cost scales linearly with num_windows.
@@ -60,8 +60,8 @@ pub enum QueryMethod {
 
 /// The assignment of a single AQE to a streaming config (or EXACT fallback).
 #[derive(Debug, Clone)]
-pub struct AqeAssignment {
-    pub aqe: Aqe,
+pub struct AQEAssignment {
+    pub aqe: AQE,
 
     /// ID of the deployed config that serves this AQE.
     /// `None` means the EXACT_a fallback (no streaming config, raw query).
@@ -87,7 +87,7 @@ pub struct OptimizerSolution {
     pub deployed_configs: HashMap<u64, AggregationConfig>,
 
     /// One entry per deduplicated AQE across the full RQE workload.
-    pub assignments: Vec<AqeAssignment>,
+    pub assignments: Vec<AQEAssignment>,
 
     /// Estimated steady-state ingestion cost rate across all deployed configs
     /// (Σ_{g: y_g=1} IngestCost(g)).
@@ -100,10 +100,10 @@ pub struct OptimizerSolution {
 impl OptimizerSolution {
     /// Construct an all-EXACT solution: every AQE falls back to raw data,
     /// no streaming configs are deployed. Used as the Phase 1 scaffolding baseline.
-    pub fn all_exact(aqes: Vec<Aqe>) -> Self {
+    pub fn all_exact(aqes: Vec<AQE>) -> Self {
         let assignments = aqes
             .into_iter()
-            .map(|aqe| AqeAssignment {
+            .map(|aqe| AQEAssignment {
                 aqe,
                 aggregation_id: None,
                 query_method: QueryMethod::Exact,

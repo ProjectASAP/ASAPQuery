@@ -51,7 +51,7 @@ fn build_inference_config(solution: &OptimizerSolution) -> InferenceConfig {
 /// inference config (num_aggregates_to_retain on the AggregationReference).
 pub fn retention_count_for_assignment(query_method: &QueryMethod) -> u64 {
     match query_method {
-        QueryMethod::Neither => 1,
+        QueryMethod::Direct => 1,
         QueryMethod::Merge { num_windows } => *num_windows,
         // Subtract needs 2 prefix checkpoints per query but we retain
         // ceil(range_a/W) checkpoints total to cover the full lookback.

@@ -5,7 +5,7 @@ use tracing::debug;
 
 use super::candidate_gen::enumerate_candidates;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
-use super::solution::{Aqe, AqeAssignment, OptimizerSolution};
+use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 
 /// Greedily assign each AQE to its independently-cheapest candidate config.
 ///
@@ -17,7 +17,7 @@ use super::solution::{Aqe, AqeAssignment, OptimizerSolution};
 /// Real per-config rates need Prometheus scrape-rate × series-count data,
 /// which isn't wired up yet — a single placeholder value is applied uniformly.
 pub fn greedy_assign(
-    aqes: Vec<Aqe>,
+    aqes: Vec<AQE>,
     scrape_interval_secs: u64,
     rho_g: f64,
     costs: &AtomicCosts,
@@ -34,11 +34,13 @@ pub fn greedy_assign(
 
         let best = candidates
             .into_iter()
-            .min_by(|a, b| {
-                total_cost_rate(&aqe, a, rho_g, costs, weights)
-                    .partial_cmp(&total_cost_rate(&aqe, b, rho_g, costs, weights))
-                    .unwrap()
+            .map(|c| {
+                let cost = total_cost_rate(&aqe, &c, rho_g, costs, weights);
+                (c, cost)
             })
+            // total_cmp (not partial_cmp().unwrap()) so a stray NaN cost can't panic.
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(c, _)| c)
             .expect("enumerate_candidates always returns at least the EXACT fallback");
 
         let ingest = ingest_cost(&best, rho_g, costs, weights);
@@ -68,7 +70,7 @@ pub fn greedy_assign(
         estimated_ingest_cost_per_sec += ingest;
         estimated_total_cost_per_sec += ingest + query_rate;
 
-        assignments.push(AqeAssignment {
+        assignments.push(AQEAssignment {
             aqe,
             aggregation_id,
             query_method,
@@ -92,8 +94,8 @@ mod tests {
     use promql_utilities::query_logics::enums::Statistic;
     use std::collections::HashMap as StdHashMap;
 
-    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64, freq_hz: f64) -> Aqe {
-        Aqe {
+    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64, freq_hz: f64) -> AQE {
+        AQE {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![stat],
@@ -135,7 +137,7 @@ mod tests {
 
     #[test]
     fn unsupported_multi_statistic_aqe_falls_back_to_exact() {
-        let aqe = Aqe {
+        let aqe = AQE {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![Statistic::Sum, Statistic::Count], // avg-style, unsupported
