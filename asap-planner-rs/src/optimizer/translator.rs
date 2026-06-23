@@ -53,11 +53,12 @@ pub fn retention_count_for_assignment(query_method: &QueryMethod) -> u64 {
     match query_method {
         QueryMethod::Direct => 1,
         QueryMethod::Merge { num_windows } => *num_windows,
-        // Subtract needs 2 prefix checkpoints per query but we retain
-        // ceil(range_a/W) checkpoints total to cover the full lookback.
-        // The exact value comes from the config's window parameters; use 1
-        // as a placeholder until Phase 3 wires this up properly.
-        QueryMethod::Subtract => 1,
+        // Subtract combines exactly 2 prefix-sum checkpoints per query
+        // (current cumulative, and the one from range_a ago), regardless of
+        // how many checkpoints the engine retains to make that pair available
+        // (see candidate_gen.rs's n_windows, a separate concept: the deployed
+        // AggregationConfig's retention depth).
+        QueryMethod::Subtract => 2,
         QueryMethod::Exact => 0,
     }
 }
