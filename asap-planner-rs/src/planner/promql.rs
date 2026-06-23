@@ -50,6 +50,25 @@ fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::E
     }
 }
 
+/// Parse `query` and, if it is a top-level binary arithmetic expression,
+/// return its two arms. Returns `None` if the query fails to parse, isn't a
+/// `Binary` expression, or uses a comparison/set operator (e.g. `==`, `and`).
+///
+/// This is the single shared entry point for binary-arm decomposition; both
+/// `SingleQueryProcessor::get_binary_arm_queries` and the AQE extractor's
+/// leaf decomposition build on it.
+pub(crate) fn parse_binary_arms(query: &str) -> Option<(BinaryArm, BinaryArm)> {
+    let ast = promql_parser::parser::parse(query).ok()?;
+    if let promql_parser::parser::Expr::Binary(binary) = ast {
+        if !binary.op.is_comparison_operator() && !binary.op.is_set_operator() {
+            let lhs = expr_to_binary_arm(binary.lhs.as_ref());
+            let rhs = expr_to_binary_arm(binary.rhs.as_ref());
+            return Some((lhs, rhs));
+        }
+    }
+    None
+}
+
 pub struct SingleQueryProcessor {
     query: String,
     t_repeat: u64,
@@ -132,16 +151,7 @@ impl SingleQueryProcessor {
     /// (`BinaryArm::Scalar`). Returns `None` if the query is not a binary expression
     /// or cannot be parsed.
     pub fn get_binary_arm_queries(&self) -> Option<(BinaryArm, BinaryArm)> {
-        let ast = promql_parser::parser::parse(&self.query).ok()?;
-        if let promql_parser::parser::Expr::Binary(binary) = ast {
-            let lhs = expr_to_binary_arm(binary.lhs.as_ref());
-            let rhs = expr_to_binary_arm(binary.rhs.as_ref());
-            // Only handle arithmetic operators (not comparison or set operators)
-            if !binary.op.is_comparison_operator() && !binary.op.is_set_operator() {
-                return Some((lhs, rhs));
-            }
-        }
-        None
+        parse_binary_arms(&self.query)
     }
 
     /// Create a new processor for an arm query, reusing all parameters from this processor.
