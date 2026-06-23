@@ -1,0 +1,148 @@
+use asap_types::inference_config::InferenceConfig;
+use asap_types::streaming_config::StreamingConfig;
+use asap_types::PromQLSchema;
+
+use crate::config::input::ControllerConfig;
+
+use super::aqe_extractor::{extract_aqes, RQE};
+use super::cost_model::{AtomicCosts, CostWeights};
+use super::greedy::greedy_assign;
+use super::solution::OptimizerSolution;
+use super::translator::{translate, TranslationSummary};
+
+/// Run the all-EXACT optimizer pipeline (Phase 1 scaffolding).
+///
+/// Converts a `ControllerConfig` into `(StreamingConfig, InferenceConfig)` via
+/// the optimizer path: RQEs → AQEs → all-EXACT solution → deployment artifacts.
+///
+/// No streaming configs are deployed — every AQE falls back to raw data at
+/// query time. This validates the end-to-end pipeline plumbing before real
+/// sketch selection logic is added in Phase 2.
+pub fn run_all_exact_pipeline(
+    config: &ControllerConfig,
+    schema: &PromQLSchema,
+) -> (StreamingConfig, InferenceConfig) {
+    let rqes = config_to_rqes(config);
+    let aqes = extract_aqes(&rqes, schema);
+    let solution = OptimizerSolution::all_exact(aqes);
+
+    let summary = TranslationSummary::from_solution(&solution);
+    tracing::info!(
+        num_deployed_configs = summary.num_deployed_configs,
+        num_sketch_assignments = summary.num_sketch_assignments,
+        num_exact_fallbacks = summary.num_exact_fallbacks,
+        "optimizer pipeline: all-EXACT solution produced"
+    );
+
+    translate(&solution)
+}
+
+/// Run the greedy optimizer pipeline (Phase 2): each AQE is assigned, independently,
+/// to its cheapest feasible candidate config (or to the EXACT fallback).
+///
+/// No cross-AQE sharing — every deployed sketch serves exactly one AQE, even
+/// if two AQEs could share one. The Phase 3 MIP finds sharing opportunities.
+///
+/// `rho_g` is a placeholder arrival rate applied uniformly to every candidate's
+/// IngestCost; real per-config rates need Prometheus scrape-rate × series-count
+/// data, which isn't wired up yet (see implementation plan TODOs).
+pub fn run_greedy_pipeline(
+    config: &ControllerConfig,
+    schema: &PromQLSchema,
+    scrape_interval_secs: u64,
+    rho_g: f64,
+) -> (StreamingConfig, InferenceConfig) {
+    let rqes = config_to_rqes(config);
+    let aqes = extract_aqes(&rqes, schema);
+    let solution = greedy_assign(
+        aqes,
+        scrape_interval_secs,
+        rho_g,
+        &AtomicCosts::default(),
+        &CostWeights::default(),
+    );
+
+    let summary = TranslationSummary::from_solution(&solution);
+    tracing::info!(
+        num_deployed_configs = summary.num_deployed_configs,
+        num_sketch_assignments = summary.num_sketch_assignments,
+        num_exact_fallbacks = summary.num_exact_fallbacks,
+        estimated_ingest_cost_per_sec = solution.estimated_ingest_cost_per_sec,
+        estimated_total_cost_per_sec = solution.estimated_total_cost_per_sec,
+        "optimizer pipeline: greedy solution produced"
+    );
+
+    translate(&solution)
+}
+
+/// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
+/// Each (query, repetition_delay) pair becomes one RQE.
+fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
+    config
+        .query_groups
+        .iter()
+        .flat_map(|qg| {
+            qg.queries.iter().map(|q| RQE {
+                query_string: q.clone(),
+                t_repeat_secs: qg.repetition_delay,
+            })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_config(queries: &[(&str, u64)]) -> ControllerConfig {
+        use crate::config::input::QueryGroup;
+
+        let query_groups = queries
+            .iter()
+            .map(|(q, t)| QueryGroup {
+                id: None,
+                queries: vec![q.to_string()],
+                repetition_delay: *t,
+                controller_options: Default::default(),
+                step: None,
+                range_duration: None,
+            })
+            .collect();
+
+        ControllerConfig {
+            query_groups,
+            sketch_parameters: None,
+            aggregate_cleanup: None,
+            metrics: None,
+            existing_streaming_config: None,
+            existing_inference_config: None,
+        }
+    }
+
+    #[test]
+    fn all_exact_pipeline_produces_empty_streaming_config() {
+        let config = make_config(&[("sum_over_time(metric[5m])", 60), ("sum(other_metric)", 30)]);
+        let schema = PromQLSchema::new();
+        let (streaming, _inference) = run_all_exact_pipeline(&config, &schema);
+        // All-EXACT: no streaming configs deployed.
+        assert!(streaming.get_all_aggregation_configs().is_empty());
+    }
+
+    #[test]
+    fn greedy_pipeline_deploys_a_config_for_a_mergeable_aqe() {
+        let config = make_config(&[("min_over_time(metric[5m])", 60)]);
+        let schema = PromQLSchema::new();
+        let (streaming, inference) = run_greedy_pipeline(&config, &schema, 60, 1.0);
+        assert!(!streaming.get_all_aggregation_configs().is_empty());
+        assert!(!inference.query_configs.is_empty());
+    }
+
+    #[test]
+    fn config_to_rqes_flattens_groups() {
+        let config = make_config(&[("sum_over_time(a[5m])", 60), ("sum_over_time(b[5m])", 30)]);
+        let rqes = config_to_rqes(&config);
+        assert_eq!(rqes.len(), 2);
+        assert_eq!(rqes[0].t_repeat_secs, 60);
+        assert_eq!(rqes[1].t_repeat_secs, 30);
+    }
+}

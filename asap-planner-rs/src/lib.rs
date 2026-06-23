@@ -3,6 +3,7 @@ pub mod config;
 pub mod elastic_dsl;
 pub mod error;
 pub mod generator;
+pub mod optimizer;
 pub mod planner;
 pub mod planner_output;
 pub mod prometheus_client;

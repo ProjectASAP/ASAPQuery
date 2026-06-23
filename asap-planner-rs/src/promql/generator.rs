@@ -18,7 +18,12 @@ use crate::RuntimeOptions;
 /// `(query_string, Vec<(identifying_key, cleanup_param)>)` pairs produced by binary leaf decomposition.
 type LeafEntries = Vec<(String, Vec<(String, Option<u64>)>)>;
 
-/// Run the full planning pipeline and produce YAML outputs
+/// Run the full planning pipeline and produce YAML outputs.
+///
+/// This is the hardcoded sketch/window selection path that `Controller::generate()`
+/// currently calls. `crate::optimizer` implements an optimization-based replacement
+/// (issue #405) but is not wired in here yet — see `bin/optimizer_cli.rs` for an
+/// offline runner and `.design_docs/optimizer-v1-implementation-plan.md` for status.
 pub fn generate_plan(
     controller_config: &ControllerConfig,
     schema: &PromQLSchema,
