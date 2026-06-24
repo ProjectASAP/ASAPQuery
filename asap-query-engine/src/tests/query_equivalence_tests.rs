@@ -372,4 +372,50 @@ mod tests {
             "spatial_of_temporal_sum",
         );
     }
+
+    // --- Sub-second range vector (issue #398) ---
+    // This is the actual capability the issue asks for: a `[500ms]` PromQL range
+    // vector must produce a 500ms execution window, not round to 0 under the old
+    // whole-seconds representation. This test would have failed before the
+    // ms-precision rename (the engine's `.num_seconds()` truncation bug) and
+    // must pass after it.
+    #[test]
+    fn sub_second_range_vector_produces_sub_second_window() {
+        let scrape_interval_ms = 100;
+        let promql_query = "sum_over_time(cpu_usage[500ms])";
+        let window_size_ms = 500;
+
+        let (promql_config, _, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1"])
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_temporal_query(
+                promql_query,
+                promql_query,
+                1,
+                window_size_ms,
+                WindowType::Tumbling,
+            )
+            .build_both();
+
+        let promql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            promql_config,
+            streaming_config,
+            scrape_interval_ms,
+            QueryLanguage::promql,
+        );
+
+        let query_time_sec: f64 = 1000.0;
+        let context = promql_engine
+            .build_query_execution_context_promql(promql_query.to_string(), query_time_sec)
+            .expect("Failed to build PromQL context for sub-second range vector");
+
+        let start_ms = context.store_plan.values_query.start_timestamp;
+        let end_ms = context.store_plan.values_query.end_timestamp;
+        assert_eq!(
+            end_ms - start_ms,
+            500,
+            "[500ms] range vector must produce a 500ms window, got [{start_ms}, {end_ms})"
+        );
+    }
 }

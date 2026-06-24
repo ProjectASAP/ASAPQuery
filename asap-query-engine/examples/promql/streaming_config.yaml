@@ -9,7 +9,7 @@ aggregations:
   metric: fake_metric
   parameters:
     K: 20
-  windowSize: 1
+  windowSizeMs: 1000
   windowType: tumbling
   spatialFilter: ''
 metrics:

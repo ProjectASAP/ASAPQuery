@@ -587,3 +587,49 @@ fn temporal_overlapping_rate_increase_deduped() {
     assert_eq!(out.inference_query_count(), 4);
     assert_eq!(out.streaming_aggregation_count(), 4); // not 5
 }
+
+// --- Sub-second scrape interval (issue #398) ---
+// This is the actual capability the issue asks for: a 100ms scrape interval
+// rounds to 0 under the old whole-seconds representation. These tests would
+// have failed before the ms-precision rename and must pass after it.
+
+#[test]
+fn sub_second_scrape_interval_window_size_equals_scrape_interval() {
+    // OnlySpatial query: window size = scrape interval (planner/window.rs).
+    // 100ms would be indistinguishable from 0 under the old seconds-only model.
+    let opts = RuntimeOptions {
+        prometheus_scrape_interval_ms: 100,
+        ..arroyo_opts()
+    };
+    let c = Controller::from_file_with_schema(
+        Path::new("tests/comparison/test_data/configs/spatial_quantile.yaml"),
+        http_requests_schema(),
+        opts,
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert!(out.all_tumbling_window_sizes_eq(100));
+}
+
+#[test]
+fn sub_second_scrape_interval_round_trips_through_generated_yaml() {
+    // The generated streaming_config.yaml must carry the sub-second value through
+    // under the renamed wire key (windowSizeMs, not windowSize) — not silently
+    // rounded or truncated.
+    let opts = RuntimeOptions {
+        prometheus_scrape_interval_ms: 100,
+        ..arroyo_opts()
+    };
+    let c = Controller::from_file_with_schema(
+        Path::new("tests/comparison/test_data/configs/spatial_quantile.yaml"),
+        http_requests_schema(),
+        opts,
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    let yaml = out.to_streaming_yaml_string().unwrap();
+    assert!(
+        yaml.contains("windowSizeMs: 100"),
+        "expected a sub-second windowSizeMs in the generated YAML, got:\n{yaml}"
+    );
+}

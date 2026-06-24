@@ -1,6 +1,6 @@
 output_dir: "/app/outputs"
 log_level: "INFO"
-prometheus_scrape_interval: 15
+prometheus_scrape_interval_ms: 15000
 streaming_engine: "precompute"
 
 http_server:

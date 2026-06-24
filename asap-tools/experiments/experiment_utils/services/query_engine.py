@@ -140,7 +140,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         return {
             "output_dir": output_dir,
             "log_level": log_level,
-            "prometheus_scrape_interval": prometheus_scrape_interval,
+            "prometheus_scrape_interval_ms": prometheus_scrape_interval * 1000,
             "streaming_engine": streaming_engine,
             "http_server": {"port": http_port},
             "backend": backend,  # already fully resolved by caller
@@ -223,7 +223,8 @@ class QueryEngineRustService(BaseQueryEngineService):
                                   config YAML locally before rsyncing to remote)
             flink_output_format: Format of data from Flink (used as Kafka input_format
                                  when streaming_engine=arroyo)
-            prometheus_scrape_interval: Prometheus scraping interval
+            prometheus_scrape_interval: Prometheus scraping interval (seconds; written to
+                EngineConfig as prometheus_scrape_interval_ms, ×1000)
             log_level: Logging level
             profile_query_engine: Whether to enable profiling
             manual: Whether to run in manual mode

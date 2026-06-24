@@ -15,6 +15,6 @@ aggregations:
   value_column: cpu_usage
   parameters:
     K: 20
-  windowSize: 1
+  windowSizeMs: 1000
   windowType: tumbling
   spatialFilter: ''

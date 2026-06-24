@@ -221,7 +221,8 @@ class ControllerService(BaseService):
             discovery_backend: Backend used for label/column auto-discovery.
                 PromQL mode: DiscoveryBackend(type="prometheus", url=<url>, database=None)
                 SQL mode:    DiscoveryBackend(type="clickhouse", url=<url>, database=<db>)
-            prometheus_scrape_interval: Required for PromQL mode
+            prometheus_scrape_interval: Required for PromQL mode (seconds; converted to
+                --prometheus_scrape_interval_ms when invoking the controller binary)
             query_language: 'promql' (default) or 'sql'
             data_ingestion_interval: Required for SQL mode (seconds)
             **kwargs: Additional configuration
@@ -269,7 +270,9 @@ class ControllerService(BaseService):
             f" --query-language {query_language}"
         )
         if prometheus_scrape_interval is not None:
-            cmd += f" --prometheus_scrape_interval {prometheus_scrape_interval}"
+            cmd += (
+                f" --prometheus_scrape_interval_ms {prometheus_scrape_interval * 1000}"
+            )
         if data_ingestion_interval is not None:
             cmd += f" --data-ingestion-interval {data_ingestion_interval}"
         if discovery_backend.type == "prometheus":
@@ -331,7 +334,7 @@ class ControllerService(BaseService):
         generate_cmd += f" --query-language {query_language}"
         if prometheus_scrape_interval is not None:
             generate_cmd += (
-                f" --prometheus-scrape-interval {prometheus_scrape_interval}"
+                f" --prometheus-scrape-interval-ms {prometheus_scrape_interval * 1000}"
             )
         if data_ingestion_interval is not None:
             generate_cmd += f" --data-ingestion-interval {data_ingestion_interval}"
