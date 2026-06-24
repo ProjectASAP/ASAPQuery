@@ -65,10 +65,14 @@ impl ElasticSingleQueryProcessor {
         // Get aggregation type and statistics
         let (treatment_type, statistics) = get_elastic_statistics(&query_info.aggregation)?;
 
-        // Build window config (always tumbling for Elasticsearch queries)
+        // Build window config (always tumbling for Elasticsearch queries).
+        // self.t_repeat is seconds (Elastic DSL is out of scope for the ms-precision
+        // rename, see issue #427) — IntermediateWindowConfig is now ms-typed throughout,
+        // so convert at this boundary, same as planner::sql::compute_sql_window.
+        let t_repeat_ms = self.t_repeat * 1000;
         let window_cfg = IntermediateWindowConfig {
-            window_size: self.t_repeat,
-            slide_interval: self.t_repeat,
+            window_size_ms: t_repeat_ms,
+            slide_interval_ms: t_repeat_ms,
             window_type: WindowType::Tumbling,
         };
 

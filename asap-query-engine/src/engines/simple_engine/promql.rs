@@ -35,12 +35,15 @@ impl SimpleEngine {
     ) -> u64 {
         match query_pattern_type {
             QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
-                let range_seconds = match_result.get_range_duration().unwrap().num_seconds() as u64;
-                end_timestamp - (range_seconds * 1000)
+                // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
+                // so .num_seconds() would truncate genuinely sub-second range vectors to 0.
+                let range_ms = match_result
+                    .get_range_duration()
+                    .unwrap()
+                    .num_milliseconds() as u64;
+                end_timestamp - range_ms
             }
-            QueryPatternType::OnlySpatial => {
-                end_timestamp - (self.prometheus_scrape_interval * 1000)
-            }
+            QueryPatternType::OnlySpatial => end_timestamp - self.prometheus_scrape_interval_ms,
         }
     }
 
@@ -481,7 +484,7 @@ impl SimpleEngine {
                     .read()
                     .unwrap()
                     .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-                    .map(|c| c.window_size * 1000)?;
+                    .map(|c| c.window_size_ms)?;
 
                 self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
                     .map_err(|e| {
@@ -622,9 +625,11 @@ impl SimpleEngine {
 
         let data_range_ms = match query_pattern_type {
             QueryPatternType::OnlySpatial => None,
+            // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
+            // so .num_seconds() would truncate genuinely sub-second range vectors to 0.
             _ => match_result
                 .get_range_duration()
-                .map(|d| d.num_seconds() as u64 * 1000),
+                .map(|d| d.num_milliseconds() as u64),
         };
 
         let all_labels = match &self.inference_config.read().unwrap().schema {
@@ -1123,7 +1128,7 @@ impl SimpleEngine {
             .read()
             .unwrap()
             .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(|config| config.window_size * 1000)?;
+            .map(|config| config.window_size_ms)?;
 
         // Validate parameters
         self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
@@ -1318,8 +1323,8 @@ mod topk_pipeline_tests {
             aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
             rollup_labels: KeyByLabelNames::empty(),
             original_yaml: String::new(),
-            window_size: 1,
-            slide_interval: 1,
+            window_size_ms: 1000,
+            slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -1345,7 +1350,7 @@ mod topk_pipeline_tests {
             store.clone(),
             inference_config,
             streaming_config,
-            1,
+            1000,
             QueryLanguage::promql,
         );
         (engine, store)

@@ -9,19 +9,19 @@ type QueryVariant<'a> = ((String, u64), Vec<&'a LogEntry>);
 #[derive(Debug, Clone, PartialEq)]
 pub struct InstantQueryInfo {
     pub query: String,
-    /// Median inter-arrival time rounded to nearest scrape interval (seconds).
-    pub repetition_delay: u64,
+    /// Median inter-arrival time rounded to nearest scrape interval (ms).
+    pub repetition_delay_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RangeQueryInfo {
     pub query: String,
-    /// Median inter-arrival time rounded to nearest scrape interval (seconds).
-    pub repetition_delay: u64,
-    /// Step from params.step (seconds).
-    pub step: u64,
-    /// Median of (end − start) across occurrences (seconds).
-    pub range_duration: u64,
+    /// Median inter-arrival time rounded to nearest scrape interval (ms).
+    pub repetition_delay_ms: u64,
+    /// Step from params.step, converted from the log's native seconds to ms.
+    pub step_ms: u64,
+    /// Median of (end − start) across occurrences (ms).
+    pub range_duration_ms: u64,
 }
 
 /// Infer query repetition delays from a slice of parsed log entries.
@@ -34,12 +34,12 @@ pub struct RangeQueryInfo {
 /// - If the same query string appears under multiple step values, keep the
 ///   variant with the most occurrences and warn about discarded variants.
 /// - Groups with only 1 occurrence are skipped with a warning.
-/// - `repetition_delay` = median inter-arrival time, rounded to nearest
-///   `scrape_interval` second.
-/// - If `|raw_median − rounded| / scrape_interval ≥ 0.1` a warning is emitted.
+/// - `repetition_delay_ms` = median inter-arrival time, rounded to nearest
+///   `scrape_interval_ms`.
+/// - If `|raw_median − rounded| / scrape_interval_ms ≥ 0.1` a warning is emitted.
 pub fn infer_queries(
     entries: &[LogEntry],
-    scrape_interval: u64,
+    scrape_interval_ms: u64,
 ) -> (Vec<InstantQueryInfo>, Vec<RangeQueryInfo>) {
     // Group by (query_string, step)
     let mut groups: HashMap<(String, u64), Vec<&LogEntry>> = HashMap::new();
@@ -82,20 +82,21 @@ pub fn infer_queries(
             continue;
         }
 
-        let repetition_delay = infer_repetition_delay(&variant_entries, scrape_interval, &query);
+        let repetition_delay_ms =
+            infer_repetition_delay(&variant_entries, scrape_interval_ms, &query);
 
         if step == 0 {
             instant_results.push(InstantQueryInfo {
                 query,
-                repetition_delay,
+                repetition_delay_ms,
             });
         } else {
-            let range_duration = median_range_duration(&variant_entries);
+            let range_duration_ms = median_range_duration(&variant_entries);
             range_results.push(RangeQueryInfo {
                 query,
-                repetition_delay,
-                step,
-                range_duration,
+                repetition_delay_ms,
+                step_ms: step * 1000,
+                range_duration_ms,
             });
         }
     }
@@ -104,24 +105,24 @@ pub fn infer_queries(
 }
 
 /// Compute median inter-arrival time from timestamps and round to nearest scrape interval.
-fn infer_repetition_delay(entries: &[&LogEntry], scrape_interval: u64, query: &str) -> u64 {
+fn infer_repetition_delay(entries: &[&LogEntry], scrape_interval_ms: u64, query: &str) -> u64 {
     let mut timestamps: Vec<DateTime<Utc>> = entries.iter().map(|e| e.ts).collect();
     timestamps.sort();
 
     let deltas: Vec<f64> = timestamps
         .windows(2)
-        .map(|w| (w[1] - w[0]).num_seconds() as f64)
+        .map(|w| (w[1] - w[0]).num_milliseconds() as f64)
         .collect();
 
     let raw_median = median_f64(&deltas);
-    let rounded = round_to_nearest(raw_median, scrape_interval);
+    let rounded = round_to_nearest(raw_median, scrape_interval_ms);
 
-    let misalignment = (raw_median - rounded as f64).abs() / scrape_interval as f64;
+    let misalignment = (raw_median - rounded as f64).abs() / scrape_interval_ms as f64;
     if misalignment >= 0.1 {
         tracing::warn!(
             %query,
-            raw_median_secs = raw_median,
-            rounded_secs = rounded,
+            raw_median_ms = raw_median,
+            rounded_ms = rounded,
             misalignment_pct = misalignment * 100.0,
             "inferred repetition_delay is poorly aligned with scrape_interval; result may be inaccurate"
         );
@@ -130,11 +131,11 @@ fn infer_repetition_delay(entries: &[&LogEntry], scrape_interval: u64, query: &s
     rounded
 }
 
-/// Median of (end − start) durations in seconds.
+/// Median of (end − start) durations in ms.
 fn median_range_duration(entries: &[&LogEntry]) -> u64 {
     let mut durations: Vec<f64> = entries
         .iter()
-        .map(|e| (e.end - e.start).num_seconds() as f64)
+        .map(|e| (e.end - e.start).num_milliseconds() as f64)
         .collect();
     durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
     median_f64(&durations) as u64
@@ -211,55 +212,55 @@ mod tests {
     #[test]
     fn single_occurrence_skipped() {
         let entries = make_instant_entries(base_ts(), 60, 1);
-        let (instants, ranges) = infer_queries(&entries, 15);
+        let (instants, ranges) = infer_queries(&entries, 15_000);
         assert!(instants.is_empty());
         assert!(ranges.is_empty());
     }
 
     #[test]
     fn median_inter_arrival_odd_count() {
-        // 5 entries at exactly 60s apart → 4 deltas all 60s → median=60 → rounded=60
+        // 5 entries at exactly 60s apart → 4 deltas all 60_000ms → median=60_000 → rounded=60_000
         let entries = make_instant_entries(base_ts(), 60, 5);
-        let (instants, _) = infer_queries(&entries, 15);
+        let (instants, _) = infer_queries(&entries, 15_000);
         assert_eq!(instants.len(), 1);
-        assert_eq!(instants[0].repetition_delay, 60);
+        assert_eq!(instants[0].repetition_delay_ms, 60_000);
     }
 
     #[test]
     fn median_inter_arrival_even_count() {
-        // 4 entries at 60s apart → 3 deltas all 60s → median=60 → rounded=60
+        // 4 entries at 60s apart → 3 deltas all 60_000ms → median=60_000 → rounded=60_000
         let entries = make_instant_entries(base_ts(), 60, 4);
-        let (instants, _) = infer_queries(&entries, 15);
+        let (instants, _) = infer_queries(&entries, 15_000);
         assert_eq!(instants.len(), 1);
-        assert_eq!(instants[0].repetition_delay, 60);
+        assert_eq!(instants[0].repetition_delay_ms, 60_000);
     }
 
     #[test]
     fn round_down_to_nearest_scrape() {
-        // raw=16s, scrape=15 → nearest=15 (|16-15|/15=6.7% < 10%, no warn)
-        assert_eq!(round_to_nearest(16.0, 15), 15);
+        // raw=16_000ms, scrape=15_000ms → nearest=15_000 (|16-15|/15=6.7% < 10%, no warn)
+        assert_eq!(round_to_nearest(16_000.0, 15_000), 15_000);
     }
 
     #[test]
     fn round_up_to_nearest_scrape() {
-        // raw=23s, scrape=15 → nearest=30 (23 is closer to 30 than 15)
-        assert_eq!(round_to_nearest(23.0, 15), 30);
+        // raw=23_000ms, scrape=15_000ms → nearest=30_000 (23 is closer to 30 than 15)
+        assert_eq!(round_to_nearest(23_000.0, 15_000), 30_000);
     }
 
     #[test]
     fn misaligned_still_returns_result() {
-        // raw=22s, scrape=15 → rounds to 15, but |22-15|/15=46.7% ≥ 10% → warn emitted
+        // raw=22_000ms, scrape=15_000ms → rounds to 15_000, but |22-15|/15=46.7% ≥ 10% → warn emitted
         // We only verify the value is returned (warning is logged, not returned)
-        assert_eq!(round_to_nearest(22.0, 15), 15);
+        assert_eq!(round_to_nearest(22_000.0, 15_000), 15_000);
     }
 
     #[test]
     fn range_duration_from_start_end() {
         let entries = make_range_entries(base_ts(), 60, 3600, 30, 5);
-        let (_, ranges) = infer_queries(&entries, 15);
+        let (_, ranges) = infer_queries(&entries, 15_000);
         assert_eq!(ranges.len(), 1);
-        assert_eq!(ranges[0].range_duration, 3600);
-        assert_eq!(ranges[0].step, 30);
+        assert_eq!(ranges[0].range_duration_ms, 3_600_000);
+        assert_eq!(ranges[0].step_ms, 30_000);
     }
 
     #[test]
@@ -268,7 +269,7 @@ mod tests {
         let range_entries = make_range_entries(base_ts(), 60, 3600, 30, 2); // step=30, 2 occurrences
         entries.extend(range_entries);
 
-        let (instants, ranges) = infer_queries(&entries, 15);
+        let (instants, ranges) = infer_queries(&entries, 15_000);
         // step=0 variant has more occurrences → kept as instant
         assert_eq!(instants.len(), 1);
         // step=30 variant discarded

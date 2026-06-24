@@ -6,11 +6,11 @@ use std::path::Path;
 
 fn arroyo_opts() -> RuntimeOptions {
     RuntimeOptions {
-        prometheus_scrape_interval: 15,
+        prometheus_scrape_interval_ms: 15_000,
         streaming_engine: StreamingEngine::Arroyo,
         enable_punting: false,
-        range_duration: 0,
-        step: 0,
+        range_duration_ms: 0,
+        step_ms: 0,
     }
 }
 
@@ -81,8 +81,8 @@ fn query_log_range_produces_valid_configs() {
     )
     .unwrap();
     let out = c.generate().unwrap();
-    // range_only.log has step=30, so effective window size must be ≤ 30
-    assert!(out.all_tumbling_window_sizes_leq(30));
+    // range_only.log has step=30 (seconds, native log format) → step_ms=30_000
+    assert!(out.all_tumbling_window_sizes_leq(30_000));
 }
 
 #[test]
@@ -162,7 +162,7 @@ fn only_spatial_window_equals_scrape_interval() {
     )
     .unwrap();
     let out = c.generate().unwrap();
-    assert!(out.all_tumbling_window_sizes_eq(15));
+    assert!(out.all_tumbling_window_sizes_eq(15_000));
 }
 
 #[test]
@@ -193,8 +193,8 @@ fn topk_produces_count_min_sketch_with_heap() {
 #[test]
 fn range_query_uses_effective_repeat() {
     let opts = RuntimeOptions {
-        range_duration: 3600,
-        step: 30,
+        range_duration_ms: 3_600_000,
+        step_ms: 30_000,
         ..arroyo_opts()
     };
     let c = Controller::from_file_with_schema(
@@ -204,7 +204,7 @@ fn range_query_uses_effective_repeat() {
     )
     .unwrap();
     let out = c.generate().unwrap();
-    assert!(out.all_tumbling_window_sizes_leq(30));
+    assert!(out.all_tumbling_window_sizes_leq(30_000));
 }
 
 #[test]
@@ -223,11 +223,11 @@ fn output_files_written_to_dir() {
 
 #[test]
 fn rate_tumbling_window_size_equals_effective_repeat() {
-    // For range queries, effective_repeat = min(t_repeat=300, step=30) = 30
+    // For range queries, effective_repeat = min(t_repeat=300_000, step=30_000) = 30_000
     // Tumbling window size must equal effective_repeat (sliding is always disabled)
     let opts = RuntimeOptions {
-        range_duration: 3600,
-        step: 30,
+        range_duration_ms: 3_600_000,
+        step_ms: 30_000,
         ..arroyo_opts()
     };
     let c = Controller::from_file_with_schema(
@@ -237,15 +237,15 @@ fn rate_tumbling_window_size_equals_effective_repeat() {
     )
     .unwrap();
     let out = c.generate().unwrap();
-    assert!(out.all_tumbling_window_sizes_eq(30));
+    assert!(out.all_tumbling_window_sizes_eq(30_000));
 }
 
 #[test]
 fn increase_tumbling_window_size_equals_effective_repeat() {
-    // effective_repeat = min(t_repeat=300, step=30) = 30
+    // effective_repeat = min(t_repeat=300_000, step=30_000) = 30_000
     let opts = RuntimeOptions {
-        range_duration: 3600,
-        step: 30,
+        range_duration_ms: 3_600_000,
+        step_ms: 30_000,
         ..arroyo_opts()
     };
     let c = Controller::from_file_with_schema(
@@ -256,15 +256,15 @@ fn increase_tumbling_window_size_equals_effective_repeat() {
     .unwrap();
     let out = c.generate().unwrap();
     assert!(out.has_aggregation_type("MultipleIncrease"));
-    assert!(out.all_tumbling_window_sizes_eq(30));
+    assert!(out.all_tumbling_window_sizes_eq(30_000));
 }
 
 #[test]
 fn quantile_over_time_tumbling_window_size_equals_effective_repeat() {
-    // effective_repeat = min(t_repeat=300, step=30) = 30
+    // effective_repeat = min(t_repeat=300_000, step=30_000) = 30_000
     let opts = RuntimeOptions {
-        range_duration: 3600,
-        step: 30,
+        range_duration_ms: 3_600_000,
+        step_ms: 30_000,
         ..arroyo_opts()
     };
     let c = Controller::from_file_with_schema(
@@ -275,7 +275,7 @@ fn quantile_over_time_tumbling_window_size_equals_effective_repeat() {
     .unwrap();
     let out = c.generate().unwrap();
     assert!(out.has_aggregation_type("DatasketchesKLL"));
-    assert!(out.all_tumbling_window_sizes_eq(30));
+    assert!(out.all_tumbling_window_sizes_eq(30_000));
 }
 
 #[test]
@@ -332,7 +332,7 @@ query_groups:
   - id: 1
     queries:
       - "rate(http_requests_total[5m])"
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0
@@ -355,7 +355,7 @@ query_groups:
     queries:
       - "rate(http_requests_total[5m])"
       - "rate(http_requests_total[5m])"
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0
@@ -374,14 +374,14 @@ query_groups:
   - id: 1
     queries:
       - "rate(http_requests_total[5m])"
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0
   - id: 2
     queries:
       - "rate(http_requests_total[5m])"
-    repetition_delay: 60
+    repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0
@@ -401,7 +401,7 @@ query_groups:
   - id: 1
     queries:
       - "rate(unknown_metric[5m])"
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0
@@ -429,7 +429,7 @@ query_groups:
   - id: 1
     queries:
       - "rate(http_requests_total[5m])"
-    repetition_delay: 300
+    repetition_delay_ms: 300000
 metrics:
   - metric: "http_requests_total"
     labels: ["instance"]
@@ -445,7 +445,7 @@ metrics:
 
 #[test]
 fn temporal_overlapping_window_size_equals_t_repeat() {
-    // [5m] range repeated every 60s → windowSize = 60, not 300
+    // [5m] range repeated every 60_000ms → windowSizeMs = 60_000, not 300_000
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
         http_requests_schema(),
@@ -453,7 +453,7 @@ fn temporal_overlapping_window_size_equals_t_repeat() {
     )
     .unwrap();
     let out = c.generate().unwrap();
-    assert!(out.all_tumbling_window_sizes_eq(60));
+    assert!(out.all_tumbling_window_sizes_eq(60_000));
 }
 
 #[test]

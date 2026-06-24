@@ -59,13 +59,13 @@ pub fn generate_plan(
         for query_string in &qg.queries {
             let processor = SingleQueryProcessor::new(
                 query_string.clone(),
-                qg.repetition_delay,
-                opts.prometheus_scrape_interval,
+                qg.repetition_delay_ms,
+                opts.prometheus_scrape_interval_ms,
                 metric_schema.clone(),
                 opts.streaming_engine,
                 controller_config.sketch_parameters.clone(),
-                qg.range_duration.unwrap_or(opts.range_duration),
-                qg.step.unwrap_or(opts.step),
+                qg.range_duration_ms.unwrap_or(opts.range_duration_ms),
+                qg.step_ms.unwrap_or(opts.step_ms),
                 cleanup_policy,
             );
 

@@ -121,7 +121,7 @@ fn make_timeseries(metric: &str, label_0: &str, samples: Vec<Sample>) -> TimeSer
 
 fn make_kll_streaming_config(
     aggregation_id: u64,
-    window_size_secs: u64,
+    window_size_ms: u64,
     k: u16,
 ) -> Arc<StreamingConfig> {
     let mut params = HashMap::new();
@@ -136,8 +136,8 @@ fn make_kll_streaming_config(
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         String::new(),
-        window_size_secs,
-        window_size_secs,
+        window_size_ms,
+        window_size_ms,
         WindowType::Tumbling,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
@@ -274,7 +274,7 @@ async fn run_latency_benchmark(
     let aggregation_id = 101;
     let metric = "bench_metric";
     let window_size_ms = (args.window_size_secs * 1000) as i64;
-    let streaming_config = make_kll_streaming_config(aggregation_id, args.window_size_secs, args.k);
+    let streaming_config = make_kll_streaming_config(aggregation_id, window_size_ms as u64, args.k);
     let store = make_store(streaming_config.clone());
     let sink = Arc::new(TrackingStoreSink::new(store.clone()));
 
@@ -370,7 +370,7 @@ async fn run_throughput_benchmark(
     let total_samples = (args.num_requests * args.num_series * args.samples_per_series) as u64;
     let expected_outputs = (args.num_requests * args.num_series) as u64;
 
-    let streaming_config = make_kll_streaming_config(aggregation_id, args.window_size_secs, args.k);
+    let streaming_config = make_kll_streaming_config(aggregation_id, window_size_ms as u64, args.k);
     let store = make_store(streaming_config.clone());
     let sink = Arc::new(TrackingStoreSink::new(store.clone()));
 

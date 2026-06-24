@@ -36,8 +36,8 @@ fn make_agg_config(
     metric: &str,
     agg_type: AggregationType,
     agg_sub_type: &str,
-    window_secs: u64,
-    slide_secs: u64,
+    window_size_ms: u64,
+    slide_interval_ms: u64,
     grouping: Vec<&str>,
 ) -> AggregationConfig {
     make_agg_config_full(
@@ -45,8 +45,8 @@ fn make_agg_config(
         metric,
         agg_type,
         agg_sub_type,
-        window_secs,
-        slide_secs,
+        window_size_ms,
+        slide_interval_ms,
         grouping,
         vec![],
     )
@@ -58,12 +58,12 @@ fn make_agg_config_full(
     metric: &str,
     agg_type: AggregationType,
     agg_sub_type: &str,
-    window_secs: u64,
-    slide_secs: u64,
+    window_size_ms: u64,
+    slide_interval_ms: u64,
     grouping: Vec<&str>,
     aggregated: Vec<&str>,
 ) -> AggregationConfig {
-    let window_type = if slide_secs == 0 || slide_secs == window_secs {
+    let window_type = if slide_interval_ms == 0 || slide_interval_ms == window_size_ms {
         WindowType::Tumbling
     } else {
         WindowType::Sliding
@@ -81,8 +81,8 @@ fn make_agg_config_full(
         ),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         String::new(),
-        window_secs,
-        slide_secs,
+        window_size_ms,
+        slide_interval_ms,
         window_type,
         metric.to_string(),
         metric.to_string(),
@@ -174,7 +174,7 @@ fn gzip_hex(bytes: &[u8]) -> String {
 async fn e2e_kll_output_matches_arroyo() {
     let port = 19400u16;
     let agg_id = 1u64;
-    let window_secs = 10u64;
+    let window_size_ms = 10_000u64;
     let k = 20u16;
 
     let mut kll_config = make_agg_config(
@@ -182,7 +182,7 @@ async fn e2e_kll_output_matches_arroyo() {
         "latency",
         AggregationType::DatasketchesKLL,
         "",
-        window_secs,
+        window_size_ms,
         0,
         vec![],
     );
@@ -264,7 +264,7 @@ async fn e2e_kll_output_matches_arroyo() {
     // Window metadata
     assert_eq!(handcrafted_output.aggregation_id, agg_id);
     assert_eq!(handcrafted_output.start_timestamp, 0);
-    assert_eq!(handcrafted_output.end_timestamp, window_secs * 1_000);
+    assert_eq!(handcrafted_output.end_timestamp, window_size_ms);
 
     // Sketch contents
     assert_eq!(
@@ -294,14 +294,14 @@ async fn e2e_kll_output_matches_arroyo() {
 async fn e2e_multiple_sum_output_matches_arroyo() {
     let port = 19401u16;
     let agg_id = 2u64;
-    let window_secs = 10u64;
+    let window_size_ms = 10_000u64;
 
     let config = make_agg_config_full(
         agg_id,
         "cpu",
         AggregationType::MultipleSum,
         "sum",
-        window_secs,
+        window_size_ms,
         0,
         vec![],       // grouping: none
         vec!["host"], // aggregated: host is the key INSIDE the sketch
@@ -377,7 +377,7 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
     // Window metadata
     assert_eq!(handcrafted_output.aggregation_id, agg_id);
     assert_eq!(handcrafted_output.start_timestamp, 0);
-    assert_eq!(handcrafted_output.end_timestamp, window_secs * 1_000);
+    assert_eq!(handcrafted_output.end_timestamp, window_size_ms);
 
     // Accumulator contents
     assert_eq!(

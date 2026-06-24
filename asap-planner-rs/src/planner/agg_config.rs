@@ -14,8 +14,8 @@ pub struct IntermediateAggConfig {
     pub aggregation_type: AggregationType,
     pub aggregation_sub_type: String,
     pub window_type: WindowType,
-    pub window_size: u64,
-    pub slide_interval: u64,
+    pub window_size_ms: u64,
+    pub slide_interval_ms: u64,
     pub spatial_filter: String,
     pub metric: String,
     pub table_name: Option<String>,
@@ -56,8 +56,8 @@ impl IntermediateAggConfig {
             self.aggregation_type,
             self.aggregation_sub_type,
             self.window_type,
-            self.window_size,
-            self.slide_interval,
+            self.window_size_ms,
+            self.slide_interval_ms,
             self.spatial_filter,
             self.metric,
             self.table_name,
@@ -112,8 +112,8 @@ pub fn build_agg_configs_for_statistics(
                 aggregation_type: AggregationType::DeltaSetAggregator,
                 aggregation_sub_type: String::new(),
                 window_type: window_cfg.window_type,
-                window_size: window_cfg.window_size,
-                slide_interval: window_cfg.slide_interval,
+                window_size_ms: window_cfg.window_size_ms,
+                slide_interval_ms: window_cfg.slide_interval_ms,
                 spatial_filter: spatial_filter.to_string(),
                 metric: metric.to_string(),
                 table_name: table_name.map(str::to_string),
@@ -130,8 +130,8 @@ pub fn build_agg_configs_for_statistics(
             aggregation_type: agg_type,
             aggregation_sub_type: agg_sub_type,
             window_type: window_cfg.window_type,
-            window_size: window_cfg.window_size,
-            slide_interval: window_cfg.slide_interval,
+            window_size_ms: window_cfg.window_size_ms,
+            slide_interval_ms: window_cfg.slide_interval_ms,
             spatial_filter: spatial_filter.to_string(),
             metric: metric.to_string(),
             table_name: table_name.map(str::to_string),
@@ -157,8 +157,8 @@ mod tests {
             aggregation_type: AggregationType::MultipleIncrease,
             aggregation_sub_type: "rate".to_string(),
             window_type: WindowType::Tumbling,
-            window_size: 300,
-            slide_interval: 300,
+            window_size_ms: 300_000,
+            slide_interval_ms: 300_000,
             spatial_filter: String::new(),
             metric: "http_requests_total".to_string(),
             table_name: None,
@@ -196,7 +196,7 @@ mod tests {
     fn different_window_size_produces_different_key() {
         let cfg1 = base_config();
         let mut cfg2 = base_config();
-        cfg2.window_size = 60;
+        cfg2.window_size_ms = 60_000;
         assert_ne!(cfg1.identifying_key(), cfg2.identifying_key());
     }
 

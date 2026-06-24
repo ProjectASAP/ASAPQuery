@@ -135,8 +135,8 @@ fn make_agg_config(
         KeyByLabelNames::empty(),
         KeyByLabelNames::empty(),
         "".to_string(),
-        60,                   // window_size (seconds)
-        60,                   // slide_interval (seconds)
+        60_000,               // window_size_ms
+        60_000,               // slide_interval_ms
         WindowType::Tumbling, // window_type
         "".to_string(),       // spatial_filter
         metric.to_string(),

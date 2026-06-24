@@ -19,7 +19,7 @@ use super::solution::AQE;
 #[derive(Debug, Clone)]
 pub struct RQE {
     pub query_string: String,
-    pub t_repeat_secs: u64,
+    pub t_repeat_ms: u64,
 }
 
 /// Stable deduplication key for an AQE.
@@ -57,9 +57,9 @@ impl AQEKey {
 ///
 /// Three frequency-related values are computed per AQE:
 /// - `query_frequency_hz`: Σ 1/T_r — total query load for the MIP objective.
-/// - `min_t_repeat_secs`: min(T_r) — freshness bound on window size W ≤ min_t.
-/// - `t_repeat_gcd_secs`: GCD(T_r) — natural slide interval S for candidate
-///   generation (windows completing every GCD secs align with all dashboards).
+/// - `min_t_repeat_ms`: min(T_r) — freshness bound on window size W ≤ min_t.
+/// - `t_repeat_gcd_ms`: GCD(T_r) — natural slide interval S for candidate
+///   generation (windows completing every GCD ms align with all dashboards).
 ///
 /// Leaf queries that do not match any supported pattern (e.g. unsupported
 /// functions, parse errors) are skipped with a warning.
@@ -68,10 +68,10 @@ pub fn extract_aqes(rqes: &[RQE], metric_schema: &PromQLSchema) -> Vec<AQE> {
     let mut acc: HashMap<AQEKey, (QueryRequirements, Vec<String>, f64, u64, u64)> = HashMap::new();
 
     for rqe in rqes {
-        if rqe.t_repeat_secs == 0 {
+        if rqe.t_repeat_ms == 0 {
             warn!(
                 query = %rqe.query_string,
-                "aqe_extractor: skipping RQE with repetition_delay=0 \
+                "aqe_extractor: skipping RQE with repetition_delay_ms=0 \
                  (would produce infinite query frequency and corrupt GCD)"
             );
             continue;
@@ -89,12 +89,14 @@ pub fn extract_aqes(rqes: &[RQE], metric_schema: &PromQLSchema) -> Vec<AQE> {
                     if !entry.1.contains(&leaf) {
                         entry.1.push(leaf);
                     }
-                    entry.2 += 1.0 / rqe.t_repeat_secs as f64;
-                    entry.3 = entry.3.min(rqe.t_repeat_secs);
+                    // query_frequency_hz must stay in Hz (queries per real second)
+                    // regardless of t_repeat_ms's internal unit — 1000.0 / ms, not 1.0 / ms.
+                    entry.2 += 1000.0 / rqe.t_repeat_ms as f64;
+                    entry.3 = entry.3.min(rqe.t_repeat_ms);
                     entry.4 = if entry.4 == 0 {
-                        rqe.t_repeat_secs
+                        rqe.t_repeat_ms
                     } else {
-                        gcd(entry.4, rqe.t_repeat_secs)
+                        gcd(entry.4, rqe.t_repeat_ms)
                     };
                 }
                 None => {
@@ -113,14 +115,14 @@ pub fn extract_aqes(rqes: &[RQE], metric_schema: &PromQLSchema) -> Vec<AQE> {
                 requirements,
                 query_strings,
                 query_frequency_hz,
-                min_t_repeat_secs,
-                t_repeat_gcd_secs,
+                min_t_repeat_ms,
+                t_repeat_gcd_ms,
             )| AQE {
                 requirements,
                 query_strings,
                 query_frequency_hz,
-                min_t_repeat_secs,
-                t_repeat_gcd_secs,
+                min_t_repeat_ms,
+                t_repeat_gcd_ms,
             },
         )
         .collect()
@@ -208,9 +210,11 @@ fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<Que
 
     let data_range_ms = match pattern_type {
         QueryPatternType::OnlySpatial => None,
+        // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
+        // so .num_seconds() would truncate genuinely sub-second range vectors to 0.
         _ => match_result
             .get_range_duration()
-            .map(|d| d.num_seconds() as u64 * 1000),
+            .map(|d| d.num_milliseconds() as u64),
     };
 
     let grouping_labels = match pattern_type {
@@ -250,16 +254,16 @@ mod tests {
         PromQLSchema::new()
     }
 
-    fn rqe(query: &str, t: u64) -> RQE {
+    fn rqe(query: &str, t_ms: u64) -> RQE {
         RQE {
             query_string: query.to_string(),
-            t_repeat_secs: t,
+            t_repeat_ms: t_ms,
         }
     }
 
     #[test]
     fn single_temporal_query() {
-        let rqes = vec![rqe("sum_over_time(metric[5m])", 60)];
+        let rqes = vec![rqe("sum_over_time(metric[5m])", 60_000)];
         let aqes = extract_aqes(&rqes, &empty_schema());
         assert_eq!(aqes.len(), 1);
         assert!((aqes[0].query_frequency_hz - 1.0 / 60.0).abs() < 1e-9);
@@ -271,7 +275,7 @@ mod tests {
     fn binary_query_produces_two_aqes() {
         let rqes = vec![rqe(
             "sum_over_time(metric_a[5m]) / sum_over_time(metric_b[5m])",
-            60,
+            60_000,
         )];
         let aqes = extract_aqes(&rqes, &empty_schema());
         assert_eq!(aqes.len(), 2);
@@ -279,7 +283,7 @@ mod tests {
 
     #[test]
     fn binary_with_scalar_produces_one_aqe() {
-        let rqes = vec![rqe("sum_over_time(metric[5m]) * 100", 60)];
+        let rqes = vec![rqe("sum_over_time(metric[5m]) * 100", 60_000)];
         let aqes = extract_aqes(&rqes, &empty_schema());
         assert_eq!(aqes.len(), 1);
     }
@@ -287,8 +291,8 @@ mod tests {
     #[test]
     fn same_aqe_in_two_rqes_deduplicates_and_sums_frequency() {
         let rqes = vec![
-            rqe("sum_over_time(metric[5m])", 60),
-            rqe("sum_over_time(metric[5m])", 30),
+            rqe("sum_over_time(metric[5m])", 60_000),
+            rqe("sum_over_time(metric[5m])", 30_000),
         ];
         let aqes = extract_aqes(&rqes, &empty_schema());
         assert_eq!(aqes.len(), 1);
@@ -296,14 +300,14 @@ mod tests {
         let expected_freq = 1.0 / 60.0 + 1.0 / 30.0;
         assert!((aqes[0].query_frequency_hz - expected_freq).abs() < 1e-9);
         // min_t and gcd_t used for windowing constraints
-        assert_eq!(aqes[0].min_t_repeat_secs, 30);
-        assert_eq!(aqes[0].t_repeat_gcd_secs, 30); // gcd(60, 30) = 30
+        assert_eq!(aqes[0].min_t_repeat_ms, 30_000);
+        assert_eq!(aqes[0].t_repeat_gcd_ms, 30_000); // gcd(60_000, 30_000) = 30_000
         assert_eq!(aqes[0].query_strings.len(), 1); // same string, deduplicated
     }
 
     #[test]
     fn unsupported_query_is_skipped() {
-        let rqes = vec![rqe("not_a_real_function(metric[5m])", 60)];
+        let rqes = vec![rqe("not_a_real_function(metric[5m])", 60_000)];
         let aqes = extract_aqes(&rqes, &empty_schema());
         assert_eq!(aqes.len(), 0);
     }

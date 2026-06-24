@@ -5,7 +5,7 @@ query_groups:
       - "increase(http_requests_total[5m])"
       - "sum_over_time(http_requests_total[5m])"
       - "quantile_over_time(0.99, http_requests_total[5m])"
-    repetition_delay: 60
+    repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0

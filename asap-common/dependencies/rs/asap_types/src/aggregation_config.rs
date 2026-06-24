@@ -20,8 +20,8 @@ pub struct AggregationConfig {
     pub rollup_labels: KeyByLabelNames,
     pub original_yaml: String,
 
-    pub window_size_ms: u64,     // Window size in milliseconds (e.g., 900_000ms for 15m)
-    pub slide_interval_ms: u64,  // Slide/hop interval in milliseconds (e.g., 30_000ms)
+    pub window_size_ms: u64, // Window size in milliseconds (e.g., 900_000ms for 15m)
+    pub slide_interval_ms: u64, // Slide/hop interval in milliseconds (e.g., 30_000ms)
     pub window_type: WindowType, // Tumbling or Sliding
 
     pub spatial_filter: String,

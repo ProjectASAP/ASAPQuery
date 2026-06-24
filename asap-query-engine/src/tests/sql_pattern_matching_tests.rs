@@ -19,10 +19,10 @@ mod tests {
 
     /// Build a minimal SQL SimpleEngine with one template query config.
     ///
-    /// * `template_sql` — the NOW()-based query stored in inference_config
-    /// * `agg_id`        — aggregation id
-    /// * `window_secs`   — window size in seconds
-    fn build_sql_engine(template_sql: &str, agg_id: u64, window_secs: u64) -> SimpleEngine {
+    /// * `template_sql`  — the NOW()-based query stored in inference_config
+    /// * `agg_id`         — aggregation id
+    /// * `window_size_ms` — window size in ms
+    fn build_sql_engine(template_sql: &str, agg_id: u64, window_size_ms: u64) -> SimpleEngine {
         // Schema: cpu_usage table
         let labels: HashSet<String> = ["L1", "L2", "L3", "L4"]
             .iter()
@@ -62,8 +62,8 @@ mod tests {
             aggregated_labels: KeyByLabelNames::empty(),
             rollup_labels: KeyByLabelNames::empty(),
             original_yaml: String::new(),
-            window_size: window_secs,
-            slide_interval: window_secs,
+            window_size_ms,
+            slide_interval_ms: window_size_ms,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -89,7 +89,7 @@ mod tests {
             store,
             inference_config,
             streaming_config,
-            1,
+            1000,
             QueryLanguage::sql,
         )
     }
@@ -98,7 +98,7 @@ mod tests {
     fn test_temporal_query_matches_now_template() {
         // Template in inference_config uses NOW()
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        let engine = build_sql_engine(template, 1, 10);
+        let engine = build_sql_engine(template, 1, 10_000);
 
         // Incoming query uses absolute timestamps for the same 10s window
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
@@ -116,7 +116,7 @@ mod tests {
     fn test_spatiotemporal_query_matches_now_template() {
         // SpatioTemporal: same metric, spans multiple intervals, GROUP BY subset of labels
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1";
-        let engine = build_sql_engine(template, 1, 10);
+        let engine = build_sql_engine(template, 1, 10_000);
 
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1";
         let query_time = 1727740810.0_f64;
@@ -133,7 +133,7 @@ mod tests {
         // Spatial: window equals the scrape interval (1s), GROUP BY all labels
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
         // scrape_interval=1, window=1 → classified as Spatial by the matcher
-        let engine = build_sql_engine(template, 1, 1);
+        let engine = build_sql_engine(template, 1, 1000);
 
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
         let query_time = 1727740810.0_f64;
@@ -149,7 +149,7 @@ mod tests {
     fn test_temporal_quantile_query_matches_now_template() {
         // TemporalQuantile: QUANTILE aggregation, window > scrape interval, GROUP BY all labels
         let template = "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        let engine = build_sql_engine(template, 1, 10);
+        let engine = build_sql_engine(template, 1, 10_000);
 
         let incoming = "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
         let query_time = 1727740810.0_f64;
@@ -165,7 +165,7 @@ mod tests {
     fn test_spatial_of_temporal_subquery_matches_now_template() {
         // Spatial-of-temporal: outer GROUP BY L1 (subset), inner GROUP BY all labels
         let template = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1";
-        let engine = build_sql_engine(template, 1, 10);
+        let engine = build_sql_engine(template, 1, 10_000);
 
         let incoming = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4) GROUP BY L1";
         let query_time = 1727740810.0_f64;
@@ -182,7 +182,7 @@ mod tests {
         // Outer ORDER BY + LIMIT on a spatial-over-temporal query must not be routed
         // through CountMinSketchWithHeap; the inner temporal SUM is not a flat top-k.
         let template = "SELECT L1, SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) sub GROUP BY L1";
-        let engine = build_sql_engine(template, 1, 10);
+        let engine = build_sql_engine(template, 1, 10_000);
 
         let incoming = "SELECT L1, SUM(result) AS rollup FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4) sub GROUP BY L1 ORDER BY rollup DESC LIMIT 10";
         let query_time = 1727740810.0_f64;
@@ -201,7 +201,7 @@ mod tests {
     fn test_no_match_returns_none() {
         // Engine has a SUM template; incoming uses AVG — should never match
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        let engine = build_sql_engine(template, 1, 10);
+        let engine = build_sql_engine(template, 1, 10_000);
 
         let incoming = "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
         let query_time = 1727740810.0_f64;

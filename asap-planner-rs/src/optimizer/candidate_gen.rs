@@ -31,7 +31,7 @@ pub struct CandidateConfig {
 ///
 /// Multi-statistic AQEs (e.g. avg = [Sum, Count]) return only EXACT — a single
 /// sketch family cannot serve two incompatible statistics simultaneously.
-pub fn enumerate_candidates(aqe: &AQE, scrape_interval_secs: u64) -> Vec<CandidateConfig> {
+pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<CandidateConfig> {
     let mut candidates = Vec::new();
 
     if aqe.requirements.statistics.len() != 1 {
@@ -41,7 +41,7 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_secs: u64) -> Vec<Candida
     }
 
     let stat = aqe.requirements.statistics[0];
-    let range_a_secs = aqe.requirements.data_range_ms.map(|ms| ms.div_ceil(1000));
+    let range_a_ms = aqe.requirements.data_range_ms;
 
     for &agg_type in compatible_agg_types(stat) {
         let props = sketch_properties(agg_type);
@@ -49,7 +49,7 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_secs: u64) -> Vec<Candida
 
         for params in param_grid(agg_type, aqe.requirements.topk_count_events) {
             for (window_type, w, slide_interval, n) in
-                window_candidates(range_a_secs, aqe.min_t_repeat_secs, scrape_interval_secs)
+                window_candidates(range_a_ms, aqe.min_t_repeat_ms, scrape_interval_ms)
             {
                 let Some(qm) = determine_query_method(window_type, n, &props) else {
                     continue;
@@ -86,7 +86,7 @@ fn exact_candidate() -> CandidateConfig {
     }
 }
 
-/// Window candidates: (WindowType, W_secs, slide_interval_secs, n_windows).
+/// Window candidates: (WindowType, W_ms, slide_interval_ms, n_windows).
 ///
 /// For spatial-only queries (range = None): one tumbling window of scrape_interval.
 /// For range-based queries:
@@ -99,39 +99,39 @@ fn exact_candidate() -> CandidateConfig {
 ///             ingest CPU/mem but gives fresher results. Doubling from scrape_interval up to
 ///             W keeps the grid small while covering that tradeoff.
 fn window_candidates(
-    range_a_secs: Option<u64>,
-    min_t_repeat_secs: u64,
-    scrape_interval_secs: u64,
+    range_a_ms: Option<u64>,
+    min_t_repeat_ms: u64,
+    scrape_interval_ms: u64,
 ) -> Vec<(WindowType, u64, u64, u64)> {
-    let Some(range_a) = range_a_secs else {
+    let Some(range_a) = range_a_ms else {
         // Spatial-only: any window works (window_compatible returns true for None range).
         return vec![(
             WindowType::Tumbling,
-            scrape_interval_secs,
-            scrape_interval_secs,
+            scrape_interval_ms,
+            scrape_interval_ms,
             1,
         )];
     };
-    if range_a == 0 || scrape_interval_secs == 0 {
+    if range_a == 0 || scrape_interval_ms == 0 {
         return vec![];
     }
 
-    let max_w = range_a.min(min_t_repeat_secs);
+    let max_w = range_a.min(min_t_repeat_ms);
     let mut out = Vec::new();
 
     // Tumbling: W divides range_a, is a multiple of scrape_interval, and ≤ max_w.
-    let mut w = scrape_interval_secs;
+    let mut w = scrape_interval_ms;
     while w <= max_w {
         if range_a % w == 0 {
             let n = range_a / w;
             out.push((WindowType::Tumbling, w, w, n));
         }
-        w += scrape_interval_secs;
+        w += scrape_interval_ms;
     }
 
     // Sliding: W = range_a exactly; S doubles from scrape_interval up to W.
-    if range_a <= min_t_repeat_secs {
-        let mut s = scrape_interval_secs;
+    if range_a <= min_t_repeat_ms {
+        let mut s = scrape_interval_ms;
         while s <= range_a {
             out.push((WindowType::Sliding, range_a, s, 1));
             s *= 2;
@@ -314,15 +314,15 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_secs: min_t,
-            t_repeat_gcd_secs: min_t,
+            min_t_repeat_ms: min_t,
+            t_repeat_gcd_ms: min_t,
         }
     }
 
     #[test]
     fn always_includes_exact_fallback() {
-        let aqe = make_aqe(Statistic::Sum, Some(300_000), 60);
-        let candidates = enumerate_candidates(&aqe, 15);
+        let aqe = make_aqe(Statistic::Sum, Some(300_000), 60_000);
+        let candidates = enumerate_candidates(&aqe, 15_000);
         assert!(candidates
             .iter()
             .any(|c| c.config.is_none() && c.query_method == QueryMethod::Exact));
@@ -330,8 +330,8 @@ mod tests {
 
     #[test]
     fn spatial_only_produces_neither_candidates() {
-        let aqe = make_aqe(Statistic::Sum, None, 60);
-        let candidates = enumerate_candidates(&aqe, 15);
+        let aqe = make_aqe(Statistic::Sum, None, 60_000);
+        let candidates = enumerate_candidates(&aqe, 15_000);
         // All non-EXACT candidates should be Direct (no temporal range to cover).
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(c.query_method, QueryMethod::Direct);
@@ -340,9 +340,9 @@ mod tests {
 
     #[test]
     fn tumbling_w_equals_range_produces_neither() {
-        // range_a = 60s, scrape = 60s → only W=60, n=1 → Direct
-        let aqe = make_aqe(Statistic::Sum, Some(60_000), 60);
-        let candidates = enumerate_candidates(&aqe, 60);
+        // range_a = 60_000ms, scrape = 60_000ms → only W=60_000, n=1 → Direct
+        let aqe = make_aqe(Statistic::Sum, Some(60_000), 60_000);
+        let candidates = enumerate_candidates(&aqe, 60_000);
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(c.query_method, QueryMethod::Direct);
         }
@@ -350,10 +350,10 @@ mod tests {
 
     #[test]
     fn mergeable_sketch_with_multiple_windows_produces_merge() {
-        // Min → MinMax (mergeable, not subtractable): range_a=300s, scrape=60s, min_t=300s
-        // → W=60 → n=5, Merge{5}. (Sum would prefer Subtract since it's also subtractable.)
-        let aqe = make_aqe(Statistic::Min, Some(300_000), 300);
-        let candidates = enumerate_candidates(&aqe, 60);
+        // Min → MinMax (mergeable, not subtractable): range_a=300_000ms, scrape=60_000ms, min_t=300_000ms
+        // → W=60_000 → n=5, Merge{5}. (Sum would prefer Subtract since it's also subtractable.)
+        let aqe = make_aqe(Statistic::Min, Some(300_000), 300_000);
+        let candidates = enumerate_candidates(&aqe, 60_000);
         let merge_candidates: Vec<_> = candidates
             .iter()
             .filter(|c| matches!(c.query_method, QueryMethod::Merge { .. }))
@@ -367,8 +367,8 @@ mod tests {
     #[test]
     fn cms_with_heap_only_neither_no_merge() {
         // CMS+Heap is neither mergeable nor subtractable → only n=1 (Direct) valid.
-        let aqe = make_aqe(Statistic::Topk, Some(300_000), 300);
-        let candidates = enumerate_candidates(&aqe, 60);
+        let aqe = make_aqe(Statistic::Topk, Some(300_000), 300_000);
+        let candidates = enumerate_candidates(&aqe, 60_000);
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(
                 c.query_method,

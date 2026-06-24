@@ -13,14 +13,13 @@ pub struct WindowManager {
 impl WindowManager {
     /// Create a new WindowManager.
     ///
-    /// `window_size_secs` and `slide_interval_secs` come from `AggregationConfig`
-    /// (which stores them in seconds). They are converted to milliseconds internally.
-    pub fn new(window_size_secs: u64, slide_interval_secs: u64) -> Self {
-        let window_size_ms = (window_size_secs * 1000) as i64;
-        let slide_interval_ms = if slide_interval_secs == 0 {
-            window_size_ms // tumbling window
-        } else {
-            (slide_interval_secs * 1000) as i64
+    /// `window_size_ms` and `slide_interval_ms` come straight from `AggregationConfig`,
+    /// which is ms-typed already — no conversion needed here.
+    pub fn new(window_size_ms: u64, slide_interval_ms: u64) -> Self {
+        let window_size_ms = window_size_ms as i64;
+        let slide_interval_ms = match slide_interval_ms {
+            0 => window_size_ms, // tumbling window
+            ms => ms as i64,
         };
         Self {
             window_size_ms,
@@ -123,7 +122,7 @@ mod tests {
     #[test]
     fn test_tumbling_window_start() {
         // 60-second (60000ms) tumbling windows
-        let wm = WindowManager::new(60, 0);
+        let wm = WindowManager::new(60_000, 0);
 
         assert_eq!(wm.window_start_for(0), 0);
         assert_eq!(wm.window_start_for(59_999), 0);
@@ -134,7 +133,7 @@ mod tests {
 
     #[test]
     fn test_no_closed_windows_on_first_sample() {
-        let wm = WindowManager::new(60, 0);
+        let wm = WindowManager::new(60_000, 0);
         let closed = wm.closed_windows(i64::MIN, 30_000);
         assert!(closed.is_empty());
     }
@@ -142,7 +141,7 @@ mod tests {
     #[test]
     fn test_tumbling_window_close() {
         // 60s tumbling windows
-        let wm = WindowManager::new(60, 0);
+        let wm = WindowManager::new(60_000, 0);
 
         // Watermark advances from 30_000 to 70_000
         // Window [0, 60_000) closes when wm >= 60_000
@@ -153,7 +152,7 @@ mod tests {
     #[test]
     fn test_multiple_window_closes() {
         // 10s (10000ms) tumbling windows
-        let wm = WindowManager::new(10, 0);
+        let wm = WindowManager::new(10_000, 0);
 
         // Watermark jumps from 5_000 to 35_000 — closes windows 0, 10_000, 20_000
         let closed = wm.closed_windows(5_000, 35_000);
@@ -162,14 +161,14 @@ mod tests {
 
     #[test]
     fn test_no_close_when_watermark_stagnant() {
-        let wm = WindowManager::new(60, 0);
+        let wm = WindowManager::new(60_000, 0);
         let closed = wm.closed_windows(30_000, 30_000);
         assert!(closed.is_empty());
     }
 
     #[test]
     fn test_window_bounds() {
-        let wm = WindowManager::new(60, 0);
+        let wm = WindowManager::new(60_000, 0);
         assert_eq!(wm.window_bounds(0), (0, 60_000));
         assert_eq!(wm.window_bounds(60_000), (60_000, 120_000));
     }
@@ -177,7 +176,7 @@ mod tests {
     #[test]
     fn test_sliding_window() {
         // 30s window, 10s slide
-        let wm = WindowManager::new(30, 10);
+        let wm = WindowManager::new(30_000, 10_000);
 
         assert_eq!(wm.window_start_for(0), 0);
         assert_eq!(wm.window_start_for(9_999), 0);
@@ -192,7 +191,7 @@ mod tests {
     #[test]
     fn test_window_starts_containing_tumbling() {
         // 60s tumbling windows — each sample belongs to exactly one window
-        let wm = WindowManager::new(60, 0);
+        let wm = WindowManager::new(60_000, 0);
         let mut starts = wm.window_starts_containing(15_000);
         starts.sort();
         assert_eq!(starts, vec![0]);
@@ -205,7 +204,7 @@ mod tests {
     #[test]
     fn test_window_starts_containing_sliding() {
         // 30s window, 10s slide — each sample belongs to 3 windows
-        let wm = WindowManager::new(30, 10);
+        let wm = WindowManager::new(30_000, 10_000);
 
         // t=15_000 belongs to [0, 30_000), [10_000, 40_000)
         // and [-10_000, 20_000) which starts negative — still returned
@@ -224,7 +223,7 @@ mod tests {
     #[test]
     fn test_pane_start_for_equals_window_start_for() {
         // Pane start and window start use the same slide-aligned grid
-        let wm = WindowManager::new(30, 10);
+        let wm = WindowManager::new(30_000, 10_000);
         for ts in [0, 5_000, 9_999, 10_000, 15_000, 25_000, 30_000] {
             assert_eq!(wm.pane_start_for(ts), wm.window_start_for(ts));
         }
@@ -233,7 +232,7 @@ mod tests {
     #[test]
     fn test_panes_for_window_sliding() {
         // 30s window, 10s slide → 3 panes per window
-        let wm = WindowManager::new(30, 10);
+        let wm = WindowManager::new(30_000, 10_000);
 
         assert_eq!(wm.panes_for_window(0), vec![0, 10_000, 20_000]);
         assert_eq!(wm.panes_for_window(10_000), vec![10_000, 20_000, 30_000]);
@@ -243,7 +242,7 @@ mod tests {
     #[test]
     fn test_panes_for_window_tumbling_degeneration() {
         // 60s tumbling window → 1 pane per window (no merges needed)
-        let wm = WindowManager::new(60, 0);
+        let wm = WindowManager::new(60_000, 0);
 
         assert_eq!(wm.panes_for_window(0), vec![0]);
         assert_eq!(wm.panes_for_window(60_000), vec![60_000]);
@@ -251,30 +250,30 @@ mod tests {
 
     #[test]
     fn test_slide_interval_ms_accessor() {
-        let wm_tumbling = WindowManager::new(60, 0);
+        let wm_tumbling = WindowManager::new(60_000, 0);
         assert_eq!(wm_tumbling.slide_interval_ms(), 60_000);
 
-        let wm_sliding = WindowManager::new(30, 10);
+        let wm_sliding = WindowManager::new(30_000, 10_000);
         assert_eq!(wm_sliding.slide_interval_ms(), 10_000);
     }
 
     #[test]
     fn test_panes_for_window_count() {
         // W = window_size / slide_interval
-        let wm = WindowManager::new(30, 10);
+        let wm = WindowManager::new(30_000, 10_000);
         assert_eq!(wm.panes_for_window(0).len(), 3); // 30/10 = 3
 
-        let wm2 = WindowManager::new(50, 10);
+        let wm2 = WindowManager::new(50_000, 10_000);
         assert_eq!(wm2.panes_for_window(0).len(), 5); // 50/10 = 5
 
-        let wm3 = WindowManager::new(60, 0);
+        let wm3 = WindowManager::new(60_000, 0);
         assert_eq!(wm3.panes_for_window(0).len(), 1); // tumbling = 1
     }
 
     #[test]
     fn test_consecutive_windows_share_panes() {
         // 30s window, 10s slide — consecutive windows share W-1 = 2 panes
-        let wm = WindowManager::new(30, 10);
+        let wm = WindowManager::new(30_000, 10_000);
 
         let panes_a = wm.panes_for_window(0); // [0, 10_000, 20_000]
         let panes_b = wm.panes_for_window(10_000); // [10_000, 20_000, 30_000]

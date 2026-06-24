@@ -132,7 +132,7 @@ pub struct SimpleEngine {
     /// Updated at runtime via update_streaming_config(). Readers briefly lock to
     /// clone the Arc pointer, then use without holding the lock.
     streaming_config: RwLock<Arc<StreamingConfig>>,
-    prometheus_scrape_interval: u64,
+    prometheus_scrape_interval_ms: u64,
     controller_patterns: HashMap<QueryPatternType, Vec<PromQLPattern>>,
     query_language: QueryLanguage,
 }
@@ -143,7 +143,7 @@ impl SimpleEngine {
         // promsketch_store: Option<Arc<PromSketchStore>>,
         inference_config: InferenceConfig,
         streaming_config: Arc<StreamingConfig>,
-        prometheus_scrape_interval: u64,
+        prometheus_scrape_interval_ms: u64,
         query_language: QueryLanguage,
     ) -> Self {
         // Create temporal pattern blocks
@@ -283,7 +283,7 @@ impl SimpleEngine {
             // promsketch_store,
             inference_config: RwLock::new(inference_config),
             streaming_config: RwLock::new(streaming_config),
-            prometheus_scrape_interval,
+            prometheus_scrape_interval_ms,
             controller_patterns,
             query_language,
         }
@@ -328,13 +328,13 @@ impl SimpleEngine {
         mut end_timestamp: u64,
         query_pattern_type: QueryPatternType,
     ) -> u64 {
-        let interval_ms = self.prometheus_scrape_interval * 1000;
+        let interval_ms = self.prometheus_scrape_interval_ms;
 
         if !end_timestamp.is_multiple_of(interval_ms) {
             warn!(
-                "Query end timestamp {} is not aligned with Prometheus scrape interval of {} seconds. \
+                "Query end timestamp {} is not aligned with Prometheus scrape interval of {} ms. \
                  This may lead to inaccurate results.",
-                end_timestamp, self.prometheus_scrape_interval
+                end_timestamp, self.prometheus_scrape_interval_ms
             );
         }
 
@@ -344,8 +344,8 @@ impl SimpleEngine {
         {
             let aligned_end_timestamp = (end_timestamp / interval_ms) * interval_ms;
             debug!(
-                "OnlySpatial query: Aligning end_timestamp from {} to {} using scrape interval of {} seconds",
-                end_timestamp, aligned_end_timestamp, self.prometheus_scrape_interval
+                "OnlySpatial query: Aligning end_timestamp from {} to {} using scrape interval of {} ms",
+                end_timestamp, aligned_end_timestamp, self.prometheus_scrape_interval_ms
             );
             end_timestamp = aligned_end_timestamp;
         }
@@ -372,7 +372,7 @@ impl SimpleEngine {
                     .read()
                     .unwrap()
                     .get_aggregation_config(agg_info.aggregation_id_for_key)
-                    .map(|config| config.window_size * 1000)
+                    .map(|config| config.window_size_ms)
                     .ok_or_else(|| {
                         format!(
                             "Failed to get window size for aggregation {}",
@@ -420,7 +420,7 @@ impl SimpleEngine {
         let (values_start, values_end) = if is_exact_query {
             // Sliding window: exact window match
             let exact_start =
-                timestamps.end_timestamp - (aggregation_config_for_value.window_size * 1000);
+                timestamps.end_timestamp - aggregation_config_for_value.window_size_ms;
             (exact_start, timestamps.end_timestamp)
         } else {
             // Tumbling window: range query

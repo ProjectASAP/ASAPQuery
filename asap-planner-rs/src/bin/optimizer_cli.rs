@@ -20,8 +20,8 @@ struct Args {
     #[arg(long = "input_config")]
     input_config: PathBuf,
 
-    #[arg(long = "prometheus_scrape_interval")]
-    prometheus_scrape_interval: u64,
+    #[arg(long = "prometheus_scrape_interval_ms")]
+    prometheus_scrape_interval_ms: u64,
 
     /// Placeholder arrival rate (items/sec) applied uniformly to every candidate's
     /// IngestCost. Real per-config rates aren't wired up yet — see the open TODOs
@@ -56,18 +56,22 @@ fn main() -> anyhow::Result<()> {
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
     let schema = config.schema_from_hints();
 
-    let (streaming, inference) =
-        run_greedy_pipeline(&config, &schema, args.prometheus_scrape_interval, args.rho);
+    let (streaming, inference) = run_greedy_pipeline(
+        &config,
+        &schema,
+        args.prometheus_scrape_interval_ms,
+        args.rho,
+    );
 
     let deployed = streaming.get_all_aggregation_configs();
     println!("=== Deployed streaming configs: {} ===", deployed.len());
     for (id, cfg) in deployed {
         println!(
-            "  [{id}] {} sub_type={:?} window={}s slide={}s type={:?} metric={} params={:?}",
+            "  [{id}] {} sub_type={:?} window={}ms slide={}ms type={:?} metric={} params={:?}",
             cfg.aggregation_type,
             cfg.aggregation_sub_type,
-            cfg.window_size,
-            cfg.slide_interval,
+            cfg.window_size_ms,
+            cfg.slide_interval_ms,
             cfg.window_type,
             cfg.metric,
             cfg.parameters,

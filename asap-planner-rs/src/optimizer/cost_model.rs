@@ -80,11 +80,11 @@ pub fn ingest_cost(
     // placeholder; both branches collapse to the same value until that lands.
     let n = 1.0_f64;
 
-    // Defensive floor: slide_interval is a plain u64 on a widely-shared struct;
+    // Defensive floor: slide_interval_ms is a plain u64 on a widely-shared struct;
     // guard against div-by-zero producing `inf` and poisoning cost comparisons.
     let n_concurrent = match g.window_type {
         WindowType::Tumbling => 1.0,
-        WindowType::Sliding => (g.window_size as f64 / g.slide_interval.max(1) as f64).ceil(),
+        WindowType::Sliding => (g.window_size_ms as f64 / g.slide_interval_ms.max(1) as f64).ceil(),
     };
 
     let mem_active = n_concurrent * n * costs.mem_bytes_per_instance;
@@ -175,8 +175,8 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_secs: min_t,
-            t_repeat_gcd_secs: min_t,
+            min_t_repeat_ms: min_t,
+            t_repeat_gcd_ms: min_t,
         }
     }
 
@@ -189,7 +189,7 @@ mod tests {
         };
         let costs = AtomicCosts::default();
         let weights = CostWeights::default();
-        let a = make_aqe(Statistic::Sum, Some(300_000), 300);
+        let a = make_aqe(Statistic::Sum, Some(300_000), 300_000);
         assert_eq!(ingest_cost(&candidate, 1.0, &costs, &weights), 0.0);
         assert!(query_cost(&a, &candidate, &costs, &weights) > 0.0);
     }
@@ -199,8 +199,8 @@ mod tests {
         // Calibration-independent: Subtract is O(1) (one subtract + one read) while
         // Merge is O(n) (n-1 merges + one read), so for the same n and same
         // underlying config, Subtract must cost less regardless of weight tuning.
-        let a = make_aqe(Statistic::Sum, Some(300_000), 300);
-        let candidates = enumerate_candidates(&a, 60);
+        let a = make_aqe(Statistic::Sum, Some(300_000), 300_000);
+        let candidates = enumerate_candidates(&a, 60_000);
         let template = candidates
             .iter()
             .find_map(|c| c.config.clone())
