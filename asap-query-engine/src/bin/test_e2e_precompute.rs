@@ -33,7 +33,7 @@ use std::sync::Arc;
 const INGEST_PORT: u16 = 19090;
 const QUERY_PORT: u16 = 18080;
 const RAW_INGEST_PORT: u16 = 19091;
-const SCRAPE_INTERVAL: u64 = 1; // 1 second to match tumblingWindowSize
+const SCRAPE_INTERVAL_MS: u64 = 1000; // 1s to match windowSizeMs in examples/promql/streaming_config.yaml
 
 fn build_remote_write_body(timeseries: Vec<TimeSeries>) -> Vec<u8> {
     let write_req = WriteRequest { timeseries };
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         store.clone(),
         inference_config,
         streaming_config.clone(),
-        SCRAPE_INTERVAL,
+        SCRAPE_INTERVAL_MS,
         QueryLanguage::promql,
     ));
     let http_config = HttpServerConfig {

@@ -193,7 +193,7 @@ class TestGetSqlQuerySQL:
                 },
                 "parameters": {},
                 "spatialFilter": "",
-                "windowSize": 10,
+                "windowSizeMs": 10000,
             }
         )
 
@@ -277,7 +277,7 @@ class TestGetSqlQueryPromQL:
                 },
                 "parameters": {},
                 "spatialFilter": "",
-                "windowSize": 10,
+                "windowSizeMs": 10000,
             }
         )
 
@@ -367,7 +367,7 @@ aggregations:
       rollup: []
     parameters: {}
     spatialFilter: ''
-    windowSize: 10
+    windowSizeMs: 10000
 """
         config = yaml.safe_load(config_content)
 
@@ -403,7 +403,7 @@ aggregations:
     metric: fake_metric_total
     parameters: {}
     spatialFilter: ''
-    windowSize: 10
+    windowSizeMs: 10000
 
 metrics:
   fake_metric_total:

@@ -26,8 +26,8 @@ class StreamingAggregationConfig:
     aggregationType: str
     aggregationSubType: str
 
-    windowSize: int  # Window size in seconds (e.g., 900s for 15m)
-    slideInterval: int  # Slide/hop interval in seconds (e.g., 30s)
+    windowSizeMs: int  # Window size in milliseconds (e.g., 900_000ms for 15m)
+    slideIntervalMs: int  # Slide/hop interval in milliseconds (e.g., 30_000ms)
     windowType: str  # "tumbling" or "sliding"
 
     spatialFilter: str
@@ -61,9 +61,9 @@ class StreamingAggregationConfig:
         aggregation.aggregationSubType = aggregation_config["aggregationSubType"]
 
         aggregation.windowType = aggregation_config.get("windowType", "tumbling")
-        aggregation.windowSize = aggregation_config["windowSize"]
-        aggregation.slideInterval = aggregation_config.get(
-            "slideInterval", aggregation.windowSize
+        aggregation.windowSizeMs = aggregation_config["windowSizeMs"]
+        aggregation.slideIntervalMs = aggregation_config.get(
+            "slideIntervalMs", aggregation.windowSizeMs
         )
 
         aggregation.spatialFilter = aggregation_config["spatialFilter"]
@@ -139,8 +139,8 @@ class StreamingAggregationConfig:
             self.aggregationType,
             self.aggregationSubType,
             self.windowType,
-            self.windowSize,
-            self.slideInterval,
+            self.windowSizeMs,
+            self.slideIntervalMs,
             self.spatialFilter,
             self.metric,
             self.table_name,  # SQL mode: table name
