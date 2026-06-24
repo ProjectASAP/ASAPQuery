@@ -9,7 +9,7 @@ use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, debug_span, info, warn};
@@ -914,9 +914,13 @@ fn apply_sample(
 /// The label value is parsed as `f64`. This is lossless for the netflow IPv4
 /// `u32` columns (≤ 2^32 < 2^53) and consistent with the replay's int→f64
 /// convention; cardinality only requires distinct inputs to map to distinct
-/// hashes, so the exact hash need not match the baseline engine. Non-numeric
-/// distinct targets (e.g. `proto`) are not yet supported — they fall back to
-/// `wire_val` (see the follow-up for a byte/string hashing path).
+/// hashes, so the exact hash need not match the baseline engine.
+///
+/// # Panics
+/// Panics if `value_column` names a label whose value is not numeric. Non-numeric
+/// distinct targets (e.g. `proto`) are not yet supported; this is a temporary
+/// guard until the path is refactored to return a `Result` (see follow-up for a
+/// byte/string hashing path).
 fn resolve_sample_value(
     labels: &HashMap<&str, &str>,
     wire_val: f64,
@@ -932,24 +936,15 @@ fn resolve_sample_value(
 
     match raw.parse::<f64>() {
         Ok(v) => v,
-        Err(_) => {
-            // Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are not yet
-            // supported: falling back to the wire value silently produces an INCORRECT
-            // aggregate, so surface it as a warning. Warn-once (process-global guard)
-            // keeps this off the per-sample hot path — otherwise a single misconfigured
-            // aggregation would emit a warning for every ingested sample.
-            static NON_NUMERIC_WARNED: AtomicBool = AtomicBool::new(false);
-            if !NON_NUMERIC_WARNED.swap(true, Ordering::Relaxed) {
-                warn!(
-                    "value_column '{}' label value {:?} is not numeric; falling back to the \
-                     wire value. Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are \
-                     not yet supported and will produce INCORRECT results. \
-                     (This warning is logged once per process.)",
-                    col, raw
-                );
-            }
-            wire_val
-        }
+        // Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are not yet
+        // supported: silently falling back to the wire value would produce an
+        // INCORRECT aggregate, so fail loudly instead. This panic is a temporary
+        // measure — the longer-term fix is to make this path return a `Result`
+        // and propagate the error up to the caller.
+        Err(_) => panic!(
+            "value_column '{col}' label value {raw:?} is not numeric; non-numeric distinct \
+             targets (e.g. COUNT(DISTINCT proto)) are not yet supported"
+        ),
     }
 }
 
@@ -1109,9 +1104,10 @@ mod tests {
     }
 
     #[test]
-    fn resolve_sample_value_non_numeric_label_falls_back() {
-        // Non-numeric distinct targets are a follow-up; for now we fall back to
-        // the wire value rather than panicking on a parse failure.
+    #[should_panic(expected = "is not numeric")]
+    fn resolve_sample_value_non_numeric_label_panics() {
+        // Non-numeric distinct targets are a follow-up; for now we fail loudly
+        // rather than silently producing an incorrect aggregate.
         let mut config = make_agg_config(
             4,
             "netflow_table",
@@ -1124,7 +1120,7 @@ mod tests {
         config.value_column = Some("proto".to_string());
         let series = "netflow_table{srcip=\"10\",proto=\"TCP\"}";
         let labels = parse_labels_from_series_key(series);
-        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 1400.0);
+        let _ = resolve_sample_value(&labels, 1400.0, &config);
     }
 
     #[test]
