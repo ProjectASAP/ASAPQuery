@@ -233,10 +233,8 @@ def main(cfg: DictConfig) -> None:
         cfg,
         required_params=[
             ("experiment.name", "Human-readable experiment name"),
-            ("cloudlab.num_nodes", "Number of CloudLab nodes to use"),
-            ("cloudlab.username", "Your CloudLab username"),
-            ("cloudlab.hostname_suffix", "CloudLab experiment hostname suffix"),
-        ],
+        ]
+        + config.required_cloudlab_params(cfg),
         script_name="experiment_run_clickhouse",
     )
     config.validate_experiment_config(cfg.experiment_params)
@@ -244,14 +242,25 @@ def main(cfg: DictConfig) -> None:
     provider = create_provider(cfg)
 
     experiment_name = cfg.experiment.name
-    node_offset = cfg.cloudlab.node_offset
+    num_nodes, node_offset = config.get_node_params(cfg)
     no_teardown = cfg.flow.no_teardown
     use_container = cfg.use_container.prometheus_client
     parallel = cfg.prometheus_client.parallel
 
-    local_experiment_root_dir = os.path.join(
-        constants.LOCAL_EXPERIMENT_DIR, experiment_name
-    )
+    if provider.is_remote():
+        local_experiment_root_dir = os.path.join(
+            constants.LOCAL_EXPERIMENT_DIR, experiment_name
+        )
+        experiment_root_output_dir = os.path.join(
+            provider.get_home_dir(), "experiment_outputs", experiment_name
+        )
+    else:
+        # Local mode: "remote" and "local" roots are the same filesystem path,
+        # so every rsync/scp call downstream becomes a no-op.
+        local_experiment_root_dir = os.path.join(
+            provider.get_home_dir(), "experiment_outputs", experiment_name
+        )
+        experiment_root_output_dir = local_experiment_root_dir
     os.makedirs(local_experiment_root_dir, exist_ok=True)
 
     with open(os.path.join(local_experiment_root_dir, "hydra_config.yaml"), "w") as f:
@@ -259,9 +268,6 @@ def main(cfg: DictConfig) -> None:
     with open(os.path.join(local_experiment_root_dir, "cmdline_args.txt"), "w") as f:
         json.dump({"experiment_name": experiment_name, "node_offset": node_offset}, f)
 
-    experiment_root_output_dir = (
-        f"{constants.CLOUDLAB_HOME_DIR}/experiment_outputs/{experiment_name}"
-    )
     provider.execute_command(
         node_idx=node_offset,
         cmd=f"mkdir -p {experiment_root_output_dir}",
@@ -314,7 +320,7 @@ def main(cfg: DictConfig) -> None:
 
     # --- start ClickHouse (persists across all modes) ---
     clickhouse_service = ClickHouseService(
-        provider, num_nodes=cfg.cloudlab.num_nodes, node_offset=node_offset
+        provider, num_nodes=num_nodes, node_offset=node_offset
     )
     clickhouse_service.start(
         experiment_output_dir=experiment_root_output_dir,
@@ -326,7 +332,7 @@ def main(cfg: DictConfig) -> None:
     # --- load data once before the mode loop (DROP + reload) ---
     data_loader = ClickHouseDataLoaderService(
         provider,
-        num_nodes=cfg.cloudlab.num_nodes,
+        num_nodes=num_nodes,
         node_offset=node_offset,
         clickhouse_http_port=clickhouse_http_port,
     )

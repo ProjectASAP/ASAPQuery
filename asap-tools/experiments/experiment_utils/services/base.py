@@ -22,12 +22,6 @@ class BaseService(ABC):
         """
         self.provider = provider
 
-        # Maintain backward compatibility properties
-        if hasattr(provider, "username"):
-            self.username = provider.username
-        if hasattr(provider, "hostname_suffix"):
-            self.hostname_suffix = provider.hostname_suffix
-
     @abstractmethod
     def start(self, **kwargs) -> None:
         """

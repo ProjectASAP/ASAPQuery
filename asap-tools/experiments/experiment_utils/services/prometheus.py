@@ -119,24 +119,21 @@ class PrometheusService(BaseService):
             pass
 
     def reset(self) -> None:
-        """Reset Prometheus data across nodes."""
-        # For provider-based architecture, we need to handle reset differently
-        # This maintains backward compatibility for CloudLab while allowing future provider extensions
-        if hasattr(self.provider, "username") and hasattr(
-            self.provider, "hostname_suffix"
-        ):
-            cmd = "python3 reset_prometheus.py --num_nodes {} --cloudlab_username {} --hostname_suffix {} --node_offset {}".format(
-                self.num_nodes,
-                self.provider.username,
-                self.provider.hostname_suffix,
-                self.node_offset,
-            )
-            subprocess.run(cmd, shell=True, check=True)
-        else:
-            # For non-CloudLab providers, implement provider-specific reset logic
-            raise NotImplementedError(
-                "Reset functionality not yet implemented for this provider type"
-            )
+        """Reset Prometheus data.
+
+        reset_prometheus.py (the historical CloudLab-only path) just runs
+        `rm -rf data; rm -f queries.log` over SSH via the same
+        utils.run_on_cloudlab_node that CloudLabProvider.execute_command
+        already calls with identical args — so there's nothing to branch on.
+        """
+        self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd="rm -rf data; rm -f queries.log",
+            cmd_dir=os.path.join(self.provider.get_home_dir(), "prometheus"),
+            nohup=False,
+            popen=False,
+            ignore_errors=True,
+        )
 
     def is_healthy(self) -> bool:
         """

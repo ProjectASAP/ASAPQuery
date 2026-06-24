@@ -6,7 +6,6 @@ import os
 from abc import abstractmethod
 from typing import Tuple, List, Dict, Any
 
-import constants
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
@@ -133,7 +132,7 @@ class PythonExporterService(BaseExporterService):
             cmds.append(cmd)
 
         cmd_dir = os.path.join(
-            constants.CLOUDLAB_HOME_DIR,
+            self.provider.get_home_dir(),
             "code",
             "asap-tools",
             "data-sources",
@@ -375,7 +374,7 @@ class RustExporterService(BaseExporterService):
             )
             cmds.append(cmd)
 
-        cmd_dir = f"{constants.CLOUDLAB_HOME_DIR}/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter"
+        cmd_dir = f"{self.provider.get_home_dir()}/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter"
 
         # Dump workload configuration to a file
         os.makedirs(
