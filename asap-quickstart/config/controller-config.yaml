@@ -9,7 +9,7 @@ query_groups:
       - "quantile by (pattern) (0.95, sensor_reading)"
       - "quantile by (pattern) (0.90, sensor_reading)"
       - "quantile by (pattern) (0.50, sensor_reading)"
-    repetition_delay: 10
+    repetition_delay_ms: 10000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1

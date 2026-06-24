@@ -27,7 +27,7 @@ asap-planner \
   --query-log /var/log/prometheus/query.log \
   --prometheus-url http://localhost:9090 \
   --output_dir ./configs \
-  --prometheus_scrape_interval 15 \
+  --prometheus_scrape_interval_ms 15000 \
   --streaming_engine arroyo
 ```
 

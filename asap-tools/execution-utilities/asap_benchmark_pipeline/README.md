@@ -81,7 +81,7 @@ python3 plot_latency.py
 
 To benchmark with a different tumbling window size (e.g., 120s):
 
-1. Set `tumblingWindowSize` and `windowSize` in `streaming_config.yaml`
+1. Set `windowSizeMs` in `streaming_config.yaml` (e.g., `120000` for 120s; `tumblingWindowSize` is a legacy key, no longer read)
 2. Set the DATEADD offset in `inference_config.yaml` to match (e.g., `-120`)
 3. Regenerate query files with matching window boundaries
 
