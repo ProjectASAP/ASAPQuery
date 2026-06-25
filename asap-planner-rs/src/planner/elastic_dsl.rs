@@ -135,8 +135,8 @@ impl ElasticSingleQueryProcessor {
             })
             .and_then(|p| range_query_to_time_range(p, 0));
         let t_lookback = match time_range {
-            Some(tr) => tr.duration_ms().unwrap_or(self.t_repeat),
-            None => self.t_repeat, // Default to repetition delay if no time range found
+            Some(tr) => tr.duration_ms().unwrap_or(t_repeat_ms),
+            None => t_repeat_ms,
         };
 
         // Calculate cleanup param based on query's time window
@@ -144,7 +144,7 @@ impl ElasticSingleQueryProcessor {
             None
         } else {
             Some(
-                get_sql_cleanup_param(self.cleanup_policy, t_lookback, self.t_repeat)
+                get_sql_cleanup_param(self.cleanup_policy, t_lookback, t_repeat_ms)
                     .map_err(ControllerError::PlannerError)?,
             )
         };

@@ -28,7 +28,11 @@ pub fn get_cleanup_param(
     } else {
         match_result
             .get_range_duration()
-            .map(|d| d.num_milliseconds() as u64)
+            .map(|d| {
+                let ms = d.num_milliseconds();
+                debug_assert!(ms >= 0, "PromQL range duration should never be negative");
+                ms as u64
+            })
             .ok_or_else(|| "No range_vector token found".to_string())?
     };
 
