@@ -55,6 +55,26 @@ def validate_basic_config(
         raise ValueError(error_msg)
 
 
+def get_node_params(cfg: DictConfig) -> Tuple[int, int]:
+    """Return (num_nodes, node_offset). Local mode is a single node and never
+    touches cfg.cloudlab (whose username/hostname_suffix are mandatory-missing
+    markers that raise on mere attribute access if not provided)."""
+    if hasattr(cfg, "local"):
+        return 0, 0
+    return cfg.cloudlab.num_nodes, cfg.cloudlab.node_offset
+
+
+def required_cloudlab_params(cfg: DictConfig) -> List[Tuple[str, str]]:
+    """Return cloudlab.* required-param tuples, or [] when running in local mode."""
+    if hasattr(cfg, "local"):
+        return []
+    return [
+        ("cloudlab.num_nodes", "Number of CloudLab nodes to use"),
+        ("cloudlab.username", "Your CloudLab username"),
+        ("cloudlab.hostname_suffix", "CloudLab experiment hostname suffix"),
+    ]
+
+
 def _is_clickhouse_experiment(experiment_params: DictConfig) -> bool:
     """Return True if experiment_params describes a ClickHouse (SQL) experiment."""
     return "dataset" in experiment_params
@@ -481,11 +501,14 @@ class Args:
         # Experiment configuration
         self.experiment_name = cfg.experiment.name
 
-        # CloudLab configuration
-        self.num_nodes = cfg.cloudlab.num_nodes
-        self.node_offset = cfg.cloudlab.node_offset
-        self.cloudlab_username = cfg.cloudlab.username
-        self.hostname_suffix = cfg.cloudlab.hostname_suffix
+        # CloudLab configuration (or local-mode equivalents)
+        self.num_nodes, self.node_offset = get_node_params(cfg)
+        if hasattr(cfg, "local"):
+            self.cloudlab_username = None
+            self.hostname_suffix = None
+        else:
+            self.cloudlab_username = cfg.cloudlab.username
+            self.hostname_suffix = cfg.cloudlab.hostname_suffix
 
         # Logging and debugging
         self.log_level = cfg.logging.level
@@ -589,10 +612,7 @@ def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
     # Check for required parameters that must be provided via command line
     required_params = [
         ("experiment.name", "Human-readable experiment name"),
-        ("cloudlab.num_nodes", "Number of CloudLab nodes to use"),
-        ("cloudlab.username", "Your CloudLab username"),
-        ("cloudlab.hostname_suffix", "CloudLab experiment hostname suffix"),
-    ]
+    ] + required_cloudlab_params(cfg)
 
     # Use the existing validate_basic_config function
     validate_basic_config(cfg, required_params, script_name)

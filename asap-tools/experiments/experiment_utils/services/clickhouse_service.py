@@ -124,15 +124,16 @@ class ClickHouseService(DockerServiceBase):
         )
         self.compose_file = remote_compose_file
 
-        hostname = f"node{self.node_offset}.{self.provider.hostname_suffix}"
-        rsync_cmd = 'rsync -azh -e "ssh {}" {} {}@{}:{}'.format(
-            constants.SSH_OPTIONS,
-            local_compose_file,
-            self.provider.username,
-            hostname,
-            remote_compose_file,
-        )
-        utils.run_cmd_with_retry(rsync_cmd, popen=False, ignore_errors=False)
+        if self.provider.is_remote():
+            hostname = f"node{self.node_offset}.{self.provider.hostname_suffix}"
+            rsync_cmd = 'rsync -azh -e "ssh {}" {} {}@{}:{}'.format(
+                constants.SSH_OPTIONS,
+                local_compose_file,
+                self.provider.username,
+                hostname,
+                remote_compose_file,
+            )
+            utils.run_cmd_with_retry(rsync_cmd, popen=False, ignore_errors=False)
 
         self.provider.execute_command(
             node_idx=self.node_offset,
@@ -229,6 +230,11 @@ class ClickHouseDataLoaderService(BaseService):
             nohup=False,
             popen=False,
         )
+        if not self.provider.is_remote():
+            # Same filesystem: no copy needed, the file is already at this path.
+            self.remote_data_file = local_data_file
+            return self.remote_data_file
+
         hostname = f"node{self.node_offset}.{self.provider.hostname_suffix}"
         rsync_cmd = 'rsync -azh --progress -e "ssh {}" {} {}@{}:{}/'.format(
             constants.SSH_OPTIONS,
@@ -326,7 +332,22 @@ class ClickHouseDataLoaderService(BaseService):
     # ------------------------------------------------------------------ #
 
     def _rsync_to_remote(self, local_path: str, remote_path: str) -> None:
-        """Rsync a single local file to an exact remote path."""
+        """Copy a single local file to an exact path on the node.
+
+        remote_path is an ad hoc /tmp path distinct from local_path (unlike the
+        experiment_output_dir tree, it isn't collapsed onto local_path in local
+        mode), so local mode still needs an actual copy — just a local one
+        instead of rsync-over-SSH.
+        """
+        if not self.provider.is_remote():
+            self.provider.execute_command(
+                node_idx=self.node_offset,
+                cmd=f"cp {shlex.quote(local_path)} {shlex.quote(remote_path)}",
+                cmd_dir=None,
+                nohup=False,
+                popen=False,
+            )
+            return
         hostname = f"node{self.node_offset}.{self.provider.hostname_suffix}"
         cmd = 'rsync -azh -e "ssh {}" {} {}@{}:{}'.format(
             constants.SSH_OPTIONS,

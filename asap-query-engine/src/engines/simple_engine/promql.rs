@@ -10,8 +10,8 @@ use super::{
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{QueryResult, RangeVectorElement};
-use asap_types::query_requirements::QueryRequirements;
-use asap_types::utils::normalize_spatial_filter;
+use asap_types::query_requirements::build_query_requirements_promql;
+use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::get_is_collapsable;
@@ -268,7 +268,12 @@ impl SimpleEngine {
         let timestamps =
             self.calculate_query_timestamps_promql(query_time, query_pattern_type, match_result);
 
-        let statistics_to_compute = get_statistics_to_compute(query_pattern_type, match_result);
+        let statistics_to_compute = get_statistics_to_compute(query_pattern_type, match_result)
+            .map_err(|err| {
+                warn!("{}", err);
+                err
+            })
+            .ok()?;
         if statistics_to_compute.len() != 1 {
             warn!(
                 "Expected exactly one statistic to compute, found {}",
@@ -610,53 +615,6 @@ impl SimpleEngine {
 
         let output_labels = KeyByLabelNames::new(lhs_labels);
         Some((output_labels, QueryResult::matrix(combined)))
-    }
-
-    /// Extract QueryRequirements from a parsed PromQL match result.
-    /// Used as the fallback path when no query_configs entry is found.
-    fn build_query_requirements_promql(
-        &self,
-        match_result: &PromQLMatchResult,
-        query_pattern_type: QueryPatternType,
-    ) -> QueryRequirements {
-        let (metric, spatial_filter) = get_metric_and_spatial_filter(match_result);
-
-        let statistics = get_statistics_to_compute(query_pattern_type, match_result);
-
-        let data_range_ms = match query_pattern_type {
-            QueryPatternType::OnlySpatial => None,
-            // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
-            // so .num_seconds() would truncate genuinely sub-second range vectors to 0.
-            _ => match_result
-                .get_range_duration()
-                .map(|d| d.num_milliseconds() as u64),
-        };
-
-        let all_labels = match &self.inference_config.read().unwrap().schema {
-            SchemaConfig::PromQL(schema) => schema
-                .get_labels(&metric)
-                .cloned()
-                .unwrap_or_else(KeyByLabelNames::empty),
-            _ => KeyByLabelNames::empty(),
-        };
-
-        let grouping_labels = match query_pattern_type {
-            QueryPatternType::OnlyTemporal => all_labels,
-            QueryPatternType::OnlySpatial | QueryPatternType::OneTemporalOneSpatial => {
-                get_spatial_aggregation_output_labels(match_result, &all_labels)
-            }
-        };
-
-        QueryRequirements {
-            metric,
-            statistics,
-            data_range_ms,
-            grouping_labels,
-            spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
-            // PromQL top-k does not constrain the sketch weighting; leave the
-            // count/sum discriminator unset so matching does not over-filter.
-            topk_count_events: None,
-        }
     }
 
     // /// Try to extract sketch query components from a PromQL query string.
@@ -1080,8 +1038,18 @@ impl SimpleEngine {
                 "No query_config entry for PromQL query '{}'. Attempting capability-based matching.",
                 query
             );
-            let requirements =
-                self.build_query_requirements_promql(&match_result, query_pattern_type);
+            let inference_config = self.inference_config.read().unwrap();
+            let empty_schema = PromQLSchema::new();
+            let metric_schema = match &inference_config.schema {
+                SchemaConfig::PromQL(schema) => schema,
+                _ => &empty_schema,
+            };
+            let requirements = build_query_requirements_promql(
+                &query,
+                &match_result,
+                query_pattern_type,
+                metric_schema,
+            )?;
             self.streaming_config
                 .read()
                 .unwrap()

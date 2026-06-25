@@ -132,6 +132,19 @@ class InfrastructureProvider(ABC):
         """
         return self.__class__.__name__.replace("Provider", "").lower()
 
+    def is_remote(self) -> bool:
+        """
+        Whether this provider executes on a separate machine reachable over SSH.
+
+        Local providers override this to False so that callers can skip
+        rsync/scp file-transfer steps entirely (source and destination are
+        the same filesystem).
+
+        Returns:
+            True by default (e.g. CloudLab); False for local execution.
+        """
+        return True
+
     def __str__(self) -> str:
         """String representation of the provider."""
         return f"{self.__class__.__name__}()"

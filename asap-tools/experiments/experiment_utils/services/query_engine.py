@@ -176,6 +176,11 @@ class QueryEngineRustService(BaseQueryEngineService):
         with open(local_path, "w") as f:
             f.write(config_yaml)
 
+        if not self.provider.is_remote():
+            # Same filesystem: local_path and remote_path resolve to the same
+            # location once experiment_output_dir/local_experiment_dir collapse.
+            return
+
         hostname = f"node{self.node_offset}.{self.provider.hostname_suffix}"
         # Ensure the remote directory exists before rsyncing
         self.provider.execute_command(

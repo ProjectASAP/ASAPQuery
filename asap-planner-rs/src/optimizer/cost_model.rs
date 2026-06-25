@@ -64,72 +64,81 @@ impl Default for CostWeights {
 
 /// IngestCost(g): steady-state cost rate of keeping `candidate` deployed,
 /// independent of which AQEs query it (facility-location requirement).
-/// `rho_g` is the arrival rate (items/sec) for this config's metric+filter.
+/// `arrival_rate_hz` is the arrival rate (items/sec) for this config's metric+filter.
 pub fn ingest_cost(
     candidate: &CandidateConfig,
-    rho_g: f64,
+    arrival_rate_hz: f64,
     costs: &AtomicCosts,
     weights: &CostWeights,
 ) -> f64 {
-    let Some(g) = &candidate.config else {
+    let Some(agg_config) = &candidate.config else {
         return 0.0; // EXACT: no streaming config deployed.
     };
 
-    // N(s,g) = 1 if subpopulation_aware else N_g (distinct label-group count).
-    // N_g isn't profiled yet (needs Prometheus series-count data) — use 1 as a
-    // placeholder; both branches collapse to the same value until that lands.
-    let n = 1.0_f64;
+    // Subpopulation count: 1 if subpopulation_aware else the distinct
+    // label-group count for this config. The label-group count isn't profiled
+    // yet (needs Prometheus series-count data) — use 1 as a placeholder; both
+    // branches collapse to the same value until that lands.
+    let subpopulation_count = 1.0_f64;
 
     // Defensive floor: slide_interval_ms is a plain u64 on a widely-shared struct;
     // guard against div-by-zero producing `inf` and poisoning cost comparisons.
-    let n_concurrent = match g.window_type {
+    let n_concurrent = match agg_config.window_type {
         WindowType::Tumbling => 1.0,
-        WindowType::Sliding => (g.window_size_ms as f64 / g.slide_interval_ms.max(1) as f64).ceil(),
+        WindowType::Sliding => {
+            (agg_config.window_size_ms as f64 / agg_config.slide_interval_ms.max(1) as f64).ceil()
+        }
     };
 
-    let mem_active = n_concurrent * n * costs.mem_bytes_per_instance;
-    let mem_retain = match g.window_type {
-        WindowType::Tumbling => candidate.n_windows as f64 * n * costs.mem_bytes_per_instance,
+    let mem_active = n_concurrent * subpopulation_count * costs.mem_bytes_per_instance;
+    let mem_retain = match agg_config.window_type {
+        WindowType::Tumbling => {
+            candidate.n_windows as f64 * subpopulation_count * costs.mem_bytes_per_instance
+        }
         WindowType::Sliding => 0.0, // already counted in mem_active's concurrent windows
     };
 
-    let cpu_ingest = match g.window_type {
-        WindowType::Tumbling => rho_g * costs.insert_cpu_secs,
-        WindowType::Sliding => rho_g * n_concurrent * costs.insert_cpu_secs,
+    let cpu_ingest = match agg_config.window_type {
+        WindowType::Tumbling => arrival_rate_hz * costs.insert_cpu_secs,
+        WindowType::Sliding => arrival_rate_hz * n_concurrent * costs.insert_cpu_secs,
     };
 
     weights.ingest_mem * (mem_active + mem_retain) + weights.ingest_cpu * cpu_ingest
 }
 
-/// QueryCost(a,g): cost of answering one query for `a` from `candidate`.
+/// QueryCost(a,g): cost of answering one query for `aqe` from `candidate`.
 pub fn query_cost(
-    _a: &AQE,
+    _aqe: &AQE,
     candidate: &CandidateConfig,
     costs: &AtomicCosts,
     weights: &CostWeights,
 ) -> f64 {
-    let Some(g) = &candidate.config else {
+    let Some(agg_config) = &candidate.config else {
         return costs.exact_query_cpu_secs * weights.query_cpu; // EXACT: raw query at query time.
     };
 
-    let n = 1.0_f64; // N(s,g); see ingest_cost comment.
-    let props = sketch_properties(g.aggregation_type);
+    // Subpopulation count; see ingest_cost comment.
+    let subpopulation_count = 1.0_f64;
+    let props = sketch_properties(agg_config.aggregation_type);
 
     let (cpu, mem) = match &candidate.query_method {
-        QueryMethod::Direct => (n * costs.query_cpu_secs, n * costs.mem_bytes_per_instance),
+        QueryMethod::Direct => (
+            subpopulation_count * costs.query_cpu_secs,
+            subpopulation_count * costs.mem_bytes_per_instance,
+        ),
         QueryMethod::Merge { num_windows } => {
             debug_assert!(props.mergeable);
             let merges = (*num_windows).saturating_sub(1) as f64;
             (
-                n * (merges * costs.merge_cpu_secs + costs.query_cpu_secs),
-                *num_windows as f64 * n * costs.mem_bytes_per_instance,
+                subpopulation_count * (merges * costs.merge_cpu_secs + costs.query_cpu_secs),
+                *num_windows as f64 * subpopulation_count * costs.mem_bytes_per_instance,
             )
         }
         QueryMethod::Subtract => {
             debug_assert!(props.subtractable);
             (
-                n * (costs.subtract_cpu_secs + costs.query_cpu_secs),
-                2.0 * n * costs.mem_bytes_per_instance,
+                subpopulation_count * (costs.subtract_cpu_secs + costs.query_cpu_secs),
+                2.0 * subpopulation_count * costs.mem_bytes_per_instance,
             )
         }
         // candidate_gen only ever pairs Exact with config=None, already handled above.
@@ -141,18 +150,18 @@ pub fn query_cost(
     weights.query_cpu * cpu + weights.query_mem * mem
 }
 
-/// Total cost rate contributed by assigning AQE `a` (with frequency `f_a` =
-/// `a.query_frequency_hz`) to `candidate`: IngestCost(g) + f_a * QueryCost(a,g).
+/// Total cost rate contributed by assigning AQE `aqe` (with frequency
+/// `aqe.query_frequency_hz`) to `candidate`: IngestCost(g) + frequency * QueryCost(a,g).
 /// This is the per-(a,g) term the greedy/MIP solver minimizes.
 pub fn total_cost_rate(
-    a: &AQE,
+    aqe: &AQE,
     candidate: &CandidateConfig,
-    rho_g: f64,
+    arrival_rate_hz: f64,
     costs: &AtomicCosts,
     weights: &CostWeights,
 ) -> f64 {
-    ingest_cost(candidate, rho_g, costs, weights)
-        + a.query_frequency_hz * query_cost(a, candidate, costs, weights)
+    ingest_cost(candidate, arrival_rate_hz, costs, weights)
+        + aqe.query_frequency_hz * query_cost(aqe, candidate, costs, weights)
 }
 
 #[cfg(test)]

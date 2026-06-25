@@ -1,16 +1,13 @@
 use std::collections::HashMap;
 
-use asap_types::query_requirements::QueryRequirements;
-use asap_types::utils::normalize_spatial_filter;
+use asap_types::query_requirements::{build_query_requirements_promql, QueryRequirements};
 use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
-use promql_utilities::query_logics::parsing::{
-    get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
-};
+use promql_utilities::query_logics::enums::Statistic;
 use tracing::warn;
 
 use crate::planner::patterns::build_patterns;
+use crate::planner::promql::{parse_binary_arms, BinaryArm};
 
 use super::solution::AQE;
 
@@ -145,53 +142,22 @@ fn gcd(a: u64, b: u64) -> u64 {
 /// dropped — they contribute no AQE. Only arithmetic operators are split;
 /// comparison and set operators are left as-is (treated as opaque leaves).
 fn decompose_to_leaves(query: &str) -> Vec<String> {
-    let ast = match promql_parser::parser::parse(query) {
-        Ok(a) => a,
-        Err(_) => return vec![query.to_string()],
+    let (lhs, rhs) = match parse_binary_arms(query) {
+        Some(arms) => arms,
+        None => return vec![query.to_string()],
     };
 
-    if let promql_parser::parser::Expr::Binary(binary) = &ast {
-        if !binary.op.is_comparison_operator() && !binary.op.is_set_operator() {
-            let mut leaves = Vec::new();
-            if let Some(lhs_str) = arm_to_query_string(binary.lhs.as_ref()) {
-                leaves.extend(decompose_to_leaves(&lhs_str));
-            }
-            if let Some(rhs_str) = arm_to_query_string(binary.rhs.as_ref()) {
-                leaves.extend(decompose_to_leaves(&rhs_str));
-            }
-            return leaves;
+    let mut leaves = Vec::new();
+    for arm in [lhs, rhs] {
+        if let BinaryArm::Query(arm_query) = arm {
+            leaves.extend(decompose_to_leaves(&arm_query));
         }
     }
-
-    vec![query.to_string()]
-}
-
-/// Convert one arm of a binary expression to a query string, returning `None`
-/// for scalar literals (they don't map to AQEs).
-fn arm_to_query_string(expr: &promql_parser::parser::Expr) -> Option<String> {
-    let inner = strip_parens(expr);
-    match inner {
-        promql_parser::parser::Expr::NumberLiteral(_) => None,
-        other => Some(format!("{}", other)),
-    }
-}
-
-fn strip_parens(expr: &promql_parser::parser::Expr) -> &promql_parser::parser::Expr {
-    if let promql_parser::parser::Expr::Paren(paren) = expr {
-        strip_parens(&paren.expr)
-    } else {
-        expr
-    }
+    leaves
 }
 
 /// Try to extract `QueryRequirements` from a single leaf PromQL query string.
 /// Returns `None` if the query cannot be parsed or does not match any pattern.
-///
-/// TODO: this duplicates `build_query_requirements_promql` in
-/// `asap-query-engine/src/engines/simple_engine/promql.rs:614`. That function
-/// is a private `&self` method tied to `SimplePromQLEngine`. The shared logic
-/// should be extracted into a free function in `asap_types::query_requirements`
-/// and called from both sites.
 fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<QueryRequirements> {
     let ast = promql_parser::parser::parse(query).ok()?;
     let patterns = build_patterns();
@@ -205,45 +171,7 @@ fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<Que
         }
     })?;
 
-    let (metric, spatial_filter) = get_metric_and_spatial_filter(&match_result);
-    let statistics = get_statistics_to_compute(pattern_type, &match_result);
-
-    let data_range_ms = match pattern_type {
-        QueryPatternType::OnlySpatial => None,
-        // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
-        // so .num_seconds() would truncate genuinely sub-second range vectors to 0.
-        _ => match_result
-            .get_range_duration()
-            .map(|d| d.num_milliseconds() as u64),
-    };
-
-    let grouping_labels = match pattern_type {
-        // OnlyTemporal preserves all labels — look them up in the schema.
-        // If the metric is unknown, fall back to empty (dedup still works; cost
-        // model will treat it as a zero-group-count sketch).
-        QueryPatternType::OnlyTemporal => metric_schema
-            .get_labels(&metric)
-            .cloned()
-            .unwrap_or_else(KeyByLabelNames::empty),
-        // OnlySpatial and OneTemporalOneSpatial encode their output labels in
-        // the AST's `by (...)` / `without (...)` clause.
-        QueryPatternType::OnlySpatial | QueryPatternType::OneTemporalOneSpatial => {
-            let all_labels = metric_schema
-                .get_labels(&metric)
-                .cloned()
-                .unwrap_or_else(KeyByLabelNames::empty);
-            get_spatial_aggregation_output_labels(&match_result, &all_labels)
-        }
-    };
-
-    Some(QueryRequirements {
-        metric,
-        statistics,
-        data_range_ms,
-        grouping_labels,
-        spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
-        topk_count_events: None,
-    })
+    build_query_requirements_promql(query, &match_result, pattern_type, metric_schema)
 }
 
 #[cfg(test)]
@@ -296,7 +224,7 @@ mod tests {
         ];
         let aqes = extract_aqes(&rqes, &empty_schema());
         assert_eq!(aqes.len(), 1);
-        // f_a = sum of rates (total query load for the MIP objective)
+        // query_frequency_hz = sum of rates (total query load for the MIP objective)
         let expected_freq = 1.0 / 60.0 + 1.0 / 30.0;
         assert!((aqes[0].query_frequency_hz - expected_freq).abs() < 1e-9);
         // min_t and gcd_t used for windowing constraints
