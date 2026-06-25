@@ -46,7 +46,9 @@ pub struct QueryMetadata {
 pub struct StoreQueryParams {
     pub metric: String,
     pub aggregation_id: u64,
+    /// Milliseconds since epoch.
     pub start_timestamp: u64,
+    /// Milliseconds since epoch.
     pub end_timestamp: u64,
     /// true for sliding windows (exact match), false for tumbling (range)
     pub is_exact_query: bool,
@@ -63,7 +65,9 @@ pub struct StoreQueryPlan {
 /// Timestamps for query execution
 #[derive(Debug, Clone)]
 pub struct QueryTimestamps {
+    /// Milliseconds since epoch.
     pub start_timestamp: u64,
+    /// Milliseconds since epoch.
     pub end_timestamp: u64,
 }
 

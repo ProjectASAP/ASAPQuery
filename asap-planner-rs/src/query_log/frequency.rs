@@ -95,7 +95,7 @@ pub fn infer_queries(
             range_results.push(RangeQueryInfo {
                 query,
                 repetition_delay_ms,
-                step_ms: step * 1000,
+                step_ms: step * 1000, // LogEntry.step is seconds (Prometheus log format)
                 range_duration_ms,
             });
         }
