@@ -327,7 +327,7 @@ async fn run_latency_benchmark(
         metric,
         aggregation_id,
         0,
-        ((args.latency_repetitions as u64) + 10) * args.window_size_secs * 1000,
+        ((args.latency_repetitions as u64) + 10) * window_size_ms as u64,
     )?;
     let stored_windows: usize = latency_store_results
         .values()
@@ -431,7 +431,7 @@ async fn run_throughput_benchmark(
         metric,
         aggregation_id,
         0,
-        ((args.num_requests as u64) + 2) * args.window_size_secs * 1000,
+        ((args.num_requests as u64) + 2) * window_size_ms as u64,
     )?;
     let stored_windows: usize = store_results.values().map(|buckets| buckets.len()).sum();
 
