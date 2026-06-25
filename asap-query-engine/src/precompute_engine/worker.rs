@@ -872,11 +872,79 @@ fn apply_sample(
     ts: i64,
     config: &AggregationConfig,
 ) {
-    if updater.is_keyed() {
-        let key = extract_aggregated_key_from_series(series_key, config);
-        updater.update_keyed(&key, val, ts);
+    // Parse the series labels at most once and share them across value resolution
+    // and key extraction — both walk the same label string. Skip parsing entirely
+    // when neither path needs labels (non-keyed accumulator with no value_column),
+    // which is the common SUM/quantile case on the per-sample ingest hot path.
+    let keyed = updater.is_keyed();
+    let labels = if keyed || config.value_column.is_some() {
+        parse_labels_from_series_key(series_key)
     } else {
-        updater.update_single(val, ts);
+        HashMap::new()
+    };
+
+    let value = resolve_sample_value(&labels, val, config);
+    if keyed {
+        let key = extract_aggregated_key_from_series(&labels, config);
+        updater.update_keyed(&key, value, ts);
+    } else {
+        updater.update_single(value, ts);
+    }
+}
+
+/// Resolve which scalar to aggregate for a sample.
+///
+/// The wire format collapses each sample to a single scalar (`wire_val`) plus a
+/// set of labels carried in `series_key`. `wire_val` is whatever the source
+/// considered the default value column (e.g. `pkt_len` for the netflow dataset).
+/// But an aggregation may target a *different* column via `config.value_column`
+/// — most importantly `COUNT(DISTINCT dstip)`, where the HLL sketch must hash
+/// `dstip`, not the wire `pkt_len`.
+///
+/// Rule (general, self-correcting): if `config.value_column` names a column that
+/// is present among the series labels, aggregate that label's value; otherwise
+/// fall back to `wire_val`. Numeric value columns such as `pkt_len` are never
+/// sent as labels, so SUM / quantile / top-k transparently keep using the wire
+/// scalar, while label-present distinct targets such as `dstip` get substituted.
+///
+/// `labels` is the already-parsed label map for the sample's series key (parsed
+/// once by `apply_sample` and shared with key extraction), so this is allocation-
+/// free on the hot path.
+///
+/// The label value is parsed as `f64`. This is lossless for the netflow IPv4
+/// `u32` columns (≤ 2^32 < 2^53) and consistent with the replay's int→f64
+/// convention; cardinality only requires distinct inputs to map to distinct
+/// hashes, so the exact hash need not match the baseline engine.
+///
+/// # Panics
+/// Panics if `value_column` names a label whose value is not numeric. Non-numeric
+/// distinct targets (e.g. `proto`) are not yet supported; this is a temporary
+/// guard until the path is refactored to return a `Result` (see follow-up for a
+/// byte/string hashing path).
+fn resolve_sample_value(
+    labels: &HashMap<&str, &str>,
+    wire_val: f64,
+    config: &AggregationConfig,
+) -> f64 {
+    let Some(col) = config.value_column.as_deref() else {
+        return wire_val;
+    };
+
+    let Some(raw) = labels.get(col) else {
+        return wire_val;
+    };
+
+    match raw.parse::<f64>() {
+        Ok(v) => v,
+        // Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are not yet
+        // supported: silently falling back to the wire value would produce an
+        // INCORRECT aggregate, so fail loudly instead. This panic is a temporary
+        // measure — the longer-term fix is to make this path return a `Result`
+        // and propagate the error up to the caller.
+        Err(_) => panic!(
+            "value_column '{col}' label value {raw:?} is not numeric; non-numeric distinct \
+             targets (e.g. COUNT(DISTINCT proto)) are not yet supported"
+        ),
     }
 }
 
@@ -884,10 +952,9 @@ fn apply_sample(
 /// These are the labels that form the key dimension *inside* keyed accumulators
 /// (MultipleSum, CMS, HydraKLL), matching Arroyo's `agg_columns`.
 fn extract_aggregated_key_from_series(
-    series_key: &str,
+    labels: &HashMap<&str, &str>,
     config: &AggregationConfig,
 ) -> KeyByLabelValues {
-    let labels = parse_labels_from_series_key(series_key);
     let mut values = Vec::new();
 
     for label_name in &config.aggregated_labels.labels {
@@ -976,6 +1043,162 @@ mod tests {
     fn test_parse_labels_empty_braces() {
         let labels = parse_labels_from_series_key("metric{}");
         assert!(labels.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // resolve_sample_value: choose value_column label over the wire scalar
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn resolve_sample_value_uses_label_when_value_column_present() {
+        // COUNT(DISTINCT dstip): the wire scalar is pkt_len, but the HLL must
+        // hash dstip, which is carried as a series label.
+        let mut config = make_agg_config(
+            4,
+            "netflow_table",
+            AggregationType::HLL,
+            "",
+            1,
+            1,
+            vec!["srcip"],
+        );
+        config.value_column = Some("dstip".to_string());
+        let series = "netflow_table{srcip=\"10\",dstip=\"4242\",proto=\"TCP\"}";
+        let labels = parse_labels_from_series_key(series);
+        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 4242.0);
+    }
+
+    #[test]
+    fn resolve_sample_value_falls_back_when_column_not_a_label() {
+        // Numeric value columns like pkt_len are sent as the wire scalar, never
+        // as a label, so resolution must transparently keep the wire value.
+        let mut config = make_agg_config(
+            1,
+            "netflow_table",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            1,
+            1,
+            vec!["srcip"],
+        );
+        config.value_column = Some("pkt_len".to_string());
+        let series = "netflow_table{srcip=\"10\",dstip=\"4242\"}";
+        let labels = parse_labels_from_series_key(series);
+        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 1400.0);
+    }
+
+    #[test]
+    fn resolve_sample_value_none_value_column_uses_wire_value() {
+        let config = make_agg_config(
+            1,
+            "netflow_table",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            1,
+            1,
+            vec!["srcip"],
+        );
+        let series = "netflow_table{srcip=\"10\",dstip=\"4242\"}";
+        let labels = parse_labels_from_series_key(series);
+        assert_eq!(resolve_sample_value(&labels, 1400.0, &config), 1400.0);
+    }
+
+    #[test]
+    #[should_panic(expected = "is not numeric")]
+    fn resolve_sample_value_non_numeric_label_panics() {
+        // Non-numeric distinct targets are a follow-up; for now we fail loudly
+        // rather than silently producing an incorrect aggregate.
+        let mut config = make_agg_config(
+            4,
+            "netflow_table",
+            AggregationType::HLL,
+            "",
+            1,
+            1,
+            vec!["srcip"],
+        );
+        config.value_column = Some("proto".to_string());
+        let series = "netflow_table{srcip=\"10\",proto=\"TCP\"}";
+        let labels = parse_labels_from_series_key(series);
+        let _ = resolve_sample_value(&labels, 1400.0, &config);
+    }
+
+    #[test]
+    fn hll_counts_distinct_value_column_not_wire_value() {
+        use crate::precompute_operators::hll_accumulator::HllAccumulator;
+
+        // COUNT(DISTINCT dstip) GROUP BY srcip, 1s tumbling window.
+        let mut config = make_agg_config(
+            4,
+            "netflow_table",
+            AggregationType::HLL,
+            "",
+            1,
+            1,
+            vec!["srcip"],
+        );
+        config.value_column = Some("dstip".to_string());
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(4, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        // Two samples, same srcip, DIFFERENT dstip, IDENTICAL wire value
+        // (pkt_len). Window [0, 1000).
+        worker
+            .process_group_samples(
+                4,
+                "10",
+                vec![
+                    (
+                        "netflow_table{srcip=\"10\",dstip=\"100\",proto=\"TCP\"}".to_string(),
+                        100,
+                        1400.0,
+                    ),
+                    (
+                        "netflow_table{srcip=\"10\",dstip=\"200\",proto=\"TCP\"}".to_string(),
+                        200,
+                        1400.0,
+                    ),
+                ],
+            )
+            .unwrap();
+
+        // Advance the watermark past the window end to close [0, 1000).
+        worker
+            .process_group_samples(
+                4,
+                "10",
+                vec![(
+                    "netflow_table{srcip=\"10\",dstip=\"300\",proto=\"TCP\"}".to_string(),
+                    5000,
+                    1400.0,
+                )],
+            )
+            .unwrap();
+
+        let captured = sink.drain();
+        let (_output, acc) = captured
+            .iter()
+            .find(|(o, _)| o.start_timestamp == 0)
+            .expect("window [0, 1000) should emit a closed HLL pane");
+        let hll = acc
+            .as_any()
+            .downcast_ref::<HllAccumulator>()
+            .expect("should be HllAccumulator");
+        let est = hll.estimate();
+        assert!(
+            est > 1.5 && est < 3.0,
+            "HLL should count 2 distinct dstip (got {est}); \
+             with the bug it would count 1 distinct pkt_len"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1554,6 +1777,103 @@ mod tests {
             }
             if key.labels == vec!["B".to_string()] {
                 assert!((sum - 20.0).abs() < 1e-10);
+                found_b = true;
+            }
+        }
+        assert!(found_a, "expected key A inside accumulator");
+        assert!(found_b, "expected key B inside accumulator");
+    }
+
+    // -----------------------------------------------------------------------
+    // Test: keyed accumulator with a numeric (non-label) value_column.
+    // Regression guard for the value_column resolution change — existing keyed
+    // aggregations (MultipleSum/top-k) set value_column to the wire scalar
+    // (e.g. pkt_len), which is NOT carried as a label, so the wire value must
+    // still flow through unchanged while the key comes from aggregated labels.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_keyed_accumulator_numeric_value_column_uses_wire_value() {
+        // Like planner output for `SUM(pkt_len) GROUP BY dstip`:
+        // grouping=[] (one output group), aggregated=[dstip] (key inside sketch),
+        // value_column=pkt_len (the wire scalar, never sent as a label).
+        let mut config = make_agg_config_full(
+            5,
+            "netflow_table",
+            AggregationType::MultipleSubpopulation,
+            "Sum",
+            10,
+            0,
+            vec![],        // grouping: empty — one output group
+            vec!["dstip"], // aggregated: dstip is the key INSIDE the sketch
+        );
+        config.value_column = Some("pkt_len".to_string());
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(5, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        // Two samples with the same dstip and one with a different dstip. The
+        // summed values are the WIRE scalars (100+200 for A, 50 for B); if
+        // resolution wrongly substituted dstip, the sums would be garbage.
+        worker
+            .process_group_samples(
+                5,
+                "",
+                vec![
+                    ("netflow_table{dstip=\"A\"}".to_string(), 1000, 100.0),
+                    ("netflow_table{dstip=\"A\"}".to_string(), 2000, 200.0),
+                    ("netflow_table{dstip=\"B\"}".to_string(), 3000, 50.0),
+                ],
+            )
+            .unwrap();
+
+        // Close the window [0, 10000).
+        worker
+            .process_group_samples(
+                5,
+                "",
+                group_samples("netflow_table{dstip=\"A\"}", vec![(10000, 0.0)]),
+            )
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1, "one group → one output");
+
+        let (_output, acc) = &captured[0];
+        let ms_acc = acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("should be MultipleSumAccumulator");
+
+        assert_eq!(
+            ms_acc.sums.len(),
+            2,
+            "two dstip keys inside one accumulator"
+        );
+
+        let mut found_a = false;
+        let mut found_b = false;
+        for (key, &sum) in &ms_acc.sums {
+            if key.labels == vec!["A".to_string()] {
+                assert!(
+                    (sum - 300.0).abs() < 1e-10,
+                    "dstip=A must sum the wire pkt_len values (100+200), got {sum}"
+                );
+                found_a = true;
+            }
+            if key.labels == vec!["B".to_string()] {
+                assert!(
+                    (sum - 50.0).abs() < 1e-10,
+                    "dstip=B must sum the wire pkt_len value (50), got {sum}"
+                );
                 found_b = true;
             }
         }
