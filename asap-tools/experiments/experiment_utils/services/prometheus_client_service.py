@@ -205,7 +205,7 @@ class QueryClientService(BaseService):
         try:
             if self.compose_file:
                 cmd = f"docker compose -f {self.compose_file} down"
-                if self.provider.hostname_suffix == "localhost":
+                if not self.provider.is_remote():
                     utils.run_cmd(cmd, popen=False)
                     self.compose_file = None
                 else:
@@ -220,7 +220,7 @@ class QueryClientService(BaseService):
             else:
                 # Fallback: stop by container name on remote node
                 cmd = f"docker stop {self.container_name}; docker rm {self.container_name}"
-                if self.provider.hostname_suffix == "localhost":
+                if not self.provider.is_remote():
                     utils.run_cmd(cmd, popen=False)
                 else:
                     self.provider.execute_command(
@@ -238,7 +238,7 @@ class QueryClientService(BaseService):
     def _stop_bare_metal(self):
         """Kill Prometheus client processes."""
         cmd = "pkill -f main_prometheus_client.py"
-        if self.provider.hostname_suffix == "localhost":
+        if not self.provider.is_remote():
             # If running on localhost, use pkill to stop the process (e.g. from remote_monitor)
             utils.run_cmd(cmd, popen=False)
         else:

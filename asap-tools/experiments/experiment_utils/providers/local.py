@@ -49,15 +49,28 @@ class LocalProvider(InfrastructureProvider):
         if nohup:
             cmd = f"nohup {cmd}"
 
+        # subprocess treats cwd="" as an actual (invalid) path, unlike the
+        # CloudLab SSH path's `if cmd_dir: cd {cmd_dir}` which is falsy-safe.
+        cmd_dir = cmd_dir or None
+
         if popen:
-            return subprocess.Popen(
-                cmd,
-                shell=True,
-                cwd=cmd_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            try:
+                return subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    cwd=cmd_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except OSError as e:
+                # execute_command_parallel has no ignore_errors knob (see
+                # follow-up issue), so this can't be conditional yet. Mirrors
+                # CloudLab's SSH transport: launching `ssh` locally never
+                # fails even if the remote cmd_dir is missing — the failure
+                # is invisible unless something later checks output/health.
+                print(f"Warning: failed to launch '{cmd}' in {cmd_dir!r}: {e}")
+                return None
 
         try:
             return subprocess.run(
@@ -68,7 +81,13 @@ class LocalProvider(InfrastructureProvider):
                 text=True,
                 check=not ignore_errors,
             )
-        except subprocess.CalledProcessError as e:
+        except (subprocess.CalledProcessError, OSError) as e:
+            # Over SSH, a missing cmd_dir just makes the *remote* shell exit
+            # nonzero, which ignore_errors already swallows via check=False.
+            # Locally, a missing cmd_dir makes subprocess.run itself raise
+            # OSError (e.g. FileNotFoundError) before the command ever runs —
+            # same "best-effort cleanup, don't crash" intent, different
+            # exception type, so it needs the same ignore_errors treatment.
             if ignore_errors:
                 return e
             raise
@@ -97,7 +116,8 @@ class LocalProvider(InfrastructureProvider):
         processes = [process]
         if wait:
             for p in processes:
-                p.wait()
+                if p is not None:
+                    p.wait()
         return processes
 
     def is_remote(self) -> bool:
