@@ -73,7 +73,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         self,
         output_dir: str,
         flink_output_format: str,
-        prometheus_scrape_interval: int,
+        prometheus_scrape_interval_ms: int,
         log_level: str,
         streaming_engine: str,
         controller_config_dir: str,
@@ -93,7 +93,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         Args:
             output_dir: Output directory path (remote host path or container-internal path)
             flink_output_format: Kafka input_format when streaming_engine=arroyo
-            prometheus_scrape_interval: Prometheus scraping interval in seconds
+            prometheus_scrape_interval_ms: Prometheus scraping interval in milliseconds
             log_level: Logging level
             streaming_engine: 'arroyo' (Kafka ingest) or 'precompute' (HTTP remote write)
             controller_config_dir: Directory containing inference_config.yaml and streaming_config.yaml
@@ -140,7 +140,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         return {
             "output_dir": output_dir,
             "log_level": log_level,
-            "prometheus_scrape_interval_ms": prometheus_scrape_interval * 1000,
+            "prometheus_scrape_interval_ms": prometheus_scrape_interval_ms,
             "streaming_engine": streaming_engine,
             "http_server": {"port": http_port},
             "backend": backend,  # already fully resolved by caller
@@ -205,7 +205,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         experiment_output_dir: str,
         local_experiment_dir: str,
         flink_output_format: str,
-        prometheus_scrape_interval: int,
+        prometheus_scrape_interval_ms: int,
         log_level: str,
         profile_query_engine: bool,
         manual: bool,
@@ -228,8 +228,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                                   config YAML locally before rsyncing to remote)
             flink_output_format: Format of data from Flink (used as Kafka input_format
                                  when streaming_engine=arroyo)
-            prometheus_scrape_interval: Prometheus scraping interval (seconds; written to
-                EngineConfig as prometheus_scrape_interval_ms, ×1000)
+            prometheus_scrape_interval_ms: Prometheus scraping interval in milliseconds
             log_level: Logging level
             profile_query_engine: Whether to enable profiling
             manual: Whether to run in manual mode
@@ -251,7 +250,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                 experiment_output_dir,
                 local_experiment_dir,
                 flink_output_format,
-                prometheus_scrape_interval,
+                prometheus_scrape_interval_ms,
                 log_level,
                 profile_query_engine,
                 manual,
@@ -270,7 +269,7 @@ class QueryEngineRustService(BaseQueryEngineService):
                 experiment_output_dir,
                 local_experiment_dir,
                 flink_output_format,
-                prometheus_scrape_interval,
+                prometheus_scrape_interval_ms,
                 log_level,
                 profile_query_engine,
                 manual,
@@ -290,7 +289,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         experiment_output_dir: str,
         local_experiment_dir: str,
         flink_output_format: str,
-        prometheus_scrape_interval: int,
+        prometheus_scrape_interval_ms: int,
         log_level: str,
         profile_query_engine: bool,
         manual: bool,
@@ -311,7 +310,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         config = self._build_engine_config(
             output_dir=output_dir,
             flink_output_format=flink_output_format,
-            prometheus_scrape_interval=prometheus_scrape_interval,
+            prometheus_scrape_interval_ms=prometheus_scrape_interval_ms,
             log_level=log_level,
             streaming_engine=streaming_engine,
             controller_config_dir=controller_remote_output_dir,
@@ -354,7 +353,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         experiment_output_dir: str,
         local_experiment_dir: str,
         flink_output_format: str,
-        prometheus_scrape_interval: int,
+        prometheus_scrape_interval_ms: int,
         log_level: str,
         profile_query_engine: bool,
         manual: bool,
@@ -381,7 +380,7 @@ class QueryEngineRustService(BaseQueryEngineService):
         config = self._build_engine_config(
             output_dir=container_output_dir,
             flink_output_format=flink_output_format,
-            prometheus_scrape_interval=prometheus_scrape_interval,
+            prometheus_scrape_interval_ms=prometheus_scrape_interval_ms,
             log_level=log_level,
             streaming_engine=streaming_engine,
             controller_config_dir=container_controller_dir,

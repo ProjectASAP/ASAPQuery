@@ -350,7 +350,7 @@ def main(cfg: DictConfig):
 
         controller_service.start(
             controller_input_file=controller_input_config,
-            prometheus_scrape_interval=prometheus_scrape_interval,
+            prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
             streaming_engine=args.streaming_engine,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             punting=args.controller_punting,
@@ -467,7 +467,7 @@ def main(cfg: DictConfig):
                 experiment_output_dir=experiment_output_dir,
                 local_experiment_dir=local_experiment_dir,
                 flink_output_format=args.flink_output_format,
-                prometheus_scrape_interval=prometheus_scrape_interval,
+                prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
                 log_level=args.log_level,
                 profile_query_engine=args.profile_query_engine,
                 manual=args.manual_query_engine,
