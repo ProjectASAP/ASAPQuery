@@ -13,6 +13,15 @@ services:
     build:
       context: ..
       dockerfile: asap-planner-rs/Dockerfile
+    command:
+      - "--input_config=/config/controller-config.yaml"
+      - "--output_dir=/asap-planner-output"
+      - "--prometheus_scrape_interval_ms=1000"
+      - "--streaming_engine=precompute"
+      - "--range-duration-ms=300000"
+      - "--step-ms=10000"
+
+      - "-v"
 
   queryengine:
     build:
