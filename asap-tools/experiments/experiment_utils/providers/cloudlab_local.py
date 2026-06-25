@@ -154,6 +154,10 @@ class CloudLabLocalProvider(InfrastructureProvider):
 
         return processes
 
+    def is_remote(self) -> bool:
+        """Commands run locally on this node (no SSH), even though paths/usernames are CloudLab-shaped."""
+        return False
+
     def get_node_address(self, node_idx: int) -> str:
         """
         Get the network address for the local node.

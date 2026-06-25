@@ -160,7 +160,7 @@ class ArroyoService(BaseService):
             if enable_optimized_remote_write:
                 cmd += " --prometheus_remote_write_source optimized"
         cmd_dir = os.path.join(
-            constants.CLOUDLAB_HOME_DIR, "code", "asap-summary-ingest"
+            self.provider.get_home_dir(), "code", "asap-summary-ingest"
         )
 
         if avoid_long_ssh:
@@ -216,7 +216,7 @@ class ArroyoService(BaseService):
         """
         cmd = "python3 delete_pipeline.py --pipeline_id {}".format(pipeline_id)
         cmd_dir = os.path.join(
-            constants.CLOUDLAB_HOME_DIR, "code", "asap-summary-ingest"
+            self.provider.get_home_dir(), "code", "asap-summary-ingest"
         )
         self.provider.execute_command(
             node_idx=self.node_offset,
@@ -309,10 +309,15 @@ class ArroyoService(BaseService):
     def _start_bare_metal(self, experiment_output_dir: str, **kwargs) -> None:
         """Start Arroyo cluster using bare metal deployment (original implementation)."""
         arroyo_config_file_path = os.path.join(
-            constants.CLOUDLAB_HOME_DIR, "code", "asap-summary-ingest", "config.yaml"
+            self.provider.get_home_dir(), "code", "asap-summary-ingest", "config.yaml"
         )
         arroyo_bin_path = os.path.join(
-            constants.CLOUDLAB_HOME_DIR, "code", "arroyo", "target", "release", "arroyo"
+            self.provider.get_home_dir(),
+            "code",
+            "arroyo",
+            "target",
+            "release",
+            "arroyo",
         )
 
         arroyo_output_file = os.path.join(experiment_output_dir, "arroyo_cluster.out")
@@ -332,7 +337,7 @@ class ArroyoService(BaseService):
     def _start_containerized(self, experiment_output_dir: str, **kwargs) -> None:
         """Start Arroyo cluster using Docker container deployment."""
         arroyo_config_file_path = os.path.join(
-            constants.CLOUDLAB_HOME_DIR, "code", "asap-summary-ingest", "config.yaml"
+            self.provider.get_home_dir(), "code", "asap-summary-ingest", "config.yaml"
         )
         arroyo_output_file = os.path.join(experiment_output_dir, "arroyo_cluster.out")
 

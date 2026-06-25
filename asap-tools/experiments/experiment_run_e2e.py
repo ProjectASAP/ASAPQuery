@@ -59,15 +59,35 @@ def main(cfg: DictConfig):
     config.validate_config(cfg)
     # Validate experiment configuration
     config.validate_experiment_config(cfg.experiment_params)
-    # Convert config to args-like object for backward compatibility
-    args = config.Args(cfg)
 
     # Create infrastructure provider
     provider = create_provider(cfg)
 
-    local_experiment_root_dir = os.path.join(
-        constants.LOCAL_EXPERIMENT_DIR, args.experiment_name
+    # Route the remote-write IP through the provider (127.0.0.1 for local mode,
+    # CloudLab's 10.10.1.x scheme otherwise) before anything resolves
+    # cfg.streaming.remote_write.ip (Args does, below).
+    OmegaConf.register_new_resolver(
+        "remote_write_ip", provider.get_node_ip, replace=True
     )
+
+    # Convert config to args-like object for backward compatibility
+    args = config.Args(cfg)
+
+    if provider.is_remote():
+        local_experiment_root_dir = os.path.join(
+            constants.LOCAL_EXPERIMENT_DIR, args.experiment_name
+        )
+        experiment_root_output_dir = os.path.join(
+            provider.get_home_dir(), "experiment_outputs", args.experiment_name
+        )
+    else:
+        # Local mode: the "remote" and "local" roots are the same filesystem
+        # path by construction, so every rsync/scp call downstream becomes a
+        # no-op rather than something to opportunistically skip.
+        local_experiment_root_dir = os.path.join(
+            provider.get_home_dir(), "experiment_outputs", args.experiment_name
+        )
+        experiment_root_output_dir = local_experiment_root_dir
     os.makedirs(local_experiment_root_dir, exist_ok=True)
 
     # dump config to a file
@@ -77,10 +97,6 @@ def main(cfg: DictConfig):
     # Also dump args to a file for backward compatibility
     with open(os.path.join(local_experiment_root_dir, "cmdline_args.txt"), "w") as f:
         json.dump(vars(args), f)
-
-    experiment_root_output_dir = (
-        f"{constants.CLOUDLAB_HOME_DIR}/experiment_outputs/{args.experiment_name}"
-    )
 
     global CONTROLLER_REMOTE_OUTPUT_DIR, CONTROLLER_LOCAL_OUTPUT_DIR
     CONTROLLER_LOCAL_OUTPUT_DIR = os.path.join(
@@ -93,7 +109,7 @@ def main(cfg: DictConfig):
     provider.execute_command(
         node_idx=args.get_coordinator_node(),
         cmd="mkdir -p {} {}".format(
-            os.path.dirname(constants.CLOUDLAB_QUERY_LOG_FILE),
+            os.path.dirname(provider.get_query_log_file()),
             experiment_root_output_dir,
         ),
         cmd_dir="",

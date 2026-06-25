@@ -14,6 +14,9 @@ def copy_prometheus_data(
     provider: InfrastructureProvider, experiment_name: str, node_offset: int
 ):
     """Copy Prometheus data from remote to local machine."""
+    if not provider.is_remote():
+        return
+
     remote_prometheus_home_dir = os.path.join(provider.get_home_dir(), "prometheus")
     data_to_copy = [
         f"{remote_prometheus_home_dir}/data",
@@ -36,6 +39,8 @@ def rsync_experiment_data(
     node_offset: int,
 ):
     """Sync experiment data from remote to local machine."""
+    if not provider.is_remote():
+        return
     cmd = 'rsync -azh -e "ssh {}" {}@node{}.{}:{}/ {}/'.format(
         constants.SSH_OPTIONS,
         provider.username,
@@ -69,6 +74,9 @@ def rsync_prometheus_config(
         node_idx=node_offset, cmd=cmd, cmd_dir=None, nohup=False, popen=False
     )
 
+    if not provider.is_remote():
+        return
+
     hostname = f"node{node_offset}.{provider.hostname_suffix}"
     # Sync entire directory (note the trailing slash to sync contents)
     cmd = 'rsync -azh -e "ssh {}" {}/ {}@{}:{}/'.format(
@@ -88,6 +96,8 @@ def rsync_controller_client_configs(
     node_offset: int,
 ):
     """Sync controller client configurations to remote machine."""
+    if not provider.is_remote():
+        return
     hostname = f"node{node_offset}.{provider.hostname_suffix}"
     cmd = 'rsync -azh -e "ssh {}" {} {}@{}:{}/'.format(
         constants.SSH_OPTIONS,
@@ -106,6 +116,8 @@ def rsync_controller_config_remote_to_local(
     node_offset: int,
 ):
     """Sync controller configuration from remote to local machine."""
+    if not provider.is_remote():
+        return
     hostname = f"node{node_offset}.{provider.hostname_suffix}"
     cmd = 'rsync -azh -e "ssh {}" {}@{}:{}/ {}/'.format(
         constants.SSH_OPTIONS,
@@ -134,7 +146,6 @@ def rsync_dataset_file(
     Returns:
         The full remote path to the rsynced file.
     """
-    hostname = f"node{node_offset}.{provider.hostname_suffix}"
     provider.execute_command(
         node_idx=node_offset,
         cmd=f"mkdir -p {remote_dir}",
@@ -142,6 +153,11 @@ def rsync_dataset_file(
         nohup=False,
         popen=False,
     )
+    if not provider.is_remote():
+        # Same filesystem: no copy needed, the file is already at this path.
+        return local_data_file
+
+    hostname = f"node{node_offset}.{provider.hostname_suffix}"
     cmd = 'rsync -azh --progress -e "ssh {}" {} {}@{}:{}/'.format(
         constants.SSH_OPTIONS,
         local_data_file,
@@ -170,7 +186,6 @@ def rsync_streaming_configs(
         remote_dir: Absolute remote directory path (created if absent).
         node_offset: Index of the target node.
     """
-    hostname = f"node{node_offset}.{provider.hostname_suffix}"
     provider.execute_command(
         node_idx=node_offset,
         cmd=f"mkdir -p {remote_dir}",
@@ -178,6 +193,9 @@ def rsync_streaming_configs(
         nohup=False,
         popen=False,
     )
+    if not provider.is_remote():
+        return
+    hostname = f"node{node_offset}.{provider.hostname_suffix}"
     cmd = 'rsync -azh -e "ssh {}" {}/ {}@{}:{}/'.format(
         constants.SSH_OPTIONS,
         local_dir,

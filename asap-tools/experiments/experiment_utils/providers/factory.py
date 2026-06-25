@@ -9,6 +9,7 @@ from omegaconf import DictConfig
 
 from .base import InfrastructureProvider
 from .cloudlab import CloudLabProvider
+from .local import LocalProvider
 
 
 def create_provider(cfg: DictConfig) -> InfrastructureProvider:
@@ -28,8 +29,13 @@ def create_provider(cfg: DictConfig) -> InfrastructureProvider:
         ValueError: If the configuration doesn't contain required parameters
                    or specifies an unsupported provider type
     """
-    # Phase 1: Always return CloudLab provider for backward compatibility
-    # Future phases will add detection logic for other providers
+    # Local mode (e.g. `+local.home_dir=...`) takes priority and must be checked
+    # before any `cfg.cloudlab.*` access — those fields are Hydra `???` mandatory-
+    # missing markers, so merely reading them raises if not provided via CLI.
+    if hasattr(cfg, "local"):
+        if not hasattr(cfg.local, "home_dir") or not cfg.local.home_dir:
+            raise ValueError("Missing 'local.home_dir' configuration parameter")
+        return LocalProvider(home_dir=cfg.local.home_dir)
 
     # Validate that we have the required CloudLab parameters
     if not hasattr(cfg, "cloudlab"):
@@ -62,11 +68,13 @@ def detect_provider_type(cfg: DictConfig) -> str:
     Returns:
         String identifier for the provider type ('cloudlab', 'aws', 'local', etc.)
     """
-    # Phase 1: Always detect as CloudLab
+    if hasattr(cfg, "local"):
+        return "local"
+
     # Future phases will add logic to detect other provider types
     # based on configuration parameters like:
     # - cfg.infrastructure.provider
-    # - presence of aws/kubernetes/local configuration sections
+    # - presence of aws/kubernetes configuration sections
     # - environment variables
 
     if (
@@ -83,10 +91,9 @@ def detect_provider_type(cfg: DictConfig) -> str:
     #     return "aws"
     # if hasattr(cfg, "kubernetes"):
     #     return "kubernetes"
-    # if cfg.get("local", False):
-    #     return "local"
 
     raise ValueError(
         "Unable to detect infrastructure provider type from configuration. "
-        "Currently supported: CloudLab (requires cloudlab.username and cloudlab.hostname_suffix)"
+        "Currently supported: CloudLab (requires cloudlab.username and cloudlab.hostname_suffix) "
+        "or Local (requires local.home_dir)"
     )

@@ -193,15 +193,16 @@ class DockerVictoriaMetricsService(DockerServiceBase):
         )
         self.compose_file = remote_compose_file
 
-        hostname = f"node{self.node_offset}.{self.provider.hostname_suffix}"
-        rsync_cmd = 'rsync -azh -e "ssh {}" {} {}@{}:{}'.format(
-            constants.SSH_OPTIONS,
-            local_compose_file,
-            self.provider.username,
-            hostname,
-            remote_compose_file,
-        )
-        utils.run_cmd_with_retry(rsync_cmd, popen=False, ignore_errors=False)
+        if self.provider.is_remote():
+            hostname = f"node{self.node_offset}.{self.provider.hostname_suffix}"
+            rsync_cmd = 'rsync -azh -e "ssh {}" {} {}@{}:{}'.format(
+                constants.SSH_OPTIONS,
+                local_compose_file,
+                self.provider.username,
+                hostname,
+                remote_compose_file,
+            )
+            utils.run_cmd_with_retry(rsync_cmd, popen=False, ignore_errors=False)
 
         # Start containers using docker-compose
         self.provider.execute_command(
