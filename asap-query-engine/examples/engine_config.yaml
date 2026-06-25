@@ -20,8 +20,6 @@ prometheus_scrape_interval_ms: 15000
 #   precompute → requires ingest.type=http_remote_write or csv
 streaming_engine: "precompute"   # arroyo | precompute
 
-do_profiling: false
-
 # ---------------------------------------------------------------------------
 # HTTP query server
 # ---------------------------------------------------------------------------
