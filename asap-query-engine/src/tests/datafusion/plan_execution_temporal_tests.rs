@@ -51,7 +51,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -81,7 +81,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -118,7 +118,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -155,7 +155,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -193,7 +193,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -226,7 +226,7 @@ mod tests {
             vec!["host"],
             vec![],
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -251,7 +251,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(1.0)),
             )],
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -275,7 +275,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(1.0)),
             )],
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -324,7 +324,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -376,7 +376,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -415,7 +415,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(1.0)),
             )],
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -443,7 +443,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(1.0)),
             )],
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -467,7 +467,7 @@ mod tests {
             vec!["host"],
             vec![],
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -503,7 +503,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 
@@ -533,7 +533,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5,
+            5_000,
             WindowType::Tumbling,
         );
 

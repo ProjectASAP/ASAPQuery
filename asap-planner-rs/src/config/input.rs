@@ -48,15 +48,15 @@ impl ControllerConfig {
 pub struct QueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
-    pub repetition_delay: u64,
+    pub repetition_delay_ms: u64,
     #[serde(default)]
     pub controller_options: ControllerOptions,
-    /// Per-group step override (seconds). Falls back to `RuntimeOptions::step` when None.
+    /// Per-group step override (ms). Falls back to `RuntimeOptions::step_ms` when None.
     #[serde(default)]
-    pub step: Option<u64>,
-    /// Per-group range_duration override (seconds). Falls back to `RuntimeOptions::range_duration` when None.
+    pub step_ms: Option<u64>,
+    /// Per-group range_duration override (ms). Falls back to `RuntimeOptions::range_duration_ms` when None.
     #[serde(default)]
-    pub range_duration: Option<u64>,
+    pub range_duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

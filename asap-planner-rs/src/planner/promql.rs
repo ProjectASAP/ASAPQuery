@@ -71,14 +71,14 @@ pub(crate) fn parse_binary_arms(query: &str) -> Option<(BinaryArm, BinaryArm)> {
 
 pub struct SingleQueryProcessor {
     query: String,
-    t_repeat: u64,
-    prometheus_scrape_interval: u64,
+    t_repeat_ms: u64,
+    prometheus_scrape_interval_ms: u64,
     metric_schema: PromQLSchema,
     #[allow(dead_code)]
     streaming_engine: StreamingEngine,
     sketch_parameters: Option<SketchParameterOverrides>,
-    range_duration: u64,
-    step: u64,
+    range_duration_ms: u64,
+    step_ms: u64,
     cleanup_policy: CleanupPolicy,
 }
 
@@ -86,24 +86,24 @@ impl SingleQueryProcessor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         query: String,
-        t_repeat: u64,
-        prometheus_scrape_interval: u64,
+        t_repeat_ms: u64,
+        prometheus_scrape_interval_ms: u64,
         metric_schema: PromQLSchema,
         streaming_engine: StreamingEngine,
         sketch_parameters: Option<SketchParameterOverrides>,
-        range_duration: u64,
-        step: u64,
+        range_duration_ms: u64,
+        step_ms: u64,
         cleanup_policy: CleanupPolicy,
     ) -> Self {
         Self {
             query,
-            t_repeat,
-            prometheus_scrape_interval,
+            t_repeat_ms,
+            prometheus_scrape_interval_ms,
             metric_schema,
             streaming_engine,
             sketch_parameters,
-            range_duration,
-            step,
+            range_duration_ms,
+            step_ms,
             cleanup_policy,
         }
     }
@@ -158,13 +158,13 @@ impl SingleQueryProcessor {
     pub fn make_arm_processor(&self, arm_query: String) -> Self {
         SingleQueryProcessor::new(
             arm_query,
-            self.t_repeat,
-            self.prometheus_scrape_interval,
+            self.t_repeat_ms,
+            self.prometheus_scrape_interval_ms,
             self.metric_schema.clone(),
             self.streaming_engine,
             self.sketch_parameters.clone(),
-            self.range_duration,
-            self.step,
+            self.range_duration_ms,
+            self.step_ms,
             self.cleanup_policy,
         )
     }
@@ -198,14 +198,15 @@ impl SingleQueryProcessor {
                     | PromQLFunction::Increase
                     | PromQLFunction::QuantileOverTime)
             ) {
-                let num_data_points = self.t_repeat as f64 / self.prometheus_scrape_interval as f64;
+                let num_data_points =
+                    self.t_repeat_ms as f64 / self.prometheus_scrape_interval_ms as f64;
                 if num_data_points < 60.0 {
                     return false;
                 }
                 if parsed_fn == Ok(PromQLFunction::QuantileOverTime) {
                     if let Some(range_dur) = match_result.get_range_duration() {
-                        let range_secs = range_dur.num_seconds() as f64;
-                        if range_secs / self.t_repeat as f64 > 15.0 {
+                        let range_ms = range_dur.num_milliseconds() as f64;
+                        if range_ms / self.t_repeat_ms as f64 > 15.0 {
                             return false;
                         }
                     }
@@ -246,10 +247,10 @@ impl SingleQueryProcessor {
         let mut window_cfg = IntermediateWindowConfig::default();
         set_window_parameters(
             pattern_type,
-            self.t_repeat,
-            self.prometheus_scrape_interval,
+            self.t_repeat_ms,
+            self.prometheus_scrape_interval_ms,
             "any", // aggregation_type doesn't matter (sliding always false)
-            self.step,
+            self.step_ms,
             &mut window_cfg,
         );
 
@@ -286,10 +287,10 @@ impl SingleQueryProcessor {
                     self.cleanup_policy,
                     pattern_type,
                     &match_result,
-                    self.t_repeat,
+                    self.t_repeat_ms,
                     window_cfg.window_type,
-                    self.range_duration,
-                    self.step,
+                    self.range_duration_ms,
+                    self.step_ms,
                 )
                 .map_err(ControllerError::PlannerError)?,
             )

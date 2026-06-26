@@ -19,7 +19,7 @@ pub struct TestConfigBuilder {
     value_col: String,
     grouping_labels: Vec<String>,
     rollup_labels: Vec<String>,
-    scrape_interval: u64,
+    scrape_interval_ms: u64,
     query_configs: Vec<QueryConfig>,
     streaming_configs: HashMap<u64, AggregationConfig>,
 }
@@ -33,7 +33,7 @@ impl TestConfigBuilder {
             value_col: "value".to_string(),
             grouping_labels: Vec::new(),
             rollup_labels: Vec::new(),
-            scrape_interval: 1,
+            scrape_interval_ms: 1000,
             query_configs: Vec::new(),
             streaming_configs: HashMap::new(),
         }
@@ -62,9 +62,9 @@ impl TestConfigBuilder {
         self
     }
 
-    /// Set the scrape interval in seconds (default: 1)
-    pub fn with_scrape_interval(mut self, interval: u64) -> Self {
-        self.scrape_interval = interval;
+    /// Set the scrape interval in ms (default: 1000)
+    pub fn with_scrape_interval_ms(mut self, interval_ms: u64) -> Self {
+        self.scrape_interval_ms = interval_ms;
         self
     }
 
@@ -74,7 +74,7 @@ impl TestConfigBuilder {
         promql: &str,
         sql: &str,
         agg_id: u64,
-        window_seconds: u64,
+        window_size_ms: u64,
         window_type: WindowType,
     ) -> Self {
         // Add PromQL query config
@@ -97,8 +97,8 @@ impl TestConfigBuilder {
             aggregated_labels: KeyByLabelNames::empty(),
             rollup_labels: KeyByLabelNames::new(self.rollup_labels.clone()),
             original_yaml: String::new(),
-            window_size: window_seconds,
-            slide_interval: window_seconds,
+            window_size_ms,
+            slide_interval_ms: window_size_ms,
             window_type,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -134,8 +134,8 @@ impl TestConfigBuilder {
             aggregated_labels: KeyByLabelNames::empty(),
             rollup_labels: KeyByLabelNames::new(self.rollup_labels.clone()),
             original_yaml: String::new(),
-            window_size: self.scrape_interval,
-            slide_interval: self.scrape_interval,
+            window_size_ms: self.scrape_interval_ms,
+            slide_interval_ms: self.scrape_interval_ms,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -156,7 +156,7 @@ impl TestConfigBuilder {
         promql: &str,
         sql: &str,
         agg_id: u64,
-        window_seconds: u64,
+        window_size_ms: u64,
     ) -> Self {
         // Add PromQL query config
         let promql_config = QueryConfig::new(promql.to_string())
@@ -177,8 +177,8 @@ impl TestConfigBuilder {
             aggregated_labels: KeyByLabelNames::empty(),
             rollup_labels: KeyByLabelNames::new(self.rollup_labels.clone()),
             original_yaml: String::new(),
-            window_size: window_seconds,
-            slide_interval: window_seconds,
+            window_size_ms,
+            slide_interval_ms: window_size_ms,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -290,12 +290,12 @@ mod tests {
     fn test_builder_creates_valid_configs() {
         let (inference_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
-            .with_scrape_interval(1)
+            .with_scrape_interval_ms(1000)
             .add_temporal_query(
                 "sum_over_time(cpu_usage[10s])",
                 "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN NOW() AND DATEADD(s, -10, NOW()) GROUP BY L1, L2, L3, L4",
                 1,
-                10,
+                10_000,
                 WindowType::Tumbling,
             )
             .build();
@@ -316,7 +316,7 @@ mod tests {
         // Verify streaming config
         assert!(streaming_config.get_aggregation_config(1).is_some());
         let agg_config = streaming_config.get_aggregation_config(1).unwrap();
-        assert_eq!(agg_config.window_size, 10);
+        assert_eq!(agg_config.window_size_ms, 10_000);
         assert_eq!(agg_config.window_type, WindowType::Tumbling);
     }
 

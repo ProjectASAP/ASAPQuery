@@ -27,7 +27,7 @@ use query_engine_rust::precompute_engine::{
 };
 use query_engine_rust::precompute_operators::sum_accumulator::SumAccumulator;
 
-fn netflow_agg_config(metric: &str, window_secs: u64) -> AggregationConfig {
+fn netflow_agg_config(metric: &str, window_size_ms: u64) -> AggregationConfig {
     AggregationConfig::new(
         1,
         AggregationType::SingleSubpopulation,
@@ -37,7 +37,7 @@ fn netflow_agg_config(metric: &str, window_secs: u64) -> AggregationConfig {
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         String::new(),
-        window_secs,
+        window_size_ms,
         0,
         WindowType::Tumbling,
         metric.to_string(),
@@ -97,7 +97,7 @@ async fn netflow_single_second_batch_is_not_lost_on_shutdown() {
     // --- Wire up the real engine: 1s tumbling Sum over `bytes`.
     let metric = "netflow_bytes";
     let mut agg_map = HashMap::new();
-    agg_map.insert(1u64, netflow_agg_config(metric, 1));
+    agg_map.insert(1u64, netflow_agg_config(metric, 1_000));
     let streaming_config = Arc::new(StreamingConfig::new(agg_map));
 
     let json_cfg = JsonFileIngestConfig {

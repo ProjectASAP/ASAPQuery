@@ -149,8 +149,8 @@ fn make_kll_streaming_config() -> Arc<StreamingConfig> {
         rollup,
         aggregated,
         String::new(),
-        10, // window size = 10s (matching quickstart range-duration/step)
-        10, // tumbling
+        10_000, // window size = 10s (matching quickstart range-duration/step)
+        10_000, // tumbling
         WindowType::Tumbling,
         "sensor_reading".to_string(),
         "sensor_reading".to_string(),

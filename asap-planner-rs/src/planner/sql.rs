@@ -218,13 +218,17 @@ fn compute_sql_window(
     data_ingestion_interval: u64,
     t_repeat: u64,
 ) -> IntermediateWindowConfig {
-    let window_size = match query_type {
-        QueryType::Spatial => data_ingestion_interval,
-        _ => t_repeat,
+    // data_ingestion_interval and t_repeat are seconds (SQL mode is out of scope for the
+    // ms-precision rename, see issue #427) — IntermediateWindowConfig is now ms-typed
+    // throughout, so convert at this boundary, same as the pre-existing pattern in
+    // asap-query-engine/src/engines/simple_engine/sql.rs.
+    let window_size_ms = match query_type {
+        QueryType::Spatial => data_ingestion_interval * 1000,
+        _ => t_repeat * 1000,
     };
     IntermediateWindowConfig {
-        window_size,
-        slide_interval: window_size,
+        window_size_ms,
+        slide_interval_ms: window_size_ms,
         window_type: WindowType::Tumbling,
     }
 }

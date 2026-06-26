@@ -607,9 +607,11 @@ def get_sql_query(
 ) -> Tuple[str, str, dict]:
 
     window_type = streaming_aggregation_config.windowType
-    window_size = "{} seconds".format(streaming_aggregation_config.windowSize)
+    window_size = "{} milliseconds".format(streaming_aggregation_config.windowSizeMs)
     window_interval = window_size
-    slide_interval = "{} seconds".format(streaming_aggregation_config.slideInterval)
+    slide_interval = "{} milliseconds".format(
+        streaming_aggregation_config.slideIntervalMs
+    )
 
     logger.info(
         f"Preparing SQL query for aggregation {streaming_aggregation_config.aggregationId}: "

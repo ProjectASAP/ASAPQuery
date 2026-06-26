@@ -18,7 +18,7 @@ use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 /// which isn't wired up yet — a single placeholder value is applied uniformly.
 pub fn greedy_assign(
     aqes: Vec<AQE>,
-    scrape_interval_secs: u64,
+    scrape_interval_ms: u64,
     arrival_rate_hz: f64,
     costs: &AtomicCosts,
     weights: &CostWeights,
@@ -30,7 +30,7 @@ pub fn greedy_assign(
     let mut next_id: u64 = 1;
 
     for aqe in aqes {
-        let candidates = enumerate_candidates(&aqe, scrape_interval_secs);
+        let candidates = enumerate_candidates(&aqe, scrape_interval_ms);
 
         let best = candidates
             .into_iter()
@@ -106,20 +106,20 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: freq_hz,
-            min_t_repeat_secs: min_t,
-            t_repeat_gcd_secs: min_t,
+            min_t_repeat_ms: min_t,
+            t_repeat_gcd_ms: min_t,
         }
     }
 
     #[test]
     fn assigns_unique_ids_to_each_deployed_config() {
         let aqes = vec![
-            make_aqe(Statistic::Min, Some(300_000), 300, 1.0 / 60.0),
-            make_aqe(Statistic::Max, Some(300_000), 300, 1.0 / 60.0),
+            make_aqe(Statistic::Min, Some(300_000), 300_000, 1.0 / 60.0),
+            make_aqe(Statistic::Max, Some(300_000), 300_000, 1.0 / 60.0),
         ];
         let solution = greedy_assign(
             aqes,
-            60,
+            60_000,
             1.0,
             &AtomicCosts::default(),
             &CostWeights::default(),
@@ -148,12 +148,12 @@ mod tests {
             },
             query_strings: vec!["avg_query".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_secs: 60,
-            t_repeat_gcd_secs: 60,
+            min_t_repeat_ms: 60_000,
+            t_repeat_gcd_ms: 60_000,
         };
         let solution = greedy_assign(
             vec![aqe],
-            60,
+            60_000,
             1.0,
             &AtomicCosts::default(),
             &CostWeights::default(),

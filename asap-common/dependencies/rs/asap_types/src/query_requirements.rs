@@ -64,9 +64,11 @@ pub fn build_query_requirements_promql(
 
     let data_range_ms = match pattern_type {
         QueryPatternType::OnlySpatial => None,
+        // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
+        // so .num_seconds() would truncate sub-second ranges to 0.
         _ => match_result
             .get_range_duration()
-            .map(|d| d.num_seconds() as u64 * 1000),
+            .map(|d| d.num_milliseconds() as u64),
     };
 
     let all_labels = metric_schema

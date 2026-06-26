@@ -117,7 +117,7 @@ async fn main() -> Result<()> {
         store.clone(),
         inference_config,
         streaming_config.clone(),
-        config.prometheus_scrape_interval,
+        config.prometheus_scrape_interval_ms,
         query_language,
     ));
 
@@ -395,14 +395,14 @@ async fn main() -> Result<()> {
 
         let tracker_config = QueryTrackerConfig {
             observation_window_secs: config.query_tracker.observation_window_secs,
-            prometheus_scrape_interval: config.prometheus_scrape_interval,
+            prometheus_scrape_interval_ms: config.prometheus_scrape_interval_ms,
         };
         let runtime_options = asap_planner::RuntimeOptions {
-            prometheus_scrape_interval: config.prometheus_scrape_interval,
+            prometheus_scrape_interval_ms: config.prometheus_scrape_interval_ms,
             streaming_engine: asap_planner::StreamingEngine::Precompute,
             enable_punting: false,
-            range_duration: 300,
-            step: config.prometheus_scrape_interval,
+            range_duration_ms: 300_000,
+            step_ms: config.prometheus_scrape_interval_ms,
         };
         let prometheus_url = match &config.backend {
             BackendConfig::Prometheus { server, .. } => server.clone(),

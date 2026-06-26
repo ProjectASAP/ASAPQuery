@@ -80,21 +80,21 @@ mod tests {
 
     #[test]
     fn test_temporal_sum_equivalence() {
-        let scrape_interval = 1;
+        let scrape_interval_ms = 1000;
         let promql_query = "sum_over_time(cpu_usage[10s])";
         let sql_query = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
         let grouping_labels = vec!["L1", "L2", "L3", "L4"];
-        let window_seconds = 10;
+        let window_size_ms = 10_000;
 
         // Setup test configuration
         let (promql_config, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(grouping_labels)
-            .with_scrape_interval(scrape_interval)
+            .with_scrape_interval_ms(scrape_interval_ms)
             .add_temporal_query(
                 promql_query,
                 sql_query,
                 1,
-                window_seconds,
+                window_size_ms,
                 WindowType::Tumbling,
             )
             .build_both();
@@ -105,7 +105,7 @@ mod tests {
             // None,
             promql_config,
             streaming_config.clone(),
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::promql,
         );
 
@@ -114,7 +114,7 @@ mod tests {
             // None,
             sql_config,
             streaming_config,
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::sql,
         );
 
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn test_spatial_sum_equivalence() {
-        let scrape_interval = 1;
+        let scrape_interval_ms = 1000;
         let promql_query = "sum(cpu_usage) by (L1, L2)";
         let sql_query = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2";
         let grouping_labels = vec!["L1", "L2"];
@@ -145,7 +145,7 @@ mod tests {
         let (promql_config, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(grouping_labels)
             .with_rollup_labels(rollup_labels)
-            .with_scrape_interval(scrape_interval)
+            .with_scrape_interval_ms(scrape_interval_ms)
             .add_spatial_query(promql_query, sql_query, 2)
             .build_both();
 
@@ -155,7 +155,7 @@ mod tests {
             // None,
             promql_config,
             streaming_config.clone(),
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::promql,
         );
 
@@ -164,7 +164,7 @@ mod tests {
             // None,
             sql_config,
             streaming_config,
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::sql,
         );
 
@@ -188,20 +188,20 @@ mod tests {
     /// Bug: start = end - (150 * 15 * 1000) = end - 2_250_000ms (15× too wide).
     #[test]
     fn test_bug_sql_start_timestamp_multiplied_by_scrape_interval() {
-        let scrape_interval = 15u64;
-        let window_seconds = 150u64;
+        let scrape_interval_ms = 15_000u64;
+        let window_size_ms = 150_000u64;
         let sql_query = "SELECT SUM(value) FROM cpu_usage \
              WHERE time BETWEEN DATEADD(s, -150, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
              GROUP BY L1, L2, L3, L4";
 
         let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
-            .with_scrape_interval(scrape_interval) // USED: propagated to SimpleEngine::prometheus_scrape_interval
+            .with_scrape_interval_ms(scrape_interval_ms) // USED: propagated to SimpleEngine::prometheus_scrape_interval_ms
             .add_temporal_query(
                 "sum_over_time(cpu_usage[150s])", // NOT USED: TestConfigBuilder requires a PromQL string; timestamp calculation is SQL-only
                 sql_query,                        // USED: parsed to extract the 150s duration
                 1, // NOT USED: agg_id just satisfies the builder; calculate_start_timestamp_sql never consults it
-                window_seconds, // NOT USED: stored in AggregationConfig, not read by timestamp calculation
+                window_size_ms, // NOT USED: stored in AggregationConfig, not read by timestamp calculation
                 WindowType::Tumbling, // NOT USED: same as above
             )
             .build_both();
@@ -210,7 +210,7 @@ mod tests {
             Arc::new(NoOpStore),
             sql_config,
             streaming_config,
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::sql,
         );
 
@@ -222,7 +222,7 @@ mod tests {
         let start_ms = sql_context.store_plan.values_query.start_timestamp;
         let end_ms = sql_context.store_plan.values_query.end_timestamp;
         let actual_window_ms = end_ms - start_ms;
-        let expected_window_ms = window_seconds * 1000;
+        let expected_window_ms = window_size_ms; // already ms — this field is ms-typed end to end now
 
         assert_eq!(
             actual_window_ms, expected_window_ms,
@@ -239,7 +239,7 @@ mod tests {
     /// query forms answer the identical question.
     #[test]
     fn test_half_open_equivalent_to_between() {
-        let scrape_interval = 1;
+        let scrape_interval_ms = 1000;
         let promql_query = "sum_over_time(cpu_usage[10s])";
         let between_query = "SELECT SUM(value) FROM cpu_usage \
              WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
@@ -252,15 +252,15 @@ mod tests {
         // half-open incoming query resolves against it (duration-based match).
         let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
-            .with_scrape_interval(scrape_interval)
-            .add_temporal_query(promql_query, between_query, 1, 10, WindowType::Tumbling)
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_temporal_query(promql_query, between_query, 1, 10_000, WindowType::Tumbling)
             .build_both();
 
         let sql_engine = SimpleEngine::new(
             Arc::new(NoOpStore),
             sql_config,
             streaming_config,
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::sql,
         );
 
@@ -285,7 +285,7 @@ mod tests {
     /// half-open window that wouldn't match the ClickHouse baseline).
     #[test]
     fn test_gt_lte_combination_not_matched() {
-        let scrape_interval = 1;
+        let scrape_interval_ms = 1000;
         let promql_query = "sum_over_time(cpu_usage[10s])";
         let between_query = "SELECT SUM(value) FROM cpu_usage \
              WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
@@ -296,15 +296,15 @@ mod tests {
 
         let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
-            .with_scrape_interval(scrape_interval)
-            .add_temporal_query(promql_query, between_query, 1, 10, WindowType::Tumbling)
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_temporal_query(promql_query, between_query, 1, 10_000, WindowType::Tumbling)
             .build_both();
 
         let sql_engine = SimpleEngine::new(
             Arc::new(NoOpStore),
             sql_config,
             streaming_config,
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::sql,
         );
 
@@ -318,21 +318,21 @@ mod tests {
 
     #[test]
     fn test_spatial_of_temporal_sum_equivalence() {
-        let scrape_interval = 1;
+        let scrape_interval_ms = 1000;
         let promql_query = "sum(sum_over_time(cpu_usage[10s])) by (L1)";
         let sql_query = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1";
         // let all_labels = vec!["L1", "L2", "L3", "L4"];
         let grouping_labels = vec!["L1"];
         let rollup_labels = vec!["L2", "L3", "L4"];
-        let window_seconds = 10;
+        let window_size_ms = 10_000;
 
         // Setup test configuration
         // Using SUM of SUM which is collapsable (spatial="sum", temporal="sum_over_time")
         let (promql_config, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(grouping_labels)
             .with_rollup_labels(rollup_labels)
-            .with_scrape_interval(scrape_interval)
-            .add_spatial_of_temporal_query(promql_query, sql_query, 3, window_seconds)
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_spatial_of_temporal_query(promql_query, sql_query, 3, window_size_ms)
             .build_both();
 
         // Create engines
@@ -341,7 +341,7 @@ mod tests {
             // None,
             promql_config,
             streaming_config.clone(),
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::promql,
         );
 
@@ -350,7 +350,7 @@ mod tests {
             // None,
             sql_config,
             streaming_config,
-            scrape_interval,
+            scrape_interval_ms,
             QueryLanguage::sql,
         );
 
@@ -370,6 +370,52 @@ mod tests {
             &promql_context,
             &sql_context,
             "spatial_of_temporal_sum",
+        );
+    }
+
+    // --- Sub-second range vector (issue #398) ---
+    // This is the actual capability the issue asks for: a `[500ms]` PromQL range
+    // vector must produce a 500ms execution window, not round to 0 under the old
+    // whole-seconds representation. This test would have failed before the
+    // ms-precision rename (the engine's `.num_seconds()` truncation bug) and
+    // must pass after it.
+    #[test]
+    fn sub_second_range_vector_produces_sub_second_window() {
+        let scrape_interval_ms = 100;
+        let promql_query = "sum_over_time(cpu_usage[500ms])";
+        let window_size_ms = 500;
+
+        let (promql_config, _, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1"])
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_temporal_query(
+                promql_query,
+                promql_query,
+                1,
+                window_size_ms,
+                WindowType::Tumbling,
+            )
+            .build_both();
+
+        let promql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            promql_config,
+            streaming_config,
+            scrape_interval_ms,
+            QueryLanguage::promql,
+        );
+
+        let query_time_sec: f64 = 1000.0;
+        let context = promql_engine
+            .build_query_execution_context_promql(promql_query.to_string(), query_time_sec)
+            .expect("Failed to build PromQL context for sub-second range vector");
+
+        let start_ms = context.store_plan.values_query.start_timestamp;
+        let end_ms = context.store_plan.values_query.end_timestamp;
+        assert_eq!(
+            end_ms - start_ms,
+            500,
+            "[500ms] range vector must produce a 500ms window, got [{start_ms}, {end_ms})"
         );
     }
 }

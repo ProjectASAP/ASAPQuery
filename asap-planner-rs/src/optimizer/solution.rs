@@ -21,18 +21,18 @@ pub struct AQE {
     /// hitting the sketch.
     pub query_frequency_hz: f64,
 
-    /// Minimum repeat interval across all RQEs that reference this AQE (secs).
+    /// Minimum repeat interval across all RQEs that reference this AQE (ms).
     /// Determines the freshness constraint on the window size: W ≤ min_t_repeat
     /// ensures a completed window is available for every dashboard's cycle.
     /// When multiple RQEs share this AQE, the fastest dashboard is the binding
     /// constraint.
-    pub min_t_repeat_secs: u64,
+    pub min_t_repeat_ms: u64,
 
-    /// GCD of all repeat intervals across RQEs that reference this AQE (secs).
+    /// GCD of all repeat intervals across RQEs that reference this AQE (ms).
     /// The natural candidate for the slide interval S: windows that complete
-    /// every GCD seconds align harmonically with all dashboard refresh cycles,
+    /// every GCD ms align harmonically with all dashboard refresh cycles,
     /// ensuring every dashboard can always be served a fresh result on-cycle.
-    pub t_repeat_gcd_secs: u64,
+    pub t_repeat_gcd_ms: u64,
 }
 
 /// How an AQE is answered from its assigned streaming config.

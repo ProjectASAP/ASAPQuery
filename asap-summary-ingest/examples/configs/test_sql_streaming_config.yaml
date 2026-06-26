@@ -21,7 +21,7 @@ aggregations:
         - hostname
     parameters:
       K: 20
-    slideInterval: 1
+    slideIntervalMs: 1000
     spatialFilter: ''
-    windowSize: 1
+    windowSizeMs: 1000
     windowType: tumbling

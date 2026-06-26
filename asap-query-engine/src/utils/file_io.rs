@@ -62,7 +62,7 @@ aggregations:
   parameters:
     K: 200
   spatialFilter: ''
-  windowSize: 10
+  windowSizeMs: 10000
 metrics:
   fake_metric_total:
   - instance

@@ -7,7 +7,7 @@ use asap_types::streaming_config::StreamingConfig;
 use crate::generator::{
     GeneratorOutput, PuntedQuery, KEY_AGGREGATIONS, KEY_AGG_SUB_TYPE, KEY_AGG_TYPE, KEY_LABELS,
     KEY_NUM_AGG_TO_RETAIN, KEY_PARAMETERS, KEY_QUERIES, KEY_QUERY, KEY_READ_COUNT_THRESHOLD,
-    KEY_TABLE_NAME, KEY_VALUE_COLUMN, KEY_WINDOW_SIZE,
+    KEY_TABLE_NAME, KEY_VALUE_COLUMN, KEY_WINDOW_SIZE_MS,
 };
 
 /// Output of the planning process — contains the two YAML configs
@@ -83,7 +83,7 @@ impl PlannerOutput {
             .map(|aggs| {
                 aggs.iter().all(|agg| {
                     if let YamlValue::Mapping(m) = agg {
-                        if let Some(val) = m.get(KEY_WINDOW_SIZE) {
+                        if let Some(val) = m.get(KEY_WINDOW_SIZE_MS) {
                             let size = match val {
                                 YamlValue::Number(n) => n.as_u64().unwrap_or(0),
                                 _ => 0,

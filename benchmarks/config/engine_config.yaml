@@ -1,8 +1,7 @@
 output_dir: "/app/outputs"
 log_level: "INFO"
-prometheus_scrape_interval: 1
+prometheus_scrape_interval_ms: 1000
 streaming_engine: "precompute"
-do_profiling: false
 
 http_server:
   port: 8088

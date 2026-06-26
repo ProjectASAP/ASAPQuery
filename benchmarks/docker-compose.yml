@@ -12,6 +12,16 @@
 services:
   asap-planner-rs:
     image: ghcr.io/projectasap/asap-planner-rs:${ASAP_IMAGE_TAG}
+    command:
+      - "--input_config=/config/controller-config.yaml"
+      - "--output_dir=/asap-planner-output"
+      - "--prometheus_scrape_interval_ms=1000"
+      - "--streaming_engine=precompute"
+      - "--range-duration-ms=300000"
+      - "--step-ms=10000"
+      - "-v"
+    volumes:
+      - ../benchmarks/config/controller-config.yaml:/config/controller-config.yaml:ro
 
   queryengine:
     image: ghcr.io/projectasap/asap-query-engine:${ASAP_IMAGE_TAG}

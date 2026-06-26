@@ -33,7 +33,7 @@ use std::sync::Arc;
 const INGEST_PORT: u16 = 19090;
 const QUERY_PORT: u16 = 18080;
 const RAW_INGEST_PORT: u16 = 19091;
-const SCRAPE_INTERVAL: u64 = 1; // 1 second to match tumblingWindowSize
+const SCRAPE_INTERVAL_MS: u64 = 1000; // 1s to match windowSizeMs in examples/promql/streaming_config.yaml
 
 fn build_remote_write_body(timeseries: Vec<TimeSeries>) -> Vec<u8> {
     let write_req = WriteRequest { timeseries };
@@ -122,7 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         store.clone(),
         inference_config,
         streaming_config.clone(),
-        SCRAPE_INTERVAL,
+        SCRAPE_INTERVAL_MS,
         QueryLanguage::promql,
     ));
     let http_config = HttpServerConfig {
@@ -601,10 +601,10 @@ struct BenchRunConfig {
 /// Build an AggregationConfig for Sum with specified window parameters.
 fn make_sum_agg_config(
     agg_id: u64,
-    window_size_secs: u64,
-    slide_interval_secs: u64,
+    window_size_ms: u64,
+    slide_interval_ms: u64,
 ) -> AggregationConfig {
-    let window_type = if slide_interval_secs == 0 || slide_interval_secs == window_size_secs {
+    let window_type = if slide_interval_ms == 0 || slide_interval_ms == window_size_ms {
         WindowType::Tumbling
     } else {
         WindowType::Sliding
@@ -618,8 +618,8 @@ fn make_sum_agg_config(
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         String::new(),
-        window_size_secs,
-        slide_interval_secs,
+        window_size_ms,
+        slide_interval_ms,
         window_type,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
@@ -779,10 +779,10 @@ async fn run_windowed_benchmarks(
     let num_series = 50u64;
 
     let configs: Vec<(&str, u16, u64, u64)> = vec![
-        // (label, port, window_size_secs, slide_interval_secs)
-        ("Tumbling 10s Sum", 19100, 10, 0),
-        ("Sliding 30s/10s Sum", 19101, 30, 10),
-        ("Sliding 60s/10s Sum (W=6)", 19102, 60, 10),
+        // (label, port, window_size_ms, slide_interval_ms)
+        ("Tumbling 10s Sum", 19100, 10_000, 0),
+        ("Sliding 30s/10s Sum", 19101, 30_000, 10_000),
+        ("Sliding 60s/10s Sum (W=6)", 19102, 60_000, 10_000),
     ];
 
     println!("\n=== Windowed aggregation benchmarks ({num_requests} req × {samples_per_request} samples, {num_series} series) ===");
@@ -833,7 +833,7 @@ async fn run_scalability_benchmark(
         let port = base_port + i as u16;
         let label = format!("{num_workers}");
 
-        let agg_config = make_sum_agg_config(200 + i as u64, 30, 10);
+        let agg_config = make_sum_agg_config(200 + i as u64, 30_000, 10_000);
         let mut agg_map = HashMap::new();
         agg_map.insert(200 + i as u64, agg_config);
         let sc = Arc::new(StreamingConfig::new(agg_map));

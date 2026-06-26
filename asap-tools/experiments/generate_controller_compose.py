@@ -16,7 +16,7 @@ def generate_compose_file(
     container_name: str,
     input_config_path: str,
     output_dir: str,
-    prometheus_scrape_interval: int,
+    prometheus_scrape_interval_ms: int,
     streaming_engine: str,
     punting: bool,
     prometheus_url: str,
@@ -42,7 +42,7 @@ def generate_compose_file(
         "container_name": container_name,
         "input_config_path": input_config_path,
         "output_dir": output_dir,
-        "prometheus_scrape_interval": prometheus_scrape_interval,
+        "prometheus_scrape_interval_ms": prometheus_scrape_interval_ms,
         "streaming_engine": streaming_engine,
         "punting": punting,
         "prometheus_url": prometheus_url,
@@ -108,10 +108,10 @@ def main():
         help="Output directory for generated configs",
     )
     parser.add_argument(
-        "--prometheus-scrape-interval",
+        "--prometheus-scrape-interval-ms",
         type=int,
         required=True,
-        help="Prometheus scrape interval in seconds",
+        help="Prometheus scrape interval in milliseconds",
     )
     parser.add_argument(
         "--streaming-engine",
@@ -156,7 +156,7 @@ def main():
         container_name=args.container_name,
         input_config_path=args.input_config_path,
         output_dir=args.controller_output_dir,
-        prometheus_scrape_interval=args.prometheus_scrape_interval,
+        prometheus_scrape_interval_ms=args.prometheus_scrape_interval_ms,
         streaming_engine=args.streaming_engine,
         punting=args.punting,
         prometheus_url=args.prometheus_url,

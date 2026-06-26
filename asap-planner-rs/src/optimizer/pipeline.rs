@@ -63,13 +63,13 @@ pub fn run_all_exact_pipeline(
 pub fn run_greedy_pipeline(
     config: &ControllerConfig,
     schema: &PromQLSchema,
-    scrape_interval_secs: u64,
+    scrape_interval_ms: u64,
     arrival_rate_hz: f64,
 ) -> (StreamingConfig, InferenceConfig) {
     run_pipeline(config, schema, "greedy", |aqes| {
         greedy_assign(
             aqes,
-            scrape_interval_secs,
+            scrape_interval_ms,
             arrival_rate_hz,
             &AtomicCosts::default(),
             &CostWeights::default(),
@@ -86,7 +86,7 @@ fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
         .flat_map(|qg| {
             qg.queries.iter().map(|q| RQE {
                 query_string: q.clone(),
-                t_repeat_secs: qg.repetition_delay,
+                t_repeat_ms: qg.repetition_delay_ms,
             })
         })
         .collect()
@@ -104,10 +104,10 @@ mod tests {
             .map(|(q, t)| QueryGroup {
                 id: None,
                 queries: vec![q.to_string()],
-                repetition_delay: *t,
+                repetition_delay_ms: *t,
                 controller_options: Default::default(),
-                step: None,
-                range_duration: None,
+                step_ms: None,
+                range_duration_ms: None,
             })
             .collect();
 
@@ -123,7 +123,10 @@ mod tests {
 
     #[test]
     fn all_exact_pipeline_produces_empty_streaming_config() {
-        let config = make_config(&[("sum_over_time(metric[5m])", 60), ("sum(other_metric)", 30)]);
+        let config = make_config(&[
+            ("sum_over_time(metric[5m])", 60_000),
+            ("sum(other_metric)", 30_000),
+        ]);
         let schema = PromQLSchema::new();
         let (streaming, _inference) = run_all_exact_pipeline(&config, &schema);
         // All-EXACT: no streaming configs deployed.
@@ -132,19 +135,22 @@ mod tests {
 
     #[test]
     fn greedy_pipeline_deploys_a_config_for_a_mergeable_aqe() {
-        let config = make_config(&[("min_over_time(metric[5m])", 60)]);
+        let config = make_config(&[("min_over_time(metric[5m])", 60_000)]);
         let schema = PromQLSchema::new();
-        let (streaming, inference) = run_greedy_pipeline(&config, &schema, 60, 1.0);
+        let (streaming, inference) = run_greedy_pipeline(&config, &schema, 60_000, 1.0);
         assert!(!streaming.get_all_aggregation_configs().is_empty());
         assert!(!inference.query_configs.is_empty());
     }
 
     #[test]
     fn config_to_rqes_flattens_groups() {
-        let config = make_config(&[("sum_over_time(a[5m])", 60), ("sum_over_time(b[5m])", 30)]);
+        let config = make_config(&[
+            ("sum_over_time(a[5m])", 60_000),
+            ("sum_over_time(b[5m])", 30_000),
+        ]);
         let rqes = config_to_rqes(&config);
         assert_eq!(rqes.len(), 2);
-        assert_eq!(rqes[0].t_repeat_secs, 60);
-        assert_eq!(rqes[1].t_repeat_secs, 30);
+        assert_eq!(rqes[0].t_repeat_ms, 60_000);
+        assert_eq!(rqes[1].t_repeat_ms, 30_000);
     }
 }

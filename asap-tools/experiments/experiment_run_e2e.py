@@ -372,7 +372,7 @@ def main(cfg: DictConfig):
                     url=prometheus_url,
                     database=None,
                 ),
-                prometheus_scrape_interval=prometheus_scrape_interval,
+                prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
             )
             sync.rsync_controller_config_remote_to_local(
                 provider,
@@ -516,7 +516,7 @@ def main(cfg: DictConfig):
                     experiment_output_dir=experiment_output_dir,
                     local_experiment_dir=local_experiment_dir,
                     flink_output_format=args.flink_output_format,
-                    prometheus_scrape_interval=prometheus_scrape_interval,
+                    prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
                     log_level=args.log_level,
                     profile_query_engine=args.profile_query_engine,
                     manual=args.manual_query_engine,

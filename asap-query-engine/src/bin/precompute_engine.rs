@@ -144,7 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             store.clone(),
             inference_config,
             streaming_config.clone(),
-            15, // default prometheus scrape interval
+            15_000, // default prometheus scrape interval (ms)
             QueryLanguage::promql,
         ));
         let http_config = HttpServerConfig {

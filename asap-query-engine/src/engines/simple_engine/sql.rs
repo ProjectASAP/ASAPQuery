@@ -197,9 +197,7 @@ impl SimpleEngine {
                     .get_duration() as u64;
                 end_timestamp - (duration_secs * 1000)
             }
-            QueryPatternType::OnlySpatial => {
-                end_timestamp - (self.prometheus_scrape_interval * 1000)
-            }
+            QueryPatternType::OnlySpatial => end_timestamp - self.prometheus_scrape_interval_ms,
         }
     }
 
@@ -400,7 +398,10 @@ impl SimpleEngine {
             }
         };
 
-        let matcher = SQLPatternMatcher::new(schema, self.prometheus_scrape_interval as f64);
+        // SQLPatternMatcher (sql_utilities, out of scope for the ms rename) divides a
+        // seconds-denominated SQL query duration by this value — convert back to seconds.
+        let matcher =
+            SQLPatternMatcher::new(schema, self.prometheus_scrape_interval_ms as f64 / 1000.0);
         let match_result = matcher.query_info_to_pattern(&query_data);
 
         debug!("Match result: {:?}", match_result);
@@ -1239,8 +1240,8 @@ mod topk_pipeline_tests {
             aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
             rollup_labels: KeyByLabelNames::empty(),
             original_yaml: String::new(),
-            window_size: 1,
-            slide_interval: 1,
+            window_size_ms: 1000,
+            slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -1266,7 +1267,7 @@ mod topk_pipeline_tests {
             store.clone(),
             inference_config,
             streaming_config,
-            1, // 1s scrape interval ⇒ the 1s window classifies as OnlySpatial
+            1000, // 1s scrape interval ⇒ the 1s window classifies as OnlySpatial
             QueryLanguage::sql,
         );
         (engine, store)
@@ -1329,8 +1330,8 @@ mod topk_pipeline_tests {
             aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
             rollup_labels: KeyByLabelNames::empty(),
             original_yaml: String::new(),
-            window_size: 1,
-            slide_interval: 1,
+            window_size_ms: 1000,
+            slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -1354,7 +1355,7 @@ mod topk_pipeline_tests {
             store,
             inference_config,
             streaming_config,
-            1,
+            1000,
             QueryLanguage::sql,
         )
     }
@@ -1391,8 +1392,8 @@ mod topk_pipeline_tests {
             aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
             rollup_labels: KeyByLabelNames::empty(),
             original_yaml: String::new(),
-            window_size: 1,
-            slide_interval: 1,
+            window_size_ms: 1000,
+            slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -1414,8 +1415,8 @@ mod topk_pipeline_tests {
             aggregated_labels: KeyByLabelNames::empty(),
             rollup_labels: KeyByLabelNames::empty(),
             original_yaml: String::new(),
-            window_size: 1,
-            slide_interval: 1,
+            window_size_ms: 1000,
+            slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
@@ -1452,7 +1453,7 @@ mod topk_pipeline_tests {
             store,
             inference_config,
             streaming_config,
-            1,
+            1000,
             QueryLanguage::sql,
         )
     }

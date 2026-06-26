@@ -12,15 +12,13 @@
 output_dir: "./output"
 log_level: "INFO"                # DEBUG | INFO | WARN | ERROR (also respects RUST_LOG)
 
-# Prometheus scrape interval in seconds. Used by the query tracker and planner.
-prometheus_scrape_interval: 15
+# Prometheus scrape interval in milliseconds. Used by the query tracker and planner.
+prometheus_scrape_interval_ms: 15000
 
 # Processing backend. Must be consistent with the ingest source chosen below:
 #   arroyo     → requires ingest.type=kafka
 #   precompute → requires ingest.type=http_remote_write or csv
 streaming_engine: "precompute"   # arroyo | precompute
-
-do_profiling: false
 
 # ---------------------------------------------------------------------------
 # HTTP query server

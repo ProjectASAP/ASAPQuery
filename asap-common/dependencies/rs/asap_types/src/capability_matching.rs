@@ -70,7 +70,7 @@ pub fn window_compatible(config: &AggregationConfig, data_range_ms: Option<u64>)
     let Some(range) = data_range_ms else {
         return true;
     };
-    let window_ms = config.window_size * 1000;
+    let window_ms = config.window_size_ms;
     if window_ms == 0 || range == 0 {
         return false;
     }
@@ -134,10 +134,10 @@ pub fn topk_weighting_compatible(
     }
 }
 
-/// Aggregation priority comparator: prefer larger `window_size` (descending).
+/// Aggregation priority comparator: prefer larger `window_size_ms` (descending).
 /// This is a separate function so callers can swap the policy without touching matching logic.
 pub fn aggregation_priority(a: &AggregationConfig, b: &AggregationConfig) -> Ordering {
-    b.window_size.cmp(&a.window_size)
+    b.window_size_ms.cmp(&a.window_size_ms)
 }
 
 // ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ pub fn aggregation_priority(a: &AggregationConfig, b: &AggregationConfig) -> Ord
 /// Algorithm:
 /// 1. For each statistic, collect and sort compatible candidates.
 /// 2. For multi-statistic requirements (e.g. avg = [Sum, Count]), all must be
-///    served by configs sharing the same `window_size` and `grouping_labels`.
+///    served by configs sharing the same `window_size_ms` and `grouping_labels`.
 /// 3. If the selected value aggregation type is multi-population, also find a
 ///    paired key aggregation (`SetAggregator` / `DeltaSetAggregator`) on the same metric.
 pub fn find_compatible_aggregation(
@@ -197,7 +197,7 @@ pub fn find_compatible_aggregation(
                         agg_id = c.aggregation_id,
                         agg_type = %c.aggregation_type,
                         metric = %c.metric,
-                        window_size_s = c.window_size,
+                        window_size_ms = c.window_size_ms,
                         "capability matching: rejected config for {:?}",
                         stat,
                     );
@@ -222,7 +222,7 @@ pub fn find_compatible_aggregation(
             num_candidates = candidates.len(),
             chosen_agg_id = candidates[0].aggregation_id,
             chosen_agg_type = %candidates[0].aggregation_type,
-            chosen_window_size_s = candidates[0].window_size,
+            chosen_window_size_ms = candidates[0].window_size_ms,
             "capability matching: found candidates, chose best",
         );
 
@@ -233,16 +233,17 @@ pub fn find_compatible_aggregation(
     let value_agg = per_stat_candidates[0][0];
 
     // For multi-statistic requirements, the remaining statistics must be served by a
-    // config that agrees on window_size and grouping_labels with the chosen value agg.
+    // config that agrees on window_size_ms and grouping_labels with the chosen value agg.
     for (i, candidates) in per_stat_candidates.iter().enumerate().skip(1) {
         let found = candidates.iter().any(|c| {
-            c.window_size == value_agg.window_size && c.grouping_labels == value_agg.grouping_labels
+            c.window_size_ms == value_agg.window_size_ms
+                && c.grouping_labels == value_agg.grouping_labels
         });
         if !found {
             warn!(
                 metric = %requirements.metric,
                 statistic = ?requirements.statistics[i],
-                required_window_size_s = value_agg.window_size,
+                required_window_size_ms = value_agg.window_size_ms,
                 "capability matching: no matching window/labels for multi-statistic requirement",
             );
             return None;
@@ -305,7 +306,7 @@ mod tests {
         metric: &str,
         agg_type: &str,
         sub_type: &str,
-        window_size_s: u64,
+        window_size_ms: u64,
         window_type: &str,
         grouping: &[&str],
         spatial_filter: &str,
@@ -322,8 +323,8 @@ mod tests {
             aggregated_labels: KeyByLabelNames::new(vec![]),
             rollup_labels: KeyByLabelNames::new(vec![]),
             original_yaml: String::new(),
-            window_size: window_size_s,
-            slide_interval: window_size_s,
+            window_size_ms,
+            slide_interval_ms: window_size_ms,
             window_type: window_type.parse::<WindowType>().unwrap_or_default(),
             spatial_filter: spatial_filter.to_string(),
             spatial_filter_normalized,
@@ -362,7 +363,16 @@ mod tests {
 
     #[test]
     fn basic_sum_match() {
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 300, "tumbling", &[], ""));
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
@@ -378,7 +388,7 @@ mod tests {
             "lat",
             "DatasketchesKLL",
             "",
-            300,
+            300_000,
             "tumbling",
             &[],
             "",
@@ -403,7 +413,7 @@ mod tests {
             "lat",
             "HydraKLL",
             "",
-            300,
+            300_000,
             "tumbling",
             &[],
             "",
@@ -417,7 +427,16 @@ mod tests {
 
     #[test]
     fn no_match_wrong_metric() {
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 300, "tumbling", &[], ""));
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("mem", &[Statistic::Sum], Some(300_000), &[], ""),
@@ -432,7 +451,7 @@ mod tests {
             "cpu",
             "DatasketchesKLL",
             "",
-            300,
+            300_000,
             "tumbling",
             &[],
             "",
@@ -448,7 +467,16 @@ mod tests {
 
     #[test]
     fn window_tumbling_exact() {
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 300, "tumbling", &[], ""));
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
@@ -458,8 +486,17 @@ mod tests {
 
     #[test]
     fn window_tumbling_divisible() {
-        // 900_000 ms / 300 s = 3 buckets — valid merge
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 300, "tumbling", &[], ""));
+        // 900_000 ms / 300_000 ms = 3 buckets — valid merge
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(900_000), &[], ""),
@@ -469,8 +506,17 @@ mod tests {
 
     #[test]
     fn window_tumbling_not_divisible() {
-        // 600_000 ms / 900 s is not a whole number
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 900, "tumbling", &[], ""));
+        // 600_000 ms / 900_000 ms is not a whole number
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            900_000,
+            "tumbling",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(600_000), &[], ""),
@@ -480,7 +526,16 @@ mod tests {
 
     #[test]
     fn window_sliding_exact() {
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 300, "sliding", &[], ""));
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            300_000,
+            "sliding",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
@@ -490,8 +545,17 @@ mod tests {
 
     #[test]
     fn window_sliding_too_large() {
-        // Query range 600 s but sliding window only covers 300 s
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 300, "sliding", &[], ""));
+        // Query range 600_000 ms but sliding window only covers 300_000 ms
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            300_000,
+            "sliding",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(600_000), &[], ""),
@@ -504,13 +568,13 @@ mod tests {
         let mut configs = HashMap::new();
         configs.insert(
             1,
-            make_config(1, "cpu", "Sum", "", 300, "tumbling", &[], ""),
+            make_config(1, "cpu", "Sum", "", 300_000, "tumbling", &[], ""),
         );
         configs.insert(
             2,
-            make_config(2, "cpu", "Sum", "", 900, "tumbling", &[], ""),
+            make_config(2, "cpu", "Sum", "", 900_000, "tumbling", &[], ""),
         );
-        // 900_000 ms is divisible by both 300 s and 900 s — prefer 900 s
+        // 900_000 ms is divisible by both 300_000 ms and 900_000 ms — prefer 900_000 ms
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(900_000), &[], ""),
@@ -521,7 +585,16 @@ mod tests {
     #[test]
     fn spatial_only_no_range() {
         // data_range_ms = None → any window size is compatible
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 900, "tumbling", &[], ""));
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            900_000,
+            "tumbling",
+            &[],
+            "",
+        ));
         let result =
             find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], None, &[], ""));
         assert!(result.is_some());
@@ -536,7 +609,7 @@ mod tests {
             "cpu",
             "Sum",
             "",
-            300,
+            300_000,
             "tumbling",
             &["job"],
             "",
@@ -556,7 +629,7 @@ mod tests {
             "cpu",
             "Sum",
             "",
-            300,
+            300_000,
             "tumbling",
             &["job", "instance"],
             "",
@@ -575,7 +648,7 @@ mod tests {
             "cpu",
             "Sum",
             "",
-            300,
+            300_000,
             "tumbling",
             &["region"],
             "",
@@ -591,7 +664,16 @@ mod tests {
 
     #[test]
     fn spatial_filter_empty_both() {
-        let configs = single_config(make_config(1, "cpu", "Sum", "", 300, "tumbling", &[], ""));
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "Sum",
+            "",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        ));
         let result = find_compatible_aggregation(
             &configs,
             &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
@@ -607,7 +689,7 @@ mod tests {
             "cpu",
             "Sum",
             "",
-            300,
+            300_000,
             "tumbling",
             &[],
             "env=prod",
@@ -626,7 +708,7 @@ mod tests {
             "cpu",
             "Sum",
             "",
-            300,
+            300_000,
             "tumbling",
             &[],
             "env=prod",
@@ -645,7 +727,7 @@ mod tests {
             "cpu",
             "Sum",
             "",
-            300,
+            300_000,
             "tumbling",
             &[],
             "env=prod",
@@ -666,7 +748,7 @@ mod tests {
             "cpu",
             "MinMax",
             "min",
-            300,
+            300_000,
             "tumbling",
             &[],
             "",
@@ -686,7 +768,7 @@ mod tests {
             "cpu",
             "MinMax",
             "min",
-            300,
+            300_000,
             "tumbling",
             &[],
             "",
@@ -710,7 +792,7 @@ mod tests {
                 "req",
                 "CountMinSketchWithHeap",
                 "",
-                300,
+                300_000,
                 "tumbling",
                 &[],
                 "",
@@ -723,7 +805,7 @@ mod tests {
                 "req",
                 "DeltaSetAggregator",
                 "",
-                300,
+                300_000,
                 "tumbling",
                 &[],
                 "",
@@ -746,7 +828,7 @@ mod tests {
             "req",
             "CountMinSketchWithHeap",
             "",
-            300,
+            300_000,
             "tumbling",
             &[],
             "",
@@ -765,7 +847,7 @@ mod tests {
         let mut configs = HashMap::new();
         configs.insert(
             1,
-            make_config(1, "cpu", "Sum", "", 300, "tumbling", &["job"], ""),
+            make_config(1, "cpu", "Sum", "", 300_000, "tumbling", &["job"], ""),
         );
         configs.insert(
             2,
@@ -774,7 +856,7 @@ mod tests {
                 "cpu",
                 "CountMinSketch",
                 "",
-                300,
+                300_000,
                 "tumbling",
                 &["job"],
                 "",
@@ -806,7 +888,7 @@ mod tests {
             "peers",
             "HLL",
             "",
-            1,
+            1_000,
             "tumbling",
             &["srcip"],
             "",
@@ -850,9 +932,9 @@ mod tests {
         let mut configs = HashMap::new();
         configs.insert(
             1,
-            make_config(1, "cpu", "Sum", "", 300, "tumbling", &["job"], ""),
+            make_config(1, "cpu", "Sum", "", 300_000, "tumbling", &["job"], ""),
         );
-        // Count config has different window_size — must be rejected
+        // Count config has different window_size_ms — must be rejected
         configs.insert(
             2,
             make_config(
@@ -860,7 +942,7 @@ mod tests {
                 "cpu",
                 "CountMinSketch",
                 "",
-                900,
+                900_000,
                 "tumbling",
                 &["job"],
                 "",
@@ -889,7 +971,16 @@ mod tests {
 
     /// Paired key aggregation required by the multi-population fallback.
     fn make_key_agg(id: u64, metric: &str) -> AggregationConfig {
-        make_config(id, metric, "DeltaSetAggregator", "", 1, "tumbling", &[], "")
+        make_config(
+            id,
+            metric,
+            "DeltaSetAggregator",
+            "",
+            1_000,
+            "tumbling",
+            &[],
+            "",
+        )
     }
 
     /// `CountMinSketchWithHeap` config with an explicit `count_events` parameter.
@@ -899,7 +990,7 @@ mod tests {
             metric,
             "CountMinSketchWithHeap",
             "",
-            1,
+            1_000,
             "tumbling",
             &[],
             "",
@@ -971,7 +1062,7 @@ mod tests {
                 "netflow_table",
                 "CountMinSketchWithHeap",
                 "",
-                1,
+                1_000,
                 "tumbling",
                 &[],
                 "",

@@ -169,7 +169,7 @@ mod tests {
             KeyByLabelNames::new(vec![]),
             KeyByLabelNames::new(vec![]),
             String::new(),
-            10,
+            10_000,
             0,
             WindowType::Tumbling,
             metric.to_string(),

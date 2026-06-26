@@ -297,7 +297,7 @@ def main(cfg: DictConfig):
 
         controller_service.start(
             controller_input_file=controller_input_config,
-            prometheus_scrape_interval=prometheus_scrape_interval,
+            prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
             streaming_engine=args.streaming_engine,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             punting=args.controller_punting,

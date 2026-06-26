@@ -205,7 +205,7 @@ class ControllerService(BaseService):
         controller_remote_output_dir: str,
         punting: bool,
         discovery_backend: DiscoveryBackend,
-        prometheus_scrape_interval: Optional[int] = None,
+        prometheus_scrape_interval_ms: Optional[int] = None,
         query_language: str = "promql",
         data_ingestion_interval: Optional[int] = None,
         **kwargs,
@@ -221,7 +221,8 @@ class ControllerService(BaseService):
             discovery_backend: Backend used for label/column auto-discovery.
                 PromQL mode: DiscoveryBackend(type="prometheus", url=<url>, database=None)
                 SQL mode:    DiscoveryBackend(type="clickhouse", url=<url>, database=<db>)
-            prometheus_scrape_interval: Required for PromQL mode
+            prometheus_scrape_interval_ms: Required for PromQL mode (milliseconds; passed as
+                --prometheus_scrape_interval_ms / --prometheus-scrape-interval-ms)
             query_language: 'promql' (default) or 'sql'
             data_ingestion_interval: Required for SQL mode (seconds)
             **kwargs: Additional configuration
@@ -233,7 +234,7 @@ class ControllerService(BaseService):
                 controller_remote_output_dir,
                 punting,
                 discovery_backend,
-                prometheus_scrape_interval,
+                prometheus_scrape_interval_ms,
                 query_language,
                 data_ingestion_interval,
             )
@@ -244,7 +245,7 @@ class ControllerService(BaseService):
                 controller_remote_output_dir,
                 punting,
                 discovery_backend,
-                prometheus_scrape_interval,
+                prometheus_scrape_interval_ms,
                 query_language,
                 data_ingestion_interval,
             )
@@ -256,7 +257,7 @@ class ControllerService(BaseService):
         controller_remote_output_dir: str,
         punting: bool,
         discovery_backend: DiscoveryBackend,
-        prometheus_scrape_interval: Optional[int],
+        prometheus_scrape_interval_ms: Optional[int],
         query_language: str,
         data_ingestion_interval: Optional[int],
     ) -> None:
@@ -268,8 +269,8 @@ class ControllerService(BaseService):
             f" --streaming_engine {streaming_engine}"
             f" --query-language {query_language}"
         )
-        if prometheus_scrape_interval is not None:
-            cmd += f" --prometheus_scrape_interval {prometheus_scrape_interval}"
+        if prometheus_scrape_interval_ms is not None:
+            cmd += f" --prometheus_scrape_interval_ms {prometheus_scrape_interval_ms}"
         if data_ingestion_interval is not None:
             cmd += f" --data-ingestion-interval {data_ingestion_interval}"
         if discovery_backend.type == "prometheus":
@@ -299,7 +300,7 @@ class ControllerService(BaseService):
         controller_remote_output_dir: str,
         punting: bool,
         discovery_backend: DiscoveryBackend,
-        prometheus_scrape_interval: Optional[int],
+        prometheus_scrape_interval_ms: Optional[int],
         query_language: str,
         data_ingestion_interval: Optional[int],
     ):
@@ -329,9 +330,9 @@ class ControllerService(BaseService):
         generate_cmd += f" --controller-output-dir {controller_remote_output_dir}"
         generate_cmd += f" --streaming-engine {streaming_engine}"
         generate_cmd += f" --query-language {query_language}"
-        if prometheus_scrape_interval is not None:
+        if prometheus_scrape_interval_ms is not None:
             generate_cmd += (
-                f" --prometheus-scrape-interval {prometheus_scrape_interval}"
+                f" --prometheus-scrape-interval-ms {prometheus_scrape_interval_ms}"
             )
         if data_ingestion_interval is not None:
             generate_cmd += f" --data-ingestion-interval {data_ingestion_interval}"

@@ -369,6 +369,18 @@ def generate_controller_client_configs(
         controller_only_config = {
             k: v for k, v in full_config.items() if k in CONTROLLER_ALLOWED_KEYS
         }
+        # asap-planner-rs renamed QueryGroup.repetition_delay -> repetition_delay_ms
+        # (issue #398). full_config keeps the original seconds value for
+        # prometheus_client (a separate tool, unaffected by that rename) —
+        # only the controller-bound copy needs the renamed/scaled key.
+        if "query_groups" in controller_only_config:
+            controller_only_config["query_groups"] = [
+                {
+                    **{k: v for k, v in qg.items() if k != "repetition_delay"},
+                    "repetition_delay_ms": qg["repetition_delay"] * 1000,
+                }
+                for qg in controller_only_config["query_groups"]
+            ]
         with open(
             os.path.join(
                 output_dir, "{}_controller_input.yaml".format(experiment_mode["mode"])

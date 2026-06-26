@@ -20,8 +20,8 @@ pub struct AggregationConfig {
     pub rollup_labels: KeyByLabelNames,
     pub original_yaml: String,
 
-    pub window_size: u64,        // Window size in seconds (e.g., 900s for 15m)
-    pub slide_interval: u64,     // Slide/hop interval in seconds (e.g., 30s)
+    pub window_size_ms: u64, // Window size in milliseconds (e.g., 900_000ms for 15m)
+    pub slide_interval_ms: u64, // Slide/hop interval in milliseconds (e.g., 30_000ms)
     pub window_type: WindowType, // Tumbling or Sliding
 
     pub spatial_filter: String,
@@ -59,8 +59,8 @@ impl AggregationConfig {
         aggregated_labels: KeyByLabelNames,
         rollup_labels: KeyByLabelNames,
         original_yaml: String,
-        window_size: u64,
-        slide_interval: u64,
+        window_size_ms: u64,
+        slide_interval_ms: u64,
         window_type: WindowType,
         spatial_filter: String,
         metric: String,
@@ -82,8 +82,8 @@ impl AggregationConfig {
             aggregated_labels,
             rollup_labels,
             original_yaml,
-            window_size,
-            slide_interval,
+            window_size_ms,
+            slide_interval_ms,
             window_type,
             spatial_filter,
             spatial_filter_normalized,
@@ -144,7 +144,9 @@ impl AggregationConfig {
         let aggregated_labels = KeyByLabelNames::deserialize_from_json(&data["aggregatedLabels"])?;
         let rollup_labels = KeyByLabelNames::deserialize_from_json(&data["rollupLabels"])?;
 
-        let window_size = data["windowSize"].as_u64().ok_or("Missing windowSize")?;
+        let window_size_ms = data["windowSizeMs"]
+            .as_u64()
+            .ok_or("Missing windowSizeMs")?;
 
         let window_type = data
             .get("windowType")
@@ -153,10 +155,10 @@ impl AggregationConfig {
             .parse::<WindowType>()
             .unwrap_or_default();
 
-        let slide_interval = data
-            .get("slideInterval")
+        let slide_interval_ms = data
+            .get("slideIntervalMs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(window_size);
+            .unwrap_or(window_size_ms);
 
         let spatial_filter = data["spatialFilter"].as_str().unwrap_or("").to_string();
 
@@ -184,8 +186,8 @@ impl AggregationConfig {
             aggregated_labels,
             rollup_labels,
             original_yaml,
-            window_size,
-            slide_interval,
+            window_size_ms,
+            slide_interval_ms,
             window_type,
             spatial_filter,
             metric,
@@ -266,9 +268,9 @@ impl AggregationConfig {
             })
             .collect();
 
-        let window_size = aggregation_data["windowSize"]
+        let window_size_ms = aggregation_data["windowSizeMs"]
             .as_u64()
-            .ok_or_else(|| anyhow::anyhow!("Missing windowSize"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing windowSizeMs"))?;
 
         let window_type = aggregation_data
             .get("windowType")
@@ -277,10 +279,10 @@ impl AggregationConfig {
             .parse::<WindowType>()
             .unwrap_or_default();
 
-        let slide_interval = aggregation_data
-            .get("slideInterval")
+        let slide_interval_ms = aggregation_data
+            .get("slideIntervalMs")
             .and_then(|v| v.as_u64())
-            .unwrap_or(window_size);
+            .unwrap_or(window_size_ms);
 
         let spatial_filter = aggregation_data["spatialFilter"]
             .as_str()
@@ -330,8 +332,8 @@ impl AggregationConfig {
             aggregated_labels,
             rollup_labels,
             String::new(), // original_yaml - empty as in Python
-            window_size,
-            slide_interval,
+            window_size_ms,
+            slide_interval_ms,
             window_type,
             spatial_filter,
             metric,
@@ -351,8 +353,8 @@ impl SerializableToSink for AggregationConfig {
             "aggregationSubType": self.aggregation_sub_type,
             "parameters": self.parameters,
             "originalYaml": self.original_yaml,
-            "windowSize": self.window_size,
-            "slideInterval": self.slide_interval,
+            "windowSizeMs": self.window_size_ms,
+            "slideIntervalMs": self.slide_interval_ms,
             "windowType": self.window_type.to_string(),
             "spatialFilter": self.spatial_filter,
             "metric": self.metric,

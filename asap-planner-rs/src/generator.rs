@@ -28,14 +28,14 @@ pub(crate) const KEY_PARAMETERS: &str = "parameters";
 pub(crate) const KEY_QUERIES: &str = "queries";
 pub(crate) const KEY_QUERY: &str = "query";
 pub(crate) const KEY_READ_COUNT_THRESHOLD: &str = "read_count_threshold";
-pub(crate) const KEY_SLIDE_INTERVAL: &str = "slideInterval";
+pub(crate) const KEY_SLIDE_INTERVAL_MS: &str = "slideIntervalMs";
 pub(crate) const KEY_SPATIAL_FILTER: &str = "spatialFilter";
 pub(crate) const KEY_TABLE_NAME: &str = "table_name";
 pub(crate) const KEY_TABLES: &str = "tables";
 pub(crate) const KEY_TIME_COLUMN: &str = "time_column";
 pub(crate) const KEY_VALUE_COLUMN: &str = "value_column";
 pub(crate) const KEY_VALUE_COLUMNS: &str = "value_columns";
-pub(crate) const KEY_WINDOW_SIZE: &str = "windowSize";
+pub(crate) const KEY_WINDOW_SIZE_MS: &str = "windowSizeMs";
 pub(crate) const KEY_WINDOW_TYPE: &str = "windowType";
 
 pub fn key_by_labels_to_yaml(labels: &KeyByLabelNames) -> YamlValue {
@@ -90,8 +90,8 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
         params_to_yaml(&cfg.parameters),
     );
     map.insert(
-        YamlValue::String(KEY_SLIDE_INTERVAL.to_string()),
-        YamlValue::Number(cfg.slide_interval.into()),
+        YamlValue::String(KEY_SLIDE_INTERVAL_MS.to_string()),
+        YamlValue::Number(cfg.slide_interval_ms.into()),
     );
     map.insert(
         YamlValue::String(KEY_SPATIAL_FILTER.to_string()),
@@ -112,8 +112,8 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
         },
     );
     map.insert(
-        YamlValue::String(KEY_WINDOW_SIZE.to_string()),
-        YamlValue::Number(cfg.window_size.into()),
+        YamlValue::String(KEY_WINDOW_SIZE_MS.to_string()),
+        YamlValue::Number(cfg.window_size_ms.into()),
     );
     map.insert(
         YamlValue::String(KEY_WINDOW_TYPE.to_string()),

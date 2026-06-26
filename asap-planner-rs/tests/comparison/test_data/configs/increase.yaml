@@ -2,7 +2,7 @@ query_groups:
   - id: 1
     queries:
       - "increase(http_requests_total[5m])"
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
       latency_sla: 1.0

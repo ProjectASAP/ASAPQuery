@@ -58,7 +58,7 @@ aggregations:
   parameters:
     K: 20
   tumblingWindowSize: 1
-  windowSize: 1
+  windowSizeMs: 1000
   windowType: tumbling
   spatialFilter: ''
 metrics:

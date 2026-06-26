@@ -65,10 +65,14 @@ impl ElasticSingleQueryProcessor {
         // Get aggregation type and statistics
         let (treatment_type, statistics) = get_elastic_statistics(&query_info.aggregation)?;
 
-        // Build window config (always tumbling for Elasticsearch queries)
+        // Build window config (always tumbling for Elasticsearch queries).
+        // self.t_repeat is seconds (Elastic DSL is out of scope for the ms-precision
+        // rename, see issue #427) — IntermediateWindowConfig is now ms-typed throughout,
+        // so convert at this boundary, same as planner::sql::compute_sql_window.
+        let t_repeat_ms = self.t_repeat * 1000;
         let window_cfg = IntermediateWindowConfig {
-            window_size: self.t_repeat,
-            slide_interval: self.t_repeat,
+            window_size_ms: t_repeat_ms,
+            slide_interval_ms: t_repeat_ms,
             window_type: WindowType::Tumbling,
         };
 
@@ -131,8 +135,8 @@ impl ElasticSingleQueryProcessor {
             })
             .and_then(|p| range_query_to_time_range(p, 0));
         let t_lookback = match time_range {
-            Some(tr) => tr.duration_ms().unwrap_or(self.t_repeat),
-            None => self.t_repeat, // Default to repetition delay if no time range found
+            Some(tr) => tr.duration_ms().unwrap_or(t_repeat_ms),
+            None => t_repeat_ms,
         };
 
         // Calculate cleanup param based on query's time window
@@ -140,7 +144,7 @@ impl ElasticSingleQueryProcessor {
             None
         } else {
             Some(
-                get_sql_cleanup_param(self.cleanup_policy, t_lookback, self.t_repeat)
+                get_sql_cleanup_param(self.cleanup_policy, t_lookback, t_repeat_ms)
                     .map_err(ControllerError::PlannerError)?,
             )
         };

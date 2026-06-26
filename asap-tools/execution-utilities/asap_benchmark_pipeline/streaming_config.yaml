@@ -16,7 +16,6 @@ aggregations:
     value_column: v1
     parameters:
       K: 200
-    tumblingWindowSize: 10
-    windowSize: 10
+    windowSizeMs: 10000
     windowType: tumbling
     spatialFilter: ''

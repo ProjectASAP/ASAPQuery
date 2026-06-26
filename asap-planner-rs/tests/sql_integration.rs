@@ -77,7 +77,7 @@ fn temporal_sum() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketch"));
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("CountMinSketch"),
         Some("metrics_table".to_string())
@@ -114,7 +114,7 @@ fn temporal_count() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketch"));
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("CountMinSketch"),
         Some("metrics_table".to_string())
@@ -151,7 +151,7 @@ fn temporal_min() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("MultipleMinMax"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("MultipleMinMax"),
         Some("metrics_table".to_string())
@@ -188,7 +188,7 @@ fn temporal_max() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("MultipleMinMax"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("MultipleMinMax"),
         Some("metrics_table".to_string())
@@ -225,7 +225,7 @@ fn temporal_avg() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketch"));
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("CountMinSketch"),
         Some("metrics_table".to_string())
@@ -262,7 +262,7 @@ fn temporal_quantile() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("DatasketchesKLL"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("DatasketchesKLL"),
         Some("metrics_table".to_string())
@@ -308,7 +308,7 @@ fn temporal_quantile_half_open() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("DatasketchesKLL"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("DatasketchesKLL"),
         Some("metrics_table".to_string())
@@ -369,7 +369,7 @@ fn temporal_quantile_percentile_syntax() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("DatasketchesKLL"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("DatasketchesKLL"),
         Some("metrics_table".to_string())
@@ -406,7 +406,7 @@ fn temporal_quantile_quoted_dateadd_unit() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("DatasketchesKLL"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("DatasketchesKLL"),
         Some("metrics_table".to_string())
@@ -443,7 +443,7 @@ fn temporal_quantile_cast_datetime_bounds() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("DatasketchesKLL"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("DatasketchesKLL"),
         Some("metrics_table".to_string())
@@ -512,7 +512,7 @@ fn spatial_count_distinct_hll() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("HLL"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(1));
+    assert!(out.all_tumbling_window_sizes_eq(1_000));
     assert_eq!(
         out.aggregation_table_name("HLL"),
         Some("netflow_table".to_string())
@@ -554,7 +554,7 @@ fn temporal_sum_t30() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketch"));
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(30));
+    assert!(out.all_tumbling_window_sizes_eq(30_000));
     assert_eq!(
         out.aggregation_table_name("CountMinSketch"),
         Some("metrics_table".to_string())
@@ -592,7 +592,7 @@ fn temporal_sum_t600() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketch"));
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(600));
+    assert!(out.all_tumbling_window_sizes_eq(600_000));
     assert_eq!(
         out.aggregation_table_name("CountMinSketch"),
         Some("metrics_table".to_string())
@@ -913,7 +913,7 @@ fn spatial_count_topk_heap() {
     assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
-    assert!(out.all_tumbling_window_sizes_eq(1));
+    assert!(out.all_tumbling_window_sizes_eq(1_000));
     assert_eq!(
         out.aggregation_labels("CountMinSketchWithHeap", "grouping"),
         Vec::<String>::new()
@@ -954,7 +954,7 @@ fn spatial_sum_topk_heap() {
     assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
-    assert!(out.all_tumbling_window_sizes_eq(1));
+    assert!(out.all_tumbling_window_sizes_eq(1_000));
     assert_eq!(
         out.aggregation_labels("CountMinSketchWithHeap", "grouping"),
         Vec::<String>::new()

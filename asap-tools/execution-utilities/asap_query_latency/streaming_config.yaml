@@ -99,7 +99,7 @@ aggregations:
     value_column: ResolutionWidth
     parameters:
       K: 200
-    windowSize: 10
+    windowSizeMs: 10000
     windowType: tumbling
     spatialFilter: ''
 

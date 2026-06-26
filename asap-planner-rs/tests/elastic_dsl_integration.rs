@@ -149,7 +149,7 @@ fn elastic_sum_produces_basic_plan_and_schema() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketch"));
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("CountMinSketch"),
         Some("metrics".to_string())
@@ -201,7 +201,7 @@ fn elastic_avg_produces_three_configs() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("MultipleSum"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("MultipleSum"),
         Some("metrics".to_string())
@@ -254,7 +254,7 @@ fn elastic_min_produces_exact_plan() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("MultipleMinMax"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("MultipleMinMax"),
         Some("metrics".to_string())
@@ -307,7 +307,7 @@ fn elastic_percentiles_produce_kll_plan() {
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("DatasketchesKLL"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
     assert_eq!(
         out.aggregation_table_name("DatasketchesKLL"),
         Some("metrics".to_string())
@@ -420,7 +420,7 @@ aggregate_cleanup:
     assert_eq!(out.inference_query_count(), 2);
     assert!(out.has_aggregation_type("MultipleSum"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(300));
+    assert!(out.all_tumbling_window_sizes_eq(300_000));
 
     let inference_config = out
         .to_inference_config(QueryLanguage::elastic_querydsl)

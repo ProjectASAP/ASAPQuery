@@ -106,10 +106,10 @@ mod tests {
             query_groups: vec![QueryGroup {
                 id: Some(1),
                 queries: vec!["sum(rate(http_requests_total[5m]))".to_string()],
-                repetition_delay: 60,
+                repetition_delay_ms: 60_000,
                 controller_options: ControllerOptions::default(),
-                step: None,
-                range_duration: None,
+                step_ms: None,
+                range_duration_ms: None,
             }],
             metrics: Some(vec![MetricDefinition {
                 metric: "http_requests_total".to_string(),
@@ -124,11 +124,11 @@ mod tests {
 
     fn sample_runtime_options() -> RuntimeOptions {
         RuntimeOptions {
-            prometheus_scrape_interval: 15,
+            prometheus_scrape_interval_ms: 15_000,
             streaming_engine: StreamingEngine::Precompute,
             enable_punting: false,
-            range_duration: 300,
-            step: 15,
+            range_duration_ms: 300_000,
+            step_ms: 15_000,
         }
     }
 

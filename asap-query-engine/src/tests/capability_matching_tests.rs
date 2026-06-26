@@ -27,7 +27,7 @@ fn make_agg_config(
     id: u64,
     metric: &str,
     agg_type: AggregationType,
-    window_size_s: u64,
+    window_size_ms: u64,
     window_type: WindowType,
     grouping: &[&str],
 ) -> AggregationConfig {
@@ -40,8 +40,8 @@ fn make_agg_config(
         aggregated_labels: KeyByLabelNames::empty(),
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
-        window_size: window_size_s,
-        slide_interval: window_size_s,
+        window_size_ms,
+        slide_interval_ms: window_size_ms,
         window_type,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -75,7 +75,7 @@ fn engine_no_query_configs(
     // Insert a data point for each aggregation so queries can actually execute.
     let ts = 1_000_000_u64;
     for c in &agg_configs {
-        let window_ms = c.window_size * 1000;
+        let window_ms = c.window_size_ms;
         let output = PrecomputedOutput::new(ts - window_ms, ts, None, c.aggregation_id);
         let acc: Box<dyn crate::AggregateCore> = match c.aggregation_type.as_str() {
             "DatasketchesKLL" => {
@@ -102,7 +102,7 @@ fn engine_no_query_configs(
         store,
         inference_config,
         streaming_config,
-        1,
+        1000,
         QueryLanguage::promql,
     )
 }
@@ -126,7 +126,7 @@ fn engine_with_query_config(
     ));
 
     let ts = 1_000_000_u64;
-    let window_ms = agg_config.window_size * 1000;
+    let window_ms = agg_config.window_size_ms;
     let output = PrecomputedOutput::new(ts - window_ms, ts, None, agg_id);
     store
         .insert_precomputed_output(output, Box::new(SumAccumulator::with_sum(99.0)))
@@ -149,7 +149,7 @@ fn engine_with_query_config(
         store,
         inference_config,
         streaming_config,
-        1,
+        1000,
         QueryLanguage::promql,
     )
 }
@@ -166,7 +166,7 @@ fn capability_fallback_fires_when_no_config() {
         1,
         "cpu",
         AggregationType::Sum,
-        300,
+        300_000,
         WindowType::Tumbling,
         &[],
     );
@@ -190,7 +190,7 @@ fn config_path_takes_priority_over_capability_matching() {
         42,
         "cpu",
         AggregationType::Sum,
-        300,
+        300_000,
         WindowType::Tumbling,
         &[],
     );
@@ -212,7 +212,7 @@ fn quantile_different_values_resolve_to_same_aggregation() {
         7,
         "latency",
         AggregationType::DatasketchesKLL,
-        300,
+        300_000,
         WindowType::Tumbling,
         &[],
     );
@@ -250,7 +250,7 @@ fn no_match_returns_none() {
         1,
         "cpu",
         AggregationType::DatasketchesKLL,
-        300,
+        300_000,
         WindowType::Tumbling,
         &[],
     );
@@ -271,7 +271,7 @@ fn priority_largest_window_wins() {
         1,
         "cpu",
         AggregationType::Sum,
-        300,
+        300_000,
         WindowType::Tumbling,
         &[],
     );
@@ -279,7 +279,7 @@ fn priority_largest_window_wins() {
         2,
         "cpu",
         AggregationType::Sum,
-        900,
+        900_000,
         WindowType::Tumbling,
         &[],
     );

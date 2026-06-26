@@ -348,7 +348,7 @@ impl Worker {
             // Creation path: requires a config, and allocates the interned key once.
             let config = Arc::clone(self.agg_configs.get(&agg_id)?);
             let gs = GroupState {
-                window_manager: WindowManager::new(config.window_size, config.slide_interval),
+                window_manager: WindowManager::new(config.window_size_ms, config.slide_interval_ms),
                 config,
                 active_panes: BTreeMap::new(),
                 previous_watermark_ms: i64::MIN,
@@ -1133,8 +1133,8 @@ mod tests {
             "netflow_table",
             AggregationType::HLL,
             "",
-            1,
-            1,
+            1000,
+            1000,
             vec!["srcip"],
         );
         config.value_column = Some("dstip".to_string());
@@ -1219,8 +1219,8 @@ mod tests {
         metric: &str,
         agg_type: AggregationType,
         agg_sub_type: &str,
-        window_secs: u64,
-        slide_secs: u64,
+        window_size_ms: u64,
+        slide_interval_ms: u64,
         grouping: Vec<&str>,
     ) -> AggregationConfig {
         make_agg_config_full(
@@ -1228,8 +1228,8 @@ mod tests {
             metric,
             agg_type,
             agg_sub_type,
-            window_secs,
-            slide_secs,
+            window_size_ms,
+            slide_interval_ms,
             grouping,
             vec![],
         )
@@ -1241,12 +1241,12 @@ mod tests {
         metric: &str,
         agg_type: AggregationType,
         agg_sub_type: &str,
-        window_secs: u64,
-        slide_secs: u64,
+        window_size_ms: u64,
+        slide_interval_ms: u64,
         grouping: Vec<&str>,
         aggregated: Vec<&str>,
     ) -> AggregationConfig {
-        let window_type = if slide_secs == 0 || slide_secs == window_secs {
+        let window_type = if slide_interval_ms == 0 || slide_interval_ms == window_size_ms {
             WindowType::Tumbling
         } else {
             WindowType::Sliding
@@ -1264,8 +1264,8 @@ mod tests {
             ),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             String::new(),
-            window_secs,
-            slide_secs,
+            window_size_ms,
+            slide_interval_ms,
             window_type,
             metric.to_string(),
             metric.to_string(),
@@ -1362,7 +1362,7 @@ mod tests {
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -1428,7 +1428,7 @@ mod tests {
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -1493,7 +1493,7 @@ mod tests {
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec!["pattern"],
         );
@@ -1566,7 +1566,7 @@ mod tests {
             "latency",
             AggregationType::DatasketchesKLL,
             "",
-            10,
+            10_000,
             0,
             vec!["pattern"],
         );
@@ -1650,8 +1650,8 @@ mod tests {
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            30,
-            10,
+            30_000,
+            10_000,
             vec![],
         );
         let mut agg_configs = HashMap::new();
@@ -1717,7 +1717,7 @@ mod tests {
             "cpu",
             AggregationType::MultipleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],       // grouping: empty — one output group
             vec!["host"], // aggregated: host is the key INSIDE the sketch
@@ -1802,7 +1802,7 @@ mod tests {
             "netflow_table",
             AggregationType::MultipleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],        // grouping: empty — one output group
             vec!["dstip"], // aggregated: dstip is the key INSIDE the sketch
@@ -1891,7 +1891,7 @@ mod tests {
             "cpu",
             AggregationType::MultipleSum,
             "sum",
-            10,
+            10_000,
             0,
             vec!["host"],
         );
@@ -1967,7 +1967,7 @@ mod tests {
             "latency",
             AggregationType::DatasketchesKLL,
             "",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -2067,7 +2067,7 @@ mod tests {
             "cpu",
             AggregationType::MultipleSum,
             "sum",
-            10,
+            10_000,
             0,
             vec![],
             vec!["host"],
@@ -2168,7 +2168,7 @@ mod tests {
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -2221,7 +2221,7 @@ mod tests {
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -2300,9 +2300,9 @@ aggregations:
   metric: requests_total
   parameters: {}
   tumblingWindowSize: 10
-  windowSize: 10
+  windowSizeMs: 10000
   windowType: tumbling
-  slideInterval: 0
+  slideIntervalMs: 0
   spatialFilter: ''
 "#;
 
@@ -2408,7 +2408,7 @@ aggregations:
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -2553,7 +2553,7 @@ aggregations:
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -2607,7 +2607,7 @@ aggregations:
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10, // 10s tumbling window
+            10_000, // 10s tumbling window
             0,
             vec![],
         );
@@ -2738,14 +2738,14 @@ aggregations:
         // Realistic event time: ~2023-11-14T22:13:20Z in ms. With the old
         // i64::MAX code this is what made closed_windows blow up.
         let base_ms: i64 = 1_700_000_000_000;
-        let window_secs = 10u64;
+        let window_size_ms = 10_000u64;
 
         let config = make_agg_config(
             1,
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            window_secs,
+            window_size_ms,
             0,
             vec![],
         );
@@ -2802,7 +2802,7 @@ aggregations:
             "removing the agg_id must force-close the single open window"
         );
         let (output, acc) = &captured[0];
-        let window_ms = window_secs as i64 * 1_000;
+        let window_ms = window_size_ms as i64;
         let expected_start = base_ms - (base_ms % window_ms);
         assert_eq!(output.start_timestamp as i64, expected_start);
         assert_eq!(output.end_timestamp as i64, expected_start + window_ms);
@@ -2865,7 +2865,7 @@ aggregations:
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -2932,7 +2932,7 @@ aggregations:
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
@@ -2979,7 +2979,7 @@ aggregations:
             "cpu",
             AggregationType::SingleSubpopulation,
             "Sum",
-            10,
+            10_000,
             0,
             vec![],
         );
