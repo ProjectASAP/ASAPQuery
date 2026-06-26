@@ -27,6 +27,7 @@ from experiment_utils.services import (
     SystemExportersService,
     GrafanaService,
 )
+from experiment_utils.services.misc import DiscoveryBackend
 
 COMPRESS_JSON = True
 GRAFANA_ADMIN_PASSWORD = "admin"
@@ -356,7 +357,11 @@ def main(cfg: DictConfig):
             streaming_engine=args.streaming_engine,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             punting=args.controller_punting,
-            prometheus_url=prometheus_url,
+            discovery_backend=DiscoveryBackend(
+                type="prometheus",
+                url=prometheus_url,
+                database=None,
+            ),
         )
         sync.rsync_controller_config_remote_to_local(
             provider,
