@@ -27,7 +27,7 @@ query_groups:
             }
           }
         }
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 1.0

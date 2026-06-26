@@ -19,9 +19,9 @@ use indexmap::IndexSet;
 
 pub struct ElasticSingleQueryProcessor {
     query_string: String,
-    t_repeat: u64,
+    t_repeat_ms: u64,
     #[allow(dead_code)]
-    data_ingestion_interval: u64,
+    data_ingestion_interval_ms: u64,
     index_schema: ElasticIndexSchemaBuilder,
     #[allow(dead_code)]
     streaming_engine: StreamingEngine,
@@ -33,8 +33,8 @@ impl ElasticSingleQueryProcessor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         query_string: String,
-        t_repeat: u64,
-        data_ingestion_interval: u64,
+        t_repeat_ms: u64,
+        data_ingestion_interval_ms: u64,
         index_schema: ElasticIndexSchemaBuilder,
         streaming_engine: StreamingEngine,
         sketch_parameters: Option<SketchParameterOverrides>,
@@ -42,8 +42,8 @@ impl ElasticSingleQueryProcessor {
     ) -> Self {
         Self {
             query_string,
-            t_repeat,
-            data_ingestion_interval,
+            t_repeat_ms,
+            data_ingestion_interval_ms,
             index_schema,
             streaming_engine,
             sketch_parameters,
@@ -65,11 +65,7 @@ impl ElasticSingleQueryProcessor {
         // Get aggregation type and statistics
         let (treatment_type, statistics) = get_elastic_statistics(&query_info.aggregation)?;
 
-        // Build window config (always tumbling for Elasticsearch queries).
-        // self.t_repeat is seconds (Elastic DSL is out of scope for the ms-precision
-        // rename, see issue #427) — IntermediateWindowConfig is now ms-typed throughout,
-        // so convert at this boundary, same as planner::sql::compute_sql_window.
-        let t_repeat_ms = self.t_repeat * 1000;
+        let t_repeat_ms = self.t_repeat_ms;
         let window_cfg = IntermediateWindowConfig {
             window_size_ms: t_repeat_ms,
             slide_interval_ms: t_repeat_ms,

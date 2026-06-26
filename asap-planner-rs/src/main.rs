@@ -45,8 +45,8 @@ struct Args {
     #[arg(long = "query-language", value_enum, default_value = "promql")]
     query_language: QueryLanguage,
 
-    #[arg(long = "data-ingestion-interval", required = false)]
-    data_ingestion_interval: Option<u64>,
+    #[arg(long = "data-ingestion-interval-ms", required = false)]
+    data_ingestion_interval_ms: Option<u64>,
 
     /// ClickHouse base URL for auto-inferring metadata_columns when not listed
     /// in the config file. Example: http://localhost:8123
@@ -123,8 +123,8 @@ fn main() -> anyhow::Result<()> {
             controller.generate_to_dir(&args.output_dir)?;
         }
         QueryLanguage::sql | QueryLanguage::elastic_sql => {
-            let interval = args.data_ingestion_interval.ok_or_else(|| {
-                anyhow::anyhow!("--data-ingestion-interval is required for SQL mode")
+            let interval = args.data_ingestion_interval_ms.ok_or_else(|| {
+                anyhow::anyhow!("--data-ingestion-interval-ms is required for SQL mode")
             })?;
             let config_path = args
                 .input_config
@@ -132,7 +132,7 @@ fn main() -> anyhow::Result<()> {
             let opts = SQLRuntimeOptions {
                 streaming_engine: engine,
                 query_evaluation_time: None,
-                data_ingestion_interval: interval,
+                data_ingestion_interval_ms: interval,
             };
             let controller = match args.clickhouse_url {
                 Some(ref url) => SQLController::from_file_with_discovery(
@@ -146,15 +146,17 @@ fn main() -> anyhow::Result<()> {
             controller.generate_to_dir(&args.output_dir)?;
         }
         QueryLanguage::elastic_querydsl => {
-            let interval = args.data_ingestion_interval.ok_or_else(|| {
-                anyhow::anyhow!("--data-ingestion-interval is required for Elasticsearch DSL mode")
+            let interval = args.data_ingestion_interval_ms.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "--data-ingestion-interval-ms is required for Elasticsearch DSL mode"
+                )
             })?;
             let config_path = args.input_config.ok_or_else(|| {
                 anyhow::anyhow!("--input_config is required for Elasticsearch DSL mode")
             })?;
             let opts = ElasticRuntimeOptions {
                 streaming_engine: engine,
-                data_ingestion_interval: interval,
+                data_ingestion_interval_ms: interval,
             };
             ElasticController::from_file(&config_path, opts)?.generate_to_dir(&args.output_dir)?;
         }

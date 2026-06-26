@@ -7,7 +7,7 @@ fn sql_opts() -> SQLRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
         // Fixed evaluation time so NOW()-relative timestamps are deterministic.
         query_evaluation_time: Some(1_000_000.0),
-        data_ingestion_interval: 15,
+        data_ingestion_interval_ms: 15_000,
     }
 }
 
@@ -17,8 +17,8 @@ fn sql_opts() -> SQLRuntimeOptions {
 ///   time_column       : time
 ///   value_columns     : [cpu_usage]
 ///   metadata_columns  : [hostname, datacenter, region]
-/// data_ingestion_interval = 15 s
-fn one_query_config(query: &str, t_repeat: u64) -> String {
+/// data_ingestion_interval_ms = 15_000 ms
+fn one_query_config(query: &str, t_repeat_ms: u64) -> String {
     format!(
         r#"
 tables:
@@ -28,7 +28,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay: {t_repeat}
+    repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -68,7 +68,7 @@ aggregate_cleanup:
 #[test]
 fn temporal_sum() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -105,7 +105,7 @@ fn temporal_sum() {
 #[test]
 fn temporal_count() {
     let q = "SELECT COUNT(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -142,7 +142,7 @@ fn temporal_count() {
 #[test]
 fn temporal_min() {
     let q = "SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -179,7 +179,7 @@ fn temporal_min() {
 #[test]
 fn temporal_max() {
     let q = "SELECT MAX(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -216,7 +216,7 @@ fn temporal_max() {
 #[test]
 fn temporal_avg() {
     let q = "SELECT AVG(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -253,7 +253,7 @@ fn temporal_avg() {
 #[test]
 fn temporal_quantile() {
     let q = "SELECT quantile(0.95)(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -299,7 +299,7 @@ fn temporal_quantile() {
 #[test]
 fn temporal_quantile_half_open() {
     let q = "SELECT quantile(0.95)(cpu_usage) FROM metrics_table WHERE time >= DATEADD(s, -300, NOW()) AND time < NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -338,7 +338,7 @@ fn temporal_quantile_half_open() {
 #[test]
 fn half_open_gt_lte_returns_sql_parse_error() {
     let q = "SELECT quantile(0.95)(cpu_usage) FROM metrics_table WHERE time > DATEADD(s, -300, NOW()) AND time <= NOW() GROUP BY datacenter";
-    let result = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let result = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate();
     assert!(matches!(result, Err(ControllerError::SqlParse(_))));
@@ -360,7 +360,7 @@ fn half_open_gt_lte_returns_sql_parse_error() {
 #[test]
 fn temporal_quantile_percentile_syntax() {
     let q = "SELECT PERCENTILE(cpu_usage, 95) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -397,7 +397,7 @@ fn temporal_quantile_percentile_syntax() {
 #[test]
 fn temporal_quantile_quoted_dateadd_unit() {
     let q = "SELECT PERCENTILE(cpu_usage, 95) FROM metrics_table WHERE time BETWEEN DATEADD('s', -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -434,7 +434,7 @@ fn temporal_quantile_quoted_dateadd_unit() {
 #[test]
 fn temporal_quantile_cast_datetime_bounds() {
     let q = "SELECT PERCENTILE(cpu_usage, 95) FROM metrics_table WHERE time BETWEEN DATEADD('s', -300, CAST('2024-01-01T00:05:00Z' AS DATETIME)) AND CAST('2024-01-01T00:05:00Z' AS DATETIME) GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -468,7 +468,7 @@ fn temporal_quantile_cast_datetime_bounds() {
 
 // ── COUNT(DISTINCT) / HLL (spatial 1 s) ───────────────────────────────────────
 
-fn netflow_one_query_config(query: &str, t_repeat: u64) -> String {
+fn netflow_one_query_config(query: &str, t_repeat_ms: u64) -> String {
     format!(
         r#"
 tables:
@@ -478,7 +478,7 @@ tables:
     metadata_columns: [srcip, dstip, proto]
 query_groups:
   - id: 1
-    repetition_delay: {t_repeat}
+    repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -495,7 +495,7 @@ fn sql_opts_1s_ingest() -> SQLRuntimeOptions {
     SQLRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
         query_evaluation_time: Some(1_000_000.0),
-        data_ingestion_interval: 1,
+        data_ingestion_interval_ms: 1_000,
     }
 }
 
@@ -503,7 +503,7 @@ fn sql_opts_1s_ingest() -> SQLRuntimeOptions {
 #[test]
 fn spatial_count_distinct_hll() {
     let q = "SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) GROUP BY srcip";
-    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1_000), sql_opts_1s_ingest())
         .unwrap()
         .generate()
         .unwrap();
@@ -545,7 +545,7 @@ fn spatial_count_distinct_hll() {
 #[test]
 fn temporal_sum_t30() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 30), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 30_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -583,7 +583,7 @@ fn temporal_sum_t30() {
 #[test]
 fn temporal_sum_t600() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 600), sql_opts())
+    let out = SQLController::from_yaml(&one_query_config(q, 600_000), sql_opts())
         .unwrap()
         .generate()
         .unwrap();
@@ -628,7 +628,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -636,7 +636,7 @@ query_groups:
       - >-
         SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
   - id: 2
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -669,7 +669,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -703,7 +703,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -711,7 +711,7 @@ query_groups:
       - >-
         {q}
   - id: 2
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -740,7 +740,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -748,7 +748,7 @@ query_groups:
       - >-
         SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
   - id: 2
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -774,7 +774,7 @@ aggregate_cleanup:
 fn generate_to_dir_writes_both_yaml_files() {
     let dir = tempfile::tempdir().unwrap();
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate_to_dir(dir.path())
         .unwrap();
@@ -793,7 +793,7 @@ fn malformed_yaml_returns_parse_error() {
 #[test]
 fn malformed_sql_returns_sql_parse_error() {
     let q = "NOT VALID SQL AT ALL %%%";
-    let result = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let result = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate();
     assert!(matches!(result, Err(ControllerError::SqlParse(_))));
@@ -802,7 +802,7 @@ fn malformed_sql_returns_sql_parse_error() {
 #[test]
 fn query_referencing_unknown_table_returns_error() {
     let q = "SELECT SUM(cpu_usage) FROM nonexistent_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let result = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let result = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate();
     assert!(matches!(
@@ -814,7 +814,7 @@ fn query_referencing_unknown_table_returns_error() {
 #[test]
 fn query_referencing_unknown_value_column_returns_sql_parse_error() {
     let q = "SELECT SUM(nonexistent_col) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let result = SQLController::from_yaml(&one_query_config(q, 300), sql_opts())
+    let result = SQLController::from_yaml(&one_query_config(q, 300_000), sql_opts())
         .unwrap()
         .generate();
     assert!(matches!(result, Err(ControllerError::SqlParse(_))));
@@ -832,7 +832,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -863,7 +863,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -882,13 +882,13 @@ aggregate_cleanup:
     ));
 }
 
-/// T that is not a multiple of data_ingestion_interval is invalid: sketch windows
+/// T that is not a multiple of data_ingestion_interval_ms is invalid: sketch windows
 /// must align with the ingestion cadence.
-/// data_ingestion_interval = 15 s, T = 200 s → 200 mod 15 ≠ 0 → PlannerError.
+/// data_ingestion_interval_ms = 15_000, T_ms = 200_000 → 200_000 mod 15_000 ≠ 0 → PlannerError.
 #[test]
 fn t_not_multiple_of_data_ingestion_interval_returns_planner_error() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -200, NOW()) AND NOW() GROUP BY datacenter";
-    let result = SQLController::from_yaml(&one_query_config(q, 200), sql_opts())
+    let result = SQLController::from_yaml(&one_query_config(q, 200_000), sql_opts())
         .unwrap()
         .generate();
     assert!(matches!(result, Err(ControllerError::PlannerError(_))));
@@ -902,7 +902,7 @@ fn spatial_count_topk_heap() {
     let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
              WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
              GROUP BY srcip ORDER BY transfer_events DESC LIMIT 10";
-    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1_000), sql_opts_1s_ingest())
         .unwrap()
         .generate()
         .unwrap();
@@ -943,7 +943,7 @@ fn spatial_sum_topk_heap() {
     let q = "SELECT srcip, SUM(pkt_len) AS total_bytes FROM netflow_table \
              WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
              GROUP BY srcip ORDER BY total_bytes DESC LIMIT 10";
-    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1_000), sql_opts_1s_ingest())
         .unwrap()
         .generate()
         .unwrap();
@@ -984,7 +984,7 @@ fn spatial_count_without_order_by_is_not_topk() {
     let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
              WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
              GROUP BY srcip";
-    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1_000), sql_opts_1s_ingest())
         .unwrap()
         .generate()
         .unwrap();
@@ -1001,7 +1001,7 @@ fn spatial_count_order_by_asc_limit_is_not_topk() {
     let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
              WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
              GROUP BY srcip ORDER BY transfer_events ASC LIMIT 10";
-    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1_000), sql_opts_1s_ingest())
         .unwrap()
         .generate()
         .unwrap();
@@ -1012,13 +1012,37 @@ fn spatial_count_order_by_asc_limit_is_not_topk() {
     assert!(!out.has_aggregation_type("CountMinSketchWithHeap"));
 }
 
+// ── sub-second precision ──────────────────────────────────────────────────────
+
+/// data_ingestion_interval_ms = 500 (sub-second): spatial HLL with 500 ms window.
+/// Validates that ms-precision plumbing works end-to-end below 1 s.
+#[test]
+fn sub_second_data_ingestion_interval_ms() {
+    let q = "SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() \
+             GROUP BY srcip";
+    let opts = SQLRuntimeOptions {
+        streaming_engine: StreamingEngine::Arroyo,
+        query_evaluation_time: Some(1_000_000.0),
+        data_ingestion_interval_ms: 500,
+    };
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 500), opts)
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert!(out.has_aggregation_type("HLL"));
+    assert!(out.all_tumbling_window_sizes_eq(500));
+}
+
 /// LIMIT 0 is treated as non-top-k and uses the normal CMS + DeltaSet path.
 #[test]
 fn spatial_count_limit_zero_is_not_topk() {
     let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
              WHERE time BETWEEN DATEADD(s, -11, NOW()) AND DATEADD(s, -10, NOW()) \
              GROUP BY srcip ORDER BY transfer_events DESC LIMIT 0";
-    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1), sql_opts_1s_ingest())
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 1_000), sql_opts_1s_ingest())
         .unwrap()
         .generate()
         .unwrap();
