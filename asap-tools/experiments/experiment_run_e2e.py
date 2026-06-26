@@ -324,7 +324,7 @@ def main(cfg: DictConfig):
             prometheus_config_output_dir,
             node_offset=args.node_offset,
         )
-        prometheus_scrape_interval = config.get_prometheus_scrape_interval(
+        prometheus_scrape_interval_ms = config.get_prometheus_scrape_interval_ms(
             cfg.prometheus
         )
 
@@ -352,12 +352,12 @@ def main(cfg: DictConfig):
             prometheus_service.wait_until_ready()
 
             # Wait for two scrape intervals so Prometheus has series to return.
-            label_discovery_wait = prometheus_scrape_interval * 2
+            label_discovery_wait_ms = prometheus_scrape_interval_ms * 2
             print(
-                f"Waiting {label_discovery_wait}s for Prometheus to scrape initial data "
+                f"Waiting {label_discovery_wait_ms / 1000}s for Prometheus to scrape initial data "
                 f"before running controller label inference..."
             )
-            time.sleep(label_discovery_wait)
+            time.sleep(label_discovery_wait_ms / 1000)
 
             prometheus_url = (
                 f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
@@ -372,7 +372,7 @@ def main(cfg: DictConfig):
                     url=prometheus_url,
                     database=None,
                 ),
-                prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
+                prometheus_scrape_interval_ms=prometheus_scrape_interval_ms,
             )
             sync.rsync_controller_config_remote_to_local(
                 provider,
@@ -516,7 +516,7 @@ def main(cfg: DictConfig):
                     experiment_output_dir=experiment_output_dir,
                     local_experiment_dir=local_experiment_dir,
                     flink_output_format=args.flink_output_format,
-                    prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
+                    prometheus_scrape_interval_ms=prometheus_scrape_interval_ms,
                     log_level=args.log_level,
                     profile_query_engine=args.profile_query_engine,
                     manual=args.manual_query_engine,
