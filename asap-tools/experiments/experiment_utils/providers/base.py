@@ -56,6 +56,7 @@ class InfrastructureProvider(ABC):
         popen: bool = True,
         redirect: bool = False,
         wait: bool = True,
+        ignore_errors: bool = False,
     ) -> List[subprocess.Popen]:
         """
         Execute a command on multiple nodes in parallel.
@@ -68,6 +69,7 @@ class InfrastructureProvider(ABC):
             popen: Must be True for parallel execution
             redirect: Whether to redirect output to /dev/null
             wait: Whether to wait for all commands to complete
+            ignore_errors: Whether to ignore command execution errors
 
         Returns:
             List of Popen objects for each node
