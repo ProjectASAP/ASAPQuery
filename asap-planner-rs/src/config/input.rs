@@ -62,7 +62,6 @@ impl ControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct QueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -78,27 +77,23 @@ pub struct QueryGroup {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct ControllerOptions {
     pub accuracy_sla: f64,
     pub latency_sla: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct MetricDefinition {
     pub metric: String,
     pub labels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AggregateCleanupConfig {
     pub policy: Option<CleanupPolicy>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct SketchParameterOverrides {
     #[serde(rename = "CountMinSketch")]
     pub count_min_sketch: Option<CmsParams>,
@@ -113,14 +108,12 @@ pub struct SketchParameterOverrides {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CmsParams {
     pub depth: u64,
     pub width: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CmsHeapParams {
     pub depth: u64,
     pub width: u64,
@@ -128,14 +121,12 @@ pub struct CmsHeapParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct KllParams {
     #[serde(rename = "K")]
     pub k: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HydraParams {
     pub row_num: u64,
     pub col_num: u64,
@@ -143,13 +134,11 @@ pub struct HydraParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct HllParams {
     pub precision: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SQLControllerConfig {
     pub query_groups: Vec<SQLQueryGroup>,
     pub tables: Vec<TableDefinition>,
@@ -158,7 +147,6 @@ pub struct SQLControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct SQLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -167,7 +155,6 @@ pub struct SQLQueryGroup {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct TableDefinition {
     pub name: String,
     pub time_column: String,
@@ -177,7 +164,6 @@ pub struct TableDefinition {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ElasticDSLControllerConfig {
     pub query_groups: Vec<ElasticDSLQueryGroup>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
@@ -185,7 +171,6 @@ pub struct ElasticDSLControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ElasticDSLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
