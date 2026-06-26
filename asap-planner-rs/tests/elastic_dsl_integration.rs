@@ -13,7 +13,7 @@ fn indent_block(text: &str, indent: usize) -> String {
         .join("\n")
 }
 
-fn elastic_yaml(index: &str, time_field: &str, query: &str, t_repeat: u64) -> String {
+fn elastic_yaml(index: &str, time_field: &str, query: &str, t_repeat_ms: u64) -> String {
     format!(
         r#"
 query_groups:
@@ -23,7 +23,7 @@ query_groups:
     queries:
       - |
 {query}
-    repetition_delay: {t_repeat}
+    repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 1.0
@@ -33,18 +33,28 @@ aggregate_cleanup:
         index = index,
         time_field = time_field,
         query = indent_block(query, 8),
-        t_repeat = t_repeat,
+        t_repeat_ms = t_repeat_ms,
     )
 }
 
-fn elastic_output(index: &str, time_field: &str, query: &str, t_repeat: u64) -> PlannerOutput {
-    let yaml = elastic_yaml(index, time_field, query, t_repeat);
+fn elastic_output(index: &str, time_field: &str, query: &str, t_repeat_ms: u64) -> PlannerOutput {
+    elastic_output_with_interval(index, time_field, query, t_repeat_ms, 15_000)
+}
+
+fn elastic_output_with_interval(
+    index: &str,
+    time_field: &str,
+    query: &str,
+    t_repeat_ms: u64,
+    data_ingestion_interval_ms: u64,
+) -> PlannerOutput {
+    let yaml = elastic_yaml(index, time_field, query, t_repeat_ms);
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(yaml.as_bytes()).unwrap();
 
     let opts = ElasticRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
-        data_ingestion_interval: 15,
+        data_ingestion_interval_ms,
     };
 
     ElasticController::from_file(Path::new(file.path()), opts)
@@ -86,7 +96,7 @@ fn assert_index_schema(
 fn elastic_querydsl_emits_index_schema() {
     let opts = ElasticRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
-        data_ingestion_interval: 15,
+        data_ingestion_interval_ms: 15_000,
     };
     let c = ElasticController::from_file(Path::new("tests/elastic_example.yaml"), opts).unwrap();
     let out = c.generate().unwrap();
@@ -143,7 +153,7 @@ fn elastic_sum_produces_basic_plan_and_schema() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 2);
     assert_eq!(out.inference_query_count(), 1);
@@ -195,7 +205,7 @@ fn elastic_avg_produces_three_configs() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 2);
     assert_eq!(out.inference_query_count(), 1);
@@ -248,7 +258,7 @@ fn elastic_min_produces_exact_plan() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
@@ -301,7 +311,7 @@ fn elastic_percentiles_produce_kll_plan() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
@@ -358,7 +368,7 @@ query_groups:
                         }
                     }
                 }
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 1.0
@@ -397,7 +407,7 @@ query_groups:
                         }
                     }
                 }
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 1.0
@@ -410,7 +420,7 @@ aggregate_cleanup:
 
     let opts = ElasticRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
-        data_ingestion_interval: 15,
+        data_ingestion_interval_ms: 15_000,
     };
 
     let c = ElasticController::from_file(Path::new(file.path()), opts).unwrap();
@@ -448,4 +458,38 @@ aggregate_cleanup:
         }
         other => panic!("expected elastic querydsl schema, got {:?}", other),
     }
+}
+
+// ── sub-second precision ──────────────────────────────────────────────────────
+
+/// repetition_delay_ms = 500 (sub-second): validates ms-precision plumbing end-to-end.
+#[test]
+fn sub_second_repetition_delay_ms() {
+    let query = r#"
+{
+    "aggs": {
+        "avg_cpu": {
+            "avg": {
+                "field": "cpu_usage"
+            }
+        }
+    },
+    "query": {
+        "bool": {
+            "filter": [
+                {
+                    "range": {
+                        "@timestamp": {
+                            "gte": "now-5m",
+                            "lte": "now"
+                        }
+                    }
+                }
+            ]
+        }
+    }
+}"#;
+    let out = elastic_output_with_interval("metrics", "\"@timestamp\"", query, 500, 500);
+    assert_eq!(out.streaming_aggregation_count(), 2);
+    assert!(out.all_tumbling_window_sizes_eq(500));
 }

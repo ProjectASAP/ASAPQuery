@@ -212,8 +212,8 @@ def validate_experiment_config(
             raise ValueError(
                 f"Query group {i} missing 'client_options.repetitions' field"
             )
-        if "repetition_delay" not in group:
-            raise ValueError(f"Query group {i} missing 'repetition_delay' field")
+        if "repetition_delay_ms" not in group:
+            raise ValueError(f"Query group {i} missing 'repetition_delay_ms' field")
 
     # Validate exporters structure
     if "exporter_list" not in experiment_params.exporters:
@@ -284,7 +284,7 @@ def get_minimum_experiment_running_time(experiment_params: DictConfig) -> int:
     for query_group in query_groups:
         query_group_starting_delay = query_group.client_options.starting_delay
         query_group_repetitions = query_group.client_options.repetitions
-        query_group_reptition_delay = query_group.repetition_delay
+        query_group_reptition_delay = query_group.repetition_delay_ms / 1000
 
         query_group_running_time = (
             query_group_starting_delay
@@ -369,18 +369,6 @@ def generate_controller_client_configs(
         controller_only_config = {
             k: v for k, v in full_config.items() if k in CONTROLLER_ALLOWED_KEYS
         }
-        # asap-planner-rs renamed QueryGroup.repetition_delay -> repetition_delay_ms
-        # (issue #398). full_config keeps the original seconds value for
-        # prometheus_client (a separate tool, unaffected by that rename) —
-        # only the controller-bound copy needs the renamed/scaled key.
-        if "query_groups" in controller_only_config:
-            controller_only_config["query_groups"] = [
-                {
-                    **{k: v for k, v in qg.items() if k != "repetition_delay"},
-                    "repetition_delay_ms": qg["repetition_delay"] * 1000,
-                }
-                for qg in controller_only_config["query_groups"]
-            ]
         with open(
             os.path.join(
                 output_dir, "{}_controller_input.yaml".format(experiment_mode["mode"])
@@ -692,7 +680,7 @@ def generate_clickhouse_client_configs(
     Args:
         query_groups: Iterable of query-group dicts (or DictConfig/ListConfig).
             Each entry must have ``sql_file`` and may have ``client_options``
-            (``starting_delay``, ``repetitions``) and ``repetition_delay``.
+            (``starting_delay``, ``repetitions``) and ``repetition_delay_ms``.
         local_experiment_dir: Local directory under which
             ``controller_client_configs/`` is created.
         mode_server_urls: Mapping of mode name to ClickHouse server URL, e.g.
@@ -734,7 +722,7 @@ def generate_clickhouse_client_configs(
             {
                 "id": idx,
                 "queries": queries,
-                "repetition_delay": group.get("repetition_delay", 0),
+                "repetition_delay_ms": group.get("repetition_delay_ms", 0),
                 "client_options": client_opts,
                 "time_window_seconds": group.get("time_window_seconds"),
             }
@@ -775,7 +763,7 @@ def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
 
     Args:
         query_groups: ListConfig of query group dicts.
-            Each entry must have ``sql_file``, ``repetition_delay``, and
+            Each entry must have ``sql_file``, ``repetition_delay_ms``, and
             ``controller_options`` (``accuracy_sla``, ``latency_sla``).
         dataset_cfg: DictConfig with ``table``/``name``, and ``precompute``
             sub-config (``timestamp_col``, ``value_col``, ``label_cols``).
@@ -813,7 +801,7 @@ def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
         planner_query_groups.append(
             {
                 "id": idx + 1,
-                "repetition_delay": int(group.get("repetition_delay", 0)),
+                "repetition_delay_ms": int(group.get("repetition_delay_ms", 0)),
                 "queries": queries,
                 "controller_options": {
                     "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),

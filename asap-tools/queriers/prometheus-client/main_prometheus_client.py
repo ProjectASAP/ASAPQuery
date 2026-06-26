@@ -142,17 +142,16 @@ def get_query_unix_time(
     query: Query,
     query_unix_time: UnixTimestamp,
     query_start_times: Optional[QueryStartTimes],
-    repetition_delay: int,
+    repetition_delay_ms: int,
 ) -> UnixTimestamp:
     if query_start_times is None or query not in query_start_times:
         return query_unix_time
 
     query_alignment_time = query_start_times[query]
-    # we want the latest timestamp that is query_aligment_time + N * repetition_delay
-    query_unix_time = int(
-        query_unix_time - (query_unix_time - query_alignment_time) % repetition_delay
-    )
-    return query_unix_time
+    # we want the latest timestamp that is query_alignment_time + N * (repetition_delay_ms / 1000)
+    # Keep arithmetic in integer ms to avoid IEEE 754 drift from non-round divisions.
+    diff_ms = round((query_unix_time - query_alignment_time) * 1000)
+    return int(query_unix_time - (diff_ms % repetition_delay_ms) / 1000)
 
 
 def execute_single_query(
@@ -342,7 +341,7 @@ def handle_query_group(
                         query,
                         query_unix_time,
                         query_start_times,
-                        query_group.repetition_delay,
+                        query_group.repetition_delay_ms,
                     )
 
                     for server_name, server_object in servers.items():
@@ -385,7 +384,7 @@ def handle_query_group(
                     query,
                     query_unix_time,
                     query_start_times,
-                    query_group.repetition_delay,
+                    query_group.repetition_delay_ms,
                 )
 
                 logger.debug("Unix time for query: {}", current_query_unix_time)
@@ -430,7 +429,7 @@ def handle_query_group(
             latency_exporter.export_repetition(repetition_idx, result)
 
         if repetition_idx < query_group.repetitions - 1:
-            time.sleep(query_group.repetition_delay)
+            time.sleep(query_group.repetition_delay_ms / 1000)
 
     if latency_exporter is not None:
         latency_exporter.shutdown()
@@ -677,9 +676,9 @@ def main(args: Any) -> None:
     max_duration = 0
     for query_group in config.query_groups:
         assert query_group.repetitions is not None
-        assert query_group.repetition_delay is not None
+        assert query_group.repetition_delay_ms is not None
         duration = (
-            query_group.repetition_delay * query_group.repetitions
+            query_group.repetition_delay_ms / 1000 * query_group.repetitions
             + query_group.starting_delay
             - min_starting_delay
         )

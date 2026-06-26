@@ -37,6 +37,7 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
         let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        config.warn_default_slas();
         let all_queries: Vec<String> = config
             .query_groups
             .iter()
@@ -78,6 +79,7 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
         let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        config.warn_default_slas();
         Ok(Self {
             config,
             schema,
@@ -92,6 +94,7 @@ impl Controller {
         opts: RuntimeOptions,
     ) -> Result<Self, ControllerError> {
         let config: ControllerConfig = serde_yaml::from_str(yaml)?;
+        config.warn_default_slas();
         Ok(Self {
             config,
             schema,

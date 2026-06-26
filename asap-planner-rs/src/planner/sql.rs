@@ -20,8 +20,8 @@ use crate::StreamingEngine;
 
 pub struct SQLSingleQueryProcessor {
     query_string: String,
-    t_repeat: u64,
-    data_ingestion_interval: u64,
+    t_repeat_ms: u64,
+    data_ingestion_interval_ms: u64,
     table_definitions: Vec<TableDefinition>,
     #[allow(dead_code)]
     streaming_engine: StreamingEngine,
@@ -33,8 +33,8 @@ impl SQLSingleQueryProcessor {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         query_string: String,
-        t_repeat: u64,
-        data_ingestion_interval: u64,
+        t_repeat_ms: u64,
+        data_ingestion_interval_ms: u64,
         table_definitions: Vec<TableDefinition>,
         streaming_engine: StreamingEngine,
         sketch_parameters: Option<SketchParameterOverrides>,
@@ -42,8 +42,8 @@ impl SQLSingleQueryProcessor {
     ) -> Self {
         Self {
             query_string,
-            t_repeat,
-            data_ingestion_interval,
+            t_repeat_ms,
+            data_ingestion_interval_ms,
             table_definitions,
             streaming_engine,
             sketch_parameters,
@@ -72,8 +72,12 @@ impl SQLSingleQueryProcessor {
             })?;
 
         // Match query to pattern
-        let sql_query = SQLPatternMatcher::new(schema.clone(), self.data_ingestion_interval as f64)
-            .query_info_to_pattern(&qdata);
+        // SQLPatternMatcher.scrape_interval is in seconds (SQL timestamps are seconds-based).
+        let sql_query = SQLPatternMatcher::new(
+            schema.clone(),
+            self.data_ingestion_interval_ms as f64 / 1000.0,
+        )
+        .query_info_to_pattern(&qdata);
 
         if !sql_query.is_valid() {
             return Err(ControllerError::SqlParse(sql_query.msg.unwrap_or_default()));
@@ -97,8 +101,11 @@ impl SQLSingleQueryProcessor {
         let value_column = agg_info.get_value_column_name().to_string();
 
         // Compute window
-        let window_cfg =
-            compute_sql_window(query_type, self.data_ingestion_interval, self.t_repeat);
+        let window_cfg = compute_sql_window(
+            query_type,
+            self.data_ingestion_interval_ms,
+            self.t_repeat_ms,
+        );
 
         // Get all metadata columns for the table
         let all_metadata = get_all_metadata_columns(&self.table_definitions, table_name)?;
@@ -157,16 +164,17 @@ impl SQLSingleQueryProcessor {
             }
         }
 
-        let t_lookback = match query_type {
-            QueryType::Spatial => self.data_ingestion_interval,
-            _ => sql_query.query_data[0].time_info.get_duration() as u64,
+        let t_lookback_ms = match query_type {
+            QueryType::Spatial => self.data_ingestion_interval_ms,
+            // SQLPatternParser always produces second-based durations; convert to ms.
+            _ => (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64,
         };
 
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {
             None
         } else {
             Some(
-                get_sql_cleanup_param(self.cleanup_policy, t_lookback, self.t_repeat)
+                get_sql_cleanup_param(self.cleanup_policy, t_lookback_ms, self.t_repeat_ms)
                     .map_err(ControllerError::PlannerError)?,
             )
         };
@@ -215,16 +223,12 @@ fn get_sql_statistics(name: &str) -> Result<Vec<Statistic>, ControllerError> {
 
 fn compute_sql_window(
     query_type: &QueryType,
-    data_ingestion_interval: u64,
-    t_repeat: u64,
+    data_ingestion_interval_ms: u64,
+    t_repeat_ms: u64,
 ) -> IntermediateWindowConfig {
-    // data_ingestion_interval and t_repeat are seconds (SQL mode is out of scope for the
-    // ms-precision rename, see issue #427) — IntermediateWindowConfig is now ms-typed
-    // throughout, so convert at this boundary, same as the pre-existing pattern in
-    // asap-query-engine/src/engines/simple_engine/sql.rs.
     let window_size_ms = match query_type {
-        QueryType::Spatial => data_ingestion_interval * 1000,
-        _ => t_repeat * 1000,
+        QueryType::Spatial => data_ingestion_interval_ms,
+        _ => t_repeat_ms,
     };
     IntermediateWindowConfig {
         window_size_ms,

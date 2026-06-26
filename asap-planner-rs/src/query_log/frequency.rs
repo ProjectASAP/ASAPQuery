@@ -83,7 +83,7 @@ pub fn infer_queries(
         }
 
         let repetition_delay_ms =
-            infer_repetition_delay(&variant_entries, scrape_interval_ms, &query);
+            infer_repetition_delay_ms(&variant_entries, scrape_interval_ms, &query);
 
         if step == 0 {
             instant_results.push(InstantQueryInfo {
@@ -105,7 +105,7 @@ pub fn infer_queries(
 }
 
 /// Compute median inter-arrival time from timestamps and round to nearest scrape interval.
-fn infer_repetition_delay(entries: &[&LogEntry], scrape_interval_ms: u64, query: &str) -> u64 {
+fn infer_repetition_delay_ms(entries: &[&LogEntry], scrape_interval_ms: u64, query: &str) -> u64 {
     let mut timestamps: Vec<DateTime<Utc>> = entries.iter().map(|e| e.ts).collect();
     timestamps.sort();
 
@@ -124,7 +124,7 @@ fn infer_repetition_delay(entries: &[&LogEntry], scrape_interval_ms: u64, query:
             raw_median_ms = raw_median,
             rounded_ms = rounded,
             misalignment_pct = misalignment * 100.0,
-            "inferred repetition_delay is poorly aligned with scrape_interval; result may be inaccurate"
+            "inferred repetition_delay_ms is poorly aligned with scrape_interval; result may be inaccurate"
         );
     }
 
