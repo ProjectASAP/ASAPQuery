@@ -47,7 +47,7 @@ impl ElasticIndexSchemaBuilder {
 
 pub struct ElasticRuntimeOptions {
     pub streaming_engine: StreamingEngine,
-    pub data_ingestion_interval: u64,
+    pub data_ingestion_interval_ms: u64,
 }
 
 pub fn generate_elastic_plan(
@@ -60,12 +60,12 @@ pub fn generate_elastic_plan(
         .and_then(|c| c.policy)
         .unwrap_or(CleanupPolicy::ReadBased);
 
-    // Validate T % data_ingestion_interval == 0
+    // Validate T % data_ingestion_interval_ms == 0
     for qg in &config.query_groups {
-        if (qg.repetition_delay_ms / 1000) % opts.data_ingestion_interval != 0 {
+        if qg.repetition_delay_ms % opts.data_ingestion_interval_ms != 0 {
             return Err(ControllerError::PlannerError(format!(
-                "repetition_delay_ms {} is not a multiple of data_ingestion_interval {} s",
-                qg.repetition_delay_ms, opts.data_ingestion_interval
+                "repetition_delay_ms {} is not a multiple of data_ingestion_interval_ms {}",
+                qg.repetition_delay_ms, opts.data_ingestion_interval_ms
             )));
         }
     }
@@ -111,8 +111,8 @@ pub fn generate_elastic_plan(
         for query_string in &qg.queries {
             let processor = ElasticSingleQueryProcessor::new(
                 query_string.clone(),
-                qg.repetition_delay_ms / 1000,
-                opts.data_ingestion_interval,
+                qg.repetition_delay_ms,
+                opts.data_ingestion_interval_ms,
                 index_schema_builders[&qg.index].clone(),
                 opts.streaming_engine,
                 config.sketch_parameters.clone(),

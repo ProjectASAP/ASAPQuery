@@ -7,7 +7,7 @@ fn sql_opts() -> SQLRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
         // Fixed evaluation time so NOW()-relative timestamps are deterministic.
         query_evaluation_time: Some(1_000_000.0),
-        data_ingestion_interval: 15,
+        data_ingestion_interval_ms: 15_000,
     }
 }
 
@@ -17,8 +17,8 @@ fn sql_opts() -> SQLRuntimeOptions {
 ///   time_column       : time
 ///   value_columns     : [cpu_usage]
 ///   metadata_columns  : [hostname, datacenter, region]
-/// data_ingestion_interval = 15 s
-fn one_query_config(query: &str, t_repeat: u64) -> String {
+/// data_ingestion_interval_ms = 15_000 ms
+fn one_query_config(query: &str, t_repeat_ms: u64) -> String {
     format!(
         r#"
 tables:
@@ -28,7 +28,7 @@ tables:
     metadata_columns: [hostname, datacenter, region]
 query_groups:
   - id: 1
-    repetition_delay_ms: {t_repeat}
+    repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -468,7 +468,7 @@ fn temporal_quantile_cast_datetime_bounds() {
 
 // ── COUNT(DISTINCT) / HLL (spatial 1 s) ───────────────────────────────────────
 
-fn netflow_one_query_config(query: &str, t_repeat: u64) -> String {
+fn netflow_one_query_config(query: &str, t_repeat_ms: u64) -> String {
     format!(
         r#"
 tables:
@@ -478,7 +478,7 @@ tables:
     metadata_columns: [srcip, dstip, proto]
 query_groups:
   - id: 1
-    repetition_delay_ms: {t_repeat}
+    repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 100.0
@@ -495,7 +495,7 @@ fn sql_opts_1s_ingest() -> SQLRuntimeOptions {
     SQLRuntimeOptions {
         streaming_engine: StreamingEngine::Arroyo,
         query_evaluation_time: Some(1_000_000.0),
-        data_ingestion_interval: 1,
+        data_ingestion_interval_ms: 1_000,
     }
 }
 
@@ -882,9 +882,9 @@ aggregate_cleanup:
     ));
 }
 
-/// T that is not a multiple of data_ingestion_interval is invalid: sketch windows
+/// T that is not a multiple of data_ingestion_interval_ms is invalid: sketch windows
 /// must align with the ingestion cadence.
-/// data_ingestion_interval = 15 s, T = 200 s → 200 mod 15 ≠ 0 → PlannerError.
+/// data_ingestion_interval_ms = 15_000, T_ms = 200_000 → 200_000 mod 15_000 ≠ 0 → PlannerError.
 #[test]
 fn t_not_multiple_of_data_ingestion_interval_returns_planner_error() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -200, NOW()) AND NOW() GROUP BY datacenter";
@@ -1010,6 +1010,30 @@ fn spatial_count_order_by_asc_limit_is_not_topk() {
     assert!(out.has_aggregation_type("CountMinSketch"));
     assert!(out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketchWithHeap"));
+}
+
+// ── sub-second precision ──────────────────────────────────────────────────────
+
+/// data_ingestion_interval_ms = 500 (sub-second): spatial HLL with 500 ms window.
+/// Validates that ms-precision plumbing works end-to-end below 1 s.
+#[test]
+fn sub_second_data_ingestion_interval_ms() {
+    let q = "SELECT srcip, COUNT(DISTINCT dstip) AS unique_peers FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() \
+             GROUP BY srcip";
+    let opts = SQLRuntimeOptions {
+        streaming_engine: StreamingEngine::Arroyo,
+        query_evaluation_time: Some(1_000_000.0),
+        data_ingestion_interval_ms: 500,
+    };
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 500), opts)
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert!(out.has_aggregation_type("HLL"));
+    assert!(out.all_tumbling_window_sizes_eq(500));
 }
 
 /// LIMIT 0 is treated as non-top-k and uses the normal CMS + DeltaSet path.
