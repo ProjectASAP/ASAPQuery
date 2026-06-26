@@ -4,6 +4,7 @@ use asap_types::streaming_config::StreamingConfig;
 use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
 use serde::Deserialize;
+use tracing::warn;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +31,22 @@ pub struct ControllerConfig {
 }
 
 impl ControllerConfig {
+    /// Warn if any query group has both SLAs at 0.0 (the serde Default),
+    /// which indicates `controller_options` was omitted from the config.
+    pub fn warn_default_slas(&self) {
+        for qg in &self.query_groups {
+            let opts = &qg.controller_options;
+            if opts.accuracy_sla == 0.0 && opts.latency_sla == 0.0 {
+                warn!(
+                    query_group_id = ?qg.id,
+                    "controller_options not set in query group; \
+                     accuracy_sla=0.0 and latency_sla=0.0 will be used — \
+                     add controller_options to your config"
+                );
+            }
+        }
+    }
+
     /// Build a `PromQLSchema` from the `metrics` hints in this config.
     /// Returns an empty schema if no hints are present.
     pub fn schema_from_hints(&self) -> PromQLSchema {

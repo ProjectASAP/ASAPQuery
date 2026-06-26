@@ -10,6 +10,7 @@ import urllib.parse
 import os
 import sys
 import typing
+import warnings
 import requests
 import re
 from dataclasses import dataclass
@@ -500,7 +501,19 @@ class GrafanaDashboardBuilder:
             return "30s"
 
         min_delay = min(q.repetition_delay_ms for q in queries)
-        return f"{max(1, min_delay // 1000)}s"
+        if min_delay < 1000:
+            warnings.warn(
+                f"Minimum repetition_delay_ms ({min_delay} ms) is sub-second; "
+                "Grafana refresh intervals must be at least 1 second.",
+                UserWarning,
+                stacklevel=2,
+            )
+            raise ValueError(
+                f"Cannot generate Grafana dashboard: minimum repetition_delay_ms "
+                f"({min_delay} ms) is less than 1000 ms. Grafana requires a refresh "
+                "interval of at least 1 second."
+            )
+        return f"{min_delay // 1000}s"
 
     def _calculate_time_range(self, queries: List[QueryConfig]) -> tuple[str, str]:
         """
