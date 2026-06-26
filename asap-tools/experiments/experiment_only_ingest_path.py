@@ -227,7 +227,9 @@ def main(cfg: DictConfig):
         node_offset=args.node_offset,
     )
 
-    prometheus_scrape_interval = config.get_prometheus_scrape_interval(cfg.prometheus)
+    prometheus_scrape_interval_ms = config.get_prometheus_scrape_interval_ms(
+        cfg.prometheus
+    )
 
     # Start fake exporter if configured
     if config.check_exporter_and_queries_exist("fake_exporter", cfg.experiment_params):
@@ -288,16 +290,16 @@ def main(cfg: DictConfig):
 
         prometheus_service.wait_until_ready()
 
-        label_discovery_wait = prometheus_scrape_interval * 2
+        label_discovery_wait_ms = prometheus_scrape_interval_ms * 2
         print(
-            f"Waiting {label_discovery_wait}s for Prometheus to scrape initial data "
+            f"Waiting {label_discovery_wait_ms / 1000}s for Prometheus to scrape initial data "
             f"before running controller label inference..."
         )
-        time.sleep(label_discovery_wait)
+        time.sleep(label_discovery_wait_ms / 1000)
 
         controller_service.start(
             controller_input_file=controller_input_config,
-            prometheus_scrape_interval_ms=prometheus_scrape_interval * 1000,
+            prometheus_scrape_interval_ms=prometheus_scrape_interval_ms,
             streaming_engine=args.streaming_engine,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             punting=args.controller_punting,

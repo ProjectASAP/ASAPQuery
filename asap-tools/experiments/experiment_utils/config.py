@@ -478,20 +478,18 @@ def read_workloads_config(experiment_params: DictConfig):
     return workloads_config
 
 
-def get_prometheus_scrape_interval(prometheus_config):
-    """Extract scrape interval from Prometheus configuration."""
-    prometheus_scrape_interval_string = prometheus_config.scrape_interval
-    # convert to seconds
-    if prometheus_scrape_interval_string.endswith("s"):
-        prometheus_scrape_interval = int(prometheus_scrape_interval_string[:-1])
-    elif prometheus_scrape_interval_string.endswith("m"):
-        prometheus_scrape_interval = int(prometheus_scrape_interval_string[:-1]) * 60
+def get_prometheus_scrape_interval_ms(prometheus_config):
+    """Extract scrape interval from Prometheus configuration, returned in milliseconds."""
+    s = prometheus_config.scrape_interval
+    # ponytail: check ms before s — "100ms".endswith("s") is True and would misroute
+    if s.endswith("ms"):
+        return int(s[:-2])
+    elif s.endswith("s"):
+        return int(s[:-1]) * 1000
+    elif s.endswith("m"):
+        return int(s[:-1]) * 60 * 1000
     else:
-        raise ValueError(
-            f"Invalid scrape interval string: {prometheus_scrape_interval_string}"
-        )
-
-    return prometheus_scrape_interval
+        raise ValueError(f"Invalid scrape interval string: {s}")
 
 
 class Args:
