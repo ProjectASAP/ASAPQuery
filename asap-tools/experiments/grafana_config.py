@@ -46,7 +46,7 @@ class QueryConfig:
     """Configuration for a query with timing parameters."""
 
     query: str
-    repetition_delay: int
+    repetition_delay_ms: int
     query_time_offset: int
 
 
@@ -306,7 +306,7 @@ class ExperimentDashboardConfig:
             if not hasattr(query_group, "queries") or not query_group.queries:
                 continue
 
-            repetition_delay = getattr(query_group, "repetition_delay", 30)
+            repetition_delay_ms = getattr(query_group, "repetition_delay_ms", 30000)
             query_time_offset = 0
 
             if hasattr(query_group, "client_options"):
@@ -317,7 +317,7 @@ class ExperimentDashboardConfig:
                 queries.append(
                     QueryConfig(
                         query=query_str,
-                        repetition_delay=repetition_delay,
+                        repetition_delay_ms=repetition_delay_ms,
                         query_time_offset=query_time_offset,
                     )
                 )
@@ -499,8 +499,8 @@ class GrafanaDashboardBuilder:
         if not queries:
             return "30s"
 
-        min_delay = min(q.repetition_delay for q in queries)
-        return f"{min_delay}s"
+        min_delay = min(q.repetition_delay_ms for q in queries)
+        return f"{min_delay // 1000}s"
 
     def _calculate_time_range(self, queries: List[QueryConfig]) -> tuple[str, str]:
         """

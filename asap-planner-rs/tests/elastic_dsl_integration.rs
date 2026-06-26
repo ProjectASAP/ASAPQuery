@@ -23,7 +23,7 @@ query_groups:
     queries:
       - |
 {query}
-    repetition_delay: {t_repeat}
+    repetition_delay_ms: {t_repeat}
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 1.0
@@ -143,7 +143,7 @@ fn elastic_sum_produces_basic_plan_and_schema() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 2);
     assert_eq!(out.inference_query_count(), 1);
@@ -195,7 +195,7 @@ fn elastic_avg_produces_three_configs() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 2);
     assert_eq!(out.inference_query_count(), 1);
@@ -248,7 +248,7 @@ fn elastic_min_produces_exact_plan() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
@@ -301,7 +301,7 @@ fn elastic_percentiles_produce_kll_plan() {
     }
 }
 "#;
-    let out = elastic_output("metrics", "\"@timestamp\"", query, 300);
+    let out = elastic_output("metrics", "\"@timestamp\"", query, 300_000);
 
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
@@ -358,7 +358,7 @@ query_groups:
                         }
                     }
                 }
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 1.0
@@ -397,7 +397,7 @@ query_groups:
                         }
                     }
                 }
-    repetition_delay: 300
+    repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
       latency_sla: 1.0

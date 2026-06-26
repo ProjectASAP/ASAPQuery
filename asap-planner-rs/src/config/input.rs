@@ -133,7 +133,7 @@ pub struct SQLControllerConfig {
 pub struct SQLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
-    pub repetition_delay: u64,
+    pub repetition_delay_ms: u64,
     pub controller_options: ControllerOptions,
 }
 
@@ -157,7 +157,7 @@ pub struct ElasticDSLControllerConfig {
 pub struct ElasticDSLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
-    pub repetition_delay: u64,
+    pub repetition_delay_ms: u64,
     pub index: String,
     pub time_field: String,
     pub controller_options: ControllerOptions,

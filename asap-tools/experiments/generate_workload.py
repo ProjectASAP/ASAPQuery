@@ -378,7 +378,7 @@ def get_base_config() -> Dict:
             {
                 "id": 1,
                 "queries": [],  # Will be populated
-                "repetition_delay": 10,
+                "repetition_delay_ms": 10000,
                 "client_options": {
                     "repetitions": 10,
                     "query_time_offset": 10,

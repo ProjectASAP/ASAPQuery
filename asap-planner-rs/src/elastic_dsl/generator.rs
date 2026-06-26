@@ -62,10 +62,10 @@ pub fn generate_elastic_plan(
 
     // Validate T % data_ingestion_interval == 0
     for qg in &config.query_groups {
-        if qg.repetition_delay % opts.data_ingestion_interval != 0 {
+        if (qg.repetition_delay_ms / 1000) % opts.data_ingestion_interval != 0 {
             return Err(ControllerError::PlannerError(format!(
-                "repetition_delay {} is not a multiple of data_ingestion_interval {}",
-                qg.repetition_delay, opts.data_ingestion_interval
+                "repetition_delay_ms {} is not a multiple of data_ingestion_interval {} s",
+                qg.repetition_delay_ms, opts.data_ingestion_interval
             )));
         }
     }
@@ -111,7 +111,7 @@ pub fn generate_elastic_plan(
         for query_string in &qg.queries {
             let processor = ElasticSingleQueryProcessor::new(
                 query_string.clone(),
-                qg.repetition_delay,
+                qg.repetition_delay_ms / 1000,
                 opts.data_ingestion_interval,
                 index_schema_builders[&qg.index].clone(),
                 opts.streaming_engine,

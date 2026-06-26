@@ -37,7 +37,7 @@ class QueryGroupConfig:
         id: int,
         queries: List[str],
         # repetitions: int,
-        repetition_delay: int,
+        repetition_delay_ms: int,
         options: Dict[str, Any],
         time_window_seconds: Optional[int],
         # starting_delay: int,
@@ -50,7 +50,7 @@ class QueryGroupConfig:
         self.id = id
         self.queries = queries
         # self.repetitions = repetitions
-        self.repetition_delay = repetition_delay
+        self.repetition_delay_ms = repetition_delay_ms
         self.time_window_seconds = time_window_seconds
         self.__dict__.update(options)
         # self.starting_delay = starting_delay
@@ -71,7 +71,7 @@ class QueryGroupConfig:
         return cls(
             id=data["id"],
             queries=data["queries"],
-            repetition_delay=data["repetition_delay"],
+            repetition_delay_ms=data["repetition_delay_ms"],
             options=data["client_options"],
             time_window_seconds=data.get("time_window_seconds"),
         )

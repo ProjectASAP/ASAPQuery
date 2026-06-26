@@ -78,7 +78,7 @@ pub fn run_greedy_pipeline(
 }
 
 /// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
-/// Each (query, repetition_delay) pair becomes one RQE.
+/// Each (query, repetition_delay_ms) pair becomes one RQE.
 fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
     config
         .query_groups
