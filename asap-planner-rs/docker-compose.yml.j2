@@ -12,8 +12,8 @@ services:
       "--streaming_engine", "{{ streaming_engine }}",
       "--prometheus-url", "{{ prometheus_url }}",
       "--query-language", "{{ query_language }}"{% if punting %},
-      "--enable-punting"{% endif %}{% if data_ingestion_interval is not none %},
-      "--data-ingestion-interval", "{{ data_ingestion_interval }}"{% endif %}
+      "--enable-punting"{% endif %}{% if data_ingestion_interval_ms is not none %},
+      "--data-ingestion-interval-ms", "{{ data_ingestion_interval_ms }}"{% endif %}
     ]
     network_mode: "host"
     restart: no

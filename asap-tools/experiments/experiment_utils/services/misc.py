@@ -272,7 +272,7 @@ class ControllerService(BaseService):
         if prometheus_scrape_interval_ms is not None:
             cmd += f" --prometheus_scrape_interval_ms {prometheus_scrape_interval_ms}"
         if data_ingestion_interval is not None:
-            cmd += f" --data-ingestion-interval {data_ingestion_interval}"
+            cmd += f" --data-ingestion-interval-ms {data_ingestion_interval}"
         if discovery_backend.type == "prometheus":
             cmd += f" --prometheus-url {discovery_backend.url}"
         elif discovery_backend.type == "clickhouse":
@@ -335,7 +335,7 @@ class ControllerService(BaseService):
                 f" --prometheus-scrape-interval-ms {prometheus_scrape_interval_ms}"
             )
         if data_ingestion_interval is not None:
-            generate_cmd += f" --data-ingestion-interval {data_ingestion_interval}"
+            generate_cmd += f" --data-ingestion-interval-ms {data_ingestion_interval}"
         if discovery_backend.type == "prometheus":
             generate_cmd += f" --prometheus-url {discovery_backend.url}"
         elif discovery_backend.type == "clickhouse":

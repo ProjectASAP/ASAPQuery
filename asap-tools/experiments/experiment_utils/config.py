@@ -763,7 +763,7 @@ def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
 
     Args:
         query_groups: ListConfig of query group dicts.
-            Each entry must have ``sql_file``, ``repetition_delay``, and
+            Each entry must have ``sql_file``, ``repetition_delay_ms``, and
             ``controller_options`` (``accuracy_sla``, ``latency_sla``).
         dataset_cfg: DictConfig with ``table``/``name``, and ``precompute``
             sub-config (``timestamp_col``, ``value_col``, ``label_cols``).

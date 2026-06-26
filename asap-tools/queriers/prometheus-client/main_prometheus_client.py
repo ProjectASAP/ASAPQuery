@@ -148,12 +148,10 @@ def get_query_unix_time(
         return query_unix_time
 
     query_alignment_time = query_start_times[query]
-    # we want the latest timestamp that is query_aligment_time + N * repetition_delay
-    query_unix_time = int(
-        query_unix_time
-        - (query_unix_time - query_alignment_time) % (repetition_delay_ms / 1000)
-    )
-    return query_unix_time
+    # we want the latest timestamp that is query_alignment_time + N * (repetition_delay_ms / 1000)
+    # Keep arithmetic in integer ms to avoid IEEE 754 drift from non-round divisions.
+    diff_ms = round((query_unix_time - query_alignment_time) * 1000)
+    return int(query_unix_time - (diff_ms % repetition_delay_ms) / 1000)
 
 
 def execute_single_query(

@@ -167,7 +167,7 @@ impl SQLSingleQueryProcessor {
         let t_lookback_ms = match query_type {
             QueryType::Spatial => self.data_ingestion_interval_ms,
             // SQLPatternParser always produces second-based durations; convert to ms.
-            _ => (sql_query.query_data[0].time_info.get_duration() * 1000.0) as u64,
+            _ => (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64,
         };
 
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {

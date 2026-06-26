@@ -500,7 +500,7 @@ class GrafanaDashboardBuilder:
             return "30s"
 
         min_delay = min(q.repetition_delay_ms for q in queries)
-        return f"{min_delay // 1000}s"
+        return f"{max(1, min_delay // 1000)}s"
 
     def _calculate_time_range(self, queries: List[QueryConfig]) -> tuple[str, str]:
         """

@@ -21,7 +21,7 @@ def generate_compose_file(
     punting: bool,
     prometheus_url: str,
     query_language: str,
-    data_ingestion_interval: Optional[int],
+    data_ingestion_interval_ms: Optional[int],
 ):
     """Generate docker-compose.yml from template with provided variables."""
 
@@ -47,7 +47,7 @@ def generate_compose_file(
         "punting": punting,
         "prometheus_url": prometheus_url,
         "query_language": query_language,
-        "data_ingestion_interval": data_ingestion_interval,
+        "data_ingestion_interval_ms": data_ingestion_interval_ms,
     }
 
     # Render the template
@@ -136,17 +136,17 @@ def main():
         help="Query language for the controller",
     )
     parser.add_argument(
-        "--data-ingestion-interval",
+        "--data-ingestion-interval-ms",
         type=int,
         default=None,
-        help="Data ingestion interval in seconds (SQL mode only)",
+        help="Data ingestion interval in milliseconds (SQL mode only)",
     )
 
     args = parser.parse_args()
 
-    if args.data_ingestion_interval is not None and args.query_language != "sql":
+    if args.data_ingestion_interval_ms is not None and args.query_language != "sql":
         parser.error(
-            "--data-ingestion-interval is only valid when --query-language is 'sql'"
+            "--data-ingestion-interval-ms is only valid when --query-language is 'sql'"
         )
 
     generate_compose_file(
@@ -161,7 +161,7 @@ def main():
         punting=args.punting,
         prometheus_url=args.prometheus_url,
         query_language=args.query_language,
-        data_ingestion_interval=args.data_ingestion_interval,
+        data_ingestion_interval_ms=args.data_ingestion_interval_ms,
     )
 
 
