@@ -64,13 +64,10 @@ class LocalProvider(InfrastructureProvider):
                     text=True,
                 )
             except OSError as e:
-                # execute_command_parallel has no ignore_errors knob (see
-                # follow-up issue), so this can't be conditional yet. Mirrors
-                # CloudLab's SSH transport: launching `ssh` locally never
-                # fails even if the remote cmd_dir is missing — the failure
-                # is invisible unless something later checks output/health.
-                print(f"Warning: failed to launch '{cmd}' in {cmd_dir!r}: {e}")
-                return None
+                if ignore_errors:
+                    print(f"Warning: failed to launch '{cmd}' in {cmd_dir!r}: {e}")
+                    return None
+                raise
 
         try:
             return subprocess.run(
@@ -101,6 +98,7 @@ class LocalProvider(InfrastructureProvider):
         popen: bool = True,
         redirect: bool = False,
         wait: bool = True,
+        ignore_errors: bool = False,
     ) -> List[subprocess.Popen]:
         """Execute a command once locally (there is only one local node)."""
         if redirect:
@@ -112,6 +110,7 @@ class LocalProvider(InfrastructureProvider):
             cmd_dir=cmd_dir,
             nohup=nohup,
             popen=True,
+            ignore_errors=ignore_errors,
         )
         processes = [process]
         if wait:

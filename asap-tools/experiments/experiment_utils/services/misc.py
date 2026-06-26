@@ -79,6 +79,7 @@ class DeathstarService(BaseService):
             nohup=False,
             popen=True,
             wait=True,
+            ignore_errors=True,
         )
 
     def run_workload(

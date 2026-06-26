@@ -81,14 +81,20 @@ class CloudLabLocalProvider(InfrastructureProvider):
 
         # Execute locally
         if popen:
-            return subprocess.Popen(
-                cmd,
-                shell=True,
-                cwd=cmd_dir,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
+            try:
+                return subprocess.Popen(
+                    cmd,
+                    shell=True,
+                    cwd=cmd_dir,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            except OSError as e:
+                if ignore_errors:
+                    print(f"Warning: failed to launch '{cmd}' in {cmd_dir!r}: {e}")
+                    return None
+                raise
         else:
             try:
                 result = subprocess.run(
@@ -100,7 +106,7 @@ class CloudLabLocalProvider(InfrastructureProvider):
                     check=not ignore_errors,
                 )
                 return result
-            except subprocess.CalledProcessError as e:
+            except (subprocess.CalledProcessError, OSError) as e:
                 if ignore_errors:
                     return e
                 raise
@@ -114,6 +120,7 @@ class CloudLabLocalProvider(InfrastructureProvider):
         popen: bool = True,
         redirect: bool = False,
         wait: bool = True,
+        ignore_errors: bool = False,
     ) -> List[subprocess.Popen]:
         """
         Execute a command in parallel locally.
@@ -129,6 +136,7 @@ class CloudLabLocalProvider(InfrastructureProvider):
             popen: Must be True for parallel execution
             redirect: Whether to redirect output to /dev/null
             wait: Whether to wait for all commands to complete
+            ignore_errors: Whether to ignore command execution errors
 
         Returns:
             List containing single Popen object
@@ -144,6 +152,7 @@ class CloudLabLocalProvider(InfrastructureProvider):
             cmd_dir=cmd_dir,
             nohup=nohup,
             popen=True,  # Always return Popen for parallel
+            ignore_errors=ignore_errors,
         )
 
         processes = [process]

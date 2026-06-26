@@ -78,6 +78,7 @@ class CloudLabProvider(InfrastructureProvider):
         popen: bool = True,
         redirect: bool = False,
         wait: bool = True,
+        ignore_errors: bool = False,
     ) -> List[subprocess.Popen]:
         """
         Execute a command on multiple CloudLab nodes in parallel via SSH.
