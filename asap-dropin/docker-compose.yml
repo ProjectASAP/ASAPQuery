@@ -29,7 +29,7 @@ services:
     command:
       - "--config-file=/config/engine_config.yaml"
       - "backend.server=${PROMETHEUS_URL:-http://localhost:9090}"
-      - "prometheus_scrape_interval=${PROMETHEUS_SCRAPE_INTERVAL:-15}"  # ponytail: use prometheus_scrape_interval_ms once a compatible image is released
+      - "prometheus_scrape_interval=${PROMETHEUS_SCRAPE_INTERVAL:-15}"
       - "query_tracker.observation_window_secs=${TRACKER_OBSERVATION_WINDOW_SECS:-60}"
     healthcheck:
       test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/8088' 2>/dev/null || exit 1"]

@@ -13,6 +13,8 @@ services:
     build:
       context: ..
       dockerfile: asap-planner-rs/Dockerfile
+    volumes:
+      - ./config/controller-config.dev.yaml:/config/controller-config.yaml:ro
     command:
       - "--input_config=/config/controller-config.yaml"
       - "--output_dir=/asap-planner-output"
@@ -20,7 +22,6 @@ services:
       - "--streaming_engine=precompute"
       - "--range-duration-ms=300000"
       - "--step-ms=10000"
-
       - "-v"
 
   queryengine:

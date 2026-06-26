@@ -31,7 +31,7 @@ Edit `.env` to match your deployment:
 | Variable | Default | Description |
 |---|---|---|
 | `PROMETHEUS_URL` | `http://localhost:9090` | URL of your Prometheus, reachable from inside the ASAPQuery container |
-| `PROMETHEUS_SCRAPE_INTERVAL_MS` | `15000` | Your Prometheus scrape interval in milliseconds |
+| `PROMETHEUS_SCRAPE_INTERVAL` | `15` | Your Prometheus scrape interval in seconds |
 | `ASAPQUERY_DATA_PORT` | `9091` | ASAPQuery data ingest port — must be free on the host |
 | `ASAPQUERY_QUERY_PORT` | `8088` | ASAPQuery query endpoint port — must be free on the host |
 | `TRACKER_OBSERVATION_WINDOW_SECS` | `60` | How long to observe queries before planning (see note below) |
