@@ -680,7 +680,7 @@ def generate_clickhouse_client_configs(
     Args:
         query_groups: Iterable of query-group dicts (or DictConfig/ListConfig).
             Each entry must have ``sql_file`` and may have ``client_options``
-            (``starting_delay``, ``repetitions``) and ``repetition_delay``.
+            (``starting_delay``, ``repetitions``) and ``repetition_delay_ms``.
         local_experiment_dir: Local directory under which
             ``controller_client_configs/`` is created.
         mode_server_urls: Mapping of mode name to ClickHouse server URL, e.g.

@@ -296,7 +296,7 @@ def main(cfg: DictConfig) -> None:
     mode_server_urls = {m["mode"]: servers_by_name[m["server"]] for m in experiment_cfg}
     clickhouse_url = servers_by_name["clickhouse"]
     clickhouse_http_port = urlparse(clickhouse_url).port
-    data_ingestion_interval = int(ep.data_ingestion_interval)
+    data_ingestion_interval_ms = int(ep.data_ingestion_interval_ms)
 
     # --- generate prometheus-client config YAMLs for each experiment mode ---
     experiment_modes = config.generate_clickhouse_client_configs(
@@ -420,7 +420,7 @@ def main(cfg: DictConfig) -> None:
                     database=CLICKHOUSE_DATABASE,
                 ),
                 query_language="sql",
-                data_ingestion_interval=data_ingestion_interval,
+                data_ingestion_interval_ms=data_ingestion_interval_ms,
             )
             sync.rsync_controller_config_remote_to_local(
                 provider, remote_controller_dir, local_controller_dir, node_offset
