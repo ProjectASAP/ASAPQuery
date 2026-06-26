@@ -130,7 +130,7 @@ impl ElasticSingleQueryProcessor {
                 _ => false,
             })
             .and_then(|p| range_query_to_time_range(p, 0));
-        let t_lookback = match time_range {
+        let t_lookback_ms = match time_range {
             Some(tr) => tr.duration_ms().unwrap_or(t_repeat_ms),
             None => t_repeat_ms,
         };
@@ -140,7 +140,7 @@ impl ElasticSingleQueryProcessor {
             None
         } else {
             Some(
-                get_sql_cleanup_param(self.cleanup_policy, t_lookback, t_repeat_ms)
+                get_sql_cleanup_param(self.cleanup_policy, t_lookback_ms, t_repeat_ms)
                     .map_err(ControllerError::PlannerError)?,
             )
         };
