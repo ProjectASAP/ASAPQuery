@@ -60,14 +60,6 @@ class QueryGroupConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "QueryGroupConfig":
-        # return cls(
-        #     id=data["id"],
-        #     repetitions=data["repetitions"],
-        #     repetition_delay=data["repetition_delay"],
-        #     starting_delay=data["starting_delay"] if "starting_delay" in data else 0,
-        #     options=data["options"],
-        #     queries=data["queries"],
-        # )
         return cls(
             id=data["id"],
             queries=data["queries"],
