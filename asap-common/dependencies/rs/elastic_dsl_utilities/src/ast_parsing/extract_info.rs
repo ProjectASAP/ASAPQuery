@@ -24,6 +24,11 @@ pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInf
             // Extract information from the bool query
             walk_bool_query_and_extract_info(&bool_query)
         }
+        Some(dsl::Query::Json(json_query)) => {
+            // Serde's untagged enum deserialization falls through to Json when typed
+            // deserialization fails. Extract predicates from the raw JSON structure.
+            walk_json_query_and_extract_info(&json_query.0)
+        }
         Some(other) => {
             // Predicates may just be specified directly without enclosing bool context.
             if let Some(predicate) = extract_predicates_from_query(&other) {
@@ -42,6 +47,57 @@ pub fn walk_ast_and_extract_info(ast: &dsl::Search) -> Option<ElasticDSLQueryInf
         group_by_spec,
         aggregation_type,
     ))
+}
+
+fn walk_json_query_and_extract_info(json: &serde_json::Value) -> Vec<Predicate> {
+    let Some(filter) = json
+        .get("bool")
+        .and_then(|b| b.get("filter"))
+        .and_then(|f| f.as_array())
+    else {
+        return Vec::new();
+    };
+    filter
+        .iter()
+        .filter_map(extract_predicate_from_json)
+        .collect()
+}
+
+fn extract_predicate_from_json(json: &serde_json::Value) -> Option<Predicate> {
+    if let Some(range_obj) = json.get("range").and_then(|v| v.as_object()) {
+        let (field, bounds) = range_obj.iter().next()?;
+        let field = strip_keyword_suffix(field).to_owned();
+        let gte = bounds
+            .get("gte")
+            .and_then(|v| v.as_str())
+            .map(|s| TermValue::String(s.to_owned()));
+        let lte = bounds
+            .get("lte")
+            .and_then(|v| v.as_str())
+            .map(|s| TermValue::String(s.to_owned()));
+        return Some(Predicate::Range { field, gte, lte });
+    }
+    if let Some(term_obj) = json.get("term").and_then(|v| v.as_object()) {
+        let (field, value_obj) = term_obj.iter().next()?;
+        let field = strip_keyword_suffix(field).to_owned();
+        let raw = value_obj.get("value").unwrap_or(value_obj);
+        let value = match raw {
+            serde_json::Value::String(s) => TermValue::String(s.clone()),
+            serde_json::Value::Bool(b) => TermValue::Boolean(*b),
+            serde_json::Value::Number(n) => {
+                if let Some(u) = n.as_u64() {
+                    TermValue::UnsignedInt(u)
+                } else if let Some(i) = n.as_i64() {
+                    TermValue::Int(i)
+                } else {
+                    TermValue::Float(n.as_f64()?)
+                }
+            }
+            _ => return None,
+        };
+        return Some(Predicate::Term { field, value });
+    }
+    None
 }
 
 fn walk_bool_query_and_extract_info(bool_query: &dsl::BoolQuery) -> Vec<Predicate> {
