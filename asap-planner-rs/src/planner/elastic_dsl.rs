@@ -20,7 +20,6 @@ use indexmap::IndexSet;
 pub struct ElasticSingleQueryProcessor {
     query_string: String,
     t_repeat_ms: u64,
-    #[allow(dead_code)]
     data_ingestion_interval_ms: u64,
     index_schema: ElasticIndexSchemaBuilder,
     #[allow(dead_code)]
@@ -66,9 +65,43 @@ impl ElasticSingleQueryProcessor {
         let (treatment_type, statistics) = get_elastic_statistics(&query_info.aggregation)?;
 
         let t_repeat_ms = self.t_repeat_ms;
+
+        // Validate and resolve the time-range predicate before building configs.
+        let time_field = self.index_schema.time_field.clone();
+        let time_range = query_info
+            .predicates
+            .iter()
+            .find(|p| match p {
+                Predicate::Range { field, .. } => field == &time_field,
+                _ => false,
+            })
+            .and_then(|p| range_query_to_time_range(p, 0));
+        let (t_lookback_ms, window_size_ms) = match time_range {
+            None => {
+                return Err(ControllerError::UnsupportedElasticDSLQuery(
+                    "query must include a time-range predicate on the time field".to_string(),
+                ))
+            }
+            Some(tr) => {
+                let duration = tr.duration_ms().unwrap_or(t_repeat_ms);
+                if duration < self.data_ingestion_interval_ms {
+                    return Err(ControllerError::UnsupportedElasticDSLQuery(format!(
+                        "time-range duration {}ms is shorter than the data ingestion interval {}ms",
+                        duration, self.data_ingestion_interval_ms
+                    )));
+                }
+                // Spatial query: duration spans exactly one ingestion interval → use interval as window
+                let window = if duration == self.data_ingestion_interval_ms {
+                    self.data_ingestion_interval_ms
+                } else {
+                    t_repeat_ms
+                };
+                (duration, window)
+            }
+        };
         let window_cfg = IntermediateWindowConfig {
-            window_size_ms: t_repeat_ms,
-            slide_interval_ms: t_repeat_ms,
+            window_size_ms,
+            slide_interval_ms: window_size_ms,
             window_type: WindowType::Tumbling,
         };
 
@@ -120,20 +153,6 @@ impl ElasticSingleQueryProcessor {
             },
         )
         .map_err(ControllerError::ElasticDSLParse)?;
-
-        let time_field = self.index_schema.time_field.clone();
-        let time_range = query_info
-            .predicates
-            .iter()
-            .find(|p| match p {
-                Predicate::Range { field, .. } => field == &time_field,
-                _ => false,
-            })
-            .and_then(|p| range_query_to_time_range(p, 0));
-        let t_lookback_ms = match time_range {
-            Some(tr) => tr.duration_ms().unwrap_or(t_repeat_ms),
-            None => t_repeat_ms,
-        };
 
         // Calculate cleanup param based on query's time window
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {

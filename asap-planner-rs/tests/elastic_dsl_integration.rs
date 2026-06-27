@@ -1,4 +1,6 @@
-use asap_planner::{ElasticController, ElasticRuntimeOptions, PlannerOutput, StreamingEngine};
+use asap_planner::{
+    ControllerError, ElasticController, ElasticRuntimeOptions, PlannerOutput, StreamingEngine,
+};
 use asap_types::{QueryLanguage, SchemaConfig};
 use std::io::Write;
 use std::path::Path;
@@ -39,6 +41,23 @@ aggregate_cleanup:
 
 fn elastic_output(index: &str, time_field: &str, query: &str, t_repeat_ms: u64) -> PlannerOutput {
     elastic_output_with_interval(index, time_field, query, t_repeat_ms, 15_000)
+}
+
+fn try_elastic_with_interval(
+    index: &str,
+    time_field: &str,
+    query: &str,
+    t_repeat_ms: u64,
+    data_ingestion_interval_ms: u64,
+) -> Result<PlannerOutput, ControllerError> {
+    let yaml = elastic_yaml(index, time_field, query, t_repeat_ms);
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(yaml.as_bytes()).unwrap();
+    let opts = ElasticRuntimeOptions {
+        streaming_engine: StreamingEngine::Arroyo,
+        data_ingestion_interval_ms,
+    };
+    ElasticController::from_file(Path::new(file.path()), opts)?.generate()
 }
 
 fn elastic_output_with_interval(
@@ -492,4 +511,79 @@ fn sub_second_repetition_delay_ms() {
     let out = elastic_output_with_interval("metrics", "\"@timestamp\"", query, 500, 500);
     assert_eq!(out.streaming_aggregation_count(), 2);
     assert!(out.all_tumbling_window_sizes_eq(500));
+}
+
+// ── time-range validation ─────────────────────────────────────────────────────
+
+fn time_range_query(duration: &str) -> String {
+    format!(
+        r#"{{
+    "aggs": {{ "sum_cpu": {{ "sum": {{ "field": "cpu_usage" }} }} }},
+    "query": {{ "bool": {{ "filter": [{{ "range": {{ "@timestamp": {{ "gte": "now-{duration}", "lte": "now" }} }} }}] }} }}
+}}"#
+    )
+}
+
+const QUERY_NO_TIME_RANGE: &str = r#"{
+    "aggs": { "sum_cpu": { "sum": { "field": "cpu_usage" } } }
+}"#;
+
+#[test]
+fn no_time_range_predicate_is_rejected() {
+    let result = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        QUERY_NO_TIME_RANGE,
+        300_000,
+        15_000,
+    );
+    assert!(matches!(
+        result,
+        Err(ControllerError::UnsupportedElasticDSLQuery(_))
+    ));
+}
+
+#[test]
+fn time_range_shorter_than_ingestion_interval_is_rejected() {
+    // data_ingestion_interval_ms = 15_000ms (15s), query range = 5s → duration < interval
+    let result = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        &time_range_query("5s"),
+        300_000,
+        15_000,
+    );
+    assert!(matches!(
+        result,
+        Err(ControllerError::UnsupportedElasticDSLQuery(_))
+    ));
+}
+
+#[test]
+fn time_range_equal_to_ingestion_interval_uses_interval_as_window_size() {
+    // data_ingestion_interval_ms = 15_000ms (15s), query range = 15s → Spatial: window = interval
+    let out = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        &time_range_query("15s"),
+        300_000,
+        15_000,
+    )
+    .unwrap();
+    assert!(out.all_tumbling_window_sizes_eq(15_000));
+}
+
+#[test]
+fn time_range_longer_than_ingestion_interval_uses_t_repeat_as_window_size() {
+    // data_ingestion_interval_ms = 15_000ms (15s), query range = 5m > 15s → Temporal: window = t_repeat_ms
+    let t_repeat_ms = 300_000;
+    let out = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        &time_range_query("5m"),
+        t_repeat_ms,
+        15_000,
+    )
+    .unwrap();
+    assert!(out.all_tumbling_window_sizes_eq(t_repeat_ms));
 }
