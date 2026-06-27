@@ -5,6 +5,7 @@ on:
     branches: [ main ]
     paths:
       - 'asap-query-engine/**'
+      - 'asap-planner-rs/**'
       - 'asap-common/dependencies/rs/**'
       - 'asap-common/tests/**'
       - 'asap-common/sketch-core/**'
@@ -16,6 +17,7 @@ on:
     branches: [ main ]
     paths:
       - 'asap-query-engine/**'
+      - 'asap-planner-rs/**'
       - 'asap-common/dependencies/rs/**'
       - 'asap-common/tests/**'
       - 'asap-common/sketch-core/**'
