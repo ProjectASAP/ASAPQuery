@@ -100,3 +100,11 @@ repos:
         language: system
         files: \.rs$
         pass_filenames: false
+
+      - id: pytest-summary-ingest
+        name: pytest (asap-summary-ingest)
+        description: Run asap-summary-ingest unit tests against vendored promql_utilities.
+        entry: bash -c 'pip install -q -e asap-common/dependencies/py/promql_utilities/ && python3 -m pytest asap-summary-ingest/tests/'
+        language: system
+        files: ^(asap-summary-ingest|asap-common/dependencies/py)/
+        pass_filenames: false
