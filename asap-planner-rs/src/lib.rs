@@ -35,7 +35,7 @@ pub enum StreamingEngine {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
-    pub prometheus_scrape_interval_ms: u64,
+    pub data_ingestion_interval_ms: u64,
     pub streaming_engine: StreamingEngine,
     pub enable_punting: bool,
     pub range_duration_ms: u64,

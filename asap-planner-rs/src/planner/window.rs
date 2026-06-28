@@ -20,7 +20,7 @@ pub fn should_use_sliding_window(
 pub fn set_window_parameters(
     query_pattern_type: QueryPatternType,
     t_repeat_ms: u64,
-    prometheus_scrape_interval_ms: u64,
+    data_ingestion_interval_ms: u64,
     aggregation_type: &str,
     step_ms: u64,
     config: &mut IntermediateWindowConfig,
@@ -31,7 +31,7 @@ pub fn set_window_parameters(
     set_tumbling_window_parameters(
         query_pattern_type,
         effective_repeat,
-        prometheus_scrape_interval_ms,
+        data_ingestion_interval_ms,
         config,
     );
 }
@@ -39,7 +39,7 @@ pub fn set_window_parameters(
 fn set_tumbling_window_parameters(
     query_pattern_type: QueryPatternType,
     effective_repeat: u64,
-    prometheus_scrape_interval_ms: u64,
+    data_ingestion_interval_ms: u64,
     config: &mut IntermediateWindowConfig,
 ) {
     match query_pattern_type {
@@ -49,8 +49,8 @@ fn set_tumbling_window_parameters(
             config.window_type = WindowType::Tumbling;
         }
         QueryPatternType::OnlySpatial => {
-            config.window_size_ms = prometheus_scrape_interval_ms;
-            config.slide_interval_ms = prometheus_scrape_interval_ms;
+            config.window_size_ms = data_ingestion_interval_ms;
+            config.slide_interval_ms = data_ingestion_interval_ms;
             config.window_type = WindowType::Tumbling;
         }
     }

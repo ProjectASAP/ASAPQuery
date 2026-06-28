@@ -197,7 +197,7 @@ impl SimpleEngine {
                     .get_duration() as u64;
                 end_timestamp - (duration_secs * 1000)
             }
-            QueryPatternType::OnlySpatial => end_timestamp - self.prometheus_scrape_interval_ms,
+            QueryPatternType::OnlySpatial => end_timestamp - self.data_ingestion_interval_ms,
         }
     }
 
@@ -398,10 +398,10 @@ impl SimpleEngine {
             }
         };
 
-        // SQLPatternMatcher (sql_utilities, out of scope for the ms rename) divides a
+        // SQLPatternMatcher (sql_utilities, out of scope for this rename) divides a
         // seconds-denominated SQL query duration by this value — convert back to seconds.
         let matcher =
-            SQLPatternMatcher::new(schema, self.prometheus_scrape_interval_ms as f64 / 1000.0);
+            SQLPatternMatcher::new(schema, self.data_ingestion_interval_ms as f64 / 1000.0);
         let match_result = matcher.query_info_to_pattern(&query_data);
 
         debug!("Match result: {:?}", match_result);

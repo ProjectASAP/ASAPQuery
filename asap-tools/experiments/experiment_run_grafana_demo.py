@@ -274,7 +274,7 @@ def main(cfg: DictConfig):
         prometheus_config_output_dir,
         node_offset=args.node_offset,
     )
-    prometheus_scrape_interval_ms = config.get_prometheus_scrape_interval_ms(
+    data_ingestion_interval_ms = config.get_prometheus_data_ingestion_interval_ms(
         cfg.prometheus
     )
 
@@ -344,7 +344,7 @@ def main(cfg: DictConfig):
 
         prometheus_service.wait_until_ready()
 
-        label_discovery_wait_ms = prometheus_scrape_interval_ms * 2
+        label_discovery_wait_ms = data_ingestion_interval_ms * 2
         print(
             f"Waiting {label_discovery_wait_ms / 1000}s for Prometheus to scrape initial data "
             f"before running controller label inference..."
@@ -353,7 +353,7 @@ def main(cfg: DictConfig):
 
         controller_service.start(
             controller_input_file=controller_input_config,
-            prometheus_scrape_interval_ms=prometheus_scrape_interval_ms,
+            data_ingestion_interval_ms=data_ingestion_interval_ms,
             streaming_engine=args.streaming_engine,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             punting=args.controller_punting,
@@ -474,7 +474,7 @@ def main(cfg: DictConfig):
                 experiment_output_dir=experiment_output_dir,
                 local_experiment_dir=local_experiment_dir,
                 flink_output_format=args.flink_output_format,
-                prometheus_scrape_interval_ms=prometheus_scrape_interval_ms,
+                data_ingestion_interval_ms=data_ingestion_interval_ms,
                 log_level=args.log_level,
                 profile_query_engine=args.profile_query_engine,
                 manual=args.manual_query_engine,

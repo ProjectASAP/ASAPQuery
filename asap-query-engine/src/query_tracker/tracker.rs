@@ -16,8 +16,8 @@ use crate::planner_client::{PlannerClient, PlannerResult};
 pub struct QueryTrackerConfig {
     /// How often to evaluate and trigger planning (default: 600s = 10 min).
     pub observation_window_secs: u64,
-    /// Prometheus scrape interval (ms), passed through to `infer_queries`.
-    pub prometheus_scrape_interval_ms: u64,
+    /// Data ingestion interval (ms), passed through to `infer_queries`.
+    pub data_ingestion_interval_ms: u64,
 }
 
 pub struct QueryTracker {
@@ -121,7 +121,7 @@ impl QueryTracker {
             entries.len()
         );
 
-        let scrape_interval_ms = tracker.config.prometheus_scrape_interval_ms;
+        let scrape_interval_ms = tracker.config.data_ingestion_interval_ms;
         let (instants, ranges) = infer_queries(&entries, scrape_interval_ms);
 
         info!(
@@ -228,7 +228,7 @@ mod tests {
     fn record_instant_appends_entry() {
         let tracker = make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
-            prometheus_scrape_interval_ms: 15_000,
+            data_ingestion_interval_ms: 15_000,
         });
         tracker.record_instant("rate(http_requests_total[5m])", 1700000000.0);
         tracker.record_instant("rate(http_requests_total[5m])", 1700000060.0);
@@ -242,7 +242,7 @@ mod tests {
     fn record_range_appends_entry() {
         let tracker = make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
-            prometheus_scrape_interval_ms: 15_000,
+            data_ingestion_interval_ms: 15_000,
         });
         tracker.record_range(
             "rate(http_requests_total[5m])",
@@ -260,7 +260,7 @@ mod tests {
     async fn evaluate_calls_planner_with_entries() {
         let tracker = Arc::new(make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
-            prometheus_scrape_interval_ms: 15_000,
+            data_ingestion_interval_ms: 15_000,
         }));
 
         // Record enough entries for infer_queries to produce results (need >=2 per query).
@@ -289,7 +289,7 @@ mod tests {
     async fn evaluate_skips_when_no_entries() {
         let tracker = Arc::new(make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
-            prometheus_scrape_interval_ms: 15_000,
+            data_ingestion_interval_ms: 15_000,
         }));
 
         let mock_client = Arc::new(MockPlannerClient::new());
@@ -308,7 +308,7 @@ mod tests {
     async fn evaluate_sends_plan_only_once() {
         let tracker = Arc::new(make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
-            prometheus_scrape_interval_ms: 15_000,
+            data_ingestion_interval_ms: 15_000,
         }));
 
         // Record enough for infer_queries to produce results.
@@ -400,7 +400,7 @@ mod tests {
         let tracker = Arc::new(QueryTracker::new(
             QueryTrackerConfig {
                 observation_window_secs: 600,
-                prometheus_scrape_interval_ms: 15_000,
+                data_ingestion_interval_ms: 15_000,
             },
             sc,
             ic,

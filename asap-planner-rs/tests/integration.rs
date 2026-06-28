@@ -6,7 +6,7 @@ use std::path::Path;
 
 fn arroyo_opts() -> RuntimeOptions {
     RuntimeOptions {
-        prometheus_scrape_interval_ms: 15_000,
+        data_ingestion_interval_ms: 15_000,
         streaming_engine: StreamingEngine::Arroyo,
         enable_punting: false,
         range_duration_ms: 0,
@@ -598,7 +598,7 @@ fn sub_second_scrape_interval_window_size_equals_scrape_interval() {
     // OnlySpatial query: window size = scrape interval (planner/window.rs).
     // 100ms would be indistinguishable from 0 under the old seconds-only model.
     let opts = RuntimeOptions {
-        prometheus_scrape_interval_ms: 100,
+        data_ingestion_interval_ms: 100,
         ..arroyo_opts()
     };
     let c = Controller::from_file_with_schema(
@@ -617,7 +617,7 @@ fn sub_second_scrape_interval_round_trips_through_generated_yaml() {
     // under the renamed wire key (windowSizeMs, not windowSize) — not silently
     // rounded or truncated.
     let opts = RuntimeOptions {
-        prometheus_scrape_interval_ms: 100,
+        data_ingestion_interval_ms: 100,
         ..arroyo_opts()
     };
     let c = Controller::from_file_with_schema(

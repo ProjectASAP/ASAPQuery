@@ -124,7 +124,7 @@ mod tests {
 
     fn sample_runtime_options() -> RuntimeOptions {
         RuntimeOptions {
-            prometheus_scrape_interval_ms: 15_000,
+            data_ingestion_interval_ms: 15_000,
             streaming_engine: StreamingEngine::Precompute,
             enable_punting: false,
             range_duration_ms: 300_000,

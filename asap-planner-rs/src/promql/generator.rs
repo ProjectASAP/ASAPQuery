@@ -60,7 +60,7 @@ pub fn generate_plan(
             let processor = SingleQueryProcessor::new(
                 query_string.clone(),
                 qg.repetition_delay_ms,
-                opts.prometheus_scrape_interval_ms,
+                opts.data_ingestion_interval_ms,
                 metric_schema.clone(),
                 opts.streaming_engine,
                 controller_config.sketch_parameters.clone(),

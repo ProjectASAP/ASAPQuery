@@ -196,7 +196,7 @@ mod tests {
 
         let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
-            .with_scrape_interval_ms(scrape_interval_ms) // USED: propagated to SimpleEngine::prometheus_scrape_interval_ms
+            .with_scrape_interval_ms(scrape_interval_ms) // USED: propagated to SimpleEngine::data_ingestion_interval_ms
             .add_temporal_query(
                 "sum_over_time(cpu_usage[150s])", // NOT USED: TestConfigBuilder requires a PromQL string; timestamp calculation is SQL-only
                 sql_query,                        // USED: parsed to extract the 150s duration

@@ -437,7 +437,7 @@ def main(cfg: DictConfig) -> None:
                 experiment_output_dir=experiment_output_dir,
                 local_experiment_dir=local_experiment_dir,
                 flink_output_format="json",
-                prometheus_scrape_interval_ms=data_ingestion_interval_ms,
+                data_ingestion_interval_ms=data_ingestion_interval_ms,
                 log_level="INFO",
                 profile_query_engine=False,
                 manual=False,

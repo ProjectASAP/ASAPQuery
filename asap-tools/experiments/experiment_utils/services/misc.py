@@ -206,9 +206,8 @@ class ControllerService(BaseService):
         controller_remote_output_dir: str,
         punting: bool,
         discovery_backend: DiscoveryBackend,
-        prometheus_scrape_interval_ms: Optional[int] = None,
+        data_ingestion_interval_ms: int,
         query_language: str = "promql",
-        data_ingestion_interval_ms: Optional[int] = None,
         **kwargs,
     ) -> None:
         """
@@ -222,10 +221,8 @@ class ControllerService(BaseService):
             discovery_backend: Backend used for label/column auto-discovery.
                 PromQL mode: DiscoveryBackend(type="prometheus", url=<url>, database=None)
                 SQL mode:    DiscoveryBackend(type="clickhouse", url=<url>, database=<db>)
-            prometheus_scrape_interval_ms: Required for PromQL mode (milliseconds; passed as
-                --prometheus_scrape_interval_ms / --prometheus-scrape-interval-ms)
+            data_ingestion_interval_ms: Data ingestion interval in milliseconds (required for all modes)
             query_language: 'promql' (default) or 'sql'
-            data_ingestion_interval_ms: Required for SQL mode (milliseconds)
             **kwargs: Additional configuration
         """
         if self.use_container:
@@ -235,9 +232,8 @@ class ControllerService(BaseService):
                 controller_remote_output_dir,
                 punting,
                 discovery_backend,
-                prometheus_scrape_interval_ms,
-                query_language,
                 data_ingestion_interval_ms,
+                query_language,
             )
         else:
             return self._start_bare_metal(
@@ -246,9 +242,8 @@ class ControllerService(BaseService):
                 controller_remote_output_dir,
                 punting,
                 discovery_backend,
-                prometheus_scrape_interval_ms,
-                query_language,
                 data_ingestion_interval_ms,
+                query_language,
             )
 
     def _start_bare_metal(
@@ -258,9 +253,8 @@ class ControllerService(BaseService):
         controller_remote_output_dir: str,
         punting: bool,
         discovery_backend: DiscoveryBackend,
-        prometheus_scrape_interval_ms: Optional[int],
+        data_ingestion_interval_ms: int,
         query_language: str,
-        data_ingestion_interval_ms: Optional[int],
     ) -> None:
         controller_log = os.path.join(controller_remote_output_dir, "controller.log")
         cmd = (
@@ -270,10 +264,7 @@ class ControllerService(BaseService):
             f" --streaming_engine {streaming_engine}"
             f" --query-language {query_language}"
         )
-        if prometheus_scrape_interval_ms is not None:
-            cmd += f" --prometheus_scrape_interval_ms {prometheus_scrape_interval_ms}"
-        if data_ingestion_interval_ms is not None:
-            cmd += f" --data-ingestion-interval-ms {data_ingestion_interval_ms}"
+        cmd += f" --data-ingestion-interval-ms {data_ingestion_interval_ms}"
         if discovery_backend.type == "prometheus":
             cmd += f" --prometheus-url {discovery_backend.url}"
         elif discovery_backend.type == "clickhouse":
@@ -301,9 +292,8 @@ class ControllerService(BaseService):
         controller_remote_output_dir: str,
         punting: bool,
         discovery_backend: DiscoveryBackend,
-        prometheus_scrape_interval_ms: Optional[int],
+        data_ingestion_interval_ms: int,
         query_language: str,
-        data_ingestion_interval_ms: Optional[int],
     ):
         controller_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-planner-rs"
@@ -331,14 +321,7 @@ class ControllerService(BaseService):
         generate_cmd += f" --controller-output-dir {controller_remote_output_dir}"
         generate_cmd += f" --streaming-engine {streaming_engine}"
         generate_cmd += f" --query-language {query_language}"
-        if prometheus_scrape_interval_ms is not None:
-            generate_cmd += (
-                f" --prometheus-scrape-interval-ms {prometheus_scrape_interval_ms}"
-            )
-        if data_ingestion_interval_ms is not None:
-            generate_cmd += (
-                f" --data-ingestion-interval-ms {data_ingestion_interval_ms}"
-            )
+        generate_cmd += f" --data-ingestion-interval-ms {data_ingestion_interval_ms}"
         if discovery_backend.type == "prometheus":
             generate_cmd += f" --prometheus-url {discovery_backend.url}"
         elif discovery_backend.type == "clickhouse":
