@@ -60,7 +60,11 @@ impl AQEKey {
 ///
 /// Leaf queries that do not match any supported pattern (e.g. unsupported
 /// functions, parse errors) are skipped with a warning.
-pub fn extract_aqes(rqes: &[RQE], metric_schema: &PromQLSchema) -> Vec<AQE> {
+pub fn extract_aqes(
+    rqes: &[RQE],
+    metric_schema: &PromQLSchema,
+    scrape_interval_ms: u64,
+) -> Vec<AQE> {
     // (key) -> (requirements, query_strings, sum_freq, min_t, gcd_t)
     let mut acc: HashMap<AQEKey, (QueryRequirements, Vec<String>, f64, u64, u64)> = HashMap::new();
 
@@ -78,7 +82,12 @@ pub fn extract_aqes(rqes: &[RQE], metric_schema: &PromQLSchema) -> Vec<AQE> {
 
         for leaf in leaves {
             match extract_requirements(&leaf, metric_schema) {
-                Some(req) => {
+                Some(mut req) => {
+                    // Spatial-only queries have no range vector; treat them as a
+                    // single scrape interval so downstream window logic is explicit.
+                    if req.data_range_ms.is_none() {
+                        req.data_range_ms = Some(scrape_interval_ms);
+                    }
                     let key = AQEKey::from_requirements(&req);
                     let entry = acc
                         .entry(key)
@@ -192,7 +201,7 @@ mod tests {
     #[test]
     fn single_temporal_query() {
         let rqes = vec![rqe("sum_over_time(metric[5m])", 60_000)];
-        let aqes = extract_aqes(&rqes, &empty_schema());
+        let aqes = extract_aqes(&rqes, &empty_schema(), 15_000);
         assert_eq!(aqes.len(), 1);
         assert!((aqes[0].query_frequency_hz - 1.0 / 60.0).abs() < 1e-9);
         assert_eq!(aqes[0].requirements.metric, "metric");
@@ -205,14 +214,14 @@ mod tests {
             "sum_over_time(metric_a[5m]) / sum_over_time(metric_b[5m])",
             60_000,
         )];
-        let aqes = extract_aqes(&rqes, &empty_schema());
+        let aqes = extract_aqes(&rqes, &empty_schema(), 15_000);
         assert_eq!(aqes.len(), 2);
     }
 
     #[test]
     fn binary_with_scalar_produces_one_aqe() {
         let rqes = vec![rqe("sum_over_time(metric[5m]) * 100", 60_000)];
-        let aqes = extract_aqes(&rqes, &empty_schema());
+        let aqes = extract_aqes(&rqes, &empty_schema(), 15_000);
         assert_eq!(aqes.len(), 1);
     }
 
@@ -222,7 +231,7 @@ mod tests {
             rqe("sum_over_time(metric[5m])", 60_000),
             rqe("sum_over_time(metric[5m])", 30_000),
         ];
-        let aqes = extract_aqes(&rqes, &empty_schema());
+        let aqes = extract_aqes(&rqes, &empty_schema(), 15_000);
         assert_eq!(aqes.len(), 1);
         // query_frequency_hz = sum of rates (total query load for the MIP objective)
         let expected_freq = 1.0 / 60.0 + 1.0 / 30.0;
@@ -236,7 +245,15 @@ mod tests {
     #[test]
     fn unsupported_query_is_skipped() {
         let rqes = vec![rqe("not_a_real_function(metric[5m])", 60_000)];
-        let aqes = extract_aqes(&rqes, &empty_schema());
+        let aqes = extract_aqes(&rqes, &empty_schema(), 15_000);
         assert_eq!(aqes.len(), 0);
+    }
+
+    #[test]
+    fn spatial_only_query_sets_range_to_scrape_interval() {
+        let rqes = vec![rqe("sum(metric)", 60_000)];
+        let aqes = extract_aqes(&rqes, &empty_schema(), 15_000);
+        assert_eq!(aqes.len(), 1);
+        assert_eq!(aqes[0].requirements.data_range_ms, Some(15_000));
     }
 }

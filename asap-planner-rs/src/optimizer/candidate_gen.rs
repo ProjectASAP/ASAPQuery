@@ -41,7 +41,7 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<Candidate
     }
 
     let stat = aqe.requirements.statistics[0];
-    let range_a_ms = aqe.requirements.data_range_ms;
+    let range_a_ms = aqe.requirements.data_range_ms.unwrap_or(scrape_interval_ms);
 
     for &agg_type in compatible_agg_types(stat) {
         let props = sketch_properties(agg_type);
@@ -88,30 +88,20 @@ fn exact_candidate() -> CandidateConfig {
 
 /// Window candidates: (WindowType, W_ms, slide_interval_ms, n_windows).
 ///
-/// For spatial-only queries (range = None): one tumbling window of scrape_interval.
-/// For range-based queries:
-///   Tumbling: all W that divide range_a, are multiples of scrape_interval, and ≤ min_t_repeat.
-///             Slide interval = W (a tumbling window "slides" by its own width).
-///   Sliding:  W = range_a exactly (overlapping sliding windows can't merge/subtract to cover
-///             a larger range — only mutually-exclusive tumbling windows compose). The slide
-///             interval S is still a free choice ≤ W: smaller S means more concurrent
-///             overlapping sub-windows maintained internally (⌈W/S⌉), which costs more
-///             ingest CPU/mem but gives fresher results. Doubling from scrape_interval up to
-///             W keeps the grid small while covering that tradeoff.
+/// Tumbling: all W that divide range_a, are multiples of scrape_interval, and ≤ min_t_repeat.
+///           Slide interval = W (a tumbling window "slides" by its own width).
+/// Sliding:  W = range_a exactly (overlapping sliding windows can't merge/subtract to cover
+///           a larger range — only mutually-exclusive tumbling windows compose). The slide
+///           interval S is still a free choice ≤ W: smaller S means more concurrent
+///           overlapping sub-windows maintained internally (⌈W/S⌉), which costs more
+///           ingest CPU/mem but gives fresher results. Doubling from scrape_interval up to
+///           W keeps the grid small while covering that tradeoff.
 fn window_candidates(
-    range_a_ms: Option<u64>,
+    range_a_ms: u64,
     min_t_repeat_ms: u64,
     scrape_interval_ms: u64,
 ) -> Vec<(WindowType, u64, u64, u64)> {
-    let Some(range_a) = range_a_ms else {
-        // Spatial-only: any window works (window_compatible returns true for None range).
-        return vec![(
-            WindowType::Tumbling,
-            scrape_interval_ms,
-            scrape_interval_ms,
-            1,
-        )];
-    };
+    let range_a = range_a_ms;
     if range_a == 0 || scrape_interval_ms == 0 {
         return vec![];
     }
@@ -122,7 +112,7 @@ fn window_candidates(
     // Tumbling: W divides range_a, is a multiple of scrape_interval, and ≤ max_w.
     let mut w = scrape_interval_ms;
     while w <= max_w {
-        if range_a % w == 0 {
+        if range_a.is_multiple_of(w) {
             let n = range_a / w;
             out.push((WindowType::Tumbling, w, w, n));
         }
@@ -329,10 +319,10 @@ mod tests {
     }
 
     #[test]
-    fn spatial_only_produces_neither_candidates() {
-        let aqe = make_aqe(Statistic::Sum, None, 60_000);
+    fn spatial_only_produces_direct_candidates() {
+        // Spatial-only: range = scrape_interval (set by extract_aqes). One Direct window.
+        let aqe = make_aqe(Statistic::Sum, Some(15_000), 60_000);
         let candidates = enumerate_candidates(&aqe, 15_000);
-        // All non-EXACT candidates should be Direct (no temporal range to cover).
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(c.query_method, QueryMethod::Direct);
         }

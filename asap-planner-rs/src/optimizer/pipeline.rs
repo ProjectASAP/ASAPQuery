@@ -15,11 +15,12 @@ use super::translator::{translate, TranslationSummary};
 fn run_pipeline(
     config: &ControllerConfig,
     schema: &PromQLSchema,
+    scrape_interval_ms: u64,
     solver_name: &str,
     solve: impl FnOnce(Vec<AQE>) -> OptimizerSolution,
 ) -> (StreamingConfig, InferenceConfig) {
     let rqes = config_to_rqes(config);
-    let aqes = extract_aqes(&rqes, schema);
+    let aqes = extract_aqes(&rqes, schema, scrape_interval_ms);
     let solution = solve(aqes);
 
     let summary = TranslationSummary::from_solution(&solution);
@@ -47,8 +48,15 @@ fn run_pipeline(
 pub fn run_all_exact_pipeline(
     config: &ControllerConfig,
     schema: &PromQLSchema,
+    scrape_interval_ms: u64,
 ) -> (StreamingConfig, InferenceConfig) {
-    run_pipeline(config, schema, "all-EXACT", OptimizerSolution::all_exact)
+    run_pipeline(
+        config,
+        schema,
+        scrape_interval_ms,
+        "all-EXACT",
+        OptimizerSolution::all_exact,
+    )
 }
 
 /// Run the greedy optimizer pipeline (Phase 2): each AQE is assigned, independently,
@@ -66,7 +74,7 @@ pub fn run_greedy_pipeline(
     scrape_interval_ms: u64,
     arrival_rate_hz: f64,
 ) -> (StreamingConfig, InferenceConfig) {
-    run_pipeline(config, schema, "greedy", |aqes| {
+    run_pipeline(config, schema, scrape_interval_ms, "greedy", |aqes| {
         greedy_assign(
             aqes,
             scrape_interval_ms,
@@ -128,7 +136,7 @@ mod tests {
             ("sum(other_metric)", 30_000),
         ]);
         let schema = PromQLSchema::new();
-        let (streaming, _inference) = run_all_exact_pipeline(&config, &schema);
+        let (streaming, _inference) = run_all_exact_pipeline(&config, &schema, 15_000);
         // All-EXACT: no streaming configs deployed.
         assert!(streaming.get_all_aggregation_configs().is_empty());
     }
@@ -140,6 +148,15 @@ mod tests {
         let (streaming, inference) = run_greedy_pipeline(&config, &schema, 60_000, 1.0);
         assert!(!streaming.get_all_aggregation_configs().is_empty());
         assert!(!inference.query_configs.is_empty());
+    }
+
+    #[test]
+    fn spatial_only_aqe_gets_explicit_range_from_pipeline() {
+        let config = make_config(&[("sum(metric)", 60_000)]);
+        let rqes = config_to_rqes(&config);
+        let aqes = extract_aqes(&rqes, &PromQLSchema::new(), 15_000);
+        assert_eq!(aqes.len(), 1);
+        assert_eq!(aqes[0].requirements.data_range_ms, Some(15_000));
     }
 
     #[test]
