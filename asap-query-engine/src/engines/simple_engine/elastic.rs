@@ -119,7 +119,7 @@ impl SimpleEngine {
         // Map ElasticSearch aggregation types to our internal Statistic enum.
         let statistic_to_compute = match aggregation {
             AggregationType::Percentiles(_) => Statistic::Quantile,
-            AggregationType::Avg => Statistic::Rate,
+            AggregationType::Avg => return None, // Avg requires Sum+Count; not yet supported
             AggregationType::Sum => Statistic::Sum,
             AggregationType::Min => Statistic::Min,
             AggregationType::Max => Statistic::Max,
