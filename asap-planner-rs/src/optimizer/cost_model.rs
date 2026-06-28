@@ -91,19 +91,13 @@ pub fn ingest_cost(
     };
 
     let mem_active = n_concurrent * subpopulation_count * costs.mem_bytes_per_instance;
-    let mem_retain = match agg_config.window_type {
-        WindowType::Tumbling => {
-            candidate.n_windows as f64 * subpopulation_count * costs.mem_bytes_per_instance
-        }
-        WindowType::Sliding => 0.0, // already counted in mem_active's concurrent windows
-    };
 
     let cpu_ingest = match agg_config.window_type {
         WindowType::Tumbling => arrival_rate_hz * costs.insert_cpu_secs,
         WindowType::Sliding => arrival_rate_hz * n_concurrent * costs.insert_cpu_secs,
     };
 
-    weights.ingest_mem * (mem_active + mem_retain) + weights.ingest_cpu * cpu_ingest
+    weights.ingest_mem * mem_active + weights.ingest_cpu * cpu_ingest
 }
 
 /// QueryCost(a,g): cost of answering one query for `aqe` from `candidate`.
@@ -137,7 +131,8 @@ pub fn query_cost(
         QueryMethod::Subtract => {
             debug_assert!(props.subtractable);
             (
-                subpopulation_count * (costs.subtract_cpu_secs + costs.query_cpu_secs),
+                subpopulation_count
+                    * (costs.merge_cpu_secs + costs.subtract_cpu_secs + costs.query_cpu_secs),
                 2.0 * subpopulation_count * costs.mem_bytes_per_instance,
             )
         }
@@ -201,6 +196,36 @@ mod tests {
         let a = make_aqe(Statistic::Sum, Some(300_000), 300_000);
         assert_eq!(ingest_cost(&candidate, 1.0, &costs, &weights), 0.0);
         assert!(query_cost(&a, &candidate, &costs, &weights) > 0.0);
+    }
+
+    #[test]
+    fn ingest_cost_independent_of_n_windows() {
+        // Retained windows are a transient per-query cost (Mem_query in query_cost),
+        // not a continuous allocation — so ingest_cost must not vary with n_windows.
+        let a = make_aqe(Statistic::Sum, Some(300_000), 300_000);
+        let candidates = enumerate_candidates(&a, 60_000);
+        let template = candidates
+            .iter()
+            .find_map(|c| c.config.clone())
+            .expect("expected at least one deployed candidate");
+
+        let costs = AtomicCosts::default();
+        let weights = CostWeights::default();
+        let c2 = CandidateConfig {
+            config: Some(template.clone()),
+            query_method: QueryMethod::Merge { num_windows: 2 },
+            n_windows: 2,
+        };
+        let c5 = CandidateConfig {
+            config: Some(template),
+            query_method: QueryMethod::Merge { num_windows: 5 },
+            n_windows: 5,
+        };
+
+        assert_eq!(
+            ingest_cost(&c2, 1.0, &costs, &weights),
+            ingest_cost(&c5, 1.0, &costs, &weights),
+        );
     }
 
     #[test]
