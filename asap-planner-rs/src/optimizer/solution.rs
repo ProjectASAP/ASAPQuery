@@ -22,10 +22,11 @@ pub struct AQE {
     pub query_frequency_hz: f64,
 
     /// Minimum repeat interval across all RQEs that reference this AQE (ms).
-    /// Determines the freshness constraint on the window size: W ≤ min_t_repeat
-    /// ensures a completed window is available for every dashboard's cycle.
-    /// When multiple RQEs share this AQE, the fastest dashboard is the binding
-    /// constraint.
+    /// Determines the freshness constraint on the streaming config: for Tumbling,
+    /// W ≤ min_t_repeat ensures a completed window is available every cycle; for
+    /// Sliding, S ≤ min_t_repeat is the binding constraint (fresh answers arrive
+    /// every slide interval, not every W). When multiple RQEs share this AQE,
+    /// the fastest dashboard is the binding constraint.
     pub min_t_repeat_ms: u64,
 
     /// GCD of all repeat intervals across RQEs that reference this AQE (ms).
@@ -46,7 +47,8 @@ pub enum QueryMethod {
     Direct,
 
     /// W < range_a, sketch is mergeable: combine `num_windows` retained
-    /// tumbling sub-windows at query time. Cost scales linearly with num_windows.
+    /// sub-windows at query time (Tumbling or partial-width Sliding).
+    /// Cost scales linearly with num_windows.
     Merge { num_windows: u64 },
 
     /// W < range_a, sketch is subtractable: subtract two prefix-sum checkpoints.
