@@ -203,6 +203,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -e asap-common/dependencies/py/promql_utilities/
-        pip install pytest pyyaml jinja2
+        pip install pytest pyyaml jinja2 loguru
     - name: Run pytest
       run: python -m pytest asap-summary-ingest/tests/ -v
