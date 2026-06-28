@@ -51,7 +51,7 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<Candidate
             for (window_type, w, slide_interval, n) in
                 window_candidates(range_a_ms, aqe.min_t_repeat_ms, scrape_interval_ms)
             {
-                let Some(qm) = determine_query_method(window_type, n, &props) else {
+                let Some(qm) = determine_query_method(n, &props) else {
                     continue;
                 };
 
@@ -90,12 +90,11 @@ fn exact_candidate() -> CandidateConfig {
 ///
 /// Tumbling: all W that divide range_a, are multiples of scrape_interval, and ≤ min_t_repeat.
 ///           Slide interval = W (a tumbling window "slides" by its own width).
-/// Sliding:  W = range_a exactly (overlapping sliding windows can't merge/subtract to cover
-///           a larger range — only mutually-exclusive tumbling windows compose). The slide
-///           interval S is still a free choice ≤ W: smaller S means more concurrent
-///           overlapping sub-windows maintained internally (⌈W/S⌉), which costs more
-///           ingest CPU/mem but gives fresher results. Doubling from scrape_interval up to
-///           W keeps the grid small while covering that tradeoff.
+/// Sliding:  W = range_a / k for each W that is a multiple of scrape_interval and divides
+///           range_a (k = range_a / W). At query time k staggered readings are merged or
+///           subtracted to cover range_a. Freshness is bounded by S (the slide interval),
+///           not by W — so the guard is S ≤ min_t_repeat_ms, not W ≤ min_t_repeat_ms.
+///           S doubles from scrape_interval up to min(W, min_t_repeat_ms).
 fn window_candidates(
     range_a_ms: u64,
     min_t_repeat_ms: u64,
@@ -119,22 +118,27 @@ fn window_candidates(
         w += scrape_interval_ms;
     }
 
-    // Sliding: W = range_a exactly; S doubles from scrape_interval up to W.
-    if range_a <= min_t_repeat_ms {
-        let mut s = scrape_interval_ms;
-        while s <= range_a {
-            out.push((WindowType::Sliding, range_a, s, 1));
-            s *= 2;
+    // Sliding: W = range_a / k for each valid W (multiple of scrape_interval, divides range_a).
+    // S doubles from scrape_interval up to min(W, min_t_repeat_ms). n_windows = k.
+    let mut w = scrape_interval_ms;
+    while w <= range_a {
+        if range_a.is_multiple_of(w) {
+            let k = range_a / w;
+            let mut s = scrape_interval_ms;
+            while s <= w.min(min_t_repeat_ms) {
+                out.push((WindowType::Sliding, w, s, k));
+                s *= 2;
+            }
         }
+        w += scrape_interval_ms;
     }
 
     out
 }
 
-/// Determine query method from (window_type, n_windows, sketch algebra).
-/// Returns None when the combination is infeasible (tumbling + W < range_a + neither property).
+/// Determine query method from (n_windows, sketch algebra).
+/// Returns None when the combination is infeasible (W < range_a + neither merge nor subtract).
 fn determine_query_method(
-    window_type: WindowType,
     n_windows: u64,
     props: &super::sketch_properties::SketchProperties,
 ) -> Option<QueryMethod> {
@@ -142,12 +146,10 @@ fn determine_query_method(
         // W = range_a (or spatial-only): one completed window covers the query range exactly.
         return Some(QueryMethod::Direct);
     }
-    // n > 1 means W < range_a; sliding is excluded (sliding enforces W = range_a above).
-    debug_assert_eq!(window_type, WindowType::Tumbling);
+    // n > 1: partial-width windows (W < range_a); valid for both Tumbling and Sliding.
     if props.subtractable {
         Some(QueryMethod::Subtract)
     } else if props.mergeable {
-        debug_assert!(n_windows > 1, "Merge requires merging >1 window");
         Some(QueryMethod::Merge {
             num_windows: n_windows,
         })
@@ -289,6 +291,7 @@ fn param_grid(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asap_types::enums::WindowType;
     use promql_utilities::data_model::KeyByLabelNames;
 
     fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64) -> AQE {
@@ -366,5 +369,65 @@ mod tests {
                 "CMS+Heap should only produce Direct candidates"
             );
         }
+    }
+
+    #[test]
+    fn partial_width_sliding_candidates_are_generated() {
+        // range_a=600_000ms, min_t=30_000ms, scrape=30_000ms.
+        // W=300_000 (k=2) with S=30_000 should be emitted alongside the full-width W=600_000.
+        let aqe = make_aqe(Statistic::Min, Some(600_000), 30_000);
+        let candidates = enumerate_candidates(&aqe, 30_000);
+        let partial = candidates.iter().find(|c| {
+            c.config.as_ref().is_some_and(|cfg| {
+                cfg.window_type == WindowType::Sliding
+                    && cfg.window_size_ms == 300_000
+                    && c.n_windows == 2
+            })
+        });
+        assert!(
+            partial.is_some(),
+            "expected a partial-width Sliding candidate with W=300_000ms, k=2"
+        );
+        assert!(
+            matches!(
+                partial.unwrap().query_method,
+                QueryMethod::Merge { num_windows: 2 }
+            ),
+            "partial Sliding with a mergeable-only sketch should produce Merge{{2}}"
+        );
+    }
+
+    #[test]
+    fn sliding_freshness_guard_uses_slide_not_width() {
+        // range_a=600_000ms > min_t_repeat=30_000ms. The old guard (range_a <= min_t_repeat)
+        // incorrectly rejected all Sliding candidates here. New guard: S ≤ min_t_repeat.
+        // W=600_000, S=30_000 ≤ min_t_repeat → full-width Direct Sliding should be present.
+        let aqe = make_aqe(Statistic::Sum, Some(600_000), 30_000);
+        let candidates = enumerate_candidates(&aqe, 30_000);
+        assert!(
+            candidates.iter().any(|c| {
+                c.config.as_ref().is_some_and(|cfg| {
+                    cfg.window_type == WindowType::Sliding && cfg.window_size_ms == 600_000
+                }) && c.query_method == QueryMethod::Direct
+                    && c.n_windows == 1
+            }),
+            "full-width Sliding Direct should be generated even when range_a > min_t_repeat"
+        );
+    }
+
+    #[test]
+    fn partial_sliding_subtractable_sketch_gets_subtract() {
+        // Sum → CMS (subtractable): partial Sliding with k=2 should produce Subtract.
+        let aqe = make_aqe(Statistic::Sum, Some(600_000), 30_000);
+        let candidates = enumerate_candidates(&aqe, 30_000);
+        assert!(
+            candidates.iter().any(|c| {
+                c.config
+                    .as_ref()
+                    .is_some_and(|cfg| cfg.window_type == WindowType::Sliding && c.n_windows == 2)
+                    && c.query_method == QueryMethod::Subtract
+            }),
+            "partial Sliding with subtractable sketch should produce Subtract"
+        );
     }
 }
