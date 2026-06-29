@@ -30,11 +30,6 @@ OmegaConf.register_new_resolver(
     "local_experiment_dir", lambda: constants.LOCAL_EXPERIMENT_DIR
 )
 
-# Register custom resolver for remote write IP based on node_offset
-OmegaConf.register_new_resolver(
-    "remote_write_ip", lambda node_offset: f"10.10.1.{node_offset + 1}"
-)
-
 KAFKA_NUM_TRIES = 5
 CONTROLLER_LOCAL_OUTPUT_DIR = None
 CONTROLLER_REMOTE_OUTPUT_DIR = None
@@ -83,6 +78,7 @@ def main(cfg: DictConfig):
 
     # Create infrastructure provider
     provider = create_provider(cfg)
+    args.remote_write_ip = provider.get_node_ip(args.node_offset)
 
     local_experiment_root_dir = os.path.join(
         constants.LOCAL_EXPERIMENT_DIR, args.experiment_name

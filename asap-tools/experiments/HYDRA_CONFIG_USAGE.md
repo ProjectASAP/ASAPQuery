@@ -9,9 +9,9 @@ This guide explains how to use the Hydra framework integration for experiment sc
 python experiment_run_e2e.py \
   experiment.name=my_test \
   experiment_type=cloud_demo \
-  cloudlab.num_nodes=4 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us \
+  providers.cloudlab.num_nodes=4 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
   prometheus.local_config_dir=/path/to/prometheus/config
 ```
 
@@ -20,9 +20,9 @@ python experiment_run_e2e.py \
 ### Required Infrastructure Parameters
 All experiment scripts require these core parameters:
 - `experiment.name`: Human-readable experiment name
-- `cloudlab.num_nodes`: Number of CloudLab nodes
-- `cloudlab.username`: Your CloudLab username
-- `cloudlab.hostname_suffix`: CloudLab experiment hostname suffix
+- `providers.cloudlab.num_nodes`: Number of CloudLab nodes
+- `providers.cloudlab.username`: Your CloudLab username
+- `providers.cloudlab.hostname_suffix`: CloudLab experiment hostname suffix
 
 ### Script-Specific Required Parameters
 - **experiment_run_clickhouse.py**: `experiment_type=clickhouse`, `experiment_params.dataset.name`, `experiment_params.dataset.local_data_file`, `experiment_params.query_groups[0].sql_file`
@@ -107,9 +107,9 @@ python experiment_run_e2e.py \
 python experiment_run_e2e.py \
   experiment.name=dev_test \
   experiment_type=cloud_demo \
-  cloudlab.num_nodes=2 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=dev.cloudlab.us \
+  providers.cloudlab.num_nodes=2 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=dev.cloudlab.us \
   prometheus.local_config_dir=/path/to/prometheus/config \
   logging.level=DEBUG \
   flow.steady_state_wait=60
@@ -121,7 +121,7 @@ python experiment_run_e2e.py \
 python experiment_run_e2e.py \
   experiment.name=arroyo_perf \
   experiment_type=my_exp_config \
-  cloudlab.num_nodes=8 \
+  providers.cloudlab.num_nodes=8 \
   streaming.engine=arroyo \
   streaming.enable_object_reuse=true \
   profiling.arroyo=true \
@@ -136,9 +136,9 @@ python experiment_run_e2e.py experiment.name=delay_60 experiment_type=cloud_demo
 python experiment_run_e2e.py experiment.name=delay_120 experiment_type=cloud_demo experiment_params.query_groups.0.repetition_delay=120 [required params...]
 
 # Test different node counts
-python experiment_run_e2e.py experiment.name=nodes_4 experiment_type=cloud_demo cloudlab.num_nodes=4 [required params...]
-python experiment_run_e2e.py experiment.name=nodes_8 experiment_type=cloud_demo cloudlab.num_nodes=8 [required params...]
-python experiment_run_e2e.py experiment.name=nodes_16 experiment_type=cloud_demo cloudlab.num_nodes=16 [required params...]
+python experiment_run_e2e.py experiment.name=nodes_4 experiment_type=cloud_demo providers.cloudlab.num_nodes=4 [required params...]
+python experiment_run_e2e.py experiment.name=nodes_8 experiment_type=cloud_demo providers.cloudlab.num_nodes=8 [required params...]
+python experiment_run_e2e.py experiment.name=nodes_16 experiment_type=cloud_demo providers.cloudlab.num_nodes=16 [required params...]
 
 # Test different streaming engines
 python experiment_run_e2e.py experiment.name=flink_test experiment_type=cloud_demo streaming.engine=flink [required params...]
@@ -165,9 +165,9 @@ cat > config/experiment_type/clickhouse.yaml << 'EOF'
 #   python experiment_run_clickhouse.py \
 #     experiment_type=clickhouse \
 #     experiment.name=my_test \
-#     cloudlab.num_nodes=1 \
-#     cloudlab.username=myuser \
-#     cloudlab.hostname_suffix=myexp.cloudlab.us \
+#     providers.cloudlab.num_nodes=1 \
+#     providers.cloudlab.username=myuser \
+#     providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
 #     experiment_params.dataset.name=clickbench \
 #     experiment_params.dataset.local_data_file=/path/to/hits.json \
 #     'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
@@ -203,9 +203,9 @@ EOF
 python experiment_run_clickhouse.py \
   experiment_type=clickhouse \
   experiment.name=my_clickbench_run \
-  cloudlab.num_nodes=1 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us \
+  providers.cloudlab.num_nodes=1 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
   experiment_params.dataset.name=clickbench \
   experiment_params.dataset.local_data_file=/path/to/hits.json \
   'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
@@ -231,9 +231,9 @@ experiment_params.dataset.max_rows=10000
 python experiment_run_e2e.py \
   experiment.name=full_test \
   experiment_type=cloud_demo \
-  cloudlab.num_nodes=4 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us \
+  providers.cloudlab.num_nodes=4 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
   prometheus.local_config_dir=/path/to/prometheus/config
 ```
 
@@ -242,9 +242,9 @@ python experiment_run_e2e.py \
 # Only exporters and Prometheus - no streaming
 python experiment_run_exporters_and_prometheus.py \
   experiment.name=monitoring_test \
-  cloudlab.num_nodes=4 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us
+  providers.cloudlab.num_nodes=4 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us
 ```
 
 ### experiment_run_empty_flink.py (Simplified Streaming)
@@ -253,9 +253,9 @@ python experiment_run_exporters_and_prometheus.py \
 python experiment_run_empty_flink.py \
   experiment.name=empty_flink_test \
   experiment.config_file=/path/to/config.yml \
-  cloudlab.num_nodes=4 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us
+  providers.cloudlab.num_nodes=4 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us
 ```
 
 ### experiment_run_e2e_no_queryengine.py (E2E without Query Engine)
@@ -264,9 +264,9 @@ python experiment_run_empty_flink.py \
 python experiment_run_e2e_no_queryengine.py \
   experiment.name=e2e_no_qe \
   experiment.config_file=/path/to/config.yml \
-  cloudlab.num_nodes=4 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us \
+  providers.cloudlab.num_nodes=4 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
   prometheus.local_config_dir=/path/to/prometheus/config
 ```
 
@@ -284,8 +284,8 @@ python experiment_run_sketchdboffline.py \
 # Flink performance testing with aggregation scaling
 python experiment_run_flink_with_different_num_aggregations.py \
   experiment.name=flink_perf \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
   experiment_variants.flink_aggregations.config=/path/to/config.yaml \
   experiment_variants.flink_aggregations.aggregation_id=0 \
   experiment_variants.flink_aggregations.min_aggregations=1 \
@@ -334,9 +334,9 @@ python experiment_run_e2e.py \
 python experiment_run_e2e.py \
   experiment.name=test \
   experiment_type=cloud_demo \
-  cloudlab.num_nodes=4 \
-  cloudlab.username=user \
-  cloudlab.hostname_suffix=exp.cloudlab.us \
+  providers.cloudlab.num_nodes=4 \
+  providers.cloudlab.username=user \
+  providers.cloudlab.hostname_suffix=exp.cloudlab.us \
   prometheus.local_config_dir=/path/to/config
 ```
 

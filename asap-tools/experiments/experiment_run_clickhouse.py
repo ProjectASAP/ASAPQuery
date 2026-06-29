@@ -69,9 +69,9 @@ Baseline only:
   python experiment_run_clickhouse.py \\
     experiment_type=clickhouse \\
     experiment.name=my_bench \\
-    cloudlab.num_nodes=1 \\
-    cloudlab.username=myuser \\
-    cloudlab.hostname_suffix=myexp.cloudlab.us \\
+    providers.cloudlab.num_nodes=1 \\
+    providers.cloudlab.username=myuser \\
+    providers.cloudlab.hostname_suffix=myexp.cloudlab.us \\
     experiment_params.dataset.local_data_file=/path/to/hits.json \\
     'experiment_params.query_groups[0].sql_file=/path/to/clickbench.sql'
 
@@ -79,9 +79,9 @@ Baseline + sketchdb:
   python experiment_run_clickhouse.py \\
     experiment_type=clickhouse \\
     experiment.name=my_bench \\
-    cloudlab.num_nodes=1 \\
-    cloudlab.username=myuser \\
-    cloudlab.hostname_suffix=myexp.cloudlab.us \\
+    providers.cloudlab.num_nodes=1 \\
+    providers.cloudlab.username=myuser \\
+    providers.cloudlab.hostname_suffix=myexp.cloudlab.us \\
     experiment_params.dataset.local_data_file=/path/to/hits.json \\
     'experiment_params.query_groups[0].sql_file=/path/to/clickbench.sql'
 
@@ -147,9 +147,6 @@ def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> 
 # Register resolvers used by config.yaml interpolation.
 OmegaConf.register_new_resolver(
     "local_experiment_dir", lambda: constants.LOCAL_EXPERIMENT_DIR
-)
-OmegaConf.register_new_resolver(
-    "remote_write_ip", lambda node_offset: f"10.10.1.{node_offset + 1}"
 )
 
 

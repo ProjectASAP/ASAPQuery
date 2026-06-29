@@ -5,12 +5,17 @@
 experiment:
   name: ???  # REQUIRED: Human-readable experiment name
 
-# CloudLab configuration
-cloudlab:
-  num_nodes: ???  # REQUIRED: Number of CloudLab nodes to use
-  node_offset: 0  # Starting node index (default 0, allows running multiple experiments in parallel)
-  username: ???  # REQUIRED: Your CloudLab username
-  hostname_suffix: ???  # REQUIRED: CloudLab experiment hostname suffix
+# Infrastructure provider configuration — activate exactly one provider:
+#   CloudLab (default): fill in the cloudlab fields below via CLI overrides.
+#   Local machine: uncomment the local section below (leave cloudlab as-is).
+providers:
+  cloudlab:
+    num_nodes: ???  # REQUIRED for CloudLab: Number of CloudLab nodes to use
+    node_offset: 0  # Starting node index (default 0, allows running multiple experiments in parallel)
+    username: ???  # REQUIRED for CloudLab: Your CloudLab username
+    hostname_suffix: ???  # REQUIRED for CloudLab: CloudLab experiment hostname suffix
+  # local:  # Uncomment this section to run on the local machine instead
+  #   home_dir: ???  # REQUIRED: absolute path to home directory on this machine
 
 # Logging and debugging
 logging:
@@ -57,7 +62,7 @@ streaming:
   use_kafka_ingest: false  # Use Prometheus remote write by default, set to true for legacy Kafka ingest
   # Prometheus remote write configuration
   remote_write:
-    ip: "${remote_write_ip:${cloudlab.node_offset}}"
+    ip: null  # set at runtime via provider.get_node_ip(node_offset)
     base_port: 8080
     path: "/api/v1/write"
     enable_optimized_source: true # Use optimized Prometheus remote_write source (10-20x faster)
