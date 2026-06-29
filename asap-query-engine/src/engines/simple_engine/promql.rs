@@ -43,7 +43,7 @@ impl SimpleEngine {
                     .num_milliseconds() as u64;
                 end_timestamp - range_ms
             }
-            QueryPatternType::OnlySpatial => end_timestamp - self.prometheus_scrape_interval_ms,
+            QueryPatternType::OnlySpatial => end_timestamp - self.data_ingestion_interval_ms,
         }
     }
 

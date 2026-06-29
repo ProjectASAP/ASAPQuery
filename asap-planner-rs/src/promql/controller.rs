@@ -114,7 +114,7 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         let entries = query_log::parse_log_file(log_path)?;
         let (instants, ranges) =
-            query_log::infer_queries(&entries, opts.prometheus_scrape_interval_ms);
+            query_log::infer_queries(&entries, opts.data_ingestion_interval_ms);
         let config = query_log::to_controller_config(instants, ranges);
         let all_queries: Vec<String> = config
             .query_groups
@@ -139,7 +139,7 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         let entries = query_log::parse_log_file(log_path)?;
         let (instants, ranges) =
-            query_log::infer_queries(&entries, opts.prometheus_scrape_interval_ms);
+            query_log::infer_queries(&entries, opts.data_ingestion_interval_ms);
         let config = query_log::to_controller_config(instants, ranges);
         Ok(Self {
             config,

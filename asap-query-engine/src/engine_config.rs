@@ -31,8 +31,8 @@ pub fn check_config(config: &EngineConfig) -> Result<(), String> {
         return Err("ingest.ts_step_ms is required when ingest.timestamp_col is not set".into());
     }
 
-    if config.prometheus_scrape_interval_ms == 0 {
-        return Err("prometheus_scrape_interval_ms must be greater than 0".into());
+    if config.data_ingestion_interval_ms == 0 {
+        return Err("data_ingestion_interval_ms must be greater than 0".into());
     }
 
     if config.query_tracker.enabled && !matches!(config.backend, BackendConfig::Prometheus { .. }) {
@@ -47,7 +47,7 @@ pub fn check_config(config: &EngineConfig) -> Result<(), String> {
 pub struct EngineConfig {
     pub output_dir: String,
     pub log_level: String,
-    pub prometheus_scrape_interval_ms: u64,
+    pub data_ingestion_interval_ms: u64,
     pub streaming_engine: StreamingEngine,
     pub http_server: HttpServerSettings,
     pub backend: BackendConfig,
@@ -65,7 +65,7 @@ impl Default for EngineConfig {
         Self {
             output_dir: "./output".to_string(),
             log_level: "INFO".to_string(),
-            prometheus_scrape_interval_ms: 15_000,
+            data_ingestion_interval_ms: 15_000,
             streaming_engine: StreamingEngine::Precompute,
             http_server: HttpServerSettings::default(),
             backend: BackendConfig::default(),
@@ -522,7 +522,7 @@ streaming_engine: "precompute"
 ingest:
   type: "http_remote_write"
   port: 9090
-prometheus_scrape_interval_ms: 0
+data_ingestion_interval_ms: 0
 output_dir: "./output"
 "#;
         let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();

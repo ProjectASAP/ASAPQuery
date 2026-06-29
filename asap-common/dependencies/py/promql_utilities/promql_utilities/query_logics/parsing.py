@@ -35,7 +35,6 @@ def get_statistics_to_compute(
         # template_config.tumblingWindowSize = self.t_repeat
     elif query_pattern_type == QueryPatternType.ONLY_SPATIAL:
         statistic_to_compute = query_pattern_match.tokens["aggregation"]["op"]
-        # template_config.tumblingWindowSize = self.prometheus_scrape_interval
     else:
         raise ValueError("Invalid query pattern type")
 
@@ -55,7 +54,7 @@ def get_spatial_aggregation_output_labels(
     # Fixing issue https://github.com/ProjectASAP/asap-internal/issues/24
     if aggregation_modifier is None:
         return KeyByLabelNames([])
-    
+
     if aggregation_modifier.type == aggregation_modifier.type.By:
         aggregation_modifier_labels = KeyByLabelNames(aggregation_modifier.labels)
     elif aggregation_modifier.type == aggregation_modifier.type.Without:

@@ -136,7 +136,7 @@ pub struct SimpleEngine {
     /// Updated at runtime via update_streaming_config(). Readers briefly lock to
     /// clone the Arc pointer, then use without holding the lock.
     streaming_config: RwLock<Arc<StreamingConfig>>,
-    prometheus_scrape_interval_ms: u64,
+    data_ingestion_interval_ms: u64,
     controller_patterns: HashMap<QueryPatternType, Vec<PromQLPattern>>,
     query_language: QueryLanguage,
 }
@@ -147,7 +147,7 @@ impl SimpleEngine {
         // promsketch_store: Option<Arc<PromSketchStore>>,
         inference_config: InferenceConfig,
         streaming_config: Arc<StreamingConfig>,
-        prometheus_scrape_interval_ms: u64,
+        data_ingestion_interval_ms: u64,
         query_language: QueryLanguage,
     ) -> Self {
         // Create temporal pattern blocks
@@ -287,7 +287,7 @@ impl SimpleEngine {
             // promsketch_store,
             inference_config: RwLock::new(inference_config),
             streaming_config: RwLock::new(streaming_config),
-            prometheus_scrape_interval_ms,
+            data_ingestion_interval_ms,
             controller_patterns,
             query_language,
         }
@@ -332,13 +332,13 @@ impl SimpleEngine {
         mut end_timestamp: u64,
         query_pattern_type: QueryPatternType,
     ) -> u64 {
-        let interval_ms = self.prometheus_scrape_interval_ms;
+        let interval_ms = self.data_ingestion_interval_ms;
 
         if !end_timestamp.is_multiple_of(interval_ms) {
             warn!(
-                "Query end timestamp {} is not aligned with Prometheus scrape interval of {} ms. \
+                "Query end timestamp {} is not aligned with data ingestion interval of {} ms. \
                  This may lead to inaccurate results.",
-                end_timestamp, self.prometheus_scrape_interval_ms
+                end_timestamp, self.data_ingestion_interval_ms
             );
         }
 
@@ -348,8 +348,8 @@ impl SimpleEngine {
         {
             let aligned_end_timestamp = (end_timestamp / interval_ms) * interval_ms;
             debug!(
-                "OnlySpatial query: Aligning end_timestamp from {} to {} using scrape interval of {} ms",
-                end_timestamp, aligned_end_timestamp, self.prometheus_scrape_interval_ms
+                "OnlySpatial query: Aligning end_timestamp from {} to {} using data ingestion interval of {} ms",
+                end_timestamp, aligned_end_timestamp, self.data_ingestion_interval_ms
             );
             end_timestamp = aligned_end_timestamp;
         }

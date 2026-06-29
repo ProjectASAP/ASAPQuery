@@ -20,9 +20,6 @@ struct Args {
     #[arg(long = "output_dir")]
     output_dir: PathBuf,
 
-    #[arg(long = "prometheus_scrape_interval_ms", required = false)]
-    prometheus_scrape_interval_ms: Option<u64>,
-
     /// Base URL of the Prometheus instance used to auto-infer metric label sets.
     /// Optional: when provided, the planner queries Prometheus for label discovery.
     /// When absent, labels are taken from the `metrics` hint in the config file.
@@ -86,11 +83,11 @@ fn main() -> anyhow::Result<()> {
 
     match args.query_language {
         QueryLanguage::promql => {
-            let scrape_interval_ms = args.prometheus_scrape_interval_ms.ok_or_else(|| {
-                anyhow::anyhow!("--prometheus_scrape_interval_ms is required for PromQL mode")
+            let scrape_interval_ms = args.data_ingestion_interval_ms.ok_or_else(|| {
+                anyhow::anyhow!("--data-ingestion-interval-ms is required for PromQL mode")
             })?;
             let opts = RuntimeOptions {
-                prometheus_scrape_interval_ms: scrape_interval_ms,
+                data_ingestion_interval_ms: scrape_interval_ms,
                 streaming_engine: engine,
                 enable_punting: args.enable_punting,
                 range_duration_ms: args.range_duration_ms,

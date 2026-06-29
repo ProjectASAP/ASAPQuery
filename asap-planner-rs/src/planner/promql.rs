@@ -72,7 +72,7 @@ pub(crate) fn parse_binary_arms(query: &str) -> Option<(BinaryArm, BinaryArm)> {
 pub struct SingleQueryProcessor {
     query: String,
     t_repeat_ms: u64,
-    prometheus_scrape_interval_ms: u64,
+    data_ingestion_interval_ms: u64,
     metric_schema: PromQLSchema,
     #[allow(dead_code)]
     streaming_engine: StreamingEngine,
@@ -87,7 +87,7 @@ impl SingleQueryProcessor {
     pub fn new(
         query: String,
         t_repeat_ms: u64,
-        prometheus_scrape_interval_ms: u64,
+        data_ingestion_interval_ms: u64,
         metric_schema: PromQLSchema,
         streaming_engine: StreamingEngine,
         sketch_parameters: Option<SketchParameterOverrides>,
@@ -98,7 +98,7 @@ impl SingleQueryProcessor {
         Self {
             query,
             t_repeat_ms,
-            prometheus_scrape_interval_ms,
+            data_ingestion_interval_ms,
             metric_schema,
             streaming_engine,
             sketch_parameters,
@@ -159,7 +159,7 @@ impl SingleQueryProcessor {
         SingleQueryProcessor::new(
             arm_query,
             self.t_repeat_ms,
-            self.prometheus_scrape_interval_ms,
+            self.data_ingestion_interval_ms,
             self.metric_schema.clone(),
             self.streaming_engine,
             self.sketch_parameters.clone(),
@@ -199,7 +199,7 @@ impl SingleQueryProcessor {
                     | PromQLFunction::QuantileOverTime)
             ) {
                 let num_data_points =
-                    self.t_repeat_ms as f64 / self.prometheus_scrape_interval_ms as f64;
+                    self.t_repeat_ms as f64 / self.data_ingestion_interval_ms as f64;
                 if num_data_points < 60.0 {
                     return false;
                 }
@@ -248,7 +248,7 @@ impl SingleQueryProcessor {
         set_window_parameters(
             pattern_type,
             self.t_repeat_ms,
-            self.prometheus_scrape_interval_ms,
+            self.data_ingestion_interval_ms,
             "any", // aggregation_type doesn't matter (sliding always false)
             self.step_ms,
             &mut window_cfg,
