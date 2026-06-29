@@ -83,7 +83,10 @@ class RemoteMonitorService(BaseService):
                 else list(config_keywords)
             )
 
-            if monitor_keywords is None and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            if (
+                monitor_keywords is None
+                and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
+            ):
                 if query_engine_service is not None:
                     keywords.append(query_engine_service.get_monitoring_keyword())
                 else:
@@ -160,7 +163,10 @@ class RemoteMonitorService(BaseService):
             else list(config_keywords)
         )
 
-        if monitor_keywords is None and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        if (
+            monitor_keywords is None
+            and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
+        ):
             if query_engine_service is not None:
                 keywords.append(query_engine_service.get_monitoring_keyword())
             else:
