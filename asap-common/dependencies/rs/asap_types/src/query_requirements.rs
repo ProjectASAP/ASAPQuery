@@ -20,8 +20,8 @@ pub struct QueryRequirements {
     /// window_size and grouping_labels.
     pub statistics: Vec<Statistic>,
     /// The span of historical data the query reads, in milliseconds.
-    /// None for spatial-only queries (no time range).
-    pub data_range_ms: Option<u64>,
+    /// For spatial-only queries (no time range), set to the scrape interval.
+    pub data_range_ms: u64,
     /// GROUP BY labels expected in the query result.
     pub grouping_labels: KeyByLabelNames,
     /// Normalized label filter (produced by normalize_spatial_filter).
@@ -48,6 +48,7 @@ pub fn build_query_requirements_promql(
     match_result: &PromQLMatchResult,
     pattern_type: QueryPatternType,
     metric_schema: &PromQLSchema,
+    data_ingestion_interval_ms: u64,
 ) -> Option<QueryRequirements> {
     let (metric, spatial_filter) = get_metric_and_spatial_filter(match_result);
 
@@ -63,12 +64,12 @@ pub fn build_query_requirements_promql(
         .ok()?;
 
     let data_range_ms = match pattern_type {
-        QueryPatternType::OnlySpatial => None,
+        QueryPatternType::OnlySpatial => data_ingestion_interval_ms,
         // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
         // so .num_seconds() would truncate sub-second ranges to 0.
         _ => match_result
             .get_range_duration()
-            .map(|d| d.num_milliseconds() as u64),
+            .map(|d| d.num_milliseconds() as u64)?,
     };
 
     let all_labels = metric_schema

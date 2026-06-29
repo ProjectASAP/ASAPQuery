@@ -167,7 +167,7 @@ mod tests {
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::Statistic;
 
-    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64) -> AQE {
+    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> AQE {
         AQE {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
@@ -193,7 +193,7 @@ mod tests {
         };
         let costs = AtomicCosts::default();
         let weights = CostWeights::default();
-        let a = make_aqe(Statistic::Sum, Some(300_000), 300_000);
+        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
         assert_eq!(ingest_cost(&candidate, 1.0, &costs, &weights), 0.0);
         assert!(query_cost(&a, &candidate, &costs, &weights) > 0.0);
     }
@@ -202,7 +202,7 @@ mod tests {
     fn ingest_cost_independent_of_n_windows() {
         // Retained windows are a transient per-query cost (Mem_query in query_cost),
         // not a continuous allocation — so ingest_cost must not vary with n_windows.
-        let a = make_aqe(Statistic::Sum, Some(300_000), 300_000);
+        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
         let candidates = enumerate_candidates(&a, 60_000);
         let template = candidates
             .iter()
@@ -233,7 +233,7 @@ mod tests {
         // Calibration-independent: Subtract is O(1) (one subtract + one read) while
         // Merge is O(n) (n-1 merges + one read), so for the same n and same
         // underlying config, Subtract must cost less regardless of weight tuning.
-        let a = make_aqe(Statistic::Sum, Some(300_000), 300_000);
+        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
         let candidates = enumerate_candidates(&a, 60_000);
         let template = candidates
             .iter()

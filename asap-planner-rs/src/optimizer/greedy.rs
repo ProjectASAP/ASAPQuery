@@ -94,7 +94,7 @@ mod tests {
     use promql_utilities::query_logics::enums::Statistic;
     use std::collections::HashMap as StdHashMap;
 
-    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64, freq_hz: f64) -> AQE {
+    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64, freq_hz: f64) -> AQE {
         AQE {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
@@ -114,8 +114,8 @@ mod tests {
     #[test]
     fn assigns_unique_ids_to_each_deployed_config() {
         let aqes = vec![
-            make_aqe(Statistic::Min, Some(300_000), 300_000, 1.0 / 60.0),
-            make_aqe(Statistic::Max, Some(300_000), 300_000, 1.0 / 60.0),
+            make_aqe(Statistic::Min, 300_000, 300_000, 1.0 / 60.0),
+            make_aqe(Statistic::Max, 300_000, 300_000, 1.0 / 60.0),
         ];
         let solution = greedy_assign(
             aqes,
@@ -141,7 +141,7 @@ mod tests {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![Statistic::Sum, Statistic::Count], // avg-style, unsupported
-                data_range_ms: Some(60_000),
+                data_range_ms: 60_000,
                 grouping_labels: KeyByLabelNames::empty(),
                 spatial_filter_normalized: String::new(),
                 topk_count_events: None,

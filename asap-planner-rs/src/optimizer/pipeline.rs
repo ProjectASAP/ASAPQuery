@@ -156,7 +156,7 @@ mod tests {
         let rqes = config_to_rqes(&config);
         let aqes = extract_aqes(&rqes, &PromQLSchema::new(), 15_000);
         assert_eq!(aqes.len(), 1);
-        assert_eq!(aqes[0].requirements.data_range_ms, Some(15_000));
+        assert_eq!(aqes[0].requirements.data_range_ms, 15_000);
     }
 
     #[test]

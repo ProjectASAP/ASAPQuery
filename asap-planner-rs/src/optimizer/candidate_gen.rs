@@ -41,7 +41,7 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<Candidate
     }
 
     let stat = aqe.requirements.statistics[0];
-    let range_a_ms = aqe.requirements.data_range_ms.unwrap_or(scrape_interval_ms);
+    let range_a_ms = aqe.requirements.data_range_ms;
 
     for &agg_type in compatible_agg_types(stat) {
         let props = sketch_properties(agg_type);
@@ -294,7 +294,7 @@ mod tests {
     use asap_types::enums::WindowType;
     use promql_utilities::data_model::KeyByLabelNames;
 
-    fn make_aqe(stat: Statistic, range_ms: Option<u64>, min_t: u64) -> AQE {
+    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> AQE {
         use asap_types::query_requirements::QueryRequirements;
         AQE {
             requirements: QueryRequirements {
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn always_includes_exact_fallback() {
-        let aqe = make_aqe(Statistic::Sum, Some(300_000), 60_000);
+        let aqe = make_aqe(Statistic::Sum, 300_000, 60_000);
         let candidates = enumerate_candidates(&aqe, 15_000);
         assert!(candidates
             .iter()
@@ -324,7 +324,7 @@ mod tests {
     #[test]
     fn spatial_only_produces_direct_candidates() {
         // Spatial-only: range = scrape_interval (set by extract_aqes). One Direct window.
-        let aqe = make_aqe(Statistic::Sum, Some(15_000), 60_000);
+        let aqe = make_aqe(Statistic::Sum, 15_000, 60_000);
         let candidates = enumerate_candidates(&aqe, 15_000);
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(c.query_method, QueryMethod::Direct);
@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn tumbling_w_equals_range_produces_neither() {
         // range_a = 60_000ms, scrape = 60_000ms → only W=60_000, n=1 → Direct
-        let aqe = make_aqe(Statistic::Sum, Some(60_000), 60_000);
+        let aqe = make_aqe(Statistic::Sum, 60_000, 60_000);
         let candidates = enumerate_candidates(&aqe, 60_000);
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(c.query_method, QueryMethod::Direct);
@@ -345,7 +345,7 @@ mod tests {
     fn mergeable_sketch_with_multiple_windows_produces_merge() {
         // Min → MinMax (mergeable, not subtractable): range_a=300_000ms, scrape=60_000ms, min_t=300_000ms
         // → W=60_000 → n=5, Merge{5}. (Sum would prefer Subtract since it's also subtractable.)
-        let aqe = make_aqe(Statistic::Min, Some(300_000), 300_000);
+        let aqe = make_aqe(Statistic::Min, 300_000, 300_000);
         let candidates = enumerate_candidates(&aqe, 60_000);
         let merge_candidates: Vec<_> = candidates
             .iter()
@@ -360,7 +360,7 @@ mod tests {
     #[test]
     fn cms_with_heap_only_neither_no_merge() {
         // CMS+Heap is neither mergeable nor subtractable → only n=1 (Direct) valid.
-        let aqe = make_aqe(Statistic::Topk, Some(300_000), 300_000);
+        let aqe = make_aqe(Statistic::Topk, 300_000, 300_000);
         let candidates = enumerate_candidates(&aqe, 60_000);
         for c in candidates.iter().filter(|c| c.config.is_some()) {
             assert_eq!(
@@ -375,7 +375,7 @@ mod tests {
     fn partial_width_sliding_candidates_are_generated() {
         // range_a=600_000ms, min_t=30_000ms, scrape=30_000ms.
         // W=300_000 (k=2) with S=30_000 should be emitted alongside the full-width W=600_000.
-        let aqe = make_aqe(Statistic::Min, Some(600_000), 30_000);
+        let aqe = make_aqe(Statistic::Min, 600_000, 30_000);
         let candidates = enumerate_candidates(&aqe, 30_000);
         let partial = candidates.iter().find(|c| {
             c.config.as_ref().is_some_and(|cfg| {
@@ -402,7 +402,7 @@ mod tests {
         // range_a=600_000ms > min_t_repeat=30_000ms. The old guard (range_a <= min_t_repeat)
         // incorrectly rejected all Sliding candidates here. New guard: S ≤ min_t_repeat.
         // W=600_000, S=30_000 ≤ min_t_repeat → full-width Direct Sliding should be present.
-        let aqe = make_aqe(Statistic::Sum, Some(600_000), 30_000);
+        let aqe = make_aqe(Statistic::Sum, 600_000, 30_000);
         let candidates = enumerate_candidates(&aqe, 30_000);
         assert!(
             candidates.iter().any(|c| {
@@ -418,7 +418,7 @@ mod tests {
     #[test]
     fn partial_sliding_subtractable_sketch_gets_subtract() {
         // Sum → CMS (subtractable): partial Sliding with k=2 should produce Subtract.
-        let aqe = make_aqe(Statistic::Sum, Some(600_000), 30_000);
+        let aqe = make_aqe(Statistic::Sum, 600_000, 30_000);
         let candidates = enumerate_candidates(&aqe, 30_000);
         assert!(
             candidates.iter().any(|c| {

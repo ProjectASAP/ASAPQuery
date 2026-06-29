@@ -62,21 +62,17 @@ fn is_key_agg_type(agg_type: AggregationType) -> bool {
 
 /// Window compatibility: can `config` serve a query needing `data_range_ms`?
 ///
-/// - `None` (spatial-only): always compatible.
 /// - Tumbling: `data_range_ms` must be a positive integer multiple of `window_size_ms`.
 /// - Sliding: `data_range_ms` must equal `window_size_ms` exactly (a sliding window
 ///   precomputes one fixed range per timestamp; overlapping windows cannot be merged).
-pub fn window_compatible(config: &AggregationConfig, data_range_ms: Option<u64>) -> bool {
-    let Some(range) = data_range_ms else {
-        return true;
-    };
+pub fn window_compatible(config: &AggregationConfig, data_range_ms: u64) -> bool {
     let window_ms = config.window_size_ms;
-    if window_ms == 0 || range == 0 {
+    if window_ms == 0 || data_range_ms == 0 {
         return false;
     }
     match config.window_type {
-        WindowType::Sliding => range == window_ms,
-        WindowType::Tumbling => range % window_ms == 0,
+        WindowType::Sliding => data_range_ms == window_ms,
+        WindowType::Tumbling => data_range_ms.is_multiple_of(window_ms),
     }
 }
 
@@ -339,7 +335,7 @@ mod tests {
     fn req(
         metric: &str,
         stats: &[Statistic],
-        data_range_ms: Option<u64>,
+        data_range_ms: u64,
         grouping: &[&str],
         spatial_filter: &str,
     ) -> QueryRequirements {
@@ -373,10 +369,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_some());
         assert_eq!(result.unwrap().aggregation_id_for_value, 1);
     }
@@ -396,11 +390,11 @@ mod tests {
         // quantile value (0.5 or 0.9) is NOT part of QueryRequirements — both should find the same config
         let r1 = find_compatible_aggregation(
             &configs,
-            &req("lat", &[Statistic::Quantile], Some(300_000), &[], ""),
+            &req("lat", &[Statistic::Quantile], 300_000, &[], ""),
         );
         let r2 = find_compatible_aggregation(
             &configs,
-            &req("lat", &[Statistic::Quantile], Some(300_000), &[], ""),
+            &req("lat", &[Statistic::Quantile], 300_000, &[], ""),
         );
         assert_eq!(r1.unwrap().aggregation_id_for_value, 2);
         assert_eq!(r2.unwrap().aggregation_id_for_value, 2);
@@ -420,7 +414,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req("lat", &[Statistic::Quantile], Some(300_000), &[], ""),
+            &req("lat", &[Statistic::Quantile], 300_000, &[], ""),
         );
         assert_eq!(result.unwrap().aggregation_id_for_value, 3);
     }
@@ -437,10 +431,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("mem", &[Statistic::Sum], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("mem", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_none());
     }
 
@@ -456,10 +448,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_none());
     }
 
@@ -477,10 +467,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_some());
     }
 
@@ -497,10 +485,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(900_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 900_000, &[], ""));
         assert!(result.is_some());
     }
 
@@ -517,10 +503,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(600_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 600_000, &[], ""));
         assert!(result.is_none());
     }
 
@@ -536,10 +520,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_some());
     }
 
@@ -556,10 +538,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(600_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 600_000, &[], ""));
         assert!(result.is_none());
     }
 
@@ -575,28 +555,26 @@ mod tests {
             make_config(2, "cpu", "Sum", "", 900_000, "tumbling", &[], ""),
         );
         // 900_000 ms is divisible by both 300_000 ms and 900_000 ms — prefer 900_000 ms
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(900_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 900_000, &[], ""));
         assert_eq!(result.unwrap().aggregation_id_for_value, 2);
     }
 
     #[test]
     fn spatial_only_no_range() {
-        // data_range_ms = None → any window size is compatible
+        // spatial-only queries use data_range_ms = scrape interval; window must match
         let configs = single_config(make_config(
             1,
             "cpu",
             "Sum",
             "",
-            900_000,
+            15_000,
             "tumbling",
             &[],
             "",
         ));
         let result =
-            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], None, &[], ""));
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 15_000, &[], ""));
         assert!(result.is_some());
     }
 
@@ -616,7 +594,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &["job"], ""),
+            &req("cpu", &[Statistic::Sum], 300_000, &["job"], ""),
         );
         assert!(result.is_some());
     }
@@ -636,7 +614,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &["job"], ""),
+            &req("cpu", &[Statistic::Sum], 300_000, &["job"], ""),
         );
         assert!(result.is_none());
     }
@@ -655,7 +633,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &["job"], ""),
+            &req("cpu", &[Statistic::Sum], 300_000, &["job"], ""),
         );
         assert!(result.is_none());
     }
@@ -674,10 +652,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_some());
     }
 
@@ -694,10 +670,8 @@ mod tests {
             &[],
             "env=prod",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_none());
     }
 
@@ -715,7 +689,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], "env=prod"),
+            &req("cpu", &[Statistic::Sum], 300_000, &[], "env=prod"),
         );
         assert!(result.is_some());
     }
@@ -734,7 +708,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req("cpu", &[Statistic::Sum], Some(300_000), &[], "env=staging"),
+            &req("cpu", &[Statistic::Sum], 300_000, &[], "env=staging"),
         );
         assert!(result.is_none());
     }
@@ -753,10 +727,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Min], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Min], 300_000, &[], ""));
         assert!(result.is_some());
     }
 
@@ -773,10 +745,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("cpu", &[Statistic::Max], Some(300_000), &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Max], 300_000, &[], ""));
         assert!(result.is_none());
     }
 
@@ -813,7 +783,7 @@ mod tests {
         );
         let result = find_compatible_aggregation(
             &configs,
-            &req("req", &[Statistic::Topk], Some(300_000), &[], ""),
+            &req("req", &[Statistic::Topk], 300_000, &[], ""),
         );
         let info = result.unwrap();
         assert_eq!(info.aggregation_id_for_value, 10);
@@ -835,7 +805,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req("req", &[Statistic::Topk], Some(300_000), &[], ""),
+            &req("req", &[Statistic::Topk], 300_000, &[], ""),
         );
         assert!(result.is_none());
     }
@@ -867,7 +837,7 @@ mod tests {
             &req(
                 "cpu",
                 &[Statistic::Sum, Statistic::Count],
-                Some(300_000),
+                300_000,
                 &["job"],
                 "",
             ),
@@ -895,13 +865,7 @@ mod tests {
         ));
         let result = find_compatible_aggregation(
             &configs,
-            &req(
-                "peers",
-                &[Statistic::Cardinality],
-                Some(1_000),
-                &["srcip"],
-                "",
-            ),
+            &req("peers", &[Statistic::Cardinality], 1_000, &["srcip"], ""),
         );
         let info = result.expect("HLL should serve Cardinality");
         assert_eq!(info.aggregation_id_for_value, 42);
@@ -953,7 +917,7 @@ mod tests {
             &req(
                 "cpu",
                 &[Statistic::Sum, Statistic::Count],
-                Some(300_000),
+                300_000,
                 &["job"],
                 "",
             ),
@@ -1003,7 +967,7 @@ mod tests {
     }
 
     fn topk_req(metric: &str, count_events: Option<bool>) -> QueryRequirements {
-        let mut r = req(metric, &[Statistic::Topk], Some(1_000), &[], "");
+        let mut r = req(metric, &[Statistic::Topk], 1_000, &[], "");
         r.topk_count_events = count_events;
         r
     }

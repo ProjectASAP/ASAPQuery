@@ -299,10 +299,10 @@ impl SimpleEngine {
         };
 
         let data_range_ms = match query_pattern_type {
-            QueryPatternType::OnlySpatial => None,
+            QueryPatternType::OnlySpatial => self.data_ingestion_interval_ms,
             QueryPatternType::OnlyTemporal => {
                 let duration_secs = query_data.time_info.clone().get_duration() as u64;
-                Some(duration_secs * 1000)
+                duration_secs * 1000
             }
             QueryPatternType::OneTemporalOneSpatial => {
                 let duration_secs = match_result
@@ -311,7 +311,7 @@ impl SimpleEngine {
                     .time_info
                     .clone()
                     .get_duration() as u64;
-                Some(duration_secs * 1000)
+                duration_secs * 1000
             }
         };
 
