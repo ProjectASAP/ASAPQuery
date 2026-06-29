@@ -42,7 +42,7 @@ Each summarization strategy takes an input stream of metrics and computes summar
 
 ## Objective
 
-$$\min \sum_{s \in S} y_s \cdot \operatorname{ingest\_cost}(s) \ + \ \sum_{r \in R,\ s \in S} x_{r,s} \cdot f_r \cdot \operatorname{query\_cost}(s, r)$$
+$$\min \sum_{s \in S} y_s \cdot \text{ingest\_cost}(s) \ + \ \sum_{r \in R,\ s \in S} x_{r,s} \cdot f_r \cdot \text{query\_cost}(s, r)$$
 
 Both terms are cost rates (cost/sec). $f_r$ converts the per-query `query_cost` into a rate commensurate with the continuously-accruing `ingest_cost`.
 
