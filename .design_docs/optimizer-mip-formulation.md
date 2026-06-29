@@ -23,7 +23,7 @@ For example - `avg_over_time(data[5m]) / quantile_over_time(0.5, data[5m])` is a
 | $\text{AtomicCosts}(s, p)$ | Sketch profiles | $\text{mem}(s,p),\ \text{ins}(s,p),\ \text{mrg}(s,p),\ \text{sub}(s,p),\ \text{qry}(s,p)$ |
 | $\theta_a = (N_a, D_a)$ | Measured from data source | $N_a$ = cardinality; $D_a$ = data distribution, family-specific: Zipf (with parameter $\alpha$), Gaussian (with parameters $\mu, \sigma$), or empirical trace |
 | $\rho_g$ | Measured from data source | Item arrival rate (items/sec) for $g$'s metric and label filter |
-| $N_g$ | Measured from data source | Number of distinct label-group combinations for $g$'s metric and label filter; used when $\lnot\,\text{subpop\_aware}(s)$ to determine how many sketch instances config $g$ must maintain |
+| $N_g$ | Measured from data source | Number of distinct label-group combinations for $g$'s metric and label filter; used when $\lnot\,\text{subpop-aware}(s)$ to determine how many sketch instances config $g$ must maintain |
 
 ## Internal Variables
 
@@ -39,7 +39,7 @@ Symbols computed during optimizer setup (before the MIP is solved). Formulas are
 | $d_g$ | Configs | Physical storage depth — number of completed windows $g$ retains. For tumbling $d_g = n_g$; for sliding $d_g \geq (n_g - 1)(W_g/S_g) + 1$. |
 | $n(a,g)$ | Query workload, configs | $\lceil \text{range}_a / W_g \rceil$ — number of $g$-windows needed to cover $a$'s lookback range. |
 | $f_a$ | Query workload | $\sum_{r \in R_a} 1/T_r$ — aggregate query rate for AQE $a$ (queries/sec). |
-| $N(s,g)$ |  | Label-group multiplier: 1 if $\text{subpop\_aware}(s)$, else $N_g$. |
+| $N(s,g)$ |  | Label-group multiplier: 1 if $\text{subpop-aware}(s)$, else $N_g$. |
 | Query method for $(a,g)$ |  | One of Direct / Merge / Subtract / Exact — see Derived Quantities. |
 
 ## Outputs
@@ -57,7 +57,7 @@ The two binary variables the optimizer selects.
 |----------|---------|
 | $\text{mergeable}(s)$ | Two instances can be merged into one representing their union |
 | $\text{subtractable}(s)$ | Incremental update is defined: the current query result can be derived from the previous result by adding new data and subtracting evicted data, requiring O(1) sketch operations regardless of $n$ |
-| $\text{subpop\_aware}(s)$ | One instance handles all label-group keys internally |
+| $\text{subpop-aware}(s)$ | One instance handles all label-group keys internally |
 
 ## Derived Quantities
 
@@ -65,7 +65,7 @@ The two binary variables the optimizer selects.
 $$f_a = \sum_{r \in R_a} \frac{1}{T_r} \quad \text{(queries/sec)}$$
 
 **Label-group multiplier:**
-$$N(s, g) = \begin{cases} 1 & \text{if } \text{subpop\_aware}(s) \\ N_g & \text{otherwise} \end{cases}$$
+$$N(s, g) = \begin{cases} 1 & \text{if } \text{subpop-aware}(s) \\ N_g & \text{otherwise} \end{cases}$$
 
 where $N_g$ is measured from the data source for $g$'s metric and label filter (see Inputs). *(Requires a profiling step before the optimizer runs — see Open Items.)*
 
@@ -83,9 +83,9 @@ This is fully determined by $(\tau_g, n(a,g), s)$ — where $\tau_g \in \{\text{
 | $n(a,g) > 1$, $\text{mergeable}(s)$, not subtractable | Merge |
 | $n(a,g) > 1$, neither property | Infeasible |
 
-The Subtract method uses the incremental update formula: let $[t_0, t_1]$ be the current query window ($t_1 - t_0 = \text{range}_a$). Given the previous query result $T[t_0 - T_r,\, t_1 - T_r]$ already in the $+1$ $\text{Mem\_active}$ slot, the newly completed window $T[t_1 - T_r,\, t_1]$ (loaded from storage), and the evicted window $T[t_0 - T_r,\, t_0]$ (loaded from storage), compute $T[t_0, t_1] = T[t_0-T_r, t_1-T_r] + T[t_1-T_r, t_1] - T[t_0-T_r, t_0]$. This applies to both tumbling and sliding ingest types.
+The Subtract method uses the incremental update formula: let $[t_0, t_1]$ be the current query window ($t_1 - t_0 = \text{range}_a$). Given the previous query result $T[t_0 - T_r,\, t_1 - T_r]$ already in the $+1$ $\text{Mem-active}$ slot, the newly completed window $T[t_1 - T_r,\, t_1]$ (loaded from storage), and the evicted window $T[t_0 - T_r,\, t_0]$ (loaded from storage), compute $T[t_0, t_1] = T[t_0-T_r, t_1-T_r] + T[t_1-T_r, t_1] - T[t_0-T_r, t_0]$. This applies to both tumbling and sliding ingest types.
 
-When both Subtract and Merge apply, Subtract takes priority. It requires $O(1)$ sketch operations regardless of $n(a,g)$ vs. $O(n(a,g))$ merges for Merge. The CPU advantage compounds as $n(a,g)$ grows. $\text{Mem\_query}$ is the same ($2 \cdot N(s,g) \cdot \text{mem}$) in both cases.
+When both Subtract and Merge apply, Subtract takes priority. It requires $O(1)$ sketch operations regardless of $n(a,g)$ vs. $O(n(a,g))$ merges for Merge. The CPU advantage compounds as $n(a,g)$ grows. $\text{Mem-query}$ is the same ($2 \cdot N(s,g) \cdot \text{mem}$) in both cases.
 
 ## Decision Variables
 
@@ -114,7 +114,7 @@ For sliding, $n_g$ (query working set) and $d_g$ (storage depth) differ. To retr
 
 **Relationship between $n_g$ and $d_g$:**
 - Tumbling: $d_g = n_g$ — every retained window is used at query time.
-- Sliding: $d_g \geq (n_g - 1)(W_g/S_g) + 1$ — to retrieve $n_g$ non-overlapping windows spaced $W_g$ apart, the system must retain $(n_g-1)(W_g/S_g)+1$ completed windows in storage; only $n_g$ of those are loaded at query time. The cost formulation charges for the $n_g$ loaded windows only; the remaining $d_g - n_g$ retained-but-unused windows are storage overhead not modeled in $\text{Mem\_query}$. For sliding, $n_g$ is a config-generation parameter used to size $d_g$; the optimizer operates on $d_g$ directly via (RETs) and does not reference $n_g$.
+- Sliding: $d_g \geq (n_g - 1)(W_g/S_g) + 1$ — to retrieve $n_g$ non-overlapping windows spaced $W_g$ apart, the system must retain $(n_g-1)(W_g/S_g)+1$ completed windows in storage; only $n_g$ of those are loaded at query time. The cost formulation charges for the $n_g$ loaded windows only; the remaining $d_g - n_g$ retained-but-unused windows are storage overhead not modeled in $\text{Mem-query}$. For sliding, $n_g$ is a config-generation parameter used to size $d_g$; the optimizer operates on $d_g$ directly via (RETs) and does not reference $n_g$.
 
 **Window size:**
 $$x_{a,g} = 1 \Rightarrow W_g \leq \text{range}_a \tag{WIN}$$
@@ -137,7 +137,7 @@ $\text{Error}(a, g, \theta_a)$ is an empirical lookup from sketch-bench, indexed
 **Latency:**
 $$x_{a,g} = 1 \Rightarrow \text{Latency}(a, g) \leq \text{SLA}_a \tag{LAT}$$
 
-$\text{Latency}(a,g) \approx \text{CPU\_query}(a,g)$ *(to be confirmed against end-to-end sketch-bench measurements)*.
+$\text{Latency}(a,g) \approx \text{CPU-query}(a,g)$ *(to be confirmed against end-to-end sketch-bench measurements)*.
 
 **Valid query method:**
 $$x_{a,g} = 1 \Rightarrow \text{QueryMethodValid}(a, g) \tag{QM}$$
@@ -150,32 +150,32 @@ $\text{EXACT}_a$ satisfies all conditions for any $a$: $\text{Error} = 0$, $\tex
 
 ### Ingestion memory (steady-state active windows only)
 
-Retained completed windows are charged at query time via $\text{Mem\_query}$ below, not as a continuous allocation.
+Retained completed windows are charged at query time via $\text{Mem-query}$ below, not as a continuous allocation.
 
-$$\text{Mem\_active}(g) = \begin{cases} N(s,g) \cdot \text{mem}(s,p) & \tau_g = \text{tumbling} \\ \lceil W_g / S_g \rceil \cdot N(s,g) \cdot \text{mem}(s,p) & \tau_g = \text{sliding} \end{cases}$$
+$$\text{Mem-active}(g) = \begin{cases} N(s,g) \cdot \text{mem}(s,p) & \tau_g = \text{tumbling} \\ \lceil W_g / S_g \rceil \cdot N(s,g) \cdot \text{mem}(s,p) & \tau_g = \text{sliding} \end{cases}$$
 
-The previous query result required by the Subtract incremental update is cached in the query engine, not in the streaming layer, so it does not appear in $\text{Mem\_active}$.
+The previous query result required by the Subtract incremental update is cached in the query engine, not in the streaming layer, so it does not appear in $\text{Mem-active}$.
 
 ### Ingestion CPU (rate)
 
-$$\text{CPU\_ingest}(g) = \begin{cases} \rho_g \cdot \text{ins}(s,p) & \tau_g = \text{tumbling} \\ \rho_g \cdot \lceil W_g / S_g \rceil \cdot \text{ins}(s,p) & \tau_g = \text{sliding} \end{cases}$$
+$$\text{CPU-ingest}(g) = \begin{cases} \rho_g \cdot \text{ins}(s,p) & \tau_g = \text{tumbling} \\ \rho_g \cdot \lceil W_g / S_g \rceil \cdot \text{ins}(s,p) & \tau_g = \text{sliding} \end{cases}$$
 
 ### Ingestion cost (rate — independent of AQE assignment)
 
-$$\text{IngestCost}(g) = w_1 \cdot \text{CPU\_ingest}(g) + w_2 \cdot \text{Mem\_active}(g)$$
+$$\text{IngestCost}(g) = w_1 \cdot \text{CPU-ingest}(g) + w_2 \cdot \text{Mem-active}(g)$$
 
 ### Query cost (per invocation — depends on query method)
 
-$\text{Mem\_query}$ is the transient peak working memory per query invocation (retained windows loaded from storage), not steady-state.
+$\text{Mem-query}$ is the transient peak working memory per query invocation (retained windows loaded from storage), not steady-state.
 
-| Method | $\text{CPU\_query}(a,g)$ | $\text{Mem\_query}(a,g)$ |
+| Method | $\text{CPU-query}(a,g)$ | $\text{Mem-query}(a,g)$ |
 |--------|--------------------------|--------------------------|
 | Direct | $N(s,g) \cdot \text{qry}(s,p)$ | $N(s,g) \cdot \text{mem}(s,p)$ |
 | Merge | $N(s,g) \cdot \bigl((n(a,g)-1) \cdot \text{mrg}(s,p) + \text{qry}(s,p)\bigr)$ | $n(a,g) \cdot N(s,g) \cdot \text{mem}(s,p)$ |
 | Subtract | $N(s,g) \cdot \bigl(\text{mrg}(s,p) + \text{sub}(s,p) + \text{qry}(s,p)\bigr)$ | $2 \cdot N(s,g) \cdot \text{mem}(s,p)$ |
 | Exact | $c_{\text{exact}}$ (system constant) | $0$ |
 
-$$\text{QueryCost}(a,g) = w_3 \cdot \text{CPU\_query}(a,g) + w_4 \cdot \text{Mem\_query}(a,g)$$
+$$\text{QueryCost}(a,g) = w_3 \cdot \text{CPU-query}(a,g) + w_4 \cdot \text{Mem-query}(a,g)$$
 
 ## Objective
 
@@ -201,13 +201,13 @@ Uncapacitated facility-location MIP: $y_g$ = "open facility $g$", $x_{a,g}$ = "a
 
 ## Open Items
 
-1. **$\text{Latency}(a,g) \approx \text{CPU\_query}(a,g)$**: to be confirmed against end-to-end sketch-bench measurements. If other latency components (storage reads, network) dominate, this approximation needs revision.
+1. **$\text{Latency}(a,g) \approx \text{CPU-query}(a,g)$**: to be confirmed against end-to-end sketch-bench measurements. If other latency components (storage reads, network) dominate, this approximation needs revision.
 2. **$N_g$ (distinct label-group count)**: for non-subpop-aware sketch families, $N(s,g) = N_g$ requires a profiling step (e.g. `count(metric{filters...})` from Prometheus) before the optimizer runs.
 3. **$\theta_a$ profiling**: cardinality $N_a$ and distribution $D_a$ must be estimated before $\text{Error}(a,g,\theta_a)$ can be looked up from sketch-bench. Profiling strategy not yet designed.
 4. **sketch-bench data gap**: empirical error and cost lookup requires cardinality and distribution shape to be swept parameters in sketch-bench benchmarks. This data does not yet exist and must be collected.
-5. **Sliding storage overhead**: $d_g$ is the physical storage depth for sliding configs; only $n_g \leq d_g$ windows are loaded at query time. The $d_g - n_g$ retained-but-unused windows represent storage cost not captured in $\text{Mem\_query}$.
+5. **Sliding storage overhead**: $d_g$ is the physical storage depth for sliding configs; only $n_g \leq d_g$ windows are loaded at query time. The $d_g - n_g$ retained-but-unused windows represent storage cost not captured in $\text{Mem-query}$.
 6. **Subtract formula assumes $T_r = W_g$**: The incremental formula treats $T[t_1 - T_r, t_1]$ as a single newly completed window. When $T_r > W_g$ (allowed by FRESHt), this span covers $\lfloor T_r / W_g \rfloor$ completed windows; the Subtract cost (merging in new data and subtracting evicted data) then scales with $\lfloor T_r / W_g \rfloor$, not O(1). The current cost table silently assumes $T_r = W_g$.
 7. **Latency constraints per-RQE vs per-AQE** (LAT) enforces $\text{Latency}(a,g) \leq \text{SLA}_a$ per AQE. If we instead enforced a latency budget at the RQE level, the RQE latency would depend on whether its constituent AQEs are executed in parallel (RQE latency = max of AQE latencies) or sequentially (sum). To avoid this complexity, latency constraints remain per-AQE.
 8. **$\text{IngestCost}(\text{EXACT}_a)$ is undefined**: $\text{EXACT}_a \in G$ participates in $\sum_g y_g \cdot \text{IngestCost}(g)$, but IngestCost is defined only for sketch configs (via $s, p, \rho_g, W_g, S_g$) — none of which exist for an EXACT config. Presumably $\text{IngestCost}(\text{EXACT}_a) = 0$ since Prometheus handles raw ingest, but this must be stated explicitly.
-9. **Label-dimension merge cost**: (CAP) allows a finer-grained $g$ to serve a coarser $a$ by aggregating away label dimensions at query time, but the query cost table has no entry for this. When $g$'s label set is a proper superset of $a$'s, querying $a$ from $g$ requires a group-by and reduce over the extra label values — a cost proportional to $N_g / N_a$ operations — currently silent in the model. Either add a label-merge cost term to $\text{CPU\_query}$, or restrict (CAP) to require exact label-set match.
+9. **Label-dimension merge cost**: (CAP) allows a finer-grained $g$ to serve a coarser $a$ by aggregating away label dimensions at query time, but the query cost table has no entry for this. When $g$'s label set is a proper superset of $a$'s, querying $a$ from $g$ requires a group-by and reduce over the extra label values — a cost proportional to $N_g / N_a$ operations — currently silent in the model. Either add a label-merge cost term to $\text{CPU-query}$, or restrict (CAP) to require exact label-set match.
 10. **FRESHt per-RQE vs. per-AQE**: (FRESHt) uses $\min_{r \in R_a} T_r$, banning any tumbling window $W_g > \min T_r$ for AQE $a$ even though slower RQEs could tolerate it. If $a$ is queried by a 1s RQE and a 60s RQE, all configs with $W_g > 1\text{s}$ are ruled infeasible, forcing small windows even when most query load runs at 60s cadence. Consider whether (FRESHt) should be relaxed per-$(a, r)$ pair — at the cost of introducing per-$(a, r, g)$ assignment variables.
