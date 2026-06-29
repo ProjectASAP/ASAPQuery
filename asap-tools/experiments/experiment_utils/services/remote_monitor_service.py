@@ -43,12 +43,14 @@ class RemoteMonitorService(BaseService):
         do_local_flink: bool,
         streaming_engine: str,
         query_engine_service: "BaseQueryEngineService",
-        arroyo_service: "ArroyoService",
+        arroyo_service: Optional["ArroyoService"],
         controller_remote_output_dir: str,
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
         monitoring_tool: str,
         timed_duration: Optional[int] = None,
+        backend_type: str = "prometheus",
+        monitor_keywords: Optional[List[str]] = None,
     ) -> None:
         """
         Start remote monitor processes.
@@ -75,9 +77,13 @@ class RemoteMonitorService(BaseService):
 
         if use_timed_mode:
             # Build command for timed mode (skip_querying)
-            keywords = config_keywords
+            keywords = (
+                list(monitor_keywords)
+                if monitor_keywords is not None
+                else list(config_keywords)
+            )
 
-            if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+            if monitor_keywords is None and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
                 if query_engine_service is not None:
                     keywords.append(query_engine_service.get_monitoring_keyword())
                 else:
@@ -96,7 +102,7 @@ class RemoteMonitorService(BaseService):
                         keywords.append("arroyo.*worker")
 
             cmd = (
-                "python3 -u remote_monitor.py "
+                "python3.11 -u remote_monitor.py "
                 "--execution_mode timed "
                 "--experiment_mode {} "
                 r"--keywords \"{}\" "
@@ -148,9 +154,13 @@ class RemoteMonitorService(BaseService):
         # Original prometheus_client mode logic
         assert controller_remote_output_dir is not None
 
-        keywords = config_keywords
+        keywords = (
+            list(monitor_keywords)
+            if monitor_keywords is not None
+            else list(config_keywords)
+        )
 
-        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        if monitor_keywords is None and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
             if query_engine_service is not None:
                 keywords.append(query_engine_service.get_monitoring_keyword())
             else:
@@ -169,7 +179,7 @@ class RemoteMonitorService(BaseService):
                     keywords.append("arroyo.*worker")
 
         cmd = (
-            "python3 -u remote_monitor.py "
+            "python3.11 -u remote_monitor.py "
             "--execution_mode prometheus_client "
             "--experiment_mode {} "
             r"--keywords \"{}\" "
@@ -220,6 +230,8 @@ class RemoteMonitorService(BaseService):
 
         if profile_prometheus_time is not None:
             cmd += " --profile_prometheus_time {}".format(profile_prometheus_time)
+
+        cmd += " --backend_type {}".format(backend_type)
 
         cmd_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-tools", "experiments"

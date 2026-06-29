@@ -109,8 +109,10 @@ from experiment_utils.services import (
 )
 from experiment_utils.services.misc import ControllerService, DiscoveryBackend
 from experiment_utils.services.query_engine import QueryEngineRustService
+from experiment_utils.services.remote_monitor_service import RemoteMonitorService
 
 CLICKHOUSE_DATABASE = "default"
+REMOTE_PROCESS_POLLING_INTERVAL = 10
 
 
 def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> None:
@@ -207,7 +209,7 @@ def _run_query_client(
         )
     else:
         cmd = (
-            f"python3 -u main_prometheus_client.py"
+            f"python3.11 -u main_prometheus_client.py"
             f" --config_file {config_file}"
             f" --output_dir {output_dir}"
             f" --output_file prometheus_client_output.txt"
@@ -222,6 +224,81 @@ def _run_query_client(
         nohup=False,
         popen=False,
     )
+
+
+def _clickhouse_monitor_keywords(experiment_mode: str) -> list[str]:
+    """Process keywords for remote_monitor on ClickHouse experiments.
+
+    Use ps-friendly patterns (not Docker container names): host-network
+    ClickHouse does not show up as ``clickhouse-server`` in ``ps``, and
+    ``docker inspect`` can fail in background SSH shells.
+    """
+    if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+        return [constants.QUERY_ENGINE_RS_PROCESS_KEYWORD]
+    return ["clickhouse"]
+
+
+def _run_query_workload(
+    *,
+    provider,
+    node_offset: int,
+    experiment_mode: str,
+    experiment_output_dir: str,
+    controller_client_config: str,
+    controller_remote_output_dir: str,
+    use_container: bool,
+    parallel: bool,
+    remote_monitor_enabled: bool,
+    remote_monitor_service: RemoteMonitorService,
+    minimum_experiment_running_time: int,
+    manual_remote_monitor: bool,
+    query_engine_service: QueryEngineRustService | None,
+    profile_query_engine: bool,
+    profile_prometheus_time,
+) -> None:
+    """Run the SQL query workload, optionally wrapped in remote_monitor."""
+    prometheus_client_output_dir = os.path.join(
+        experiment_output_dir, "prometheus_client_output"
+    )
+
+    if not remote_monitor_enabled:
+        _run_query_client(
+            provider=provider,
+            node_offset=node_offset,
+            config_file=controller_client_config,
+            output_dir=prometheus_client_output_dir,
+            use_container=use_container,
+            parallel=parallel,
+        )
+        return
+
+    remote_monitor_service.start(
+        controller_client_config=controller_client_config,
+        experiment_output_dir=experiment_output_dir,
+        experiment_mode=experiment_mode,
+        profile_query_engine=profile_query_engine,
+        profile_prometheus_time=profile_prometheus_time,
+        profile_flink=False,
+        flink_pids=None,
+        profile_arroyo=False,
+        arroyo_pids=None,
+        manual_mode=manual_remote_monitor,
+        do_local_flink=False,
+        streaming_engine="precompute",
+        query_engine_service=query_engine_service,
+        arroyo_service=None,
+        controller_remote_output_dir=controller_remote_output_dir,
+        use_container_prometheus_client=use_container,
+        prometheus_client_parallel=parallel,
+        monitoring_tool="prometheus",
+        backend_type="clickhouse",
+        monitor_keywords=_clickhouse_monitor_keywords(experiment_mode),
+    )
+    if not manual_remote_monitor and constants.AVOID_REMOTE_MONITOR_LONG_SSH:
+        remote_monitor_service.wait_for_remote_monitor_to_finish(
+            minimum_experiment_running_time=minimum_experiment_running_time,
+            polling_interval=REMOTE_PROCESS_POLLING_INTERVAL,
+        )
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
@@ -243,6 +320,13 @@ def main(cfg: DictConfig) -> None:
     no_teardown = cfg.flow.no_teardown
     use_container = cfg.use_container.prometheus_client
     parallel = cfg.prometheus_client.parallel
+    remote_monitor_enabled = bool(cfg.flow.get("remote_monitor", False))
+    manual_remote_monitor = bool(cfg.manual.remote_monitor)
+    profile_query_engine = bool(cfg.profiling.query_engine)
+    profile_prometheus_time = cfg.profiling.prometheus_time
+    minimum_experiment_running_time = config.get_minimum_experiment_running_time(
+        cfg.experiment_params
+    )
 
     if provider.is_remote():
         local_experiment_root_dir = os.path.join(
@@ -345,6 +429,7 @@ def main(cfg: DictConfig) -> None:
     prometheus_client_service = PrometheusClientService(
         provider, use_container=use_container, node_offset=node_offset
     )
+    remote_monitor_service = RemoteMonitorService(provider, node_offset=node_offset)
 
     for experiment_mode in experiment_modes:
         print(f"Running experiment mode: {experiment_mode}")
@@ -353,6 +438,7 @@ def main(cfg: DictConfig) -> None:
         # mirroring the prometheus_client_service.stop() call at the top of the
         # e2e mode loop.
         prometheus_client_service.stop()
+        remote_monitor_service.stop()
 
         experiment_output_dir = os.path.join(
             experiment_root_output_dir, experiment_mode
@@ -472,15 +558,22 @@ def main(cfg: DictConfig) -> None:
                 "controller_client_configs",
                 f"{experiment_mode}.yaml",
             )
-            _run_query_client(
+            _run_query_workload(
                 provider=provider,
                 node_offset=node_offset,
-                config_file=controller_client_config,
-                output_dir=os.path.join(
-                    experiment_output_dir, "prometheus_client_output"
-                ),
+                experiment_mode=experiment_mode,
+                experiment_output_dir=experiment_output_dir,
+                controller_client_config=controller_client_config,
+                controller_remote_output_dir=remote_controller_dir,
                 use_container=use_container,
                 parallel=parallel,
+                remote_monitor_enabled=remote_monitor_enabled,
+                remote_monitor_service=remote_monitor_service,
+                minimum_experiment_running_time=minimum_experiment_running_time,
+                manual_remote_monitor=manual_remote_monitor,
+                query_engine_service=query_engine_service,
+                profile_query_engine=profile_query_engine,
+                profile_prometheus_time=profile_prometheus_time,
             )
 
             sync.rsync_experiment_data(
@@ -500,15 +593,22 @@ def main(cfg: DictConfig) -> None:
                 "controller_client_configs",
                 f"{experiment_mode}.yaml",
             )
-            _run_query_client(
+            _run_query_workload(
                 provider=provider,
                 node_offset=node_offset,
-                config_file=controller_client_config,
-                output_dir=os.path.join(
-                    experiment_output_dir, "prometheus_client_output"
-                ),
+                experiment_mode=experiment_mode,
+                experiment_output_dir=experiment_output_dir,
+                controller_client_config=controller_client_config,
+                controller_remote_output_dir=experiment_root_output_dir,
                 use_container=use_container,
                 parallel=parallel,
+                remote_monitor_enabled=remote_monitor_enabled,
+                remote_monitor_service=remote_monitor_service,
+                minimum_experiment_running_time=minimum_experiment_running_time,
+                manual_remote_monitor=manual_remote_monitor,
+                query_engine_service=None,
+                profile_query_engine=profile_query_engine,
+                profile_prometheus_time=profile_prometheus_time,
             )
 
             sync.rsync_experiment_data(

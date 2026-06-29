@@ -295,7 +295,11 @@ def main(args):
     pids = []
     keywords_expanded = []
     for keyword in args.keywords:
-        keyword_pids = get_pids(keyword)
+        try:
+            keyword_pids = get_pids(keyword)
+        except ValueError as exc:
+            logger.warning("Skipping keyword {}: {}", keyword, exc)
+            continue
         pids.extend(keyword_pids)
         keywords_expanded.extend([keyword] * len(keyword_pids))
         # pid_keyword_map[pid] = keyword
@@ -395,7 +399,7 @@ def main(args):
             profile_query_engine_pid,
             args.profile_prometheus_time,
             args.prometheus_client_parallel,
-            backend_type="prometheus",
+            backend_type=args.backend_type,
         )
 
         if prometheus_client_service.use_container:
@@ -515,6 +519,12 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Streaming engine type (e.g. precompute, arroyo)",
+    )
+    parser.add_argument(
+        "--backend_type",
+        type=str,
+        default="prometheus",
+        help="Query backend for prometheus-client (prometheus or clickhouse)",
     )
     args = parser.parse_args()
     args.keywords = args.keywords.strip().split(",")
