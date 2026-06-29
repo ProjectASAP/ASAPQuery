@@ -43,11 +43,6 @@ OmegaConf.register_new_resolver(
     "local_experiment_dir", lambda: constants.LOCAL_EXPERIMENT_DIR
 )
 
-# Register custom resolver for remote write IP based on node_offset
-OmegaConf.register_new_resolver(
-    "remote_write_ip", lambda node_offset: f"10.10.1.{node_offset + 1}"
-)
-
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(cfg: DictConfig):
@@ -60,6 +55,7 @@ def main(cfg: DictConfig):
 
     # Create infrastructure provider
     provider = create_provider(cfg)
+    args.remote_write_ip = provider.get_node_ip(args.node_offset)
 
     args.forward_unsupported_queries = True
     print("Forcing forward_unsupported_queries to True for Grafana demo")

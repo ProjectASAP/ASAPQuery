@@ -803,7 +803,7 @@ def main(cfg: DictConfig):
       python grafana_config.py experiment_type=cloud_demo experiment.name=test_dash --configure
 
       # With additional overrides
-      python grafana_config.py experiment_type=collapsable cloudlab.num_nodes=2 experiment.name=pc_test_3 --configure
+      python grafana_config.py experiment_type=collapsable providers.cloudlab.num_nodes=2 experiment.name=pc_test_3 --configure
     """
     # Check if we're in configure mode (determined before Hydra processed args)
     configure_mode = hasattr(main, "_configure_mode") and main._configure_mode
@@ -852,7 +852,7 @@ if __name__ == "__main__":
         print("")
         print("  # With additional overrides")
         print(
-            "  python grafana_config.py experiment_type=collapsable cloudlab.num_nodes=2 experiment.name=pc_test_3 --configure"
+            "  python grafana_config.py experiment_type=collapsable providers.cloudlab.num_nodes=2 experiment.name=pc_test_3 --configure"
         )
         print("")
         print("Environment variables for Grafana configuration:")

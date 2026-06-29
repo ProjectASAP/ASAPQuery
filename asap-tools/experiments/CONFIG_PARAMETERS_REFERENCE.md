@@ -30,20 +30,20 @@ These parameters must be provided for all experiment scripts:
 - **Validation**: Cannot be `???` or empty
 - **Used by**: All experiment scripts
 
-#### `cloudlab.num_nodes` (int, required)
+#### `providers.cloudlab.num_nodes` (int, required)
 - **Description**: Number of CloudLab nodes to allocate for the experiment
 - **Range**: 1-50 (recommended)
 - **Example**: `4`
 - **Validation**: Must be positive integer
 - **Used by**: All experiment scripts
 
-#### `cloudlab.username` (string, required)
+#### `providers.cloudlab.username` (string, required)
 - **Description**: Your CloudLab username for SSH access
 - **Example**: `"myuser"`
 - **Validation**: Must be valid CloudLab username
 - **Used by**: All experiment scripts
 
-#### `cloudlab.hostname_suffix` (string, required)
+#### `providers.cloudlab.hostname_suffix` (string, required)
 - **Description**: CloudLab experiment hostname suffix
 - **Example**: `"myexp.cloudlab.us"`
 - **Validation**: Must be valid hostname format
@@ -612,7 +612,7 @@ These parameters come from the `experiment_type` config group and are prefixed w
 ```python
 # Recommended validation rules
 VALIDATION_RULES = {
-    "cloudlab.num_nodes": {"type": int, "min": 1, "max": 50},
+    "providers.cloudlab.num_nodes": {"type": int, "min": 1, "max": 50},
     "prometheus.scrape_interval": {"type": str, "pattern": r"^\d+[smh]$"},
     "experiment_params.exporters.exporter_list.fake_exporter.start_port": {
         "type": int, "min": 1024, "max": 65535
@@ -685,9 +685,9 @@ VALIDATION_RULES = {
 python experiment_run_e2e.py \
   experiment.name=my_test \
   experiment_type=cloud_demo \
-  cloudlab.num_nodes=4 \
-  cloudlab.username=myuser \
-  cloudlab.hostname_suffix=myexp.cloudlab.us \
+  providers.cloudlab.num_nodes=4 \
+  providers.cloudlab.username=myuser \
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
   prometheus.local_config_dir=/path/to/prometheus/config
 ```
 
@@ -719,7 +719,7 @@ python experiment_run_e2e.py \
 ```bash
 python experiment_run_e2e.py \
   experiment_type=cloud_demo \
-  cloudlab.num_nodes=2 \
+  providers.cloudlab.num_nodes=2 \
   logging.level=DEBUG \
   flow.steady_state_wait=60 \
   streaming.do_local_flink=true \
@@ -742,7 +742,7 @@ for nodes in 4 8 16; do
   python experiment_run_e2e.py \
     experiment.name=nodes_${nodes} \
     experiment_type=cloud_demo \
-    cloudlab.num_nodes=${nodes} \
+    providers.cloudlab.num_nodes=${nodes} \
     [required params...]
 done
 ```
