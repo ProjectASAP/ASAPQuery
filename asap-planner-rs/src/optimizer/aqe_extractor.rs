@@ -27,7 +27,7 @@ struct AQEKey {
     metric: String,
     /// Statistics are produced in a stable order by get_statistics_to_compute.
     statistics: Vec<Statistic>,
-    data_range_ms: Option<u64>,
+    data_range_ms: u64,
     grouping_labels: KeyByLabelNames,
     spatial_filter_normalized: String,
     topk_count_events: Option<bool>,
@@ -81,13 +81,8 @@ pub fn extract_aqes(
         let leaves = decompose_to_leaves(&rqe.query_string);
 
         for leaf in leaves {
-            match extract_requirements(&leaf, metric_schema) {
-                Some(mut req) => {
-                    // Spatial-only queries have no range vector; treat them as a
-                    // single scrape interval so downstream window logic is explicit.
-                    if req.data_range_ms.is_none() {
-                        req.data_range_ms = Some(scrape_interval_ms);
-                    }
+            match extract_requirements(&leaf, metric_schema, scrape_interval_ms) {
+                Some(req) => {
                     let key = AQEKey::from_requirements(&req);
                     let entry = acc
                         .entry(key)
@@ -167,7 +162,11 @@ fn decompose_to_leaves(query: &str) -> Vec<String> {
 
 /// Try to extract `QueryRequirements` from a single leaf PromQL query string.
 /// Returns `None` if the query cannot be parsed or does not match any pattern.
-fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<QueryRequirements> {
+fn extract_requirements(
+    query: &str,
+    metric_schema: &PromQLSchema,
+    data_ingestion_interval_ms: u64,
+) -> Option<QueryRequirements> {
     let ast = promql_parser::parser::parse(query).ok()?;
     let patterns = build_patterns();
 
@@ -180,7 +179,13 @@ fn extract_requirements(query: &str, metric_schema: &PromQLSchema) -> Option<Que
         }
     })?;
 
-    build_query_requirements_promql(query, &match_result, pattern_type, metric_schema)
+    build_query_requirements_promql(
+        query,
+        &match_result,
+        pattern_type,
+        metric_schema,
+        data_ingestion_interval_ms,
+    )
 }
 
 #[cfg(test)]
@@ -205,7 +210,7 @@ mod tests {
         assert_eq!(aqes.len(), 1);
         assert!((aqes[0].query_frequency_hz - 1.0 / 60.0).abs() < 1e-9);
         assert_eq!(aqes[0].requirements.metric, "metric");
-        assert_eq!(aqes[0].requirements.data_range_ms, Some(300_000));
+        assert_eq!(aqes[0].requirements.data_range_ms, 300_000);
     }
 
     #[test]
@@ -254,6 +259,6 @@ mod tests {
         let rqes = vec![rqe("sum(metric)", 60_000)];
         let aqes = extract_aqes(&rqes, &empty_schema(), 15_000);
         assert_eq!(aqes.len(), 1);
-        assert_eq!(aqes[0].requirements.data_range_ms, Some(15_000));
+        assert_eq!(aqes[0].requirements.data_range_ms, 15_000);
     }
 }
