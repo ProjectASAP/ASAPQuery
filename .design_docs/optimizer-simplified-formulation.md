@@ -24,8 +24,8 @@ Each summarization strategy takes an input stream of metrics and computes summar
 | $\varepsilon_r$ | User-specified | Accuracy tolerance for RQE $r$ |
 | $\text{SLA}_r$ | User-specified | Latency requirement for RQE $r$ |
 | $S = \{s_1, \ldots s_n\}$ | Expert-defined | Set of summarization strategies |
-| $ingest\_cost(s)$ | Expert-defined | Cost of ingesting data into a summary $s$ |
-| $query\_cost(s, r)$ | Expert-defined | Cost of answering RQE $r$ from summary $s$ |
+| `ingest_cost(s)` | Expert-defined | Cost of ingesting data into a summary $s$ |
+| `query_cost(s, r)` | Expert-defined | Cost of answering RQE $r$ from summary $s$ |
 
 ## Internal Variables
 
@@ -42,9 +42,9 @@ Each summarization strategy takes an input stream of metrics and computes summar
 
 ## Objective
 
-$$\min \sum_{s \in S} y_s \cdot ingest\_cost(s) \ + \ \sum_{r \in R,\ s \in S} x_{r,s} \cdot f_r \cdot query\_cost(s, r)$$
+$$\min \sum_{s \in S} y_s \cdot \operatorname{ingest\_cost}(s) \ + \ \sum_{r \in R,\ s \in S} x_{r,s} \cdot f_r \cdot \operatorname{query\_cost}(s, r)$$
 
-Both terms are cost rates (cost/sec). $f_r$ converts the per-query $query\_cost$ into a rate commensurate with the continuously-accruing $ingest\_cost$.
+Both terms are cost rates (cost/sec). $f_r$ converts the per-query `query_cost` into a rate commensurate with the continuously-accruing `ingest_cost`.
 
 ## Constraints
 
@@ -60,4 +60,4 @@ $$x_{r,s},\ y_s \in \{0,1\} \tag{3}$$
 
 1. How to define the set of available summarization strategies $S$?
 2. How to infer if a particular RQE $r$ can be feasibly answered using a summarization strategy $s$?
-3. How to efficiently infer $ingest\_cost$ and $query\_cost$, for different summarization strategies, queries, and data shapes/distributions?
+3. How to efficiently infer `ingest_cost` and `query_cost`, for different summarization strategies, queries, and data shapes/distributions?
