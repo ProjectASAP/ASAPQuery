@@ -21,6 +21,7 @@ RUN mkdir -p asap-query-engine/src && echo "fn main() {}" > asap-query-engine/sr
     mkdir -p asap-query-engine/benches && echo "fn main() {}" > asap-query-engine/benches/simple_store_bench.rs && \
     mkdir -p asap-planner-rs/src/bin && echo "fn main() {}" > asap-planner-rs/src/main.rs && \
     echo "fn main() {}" > asap-planner-rs/src/bin/optimizer_cli.rs && \
+    echo "fn main() {}" > asap-planner-rs/src/bin/candidate_gen_dump.rs && \
     echo "pub fn placeholder() {}" >> asap-planner-rs/src/lib.rs
 
 # Build dependencies (this layer will be cached)
