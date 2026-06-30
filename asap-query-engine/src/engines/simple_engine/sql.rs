@@ -615,15 +615,11 @@ impl SimpleEngine {
             String::new()
         };
 
-        let do_merge = query_pattern_type == QueryPatternType::OnlyTemporal
-            || query_pattern_type == QueryPatternType::OneTemporalOneSpatial;
-
         let ctx = self.build_sql_execution_context_tail(
             metric,
             &timestamps,
             metadata,
             agg_info,
-            do_merge,
             spatial_filter,
             query_time,
         )?;
@@ -643,11 +639,10 @@ impl SimpleEngine {
         timestamps: &QueryTimestamps,
         metadata: QueryMetadata,
         agg_info: AggregationIdInfo,
-        do_merge: bool,
         spatial_filter: String,
         query_time: u64,
     ) -> Option<QueryExecutionContext> {
-        let query_plan = self
+        let (query_plan, do_merge) = self
             .create_store_query_plan(metric, timestamps, &agg_info)
             .map_err(|e| {
                 warn!("Failed to create store query plan: {}", e);
@@ -763,7 +758,6 @@ impl SimpleEngine {
             &timestamps,
             metadata,
             agg_info,
-            true,
             String::new(),
             query_time,
         )

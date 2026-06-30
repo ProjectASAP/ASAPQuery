@@ -418,4 +418,115 @@ mod tests {
             "[500ms] range vector must produce a 500ms window, got [{start_ms}, {end_ms})"
         );
     }
+
+    // --- do_merge derivation (issue #486) ---
+    //
+    // do_merge is derived in `create_store_query_plan` as `range_ms > window_size_ms`,
+    // not from QueryPatternType. These three tests are exhaustive over the only
+    // three patterns that exist, so together they pin down the iff:
+    //   do_merge == true  iff  pattern is OnlyTemporal or OneTemporalOneSpatial
+    //   do_merge == false iff  pattern is OnlySpatial
+    // Each uses a window_size_ms smaller than the query's range so the derived
+    // check reflects a realistic config (bucket finer than the requested range),
+    // matching how OnlySpatial queries are always exactly one bucket wide
+    // (range_ms == data_ingestion_interval_ms == window_size_ms, so do_merge is
+    // always false there) while temporal/collapsable queries normally span many.
+
+    #[test]
+    fn test_do_merge_true_for_temporal_context() {
+        let scrape_interval_ms = 1000;
+        let promql_query = "sum_over_time(cpu_usage[5m])";
+        let window_size_ms = 1000; // << 5m range
+
+        let (promql_config, _, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1"])
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_temporal_query(
+                promql_query,
+                promql_query,
+                1,
+                window_size_ms,
+                WindowType::Tumbling,
+            )
+            .build_both();
+
+        let promql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            promql_config,
+            streaming_config,
+            scrape_interval_ms,
+            QueryLanguage::promql,
+        );
+
+        let context = promql_engine
+            .build_query_execution_context_promql(promql_query.to_string(), 1_000.0)
+            .expect("Failed to build PromQL context");
+
+        assert!(
+            context.do_merge,
+            "OnlyTemporal queries must have do_merge=true"
+        );
+    }
+
+    #[test]
+    fn test_do_merge_true_for_collapsable_context() {
+        let scrape_interval_ms = 1000;
+        let promql_query = "sum(sum_over_time(cpu_usage[5m])) by (L1)";
+        let window_size_ms = 1000; // << 5m range
+
+        let (promql_config, _, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1"])
+            .with_rollup_labels(vec!["L2", "L3", "L4"])
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_spatial_of_temporal_query(promql_query, promql_query, 1, window_size_ms)
+            .build_both();
+
+        let promql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            promql_config,
+            streaming_config,
+            scrape_interval_ms,
+            QueryLanguage::promql,
+        );
+
+        let context = promql_engine
+            .build_query_execution_context_promql(promql_query.to_string(), 1_000.0)
+            .expect("Failed to build PromQL context");
+
+        assert!(
+            context.do_merge,
+            "OneTemporalOneSpatial (collapsable) queries must have do_merge=true"
+        );
+    }
+
+    #[test]
+    fn test_do_merge_false_for_spatial_context() {
+        let scrape_interval_ms = 1000;
+        let promql_query = "sum(cpu_usage) by (L1)";
+
+        // add_spatial_query sets window_size_ms = scrape_interval_ms, and a spatial
+        // query's range is exactly one scrape interval, so range_ms == window_size_ms.
+        let (promql_config, _, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1"])
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_spatial_query(promql_query, promql_query, 1)
+            .build_both();
+
+        let promql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            promql_config,
+            streaming_config,
+            scrape_interval_ms,
+            QueryLanguage::promql,
+        );
+
+        let context = promql_engine
+            .build_query_execution_context_promql(promql_query.to_string(), 1_000.0)
+            .expect("Failed to build PromQL context");
+
+        assert!(
+            !context.do_merge,
+            "OnlySpatial queries must have do_merge=false"
+        );
+    }
 }

@@ -51,8 +51,6 @@ impl SimpleEngine {
             })
             .ok()?;
 
-        let do_merge = true; // No "instant" queries in ElasticSearch supported for now, so we always need to merge.
-
         let (metric, query_metadata) = self.build_query_metadata_elastic(&query_info)?;
 
         let spatial_filter = String::new(); // Placeholder - extract from query if applicable
@@ -60,7 +58,7 @@ impl SimpleEngine {
         // Parse time range information from first query predicate if available, otherwise default to entire history up to query_time.
         let timestamps = self.resolve_query_time_range_elastic(query_time, query_info);
 
-        let query_plan = self
+        let (query_plan, do_merge) = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
             .map_err(|e| {
                 warn!("Failed to create store query plan: {}", e);
