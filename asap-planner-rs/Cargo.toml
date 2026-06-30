@@ -15,6 +15,10 @@ path = "src/main.rs"
 name = "asap-optimizer-cli"
 path = "src/bin/optimizer_cli.rs"
 
+[[bin]]
+name = "candidate-gen-dump"
+path = "src/bin/candidate_gen_dump.rs"
+
 [dependencies]
 asap_types.workspace = true
 promql_utilities.workspace = true

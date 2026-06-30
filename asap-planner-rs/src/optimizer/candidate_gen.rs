@@ -49,7 +49,7 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<Candidate
 
         for params in param_grid(agg_type, aqe.requirements.topk_count_events) {
             for (window_type, w, slide_interval, n) in
-                window_candidates(range_a_ms, aqe.min_t_repeat_ms, scrape_interval_ms)
+                window_candidates(range_a_ms, aqe.t_repeat_gcd_ms, scrape_interval_ms)
             {
                 let Some(qm) = determine_query_method(n, &props) else {
                     continue;
@@ -88,16 +88,22 @@ fn exact_candidate() -> CandidateConfig {
 
 /// Window candidates: (WindowType, W_ms, slide_interval_ms, n_windows).
 ///
-/// Tumbling: all W that divide range_a, are multiples of scrape_interval, and ≤ min_t_repeat.
+/// Tumbling: W must divide GCD(range_a, t_repeat_gcd_ms) and be a multiple of scrape_interval.
+///           Dividing the GCD ensures (a) n complete windows cover range_a exactly, and
+///           (b) window completions are harmonically aligned with every dashboard refresh cycle.
 ///           Slide interval = W (a tumbling window "slides" by its own width).
 /// Sliding:  W = range_a / k for each W that is a multiple of scrape_interval and divides
-///           range_a (k = range_a / W). At query time k staggered readings are merged or
-///           subtracted to cover range_a. Freshness is bounded by S (the slide interval),
-///           not by W — so the guard is S ≤ min_t_repeat_ms, not W ≤ min_t_repeat_ms.
-///           S doubles from scrape_interval up to min(W, min_t_repeat_ms).
+///           range_a (k = range_a / W). At query time k staggered readings spaced W apart
+///           are merged or subtracted to cover range_a.
+///           S must satisfy three constraints:
+///             (a) S | W   — so W-spaced snapshots land on slide boundaries (multi-window correctness)
+///             (b) S | t_repeat_gcd — so slide boundaries align with every dashboard refresh cycle
+///             (c) S < W   — S=W is excluded because slide==window is tumbling (duplicate candidate)
+///           S is enumerated as multiples of scrape_interval < W; the divisibility check on
+///           gcd(W, t_repeat_gcd) rejects values that fail (a) or (b) without a separate bound.
 fn window_candidates(
     range_a_ms: u64,
-    min_t_repeat_ms: u64,
+    t_repeat_gcd_ms: u64,
     scrape_interval_ms: u64,
 ) -> Vec<(WindowType, u64, u64, u64)> {
     let range_a = range_a_ms;
@@ -105,13 +111,16 @@ fn window_candidates(
         return vec![];
     }
 
-    let max_w = range_a.min(min_t_repeat_ms);
     let mut out = Vec::new();
 
-    // Tumbling: W divides range_a, is a multiple of scrape_interval, and ≤ max_w.
+    // Tumbling: W divides GCD(range_a, t_repeat_gcd) and is a multiple of scrape_interval.
+    // W | t_repeat_gcd ensures window completions align harmonically with all dashboards.
+    // W | range_a (implied since t_repeat_gcd | range_a is checked at generation time, but
+    // we verify explicitly via the gcd) ensures n windows cover range_a exactly.
+    let tumbling_divisor = super::aqe_extractor::gcd(range_a, t_repeat_gcd_ms);
     let mut w = scrape_interval_ms;
-    while w <= max_w {
-        if range_a.is_multiple_of(w) {
+    while w <= tumbling_divisor {
+        if tumbling_divisor.is_multiple_of(w) {
             let n = range_a / w;
             out.push((WindowType::Tumbling, w, w, n));
         }
@@ -124,10 +133,15 @@ fn window_candidates(
     while w <= range_a {
         if range_a.is_multiple_of(w) {
             let k = range_a / w;
+            // Valid S: S | gcd(W, t_repeat_gcd). Iterate up to W (exclusive); the
+            // divisibility check rejects anything above gcd automatically.
+            let slide_divisor = super::aqe_extractor::gcd(w, t_repeat_gcd_ms);
             let mut s = scrape_interval_ms;
-            while s <= w.min(min_t_repeat_ms) {
-                out.push((WindowType::Sliding, w, s, k));
-                s *= 2;
+            while s < w {
+                if slide_divisor.is_multiple_of(s) {
+                    out.push((WindowType::Sliding, w, s, k));
+                }
+                s += scrape_interval_ms;
             }
         }
         w += scrape_interval_ms;
@@ -398,10 +412,9 @@ mod tests {
     }
 
     #[test]
-    fn sliding_freshness_guard_uses_slide_not_width() {
-        // range_a=600_000ms > min_t_repeat=30_000ms. The old guard (range_a <= min_t_repeat)
-        // incorrectly rejected all Sliding candidates here. New guard: S ≤ min_t_repeat.
-        // W=600_000, S=30_000 ≤ min_t_repeat → full-width Direct Sliding should be present.
+    fn sliding_full_width_direct_generated_when_range_exceeds_t_repeat() {
+        // range_a=600_000ms > t_repeat_gcd=30_000ms. W=range_a is valid for sliding since
+        // freshness is governed by S (not W). S=30_000 | gcd(600_000, 30_000)=30_000 → emitted.
         let aqe = make_aqe(Statistic::Sum, 600_000, 30_000);
         let candidates = enumerate_candidates(&aqe, 30_000);
         assert!(
@@ -412,6 +425,75 @@ mod tests {
                     && c.n_windows == 1
             }),
             "full-width Sliding Direct should be generated even when range_a > min_t_repeat"
+        );
+    }
+
+    #[test]
+    fn sliding_slide_must_divide_gcd_of_window_and_t_repeat() {
+        // range_a=20_000, t_repeat_gcd=5_000, scrape=1_000.
+        // W=10_000 (k=2): slide_divisor = gcd(10_000, 5_000) = 5_000.
+        // Valid S: divisors of 5_000 that are multiples of 1_000 and < 10_000 → {1_000, 5_000}.
+        // Invalid: S=2_000 (5_000 % 2_000 ≠ 0), S=4_000 (5_000 % 4_000 ≠ 0).
+        let aqe = make_aqe(Statistic::Sum, 20_000, 5_000);
+        let candidates = enumerate_candidates(&aqe, 1_000);
+
+        let sliding_w10: Vec<_> = candidates
+            .iter()
+            .filter(|c| {
+                c.config.as_ref().is_some_and(|cfg| {
+                    cfg.window_type == WindowType::Sliding && cfg.window_size_ms == 10_000
+                })
+            })
+            .collect();
+
+        let slides: Vec<u64> = sliding_w10
+            .iter()
+            .map(|c| c.config.as_ref().unwrap().slide_interval_ms)
+            .collect();
+
+        assert!(
+            slides.contains(&1_000),
+            "S=1_000 should be valid (divides 5_000)"
+        );
+        assert!(
+            slides.contains(&5_000),
+            "S=5_000 should be valid (divides 5_000)"
+        );
+        assert!(
+            !slides.contains(&2_000),
+            "S=2_000 should be rejected (5_000 % 2_000 ≠ 0)"
+        );
+        assert!(
+            !slides.contains(&4_000),
+            "S=4_000 should be rejected (5_000 % 4_000 ≠ 0)"
+        );
+    }
+
+    #[test]
+    fn sliding_slide_must_divide_window_size() {
+        // W=6_000, t_repeat_gcd=6_000: slide_divisor = gcd(6_000, 6_000) = 6_000.
+        // S=4_000: 6_000 % 4_000 = 2_000 ≠ 0 → rejected even though 4_000 < 6_000.
+        // S=2_000: 6_000 % 2_000 = 0 → valid.
+        let aqe = make_aqe(Statistic::Sum, 12_000, 6_000);
+        let candidates = enumerate_candidates(&aqe, 1_000);
+
+        let slides_w6: Vec<u64> = candidates
+            .iter()
+            .filter(|c| {
+                c.config.as_ref().is_some_and(|cfg| {
+                    cfg.window_type == WindowType::Sliding && cfg.window_size_ms == 6_000
+                })
+            })
+            .map(|c| c.config.as_ref().unwrap().slide_interval_ms)
+            .collect();
+
+        assert!(
+            slides_w6.contains(&2_000),
+            "S=2_000 should be valid (6_000 % 2_000 = 0)"
+        );
+        assert!(
+            !slides_w6.contains(&4_000),
+            "S=4_000 should be rejected (6_000 % 4_000 ≠ 0)"
         );
     }
 
