@@ -131,7 +131,7 @@ pub fn extract_aqes(
 
 /// Euclidean GCD. `num-integer` is not in the workspace; this two-liner is
 /// sufficient and avoids a dependency.
-fn gcd(a: u64, b: u64) -> u64 {
+pub(super) fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 {
         a
     } else {
