@@ -153,7 +153,6 @@ OmegaConf.register_new_resolver(
 
 
 def _run_query_workload(
-    *,
     experiment_mode: str,
     experiment_output_dir: str,
     controller_client_config: str,
@@ -186,6 +185,9 @@ def _run_query_workload(
         controller_remote_output_dir=controller_remote_output_dir,
         use_container_prometheus_client=use_container,
         prometheus_client_parallel=parallel,
+        # monitoring_tool only selects the Prometheus/VictoriaMetrics scrape-config
+        # keyword, which is unused on the ClickHouse path: process keywords are
+        # chosen from backend_type="clickhouse" below. Harmless placeholder.
         monitoring_tool="prometheus",
         backend_type="clickhouse",
     )
