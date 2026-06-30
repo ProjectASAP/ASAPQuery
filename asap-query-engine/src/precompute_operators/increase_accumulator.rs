@@ -6,9 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use promql_utilities::query_logics::enums::{
-    Statistic, RANGE_END_MS_KWARG, RANGE_START_MS_KWARG,
-};
+use promql_utilities::query_logics::enums::{Statistic, RANGE_END_MS_KWARG, RANGE_START_MS_KWARG};
 
 /// Sample count assumed when deserializing a blob that predates the
 /// `sample_count` field. Two (the minimum for a defined increase) keeps
@@ -136,8 +134,7 @@ impl IncreaseAccumulator {
         let mut duration_to_start = (self.starting_timestamp - range_start_ms) as f64 / 1000.0;
         let mut duration_to_end = (range_end_ms - self.last_seen_timestamp) as f64 / 1000.0;
 
-        let sampled_interval =
-            (self.last_seen_timestamp - self.starting_timestamp) as f64 / 1000.0;
+        let sampled_interval = (self.last_seen_timestamp - self.starting_timestamp) as f64 / 1000.0;
         let average_duration_between_samples = sampled_interval / num_samples_minus_one;
         let extrapolation_threshold = average_duration_between_samples * 1.1;
 
@@ -223,7 +220,9 @@ impl IncreaseAccumulator {
             .ok_or("Missing or invalid 'last_seen_timestamp' field")?;
         // Tolerate legacy blobs written before these fields existed.
         let counter_reset_correction = data["counter_reset_correction"].as_f64().unwrap_or(0.0);
-        let sample_count = data["sample_count"].as_u64().unwrap_or(DEFAULT_LEGACY_SAMPLE_COUNT);
+        let sample_count = data["sample_count"]
+            .as_u64()
+            .unwrap_or(DEFAULT_LEGACY_SAMPLE_COUNT);
 
         Ok(Self::new_full(
             starting_measurement,
@@ -485,10 +484,9 @@ impl SingleSubpopulationAggregate for IncreaseAccumulator {
             Statistic::Increase => false,
             Statistic::Rate => true,
             _ => {
-                return Err(format!(
-                    "Unsupported statistic in IncreaseAccumulator: {statistic:?}"
+                return Err(
+                    format!("Unsupported statistic in IncreaseAccumulator: {statistic:?}").into(),
                 )
-                .into())
             }
         };
 
@@ -720,7 +718,8 @@ mod tests {
     /// `new` on the first sample, then `update` for each subsequent one.
     fn feed(samples: &[(i64, f64)]) -> IncreaseAccumulator {
         let (ts0, v0) = samples[0];
-        let mut acc = IncreaseAccumulator::new(Measurement::new(v0), ts0, Measurement::new(v0), ts0);
+        let mut acc =
+            IncreaseAccumulator::new(Measurement::new(v0), ts0, Measurement::new(v0), ts0);
         for &(ts, v) in &samples[1..] {
             acc.update(Measurement::new(v), ts);
         }
@@ -770,7 +769,8 @@ mod tests {
     fn test_merge_boundary_reset_correction() {
         // Window A: 10 -> 20. Window B: 5 -> 30 (B starts below A's last => reset).
         // Increase = 30 - 10 + boundary(20) = 40.
-        let a = IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(20.0), 2000);
+        let a =
+            IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(20.0), 2000);
         let b = IncreaseAccumulator::new(Measurement::new(5.0), 3000, Measurement::new(30.0), 4000);
 
         let merged = IncreaseAccumulator::merge_pair(&a, &b);
@@ -787,7 +787,8 @@ mod tests {
         assert_eq!(merged_rev.last_seen_measurement.value, 30.0);
 
         // No reset at the boundary (B starts >= A's last) => no boundary correction.
-        let c = IncreaseAccumulator::new(Measurement::new(25.0), 3000, Measurement::new(40.0), 4000);
+        let c =
+            IncreaseAccumulator::new(Measurement::new(25.0), 3000, Measurement::new(40.0), 4000);
         let merged_no_reset = IncreaseAccumulator::merge_pair(&a, &c);
         assert_eq!(merged_no_reset.counter_reset_correction, 0.0);
         assert_eq!(merged_no_reset.corrected_increase(), 30.0);
@@ -799,10 +800,11 @@ mod tests {
         let w1 = feed(&[(1000, 0.0), (2000, 40.0)]); // +40, count 2
         let w2 = feed(&[(3000, 50.0), (4000, 10.0), (5000, 60.0)]); // reset +50, count 3
         let w3 = feed(&[(6000, 70.0), (7000, 90.0)]); // +20, count 2
-        let merged = <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
-            vec![w3.clone(), w1.clone(), w2.clone()],
-        )
-        .unwrap();
+        let merged =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![w3.clone(), w1.clone(), w2.clone()],
+            )
+            .unwrap();
         // boundaries: w1.last(40) -> w2.start(50): no reset. w2.last(60) -> w3.start(70): no reset.
         // total correction = 0 + 50 + 0 (intra w2) + boundaries(0) = 50.
         assert_eq!(merged.starting_measurement.value, 0.0);
@@ -838,8 +840,9 @@ mod tests {
         let mut kwargs = HashMap::new();
         kwargs.insert(RANGE_START_MS_KWARG.to_string(), "0".to_string());
         kwargs.insert(RANGE_END_MS_KWARG.to_string(), "60000".to_string());
-        let q = crate::SingleSubpopulationAggregate::query(&acc, Statistic::Increase, Some(&kwargs))
-            .unwrap();
+        let q =
+            crate::SingleSubpopulationAggregate::query(&acc, Statistic::Increase, Some(&kwargs))
+                .unwrap();
         assert!((q - 72.0).abs() < 1e-9, "query increase = {q}");
     }
 
@@ -908,7 +911,8 @@ mod tests {
     fn test_legacy_bytes_decode_with_defaults() {
         // A buffer that ends after the original four fields (correction + count
         // absent) must decode with defaults instead of erroring.
-        let acc = IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(25.0), 2000);
+        let acc =
+            IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(25.0), 2000);
         let mut bytes = acc.serialize_to_bytes();
         bytes.truncate(bytes.len() - 16); // drop counter_reset_correction (8) + sample_count (8)
         let back = IncreaseAccumulator::deserialize_from_bytes(&bytes).unwrap();

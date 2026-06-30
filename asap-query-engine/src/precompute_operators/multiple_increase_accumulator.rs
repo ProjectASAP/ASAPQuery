@@ -600,9 +600,7 @@ mod tests {
         let mut kwargs = HashMap::new();
         kwargs.insert(RANGE_START_MS_KWARG.to_string(), "0".to_string());
         kwargs.insert(RANGE_END_MS_KWARG.to_string(), "60000".to_string());
-        let v = acc
-            .query(Statistic::Increase, &key, Some(&kwargs))
-            .unwrap();
+        let v = acc.query(Statistic::Increase, &key, Some(&kwargs)).unwrap();
         assert!((v - 72.0).abs() < 1e-9, "increase = {v}");
     }
 
