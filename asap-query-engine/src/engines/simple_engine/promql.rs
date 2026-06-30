@@ -303,16 +303,13 @@ impl SimpleEngine {
             query_kwargs,
         };
 
-        let query_plan = self
+        let (query_plan, do_merge) = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
             .map_err(|e| {
                 warn!("Failed to create store query plan: {}", e);
                 e
             })
             .ok()?;
-
-        let do_merge = query_pattern_type == QueryPatternType::OnlyTemporal
-            || query_pattern_type == QueryPatternType::OneTemporalOneSpatial;
 
         let sc = self.streaming_config.read().unwrap().clone();
         let grouping_labels = sc

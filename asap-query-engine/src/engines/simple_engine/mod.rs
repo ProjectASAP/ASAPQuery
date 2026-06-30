@@ -399,13 +399,15 @@ impl SimpleEngine {
         })
     }
 
-    /// Creates a plan for querying the store based on aggregation configuration
+    /// Creates a plan for querying the store based on aggregation configuration.
+    /// Also derives `do_merge`: true when the requested time range spans more
+    /// than one stored window, i.e. `range_ms > window_size_ms`.
     fn create_store_query_plan(
         &self,
         metric: &str,
         timestamps: &QueryTimestamps,
         agg_info: &AggregationIdInfo,
-    ) -> Result<StoreQueryPlan, String> {
+    ) -> Result<(StoreQueryPlan, bool), String> {
         let sc = self.streaming_config.read().unwrap().clone();
         // Get aggregation config for value to determine window type
         let aggregation_config_for_value = sc
@@ -419,6 +421,8 @@ impl SimpleEngine {
 
         let window_type = aggregation_config_for_value.window_type;
         let is_exact_query = window_type == WindowType::Sliding;
+        let range_ms = timestamps.end_timestamp - timestamps.start_timestamp;
+        let do_merge = range_ms > aggregation_config_for_value.window_size_ms;
 
         // Determine start/end for values query based on window type
         let (values_start, values_end) = if is_exact_query {
@@ -446,10 +450,13 @@ impl SimpleEngine {
             None
         };
 
-        Ok(StoreQueryPlan {
-            values_query,
-            keys_query,
-        })
+        Ok((
+            StoreQueryPlan {
+                values_query,
+                keys_query,
+            },
+            do_merge,
+        ))
     }
 
     /// Executes a single store query based on parameters

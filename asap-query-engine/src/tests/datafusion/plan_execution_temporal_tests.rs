@@ -240,6 +240,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_temporal_context_has_do_merge_true() {
+        // window_size_ms (1_000) must be smaller than the query's [5s] range so the
+        // derived do_merge (range_ms > window_size_ms) reflects a realistic config
+        // where the aggregation's bucket is finer than the requested range.
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
@@ -251,7 +254,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(1.0)),
             )],
             query,
-            5_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -404,6 +407,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_collapsable_context_has_do_merge_true() {
+        // window_size_ms (1_000) must be smaller than the query's [5s] range so the
+        // derived do_merge (range_ms > window_size_ms) reflects a realistic config
+        // where the aggregation's bucket is finer than the requested range.
         let query = "sum by (host) (sum_over_time(http_requests[5s]))";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
@@ -415,7 +421,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(1.0)),
             )],
             query,
-            5_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -496,6 +502,9 @@ mod tests {
             })
             .collect();
 
+        // window_size_ms (1_000) must be smaller than the query's [5s] range so the
+        // derived do_merge (range_ms > window_size_ms) reflects a realistic config
+        // where the aggregation's bucket is finer than the requested range.
         let query = "sum_over_time(http_requests[5s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
@@ -503,7 +512,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -533,7 +542,7 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            1_000,
             WindowType::Tumbling,
         );
 
