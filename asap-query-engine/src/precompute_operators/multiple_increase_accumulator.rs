@@ -23,6 +23,13 @@ struct MeasurementData {
     starting_timestamp: i64,
     last_seen_measurement: f64,
     last_seen_timestamp: i64,
+    // rmp-serde encodes structs as positional arrays, so `#[serde(default)]` is
+    // what lets legacy 4-field blobs (from the Arroyo UDF before reset support)
+    // still decode — the trailing fields are filled with their defaults.
+    #[serde(default)]
+    counter_reset_correction: f64,
+    #[serde(default)]
+    sample_count: u64,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -94,7 +101,8 @@ impl MultipleIncreaseAccumulator {
 
             // Calculate consumed bytes for IncreaseAccumulator
             // Structure: starting_measurement_len(4) + starting_measurement + starting_timestamp(8) +
-            //           last_seen_measurement_len(4) + last_seen_measurement + last_seen_timestamp(8)
+            //           last_seen_measurement_len(4) + last_seen_measurement + last_seen_timestamp(8) +
+            //           counter_reset_correction(8) + sample_count(8)
             let starting_measurement_len = u32::from_le_bytes([
                 buffer[offset],
                 buffer[offset + 1],
@@ -108,7 +116,7 @@ impl MultipleIncreaseAccumulator {
                 buffer[offset + 4 + starting_measurement_len + 8 + 3],
             ]) as usize;
             let consumed_bytes =
-                4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8;
+                4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8 + 8 + 8;
             offset += consumed_bytes;
 
             accumulator.increases.insert(key, increase_data);
@@ -139,12 +147,22 @@ impl MultipleIncreaseAccumulator {
             let starting_timestamp = values.starting_timestamp;
             let last_seen_measurement = Measurement::new(values.last_seen_measurement);
             let last_seen_timestamp = values.last_seen_timestamp;
+            // `sample_count == 0` means the field was absent (legacy UDF output);
+            // fall back to 2 so extrapolation stays well-defined. A genuine
+            // single-sample window reports count 1 and is handled as "no rate".
+            let sample_count = if values.sample_count == 0 {
+                2
+            } else {
+                values.sample_count
+            };
 
-            let increase_accumulator = IncreaseAccumulator::new(
+            let increase_accumulator = IncreaseAccumulator::new_full(
                 starting_measurement,
                 starting_timestamp,
                 last_seen_measurement,
                 last_seen_timestamp,
+                values.counter_reset_correction,
+                sample_count,
             );
 
             accumulator.increases.insert(key_obj, increase_accumulator);
@@ -169,6 +187,8 @@ impl MultipleIncreaseAccumulator {
                     starting_timestamp: increase_acc.starting_timestamp,
                     last_seen_measurement: increase_acc.last_seen_measurement.value,
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
+                    counter_reset_correction: increase_acc.counter_reset_correction,
+                    sample_count: increase_acc.sample_count,
                 },
             );
         }
@@ -257,19 +277,13 @@ impl AggregateCore for MultipleIncreaseAccumulator {
             .downcast_ref::<MultipleIncreaseAccumulator>()
             .ok_or("Failed to downcast to MultipleIncreaseAccumulator")?;
 
-        // Clone self once, then merge other's data in-place
+        // Clone self once, then merge other's data in-place. Per key, delegate to
+        // the boundary-aware IncreaseAccumulator merge so counter-reset correction
+        // and sample counts are combined consistently.
         let mut merged = self.clone();
         for (key, data) in &other_multiple_increase.increases {
             if let Some(existing_data) = merged.increases.get_mut(key) {
-                // Merge in-place: take earliest start, latest end
-                if data.starting_timestamp < existing_data.starting_timestamp {
-                    existing_data.starting_measurement = data.starting_measurement.clone();
-                    existing_data.starting_timestamp = data.starting_timestamp;
-                }
-                if data.last_seen_timestamp > existing_data.last_seen_timestamp {
-                    existing_data.last_seen_measurement = data.last_seen_measurement.clone();
-                    existing_data.last_seen_timestamp = data.last_seen_timestamp;
-                }
+                *existing_data = IncreaseAccumulator::merge_pair(existing_data, data);
             } else {
                 merged.increases.insert(key.clone(), data.clone());
             }
@@ -305,14 +319,15 @@ impl MultipleSubpopulationAggregate for MultipleIncreaseAccumulator {
         &self,
         statistic: Statistic,
         key: &KeyByLabelValues,
-        _query_kwargs: Option<&HashMap<String, String>>,
+        query_kwargs: Option<&HashMap<String, String>>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
         let data = self
             .increases
             .get(key)
             .ok_or_else(|| format!("Key {key} not found in MultipleIncreaseAccumulator"))?;
 
-        data.query(statistic, None)
+        // Forward kwargs so the inner accumulator receives the range boundaries.
+        data.query(statistic, query_kwargs)
     }
 
     fn clone_boxed(&self) -> Box<dyn MultipleSubpopulationAggregate> {
@@ -333,16 +348,9 @@ impl MergeableAccumulator<MultipleIncreaseAccumulator> for MultipleIncreaseAccum
         for accumulator in accumulators {
             for (key, data) in accumulator.increases {
                 if let Some(existing_data) = result.increases.get_mut(&key) {
-                    // Merge in-place without cloning existing_data
-                    // Take the earliest start time and latest end time
-                    if data.starting_timestamp < existing_data.starting_timestamp {
-                        existing_data.starting_measurement = data.starting_measurement;
-                        existing_data.starting_timestamp = data.starting_timestamp;
-                    }
-                    if data.last_seen_timestamp > existing_data.last_seen_timestamp {
-                        existing_data.last_seen_measurement = data.last_seen_measurement;
-                        existing_data.last_seen_timestamp = data.last_seen_timestamp;
-                    }
+                    // Boundary-aware merge: earliest start, latest last-seen, summed
+                    // corrections + sample counts, plus a seam reset correction.
+                    *existing_data = IncreaseAccumulator::merge_pair(existing_data, &data);
                 } else {
                     result.increases.insert(key, data);
                 }
@@ -517,6 +525,107 @@ mod tests {
 
         let keys = trait_obj.get_keys().unwrap();
         assert_eq!(keys.len(), 1);
+    }
+
+    #[test]
+    fn test_arroyo_roundtrip_preserves_reset_fields() {
+        let mut acc = MultipleIncreaseAccumulator::new();
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        // A window with a reset: correction 100, four samples.
+        let inc = IncreaseAccumulator::new_full(
+            Measurement::new(10.0),
+            1000,
+            Measurement::new(30.0),
+            4000,
+            100.0,
+            4,
+        );
+        acc.update(key.clone(), inc);
+
+        let bytes = acc.serialize_to_bytes_arroyo();
+        let back = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
+        let got = back.increases.get(&key).unwrap();
+        assert_eq!(got.counter_reset_correction, 100.0);
+        assert_eq!(got.sample_count, 4);
+        assert_eq!(got.corrected_increase(), 120.0);
+    }
+
+    #[test]
+    fn test_arroyo_legacy_blob_defaults() {
+        // A legacy 4-field MeasurementData blob (no correction / count) must decode
+        // with safe defaults rather than failing.
+        #[derive(serde::Serialize)]
+        struct LegacyMeasurementData {
+            starting_measurement: f64,
+            starting_timestamp: i64,
+            last_seen_measurement: f64,
+            last_seen_timestamp: i64,
+        }
+        let mut legacy: HashMap<String, LegacyMeasurementData> = HashMap::new();
+        legacy.insert(
+            "web".to_string(),
+            LegacyMeasurementData {
+                starting_measurement: 10.0,
+                starting_timestamp: 1000,
+                last_seen_measurement: 25.0,
+                last_seen_timestamp: 2000,
+            },
+        );
+        let bytes = rmp_serde::to_vec(&legacy).unwrap();
+        let back = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let got = back.increases.get(&key).unwrap();
+        assert_eq!(got.counter_reset_correction, 0.0);
+        assert_eq!(got.sample_count, 2); // legacy default
+        assert_eq!(got.corrected_increase(), 15.0);
+    }
+
+    #[test]
+    fn test_query_with_range_kwargs_extrapolates() {
+        use promql_utilities::query_logics::enums::{RANGE_END_MS_KWARG, RANGE_START_MS_KWARG};
+        let mut acc = MultipleIncreaseAccumulator::new();
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        // Same numbers as IncreaseAccumulator::test_extrapolation_parity => increase 72.
+        acc.update(
+            key.clone(),
+            IncreaseAccumulator::new_full(
+                Measurement::new(10.0),
+                5_000,
+                Measurement::new(70.0),
+                55_000,
+                0.0,
+                6,
+            ),
+        );
+        let mut kwargs = HashMap::new();
+        kwargs.insert(RANGE_START_MS_KWARG.to_string(), "0".to_string());
+        kwargs.insert(RANGE_END_MS_KWARG.to_string(), "60000".to_string());
+        let v = acc
+            .query(Statistic::Increase, &key, Some(&kwargs))
+            .unwrap();
+        assert!((v - 72.0).abs() < 1e-9, "increase = {v}");
+    }
+
+    #[test]
+    fn test_merge_keyed_boundary_reset() {
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut a = MultipleIncreaseAccumulator::new();
+        a.update(
+            key.clone(),
+            IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(20.0), 2000),
+        );
+        let mut b = MultipleIncreaseAccumulator::new();
+        b.update(
+            key.clone(),
+            IncreaseAccumulator::new(Measurement::new(5.0), 3000, Measurement::new(30.0), 4000),
+        );
+
+        let merged =
+            MultipleIncreaseAccumulator::merge_accumulators(vec![a.clone(), b.clone()]).unwrap();
+        let got = merged.increases.get(&key).unwrap();
+        // boundary reset (5 < 20) => +20, increase = 30 - 10 + 20 = 40.
+        assert_eq!(got.corrected_increase(), 40.0);
+        assert_eq!(got.sample_count, 2);
     }
 
     // #[test]

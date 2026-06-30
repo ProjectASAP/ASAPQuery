@@ -3,6 +3,16 @@ use std::fmt;
 use std::str::FromStr;
 use tracing::debug;
 
+/// `query_kwargs` key carrying the range-vector start boundary (epoch ms) for a
+/// `rate()`/`increase()` evaluation. Used to drive Prometheus-style extrapolation
+/// in `IncreaseAccumulator::query`. When absent, the accumulator falls back to a
+/// non-extrapolated, reset-corrected result.
+pub const RANGE_START_MS_KWARG: &str = "range_start_ms";
+
+/// `query_kwargs` key carrying the range-vector end boundary (epoch ms) for a
+/// `rate()`/`increase()` evaluation. See [`RANGE_START_MS_KWARG`].
+pub const RANGE_END_MS_KWARG: &str = "range_end_ms";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QueryPatternType {
     OnlyTemporal,

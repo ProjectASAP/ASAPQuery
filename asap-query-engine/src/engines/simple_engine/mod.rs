@@ -24,6 +24,7 @@ use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{
     AggregationOperator, AggregationType, PromQLFunction, QueryPatternType, Statistic,
+    RANGE_END_MS_KWARG, RANGE_START_MS_KWARG,
 };
 use serde_json::Value;
 
@@ -1510,12 +1511,19 @@ impl SimpleEngine {
                 key, start_ms, end_ms, step_ms, lookback_ms, tumbling_window_ms
             );
 
+            // Per-step query kwargs: clone the base map once, then refresh the
+            // range-vector boundaries each step (rate/increase extrapolation needs
+            // [window_start, current_time) per emitted point).
+            let mut step_kwargs = context.base.metadata.query_kwargs.clone();
+
             // Iterate by OUTPUT timestamp, not by bucket index
             let mut current_time = start_ms;
             while current_time <= end_ms {
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
                 let window_start = current_time.saturating_sub(lookback_ms);
+                step_kwargs.insert(RANGE_START_MS_KWARG.to_string(), window_start.to_string());
+                step_kwargs.insert(RANGE_END_MS_KWARG.to_string(), current_time.to_string());
 
                 // Collect all AVAILABLE buckets in this window (skip missing ones)
                 let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
@@ -1541,7 +1549,7 @@ impl SimpleEngine {
                                 merged.as_ref(),
                                 &context.base.metadata.statistic_to_compute,
                                 &Some(key.clone()),
-                                &context.base.metadata.query_kwargs,
+                                &step_kwargs,
                             ) {
                                 Ok(value) => {
                                     debug!(

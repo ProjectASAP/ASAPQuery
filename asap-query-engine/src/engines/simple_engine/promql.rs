@@ -16,7 +16,8 @@ use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::get_is_collapsable;
 use promql_utilities::query_logics::enums::{
-    AggregationOperator, PromQLFunction, QueryPatternType, Statistic,
+    AggregationOperator, PromQLFunction, QueryPatternType, Statistic, RANGE_END_MS_KWARG,
+    RANGE_START_MS_KWARG,
 };
 use promql_utilities::query_logics::parsing::{
     get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
@@ -126,6 +127,7 @@ impl SimpleEngine {
         statistic: &Statistic,
         query_pattern_type: QueryPatternType,
         match_result: &PromQLMatchResult,
+        timestamps: &QueryTimestamps,
     ) -> Result<HashMap<String, String>, String> {
         let mut query_kwargs = HashMap::new();
 
@@ -141,6 +143,19 @@ impl SimpleEngine {
                 let k = self.extract_topk_param(query_pattern_type, match_result)?;
                 debug!("Extracted k value: {:?}", k);
                 query_kwargs.insert("k".to_string(), k);
+            }
+            Statistic::Rate | Statistic::Increase => {
+                // Pass the range-vector boundaries so IncreaseAccumulator can apply
+                // Prometheus extrapolation. For an instant `rate(x[5m])` evaluated
+                // at T, `timestamps` spans [T - 5m, T].
+                query_kwargs.insert(
+                    RANGE_START_MS_KWARG.to_string(),
+                    timestamps.start_timestamp.to_string(),
+                );
+                query_kwargs.insert(
+                    RANGE_END_MS_KWARG.to_string(),
+                    timestamps.end_timestamp.to_string(),
+                );
             }
             _ => {}
         }
@@ -290,7 +305,12 @@ impl SimpleEngine {
         }
 
         let query_kwargs = self
-            .build_query_kwargs_promql(statistic_to_compute, query_pattern_type, match_result)
+            .build_query_kwargs_promql(
+                statistic_to_compute,
+                query_pattern_type,
+                match_result,
+                &timestamps,
+            )
             .map_err(|e| {
                 warn!("{}", e);
                 e
