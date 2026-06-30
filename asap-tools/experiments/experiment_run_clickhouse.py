@@ -187,8 +187,8 @@ def _run_query_workload(
         prometheus_client_parallel=parallel,
         # monitoring_tool only selects the Prometheus/VictoriaMetrics scrape-config
         # keyword, which is unused on the ClickHouse path: process keywords are
-        # chosen from backend_type="clickhouse" below. Harmless placeholder.
-        monitoring_tool="prometheus",
+        # chosen from backend_type="clickhouse" below.
+        monitoring_tool="clickhouse",
         backend_type="clickhouse",
     )
     if not manual_remote_monitor and constants.AVOID_REMOTE_MONITOR_LONG_SSH:
