@@ -711,19 +711,24 @@ fn kll_k_param(config: &AggregationConfig) -> Result<u16, String> {
 }
 
 /// Extract `(row_num, col_num)` for CMS / HydraKLL configs.
+///
+/// Accepts the planner-canonical `depth`/`width` names first, then falls back
+/// to the `row_num`/`col_num` aliases — mirroring `cms_heap_params()`.
 fn cms_params(config: &AggregationConfig) -> Result<(usize, usize), String> {
-    let row_num = config
-        .parameters
-        .get("row_num")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| "CMS config missing required parameter: row_num".to_string())?
-        as usize;
-    let col_num = config
-        .parameters
-        .get("col_num")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| "CMS config missing required parameter: col_num".to_string())?
-        as usize;
+    let read = |names: &[&str]| -> Result<usize, String> {
+        names
+            .iter()
+            .find_map(|n| config.parameters.get(*n).and_then(|v| v.as_u64()))
+            .map(|v| v as usize)
+            .ok_or_else(|| {
+                format!(
+                    "CMS config missing required parameter (tried: {})",
+                    names.join(", ")
+                )
+            })
+    };
+    let row_num = read(&["depth", "row_num"])?;
+    let col_num = read(&["width", "col_num"])?;
     Ok((row_num, col_num))
 }
 
@@ -1336,10 +1341,46 @@ mod tests {
         );
         let err = create_accumulator_updater(&config)
             .err()
-            .expect("expected Err for missing row_num param");
+            .expect("expected Err for missing params");
+        // Error must mention both aliases so callers know what's accepted.
         assert!(
-            err.contains("row_num"),
-            "error should mention the missing parameter name"
+            err.contains("depth") && err.contains("row_num"),
+            "error should mention accepted parameter names, got: {err}"
+        );
+    }
+
+    #[test]
+    fn test_cms_depth_width_params_accepted() {
+        // Planner emits depth/width; engine must accept them without error.
+        use std::collections::HashMap;
+        let mut params = HashMap::new();
+        params.insert("depth".to_string(), serde_json::json!(3_u64));
+        params.insert("width".to_string(), serde_json::json!(1024_u64));
+        let config = AggregationConfig::new(
+            21,
+            AggregationType::CountMinSketch,
+            "sum".to_string(),
+            params,
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            15_000,
+            0,
+            WindowType::Tumbling,
+            "fake_metric".to_string(),
+            "fake_metric".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let updater = create_accumulator_updater(&config)
+            .expect("depth/width params must be accepted by CountMinSketch");
+        assert!(updater.is_keyed());
+        assert_eq!(
+            updater.snapshot_accumulator().type_name(),
+            "CountMinSketchAccumulator"
         );
     }
 
