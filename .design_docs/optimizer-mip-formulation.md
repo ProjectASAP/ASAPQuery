@@ -9,7 +9,7 @@ For example - `avg_over_time(data[5m]) / quantile_over_time(0.5, data[5m])` is a
 
 ## Assumptions
 
-**No cross-RQE result reuse.** $f_a = \sum_{r \in R_a} 1/T_r$ counts every RQE invocation of AQE $a$ as independent query work. In practice, if two RQEs referencing the same AQE co-fire (execute at the same moment), the system could compute $a$ once and share the result. This is not modeled. To do so would require: phase/offset information per RQE (to determine co-firing frequency), and a sharing decision variable (since co-firing RQEs may still query different time windows and cannot always share). The current model overestimates query cost, which is conservative.
+**Cross-RQE reuse is not modeled in query cost.** $f_a = \sum_{r \in R_a} 1/T_r$ counts every RQE invocation of AQE $a$ as independent query work. In practice, if two RQEs referencing the same AQE co-fire (execute at the same moment), the system could compute $a$ once and share the result. This is not modeled. To do so would require: phase/offset information per RQE (to determine co-firing frequency), and a sharing decision variable (since co-firing RQEs may still query different time windows and cannot always share). The current model overestimates query cost, which is conservative.
 
 ## Inputs
 
