@@ -152,103 +152,14 @@ OmegaConf.register_new_resolver(
 )
 
 
-def _run_query_client(
-    provider,
-    node_offset: int,
-    config_file: str,
-    output_dir: str,
-    use_container: bool,
-    parallel: bool,
-) -> None:
-    """SSH to the node and run the prometheus-client, blocking until done.
-
-    For bare-metal: runs main_prometheus_client.py directly.
-    For containerized: generates a docker-compose file then runs
-    `docker compose up --no-build` (foreground, exits when container exits).
-    """
-    home_dir = provider.get_home_dir()
-    prometheus_client_dir = os.path.join(
-        home_dir, "code", "asap-tools", "queriers", "prometheus-client"
-    )
-
-    if use_container:
-        helper_script = os.path.join(
-            home_dir,
-            "code",
-            "asap-tools",
-            "experiments",
-            "generate_prometheus_client_compose.py",
-        )
-        template_path = os.path.join(prometheus_client_dir, "docker-compose.yml.j2")
-        remote_compose_file = os.path.join(
-            output_dir, "prometheus-client-docker-compose.yml"
-        )
-        node_ip = provider.get_node_ip(node_offset)
-
-        gen_compose_cmd = (
-            f"python3 {helper_script}"
-            f" --template-path {template_path}"
-            f" --compose-output-path {remote_compose_file}"
-            f" --prometheusclient-dir {prometheus_client_dir}"
-            f" --container-name sketchdb-prometheusclient"
-            f" --experiment-output-dir {output_dir}"
-            f" --config-file {config_file}"
-            f" --client-output-dir {output_dir}"
-            f" --client-output-file prometheus_client_output.txt"
-            f" --prometheus-host {node_ip}"
-            f" --sketchdb-host {node_ip}"
-        )
-        if parallel:
-            gen_compose_cmd += " --parallel"
-
-        # docker compose up without -d: foreground, blocks until container exits
-        cmd = (
-            f"mkdir -p {output_dir}; "
-            f"{gen_compose_cmd}; "
-            f"docker compose -f {remote_compose_file} up --no-build"
-        )
-    else:
-        cmd = (
-            f"python3.11 -u main_prometheus_client.py"
-            f" --config_file {config_file}"
-            f" --output_dir {output_dir}"
-            f" --output_file prometheus_client_output.txt"
-        )
-        if parallel:
-            cmd += " --parallel"
-
-    provider.execute_command(
-        node_idx=node_offset,
-        cmd=cmd,
-        cmd_dir=prometheus_client_dir,
-        nohup=False,
-        popen=False,
-    )
-
-
-def _clickhouse_monitor_keywords(experiment_mode: str) -> list[str]:
-    """Process keywords for remote_monitor on ClickHouse experiments.
-
-    Use ps-friendly patterns (not Docker container names): host-network
-    ClickHouse does not show up as ``clickhouse-server`` in ``ps``, and
-    ``docker inspect`` can fail in background SSH shells.
-    """
-    if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-        return [constants.QUERY_ENGINE_RS_PROCESS_KEYWORD]
-    return ["clickhouse"]
-
-
 def _run_query_workload(
     *,
-    provider,
-    node_offset: int,
     experiment_mode: str,
     experiment_output_dir: str,
     controller_client_config: str,
     controller_remote_output_dir: str,
     use_container: bool,
     parallel: bool,
-    remote_monitor_enabled: bool,
     remote_monitor_service: RemoteMonitorService,
     minimum_experiment_running_time: int,
     manual_remote_monitor: bool,
@@ -256,22 +167,7 @@ def _run_query_workload(
     profile_query_engine: bool,
     profile_prometheus_time,
 ) -> None:
-    """Run the SQL query workload, optionally wrapped in remote_monitor."""
-    prometheus_client_output_dir = os.path.join(
-        experiment_output_dir, "prometheus_client_output"
-    )
-
-    if not remote_monitor_enabled:
-        _run_query_client(
-            provider=provider,
-            node_offset=node_offset,
-            config_file=controller_client_config,
-            output_dir=prometheus_client_output_dir,
-            use_container=use_container,
-            parallel=parallel,
-        )
-        return
-
+    """Run the SQL query workload wrapped in remote_monitor (CPU/memory)."""
     remote_monitor_service.start(
         controller_client_config=controller_client_config,
         experiment_output_dir=experiment_output_dir,
@@ -292,7 +188,6 @@ def _run_query_workload(
         prometheus_client_parallel=parallel,
         monitoring_tool="prometheus",
         backend_type="clickhouse",
-        monitor_keywords=_clickhouse_monitor_keywords(experiment_mode),
     )
     if not manual_remote_monitor and constants.AVOID_REMOTE_MONITOR_LONG_SSH:
         remote_monitor_service.wait_for_remote_monitor_to_finish(
@@ -320,7 +215,6 @@ def main(cfg: DictConfig) -> None:
     no_teardown = cfg.flow.no_teardown
     use_container = cfg.use_container.prometheus_client
     parallel = cfg.prometheus_client.parallel
-    remote_monitor_enabled = bool(cfg.flow.get("remote_monitor", False))
     manual_remote_monitor = bool(cfg.manual.remote_monitor)
     profile_query_engine = bool(cfg.profiling.query_engine)
     profile_prometheus_time = cfg.profiling.prometheus_time
@@ -559,15 +453,12 @@ def main(cfg: DictConfig) -> None:
                 f"{experiment_mode}.yaml",
             )
             _run_query_workload(
-                provider=provider,
-                node_offset=node_offset,
                 experiment_mode=experiment_mode,
                 experiment_output_dir=experiment_output_dir,
                 controller_client_config=controller_client_config,
                 controller_remote_output_dir=remote_controller_dir,
                 use_container=use_container,
                 parallel=parallel,
-                remote_monitor_enabled=remote_monitor_enabled,
                 remote_monitor_service=remote_monitor_service,
                 minimum_experiment_running_time=minimum_experiment_running_time,
                 manual_remote_monitor=manual_remote_monitor,
@@ -594,15 +485,12 @@ def main(cfg: DictConfig) -> None:
                 f"{experiment_mode}.yaml",
             )
             _run_query_workload(
-                provider=provider,
-                node_offset=node_offset,
                 experiment_mode=experiment_mode,
                 experiment_output_dir=experiment_output_dir,
                 controller_client_config=controller_client_config,
                 controller_remote_output_dir=experiment_root_output_dir,
                 use_container=use_container,
                 parallel=parallel,
-                remote_monitor_enabled=remote_monitor_enabled,
                 remote_monitor_service=remote_monitor_service,
                 minimum_experiment_running_time=minimum_experiment_running_time,
                 manual_remote_monitor=manual_remote_monitor,

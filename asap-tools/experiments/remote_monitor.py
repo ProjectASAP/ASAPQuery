@@ -523,7 +523,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--backend_type",
         type=str,
-        default="prometheus",
+        required=True,
         help="Query backend for prometheus-client (prometheus or clickhouse)",
     )
     args = parser.parse_args()

@@ -48,9 +48,8 @@ class RemoteMonitorService(BaseService):
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
         monitoring_tool: str,
+        backend_type: str,
         timed_duration: Optional[int] = None,
-        backend_type: str = "prometheus",
-        monitor_keywords: Optional[List[str]] = None,
     ) -> None:
         """
         Start remote monitor processes.
@@ -75,18 +74,23 @@ class RemoteMonitorService(BaseService):
         else:
             config_keywords = [constants.PROMETHEUS_CONFIG_FILE]
 
-        if use_timed_mode:
-            # Build command for timed mode (skip_querying)
-            keywords = (
-                list(monitor_keywords)
-                if monitor_keywords is not None
-                else list(config_keywords)
-            )
+        # Build the list of process keywords to monitor.
+        if backend_type == "clickhouse":
+            # ClickHouse/SQL experiments: use ps-friendly process names rather
+            # than Docker container names. Host-network bare-metal ClickHouse
+            # does not show up as ``clickhouse-server`` in ``ps``, and
+            # ``docker inspect`` can fail in background SSH shells.
+            if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+                if query_engine_service is not None:
+                    keywords = [query_engine_service.get_monitoring_keyword()]
+                else:
+                    keywords = [constants.QUERY_ENGINE_RS_PROCESS_KEYWORD]
+            else:
+                keywords = ["clickhouse"]
+        else:
+            keywords = list(config_keywords)
 
-            if (
-                monitor_keywords is None
-                and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
-            ):
+            if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
                 if query_engine_service is not None:
                     keywords.append(query_engine_service.get_monitoring_keyword())
                 else:
@@ -104,8 +108,10 @@ class RemoteMonitorService(BaseService):
                     else:
                         keywords.append("arroyo.*worker")
 
+        if use_timed_mode:
+            # Build command for timed mode (skip_querying)
             cmd = (
-                "python3.11 -u remote_monitor.py "
+                "python3 -u remote_monitor.py "
                 "--execution_mode timed "
                 "--experiment_mode {} "
                 r"--keywords \"{}\" "
@@ -157,35 +163,8 @@ class RemoteMonitorService(BaseService):
         # Original prometheus_client mode logic
         assert controller_remote_output_dir is not None
 
-        keywords = (
-            list(monitor_keywords)
-            if monitor_keywords is not None
-            else list(config_keywords)
-        )
-
-        if (
-            monitor_keywords is None
-            and experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
-        ):
-            if query_engine_service is not None:
-                keywords.append(query_engine_service.get_monitoring_keyword())
-            else:
-                keywords.append(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
-
-            if streaming_engine == "flink":
-                keywords.append("sketch-0.1.jar")  # flinksketch jar
-                if not do_local_flink:
-                    keywords.append(
-                        "org.apache.flink.runtime.taskexecutor.TaskManagerRunner"
-                    )
-            elif streaming_engine == "arroyo":
-                if arroyo_service is not None:
-                    keywords.append(arroyo_service.get_monitoring_keyword())
-                else:
-                    keywords.append("arroyo.*worker")
-
         cmd = (
-            "python3.11 -u remote_monitor.py "
+            "python3 -u remote_monitor.py "
             "--execution_mode prometheus_client "
             "--experiment_mode {} "
             r"--keywords \"{}\" "

@@ -47,7 +47,6 @@ flow:
   no_teardown: false
   replace_query_engine_with_dumb_consumer: false
   steady_state_wait: 60
-  remote_monitor: false  # ClickHouse runner: collect CPU/memory via remote_monitor.py
   skip_copy_prometheus_data: false  # Skip copying Prometheus data back to local machine
 
 
