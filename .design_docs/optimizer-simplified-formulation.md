@@ -1,19 +1,27 @@
 # Simplified formulation of the optimization formulation
 
-## Mental model
+## System model
 
-Given a workload of repeating queries over time-series data, we want to map the query workload to an ensemble of summarization strategies to deploy.
-Each query performs a certain aggregation over a certain time range over a given metric.
-Each summarization strategy takes an input stream of metrics and computes summaries (exact or approximate) on it in a streaming manner. When queries are received, they are mapped to specific summaries, and answered using them (either directly from a single summary or by manipulating summaries such as merging them)
+Objective: Given a predictable workload of repeating queries over time-series data, we want to map the query workload to an ensemble of summarization strategies to deploy.
+
+Deployment:
+- Each query performs a certain aggregation over a certain time range over a given metric.
+- Each summarization strategy takes an input stream of metrics and computes summaries (exact or approximate) on it in a streaming manner.
+- When queries are received, they are mapped to specific summaries, and answered using them (either directly from a single summary or by manipulating summaries such as merging them)
+
+Approach: We enumerate candidate summarization strategies from a sketch library, check which strategies can feasibly serve each query (accuracy, latency, freshness), then pick the minimum-cost deployment. A deployment is specified by the deployed summarization strategies, and a map denoting which strategy answers which repeating query.
 
 ![Mental model diagram](mental-model-diagram.png)
-
 
 ## Simplifying assumptions
 
 - Data arrives at a regular `data_ingestion_interval`. E.g. for Prometheus, this will be the Prometheus scrape interval
 - Each query repeats at the same time interval $T_r$.
 - $T_r$ is a multiple of `data_ingestion_interval`
+
+## Glossary
+
+- Repeating Query Expression (RQE): A query that is issued at a fixed repeating interval, usually issued from a dashboard. For e.g. the query `avg_over_time(data[5m])` repeating every 30 sec.
 
 ## Inputs
 
@@ -40,6 +48,8 @@ Each summarization strategy takes an input stream of metrics and computes summar
 | $y_s \in \{0,1\}$ | 1 if summarization strategy $s$ is deployed. |
 | $x_{r,s} \in \{0,1\}$ | 1 if RQE $r$ is served by strategy $s$. |
 
+Cross-RQE re-use is modeled by the fact that a single $s$ can serve multiple RQEs.
+
 ## Objective
 
 $$\min \sum_{s \in S} y_s \cdot \mathrm{ingest\_cost}(s) \ + \ \sum_{r \in R,\ s \in S} x_{r,s} \cdot f_r \cdot \mathrm{query\_cost}(s, r)$$
@@ -54,7 +64,9 @@ $$x_{r,s} \leq y_s \qquad \forall r \in R,\ s \in S \tag{2}$$
 
 $$x_{r,s},\ y_s \in \{0,1\} \tag{3}$$
 
-**(1)** Every RQE is served by exactly one strategy. **(2)** An RQE cannot be served by a strategy that is not deployed. **(3)** Integrality.
+**(1)** Every RQE is served by exactly one strategy.
+**(2)** An RQE cannot be served by a strategy that is not deployed.
+**(3)** Integrality.
 
 ## Challenges
 
