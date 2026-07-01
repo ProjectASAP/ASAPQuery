@@ -183,6 +183,52 @@ mod tests {
         assert_execution_context_equivalent(&promql_context, &sql_context, "spatial_avg");
     }
 
+    /// Part of #487's spatial/temporal unification: end-timestamp alignment to the nearest
+    /// ingestion interval now triggers whenever the *resolved* PromQL range equals one
+    /// interval, not only when there's no explicit range vector at all. An explicit
+    /// `sum_over_time(metric[1s])` at a 1s scrape interval is exactly that shape, so an
+    /// unaligned query time must still get floored to the interval boundary — same as the
+    /// old bare-`sum(metric)` (implicit range) case already did.
+    #[test]
+    fn test_temporal_query_with_interval_length_range_aligns_end_timestamp() {
+        let scrape_interval_ms = 1000;
+        let promql_query = "sum_over_time(cpu_usage[1s])";
+        let sql_query = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
+
+        let (promql_config, _, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
+            .with_scrape_interval_ms(scrape_interval_ms)
+            .add_temporal_query(promql_query, sql_query, 1, 1000, WindowType::Tumbling)
+            .build_both();
+
+        let promql_engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            promql_config,
+            streaming_config,
+            scrape_interval_ms,
+            QueryLanguage::promql,
+        );
+
+        // 1_000_500ms — not a multiple of the 1000ms scrape interval.
+        let query_time_sec: f64 = 1_000.5;
+
+        let promql_context = promql_engine
+            .build_query_execution_context_promql(promql_query.to_string(), query_time_sec)
+            .expect("Failed to build PromQL context");
+
+        let end_ms = promql_context.store_plan.values_query.end_timestamp;
+        let start_ms = promql_context.store_plan.values_query.start_timestamp;
+
+        assert_eq!(
+            end_ms, 1_000_000,
+            "end_timestamp should align down to the nearest 1000ms interval boundary"
+        );
+        assert_eq!(
+            start_ms, 999_000,
+            "start_timestamp should be one interval before the aligned end_timestamp"
+        );
+    }
+
     /// Regression test for issue #202.
     /// With scrape_interval=15s, a 150s SQL temporal query must produce a 150_000ms window.
     /// Bug: start = end - (150 * 15 * 1000) = end - 2_250_000ms (15× too wide).

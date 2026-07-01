@@ -326,11 +326,13 @@ impl SimpleEngine {
             .cloned()
     }
 
-    /// Validates and potentially aligns end timestamp based on query pattern
+    /// Validates and potentially aligns end timestamp based on query duration.
+    /// `is_single_interval` is true when the query's range spans exactly one
+    /// data ingestion interval (the old "OnlySpatial" shape).
     fn validate_and_align_end_timestamp(
         &self,
         mut end_timestamp: u64,
-        query_pattern_type: QueryPatternType,
+        is_single_interval: bool,
     ) -> u64 {
         let interval_ms = self.data_ingestion_interval_ms;
 
@@ -342,13 +344,11 @@ impl SimpleEngine {
             );
         }
 
-        // For OnlySpatial, align end_timestamp to nearest scrape interval
-        if query_pattern_type == QueryPatternType::OnlySpatial
-            && !end_timestamp.is_multiple_of(interval_ms)
-        {
+        // For single-interval queries, align end_timestamp to nearest scrape interval
+        if is_single_interval && !end_timestamp.is_multiple_of(interval_ms) {
             let aligned_end_timestamp = (end_timestamp / interval_ms) * interval_ms;
             debug!(
-                "OnlySpatial query: Aligning end_timestamp from {} to {} using data ingestion interval of {} ms",
+                "Single-interval query: Aligning end_timestamp from {} to {} using data ingestion interval of {} ms",
                 end_timestamp, aligned_end_timestamp, self.data_ingestion_interval_ms
             );
             end_timestamp = aligned_end_timestamp;

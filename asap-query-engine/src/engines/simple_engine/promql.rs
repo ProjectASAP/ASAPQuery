@@ -65,7 +65,15 @@ impl SimpleEngine {
             query_time
         };
 
-        end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, query_pattern_type);
+        // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`), so
+        // .num_seconds() would truncate genuinely sub-second range vectors to 0.
+        let range_ms = match_result
+            .get_range_duration()
+            .map(|d| d.num_milliseconds() as u64)
+            .unwrap_or(self.data_ingestion_interval_ms);
+        let is_single_interval = range_ms == self.data_ingestion_interval_ms;
+
+        end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, is_single_interval);
         let start_timestamp =
             self.calculate_start_timestamp_promql(end_timestamp, query_pattern_type, match_result);
 

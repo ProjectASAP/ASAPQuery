@@ -216,8 +216,24 @@ impl SimpleEngine {
         query_pattern_type: QueryPatternType,
         match_result: &SQLQuery,
     ) -> QueryTimestamps {
+        // Same duration source `calculate_start_timestamp_sql` uses below: the inner
+        // (temporal) subquery for nested queries, the single subquery otherwise.
+        let duration = match query_pattern_type {
+            QueryPatternType::OneTemporalOneSpatial => match_result
+                .inner_data()
+                .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
+                .time_info
+                .get_duration(),
+            _ => match_result
+                .outer_data()
+                .expect("pattern match guarantees outer_data is present")
+                .time_info
+                .get_duration(),
+        };
+        let is_single_interval = duration * 1000.0 == self.data_ingestion_interval_ms as f64;
+
         let mut end_timestamp = query_time;
-        end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, query_pattern_type);
+        end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, is_single_interval);
         let start_timestamp =
             self.calculate_start_timestamp_sql(end_timestamp, query_pattern_type, match_result);
 
@@ -723,10 +739,10 @@ impl SimpleEngine {
             query_kwargs: query_kwargs.clone(),
         };
 
-        // Calculate timestamps - similar to OnlyTemporal
-        let end_timestamp =
-            self.validate_and_align_end_timestamp(query_time, QueryPatternType::OnlyTemporal);
+        // Calculate timestamps
         let duration_secs = match_result.outer_data()?.time_info.get_duration() as u64;
+        let is_single_interval = duration_secs * 1000 == self.data_ingestion_interval_ms;
+        let end_timestamp = self.validate_and_align_end_timestamp(query_time, is_single_interval);
         let start_timestamp = end_timestamp - (duration_secs * 1000);
 
         let timestamps = QueryTimestamps {
