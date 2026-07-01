@@ -141,10 +141,12 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
         raise ValueError(
             "At least one query group must be defined in experiment config."
         )
-    experiment_modes = {m["mode"] for m in experiment_params.get("experiment") or []}
+    if not experiment_params.get("experiment"):
+        raise ValueError(
+            "At least one mode must be defined in experiment_params.experiment."
+        )
+    experiment_modes = {m["mode"] for m in experiment_params.experiment}
     experiment_modes.discard(constants.SKETCHDB_EXPERIMENT_NAME)
-    if not experiment_modes:
-        experiment_modes = {constants.BASELINE_EXPERIMENT_NAME}
 
     for i, group in enumerate(experiment_params.query_groups):
         sql_file = group.get("sql_file")
