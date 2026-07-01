@@ -47,8 +47,8 @@ class RemoteMonitorService(BaseService):
         controller_remote_output_dir: str,
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
-        monitoring_tool: str,
         backend_type: str,
+        monitoring_tool: Optional[str] = None,
         timed_duration: Optional[int] = None,
     ) -> None:
         """
@@ -57,12 +57,14 @@ class RemoteMonitorService(BaseService):
         Args:
             **kwargs: Additional configuration (currently unused)
             timed_duration: If provided, use timed mode instead of prometheus_client mode
-            monitoring_tool: Monitoring tool being used ("prometheus" or "victoriametrics")
+            monitoring_tool: TSDB running on the node ("prometheus" or "victoriametrics").
+                Not used when backend_type="clickhouse".
         """
         # Determine execution mode
         use_timed_mode = timed_duration is not None
 
-        # Determine which config file to look for based on monitoring tool
+        # Determine which config file to look for based on monitoring tool.
+        # Only relevant when backend_type != "clickhouse".
         if monitoring_tool == "victoriametrics":
             # first one is for vmagent
             # second one is for vmsingle
