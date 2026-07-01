@@ -47,8 +47,8 @@ class RemoteMonitorService(BaseService):
         controller_remote_output_dir: str,
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
-        backend_type: str,
-        monitoring_tool: Optional[str] = None,
+        backend_protocol: str,
+        backend_tool: Optional[str] = None,
         timed_duration: Optional[int] = None,
     ) -> None:
         """
@@ -57,15 +57,15 @@ class RemoteMonitorService(BaseService):
         Args:
             **kwargs: Additional configuration (currently unused)
             timed_duration: If provided, use timed mode instead of prometheus_client mode
-            monitoring_tool: TSDB running on the node ("prometheus" or "victoriametrics").
-                Not used when backend_type="clickhouse".
+            backend_tool: TSDB running on the node ("prometheus" or "victoriametrics").
+                Not used when backend_protocol="clickhouse".
         """
         # Determine execution mode
         use_timed_mode = timed_duration is not None
 
         # Determine which config file to look for based on monitoring tool.
-        # Only relevant when backend_type != "clickhouse".
-        if monitoring_tool == "victoriametrics":
+        # Only relevant when backend_protocol != "clickhouse".
+        if backend_tool == "victoriametrics":
             # first one is for vmagent
             # second one is for vmsingle
             # TODO: remove this hardcoding and instead query the service to get this
@@ -77,7 +77,7 @@ class RemoteMonitorService(BaseService):
             config_keywords = [constants.PROMETHEUS_CONFIG_FILE]
 
         # Build the list of process keywords to monitor.
-        if backend_type == "clickhouse":
+        if backend_protocol == "clickhouse":
             # ClickHouse/SQL experiments: use ps-friendly process names rather
             # than Docker container names. Host-network bare-metal ClickHouse
             # does not show up as ``clickhouse-server`` in ``ps``, and
@@ -218,7 +218,7 @@ class RemoteMonitorService(BaseService):
         if profile_prometheus_time is not None:
             cmd += " --profile_prometheus_time {}".format(profile_prometheus_time)
 
-        cmd += " --backend_type {}".format(backend_type)
+        cmd += " --backend_protocol {}".format(backend_protocol)
 
         cmd_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-tools", "experiments"

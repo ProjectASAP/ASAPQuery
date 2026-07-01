@@ -554,7 +554,7 @@ def main(cfg: DictConfig):
     #     controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
     #     use_container_prometheus_client=args.use_container_prometheus_client,
     #     prometheus_client_parallel=args.prometheus_client_parallel,
-    #     monitoring_tool=cfg.experiment_params.monitoring.tool,
+    #     backend_tool=cfg.experiment_params.monitoring.tool,
     #     timed_duration=None,
     # )
 

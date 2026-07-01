@@ -185,7 +185,7 @@ def _run_query_workload(
         controller_remote_output_dir=controller_remote_output_dir,
         use_container_prometheus_client=use_container,
         prometheus_client_parallel=parallel,
-        backend_type="clickhouse",
+        backend_protocol="clickhouse",
     )
     if not manual_remote_monitor and constants.AVOID_REMOTE_MONITOR_LONG_SSH:
         remote_monitor_service.wait_for_remote_monitor_to_finish(

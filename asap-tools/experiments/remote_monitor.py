@@ -399,7 +399,7 @@ def main(args):
             profile_query_engine_pid,
             args.profile_prometheus_time,
             args.prometheus_client_parallel,
-            backend_type=args.backend_type,
+            backend_protocol=args.backend_protocol,
         )
 
         if prometheus_client_service.use_container:
@@ -521,7 +521,7 @@ if __name__ == "__main__":
         help="Streaming engine type (e.g. precompute, arroyo)",
     )
     parser.add_argument(
-        "--backend_type",
+        "--backend_protocol",
         type=str,
         required=True,
         help="Query backend for prometheus-client (prometheus or clickhouse)",
