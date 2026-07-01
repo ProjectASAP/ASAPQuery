@@ -43,11 +43,12 @@ class RemoteMonitorService(BaseService):
         do_local_flink: bool,
         streaming_engine: str,
         query_engine_service: "BaseQueryEngineService",
-        arroyo_service: "ArroyoService",
+        arroyo_service: Optional["ArroyoService"],
         controller_remote_output_dir: str,
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
-        monitoring_tool: str,
+        backend_protocol: str,
+        backend_tool: Optional[str] = None,
         timed_duration: Optional[int] = None,
     ) -> None:
         """
@@ -56,13 +57,15 @@ class RemoteMonitorService(BaseService):
         Args:
             **kwargs: Additional configuration (currently unused)
             timed_duration: If provided, use timed mode instead of prometheus_client mode
-            monitoring_tool: Monitoring tool being used ("prometheus" or "victoriametrics")
+            backend_tool: TSDB running on the node ("prometheus" or "victoriametrics").
+                Not used when backend_protocol="clickhouse".
         """
         # Determine execution mode
         use_timed_mode = timed_duration is not None
 
-        # Determine which config file to look for based on monitoring tool
-        if monitoring_tool == "victoriametrics":
+        # Determine which config file to look for based on monitoring tool.
+        # Only relevant when backend_protocol != "clickhouse".
+        if backend_tool == "victoriametrics":
             # first one is for vmagent
             # second one is for vmsingle
             # TODO: remove this hardcoding and instead query the service to get this
@@ -73,9 +76,21 @@ class RemoteMonitorService(BaseService):
         else:
             config_keywords = [constants.PROMETHEUS_CONFIG_FILE]
 
-        if use_timed_mode:
-            # Build command for timed mode (skip_querying)
-            keywords = config_keywords
+        # Build the list of process keywords to monitor.
+        if backend_protocol == "clickhouse":
+            # ClickHouse/SQL experiments: use ps-friendly process names rather
+            # than Docker container names. Host-network bare-metal ClickHouse
+            # does not show up as ``clickhouse-server`` in ``ps``, and
+            # ``docker inspect`` can fail in background SSH shells.
+            if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
+                if query_engine_service is not None:
+                    keywords = [query_engine_service.get_monitoring_keyword()]
+                else:
+                    keywords = [constants.QUERY_ENGINE_RS_PROCESS_KEYWORD]
+            else:
+                keywords = ["clickhouse"]
+        else:
+            keywords = list(config_keywords)
 
             if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
                 if query_engine_service is not None:
@@ -95,6 +110,8 @@ class RemoteMonitorService(BaseService):
                     else:
                         keywords.append("arroyo.*worker")
 
+        if use_timed_mode:
+            # Build command for timed mode (skip_querying)
             cmd = (
                 "python3 -u remote_monitor.py "
                 "--execution_mode timed "
@@ -148,26 +165,6 @@ class RemoteMonitorService(BaseService):
         # Original prometheus_client mode logic
         assert controller_remote_output_dir is not None
 
-        keywords = config_keywords
-
-        if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-            if query_engine_service is not None:
-                keywords.append(query_engine_service.get_monitoring_keyword())
-            else:
-                keywords.append(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
-
-            if streaming_engine == "flink":
-                keywords.append("sketch-0.1.jar")  # flinksketch jar
-                if not do_local_flink:
-                    keywords.append(
-                        "org.apache.flink.runtime.taskexecutor.TaskManagerRunner"
-                    )
-            elif streaming_engine == "arroyo":
-                if arroyo_service is not None:
-                    keywords.append(arroyo_service.get_monitoring_keyword())
-                else:
-                    keywords.append("arroyo.*worker")
-
         cmd = (
             "python3 -u remote_monitor.py "
             "--execution_mode prometheus_client "
@@ -220,6 +217,8 @@ class RemoteMonitorService(BaseService):
 
         if profile_prometheus_time is not None:
             cmd += " --profile_prometheus_time {}".format(profile_prometheus_time)
+
+        cmd += " --backend_protocol {}".format(backend_protocol)
 
         cmd_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-tools", "experiments"
