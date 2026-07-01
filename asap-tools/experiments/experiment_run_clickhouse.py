@@ -135,10 +135,17 @@ def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> 
             return
         for group in groups:
             sql_file = group.get("sql_file")
-            if sql_file and "queries" not in group:
-                with open(sql_file) as fq:
-                    content = fq.read()
-                group["queries"] = [s.strip() for s in content.split(";") if s.strip()]
+            if not sql_file or "queries" in group:
+                continue
+            # sql_file may be per-mode (issue #491 precompute arms); label with
+            # baseline's text, matching the query text sketchdb also plans against.
+            if isinstance(sql_file, dict):
+                sql_file = sql_file.get(constants.BASELINE_EXPERIMENT_NAME)
+            if not sql_file:
+                continue
+            with open(sql_file) as fq:
+                content = fq.read()
+            group["queries"] = [s.strip() for s in content.split(";") if s.strip()]
 
     _expand_groups(data.get("query_groups"))
 
