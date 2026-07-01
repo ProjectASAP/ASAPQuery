@@ -455,15 +455,14 @@ impl SimpleEngine {
                 // bucket to reuse.
                 QueryType::SpatioTemporal => QueryPatternType::OnlyTemporal,
             },
-            [x, y] => match (x, y) {
-                (QueryType::Spatial, QueryType::TemporalGeneric) => {
-                    QueryPatternType::OneTemporalOneSpatial
-                }
-                (QueryType::Spatial, QueryType::TemporalQuantile) => {
-                    QueryPatternType::OneTemporalOneSpatial
-                }
-                _ => return None,
-            },
+            // Nested (spatial-of-temporal) query: the outer layer's own tag no longer has
+            // to be `Spatial` — the matcher now classifies it by its own labels just like
+            // any other subquery (#487) — so only the inner (temporal) layer's shape is
+            // checked here, exactly as before: it must be a full-label-coverage temporal
+            // read, not itself `SpatioTemporal`.
+            [_, QueryType::TemporalGeneric | QueryType::TemporalQuantile] => {
+                QueryPatternType::OneTemporalOneSpatial
+            }
             _ => return None,
         };
 

@@ -7,6 +7,15 @@ use std::collections::HashSet;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryType {
+    /// Dead: `query_info_to_pattern` no longer constructs this variant (#487). A query
+    /// spanning exactly one scrape interval used to be forced into `Spatial` regardless
+    /// of its GROUP BY, distinct from `Temporal*`/`SpatioTemporal`, which checked labels.
+    /// That was never a real structural difference — `Spatial` was just `Temporal` with
+    /// `range == scrape_interval` — so it's now classified by the same label-coverage
+    /// check as everything else and lands in `TemporalGeneric`/`TemporalQuantile`
+    /// (full GROUP BY) or `SpatioTemporal` (partial GROUP BY) like any other duration.
+    /// Kept as a variant only because downstream `sql.rs` still matches on it; deleted
+    /// once that's migrated to structural checks.
     Spatial,
     TemporalGeneric,
     TemporalQuantile,
@@ -245,70 +254,35 @@ impl SQLPatternMatcher {
 
         let mut sql_query = SQLQuery::new(Vec::new(), None, None);
 
-        for (i, (metric, aggregation_info, scrape_duration, labels, time_info)) in
-            query_data.iter().enumerate()
-        {
-            if i < query_data.len() - 1 {
-                // Not the last query
-                // let time_info = TimeInfo::new("time".to_string(), *start, *scrape_duration); // You may need to adjust this
-                sql_query.add_subquery(
-                    QueryType::Spatial,
-                    aggregation_info.clone(),
-                    metric.clone(),
-                    labels.clone(),
-                    time_info.clone(),
-                );
+        // Every subquery — outer or inner, whatever its duration — is classified purely
+        // by aggregation + label coverage. Duration only gates validity above
+        // (SpatialDurationSmall); it no longer decides the shape. A query that covers
+        // all metadata columns is a plain temporal read (Quantile/Generic); anything
+        // grouping by a subset of labels is SpatioTemporal, regardless of how long a
+        // range it spans — a 1-interval query with a partial GROUP BY is exactly as
+        // "spatiotemporal" as a 10-interval one.
+        for (metric, aggregation_info, _scraped_intervals, labels, time_info) in query_data.iter() {
+            let has_all_labels = self
+                .schema
+                .get_metadata_columns(metric)
+                .map(|schema_metadata_columns| labels == schema_metadata_columns)
+                .unwrap_or(true);
+
+            let query_type = if !has_all_labels {
+                QueryType::SpatioTemporal
+            } else if aggregation_info.get_name() == "QUANTILE" {
+                QueryType::TemporalQuantile
             } else {
-                // Last query
-                // let time_info = TimeInfo::new("time".to_string(), *start, *scrape_duration);
+                QueryType::TemporalGeneric
+            };
 
-                if (scrape_duration - 1.0).abs() < f64::EPSILON {
-                    sql_query.add_subquery(
-                        QueryType::Spatial,
-                        aggregation_info.clone(),
-                        metric.clone(),
-                        labels.clone(),
-                        time_info.clone(),
-                    );
-                } else if *scrape_duration > 1.0 {
-                    // Check if labels match all metadata columns
-                    let has_all_labels = self
-                        .schema
-                        .get_metadata_columns(metric)
-                        .map(|schema_metadata_columns| labels == schema_metadata_columns)
-                        .unwrap_or(true);
-
-                    if has_all_labels {
-                        // Full temporal query with all labels (PromQL-equivalent)
-                        if aggregation_info.get_name() == "QUANTILE" {
-                            sql_query.add_subquery(
-                                QueryType::TemporalQuantile,
-                                aggregation_info.clone(),
-                                metric.clone(),
-                                labels.clone(),
-                                time_info.clone(),
-                            );
-                        } else {
-                            sql_query.add_subquery(
-                                QueryType::TemporalGeneric,
-                                aggregation_info.clone(),
-                                metric.clone(),
-                                labels.clone(),
-                                time_info.clone(),
-                            );
-                        }
-                    } else {
-                        // SpatioTemporal: spans multiple scrape intervals but groups by subset of labels
-                        sql_query.add_subquery(
-                            QueryType::SpatioTemporal,
-                            aggregation_info.clone(),
-                            metric.clone(),
-                            labels.clone(),
-                            time_info.clone(),
-                        );
-                    }
-                }
-            }
+            sql_query.add_subquery(
+                query_type,
+                aggregation_info.clone(),
+                metric.clone(),
+                labels.clone(),
+                time_info.clone(),
+            );
         }
 
         sql_query

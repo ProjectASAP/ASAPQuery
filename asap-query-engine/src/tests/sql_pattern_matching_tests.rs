@@ -181,6 +181,29 @@ mod tests {
         );
     }
 
+    /// #487 Step 4: same shape as the test above, but at exactly one scrape interval —
+    /// the case the matcher fold exists for (previously tagged `Spatial`, now
+    /// `SpatioTemporal` like any other partial-GROUP-BY query). Confirms parity with
+    /// the long-duration case Step 3 already fixed.
+    #[test]
+    fn spatiotemporal_query_with_order_by_limit_detects_topk_at_one_interval() {
+        let template = "SELECT L1, SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1";
+        let engine = build_sql_engine(template, 1, 1_000);
+
+        let incoming = "SELECT L1, SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1 ORDER BY total DESC LIMIT 10";
+        let query_time = 1727740810.0_f64;
+
+        let context = engine
+            .build_query_execution_context_sql(incoming.to_string(), query_time)
+            .expect("SpatioTemporal query with ORDER BY/LIMIT should build a context");
+
+        assert_eq!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "1-interval partial-GROUP-BY queries should detect top-k the same way longer-duration ones do"
+        );
+    }
+
     #[test]
     fn test_spatial_query_matches_now_template() {
         // Spatial: window equals the scrape interval (1s), GROUP BY all labels
