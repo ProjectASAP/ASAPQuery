@@ -83,14 +83,12 @@ def _is_clickhouse_experiment(experiment_params: DictConfig) -> bool:
 def _resolve_sql_file(sql_file: Any, mode: str, idx: int, group_name: str) -> str:
     """Resolve the sql_file path for one query group and mode.
 
-    ``sql_file`` is either a single path (legacy, shared by every mode) or a
-    dict keyed by mode name (e.g. baseline/baseline_sketch/baseline_mv/...).
-    sketchdb always resolves through baseline's entry — ASAP's SQL-mode query
-    engine must see the exact same SQL text as baseline to pattern-match it
-    against available sketches, so it never gets its own dict entry.
+    ``sql_file`` is a dict keyed by mode name (e.g.
+    baseline/baseline_sketch/baseline_mv/...). sketchdb always resolves
+    through baseline's entry — ASAP's SQL-mode query engine must see the
+    exact same SQL text as baseline to pattern-match it against available
+    sketches, so it never gets its own dict entry.
     """
-    if isinstance(sql_file, str):
-        return sql_file
     lookup_mode = (
         constants.BASELINE_EXPERIMENT_NAME
         if mode == constants.SKETCHDB_EXPERIMENT_NAME

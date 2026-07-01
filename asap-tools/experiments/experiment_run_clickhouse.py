@@ -137,10 +137,9 @@ def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> 
             sql_file = group.get("sql_file")
             if not sql_file or "queries" in group:
                 continue
-            # sql_file may be per-mode (issue #491 precompute arms); label with
+            # sql_file is per-mode (issue #491 precompute arms); label with
             # baseline's text, matching the query text sketchdb also plans against.
-            if isinstance(sql_file, dict):
-                sql_file = sql_file.get(constants.BASELINE_EXPERIMENT_NAME)
+            sql_file = sql_file.get(constants.BASELINE_EXPERIMENT_NAME)
             if not sql_file:
                 continue
             with open(sql_file) as fq:
