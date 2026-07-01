@@ -229,8 +229,8 @@ impl SimpleEngine {
                 .expect("pattern match guarantees outer_data is present")
                 .time_info
                 .get_duration(),
-        };
-        let is_single_interval = duration * 1000.0 == self.data_ingestion_interval_ms as f64;
+        } as u64;
+        let is_single_interval = duration * 1000 == self.data_ingestion_interval_ms;
 
         let mut end_timestamp = query_time;
         end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, is_single_interval);
@@ -441,21 +441,19 @@ impl SimpleEngine {
         // every successful path below.
         let post = SqlPostProcessing::from_query_data(&query_data);
 
-        // Handle SpatioTemporal queries separately - they bypass QueryPatternType mapping
-        if match_result.query_type == vec![QueryType::SpatioTemporal] {
-            let query_time = Self::convert_query_time_to_data_time(
-                query_data.time_info.get_start() + query_data.time_info.get_duration(),
-            );
-            let ctx = self.build_spatiotemporal_context(&match_result, query_time, &query_data)?;
-            return Some((ctx, post));
-        }
-
         let query_pattern_type = match &match_result.query_type[..] {
             [x] => match x {
                 QueryType::Spatial => QueryPatternType::OnlySpatial,
                 QueryType::TemporalGeneric => QueryPatternType::OnlyTemporal,
                 QueryType::TemporalQuantile => QueryPatternType::OnlyTemporal,
-                QueryType::SpatioTemporal => unreachable!("SpatioTemporal handled above"),
+                // Spans multiple scrape intervals but GROUP BY only a subset of labels.
+                // Every site below keys off query_type.len() (nesting) or duration, not
+                // this specific tag, so this shares the OnlyTemporal treatment rather
+                // than a separate function — see build_query_requirements_sql's
+                // data_range_ms, which is why OnlyTemporal (reads the real duration)
+                // and not OnlySpatial (hardcodes the ingestion interval) is the right
+                // bucket to reuse.
+                QueryType::SpatioTemporal => QueryPatternType::OnlyTemporal,
             },
             [x, y] => match (x, y) {
                 (QueryType::Spatial, QueryType::TemporalGeneric) => {
@@ -696,95 +694,6 @@ impl SimpleEngine {
             grouping_labels,
             aggregated_labels,
         })
-    }
-
-    /// Build execution context for SpatioTemporal queries.
-    /// These queries span multiple scrape intervals but GROUP BY a subset of labels.
-    fn build_spatiotemporal_context(
-        &self,
-        match_result: &SQLQuery,
-        query_time: u64,
-        query_data: &SQLQueryData,
-    ) -> Option<QueryExecutionContext> {
-        // Output labels are the GROUP BY columns (subset of all labels)
-        let query_output_labels = KeyByLabelNames::new(
-            match_result
-                .outer_data()?
-                .labels
-                .clone()
-                .into_iter()
-                .collect(),
-        );
-
-        // Get the statistic from the aggregation
-        let statistic_name = match_result
-            .outer_data()?
-            .aggregation_info
-            .get_name()
-            .to_lowercase();
-
-        let statistic_to_compute = Self::parse_single_statistic(&statistic_name)?;
-
-        let query_kwargs = self
-            .build_query_kwargs_sql(&statistic_to_compute, match_result)
-            .map_err(|e| {
-                warn!("{}", e);
-                e
-            })
-            .ok()?;
-
-        let metadata = QueryMetadata {
-            query_output_labels: query_output_labels.clone(),
-            statistic_to_compute,
-            query_kwargs: query_kwargs.clone(),
-        };
-
-        // Calculate timestamps
-        let duration_secs = match_result.outer_data()?.time_info.get_duration() as u64;
-        let is_single_interval = duration_secs * 1000 == self.data_ingestion_interval_ms;
-        let end_timestamp = self.validate_and_align_end_timestamp(query_time, is_single_interval);
-        let start_timestamp = end_timestamp - (duration_secs * 1000);
-
-        let timestamps = QueryTimestamps {
-            start_timestamp,
-            end_timestamp,
-        };
-
-        // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
-        let agg_info: AggregationIdInfo = if let Some(config) =
-            self.find_query_config_sql(query_data)
-        {
-            self.get_aggregation_id_info(&config)
-                .map_err(|e| {
-                    warn!("{}", e);
-                    e
-                })
-                .ok()?
-        } else {
-            warn!(
-                    "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
-                );
-            let requirements = self.build_query_requirements_sql(
-                match_result,
-                QueryPatternType::OnlyTemporal,
-                None,
-            );
-            self.streaming_config
-                .read()
-                .unwrap()
-                .clone()
-                .find_compatible_aggregation(&requirements)?
-        };
-        let metric = &match_result.outer_data()?.metric;
-
-        self.build_sql_execution_context_tail(
-            metric,
-            &timestamps,
-            metadata,
-            agg_info,
-            String::new(),
-            query_time,
-        )
     }
 }
 

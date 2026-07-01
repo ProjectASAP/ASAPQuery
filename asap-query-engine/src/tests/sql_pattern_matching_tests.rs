@@ -128,6 +128,59 @@ mod tests {
         );
     }
 
+    /// Characterization test for #487 Step 3: pins today's `build_spatiotemporal_context`
+    /// output (labels, statistic, window) so the upcoming dispatch merge (folding
+    /// `SpatioTemporal` into the shared non-nested path) can be checked against it —
+    /// this assertion must still pass, unchanged, after the merge.
+    #[test]
+    fn spatiotemporal_query_context_is_stable_before_dispatch_merge() {
+        let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1";
+        let engine = build_sql_engine(template, 1, 10_000);
+
+        let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1";
+        let query_time = 1727740810.0_f64;
+
+        let context = engine
+            .build_query_execution_context_sql(incoming.to_string(), query_time)
+            .expect("SpatioTemporal query should build a context");
+
+        assert_eq!(context.metadata.statistic_to_compute, Statistic::Sum);
+        assert_eq!(
+            context.metadata.query_output_labels,
+            KeyByLabelNames::new(vec!["L1".to_string()])
+        );
+        let start = context.store_plan.values_query.start_timestamp;
+        let end = context.store_plan.values_query.end_timestamp;
+        assert_eq!(
+            end - start,
+            10_000,
+            "window should span the full 10s query duration"
+        );
+    }
+
+    /// #487 Step 3: a SpatioTemporal query (duration > 1 interval, partial GROUP BY)
+    /// combined with ORDER BY/LIMIT should detect top-k the same way OnlyTemporal/
+    /// OnlySpatial already do. Red today — `build_spatiotemporal_context` never calls
+    /// `detect_sql_topk` — must go green once the dispatch merge lands.
+    #[test]
+    fn spatiotemporal_query_with_order_by_limit_detects_topk() {
+        let template = "SELECT L1, SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1";
+        let engine = build_sql_engine(template, 1, 10_000);
+
+        let incoming = "SELECT L1, SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1 ORDER BY total DESC LIMIT 10";
+        let query_time = 1727740810.0_f64;
+
+        let context = engine
+            .build_query_execution_context_sql(incoming.to_string(), query_time)
+            .expect("SpatioTemporal query with ORDER BY/LIMIT should build a context");
+
+        assert_eq!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "SpatioTemporal queries should detect top-k just like OnlyTemporal/OnlySpatial do"
+        );
+    }
+
     #[test]
     fn test_spatial_query_matches_now_template() {
         // Spatial: window equals the scrape interval (1s), GROUP BY all labels

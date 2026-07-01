@@ -442,7 +442,7 @@ def main(cfg: DictConfig) -> None:
             query_engine_service.wait_until_ready()
 
             steady_state_wait = int(cfg.flow.steady_state_wait)
-            print(f"Waiting {steady_state_wait}s for precompute ingest to complete...")
+            print(f"Waiting for {steady_state_wait}s for system to stablize")
             time.sleep(steady_state_wait)
 
             controller_client_config = os.path.join(
