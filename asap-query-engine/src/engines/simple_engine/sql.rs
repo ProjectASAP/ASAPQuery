@@ -197,7 +197,15 @@ impl SimpleEngine {
                     .get_duration() as u64;
                 end_timestamp - (duration_secs * 1000)
             }
-            QueryPatternType::OnlySpatial => end_timestamp - self.data_ingestion_interval_ms,
+            QueryPatternType::OnlySpatial => {
+                let duration_secs = match_result
+                    .outer_data()
+                    .expect("OnlySpatial pattern guarantees outer_data is present")
+                    .time_info
+                    .clone()
+                    .get_duration() as u64;
+                end_timestamp - (duration_secs * 1000)
+            }
         }
     }
 
