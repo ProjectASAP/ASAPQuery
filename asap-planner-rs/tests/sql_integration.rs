@@ -978,6 +978,44 @@ fn spatial_sum_topk_heap() {
     );
 }
 
+/// COUNT … ORDER BY <alias> DESC LIMIT k over a *multi-scrape-interval* window
+/// (2s duration, 1s ingest ⇒ `QueryType::SpatioTemporal`, not `Spatial`) still
+/// detects as top-k. `detect_sql_topk` (called unconditionally on any
+/// non-nested query, see `planner/sql.rs`) isn't gated by `QueryType`, unlike
+/// the query engine's `build_spatiotemporal_context` (issue #498) — this test
+/// locks in that the planner already covers the SpatioTemporal case.
+#[test]
+fn spatiotemporal_count_topk_heap() {
+    let q = "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -12, NOW()) AND DATEADD(s, -10, NOW()) \
+             GROUP BY srcip ORDER BY transfer_events DESC LIMIT 10";
+    let out = SQLController::from_yaml(&netflow_one_query_config(q, 2_000), sql_opts_1s_ingest())
+        .unwrap()
+        .generate()
+        .unwrap();
+
+    assert_eq!(out.streaming_aggregation_count(), 1);
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
+    assert!(!out.has_aggregation_type("DeltaSetAggregator"));
+    assert!(!out.has_aggregation_type("CountMinSketch"));
+    assert!(out.all_tumbling_window_sizes_eq(2_000));
+    assert_eq!(
+        out.aggregation_labels("CountMinSketchWithHeap", "grouping"),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        out.aggregation_labels("CountMinSketchWithHeap", "aggregated"),
+        vec!["srcip".to_string()]
+    );
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
+            .and_then(|v| v.as_bool()),
+        Some(true)
+    );
+}
+
 /// Plain COUNT without ORDER BY / LIMIT stays on the CMS + DeltaSet path.
 #[test]
 fn spatial_count_without_order_by_is_not_topk() {
