@@ -699,15 +699,30 @@ impl SimpleEngine {
             .get_name()
             .to_lowercase();
 
-        let statistic_to_compute = Self::parse_single_statistic(&statistic_name)?;
+        // SpatioTemporal queries are a single (non-nested) SELECT layer, same
+        // shape `detect_sql_topk` expects, so top-k detection applies directly.
+        let topk = detect_sql_topk(query_data);
+        if topk.is_some_and(|t| t.weighting == TopkWeighting::Sum) {
+            warn!(
+                "SUM top-k assumes non-negative values; results are undefined for columns with negative entries"
+            );
+        }
+        let statistic_to_compute = if topk.is_some() {
+            Statistic::Topk
+        } else {
+            Self::parse_single_statistic(&statistic_name)?
+        };
 
-        let query_kwargs = self
+        let mut query_kwargs = self
             .build_query_kwargs_sql(&statistic_to_compute, match_result)
             .map_err(|e| {
                 warn!("{}", e);
                 e
             })
             .ok()?;
+        if let Some(topk) = topk {
+            query_kwargs.insert("k".to_string(), topk.k.to_string());
+        }
 
         let metadata = QueryMetadata {
             query_output_labels: query_output_labels.clone(),
@@ -743,7 +758,7 @@ impl SimpleEngine {
             let requirements = self.build_query_requirements_sql(
                 match_result,
                 QueryPatternType::OnlyTemporal,
-                None,
+                topk,
             );
             self.streaming_config
                 .read()
@@ -1276,6 +1291,96 @@ mod topk_pipeline_tests {
         )
     }
 
+    /// Build a SQL engine whose only aggregation is a self-keyed
+    /// `CountMinSketchWithHeap` precomputed over the *full 2-second* window,
+    /// referenced by a query_config template with a matching 2s duration —
+    /// same shape as `build_topk_engine`, just sized to a SpatioTemporal
+    /// window instead of a single-scrape-interval one.
+    ///
+    /// Self-keyed resolution (`aggregation_id_for_key ==
+    /// aggregation_id_for_value`) only happens via this query_config path
+    /// (`find_query_config_sql` / `get_aggregation_id_info`'s single-reference
+    /// case). The capability-matching fallback always pairs
+    /// `CountMinSketchWithHeap` with a separate key aggregation (see
+    /// `count_topk_capability_fallback_pairs_heap_with_key_agg`) — it doesn't
+    /// know a heap can be self-keyed, so a SpatioTemporal top-k query with no
+    /// matching query_config would fail to resolve today. That gap is
+    /// tracked separately; this test targets `build_spatiotemporal_context`'s
+    /// top-k *detection* (issue #498), not the capability-matching fallback.
+    fn build_spatiotemporal_topk_engine() -> (SimpleEngine, Arc<SimpleMapStore>) {
+        let template = "SELECT srcip, COUNT(pkt_len) FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() GROUP BY srcip";
+
+        let value_cols: HashSet<String> = ["pkt_len"].iter().map(|s| s.to_string()).collect();
+        let labels: HashSet<String> = ["srcip", "dstip", "proto"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let table = Table::new(METRIC.to_string(), "time".to_string(), value_cols, labels);
+        let sql_schema = SQLSchema::new(vec![table]);
+
+        let query_config = QueryConfig::new(template.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(sql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 2000,
+            slide_interval_ms: 2000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        let engine = SimpleEngine::new(
+            store.clone(),
+            inference_config,
+            streaming_config,
+            1000, // 1s scrape interval ⇒ a 2s query window classifies as SpatioTemporal
+            QueryLanguage::sql,
+        );
+        (engine, store)
+    }
+
+    /// Incoming top-k query over a 2-second window grouped by a *subset* of
+    /// labels (`srcip` only, out of `srcip`/`dstip`/`proto`) — the shape that
+    /// classifies as `SpatioTemporal` rather than `OnlySpatial`.
+    fn spatiotemporal_topk_query(limit: u64) -> String {
+        format!(
+            "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY srcip ORDER BY transfer_events DESC LIMIT {limit}"
+        )
+    }
+
     /// Incoming SUM top-k query over a 1-second absolute window.
     fn sum_topk_query(limit: u64) -> String {
         format!(
@@ -1504,6 +1609,35 @@ mod topk_pipeline_tests {
             context.agg_info.aggregation_id_for_value,
         );
         assert!(context.store_plan.keys_query.is_none());
+    }
+
+    /// `build_spatiotemporal_context` (issue #498) must run the same top-k
+    /// detection as the `OnlyTemporal`/`OnlySpatial` path: a `SpatioTemporal`
+    /// query (multi-interval window, subset of labels) shaped like
+    /// `COUNT ... GROUP BY <key> ORDER BY <alias> DESC LIMIT k` still resolves
+    /// to `Statistic::Topk` with `k` threaded through, self-keyed to the same
+    /// sketch the query_config template resolves for plain COUNT.
+    #[test]
+    fn spatiotemporal_query_detects_topk_and_resolves_self_keyed_heap() {
+        let (engine, _store) = build_spatiotemporal_topk_engine();
+        let context = engine
+            .build_query_execution_context_sql(spatiotemporal_topk_query(10), QUERY_TIME)
+            .expect("SpatioTemporal top-k query should build a context via the query_config path");
+
+        assert_eq!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "ORDER BY <count alias> DESC LIMIT n must be promoted to Topk even under SpatioTemporal classification",
+        );
+        assert_eq!(
+            context.metadata.query_kwargs.get("k").map(String::as_str),
+            Some("10"),
+            "LIMIT should be threaded through as the `k` kwarg",
+        );
+        assert_eq!(
+            context.agg_info.aggregation_id_for_key, context.agg_info.aggregation_id_for_value,
+            "self-keyed: the heap supplies both keys and counts",
+        );
     }
 
     #[test]
