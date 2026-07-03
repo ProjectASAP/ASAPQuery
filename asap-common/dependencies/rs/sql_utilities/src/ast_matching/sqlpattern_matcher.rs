@@ -22,6 +22,7 @@ pub enum QueryError {
     IllegalAggregationFn,
     SpatialDurationSmall,
     NestedQueryUnsupported,
+    MissingTimeRange,
 }
 
 #[derive(Debug)]
@@ -262,52 +263,32 @@ impl SQLPatternMatcher {
         if let Some((metric, aggregation_info, scrape_duration, labels, time_info)) =
             query_data.first()
         {
-            if (scrape_duration - 1.0).abs() < f64::EPSILON {
-                sql_query.add_subquery(
-                    QueryType::Spatial,
-                    aggregation_info.clone(),
-                    metric.clone(),
-                    labels.clone(),
-                    time_info.clone(),
-                );
-            } else if *scrape_duration > 1.0 {
-                // Check if labels match all metadata columns
-                let has_all_labels = self
-                    .schema
-                    .get_metadata_columns(metric)
-                    .map(|schema_metadata_columns| labels == schema_metadata_columns)
-                    .unwrap_or(true);
+            // scrape_duration is 0.0 only for the UNUSED-time-column marker
+            // (the outer layer of a nested query, which the len() > 1 check
+            // above already rejects) — not reachable for a flat query, since
+            // any real time range short enough to compute a 0.0 (or < 1
+            // scrape interval) duration already errors out above via
+            // SpatialDurationSmall. Kept as an explicit error rather than
+            // silently leaving the query unmatched, in case that invariant
+            // ever changes.
+            if *scrape_duration == 0.0 {
+                println!("Returned QueryError::MissingTimeRange");
 
-                if has_all_labels {
-                    // Full temporal query with all labels (PromQL-equivalent)
-                    if aggregation_info.get_name() == "QUANTILE" {
-                        sql_query.add_subquery(
-                            QueryType::TemporalQuantile,
-                            aggregation_info.clone(),
-                            metric.clone(),
-                            labels.clone(),
-                            time_info.clone(),
-                        );
-                    } else {
-                        sql_query.add_subquery(
-                            QueryType::TemporalGeneric,
-                            aggregation_info.clone(),
-                            metric.clone(),
-                            labels.clone(),
-                            time_info.clone(),
-                        );
-                    }
-                } else {
-                    // SpatioTemporal: spans multiple scrape intervals but groups by subset of labels
-                    sql_query.add_subquery(
-                        QueryType::SpatioTemporal,
-                        aggregation_info.clone(),
-                        metric.clone(),
-                        labels.clone(),
-                        time_info.clone(),
-                    );
-                }
+                return SQLQuery::new(
+                    Vec::new(),
+                    Some(QueryError::MissingTimeRange),
+                    Some("query has no resolvable time range".to_string()),
+                );
             }
+
+            // Every valid query classifies as SpatioTemporal
+            sql_query.add_subquery(
+                QueryType::SpatioTemporal,
+                aggregation_info.clone(),
+                metric.clone(),
+                labels.clone(),
+                time_info.clone(),
+            );
         }
 
         sql_query
