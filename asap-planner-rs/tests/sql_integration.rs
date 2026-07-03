@@ -578,41 +578,20 @@ fn temporal_sum_t30() {
 }
 
 /// T = 300 s == range: covered by temporal_sum above (cleanup = 1).
-/// T = 600 s > range: window = 600, cleanup = ceil(300 / 600) = 1.
-/// T larger than the query range is valid; the result is still 1 retained window.
+///
+/// T = 600 s > range (300s): as of #500, a precompute window is not allowed
+/// to outlive the query range it's sized for — `duration_ms >= t_repeat_ms`
+/// is now an enforced invariant, so this returns `PlannerError` instead of
+/// silently building a 600s window (the old behavior, when this test
+/// asserted `window == 600` and `cleanup == ceil(300 / 600) == 1`).
 #[test]
-fn temporal_sum_t600() {
+fn temporal_sum_t600_exceeds_duration_is_planner_error() {
     let q = "SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter";
-    let out = SQLController::from_yaml(&one_query_config(q, 600_000), sql_opts())
+    let result = SQLController::from_yaml(&one_query_config(q, 600_000), sql_opts())
         .unwrap()
-        .generate()
-        .unwrap();
+        .generate();
 
-    assert_eq!(out.streaming_aggregation_count(), 2);
-    assert_eq!(out.inference_query_count(), 1);
-    assert!(out.has_aggregation_type("CountMinSketch"));
-    assert!(out.has_aggregation_type("DeltaSetAggregator"));
-    assert!(out.all_tumbling_window_sizes_eq(600_000));
-    assert_eq!(
-        out.aggregation_table_name("CountMinSketch"),
-        Some("metrics_table".to_string())
-    );
-    assert_eq!(
-        out.aggregation_value_column("CountMinSketch"),
-        Some("cpu_usage".to_string())
-    );
-    let mut rollup = out.aggregation_labels("CountMinSketch", "rollup");
-    rollup.sort();
-    assert_eq!(rollup, vec!["hostname".to_string(), "region".to_string()]);
-    assert_eq!(
-        out.aggregation_labels("CountMinSketch", "grouping"),
-        Vec::<String>::new()
-    );
-    assert_eq!(
-        out.aggregation_labels("CountMinSketch", "aggregated"),
-        vec!["datacenter".to_string()]
-    );
-    assert_eq!(out.inference_cleanup_param(q), Some(1));
+    assert!(matches!(result, Err(ControllerError::PlannerError(_))));
 }
 
 // ── multi-query tests ─────────────────────────────────────────────────────────

@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use asap_types::enums::{CleanupPolicy, WindowType};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, QueryTreatmentType, Statistic};
-use sql_utilities::ast_matching::sqlhelper::{detect_sql_topk, Table};
-use sql_utilities::ast_matching::sqlpattern_matcher::{QueryType, SQLPatternMatcher};
+use sql_utilities::ast_matching::sqlhelper::{detect_sql_topk, Table, TimeInfo};
+use sql_utilities::ast_matching::sqlpattern_matcher::SQLPatternMatcher;
 use sql_utilities::ast_matching::sqlpattern_parser::SQLPatternParser;
 use sql_utilities::ast_matching::SQLSchema;
 use sqlparser::dialect::ClickHouseDialect;
@@ -94,7 +94,6 @@ impl SQLSingleQueryProcessor {
 
         // Determine fields from query vecs
         let agg_info = &sql_query.query_data[0].aggregation_info;
-        let query_type = &sql_query.query_type[0];
         let labels = &sql_query.query_data[0].labels;
         let table_name = &sql_query.query_data[0].metric;
 
@@ -102,10 +101,10 @@ impl SQLSingleQueryProcessor {
 
         // Compute window
         let window_cfg = compute_sql_window(
-            query_type,
+            &sql_query.query_data[0].time_info,
             self.data_ingestion_interval_ms,
             self.t_repeat_ms,
-        );
+        )?;
 
         // Get all metadata columns for the table
         let all_metadata = get_all_metadata_columns(&self.table_definitions, table_name)?;
@@ -164,11 +163,12 @@ impl SQLSingleQueryProcessor {
             }
         }
 
-        let t_lookback_ms = match query_type {
-            QueryType::Spatial => self.data_ingestion_interval_ms,
-            // SQLPatternParser always produces second-based durations; convert to ms.
-            _ => (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64,
-        };
+        // SQLPatternParser always produces second-based durations; convert to ms.
+        // For a single-scrape-interval query this equals data_ingestion_interval_ms
+        // by construction (the matcher's classification boundary), so this is a
+        // plain unconditional formula, not a special case.
+        let t_lookback_ms =
+            (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64;
 
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {
             None
@@ -221,20 +221,40 @@ fn get_sql_statistics(name: &str) -> Result<Vec<Statistic>, ControllerError> {
     }
 }
 
+/// Behavior change from #500: enforces two invariants —
+/// `t_repeat_ms >= data_ingestion_interval_ms` (can't refresh faster than
+/// raw ingestion) and `duration_ms >= t_repeat_ms` (a precompute window must
+/// not outlive the query range it's sized for) — rather than silently
+/// picking `data_ingestion_interval_ms` or `t_repeat_ms` depending on query
+/// shape. Once both hold, `window_size_ms` is simply `t_repeat_ms`: at the
+/// single-scrape-interval boundary `duration_ms == data_ingestion_interval_ms`
+/// exactly, so both invariants together force `t_repeat_ms == data_ingestion_interval_ms`
+/// there, reproducing the old `Spatial` branch without a special case.
+///
+/// Old code used `t_repeat_ms` uncapped even when it exceeded the query's
+/// own duration (see `temporal_sum_t600` in `sql_integration.rs`, updated
+/// alongside this change to expect a `PlannerError` instead).
 fn compute_sql_window(
-    query_type: &QueryType,
+    time_info: &TimeInfo,
     data_ingestion_interval_ms: u64,
     t_repeat_ms: u64,
-) -> IntermediateWindowConfig {
-    let window_size_ms = match query_type {
-        QueryType::Spatial => data_ingestion_interval_ms,
-        _ => t_repeat_ms,
-    };
-    IntermediateWindowConfig {
-        window_size_ms,
-        slide_interval_ms: window_size_ms,
-        window_type: WindowType::Tumbling,
+) -> Result<IntermediateWindowConfig, ControllerError> {
+    if t_repeat_ms < data_ingestion_interval_ms {
+        return Err(ControllerError::PlannerError(format!(
+            "t_repeat_ms ({t_repeat_ms}ms) must be >= data_ingestion_interval_ms ({data_ingestion_interval_ms}ms)"
+        )));
     }
+    let duration_ms = (time_info.get_duration() * 1000.0).round() as u64;
+    if duration_ms < t_repeat_ms {
+        return Err(ControllerError::PlannerError(format!(
+            "query duration ({duration_ms}ms) must be >= t_repeat_ms ({t_repeat_ms}ms)"
+        )));
+    }
+    Ok(IntermediateWindowConfig {
+        window_size_ms: t_repeat_ms,
+        slide_interval_ms: t_repeat_ms,
+        window_type: WindowType::Tumbling,
+    })
 }
 
 fn get_all_metadata_columns(
