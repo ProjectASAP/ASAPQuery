@@ -702,7 +702,8 @@ mod detect_topk_tests {
         let qd = parse(&sql).expect("nested query should parse");
         assert!(
             detect_sql_topk(&qd).is_some(),
-            "outer SELECT alone matches the top-k shape (this is why OneTemporalOneSpatial is gated)",
+            "outer SELECT alone matches the top-k shape — this is why nested queries must be \
+             rejected (NestedQueryUnsupported) before topk detection ever runs on them",
         );
     }
 }
