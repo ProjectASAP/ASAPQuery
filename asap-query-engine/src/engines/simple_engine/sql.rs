@@ -171,6 +171,27 @@ impl SimpleEngine {
             .cloned()
     }
 
+    /// Aligns `end_timestamp` down to the nearest data-ingestion-interval
+    /// boundary, unconditionally. Unlike the shared, PromQL-oriented
+    /// `validate_and_align_end_timestamp` (which only snaps for
+    /// `OnlySpatial`), SQL end timestamps come from explicit `BETWEEN`
+    /// clauses and should already be interval-aligned, so this is a no-op
+    /// in the common case and a safety net otherwise — for every SQL query
+    /// shape, not just a subset.
+    fn align_end_timestamp_sql(&self, end_timestamp: u64) -> u64 {
+        let interval_ms = self.data_ingestion_interval_ms;
+        if end_timestamp.is_multiple_of(interval_ms) {
+            return end_timestamp;
+        }
+        let aligned = (end_timestamp / interval_ms) * interval_ms;
+        warn!(
+            "SQL query end timestamp {} is not aligned with data ingestion interval of {} ms; \
+             aligning down to {}.",
+            end_timestamp, interval_ms, aligned
+        );
+        aligned
+    }
+
     /// Calculates start timestamp for SQL queries
     fn calculate_start_timestamp_sql(
         &self,
@@ -264,10 +285,14 @@ impl SimpleEngine {
 
     /// Extract QueryRequirements from a parsed SQL match result.
     /// Used as the fallback path when no query_configs entry is found.
+    ///
+    /// `data_range_ms` is always the query's own requested duration: for a
+    /// single-scrape-interval query this equals `data_ingestion_interval_ms`
+    /// by construction (that's exactly the matcher's classification
+    /// boundary), so this is a plain identity, not a special case.
     fn build_query_requirements_sql(
         &self,
         match_result: &SQLQuery,
-        query_pattern_type: QueryPatternType,
         topk: Option<SqlTopk>,
     ) -> QueryRequirements {
         let query_data = match_result
@@ -275,15 +300,7 @@ impl SimpleEngine {
             .expect("build_query_requirements_sql called on valid SQLQuery");
         let metric = query_data.metric.clone();
 
-        let statistic_name = match query_pattern_type {
-            QueryPatternType::OneTemporalOneSpatial => match_result
-                .inner_data()
-                .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
-                .aggregation_info
-                .get_name()
-                .to_lowercase(),
-            _ => query_data.aggregation_info.get_name().to_lowercase(),
-        };
+        let statistic_name = query_data.aggregation_info.get_name().to_lowercase();
 
         // For top-k the requirement is `Statistic::Topk` (→ CountMinSketchWithHeap)
         // and the grouping is empty: the GROUP BY column is the sketch's
@@ -298,22 +315,7 @@ impl SimpleEngine {
                 .collect()
         };
 
-        let data_range_ms = match query_pattern_type {
-            QueryPatternType::OnlySpatial => self.data_ingestion_interval_ms,
-            QueryPatternType::OnlyTemporal => {
-                let duration_secs = query_data.time_info.clone().get_duration() as u64;
-                duration_secs * 1000
-            }
-            QueryPatternType::OneTemporalOneSpatial => {
-                let duration_secs = match_result
-                    .inner_data()
-                    .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
-                    .time_info
-                    .clone()
-                    .get_duration() as u64;
-                duration_secs * 1000
-            }
-        };
+        let data_range_ms = (query_data.time_info.clone().get_duration() * 1000.0).round() as u64;
 
         let grouping_labels = if is_topk {
             KeyByLabelNames::empty()
@@ -592,8 +594,7 @@ impl SimpleEngine {
                     .ok()?
             } else {
                 warn!("No query_config entry for SQL query. Attempting capability-based matching.");
-                let requirements =
-                    self.build_query_requirements_sql(&match_result, query_pattern_type, topk);
+                let requirements = self.build_query_requirements_sql(&match_result, topk);
                 self.streaming_config
                     .read()
                     .unwrap()
@@ -730,9 +731,8 @@ impl SimpleEngine {
             query_kwargs: query_kwargs.clone(),
         };
 
-        // Calculate timestamps - similar to OnlyTemporal
-        let end_timestamp =
-            self.validate_and_align_end_timestamp(query_time, QueryPatternType::OnlyTemporal);
+        // Calculate timestamps
+        let end_timestamp = self.align_end_timestamp_sql(query_time);
         let duration_secs = match_result.outer_data()?.time_info.get_duration() as u64;
         let start_timestamp = end_timestamp - (duration_secs * 1000);
 
@@ -755,11 +755,7 @@ impl SimpleEngine {
             warn!(
                     "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
                 );
-            let requirements = self.build_query_requirements_sql(
-                match_result,
-                QueryPatternType::OnlyTemporal,
-                topk,
-            );
+            let requirements = self.build_query_requirements_sql(match_result, topk);
             self.streaming_config
                 .read()
                 .unwrap()
@@ -1788,5 +1784,165 @@ mod topk_pipeline_tests {
                 .is_none(),
             "SUM top-k must not fall back to a count_events-default sketch",
         );
+    }
+}
+
+/// `build_spatiotemporal_context`'s end_timestamp snap (issue #500 / A1):
+/// unlike the old hardcoded `QueryPatternType::OnlyTemporal` call into the
+/// shared `validate_and_align_end_timestamp` (which only snaps for
+/// `OnlySpatial`), SQL now always snaps a misaligned end_timestamp down to
+/// the nearest data-ingestion-interval boundary, for every SQL query shape
+/// including genuine multi-interval SpatioTemporal queries.
+#[cfg(test)]
+mod spatiotemporal_timestamp_alignment_tests {
+    use super::SimpleEngine;
+    use crate::data_model::{
+        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+        QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
+    };
+    use crate::stores::simple_map_store::SimpleMapStore;
+    use chrono::{Local, TimeZone};
+    use promql_utilities::data_model::KeyByLabelNames;
+    use sql_utilities::sqlhelper::{SQLSchema, Table};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    /// The SQL literal-date parser reads timestamps in the local timezone, so
+    /// the wall-clock second value that lands on (or off) a 300ms boundary
+    /// depends on the machine's TZ offset. Rather than hardcode an
+    /// assumed-UTC epoch, compute each candidate second's epoch-ms directly
+    /// via `chrono::Local`, so the test is correct under any CI timezone.
+    fn local_epoch_ms(second: u32) -> i64 {
+        Local
+            .with_ymd_and_hms(2025, 10, 1, 0, 0, second)
+            .single()
+            .expect("2025-10-01 00:00:xx is unambiguous in any timezone")
+            .timestamp()
+            * 1000
+    }
+
+    /// A SpatioTemporal SQL engine (GROUP BY a subset of labels, 2s window)
+    /// with a 300ms scrape interval — deliberately not a divisor of 1000ms,
+    /// so a whole-second literal timestamp is misaligned unless its seconds
+    /// value happens to be a multiple of 0.3s.
+    fn build_engine() -> SimpleEngine {
+        let labels: HashSet<String> = ["L1", "L2"].iter().map(|s| s.to_string()).collect();
+        let value_cols: HashSet<String> = ["value"].iter().map(|s| s.to_string()).collect();
+        let table = Table::new(
+            "cpu_usage".to_string(),
+            "time".to_string(),
+            value_cols,
+            labels,
+        );
+        let sql_schema = SQLSchema::new(vec![table]);
+
+        const AGG_ID: u64 = 1;
+        let template = "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() GROUP BY L1";
+        let query_config = QueryConfig::new(template.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(sql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::Sum,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::new(vec!["L1".to_string()]),
+            aggregated_labels: KeyByLabelNames::empty(),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 2000,
+            slide_interval_ms: 2000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: "cpu_usage".to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            300, // scrape interval, ms — not a divisor of 1000
+            QueryLanguage::sql,
+        )
+    }
+
+    #[test]
+    fn misaligned_end_timestamp_is_snapped_down() {
+        // Find a whole second in [0, 12) whose epoch-ms is NOT a multiple of
+        // 300ms (any TZ offset used by the local-date parser is itself a
+        // multiple of 300ms, so such a second exists in every timezone).
+        let (second, end_ms) = (0..12u32)
+            .map(|s| (s, local_epoch_ms(s)))
+            .find(|(_, ms)| ms % 300 != 0)
+            .expect("a misaligned second must exist in any timezone");
+        let expected_end_ms = (end_ms / 300) * 300;
+
+        let query = format!(
+            "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -2, '2025-10-01 00:00:{second:02}') \
+             AND '2025-10-01 00:00:{second:02}' GROUP BY L1"
+        );
+        let context = build_engine()
+            .build_query_execution_context_sql(query, 0.0)
+            .expect("SpatioTemporal query should build a context");
+
+        let window = &context.store_plan.values_query;
+        assert_eq!(
+            window.end_timestamp, expected_end_ms as u64,
+            "misaligned end_timestamp must be snapped down to the nearest 300ms boundary"
+        );
+        assert_eq!(
+            window.start_timestamp,
+            (expected_end_ms - 2000) as u64,
+            "start_timestamp must be the snapped end_timestamp minus the query's own 2s duration"
+        );
+    }
+
+    #[test]
+    fn already_aligned_end_timestamp_is_unchanged() {
+        // Find a whole second in [0, 12) whose epoch-ms already lands on a
+        // 300ms boundary.
+        let (second, end_ms) = (0..12u32)
+            .map(|s| (s, local_epoch_ms(s)))
+            .find(|(_, ms)| ms % 300 == 0)
+            .expect("an aligned second must exist in any timezone");
+
+        let query = format!(
+            "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -2, '2025-10-01 00:00:{second:02}') \
+             AND '2025-10-01 00:00:{second:02}' GROUP BY L1"
+        );
+        let context = build_engine()
+            .build_query_execution_context_sql(query, 0.0)
+            .expect("SpatioTemporal query should build a context");
+
+        let window = &context.store_plan.values_query;
+        assert_eq!(
+            window.end_timestamp, end_ms as u64,
+            "an already-aligned end_timestamp must be left unchanged (snap is a no-op)"
+        );
+        assert_eq!(window.start_timestamp, (end_ms - 2000) as u64);
     }
 }
