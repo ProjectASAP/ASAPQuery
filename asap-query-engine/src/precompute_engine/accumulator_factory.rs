@@ -1359,7 +1359,7 @@ mod tests {
         let config = AggregationConfig::new(
             21,
             AggregationType::CountMinSketch,
-            "sum".to_string(),
+            String::new(),
             params,
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
