@@ -579,7 +579,7 @@ fn temporal_sum_t30() {
 
 /// T = 300 s == range: covered by temporal_sum above (cleanup = 1).
 ///
-/// T = 600 s > range (300s): as of #500, a precompute window is not allowed
+/// T = 600 s > range (300s): a precompute window is not allowed
 /// to outlive the query range it's sized for — `duration_ms >= t_repeat_ms`
 /// is now an enforced invariant, so this returns `PlannerError` instead of
 /// silently building a 600s window (the old behavior, when this test

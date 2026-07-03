@@ -5,11 +5,12 @@ use crate::sqlhelper::TimeInfo;
 
 use std::collections::HashSet;
 
+/// Every valid SQL query classifies as SpatioTemporal — query-type-agnostic,
+/// so this is a single-variant enum. Kept (rather than removed outright) so
+/// `SQLQuery.query_type: Vec<QueryType>` doesn't need reshaping here — see
+/// #512 for that follow-up.
 #[derive(Debug, Clone, PartialEq)]
 pub enum QueryType {
-    Spatial,
-    TemporalGeneric,
-    TemporalQuantile,
     SpatioTemporal,
 }
 

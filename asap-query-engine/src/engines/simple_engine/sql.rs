@@ -1526,7 +1526,7 @@ mod topk_pipeline_tests {
     }
 }
 
-/// `build_spatiotemporal_context`'s end_timestamp snap (issue #500 / A1):
+/// `build_spatiotemporal_context`'s end_timestamp snap:
 /// unlike the old hardcoded `QueryPatternType::OnlyTemporal` call into the
 /// shared `validate_and_align_end_timestamp` (which only snaps for
 /// `OnlySpatial`), SQL now always snaps a misaligned end_timestamp down to

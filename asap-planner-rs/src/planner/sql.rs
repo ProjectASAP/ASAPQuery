@@ -221,7 +221,7 @@ fn get_sql_statistics(name: &str) -> Result<Vec<Statistic>, ControllerError> {
     }
 }
 
-/// Behavior change from #500: enforces two invariants —
+/// Enforces two invariants —
 /// `t_repeat_ms >= data_ingestion_interval_ms` (can't refresh faster than
 /// raw ingestion) and `duration_ms >= t_repeat_ms` (a precompute window must
 /// not outlive the query range it's sized for) — rather than silently

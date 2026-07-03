@@ -756,7 +756,7 @@ mod tests {
         );
     }
 
-    /// scraped_intervals = 30/15 = 2.0 with QUANTILE agg → TemporalQuantile
+    /// scraped_intervals = 30/15 = 2.0 with QUANTILE agg → SpatioTemporal
     #[test]
     fn test_bug_201_temporal_quantile_not_rejected() {
         check_query_with_interval(
