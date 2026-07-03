@@ -9,12 +9,11 @@ use crate::engines::query_result::{InstantVector, InstantVectorElement, QueryRes
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
-use sql_utilities::ast_matching::QueryType;
+use promql_utilities::query_logics::enums::Statistic;
 use sql_utilities::ast_matching::{
     detect_sql_topk, SQLPatternMatcher, SQLPatternParser, SQLQuery, SqlTopk, TopkWeighting,
 };
-use sql_utilities::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData};
+use sql_utilities::sqlhelper::{OrderByItem, SQLQueryData};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
 use std::collections::HashMap;
@@ -192,54 +191,6 @@ impl SimpleEngine {
         aligned
     }
 
-    /// Calculates start timestamp for SQL queries
-    fn calculate_start_timestamp_sql(
-        &self,
-        end_timestamp: u64,
-        query_pattern_type: QueryPatternType,
-        match_result: &SQLQuery,
-    ) -> u64 {
-        match query_pattern_type {
-            QueryPatternType::OnlyTemporal => {
-                let duration_secs = match_result
-                    .outer_data()
-                    .expect("OnlyTemporal pattern guarantees outer_data is present")
-                    .time_info
-                    .clone()
-                    .get_duration() as u64;
-                end_timestamp - (duration_secs * 1000)
-            }
-            QueryPatternType::OneTemporalOneSpatial => {
-                let duration_secs = match_result
-                    .inner_data()
-                    .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
-                    .time_info
-                    .clone()
-                    .get_duration() as u64;
-                end_timestamp - (duration_secs * 1000)
-            }
-            QueryPatternType::OnlySpatial => end_timestamp - self.data_ingestion_interval_ms,
-        }
-    }
-
-    /// Calculates and validates query timestamps for SQL
-    fn calculate_query_timestamps_sql(
-        &self,
-        query_time: u64,
-        query_pattern_type: QueryPatternType,
-        match_result: &SQLQuery,
-    ) -> QueryTimestamps {
-        let mut end_timestamp = query_time;
-        end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, query_pattern_type);
-        let start_timestamp =
-            self.calculate_start_timestamp_sql(end_timestamp, query_pattern_type, match_result);
-
-        QueryTimestamps {
-            start_timestamp,
-            end_timestamp,
-        }
-    }
-
     /// Extracts quantile parameter from SQL match result
     fn extract_quantile_param_sql(&self, match_result: &SQLQuery) -> Option<String> {
         match_result
@@ -265,22 +216,6 @@ impl SimpleEngine {
         // Note: SQL doesn't support topk limiting yet
 
         Ok(query_kwargs)
-    }
-
-    fn sql_get_is_collapsable(
-        &self,
-        temporal_aggregation: &AggregationInfo,
-        spatial_aggregation: &AggregationInfo,
-    ) -> bool {
-        match spatial_aggregation.get_name() {
-            "SUM" => matches!(
-                temporal_aggregation.get_name(),
-                "SUM" | "COUNT" // Note: "increase" and "rate" are commented out in Python
-            ),
-            "MIN" => temporal_aggregation.get_name() == "MIN",
-            "MAX" => temporal_aggregation.get_name() == "MAX",
-            _ => false,
-        }
     }
 
     /// Extract QueryRequirements from a parsed SQL match result.
@@ -419,211 +354,15 @@ impl SimpleEngine {
         // every successful path below.
         let post = SqlPostProcessing::from_query_data(&query_data);
 
-        // Handle SpatioTemporal queries separately - they bypass QueryPatternType mapping
-        if match_result.query_type == vec![QueryType::SpatioTemporal] {
-            let query_time = Self::convert_query_time_to_data_time(
-                query_data.time_info.get_start() + query_data.time_info.get_duration(),
-            );
-            let ctx = self.build_spatiotemporal_context(&match_result, query_time, &query_data)?;
-            return Some((ctx, post));
-        }
-
-        let query_pattern_type = match &match_result.query_type[..] {
-            [x] => match x {
-                QueryType::Spatial => QueryPatternType::OnlySpatial,
-                QueryType::TemporalGeneric => QueryPatternType::OnlyTemporal,
-                QueryType::TemporalQuantile => QueryPatternType::OnlyTemporal,
-                QueryType::SpatioTemporal => unreachable!("SpatioTemporal handled above"),
-            },
-            [x, y] => match (x, y) {
-                (QueryType::Spatial, QueryType::TemporalGeneric) => {
-                    QueryPatternType::OneTemporalOneSpatial
-                }
-                (QueryType::Spatial, QueryType::TemporalQuantile) => {
-                    QueryPatternType::OneTemporalOneSpatial
-                }
-                _ => return None,
-            },
-            _ => return None,
-        };
-
-        // For nested queries (spatial of temporal), the outer query has no time clause,
-        // so we need to use the inner (temporal) query's time_info to compute query_time
-        let query_time = match query_pattern_type {
-            QueryPatternType::OneTemporalOneSpatial => {
-                let inner_time_info = &match_result.inner_data()?.time_info;
-                Self::convert_query_time_to_data_time(
-                    inner_time_info.get_start() + inner_time_info.get_duration(),
-                )
-            }
-            _ => Self::convert_query_time_to_data_time(
-                query_data.time_info.get_start() + query_data.time_info.get_duration(),
-            ),
-        };
-
-        //     self.handle_sql_temporal_aggregation(
-        //         query_config,
-        //         &match_result,
-        //         query_time,
-        //         query_pattern_type,
-        //     )
-        // }
-
-        // fn handle_sql_temporal_aggregation(
-        //     &self,
-        //     query_config: &QueryConfig,
-        //     match_result: &SQLQuery,
-        //     query_time: u64,
-        //     query_pattern_type: QueryPatternType,
-        // ) -> Option<(KeyByLabelNames, QueryResult)> {
-        // Labels
-
-        let query_output_labels = match &match_result.query_type.len() {
-            // Potentially change SQLQueryType
-            1 => {
-                // For non-nested queries, output associated labels
-                let labels = &match_result.outer_data()?.labels;
-
-                KeyByLabelNames::new(labels.clone().into_iter().collect())
-            }
-            2 => {
-                // Extract spatial aggregation output labels using AST-based approach
-                let temporal_labels = &match_result.inner_data()?.labels;
-                let spatial_labels = &match_result.outer_data()?.labels;
-
-                let temporal_aggregation = &match_result.inner_data()?.aggregation_info;
-                let spatial_aggregation = &match_result.outer_data()?.aggregation_info;
-
-                match self.sql_get_is_collapsable(temporal_aggregation, spatial_aggregation) {
-                    // If false: get all labels, which are all temporal labels. If true, get only spatial labels
-                    false => KeyByLabelNames::new(temporal_labels.clone().into_iter().collect()),
-                    true => KeyByLabelNames::new(spatial_labels.clone().into_iter().collect()),
-                }
-            }
-            _ => {
-                warn!("Invalid query type: {}", query_pattern_type);
-                KeyByLabelNames::new(Vec::new())
-            }
-        };
-
-        // Statistic - determine based on query pattern type
-        let statistic_name = match query_pattern_type {
-            QueryPatternType::OnlyTemporal => {
-                // Use the temporal aggregation (first subquery)
-                match_result
-                    .outer_data()?
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
-            }
-            QueryPatternType::OneTemporalOneSpatial => {
-                // Use the temporal aggregation (second subquery contains temporal)
-                match_result
-                    .inner_data()?
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
-            }
-            QueryPatternType::OnlySpatial => {
-                // Use the spatial aggregation (first subquery)
-                match_result
-                    .outer_data()?
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
-            }
-        };
-
-        // Top-k (CountMinSketchWithHeap) applies to flat single-layer queries:
-        // COUNT/SUM ... GROUP BY <key> ORDER BY <agg alias> DESC LIMIT k.
-        // Nested patterns attach ORDER BY / LIMIT to the outer SELECT; `query_data`
-        // from parse is the outer layer, while the temporal aggregate lives in
-        // `inner_data` for OneTemporalOneSpatial. Running detect_sql_topk on the
-        // outer layer would mis-classify spatial rollups as top-k.
-        //
-        // Single-interval windows (duration == scrape interval) classify as
-        // `OnlySpatial` in the pattern matcher even though they are flat temporal
-        // reads, so both `OnlyTemporal` and `OnlySpatial` must run detection.
-        let topk = match query_pattern_type {
-            QueryPatternType::OnlyTemporal | QueryPatternType::OnlySpatial => {
-                detect_sql_topk(&query_data)
-            }
-            QueryPatternType::OneTemporalOneSpatial => None,
-        };
-        if topk.is_some_and(|t| t.weighting == TopkWeighting::Sum) {
-            warn!(
-                "SUM top-k assumes non-negative values; results are undefined for columns with negative entries"
-            );
-        }
-        let statistic_to_compute = if topk.is_some() {
-            Statistic::Topk
-        } else {
-            Self::parse_single_statistic(&statistic_name)?
-        };
-
-        let mut query_kwargs = self
-            .build_query_kwargs_sql(&statistic_to_compute, &match_result)
-            .map_err(|e| {
-                warn!("{}", e);
-                e
-            })
-            .ok()?;
-        if let Some(topk) = topk {
-            query_kwargs.insert("k".to_string(), topk.k.to_string());
-        }
-
-        // Create query metadata
-        let metadata = QueryMetadata {
-            query_output_labels: query_output_labels.clone(),
-            statistic_to_compute,
-            query_kwargs: query_kwargs.clone(),
-        };
-
-        // Time
-        let timestamps =
-            self.calculate_query_timestamps_sql(query_time, query_pattern_type, &match_result);
-
-        // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
-        let agg_info: AggregationIdInfo =
-            if let Some(config) = self.find_query_config_sql(&query_data) {
-                self.get_aggregation_id_info(&config)
-                    .map_err(|e| {
-                        warn!("{}", e);
-                        e
-                    })
-                    .ok()?
-            } else {
-                warn!("No query_config entry for SQL query. Attempting capability-based matching.");
-                let requirements = self.build_query_requirements_sql(&match_result, topk);
-                self.streaming_config
-                    .read()
-                    .unwrap()
-                    .clone()
-                    .find_compatible_aggregation(&requirements)?
-            };
-
-        let metric = &match_result.outer_data()?.metric;
-
-        let spatial_filter = if query_pattern_type == QueryPatternType::OneTemporalOneSpatial {
-            match_result
-                .outer_data()?
-                .labels
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(",")
-        } else {
-            String::new()
-        };
-
-        let ctx = self.build_sql_execution_context_tail(
-            metric,
-            &timestamps,
-            metadata,
-            agg_info,
-            spatial_filter,
-            query_time,
-        )?;
+        // Every valid (non-nested) SQL query is handled uniformly by
+        // `build_spatiotemporal_context`, regardless of duration or GROUP BY
+        // shape. An unmatched query (e.g. no time column) leaves `match_result`
+        // empty, so `outer_data()` inside `build_spatiotemporal_context`
+        // returns `None` and this propagates via `?` — no separate check needed.
+        let query_time = Self::convert_query_time_to_data_time(
+            query_data.time_info.get_start() + query_data.time_info.get_duration(),
+        );
+        let ctx = self.build_spatiotemporal_context(&match_result, query_time, &query_data)?;
         Some((ctx, post))
     }
 
