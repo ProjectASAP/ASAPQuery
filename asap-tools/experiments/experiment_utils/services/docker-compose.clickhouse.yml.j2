@@ -11,6 +11,10 @@ services:
     environment:
       - CLICKHOUSE_DB={{ database }}
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      # Explicit rather than relying on the image's default: naive datetime-
+      # string time literals in SQL queries must parse identically here and
+      # in asap-planner/query_engine_rust (both pinned to TZ=UTC too).
+      - TZ=UTC
     ulimits:
       nofile:
         soft: 262144

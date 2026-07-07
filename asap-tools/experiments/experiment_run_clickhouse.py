@@ -93,6 +93,7 @@ Baseline + sketchdb:
 import json
 import os
 import time
+from typing import Optional
 from urllib.parse import urlparse
 
 import hydra
@@ -162,7 +163,7 @@ def _run_query_workload(
     remote_monitor_service: RemoteMonitorService,
     minimum_experiment_running_time: int,
     manual_remote_monitor: bool,
-    query_engine_service: QueryEngineRustService | None,
+    query_engine_service: Optional[QueryEngineRustService],
     profile_query_engine: bool,
     profile_prometheus_time,
 ) -> None:
@@ -300,6 +301,9 @@ def main(cfg: DictConfig) -> None:
         local_experiment_dir=local_experiment_root_dir,
         http_port=clickhouse_http_port,
         database=CLICKHOUSE_DATABASE,
+        # Pre-AVX2 CPUs (e.g. Sandy/Ivy Bridge CloudLab nodes) SIGILL on the
+        # "latest" image; override via dataset.clickhouse_image_tag if needed.
+        image_tag=dataset_cfg.get("clickhouse_image_tag", "latest"),
     )
 
     # --- load data once before the mode loop (DROP + reload) ---
@@ -367,7 +371,7 @@ def main(cfg: DictConfig) -> None:
 
             # Generate and rsync the planner input config to the node
             planner_input_yaml = config.generate_sql_planner_input(
-                ep.query_groups, dataset_cfg
+                ep.query_groups, dataset_cfg, cfg.get("sketch_parameters", None)
             )
             local_planner_input = os.path.join(
                 local_controller_dir, "planner_input.yaml"

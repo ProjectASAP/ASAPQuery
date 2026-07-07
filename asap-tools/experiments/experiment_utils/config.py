@@ -765,13 +765,19 @@ def generate_clickhouse_client_configs(
     return modes
 
 
-def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
+def generate_sql_planner_input(
+    query_groups: Any, dataset_cfg: Any, sketch_parameters: Any = None
+) -> str:
     """Generate the YAML input file for asap-planner in SQL mode.
 
     The planner (``asap-planner --query-language sql``) reads a
     ``SQLControllerConfig`` YAML that contains:
       - ``tables``: schema of the tables being queried
       - ``query_groups``: SQL queries with controller options
+      - ``sketch_parameters``: optional per-sketch-type overrides (e.g.
+        ``DatasketchesKLL.K``), matching ``ControllerConfig``'s PromQL-mode
+        field of the same name (``SketchParameterOverrides`` in
+        asap-planner-rs's ``config/input.rs``).
 
     This function builds that YAML from the experiment config so the runner
     does not need a hand-authored planner input file.
@@ -782,6 +788,10 @@ def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
             ``controller_options`` (``accuracy_sla``, ``latency_sla``).
         dataset_cfg: DictConfig with ``table``/``name``, and ``precompute``
             sub-config (``timestamp_col``, ``value_col``, ``label_cols``).
+        sketch_parameters: Optional DictConfig/dict mirroring ``config.yaml``'s
+            top-level ``sketch_parameters`` section (``CountMinSketch``,
+            ``DatasketchesKLL``, etc.). When ``None``, the planner falls back
+            to its own defaults.
 
     Returns:
         YAML string ready to write to disk and pass to asap-planner.
@@ -830,6 +840,10 @@ def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
         "query_groups": planner_query_groups,
         "aggregate_cleanup": {"policy": "read_based"},
     }
+    if sketch_parameters is not None:
+        if isinstance(sketch_parameters, (DictConfig, ListConfig)):
+            sketch_parameters = OmegaConf.to_container(sketch_parameters, resolve=True)
+        planner_input["sketch_parameters"] = sketch_parameters
     return yaml.dump(planner_input, default_flow_style=False, allow_unicode=True)
 
 

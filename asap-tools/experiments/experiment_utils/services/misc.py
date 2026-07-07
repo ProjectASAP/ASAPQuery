@@ -257,8 +257,13 @@ class ControllerService(BaseService):
         query_language: str,
     ) -> None:
         controller_log = os.path.join(controller_remote_output_dir, "controller.log")
+        # Force UTC so naive (no Z/offset) datetime-string time literals in SQL
+        # queries parse identically here (parse_datetime, sqlpattern_parser.rs)
+        # and in ClickHouse (whose container has no TZ override, so it defaults
+        # to UTC) -- otherwise the two would silently disagree by the shell's
+        # local UTC offset.
         cmd = (
-            f"../target/release/asap-planner"
+            f"TZ=UTC ../target/release/asap-planner"
             f" --input_config {controller_input_file}"
             f" --output_dir {controller_remote_output_dir}"
             f" --streaming_engine {streaming_engine}"
