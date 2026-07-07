@@ -129,9 +129,9 @@ mod tests {
 
     #[test]
     fn test_spatial_query_matches_now_template() {
-        // Spatial: window equals the scrape interval (1s), GROUP BY all labels
+        // Window equals the scrape interval (1s), GROUP BY all labels — classifies
+        // the same as every other shape: SpatioTemporal.
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        // scrape_interval=1, window=1 → classified as Spatial by the matcher
         let engine = build_sql_engine(template, 1, 1000);
 
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_temporal_quantile_query_matches_now_template() {
-        // TemporalQuantile: QUANTILE aggregation, window > scrape interval, GROUP BY all labels
+        // QUANTILE aggregation, window > scrape interval, GROUP BY all labels
         let template = "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
         let engine = build_sql_engine(template, 1, 10_000);
 
