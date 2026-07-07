@@ -174,6 +174,30 @@ impl SimpleEngine {
             .cloned()
     }
 
+    /// Scans `self.controller_patterns` for the first `PromQLPattern` that matches
+    /// `ast`, returning its `QueryPatternType` and match result. `query` is used
+    /// only for debug logging.
+    fn find_matching_controller_pattern(
+        &self,
+        ast: &promql_parser::parser::Expr,
+        query: &str,
+    ) -> Option<(QueryPatternType, PromQLMatchResult)> {
+        for (pattern_type, patterns) in &self.controller_patterns {
+            for pattern in patterns {
+                debug!(
+                    "Trying pattern type: {:?} for query: {}",
+                    pattern_type, query
+                );
+                let match_result = pattern.matches(ast);
+                debug!("Match result: {:?}", match_result);
+                if match_result.matches {
+                    return Some((*pattern_type, match_result));
+                }
+            }
+        }
+        None
+    }
+
     /// Variant of `build_query_execution_context_promql` that accepts a pre-parsed
     /// AST node and a pre-found `QueryConfig`, avoiding redundant parsing and lookup.
     pub fn build_query_execution_context_from_ast(
@@ -184,21 +208,8 @@ impl SimpleEngine {
     ) -> Option<QueryExecutionContext> {
         let query_time = Self::convert_query_time_to_data_time(time);
 
-        let mut found_match = None;
-        for (pattern_type, patterns) in &self.controller_patterns {
-            for pattern in patterns {
-                let match_result = pattern.matches(arm_ast);
-                if match_result.matches {
-                    found_match = Some((*pattern_type, match_result));
-                    break;
-                }
-            }
-            if found_match.is_some() {
-                break;
-            }
-        }
-
-        let (query_pattern_type, match_result) = found_match?;
+        let (query_pattern_type, match_result) =
+            self.find_matching_controller_pattern(arm_ast, &query_config.query)?;
 
         let agg_info = self
             .get_aggregation_id_info(query_config)
@@ -984,24 +995,7 @@ impl SimpleEngine {
 
         let pattern_match_start_time = Instant::now();
 
-        let mut found_match = None;
-        for (pattern_type, patterns) in &self.controller_patterns {
-            for pattern in patterns {
-                debug!(
-                    "Trying pattern type: {:?} for query: {}",
-                    pattern_type, query
-                );
-                let match_result = pattern.matches(&ast);
-                debug!("Match result: {:?}", match_result);
-                if match_result.matches {
-                    found_match = Some((*pattern_type, match_result));
-                    break;
-                }
-            }
-            if found_match.is_some() {
-                break;
-            }
-        }
+        let found_match = self.find_matching_controller_pattern(&ast, &query);
 
         let (query_pattern_type, match_result) = match found_match {
             Some((pt, result)) => {
