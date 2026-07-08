@@ -25,6 +25,22 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, warn};
 
+/// Detects whether either side of a PromQL binary expression is a scalar
+/// (numeric literal), returning the scalar value, the other (vector) arm,
+/// and whether the scalar was on the left. Shared by instant and range
+/// binary-expression handling.
+fn detect_scalar_arm<'a>(
+    lhs: &'a promql_parser::parser::Expr,
+    rhs: &'a promql_parser::parser::Expr,
+) -> Option<(f64, &'a promql_parser::parser::Expr, bool)> {
+    use promql_parser::parser::Expr;
+    match (lhs, rhs) {
+        (_, Expr::NumberLiteral(nl)) => Some((nl.val, lhs, false)),
+        (Expr::NumberLiteral(nl), _) => Some((nl.val, rhs, true)),
+        _ => None,
+    }
+}
+
 impl SimpleEngine {
     /// Calculates start timestamp for PromQL queries
     fn calculate_start_timestamp_promql(
@@ -346,11 +362,37 @@ impl SimpleEngine {
         })
     }
 
+    /// Recursively unwraps `Paren`, then structurally resolves a leaf PromQL
+    /// arm (i.e. not `Binary` or `NumberLiteral`) to its `QueryConfig` and
+    /// base `QueryExecutionContext`. Shared leaf-resolution step for both
+    /// `build_arm_logical_plan` (instant) and `build_arm_range_context` (range).
+    ///
+    /// Returns `None` for `Binary` arms (caller handles recursion) and
+    /// `NumberLiteral` arms (caller handles scalars).
+    fn resolve_arm_leaf_context(
+        &self,
+        arm_ast: &promql_parser::parser::Expr,
+        time: f64,
+    ) -> Option<(QueryExecutionContext, Vec<String>)> {
+        use promql_parser::parser::Expr;
+
+        match arm_ast {
+            Expr::NumberLiteral(_) | Expr::Binary(_) => None,
+            Expr::Paren(paren) => self.resolve_arm_leaf_context(&paren.expr, time),
+            other => {
+                let config = self.find_query_config_promql_structural(other)?;
+                let ctx = self.build_query_execution_context_from_ast(other, &config, time)?;
+                let label_names = ctx.metadata.query_output_labels.labels.clone();
+                Some((ctx, label_names))
+            }
+        }
+    }
+
     /// Recursively builds a DataFusion logical plan for one arm of a binary
     /// arithmetic expression.
     ///
-    /// - Leaf arm (supported PromQL pattern): look up config structurally, build
-    ///   context, return its `to_logical_plan()` together with the output label names.
+    /// - Leaf arm (supported PromQL pattern): resolved via `resolve_arm_leaf_context`,
+    ///   returning its `to_logical_plan()` together with the output label names.
     /// - Binary arm: recursively build both sub-arms and combine with
     ///   `build_binary_vector_plan`.
     /// - Scalar literal: returns `None` (handled by the caller separately).
@@ -374,11 +416,8 @@ impl SimpleEngine {
                         .ok()?;
                 Some((combined, lhs_labels))
             }
-            other => {
-                // Leaf pattern: structural config lookup + context + plan
-                let config = self.find_query_config_promql_structural(other)?;
-                let ctx = self.build_query_execution_context_from_ast(other, &config, time)?;
-                let label_names = ctx.metadata.query_output_labels.labels.clone();
+            _ => {
+                let (ctx, label_names) = self.resolve_arm_leaf_context(arm_ast, time)?;
                 let plan = ctx.to_logical_plan().ok()?;
                 Some((plan, label_names))
             }
@@ -408,13 +447,7 @@ impl SimpleEngine {
         let rhs = binary.rhs.as_ref();
         let op = &binary.op;
 
-        // Scalar case: either side may be a numeric literal
-        let scalar_case: Option<(f64, &Expr, bool)> = match (lhs, rhs) {
-            (_, Expr::NumberLiteral(nl)) => Some((nl.val, lhs, false)),
-            (Expr::NumberLiteral(nl), _) => Some((nl.val, rhs, true)),
-            _ => None,
-        };
-        if let Some((scalar, vector_arm, scalar_on_left)) = scalar_case {
+        if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
             let (vector_plan, label_names) = self.build_arm_logical_plan(vector_arm, time)?;
             let combined =
                 build_scalar_plan(vector_plan, scalar, op, scalar_on_left, label_names.clone())
@@ -469,7 +502,13 @@ impl SimpleEngine {
         }
     }
 
-    /// Recursively builds a range execution context for one arm of a binary arithmetic expression.
+    /// Recursively builds a range execution context for one arm of a binary
+    /// arithmetic expression.
+    ///
+    /// Leaf resolution (Paren-unwrap + structural config lookup) is shared
+    /// with `build_arm_logical_plan` via `resolve_arm_leaf_context`. Note this
+    /// does not support nested `Binary` arms (e.g. `(a+b)*c` over a range) —
+    /// tracked separately in #516.
     fn build_arm_range_context(
         &self,
         arm_ast: &promql_parser::parser::Expr,
@@ -479,63 +518,57 @@ impl SimpleEngine {
     ) -> Option<(RangeQueryExecutionContext, Vec<String>)> {
         use promql_parser::parser::Expr;
 
-        match arm_ast {
-            Expr::NumberLiteral(_) => None, // caller handles scalars
-            Expr::Paren(paren) => self.build_arm_range_context(&paren.expr, start, end, step),
-            other => {
-                let config = self.find_query_config_promql_structural(other)?;
-                let base_context =
-                    self.build_query_execution_context_from_ast(other, &config, end)?;
-                let label_names = base_context.metadata.query_output_labels.labels.clone();
-
-                let start_ms = Self::convert_query_time_to_data_time(start);
-                let end_ms = Self::convert_query_time_to_data_time(end);
-                let step_ms = (step * 1000.0) as u64;
-
-                let tumbling_window_ms = self
-                    .streaming_config
-                    .read()
-                    .unwrap()
-                    .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-                    .map(|c| c.window_size_ms)?;
-
-                self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
-                    .map_err(|e| {
-                        warn!("Range arm query validation failed: {}", e);
-                        e
-                    })
-                    .ok()?;
-
-                let lookback_ms = base_context.store_plan.values_query.end_timestamp
-                    - base_context.store_plan.values_query.start_timestamp;
-
-                let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
-                let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
-
-                let mut extended_store_plan = base_context.store_plan.clone();
-                extended_store_plan.values_query.start_timestamp =
-                    start_ms.saturating_sub(lookback_ms);
-                extended_store_plan.values_query.end_timestamp = end_ms;
-                extended_store_plan.values_query.is_exact_query = false;
-
-                let range_context = RangeQueryExecutionContext {
-                    base: QueryExecutionContext {
-                        store_plan: extended_store_plan,
-                        ..base_context
-                    },
-                    range_params: RangeQueryParams {
-                        start: start_ms,
-                        end: end_ms,
-                        step: step_ms,
-                    },
-                    buckets_per_step,
-                    lookback_bucket_count,
-                    tumbling_window_ms,
-                };
-
-                Some((range_context, label_names))
-            }
+        if matches!(arm_ast, Expr::NumberLiteral(_)) {
+            return None; // caller handles scalars
         }
+
+        let (base_context, label_names) = self.resolve_arm_leaf_context(arm_ast, end)?;
+
+        let start_ms = Self::convert_query_time_to_data_time(start);
+        let end_ms = Self::convert_query_time_to_data_time(end);
+        let step_ms = (step * 1000.0) as u64;
+
+        let tumbling_window_ms = self
+            .streaming_config
+            .read()
+            .unwrap()
+            .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
+            .map(|c| c.window_size_ms)?;
+
+        self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
+            .map_err(|e| {
+                warn!("Range arm query validation failed: {}", e);
+                e
+            })
+            .ok()?;
+
+        let lookback_ms = base_context.store_plan.values_query.end_timestamp
+            - base_context.store_plan.values_query.start_timestamp;
+
+        let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
+        let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
+
+        let mut extended_store_plan = base_context.store_plan.clone();
+        extended_store_plan.values_query.start_timestamp = start_ms.saturating_sub(lookback_ms);
+        extended_store_plan.values_query.end_timestamp = end_ms;
+        extended_store_plan.values_query.is_exact_query = false;
+
+        let range_context = RangeQueryExecutionContext {
+            base: QueryExecutionContext {
+                store_plan: extended_store_plan,
+                ..base_context
+            },
+            range_params: RangeQueryParams {
+                start: start_ms,
+                end: end_ms,
+                step: step_ms,
+            },
+            buckets_per_step,
+            lookback_bucket_count,
+            tumbling_window_ms,
+        };
+
+        Some((range_context, label_names))
     }
 
     /// Handles a binary arithmetic PromQL expression for range queries.
@@ -561,13 +594,7 @@ impl SimpleEngine {
         let rhs = binary.rhs.as_ref();
         let op = &binary.op;
 
-        // Scalar case: either side may be a numeric literal
-        let scalar_case: Option<(f64, &Expr, bool)> = match (lhs, rhs) {
-            (_, Expr::NumberLiteral(nl)) => Some((nl.val, lhs, false)),
-            (Expr::NumberLiteral(nl), _) => Some((nl.val, rhs, true)),
-            _ => None,
-        };
-        if let Some((scalar, vector_arm, scalar_on_left)) = scalar_case {
+        if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
             let (ctx, labels) = self.build_arm_range_context(vector_arm, start, end, step)?;
             let results = self.execute_range_query_pipeline(&ctx).ok()?;
             let combined: Vec<RangeVectorElement> = results
@@ -869,21 +896,27 @@ impl SimpleEngine {
         let query_start_time = Instant::now();
         debug!("Handling query: {} at time {}", query, time);
 
+        let ast = match promql_parser::parser::parse(&query) {
+            Ok(ast) => ast,
+            Err(e) => {
+                warn!("Failed to parse PromQL query '{}': {}", query, e);
+                return None;
+            }
+        };
+
         // Check for binary arithmetic before attempting single-query dispatch.
         // Binary expressions won't have a matching query_config, so we handle them here.
-        if let Ok(ast) = promql_parser::parser::parse(&query) {
-            if matches!(&ast, promql_parser::parser::Expr::Binary(_)) {
-                let result = self.handle_binary_expr_promql(&ast, time);
-                let total_query_duration = query_start_time.elapsed();
-                debug!(
-                    "Binary arithmetic query handling took: {:.2}ms",
-                    total_query_duration.as_secs_f64() * 1000.0
-                );
-                return result;
-            }
+        if matches!(&ast, promql_parser::parser::Expr::Binary(_)) {
+            let result = self.handle_binary_expr_promql(&ast, time);
+            let total_query_duration = query_start_time.elapsed();
+            debug!(
+                "Binary arithmetic query handling took: {:.2}ms",
+                total_query_duration.as_secs_f64() * 1000.0
+            );
+            return result;
         }
 
-        let context = self.build_query_execution_context_promql(query, time)?;
+        let context = self.build_query_execution_context_from_parsed(&ast, &query, time)?;
 
         debug!(
             "Querying store for metric: {}, aggregation_id: {}, range: [{}, {}]",
@@ -974,8 +1007,6 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<QueryExecutionContext> {
-        let query_time = Self::convert_query_time_to_data_time(time);
-
         // Parse PromQL AST using promql-parser crate
         let parse_start_time = Instant::now();
         let ast = match promql_parser::parser::parse(&query) {
@@ -993,9 +1024,23 @@ impl SimpleEngine {
             }
         };
 
+        self.build_query_execution_context_from_parsed(&ast, &query, time)
+    }
+
+    /// Variant of `build_query_execution_context_promql` that accepts an
+    /// already-parsed AST, avoiding a redundant re-parse when the caller
+    /// (e.g. `handle_query_promql`) has already parsed `query` once.
+    fn build_query_execution_context_from_parsed(
+        &self,
+        ast: &promql_parser::parser::Expr,
+        query: &str,
+        time: f64,
+    ) -> Option<QueryExecutionContext> {
+        let query_time = Self::convert_query_time_to_data_time(time);
+
         let pattern_match_start_time = Instant::now();
 
-        let found_match = self.find_matching_controller_pattern(&ast, &query);
+        let found_match = self.find_matching_controller_pattern(ast, query);
 
         let (query_pattern_type, match_result) = match found_match {
             Some((pt, result)) => {
@@ -1017,7 +1062,7 @@ impl SimpleEngine {
         let query_context_start_time = Instant::now();
 
         // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
-        let agg_info: AggregationIdInfo = if let Some(config) = self.find_query_config(&query) {
+        let agg_info: AggregationIdInfo = if let Some(config) = self.find_query_config(query) {
             self.get_aggregation_id_info(&config)
                 .map_err(|e| {
                     warn!("{}", e);
@@ -1036,7 +1081,7 @@ impl SimpleEngine {
                 _ => &empty_schema,
             };
             let requirements = build_query_requirements_promql(
-                &query,
+                query,
                 &match_result,
                 query_pattern_type,
                 metric_schema,
@@ -1073,9 +1118,31 @@ impl SimpleEngine {
         end: f64,
         step: f64,
     ) -> Option<RangeQueryExecutionContext> {
+        let ast = match promql_parser::parser::parse(&query) {
+            Ok(ast) => ast,
+            Err(e) => {
+                warn!("Failed to parse PromQL query '{}': {}", query, e);
+                return None;
+            }
+        };
+
+        self.build_range_query_execution_context_from_parsed(&ast, &query, start, end, step)
+    }
+
+    /// Variant of `build_range_query_execution_context_promql` that accepts an
+    /// already-parsed AST, avoiding a redundant re-parse when the caller
+    /// (e.g. `handle_range_query_promql`) has already parsed `query` once.
+    fn build_range_query_execution_context_from_parsed(
+        &self,
+        ast: &promql_parser::parser::Expr,
+        query: &str,
+        start: f64,
+        end: f64,
+        step: f64,
+    ) -> Option<RangeQueryExecutionContext> {
         // First, build the base instant query context (reuse existing logic)
         // Use 'end' as the reference time for parsing
-        let base_context = self.build_query_execution_context_promql(query, end)?;
+        let base_context = self.build_query_execution_context_from_parsed(ast, query, end)?;
 
         // Convert to milliseconds
         let start_ms = Self::convert_query_time_to_data_time(start);
@@ -1142,20 +1209,27 @@ impl SimpleEngine {
             query, start, end, step
         );
 
-        // Check for binary arithmetic before attempting single-query dispatch.
-        if let Ok(ast) = promql_parser::parser::parse(&query) {
-            if matches!(&ast, promql_parser::parser::Expr::Binary(_)) {
-                let result = self.handle_binary_expr_range_promql(&ast, start, end, step);
-                let total_duration = query_start_time.elapsed();
-                debug!(
-                    "Binary arithmetic range query handling took: {:.2}ms",
-                    total_duration.as_secs_f64() * 1000.0
-                );
-                return result;
+        let ast = match promql_parser::parser::parse(&query) {
+            Ok(ast) => ast,
+            Err(e) => {
+                warn!("Failed to parse PromQL query '{}': {}", query, e);
+                return None;
             }
+        };
+
+        // Check for binary arithmetic before attempting single-query dispatch.
+        if matches!(&ast, promql_parser::parser::Expr::Binary(_)) {
+            let result = self.handle_binary_expr_range_promql(&ast, start, end, step);
+            let total_duration = query_start_time.elapsed();
+            debug!(
+                "Binary arithmetic range query handling took: {:.2}ms",
+                total_duration.as_secs_f64() * 1000.0
+            );
+            return result;
         }
 
-        let context = self.build_range_query_execution_context_promql(query, start, end, step)?;
+        let context =
+            self.build_range_query_execution_context_from_parsed(&ast, &query, start, end, step)?;
 
         // Execute range query pipeline
         let results: Vec<RangeVectorElement> = self
