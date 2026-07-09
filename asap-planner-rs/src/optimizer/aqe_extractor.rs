@@ -170,10 +170,10 @@ fn extract_requirements(
     let ast = promql_parser::parser::parse(query).ok()?;
     let patterns = build_patterns();
 
-    let (pattern_type, match_result) = patterns.iter().find_map(|(pt, pat)| {
+    let match_result = patterns.iter().find_map(|(_, pat)| {
         let r = pat.matches(&ast);
         if r.matches {
-            Some((*pt, r))
+            Some(r)
         } else {
             None
         }
@@ -182,7 +182,6 @@ fn extract_requirements(
     build_query_requirements_promql(
         query,
         &match_result,
-        pattern_type,
         metric_schema,
         data_ingestion_interval_ms,
     )

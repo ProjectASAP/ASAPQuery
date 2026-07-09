@@ -1083,7 +1083,6 @@ impl SimpleEngine {
             let requirements = build_query_requirements_promql(
                 query,
                 &match_result,
-                query_pattern_type,
                 metric_schema,
                 self.data_ingestion_interval_ms,
             )?;

@@ -1,6 +1,6 @@
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
+use promql_utilities::query_logics::enums::Statistic;
 use promql_utilities::query_logics::parsing::{
     get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
 };
@@ -46,7 +46,6 @@ pub struct QueryRequirements {
 pub fn build_query_requirements_promql(
     query: &str,
     match_result: &PromQLMatchResult,
-    pattern_type: QueryPatternType,
     metric_schema: &PromQLSchema,
     data_ingestion_interval_ms: u64,
 ) -> Option<QueryRequirements> {
@@ -63,13 +62,19 @@ pub fn build_query_requirements_promql(
         })
         .ok()?;
 
-    let data_range_ms = match pattern_type {
-        QueryPatternType::OnlySpatial => data_ingestion_interval_ms,
+    let has_temporal_function = match_result.tokens.contains_key("function");
+    let has_aggregation = match_result.tokens.contains_key("aggregation");
+
+    let data_range_ms = if has_temporal_function {
         // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
         // so .num_seconds() would truncate sub-second ranges to 0.
-        _ => match_result
+        match_result
             .get_range_duration()
-            .map(|d| d.num_milliseconds() as u64)?,
+            .map(|d| d.num_milliseconds() as u64)?
+    } else {
+        // OnlySpatial (no temporal component): the query has no range of its
+        // own, so its data range is exactly one scrape interval.
+        data_ingestion_interval_ms
     };
 
     let all_labels = metric_schema
@@ -77,14 +82,13 @@ pub fn build_query_requirements_promql(
         .cloned()
         .unwrap_or_else(KeyByLabelNames::empty);
 
-    let grouping_labels = match pattern_type {
+    let grouping_labels = if has_aggregation {
+        // OnlySpatial and (collapsable, see #508) OneTemporalOneSpatial encode
+        // their output labels in the AST's `by (...)` / `without (...)` clause.
+        get_spatial_aggregation_output_labels(match_result, &all_labels)
+    } else {
         // OnlyTemporal preserves all labels.
-        QueryPatternType::OnlyTemporal => all_labels,
-        // OnlySpatial and OneTemporalOneSpatial encode their output labels in
-        // the AST's `by (...)` / `without (...)` clause.
-        QueryPatternType::OnlySpatial | QueryPatternType::OneTemporalOneSpatial => {
-            get_spatial_aggregation_output_labels(match_result, &all_labels)
-        }
+        all_labels
     };
 
     Some(QueryRequirements {
