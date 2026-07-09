@@ -24,7 +24,7 @@ use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::get_is_collapsable;
 use promql_utilities::query_logics::enums::{
-    AggregationOperator, AggregationType, PromQLFunction, QueryPatternType, Statistic,
+    AggregationOperator, AggregationType, PromQLFunction, Statistic,
 };
 use serde_json::Value;
 
@@ -138,7 +138,7 @@ pub struct SimpleEngine {
     /// clone the Arc pointer, then use without holding the lock.
     streaming_config: RwLock<Arc<StreamingConfig>>,
     data_ingestion_interval_ms: u64,
-    controller_patterns: HashMap<QueryPatternType, Vec<PromQLPattern>>,
+    controller_patterns: Vec<PromQLPattern>,
     query_language: QueryLanguage,
 }
 
@@ -296,23 +296,13 @@ impl SimpleEngine {
         })
         .collect();
 
-        // Create controller patterns
-        let mut controller_patterns = HashMap::new();
-        controller_patterns.insert(
-            QueryPatternType::OnlyTemporal,
-            vec![
-                temporal_pattern("quantile", &temporal_pattern_blocks),
-                temporal_pattern("generic", &temporal_pattern_blocks),
-            ],
-        );
-        controller_patterns.insert(
-            QueryPatternType::OnlySpatial,
-            vec![spatial_pattern("generic", &spatial_pattern_blocks)],
-        );
-        controller_patterns.insert(
-            QueryPatternType::OneTemporalOneSpatial,
-            one_temporal_one_spatial_collapsable_patterns,
-        );
+        // Create controller patterns: tried in order until one matches.
+        let mut controller_patterns = vec![
+            temporal_pattern("quantile", &temporal_pattern_blocks),
+            temporal_pattern("generic", &temporal_pattern_blocks),
+            spatial_pattern("generic", &spatial_pattern_blocks),
+        ];
+        controller_patterns.extend(one_temporal_one_spatial_collapsable_patterns);
 
         Self {
             store,
@@ -356,37 +346,6 @@ impl SimpleEngine {
             .iter()
             .find(|config| config.query == query)
             .cloned()
-    }
-
-    /// Validates and potentially aligns end timestamp based on query pattern
-    fn validate_and_align_end_timestamp(
-        &self,
-        mut end_timestamp: u64,
-        query_pattern_type: QueryPatternType,
-    ) -> u64 {
-        let interval_ms = self.data_ingestion_interval_ms;
-
-        if !end_timestamp.is_multiple_of(interval_ms) {
-            warn!(
-                "Query end timestamp {} is not aligned with data ingestion interval of {} ms. \
-                 This may lead to inaccurate results.",
-                end_timestamp, self.data_ingestion_interval_ms
-            );
-        }
-
-        // For OnlySpatial, align end_timestamp to nearest scrape interval
-        if query_pattern_type == QueryPatternType::OnlySpatial
-            && !end_timestamp.is_multiple_of(interval_ms)
-        {
-            let aligned_end_timestamp = (end_timestamp / interval_ms) * interval_ms;
-            debug!(
-                "OnlySpatial query: Aligning end_timestamp from {} to {} using data ingestion interval of {} ms",
-                end_timestamp, aligned_end_timestamp, self.data_ingestion_interval_ms
-            );
-            end_timestamp = aligned_end_timestamp;
-        }
-
-        end_timestamp
     }
 
     /// Creates query parameters for separate keys query
