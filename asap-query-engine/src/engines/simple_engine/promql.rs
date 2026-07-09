@@ -295,7 +295,7 @@ impl SimpleEngine {
         let timestamps =
             self.calculate_query_timestamps_promql(query_time, query_pattern_type, match_result);
 
-        let statistics_to_compute = get_statistics_to_compute(query_pattern_type, match_result)
+        let statistics_to_compute = get_statistics_to_compute(match_result)
             .map_err(|err| {
                 warn!("{}", err);
                 err

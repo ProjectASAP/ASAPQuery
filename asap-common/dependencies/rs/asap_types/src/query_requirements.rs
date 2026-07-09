@@ -52,7 +52,7 @@ pub fn build_query_requirements_promql(
 ) -> Option<QueryRequirements> {
     let (metric, spatial_filter) = get_metric_and_spatial_filter(match_result);
 
-    let statistics = get_statistics_to_compute(pattern_type, match_result)
+    let statistics = get_statistics_to_compute(match_result)
         .map_err(|err| {
             warn!(
                 query = %query,
