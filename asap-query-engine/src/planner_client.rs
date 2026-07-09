@@ -105,7 +105,9 @@ mod tests {
         ControllerConfig {
             query_groups: vec![QueryGroup {
                 id: Some(1),
-                queries: vec!["sum(rate(http_requests_total[5m]))".to_string()],
+                // sum+sum_over_time is collapsable (see get_is_collapsable); sum+rate is not,
+                // and non-collapsable combinations no longer match any pattern (#508).
+                queries: vec!["sum(sum_over_time(http_requests_total[5m]))".to_string()],
                 repetition_delay_ms: 60_000,
                 controller_options: ControllerOptions::default(),
                 step_ms: None,

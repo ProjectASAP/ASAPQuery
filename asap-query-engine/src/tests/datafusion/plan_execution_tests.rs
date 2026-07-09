@@ -537,7 +537,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_plan_not_implemented_increase() {
-        // IncreaseAccumulator has no arroyo serde, so execute_plan should fail
+        // IncreaseAccumulator has no arroyo serde, so execute_plan should fail.
+        // Uses a bare OnlyTemporal query (not `sum(increase(...))`): Increase is
+        // never collapsable with any spatial aggregation (see get_is_collapsable),
+        // so a spatial wrapper would no longer match any pattern at all (#508).
         let inc = IncreaseAccumulator::new(Measurement::new(0.0), 0, Measurement::new(100.0), 10);
 
         let engine = create_engine_single_pop(
@@ -545,12 +548,12 @@ mod tests {
             AggregationType::Increase,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(inc))],
-            "sum(increase(http_requests_total[10s])) by (host)",
+            "increase(http_requests_total[10s])",
         );
 
         let context = engine
             .build_query_execution_context_promql(
-                "sum(increase(http_requests_total[10s])) by (host)".to_string(),
+                "increase(http_requests_total[10s])".to_string(),
                 1000.0,
             )
             .expect("Should build context");

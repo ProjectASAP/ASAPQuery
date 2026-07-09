@@ -22,6 +22,7 @@ use crate::AggregateCore;
 use asap_types::enums::WindowType;
 use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::get_is_collapsable;
 use promql_utilities::query_logics::enums::{
     AggregationOperator, AggregationType, PromQLFunction, QueryPatternType, Statistic,
 };
@@ -211,16 +212,6 @@ impl SimpleEngine {
         ]
         .map(AggregationOperator::as_str)
         .to_vec();
-        let spatial_ops_no_topk: Vec<&str> = [
-            AggregationOperator::Sum,
-            AggregationOperator::Count,
-            AggregationOperator::Avg,
-            AggregationOperator::Quantile,
-            AggregationOperator::Min,
-            AggregationOperator::Max,
-        ]
-        .map(AggregationOperator::as_str)
-        .to_vec();
         spatial_pattern_blocks.insert(
             "generic".to_string(),
             PromQLPatternBuilder::aggregation(
@@ -248,18 +239,62 @@ impl SimpleEngine {
             PromQLPattern::new(blocks[pattern_type].clone())
         }
 
-        let spatial_of_temporal_pattern =
-            |temporal_block: &Option<HashMap<String, Value>>| -> PromQLPattern {
+        // A spatial aggregation wrapping a temporal function only collapses into a
+        // single equivalent statistic for specific (function, op) pairs (see
+        // `get_is_collapsable`) — e.g. `sum(min_over_time(x[5m]))` cannot be served
+        // by a single precomputed statistic the way `sum(sum_over_time(x[5m]))` can.
+        // Building one narrow pattern per collapsable pair (rather than a broad
+        // any-op-wrapping-any-function pattern) means a non-collapsable combination
+        // never structurally matches at all, instead of matching and then silently
+        // dropping the outer aggregation (see #508).
+        let one_temporal_one_spatial_collapsable_patterns: Vec<PromQLPattern> = [
+            PromQLFunction::Rate,
+            PromQLFunction::Increase,
+            PromQLFunction::SumOverTime,
+            PromQLFunction::CountOverTime,
+            PromQLFunction::AvgOverTime,
+            PromQLFunction::MinOverTime,
+            PromQLFunction::MaxOverTime,
+            PromQLFunction::QuantileOverTime,
+        ]
+        .into_iter()
+        .flat_map(|func| {
+            [
+                AggregationOperator::Sum,
+                AggregationOperator::Count,
+                AggregationOperator::Avg,
+                AggregationOperator::Quantile,
+                AggregationOperator::Min,
+                AggregationOperator::Max,
+            ]
+            .into_iter()
+            .filter_map(move |op| {
+                if !get_is_collapsable(func, op) {
+                    return None;
+                }
+                let range_vector = PromQLPatternBuilder::matrix_selector(
+                    PromQLPatternBuilder::metric(None, None, None, Some("metric")),
+                    None,
+                    Some("range_vector"),
+                );
+                let function_pattern = PromQLPatternBuilder::function(
+                    vec![func.as_str()],
+                    vec![range_vector],
+                    Some("function"),
+                    Some("function_args"),
+                );
                 let pattern = PromQLPatternBuilder::aggregation(
-                    spatial_ops_no_topk.clone(),
-                    temporal_block.clone(),
+                    vec![op.as_str()],
+                    function_pattern,
                     None,
                     None,
                     None,
                     Some("aggregation"),
                 );
-                PromQLPattern::new(pattern)
-            };
+                Some(PromQLPattern::new(pattern))
+            })
+        })
+        .collect();
 
         // Create controller patterns
         let mut controller_patterns = HashMap::new();
@@ -276,10 +311,7 @@ impl SimpleEngine {
         );
         controller_patterns.insert(
             QueryPatternType::OneTemporalOneSpatial,
-            vec![
-                spatial_of_temporal_pattern(&temporal_pattern_blocks["quantile"]),
-                spatial_of_temporal_pattern(&temporal_pattern_blocks["generic"]),
-            ],
+            one_temporal_one_spatial_collapsable_patterns,
         );
 
         Self {

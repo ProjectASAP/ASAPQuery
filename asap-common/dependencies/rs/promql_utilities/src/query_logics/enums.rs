@@ -69,6 +69,22 @@ impl std::fmt::Display for Statistic {
 
 #[allow(clippy::should_implement_trait)]
 impl Statistic {
+    /// Returns `true` for statistics whose result requires approximate
+    /// pre-aggregation, regardless of whether they were reached via a
+    /// temporal function (`PromQLFunction::is_approximate`) or a spatial
+    /// aggregation operator (`AggregationOperator::is_approximate`) — for
+    /// every `Statistic` reachable from either origin, the two origins agree.
+    pub fn is_approximate(self) -> bool {
+        matches!(
+            self,
+            Statistic::Count
+                | Statistic::Sum
+                | Statistic::Cardinality
+                | Statistic::Quantile
+                | Statistic::Topk
+        )
+    }
+
     pub fn from_str(s: &str) -> Option<Self> {
         debug!("Parsing Statistic from string: {}", s);
         match s.to_lowercase().as_str() {
