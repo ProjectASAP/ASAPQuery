@@ -1,14 +1,11 @@
 use asap_types::enums::CleanupPolicy;
+use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
-use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{
-    AggregationOperator, AggregationType, PromQLFunction, QueryPatternType, QueryTreatmentType,
+    AggregationType, PromQLFunction, QueryTreatmentType, Statistic,
 };
-use promql_utilities::query_logics::logics::get_is_collapsable;
-use promql_utilities::query_logics::parsing::{
-    get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
-};
+use promql_utilities::query_logics::parsing::get_metric_and_spatial_filter;
 
 use crate::config::input::SketchParameterOverrides;
 use crate::error::ControllerError;
@@ -108,41 +105,32 @@ impl SingleQueryProcessor {
         }
     }
 
-    /// Try to match query and return (pattern_type, match_result) or None
-    fn match_pattern(
-        &self,
-        ast: &promql_parser::parser::Expr,
-    ) -> Option<(QueryPatternType, PromQLMatchResult)> {
+    /// Try to match query and return the match result, or None
+    fn match_pattern(&self, ast: &promql_parser::parser::Expr) -> Option<PromQLMatchResult> {
         let patterns = build_patterns();
-        for (pattern_type, pattern) in &patterns {
+        for pattern in &patterns {
             let result = pattern.matches(ast);
             if result.matches {
-                return Some((*pattern_type, result));
+                return Some(result);
             }
         }
         None
     }
 
-    /// Get treatment type (Exact vs Approximate) from pattern match
-    fn get_treatment_type(
-        pattern_type: QueryPatternType,
-        match_result: &PromQLMatchResult,
-    ) -> QueryTreatmentType {
-        match pattern_type {
-            QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
-                let fn_name = match_result.get_function_name().unwrap_or_default();
-                match fn_name.parse::<PromQLFunction>() {
-                    Ok(f) if f.is_approximate() => QueryTreatmentType::Approximate,
-                    _ => QueryTreatmentType::Exact,
-                }
-            }
-            QueryPatternType::OnlySpatial => {
-                let op = match_result.get_aggregation_op().unwrap_or_default();
-                match op.parse::<AggregationOperator>() {
-                    Ok(o) if o.is_approximate() => QueryTreatmentType::Approximate,
-                    _ => QueryTreatmentType::Exact,
-                }
-            }
+    /// Get treatment type (Exact vs Approximate) for a query's statistics.
+    /// All constituent statistics for a query (e.g. avg's `[Sum, Count]`)
+    /// always agree on approximate-ness, so any one of them suffices.
+    fn get_treatment_type(statistics: &[Statistic]) -> QueryTreatmentType {
+        debug_assert!(
+            statistics
+                .iter()
+                .all(|s| s.is_approximate() == statistics[0].is_approximate()),
+            "all statistics for a query must agree on approximate-ness"
+        );
+        if statistics[0].is_approximate() {
+            QueryTreatmentType::Approximate
+        } else {
+            QueryTreatmentType::Exact
         }
     }
 
@@ -184,12 +172,19 @@ impl SingleQueryProcessor {
             Ok(a) => a,
             Err(_) => return false,
         };
-        let (pattern_type, match_result) = match self.match_pattern(&ast) {
+        let match_result = match self.match_pattern(&ast) {
             Some(x) => x,
             None => return true,
         };
 
-        if pattern_type == QueryPatternType::OnlyTemporal {
+        // OnlyTemporal only — a temporal function with no outer spatial
+        // aggregation. Deliberately not reduced to a QueryRequirements-based
+        // check: doing so would also start applying this point-count-based
+        // punting to a bare spatial `quantile()` aggregation, which has never
+        // happened before and isn't asked for here (see #508).
+        let is_only_temporal = match_result.tokens.contains_key("function")
+            && !match_result.tokens.contains_key("aggregation");
+        if is_only_temporal {
             let fn_name = match_result.get_function_name().unwrap_or_default();
             let parsed_fn = fn_name.parse::<PromQLFunction>();
             if matches!(
@@ -223,11 +218,24 @@ impl SingleQueryProcessor {
         let ast = promql_parser::parser::parse(&self.query)
             .map_err(|e| ControllerError::PromQLParse(e.to_string()))?;
 
-        let (pattern_type, match_result) = self.match_pattern(&ast).ok_or_else(|| {
+        let match_result = self.match_pattern(&ast).ok_or_else(|| {
             ControllerError::PlannerError(format!("Unsupported query: {}", self.query))
         })?;
 
-        let treatment_type = Self::get_treatment_type(pattern_type, &match_result);
+        // Statistics, data range, and grouping labels all come from the same
+        // canonical derivation query-engine uses (`build_query_requirements_promql`),
+        // rather than being independently re-derived here (see #508).
+        let requirements = build_query_requirements_promql(
+            &self.query,
+            &match_result,
+            &self.metric_schema,
+            self.data_ingestion_interval_ms,
+        )
+        .ok_or_else(|| {
+            ControllerError::PlannerError(format!("Unsupported query: {}", self.query))
+        })?;
+
+        let treatment_type = Self::get_treatment_type(&requirements.statistics);
 
         let (metric, spatial_filter) = get_metric_and_spatial_filter(&match_result);
 
@@ -237,28 +245,21 @@ impl SingleQueryProcessor {
             .ok_or_else(|| ControllerError::UnknownMetric(metric.clone()))?
             .clone();
 
-        let statistics = get_statistics_to_compute(&match_result).map_err(|err| {
-            ControllerError::PlannerError(format!(
-                "Unsupported statistic for query '{}': {}",
-                self.query, err
-            ))
-        })?;
-
         let mut window_cfg = IntermediateWindowConfig::default();
         set_window_parameters(
-            pattern_type,
+            requirements.data_range_ms,
             self.t_repeat_ms,
             self.data_ingestion_interval_ms,
-            "any", // aggregation_type doesn't matter (sliding always false)
             self.step_ms,
             &mut window_cfg,
-        );
+        )
+        .map_err(ControllerError::PlannerError)?;
 
-        let (rollup, subpopulation_labels) =
-            get_label_routing(pattern_type, &match_result, &all_labels);
+        let subpopulation_labels = requirements.grouping_labels;
+        let rollup = all_labels.difference(&subpopulation_labels);
 
         let configs = build_agg_configs_for_statistics(
-            &statistics,
+            &requirements.statistics,
             treatment_type,
             &subpopulation_labels,
             &rollup,
@@ -285,8 +286,7 @@ impl SingleQueryProcessor {
             Some(
                 get_cleanup_param(
                     self.cleanup_policy,
-                    pattern_type,
-                    &match_result,
+                    requirements.data_range_ms,
                     self.t_repeat_ms,
                     window_cfg.window_type,
                     self.range_duration_ms,
@@ -297,51 +297,5 @@ impl SingleQueryProcessor {
         };
 
         Ok((configs, cleanup_param))
-    }
-}
-
-/// Returns `(rollup, subpopulation_labels)` for a given PromQL pattern type.
-/// These are constant across all statistics in a query, so they are computed
-/// once before the per-statistic loop.
-fn get_label_routing(
-    pattern_type: QueryPatternType,
-    match_result: &PromQLMatchResult,
-    all_labels: &KeyByLabelNames,
-) -> (KeyByLabelNames, KeyByLabelNames) {
-    match pattern_type {
-        QueryPatternType::OnlyTemporal => (KeyByLabelNames::empty(), all_labels.clone()),
-        QueryPatternType::OnlySpatial => {
-            // Match Python: if no by/without modifier, spatial_output = [] (rollup gets all labels).
-            // promql_utilities::get_spatial_aggregation_output_labels has a topk patch that returns
-            // all_labels when there is no modifier, but the Python planner returns [] in that case.
-            let has_modifier = match_result
-                .tokens
-                .get("aggregation")
-                .and_then(|t| t.aggregation.as_ref())
-                .and_then(|a| a.modifier.as_ref())
-                .is_some();
-            let spatial_output = if has_modifier {
-                get_spatial_aggregation_output_labels(match_result, all_labels)
-            } else {
-                KeyByLabelNames::empty()
-            };
-            (all_labels.difference(&spatial_output), spatial_output)
-        }
-        QueryPatternType::OneTemporalOneSpatial => {
-            let fn_name = match_result.get_function_name().unwrap_or_default();
-            let agg_op = match_result.get_aggregation_op().unwrap_or_default();
-            let collapsable = fn_name
-                .parse::<PromQLFunction>()
-                .ok()
-                .zip(agg_op.parse::<AggregationOperator>().ok())
-                .is_some_and(|(f, o)| get_is_collapsable(f, o));
-            if !collapsable {
-                (KeyByLabelNames::empty(), all_labels.clone())
-            } else {
-                let spatial_output =
-                    get_spatial_aggregation_output_labels(match_result, all_labels);
-                (all_labels.difference(&spatial_output), spatial_output)
-            }
-        }
     }
 }

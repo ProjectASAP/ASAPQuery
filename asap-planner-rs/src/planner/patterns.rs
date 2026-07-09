@@ -1,12 +1,11 @@
 use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
-use promql_utilities::query_logics::enums::{
-    AggregationOperator, PromQLFunction, QueryPatternType,
-};
+use promql_utilities::query_logics::enums::{AggregationOperator, PromQLFunction};
 use promql_utilities::query_logics::logics::get_is_collapsable;
 
 /// Build all patterns in priority order: ONLY_TEMPORAL (2), ONLY_SPATIAL (1),
-/// ONE_TEMPORAL_ONE_SPATIAL (one per collapsable (function, op) pair).
-pub fn build_patterns() -> Vec<(QueryPatternType, PromQLPattern)> {
+/// ONE_TEMPORAL_ONE_SPATIAL (one per collapsable (function, op) pair). Tried
+/// in order until one matches.
+pub fn build_patterns() -> Vec<PromQLPattern> {
     let metric_pattern = || PromQLPatternBuilder::metric(None, None, None, Some("metric"));
     let range_vector_pattern =
         || PromQLPatternBuilder::matrix_selector(metric_pattern(), None, Some("range_vector"));
@@ -72,7 +71,7 @@ pub fn build_patterns() -> Vec<(QueryPatternType, PromQLPattern)> {
     // can. A broad any-op-wrapping-any-function pattern would structurally match
     // non-collapsable combinations too, silently dropping the outer aggregation
     // instead of rejecting the query (see #508).
-    let one_temporal_one_spatial_collapsable: Vec<(QueryPatternType, PromQLPattern)> = [
+    let one_temporal_one_spatial_collapsable: Vec<PromQLPattern> = [
         PromQLFunction::Rate,
         PromQLFunction::Increase,
         PromQLFunction::SumOverTime,
@@ -110,19 +109,12 @@ pub fn build_patterns() -> Vec<(QueryPatternType, PromQLPattern)> {
                 None,
                 Some("aggregation"),
             );
-            Some((
-                QueryPatternType::OneTemporalOneSpatial,
-                PromQLPattern::new(pattern),
-            ))
+            Some(PromQLPattern::new(pattern))
         })
     })
     .collect();
 
-    let mut patterns = vec![
-        (QueryPatternType::OnlyTemporal, ot_quantile),
-        (QueryPatternType::OnlyTemporal, ot_temporal_funcs),
-        (QueryPatternType::OnlySpatial, os_spatial),
-    ];
+    let mut patterns = vec![ot_quantile, ot_temporal_funcs, os_spatial];
     patterns.extend(one_temporal_one_spatial_collapsable);
     patterns
 }
@@ -135,20 +127,14 @@ mod tests {
         let ast = promql_parser::parser::parse(query).expect("query should parse");
         build_patterns()
             .iter()
-            .any(|(_, pattern)| pattern.matches(&ast).matches)
+            .any(|pattern| pattern.matches(&ast).matches)
     }
 
     #[test]
     fn exactly_four_collapsable_one_temporal_one_spatial_patterns() {
-        let count = build_patterns()
-            .iter()
-            .filter(|(pt, _)| *pt == QueryPatternType::OneTemporalOneSpatial)
-            .count();
-        assert_eq!(
-            count, 4,
-            "only sum+sum_over_time, sum+count_over_time, min+min_over_time, \
-             max+max_over_time are collapsable"
-        );
+        // 2 ONLY_TEMPORAL + 1 ONLY_SPATIAL + 4 collapsable ONE_TEMPORAL_ONE_SPATIAL
+        // (sum+sum_over_time, sum+count_over_time, min+min_over_time, max+max_over_time).
+        assert_eq!(build_patterns().len(), 7);
     }
 
     #[test]

@@ -221,19 +221,27 @@ fn get_sql_statistics(name: &str) -> Result<Vec<Statistic>, ControllerError> {
     }
 }
 
-/// Enforces two invariants —
-/// `t_repeat_ms >= data_ingestion_interval_ms` (can't refresh faster than
-/// raw ingestion) and `duration_ms >= t_repeat_ms` (a precompute window must
-/// not outlive the query range it's sized for) — rather than silently
-/// picking `data_ingestion_interval_ms` or `t_repeat_ms` depending on query
-/// shape. Once both hold, `window_size_ms` is simply `t_repeat_ms`: at the
-/// single-scrape-interval boundary `duration_ms == data_ingestion_interval_ms`
-/// exactly, so both invariants together force `t_repeat_ms == data_ingestion_interval_ms`
-/// there, reproducing the old `Spatial` branch without a special case.
+/// Enforces `t_repeat_ms >= data_ingestion_interval_ms` (can't refresh faster
+/// than raw ingestion) and, for a genuinely multi-interval query,
+/// `duration_ms >= t_repeat_ms` (a precompute window must not outlive the
+/// query range it's sized for) — rather than silently picking
+/// `data_ingestion_interval_ms` or `t_repeat_ms` depending on query shape.
+///
+/// Relaxation, kept consistent with the PromQL side
+/// (`asap-planner-rs/src/planner/window.rs::set_window_parameters`): when
+/// `duration_ms == data_ingestion_interval_ms` exactly (the query's own range
+/// is exactly one scrape interval), the query only ever concerns a single
+/// precomputed bucket — it asks for "the current/latest bucket," not "the
+/// last N buckets" — so re-reading that one bucket less often than it's
+/// produced is always safe, and the `duration_ms >= t_repeat_ms` upper bound
+/// is skipped. `window_size_ms` is `data_ingestion_interval_ms` in that case,
+/// or `t_repeat_ms` otherwise.
 ///
 /// Old code used `t_repeat_ms` uncapped even when it exceeded the query's
 /// own duration (see `temporal_sum_t600` in `sql_integration.rs`, updated
-/// alongside this change to expect a `PlannerError` instead).
+/// alongside the original version of this change to expect a `PlannerError`
+/// instead — still correct, since that test's duration (300s) differs from
+/// `data_ingestion_interval_ms` (15s), so it isn't the relaxed case).
 fn compute_sql_window(
     time_info: &TimeInfo,
     data_ingestion_interval_ms: u64,
@@ -245,14 +253,19 @@ fn compute_sql_window(
         )));
     }
     let duration_ms = (time_info.get_duration() * 1000.0).round() as u64;
-    if duration_ms < t_repeat_ms {
-        return Err(ControllerError::PlannerError(format!(
-            "query duration ({duration_ms}ms) must be >= t_repeat_ms ({t_repeat_ms}ms)"
-        )));
-    }
+    let window_size_ms = if duration_ms == data_ingestion_interval_ms {
+        data_ingestion_interval_ms
+    } else {
+        if duration_ms < t_repeat_ms {
+            return Err(ControllerError::PlannerError(format!(
+                "query duration ({duration_ms}ms) must be >= t_repeat_ms ({t_repeat_ms}ms)"
+            )));
+        }
+        t_repeat_ms
+    };
     Ok(IntermediateWindowConfig {
-        window_size_ms: t_repeat_ms,
-        slide_interval_ms: t_repeat_ms,
+        window_size_ms,
+        slide_interval_ms: window_size_ms,
         window_type: WindowType::Tumbling,
     })
 }

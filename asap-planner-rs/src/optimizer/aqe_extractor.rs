@@ -170,7 +170,7 @@ fn extract_requirements(
     let ast = promql_parser::parser::parse(query).ok()?;
     let patterns = build_patterns();
 
-    let match_result = patterns.iter().find_map(|(_, pat)| {
+    let match_result = patterns.iter().find_map(|pat| {
         let r = pat.matches(&ast);
         if r.matches {
             Some(r)
