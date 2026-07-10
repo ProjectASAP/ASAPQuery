@@ -126,7 +126,7 @@ mod tests {
         );
 
         let mut seen_ids: StdHashMap<u64, ()> = StdHashMap::new();
-        for (id, _) in solution.deployed_configs.iter() {
+        for id in solution.deployed_configs.keys() {
             assert!(
                 seen_ids.insert(*id, ()).is_none(),
                 "duplicate aggregation_id"

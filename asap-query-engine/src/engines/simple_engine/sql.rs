@@ -1527,12 +1527,11 @@ mod topk_pipeline_tests {
     }
 }
 
-/// `build_spatiotemporal_context`'s end_timestamp snap:
-/// unlike the old hardcoded `QueryPatternType::OnlyTemporal` call into the
-/// shared `validate_and_align_end_timestamp` (which only snaps for
-/// `OnlySpatial`), SQL now always snaps a misaligned end_timestamp down to
-/// the nearest data-ingestion-interval boundary, for every SQL query shape
-/// including genuine multi-interval SpatioTemporal queries.
+/// `build_spatiotemporal_context`'s end_timestamp snap: SQL always snaps a
+/// misaligned end_timestamp down to the nearest data-ingestion-interval
+/// boundary, for every SQL query shape including genuine multi-interval
+/// SpatioTemporal queries (PromQL's `align_end_timestamp_promql` mirrors this
+/// unconditional behavior too, see #508).
 #[cfg(test)]
 mod spatiotemporal_timestamp_alignment_tests {
     use super::SimpleEngine;

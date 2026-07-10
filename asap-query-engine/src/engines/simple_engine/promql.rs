@@ -14,13 +14,8 @@ use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::get_is_collapsable;
-use promql_utilities::query_logics::enums::{
-    AggregationOperator, PromQLFunction, QueryPatternType, Statistic,
-};
-use promql_utilities::query_logics::parsing::{
-    get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
-};
+use promql_utilities::query_logics::enums::Statistic;
+use promql_utilities::query_logics::parsing::get_metric_and_spatial_filter;
 use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -42,33 +37,30 @@ fn detect_scalar_arm<'a>(
 }
 
 impl SimpleEngine {
-    /// Calculates start timestamp for PromQL queries
-    fn calculate_start_timestamp_promql(
-        &self,
-        end_timestamp: u64,
-        query_pattern_type: QueryPatternType,
-        match_result: &PromQLMatchResult,
-    ) -> u64 {
-        match query_pattern_type {
-            QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
-                // promql-parser supports a literal `ms` duration suffix (e.g. `[500ms]`),
-                // so .num_seconds() would truncate genuinely sub-second range vectors to 0.
-                let range_ms = match_result
-                    .get_range_duration()
-                    .unwrap()
-                    .num_milliseconds() as u64;
-                end_timestamp - range_ms
-            }
-            QueryPatternType::OnlySpatial => end_timestamp - self.data_ingestion_interval_ms,
+    /// Aligns `end_timestamp` down to the nearest data-ingestion-interval
+    /// boundary, unconditionally — mirroring SQL's `align_end_timestamp_sql`.
+    /// A no-op in the common case (already-aligned timestamps), a safety net
+    /// otherwise, for every PromQL query shape, not just a subset.
+    fn align_end_timestamp_promql(&self, end_timestamp: u64) -> u64 {
+        let interval_ms = self.data_ingestion_interval_ms;
+        if end_timestamp.is_multiple_of(interval_ms) {
+            return end_timestamp;
         }
+        let aligned = (end_timestamp / interval_ms) * interval_ms;
+        warn!(
+            "PromQL query end timestamp {} is not aligned with data ingestion interval of {} ms; \
+             aligning down to {}.",
+            end_timestamp, interval_ms, aligned
+        );
+        aligned
     }
 
     /// Calculates and validates query timestamps for PromQL
     fn calculate_query_timestamps_promql(
         &self,
         query_time: u64,
-        query_pattern_type: QueryPatternType,
         match_result: &PromQLMatchResult,
+        data_range_ms: u64,
     ) -> QueryTimestamps {
         let mut end_timestamp = if let Some(at_modifier) = match_result
             .tokens
@@ -81,9 +73,8 @@ impl SimpleEngine {
             query_time
         };
 
-        end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, query_pattern_type);
-        let start_timestamp =
-            self.calculate_start_timestamp_promql(end_timestamp, query_pattern_type, match_result);
+        end_timestamp = self.align_end_timestamp_promql(end_timestamp);
+        let start_timestamp = end_timestamp - data_range_ms;
 
         QueryTimestamps {
             start_timestamp,
@@ -91,56 +82,52 @@ impl SimpleEngine {
         }
     }
 
-    /// Extracts quantile parameter from PromQL match result
-    fn extract_quantile_param_promql(
-        &self,
-        query_pattern_type: QueryPatternType,
-        match_result: &PromQLMatchResult,
-    ) -> Option<String> {
-        let quantile_value = match query_pattern_type {
-            QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
-                match_result
-                    .tokens
-                    .get("function_args")
-                    .and_then(|token| token.function.as_ref())
-                    .and_then(|func| func.args.first())
-            }
-            QueryPatternType::OnlySpatial => match_result
-                .tokens
-                .get("aggregation")
-                .and_then(|token| token.aggregation.as_ref())
-                .and_then(|agg| agg.param.as_ref()),
-        };
+    /// Extracts quantile parameter from PromQL match result. Quantile only
+    /// ever appears in exactly one of these two token locations for a given
+    /// match (mutually exclusive — collapsable spatial-of-temporal
+    /// combinations never involve quantile, see `get_is_collapsable`), so
+    /// trying one then the other needs no additional signal to pick between
+    /// them — asserted below rather than silently trusted.
+    fn extract_quantile_param_promql(&self, match_result: &PromQLMatchResult) -> Option<String> {
+        let function_args_quantile = match_result
+            .tokens
+            .get("function_args")
+            .and_then(|token| token.function.as_ref())
+            .and_then(|func| func.args.first());
+        let aggregation_quantile = match_result
+            .tokens
+            .get("aggregation")
+            .and_then(|token| token.aggregation.as_ref())
+            .and_then(|agg| agg.param.as_ref());
 
-        quantile_value.map(|s| s.to_string())
+        debug_assert!(
+            function_args_quantile.is_none() || aggregation_quantile.is_none(),
+            "quantile must appear in exactly one of function_args or aggregation, never both"
+        );
+
+        function_args_quantile
+            .or(aggregation_quantile)
+            .map(|s| s.to_string())
     }
 
-    /// Extracts topk k parameter from PromQL match result
-    fn extract_topk_param(
-        &self,
-        query_pattern_type: QueryPatternType,
-        match_result: &PromQLMatchResult,
-    ) -> Result<String, String> {
-        match query_pattern_type {
-            QueryPatternType::OnlySpatial => match_result
-                .tokens
-                .get("aggregation")
-                .and_then(|token| token.aggregation.as_ref())
-                .and_then(|agg| agg.param.as_ref())
-                .map(|s| s.to_string())
-                .ok_or_else(|| "Missing k parameter for top-k query".to_string()),
-            _ => Err(format!(
-                "Top-k statistic is only supported for OnlySpatial pattern, found {:?}",
-                query_pattern_type
-            )),
-        }
+    /// Extracts topk k parameter from PromQL match result. Topk is only ever
+    /// produced by a spatial `topk` aggregation (excluded from every
+    /// collapsable spatial-of-temporal pattern), so no shape check is needed
+    /// before looking at the aggregation token.
+    fn extract_topk_param(&self, match_result: &PromQLMatchResult) -> Result<String, String> {
+        match_result
+            .tokens
+            .get("aggregation")
+            .and_then(|token| token.aggregation.as_ref())
+            .and_then(|agg| agg.param.as_ref())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "Missing k parameter for top-k query".to_string())
     }
 
     /// Builds query kwargs (quantile, k, etc.) for PromQL queries
     fn build_query_kwargs_promql(
         &self,
         statistic: &Statistic,
-        query_pattern_type: QueryPatternType,
         match_result: &PromQLMatchResult,
     ) -> Result<HashMap<String, String>, String> {
         let mut query_kwargs = HashMap::new();
@@ -148,13 +135,13 @@ impl SimpleEngine {
         match statistic {
             Statistic::Quantile => {
                 let quantile = self
-                    .extract_quantile_param_promql(query_pattern_type, match_result)
+                    .extract_quantile_param_promql(match_result)
                     .ok_or_else(|| "Missing quantile parameter for quantile query".to_string())?;
                 debug!("Extracted quantile value: {:?}", quantile);
                 query_kwargs.insert("quantile".to_string(), quantile);
             }
             Statistic::Topk => {
-                let k = self.extract_topk_param(query_pattern_type, match_result)?;
+                let k = self.extract_topk_param(match_result)?;
                 debug!("Extracted k value: {:?}", k);
                 query_kwargs.insert("k".to_string(), k);
             }
@@ -190,25 +177,19 @@ impl SimpleEngine {
             .cloned()
     }
 
-    /// Scans `self.controller_patterns` for the first `PromQLPattern` that matches
-    /// `ast`, returning its `QueryPatternType` and match result. `query` is used
-    /// only for debug logging.
+    /// Scans `self.controller_patterns` for the first `PromQLPattern` that
+    /// matches `ast`. `query` is used only for debug logging.
     fn find_matching_controller_pattern(
         &self,
         ast: &promql_parser::parser::Expr,
         query: &str,
-    ) -> Option<(QueryPatternType, PromQLMatchResult)> {
-        for (pattern_type, patterns) in &self.controller_patterns {
-            for pattern in patterns {
-                debug!(
-                    "Trying pattern type: {:?} for query: {}",
-                    pattern_type, query
-                );
-                let match_result = pattern.matches(ast);
-                debug!("Match result: {:?}", match_result);
-                if match_result.matches {
-                    return Some((*pattern_type, match_result));
-                }
+    ) -> Option<PromQLMatchResult> {
+        for pattern in &self.controller_patterns {
+            debug!("Trying pattern for query: {}", query);
+            let match_result = pattern.matches(ast);
+            debug!("Match result: {:?}", match_result);
+            if match_result.matches {
+                return Some(match_result);
             }
         }
         None
@@ -224,8 +205,7 @@ impl SimpleEngine {
     ) -> Option<QueryExecutionContext> {
         let query_time = Self::convert_query_time_to_data_time(time);
 
-        let (query_pattern_type, match_result) =
-            self.find_matching_controller_pattern(arm_ast, &query_config.query)?;
+        let match_result = self.find_matching_controller_pattern(arm_ast, &query_config.query)?;
 
         let agg_info = self
             .get_aggregation_id_info(query_config)
@@ -236,8 +216,8 @@ impl SimpleEngine {
             .ok()?;
 
         self.build_promql_execution_context_tail(
+            &query_config.query,
             &match_result,
-            query_pattern_type,
             query_time,
             agg_info,
         )
@@ -247,12 +227,19 @@ impl SimpleEngine {
     ///
     /// Called by `build_query_execution_context_from_ast` and
     /// `build_query_execution_context_promql` after pattern matching and
-    /// `agg_info` resolution are complete.  Computes labels, statistics,
+    /// `agg_info` resolution are complete. Computes labels, statistics,
     /// kwargs, metadata, query plan, and the final `QueryExecutionContext`.
+    ///
+    /// Labels, statistic, and data range come from `build_query_requirements_promql`
+    /// — the same canonical derivation used by the capability-matching fallback
+    /// and by `asap-planner-rs` — rather than being independently re-derived
+    /// here. Only quantile/topk kwargs (not part of `QueryRequirements`, since
+    /// they don't affect which aggregation satisfies the query) still read
+    /// `match_result` directly.
     fn build_promql_execution_context_tail(
         &self,
+        query: &str,
         match_result: &PromQLMatchResult,
-        query_pattern_type: QueryPatternType,
         query_time: u64,
         agg_info: AggregationIdInfo,
     ) -> Option<QueryExecutionContext> {
@@ -263,61 +250,43 @@ impl SimpleEngine {
             SchemaConfig::PromQL(schema) => schema,
             _ => return None,
         };
-        let all_labels = match promql_schema.get_labels(&metric).cloned() {
-            Some(labels) => labels,
-            None => {
-                warn!("No metric configuration found for '{}'", metric);
-                return None;
-            }
-        };
+        if promql_schema.get_labels(&metric).is_none() {
+            warn!("No metric configuration found for '{}'", metric);
+            return None;
+        }
 
-        let mut query_output_labels = match query_pattern_type {
-            QueryPatternType::OnlyTemporal => all_labels.clone(),
-            QueryPatternType::OnlySpatial => {
-                get_spatial_aggregation_output_labels(match_result, &all_labels)
-            }
-            QueryPatternType::OneTemporalOneSpatial => {
-                let temporal_aggregation = match_result.get_function_name().unwrap();
-                let spatial_aggregation = match_result.get_aggregation_op().unwrap();
-                let collapsable = temporal_aggregation
-                    .parse::<PromQLFunction>()
-                    .ok()
-                    .zip(spatial_aggregation.parse::<AggregationOperator>().ok())
-                    .is_some_and(|(f, o)| get_is_collapsable(f, o));
-                if collapsable {
-                    get_spatial_aggregation_output_labels(match_result, &all_labels)
-                } else {
-                    all_labels.clone()
-                }
-            }
-        };
+        let requirements = build_query_requirements_promql(
+            query,
+            match_result,
+            promql_schema,
+            self.data_ingestion_interval_ms,
+        )?;
 
-        let timestamps =
-            self.calculate_query_timestamps_promql(query_time, query_pattern_type, match_result);
+        let mut query_output_labels = requirements.grouping_labels;
 
-        let statistics_to_compute = get_statistics_to_compute(query_pattern_type, match_result)
-            .map_err(|err| {
-                warn!("{}", err);
-                err
-            })
-            .ok()?;
-        if statistics_to_compute.len() != 1 {
+        let timestamps = self.calculate_query_timestamps_promql(
+            query_time,
+            match_result,
+            requirements.data_range_ms,
+        );
+
+        if requirements.statistics.len() != 1 {
             warn!(
                 "Expected exactly one statistic to compute, found {}",
-                statistics_to_compute.len()
+                requirements.statistics.len()
             );
             return None;
         }
-        let statistic_to_compute = statistics_to_compute.first().unwrap();
+        let statistic_to_compute = requirements.statistics[0];
 
-        if *statistic_to_compute == Statistic::Topk {
+        if statistic_to_compute == Statistic::Topk {
             let mut new_labels = vec!["__name__".to_string()];
             new_labels.extend(query_output_labels.labels);
             query_output_labels = KeyByLabelNames::new(new_labels);
         }
 
         let query_kwargs = self
-            .build_query_kwargs_promql(statistic_to_compute, query_pattern_type, match_result)
+            .build_query_kwargs_promql(&statistic_to_compute, match_result)
             .map_err(|e| {
                 warn!("{}", e);
                 e
@@ -326,7 +295,7 @@ impl SimpleEngine {
 
         let metadata = QueryMetadata {
             query_output_labels: query_output_labels.clone(),
-            statistic_to_compute: *statistic_to_compute,
+            statistic_to_compute,
             query_kwargs,
         };
 
@@ -1042,14 +1011,14 @@ impl SimpleEngine {
 
         let found_match = self.find_matching_controller_pattern(ast, query);
 
-        let (query_pattern_type, match_result) = match found_match {
-            Some((pt, result)) => {
+        let match_result = match found_match {
+            Some(result) => {
                 let pattern_match_duration = pattern_match_start_time.elapsed();
                 debug!(
                     "Pattern matching took: {:.2}ms",
                     pattern_match_duration.as_secs_f64() * 1000.0
                 );
-                (pt, result)
+                result
             }
             None => {
                 warn!("No matching pattern found for query: {}", query);
@@ -1083,7 +1052,6 @@ impl SimpleEngine {
             let requirements = build_query_requirements_promql(
                 query,
                 &match_result,
-                query_pattern_type,
                 metric_schema,
                 self.data_ingestion_interval_ms,
             )?;
@@ -1094,12 +1062,8 @@ impl SimpleEngine {
                 .find_compatible_aggregation(&requirements)?
         };
 
-        let result = self.build_promql_execution_context_tail(
-            &match_result,
-            query_pattern_type,
-            query_time,
-            agg_info,
-        );
+        let result =
+            self.build_promql_execution_context_tail(query, &match_result, query_time, agg_info);
 
         let query_context_duration = query_context_start_time.elapsed();
         debug!(

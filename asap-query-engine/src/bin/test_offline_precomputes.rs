@@ -9,9 +9,21 @@ use clap::Parser;
 use serde::Deserialize;
 
 // Internal imports from QueryEngineRust
-use promql_utilities::query_logics::enums::{AggregationType, QueryPatternType, Statistic};
+use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 use query_engine_rust::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
 use query_engine_rust::precompute_operators::*;
+
+/// Simulated query shape for offline merge testing — this tool has no real
+/// query/tokens (it replays a dumped precompute file), so `--pattern-type`
+/// lets the caller manually pick which shape to pretend the data came from.
+/// Local to this binary rather than the shared `QueryPatternType` (deleted,
+/// see #508): nothing here derives from an actual `PromQLMatchResult`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PatternKind {
+    OnlyTemporal,
+    OnlySpatial,
+    OneTemporalOneSpatial,
+}
 
 /// CLI Arguments
 #[derive(Parser, Debug)]
@@ -396,7 +408,7 @@ fn group_precomputes_by_key(
 /// Reference: SimpleEngine::merge_precomputed_outputs
 fn test_merge_functionality(
     grouped_precomputes: &HashMap<Option<KeyByLabelValues>, Vec<Box<dyn AggregateCore>>>,
-    query_pattern_type: QueryPatternType,
+    query_pattern_type: PatternKind,
     aggregation_type: &str,
     window_config: Option<WindowConfig>,
 ) -> Result<MergedPrecomputes, Box<dyn std::error::Error>> {
@@ -424,7 +436,7 @@ fn test_merge_functionality(
 /// Merge all precomputes for each key (standard mode)
 fn test_merge_all(
     grouped_precomputes: &HashMap<Option<KeyByLabelValues>, Vec<Box<dyn AggregateCore>>>,
-    query_pattern_type: QueryPatternType,
+    query_pattern_type: PatternKind,
     aggregation_type: &str,
 ) -> Result<MergedPrecomputes, Box<dyn std::error::Error>> {
     let mut merged_results = HashMap::new();
@@ -477,7 +489,7 @@ fn test_merge_all(
 /// Merge precomputes using sliding windows
 fn test_merge_with_windows(
     grouped_precomputes: &HashMap<Option<KeyByLabelValues>, Vec<Box<dyn AggregateCore>>>,
-    query_pattern_type: QueryPatternType,
+    query_pattern_type: PatternKind,
     aggregation_type: &str,
     config: &WindowConfig,
 ) -> Result<MergedPrecomputes, Box<dyn std::error::Error>> {
@@ -611,10 +623,10 @@ fn print_window_merge_statistics(stats: &WindowMergeStatistics) {
 
 /// Determine if merging should happen based on pattern type and aggregation type
 /// Mirrors logic from simple_engine.rs:1360-1395
-fn should_merge(pattern_type: QueryPatternType, aggregation_type: &str) -> bool {
+fn should_merge(pattern_type: PatternKind, aggregation_type: &str) -> bool {
     match pattern_type {
-        QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => true,
-        QueryPatternType::OnlySpatial => aggregation_type == "DeltaSetAggregator",
+        PatternKind::OnlyTemporal | PatternKind::OneTemporalOneSpatial => true,
+        PatternKind::OnlySpatial => aggregation_type == "DeltaSetAggregator",
     }
 }
 
@@ -882,14 +894,14 @@ fn print_load_statistics(stats: &LoadStatistics) {
 }
 
 /// Parse pattern type string to enum
-fn parse_pattern_type(s: &str) -> QueryPatternType {
+fn parse_pattern_type(s: &str) -> PatternKind {
     match s.to_lowercase().as_str() {
-        "temporal" | "only_temporal" => QueryPatternType::OnlyTemporal,
-        "spatial" | "only_spatial" => QueryPatternType::OnlySpatial,
-        "temporal_spatial" | "one_temporal_one_spatial" => QueryPatternType::OneTemporalOneSpatial,
+        "temporal" | "only_temporal" => PatternKind::OnlyTemporal,
+        "spatial" | "only_spatial" => PatternKind::OnlySpatial,
+        "temporal_spatial" | "one_temporal_one_spatial" => PatternKind::OneTemporalOneSpatial,
         _ => {
             eprintln!("Unknown pattern type '{}', defaulting to OnlyTemporal", s);
-            QueryPatternType::OnlyTemporal
+            PatternKind::OnlyTemporal
         }
     }
 }

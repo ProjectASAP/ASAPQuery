@@ -4,21 +4,22 @@ use tracing::debug;
 use crate::ast_matching::promql_pattern::AggregationModifierType;
 use crate::ast_matching::PromQLMatchResult;
 use crate::data_model::KeyByLabelNames;
-use crate::query_logics::enums::{AggregationOperator, QueryPatternType, Statistic};
+use crate::query_logics::enums::{AggregationOperator, PromQLFunction, Statistic};
+use crate::query_logics::logics::get_is_collapsable;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StatisticExtractionError {
-    MissingStatistic { pattern_type: QueryPatternType },
+    MissingStatistic,
     UnsupportedStatistic { statistic: String },
 }
 
 impl std::fmt::Display for StatisticExtractionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::MissingStatistic { pattern_type } => {
+            Self::MissingStatistic => {
                 write!(
                     f,
-                    "No statistic found for query pattern type {pattern_type:?}"
+                    "No temporal function or aggregation operation found in match result"
                 )
             }
             Self::UnsupportedStatistic { statistic } => {
@@ -72,28 +73,66 @@ pub fn get_metric_and_spatial_filter(match_result: &PromQLMatchResult) -> (Strin
     (metric_name, spatial_filter)
 }
 
-/// Get statistics to compute based on pattern type and tokens.
+/// Get statistics to compute from a matched query's tokens.
+///
+/// Explicitly handles the three reachable shapes:
+/// - Only a temporal function (`"function"` token, no `"aggregation"`): the
+///   statistic comes from the function name.
+/// - Only a spatial aggregation (`"aggregation"` token, no `"function"`): the
+///   statistic comes from the aggregation operator.
+/// - Both (a spatial aggregation wrapping a temporal function): only ever
+///   reachable via a pattern already narrowed to a collapsable `(function,
+///   op)` pair (see `get_is_collapsable`, and #508's pattern-narrowing fix
+///   that makes non-collapsable combinations fail to match at all) — asserted
+///   below rather than silently trusted. The statistic still comes from the
+///   *function*, never the outer op: e.g. `count_over_time` + `sum` needs a
+///   `Count` accumulator, not a `Sum` one — summing per-series counts gives
+///   the group's total count, so the outer op only describes how per-series
+///   results combine, never which statistic must be precomputed.
+///
 /// Returns a typed error if the matched statistic/function name is not
 /// recognized, so callers can decide whether to skip or fail the query.
 pub fn get_statistics_to_compute(
-    pattern_type: QueryPatternType,
     match_result: &PromQLMatchResult,
 ) -> Result<Vec<Statistic>, StatisticExtractionError> {
-    debug!("Computing statistics for pattern type {:?}", pattern_type);
-    let statistic_to_compute: Option<String> = match pattern_type {
-        QueryPatternType::OnlyTemporal | QueryPatternType::OneTemporalOneSpatial => {
-            match_result.get_function_name().map(|function_name| {
-                let name = function_name.to_lowercase();
-                name.split('_').next().unwrap_or(&name).to_string()
-            })
-        }
-        QueryPatternType::OnlySpatial => match_result
+    let has_function = match_result.tokens.contains_key("function");
+    let has_aggregation = match_result.tokens.contains_key("aggregation");
+    debug!("Computing statistics (has_function={has_function}, has_aggregation={has_aggregation})");
+
+    let function_statistic = |match_result: &PromQLMatchResult| {
+        match_result.get_function_name().map(|function_name| {
+            let name = function_name.to_lowercase();
+            name.split('_').next().unwrap_or(&name).to_string()
+        })
+    };
+
+    let statistic_to_compute: Option<String> = if has_function && has_aggregation {
+        debug_assert!(
+            match_result
+                .get_function_name()
+                .and_then(|f| f.parse::<PromQLFunction>().ok())
+                .zip(
+                    match_result
+                        .get_aggregation_op()
+                        .and_then(|o| o.parse::<AggregationOperator>().ok())
+                )
+                .is_some_and(|(f, o)| get_is_collapsable(f, o)),
+            "a match with both function and aggregation tokens must be collapsable \
+             (patterns are narrowed to only collapsable pairs, see #508)"
+        );
+        function_statistic(match_result)
+    } else if has_function {
+        function_statistic(match_result)
+    } else if has_aggregation {
+        match_result
             .get_aggregation_op()
-            .map(|agg| agg.to_lowercase()),
+            .map(|agg| agg.to_lowercase())
+    } else {
+        None
     };
 
     let Some(statistic_to_compute) = statistic_to_compute else {
-        return Err(StatisticExtractionError::MissingStatistic { pattern_type });
+        return Err(StatisticExtractionError::MissingStatistic);
     };
 
     debug!("Found statistic to compute: {}", statistic_to_compute);
@@ -194,9 +233,7 @@ mod tests {
 
     #[test]
     fn unsupported_matched_temporal_statistic_returns_typed_error() {
-        let err =
-            get_statistics_to_compute(QueryPatternType::OnlyTemporal, &temporal_match("stddev"))
-                .unwrap_err();
+        let err = get_statistics_to_compute(&temporal_match("stddev")).unwrap_err();
 
         assert_eq!(
             err,
@@ -208,17 +245,9 @@ mod tests {
 
     #[test]
     fn missing_statistic_returns_typed_error() {
-        let err = get_statistics_to_compute(
-            QueryPatternType::OnlyTemporal,
-            &PromQLMatchResult::with_tokens(HashMap::new()),
-        )
-        .unwrap_err();
+        let err =
+            get_statistics_to_compute(&PromQLMatchResult::with_tokens(HashMap::new())).unwrap_err();
 
-        assert_eq!(
-            err,
-            StatisticExtractionError::MissingStatistic {
-                pattern_type: QueryPatternType::OnlyTemporal
-            }
-        );
+        assert_eq!(err, StatisticExtractionError::MissingStatistic);
     }
 }
