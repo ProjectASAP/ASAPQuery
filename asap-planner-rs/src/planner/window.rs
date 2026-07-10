@@ -68,6 +68,20 @@ pub fn set_window_parameters(
         }
         get_effective_repeat(t_repeat_ms, step_ms)
     };
+
+    // A range query reads `step_ms`-spaced samples by summing whole tumbling
+    // buckets (see `validate_range_query_params` in
+    // asap-query-engine/src/engines/simple_engine/mod.rs, which rejects a
+    // range query at query time unless `step % tumbling_window_ms == 0`).
+    // Catch a window size incompatible with its own planning-time step_ms
+    // here, at planning time, instead of provisioning a window that would
+    // reject every range query using exactly the step_ms it was planned for.
+    if step_ms > 0 && !step_ms.is_multiple_of(window_size_ms) {
+        return Err(format!(
+            "step_ms ({step_ms}ms) must be a multiple of the computed window size ({window_size_ms}ms)"
+        ));
+    }
+
     config.window_size_ms = window_size_ms;
     config.slide_interval_ms = window_size_ms;
     config.window_type = WindowType::Tumbling;
@@ -147,5 +161,18 @@ mod tests {
     fn set_window_parameters_rejects_step_below_interval() {
         let mut config = IntermediateWindowConfig::default();
         assert!(set_window_parameters(300_000, 60_000, 15_000, 10_000, &mut config).is_err());
+    }
+
+    #[test]
+    fn set_window_parameters_rejects_step_not_multiple_of_window_size() {
+        // t_repeat_ms (40_000) < step_ms (100_000), so window_size_ms =
+        // effective_repeat = t_repeat_ms = 40_000. But 100_000 is not a
+        // multiple of 40_000 (100_000 % 40_000 == 20_000) — this would
+        // otherwise provision a window that query-engine's
+        // validate_range_query_params rejects for exactly this step_ms.
+        let mut config = IntermediateWindowConfig::default();
+        let result = set_window_parameters(300_000, 40_000, 10_000, 100_000, &mut config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be a multiple of"));
     }
 }
