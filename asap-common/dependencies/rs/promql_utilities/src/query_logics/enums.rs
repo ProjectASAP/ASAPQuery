@@ -4,24 +4,6 @@ use std::str::FromStr;
 use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum QueryPatternType {
-    OnlyTemporal,
-    OnlySpatial,
-    OneTemporalOneSpatial,
-}
-
-impl std::fmt::Display for QueryPatternType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug!("Formatting QueryPatternType: {:?}", self);
-        match self {
-            QueryPatternType::OnlyTemporal => write!(f, "only_temporal"),
-            QueryPatternType::OnlySpatial => write!(f, "only_spatial"),
-            QueryPatternType::OneTemporalOneSpatial => write!(f, "one_temporal_one_spatial"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QueryTreatmentType {
     Exact,
     Approximate,
