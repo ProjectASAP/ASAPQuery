@@ -472,8 +472,9 @@ impl SimpleEngine {
 
         // Calculate timestamps
         let end_timestamp = self.align_end_timestamp_sql(query_time);
-        let duration_secs = match_result.outer_data()?.time_info.get_duration() as u64;
-        let start_timestamp = end_timestamp - (duration_secs * 1000);
+        let duration_ms =
+            (match_result.outer_data()?.time_info.get_duration() * 1000.0).round() as u64;
+        let start_timestamp = end_timestamp - duration_ms;
 
         let timestamps = QueryTimestamps {
             start_timestamp,
