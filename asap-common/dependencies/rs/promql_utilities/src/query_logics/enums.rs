@@ -14,24 +14,6 @@ pub const RANGE_START_MS_KWARG: &str = "range_start_ms";
 pub const RANGE_END_MS_KWARG: &str = "range_end_ms";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum QueryPatternType {
-    OnlyTemporal,
-    OnlySpatial,
-    OneTemporalOneSpatial,
-}
-
-impl std::fmt::Display for QueryPatternType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        debug!("Formatting QueryPatternType: {:?}", self);
-        match self {
-            QueryPatternType::OnlyTemporal => write!(f, "only_temporal"),
-            QueryPatternType::OnlySpatial => write!(f, "only_spatial"),
-            QueryPatternType::OneTemporalOneSpatial => write!(f, "one_temporal_one_spatial"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum QueryTreatmentType {
     Exact,
     Approximate,
@@ -79,6 +61,22 @@ impl std::fmt::Display for Statistic {
 
 #[allow(clippy::should_implement_trait)]
 impl Statistic {
+    /// Returns `true` for statistics whose result requires approximate
+    /// pre-aggregation, regardless of whether they were reached via a
+    /// temporal function (`PromQLFunction::is_approximate`) or a spatial
+    /// aggregation operator (`AggregationOperator::is_approximate`) — for
+    /// every `Statistic` reachable from either origin, the two origins agree.
+    pub fn is_approximate(self) -> bool {
+        matches!(
+            self,
+            Statistic::Count
+                | Statistic::Sum
+                | Statistic::Cardinality
+                | Statistic::Quantile
+                | Statistic::Topk
+        )
+    }
+
     pub fn from_str(s: &str) -> Option<Self> {
         debug!("Parsing Statistic from string: {}", s);
         match s.to_lowercase().as_str() {

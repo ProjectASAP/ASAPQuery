@@ -9,12 +9,11 @@ use crate::engines::query_result::{InstantVector, InstantVectorElement, QueryRes
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::{QueryPatternType, Statistic};
-use sql_utilities::ast_matching::QueryType;
+use promql_utilities::query_logics::enums::Statistic;
 use sql_utilities::ast_matching::{
     detect_sql_topk, SQLPatternMatcher, SQLPatternParser, SQLQuery, SqlTopk, TopkWeighting,
 };
-use sql_utilities::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData};
+use sql_utilities::sqlhelper::{OrderByItem, SQLQueryData};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
 use std::collections::HashMap;
@@ -171,52 +170,25 @@ impl SimpleEngine {
             .cloned()
     }
 
-    /// Calculates start timestamp for SQL queries
-    fn calculate_start_timestamp_sql(
-        &self,
-        end_timestamp: u64,
-        query_pattern_type: QueryPatternType,
-        match_result: &SQLQuery,
-    ) -> u64 {
-        match query_pattern_type {
-            QueryPatternType::OnlyTemporal => {
-                let duration_secs = match_result
-                    .outer_data()
-                    .expect("OnlyTemporal pattern guarantees outer_data is present")
-                    .time_info
-                    .clone()
-                    .get_duration() as u64;
-                end_timestamp - (duration_secs * 1000)
-            }
-            QueryPatternType::OneTemporalOneSpatial => {
-                let duration_secs = match_result
-                    .inner_data()
-                    .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
-                    .time_info
-                    .clone()
-                    .get_duration() as u64;
-                end_timestamp - (duration_secs * 1000)
-            }
-            QueryPatternType::OnlySpatial => end_timestamp - self.data_ingestion_interval_ms,
+    /// Aligns `end_timestamp` down to the nearest data-ingestion-interval
+    /// boundary, unconditionally. Unlike the shared, PromQL-oriented
+    /// `validate_and_align_end_timestamp` (which only snaps for
+    /// `OnlySpatial`), SQL end timestamps come from explicit `BETWEEN`
+    /// clauses and should already be interval-aligned, so this is a no-op
+    /// in the common case and a safety net otherwise — for every SQL query
+    /// shape, not just a subset.
+    fn align_end_timestamp_sql(&self, end_timestamp: u64) -> u64 {
+        let interval_ms = self.data_ingestion_interval_ms;
+        if end_timestamp.is_multiple_of(interval_ms) {
+            return end_timestamp;
         }
-    }
-
-    /// Calculates and validates query timestamps for SQL
-    fn calculate_query_timestamps_sql(
-        &self,
-        query_time: u64,
-        query_pattern_type: QueryPatternType,
-        match_result: &SQLQuery,
-    ) -> QueryTimestamps {
-        let mut end_timestamp = query_time;
-        end_timestamp = self.validate_and_align_end_timestamp(end_timestamp, query_pattern_type);
-        let start_timestamp =
-            self.calculate_start_timestamp_sql(end_timestamp, query_pattern_type, match_result);
-
-        QueryTimestamps {
-            start_timestamp,
-            end_timestamp,
-        }
+        let aligned = (end_timestamp / interval_ms) * interval_ms;
+        warn!(
+            "SQL query end timestamp {} is not aligned with data ingestion interval of {} ms; \
+             aligning down to {}.",
+            end_timestamp, interval_ms, aligned
+        );
+        aligned
     }
 
     /// Extracts quantile parameter from SQL match result
@@ -246,28 +218,16 @@ impl SimpleEngine {
         Ok(query_kwargs)
     }
 
-    fn sql_get_is_collapsable(
-        &self,
-        temporal_aggregation: &AggregationInfo,
-        spatial_aggregation: &AggregationInfo,
-    ) -> bool {
-        match spatial_aggregation.get_name() {
-            "SUM" => matches!(
-                temporal_aggregation.get_name(),
-                "SUM" | "COUNT" // Note: "increase" and "rate" are commented out in Python
-            ),
-            "MIN" => temporal_aggregation.get_name() == "MIN",
-            "MAX" => temporal_aggregation.get_name() == "MAX",
-            _ => false,
-        }
-    }
-
     /// Extract QueryRequirements from a parsed SQL match result.
     /// Used as the fallback path when no query_configs entry is found.
+    ///
+    /// `data_range_ms` is always the query's own requested duration: for a
+    /// single-scrape-interval query this equals `data_ingestion_interval_ms`
+    /// by construction (that's exactly the matcher's classification
+    /// boundary), so this is a plain identity, not a special case.
     fn build_query_requirements_sql(
         &self,
         match_result: &SQLQuery,
-        query_pattern_type: QueryPatternType,
         topk: Option<SqlTopk>,
     ) -> QueryRequirements {
         let query_data = match_result
@@ -275,15 +235,7 @@ impl SimpleEngine {
             .expect("build_query_requirements_sql called on valid SQLQuery");
         let metric = query_data.metric.clone();
 
-        let statistic_name = match query_pattern_type {
-            QueryPatternType::OneTemporalOneSpatial => match_result
-                .inner_data()
-                .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
-                .aggregation_info
-                .get_name()
-                .to_lowercase(),
-            _ => query_data.aggregation_info.get_name().to_lowercase(),
-        };
+        let statistic_name = query_data.aggregation_info.get_name().to_lowercase();
 
         // For top-k the requirement is `Statistic::Topk` (→ CountMinSketchWithHeap)
         // and the grouping is empty: the GROUP BY column is the sketch's
@@ -298,22 +250,7 @@ impl SimpleEngine {
                 .collect()
         };
 
-        let data_range_ms = match query_pattern_type {
-            QueryPatternType::OnlySpatial => self.data_ingestion_interval_ms,
-            QueryPatternType::OnlyTemporal => {
-                let duration_secs = query_data.time_info.clone().get_duration() as u64;
-                duration_secs * 1000
-            }
-            QueryPatternType::OneTemporalOneSpatial => {
-                let duration_secs = match_result
-                    .inner_data()
-                    .expect("OneTemporalOneSpatial pattern guarantees inner_data is present")
-                    .time_info
-                    .clone()
-                    .get_duration() as u64;
-                duration_secs * 1000
-            }
-        };
+        let data_range_ms = (query_data.time_info.clone().get_duration() * 1000.0).round() as u64;
 
         let grouping_labels = if is_topk {
             KeyByLabelNames::empty()
@@ -417,212 +354,15 @@ impl SimpleEngine {
         // every successful path below.
         let post = SqlPostProcessing::from_query_data(&query_data);
 
-        // Handle SpatioTemporal queries separately - they bypass QueryPatternType mapping
-        if match_result.query_type == vec![QueryType::SpatioTemporal] {
-            let query_time = Self::convert_query_time_to_data_time(
-                query_data.time_info.get_start() + query_data.time_info.get_duration(),
-            );
-            let ctx = self.build_spatiotemporal_context(&match_result, query_time, &query_data)?;
-            return Some((ctx, post));
-        }
-
-        let query_pattern_type = match &match_result.query_type[..] {
-            [x] => match x {
-                QueryType::Spatial => QueryPatternType::OnlySpatial,
-                QueryType::TemporalGeneric => QueryPatternType::OnlyTemporal,
-                QueryType::TemporalQuantile => QueryPatternType::OnlyTemporal,
-                QueryType::SpatioTemporal => unreachable!("SpatioTemporal handled above"),
-            },
-            [x, y] => match (x, y) {
-                (QueryType::Spatial, QueryType::TemporalGeneric) => {
-                    QueryPatternType::OneTemporalOneSpatial
-                }
-                (QueryType::Spatial, QueryType::TemporalQuantile) => {
-                    QueryPatternType::OneTemporalOneSpatial
-                }
-                _ => return None,
-            },
-            _ => return None,
-        };
-
-        // For nested queries (spatial of temporal), the outer query has no time clause,
-        // so we need to use the inner (temporal) query's time_info to compute query_time
-        let query_time = match query_pattern_type {
-            QueryPatternType::OneTemporalOneSpatial => {
-                let inner_time_info = &match_result.inner_data()?.time_info;
-                Self::convert_query_time_to_data_time(
-                    inner_time_info.get_start() + inner_time_info.get_duration(),
-                )
-            }
-            _ => Self::convert_query_time_to_data_time(
-                query_data.time_info.get_start() + query_data.time_info.get_duration(),
-            ),
-        };
-
-        //     self.handle_sql_temporal_aggregation(
-        //         query_config,
-        //         &match_result,
-        //         query_time,
-        //         query_pattern_type,
-        //     )
-        // }
-
-        // fn handle_sql_temporal_aggregation(
-        //     &self,
-        //     query_config: &QueryConfig,
-        //     match_result: &SQLQuery,
-        //     query_time: u64,
-        //     query_pattern_type: QueryPatternType,
-        // ) -> Option<(KeyByLabelNames, QueryResult)> {
-        // Labels
-
-        let query_output_labels = match &match_result.query_type.len() {
-            // Potentially change SQLQueryType
-            1 => {
-                // For non-nested queries, output associated labels
-                let labels = &match_result.outer_data()?.labels;
-
-                KeyByLabelNames::new(labels.clone().into_iter().collect())
-            }
-            2 => {
-                // Extract spatial aggregation output labels using AST-based approach
-                let temporal_labels = &match_result.inner_data()?.labels;
-                let spatial_labels = &match_result.outer_data()?.labels;
-
-                let temporal_aggregation = &match_result.inner_data()?.aggregation_info;
-                let spatial_aggregation = &match_result.outer_data()?.aggregation_info;
-
-                match self.sql_get_is_collapsable(temporal_aggregation, spatial_aggregation) {
-                    // If false: get all labels, which are all temporal labels. If true, get only spatial labels
-                    false => KeyByLabelNames::new(temporal_labels.clone().into_iter().collect()),
-                    true => KeyByLabelNames::new(spatial_labels.clone().into_iter().collect()),
-                }
-            }
-            _ => {
-                warn!("Invalid query type: {}", query_pattern_type);
-                KeyByLabelNames::new(Vec::new())
-            }
-        };
-
-        // Statistic - determine based on query pattern type
-        let statistic_name = match query_pattern_type {
-            QueryPatternType::OnlyTemporal => {
-                // Use the temporal aggregation (first subquery)
-                match_result
-                    .outer_data()?
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
-            }
-            QueryPatternType::OneTemporalOneSpatial => {
-                // Use the temporal aggregation (second subquery contains temporal)
-                match_result
-                    .inner_data()?
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
-            }
-            QueryPatternType::OnlySpatial => {
-                // Use the spatial aggregation (first subquery)
-                match_result
-                    .outer_data()?
-                    .aggregation_info
-                    .get_name()
-                    .to_lowercase()
-            }
-        };
-
-        // Top-k (CountMinSketchWithHeap) applies to flat single-layer queries:
-        // COUNT/SUM ... GROUP BY <key> ORDER BY <agg alias> DESC LIMIT k.
-        // Nested patterns attach ORDER BY / LIMIT to the outer SELECT; `query_data`
-        // from parse is the outer layer, while the temporal aggregate lives in
-        // `inner_data` for OneTemporalOneSpatial. Running detect_sql_topk on the
-        // outer layer would mis-classify spatial rollups as top-k.
-        //
-        // Single-interval windows (duration == scrape interval) classify as
-        // `OnlySpatial` in the pattern matcher even though they are flat temporal
-        // reads, so both `OnlyTemporal` and `OnlySpatial` must run detection.
-        let topk = match query_pattern_type {
-            QueryPatternType::OnlyTemporal | QueryPatternType::OnlySpatial => {
-                detect_sql_topk(&query_data)
-            }
-            QueryPatternType::OneTemporalOneSpatial => None,
-        };
-        if topk.is_some_and(|t| t.weighting == TopkWeighting::Sum) {
-            warn!(
-                "SUM top-k assumes non-negative values; results are undefined for columns with negative entries"
-            );
-        }
-        let statistic_to_compute = if topk.is_some() {
-            Statistic::Topk
-        } else {
-            Self::parse_single_statistic(&statistic_name)?
-        };
-
-        let mut query_kwargs = self
-            .build_query_kwargs_sql(&statistic_to_compute, &match_result)
-            .map_err(|e| {
-                warn!("{}", e);
-                e
-            })
-            .ok()?;
-        if let Some(topk) = topk {
-            query_kwargs.insert("k".to_string(), topk.k.to_string());
-        }
-
-        // Create query metadata
-        let metadata = QueryMetadata {
-            query_output_labels: query_output_labels.clone(),
-            statistic_to_compute,
-            query_kwargs: query_kwargs.clone(),
-        };
-
-        // Time
-        let timestamps =
-            self.calculate_query_timestamps_sql(query_time, query_pattern_type, &match_result);
-
-        // Resolve aggregation: try pre-configured query_configs first, fall back to capability matching.
-        let agg_info: AggregationIdInfo =
-            if let Some(config) = self.find_query_config_sql(&query_data) {
-                self.get_aggregation_id_info(&config)
-                    .map_err(|e| {
-                        warn!("{}", e);
-                        e
-                    })
-                    .ok()?
-            } else {
-                warn!("No query_config entry for SQL query. Attempting capability-based matching.");
-                let requirements =
-                    self.build_query_requirements_sql(&match_result, query_pattern_type, topk);
-                self.streaming_config
-                    .read()
-                    .unwrap()
-                    .clone()
-                    .find_compatible_aggregation(&requirements)?
-            };
-
-        let metric = &match_result.outer_data()?.metric;
-
-        let spatial_filter = if query_pattern_type == QueryPatternType::OneTemporalOneSpatial {
-            match_result
-                .outer_data()?
-                .labels
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(",")
-        } else {
-            String::new()
-        };
-
-        let ctx = self.build_sql_execution_context_tail(
-            metric,
-            &timestamps,
-            metadata,
-            agg_info,
-            spatial_filter,
-            query_time,
-        )?;
+        // Every valid (non-nested) SQL query is handled uniformly by
+        // `build_spatiotemporal_context`, regardless of duration or GROUP BY
+        // shape. An unmatched query (e.g. no time column) leaves `match_result`
+        // empty, so `outer_data()` inside `build_spatiotemporal_context`
+        // returns `None` and this propagates via `?` — no separate check needed.
+        let query_time = Self::convert_query_time_to_data_time(
+            query_data.time_info.get_start() + query_data.time_info.get_duration(),
+        );
+        let ctx = self.build_spatiotemporal_context(&match_result, query_time, &query_data)?;
         Some((ctx, post))
     }
 
@@ -699,15 +439,30 @@ impl SimpleEngine {
             .get_name()
             .to_lowercase();
 
-        let statistic_to_compute = Self::parse_single_statistic(&statistic_name)?;
+        // SpatioTemporal queries are a single (non-nested) SELECT layer, same
+        // shape `detect_sql_topk` expects, so top-k detection applies directly.
+        let topk = detect_sql_topk(query_data);
+        if topk.is_some_and(|t| t.weighting == TopkWeighting::Sum) {
+            warn!(
+                "SUM top-k assumes non-negative values; results are undefined for columns with negative entries"
+            );
+        }
+        let statistic_to_compute = if topk.is_some() {
+            Statistic::Topk
+        } else {
+            Self::parse_single_statistic(&statistic_name)?
+        };
 
-        let query_kwargs = self
+        let mut query_kwargs = self
             .build_query_kwargs_sql(&statistic_to_compute, match_result)
             .map_err(|e| {
                 warn!("{}", e);
                 e
             })
             .ok()?;
+        if let Some(topk) = topk {
+            query_kwargs.insert("k".to_string(), topk.k.to_string());
+        }
 
         let metadata = QueryMetadata {
             query_output_labels: query_output_labels.clone(),
@@ -715,11 +470,11 @@ impl SimpleEngine {
             query_kwargs: query_kwargs.clone(),
         };
 
-        // Calculate timestamps - similar to OnlyTemporal
-        let end_timestamp =
-            self.validate_and_align_end_timestamp(query_time, QueryPatternType::OnlyTemporal);
-        let duration_secs = match_result.outer_data()?.time_info.get_duration() as u64;
-        let start_timestamp = end_timestamp - (duration_secs * 1000);
+        // Calculate timestamps
+        let end_timestamp = self.align_end_timestamp_sql(query_time);
+        let duration_ms =
+            (match_result.outer_data()?.time_info.get_duration() * 1000.0).round() as u64;
+        let start_timestamp = end_timestamp - duration_ms;
 
         let timestamps = QueryTimestamps {
             start_timestamp,
@@ -740,11 +495,7 @@ impl SimpleEngine {
             warn!(
                     "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
                 );
-            let requirements = self.build_query_requirements_sql(
-                match_result,
-                QueryPatternType::OnlyTemporal,
-                None,
-            );
+            let requirements = self.build_query_requirements_sql(match_result, topk);
             self.streaming_config
                 .read()
                 .unwrap()
@@ -952,7 +703,8 @@ mod detect_topk_tests {
         let qd = parse(&sql).expect("nested query should parse");
         assert!(
             detect_sql_topk(&qd).is_some(),
-            "outer SELECT alone matches the top-k shape (this is why OneTemporalOneSpatial is gated)",
+            "outer SELECT alone matches the top-k shape — this is why nested queries must be \
+             rejected (NestedQueryUnsupported) before topk detection ever runs on them",
         );
     }
 }
@@ -1276,6 +1028,96 @@ mod topk_pipeline_tests {
         )
     }
 
+    /// Build a SQL engine whose only aggregation is a self-keyed
+    /// `CountMinSketchWithHeap` precomputed over the *full 2-second* window,
+    /// referenced by a query_config template with a matching 2s duration —
+    /// same shape as `build_topk_engine`, just sized to a SpatioTemporal
+    /// window instead of a single-scrape-interval one.
+    ///
+    /// Self-keyed resolution (`aggregation_id_for_key ==
+    /// aggregation_id_for_value`) only happens via this query_config path
+    /// (`find_query_config_sql` / `get_aggregation_id_info`'s single-reference
+    /// case). The capability-matching fallback always pairs
+    /// `CountMinSketchWithHeap` with a separate key aggregation (see
+    /// `count_topk_capability_fallback_pairs_heap_with_key_agg`) — it doesn't
+    /// know a heap can be self-keyed, so a SpatioTemporal top-k query with no
+    /// matching query_config would fail to resolve today. That gap is
+    /// tracked separately; this test targets `build_spatiotemporal_context`'s
+    /// top-k *detection* (issue #498), not the capability-matching fallback.
+    fn build_spatiotemporal_topk_engine() -> (SimpleEngine, Arc<SimpleMapStore>) {
+        let template = "SELECT srcip, COUNT(pkt_len) FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() GROUP BY srcip";
+
+        let value_cols: HashSet<String> = ["pkt_len"].iter().map(|s| s.to_string()).collect();
+        let labels: HashSet<String> = ["srcip", "dstip", "proto"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let table = Table::new(METRIC.to_string(), "time".to_string(), value_cols, labels);
+        let sql_schema = SQLSchema::new(vec![table]);
+
+        let query_config = QueryConfig::new(template.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(sql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 2000,
+            slide_interval_ms: 2000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        let engine = SimpleEngine::new(
+            store.clone(),
+            inference_config,
+            streaming_config,
+            1000, // 1s scrape interval ⇒ a 2s query window classifies as SpatioTemporal
+            QueryLanguage::sql,
+        );
+        (engine, store)
+    }
+
+    /// Incoming top-k query over a 2-second window grouped by a *subset* of
+    /// labels (`srcip` only, out of `srcip`/`dstip`/`proto`) — the shape that
+    /// classifies as `SpatioTemporal` rather than `OnlySpatial`.
+    fn spatiotemporal_topk_query(limit: u64) -> String {
+        format!(
+            "SELECT srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY srcip ORDER BY transfer_events DESC LIMIT {limit}"
+        )
+    }
+
     /// Incoming SUM top-k query over a 1-second absolute window.
     fn sum_topk_query(limit: u64) -> String {
         format!(
@@ -1506,6 +1348,35 @@ mod topk_pipeline_tests {
         assert!(context.store_plan.keys_query.is_none());
     }
 
+    /// `build_spatiotemporal_context` (issue #498) must run the same top-k
+    /// detection as the `OnlyTemporal`/`OnlySpatial` path: a `SpatioTemporal`
+    /// query (multi-interval window, subset of labels) shaped like
+    /// `COUNT ... GROUP BY <key> ORDER BY <alias> DESC LIMIT k` still resolves
+    /// to `Statistic::Topk` with `k` threaded through, self-keyed to the same
+    /// sketch the query_config template resolves for plain COUNT.
+    #[test]
+    fn spatiotemporal_query_detects_topk_and_resolves_self_keyed_heap() {
+        let (engine, _store) = build_spatiotemporal_topk_engine();
+        let context = engine
+            .build_query_execution_context_sql(spatiotemporal_topk_query(10), QUERY_TIME)
+            .expect("SpatioTemporal top-k query should build a context via the query_config path");
+
+        assert_eq!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "ORDER BY <count alias> DESC LIMIT n must be promoted to Topk even under SpatioTemporal classification",
+        );
+        assert_eq!(
+            context.metadata.query_kwargs.get("k").map(String::as_str),
+            Some("10"),
+            "LIMIT should be threaded through as the `k` kwarg",
+        );
+        assert_eq!(
+            context.agg_info.aggregation_id_for_key, context.agg_info.aggregation_id_for_value,
+            "self-keyed: the heap supplies both keys and counts",
+        );
+    }
+
     #[test]
     fn returns_top_k_srcips_sorted_descending() {
         let (engine, store) = build_topk_engine();
@@ -1654,5 +1525,164 @@ mod topk_pipeline_tests {
                 .is_none(),
             "SUM top-k must not fall back to a count_events-default sketch",
         );
+    }
+}
+
+/// `build_spatiotemporal_context`'s end_timestamp snap: SQL always snaps a
+/// misaligned end_timestamp down to the nearest data-ingestion-interval
+/// boundary, for every SQL query shape including genuine multi-interval
+/// SpatioTemporal queries (PromQL's `align_end_timestamp_promql` mirrors this
+/// unconditional behavior too, see #508).
+#[cfg(test)]
+mod spatiotemporal_timestamp_alignment_tests {
+    use super::SimpleEngine;
+    use crate::data_model::{
+        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+        QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
+    };
+    use crate::stores::simple_map_store::SimpleMapStore;
+    use chrono::{Local, TimeZone};
+    use promql_utilities::data_model::KeyByLabelNames;
+    use sql_utilities::sqlhelper::{SQLSchema, Table};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Arc;
+
+    /// The SQL literal-date parser reads timestamps in the local timezone, so
+    /// the wall-clock second value that lands on (or off) a 300ms boundary
+    /// depends on the machine's TZ offset. Rather than hardcode an
+    /// assumed-UTC epoch, compute each candidate second's epoch-ms directly
+    /// via `chrono::Local`, so the test is correct under any CI timezone.
+    fn local_epoch_ms(second: u32) -> i64 {
+        Local
+            .with_ymd_and_hms(2025, 10, 1, 0, 0, second)
+            .single()
+            .expect("2025-10-01 00:00:xx is unambiguous in any timezone")
+            .timestamp()
+            * 1000
+    }
+
+    /// A SpatioTemporal SQL engine (GROUP BY a subset of labels, 2s window)
+    /// with a 300ms scrape interval — deliberately not a divisor of 1000ms,
+    /// so a whole-second literal timestamp is misaligned unless its seconds
+    /// value happens to be a multiple of 0.3s.
+    fn build_engine() -> SimpleEngine {
+        let labels: HashSet<String> = ["L1", "L2"].iter().map(|s| s.to_string()).collect();
+        let value_cols: HashSet<String> = ["value"].iter().map(|s| s.to_string()).collect();
+        let table = Table::new(
+            "cpu_usage".to_string(),
+            "time".to_string(),
+            value_cols,
+            labels,
+        );
+        let sql_schema = SQLSchema::new(vec![table]);
+
+        const AGG_ID: u64 = 1;
+        let template = "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() GROUP BY L1";
+        let query_config = QueryConfig::new(template.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(sql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::Sum,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::new(vec!["L1".to_string()]),
+            aggregated_labels: KeyByLabelNames::empty(),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 2000,
+            slide_interval_ms: 2000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: "cpu_usage".to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            300, // scrape interval, ms — not a divisor of 1000
+            QueryLanguage::sql,
+        )
+    }
+
+    #[test]
+    fn misaligned_end_timestamp_is_snapped_down() {
+        // Find a whole second in [0, 12) whose epoch-ms is NOT a multiple of
+        // 300ms (any TZ offset used by the local-date parser is itself a
+        // multiple of 300ms, so such a second exists in every timezone).
+        let (second, end_ms) = (0..12u32)
+            .map(|s| (s, local_epoch_ms(s)))
+            .find(|(_, ms)| ms % 300 != 0)
+            .expect("a misaligned second must exist in any timezone");
+        let expected_end_ms = (end_ms / 300) * 300;
+
+        let query = format!(
+            "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -2, '2025-10-01 00:00:{second:02}') \
+             AND '2025-10-01 00:00:{second:02}' GROUP BY L1"
+        );
+        let context = build_engine()
+            .build_query_execution_context_sql(query, 0.0)
+            .expect("SpatioTemporal query should build a context");
+
+        let window = &context.store_plan.values_query;
+        assert_eq!(
+            window.end_timestamp, expected_end_ms as u64,
+            "misaligned end_timestamp must be snapped down to the nearest 300ms boundary"
+        );
+        assert_eq!(
+            window.start_timestamp,
+            (expected_end_ms - 2000) as u64,
+            "start_timestamp must be the snapped end_timestamp minus the query's own 2s duration"
+        );
+    }
+
+    #[test]
+    fn already_aligned_end_timestamp_is_unchanged() {
+        // Find a whole second in [0, 12) whose epoch-ms already lands on a
+        // 300ms boundary.
+        let (second, end_ms) = (0..12u32)
+            .map(|s| (s, local_epoch_ms(s)))
+            .find(|(_, ms)| ms % 300 == 0)
+            .expect("an aligned second must exist in any timezone");
+
+        let query = format!(
+            "SELECT L1, SUM(value) FROM cpu_usage \
+             WHERE time BETWEEN DATEADD(s, -2, '2025-10-01 00:00:{second:02}') \
+             AND '2025-10-01 00:00:{second:02}' GROUP BY L1"
+        );
+        let context = build_engine()
+            .build_query_execution_context_sql(query, 0.0)
+            .expect("SpatioTemporal query should build a context");
+
+        let window = &context.store_plan.values_query;
+        assert_eq!(
+            window.end_timestamp, end_ms as u64,
+            "an already-aligned end_timestamp must be left unchanged (snap is a no-op)"
+        );
+        assert_eq!(window.start_timestamp, (end_ms - 2000) as u64);
     }
 }

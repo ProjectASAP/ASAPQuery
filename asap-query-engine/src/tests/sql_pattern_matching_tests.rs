@@ -12,7 +12,6 @@ mod tests {
     use crate::engines::simple_engine::SimpleEngine;
     use crate::stores::simple_map_store::SimpleMapStore;
     use promql_utilities::data_model::KeyByLabelNames;
-    use promql_utilities::query_logics::enums::Statistic;
     use sql_utilities::sqlhelper::{SQLSchema, Table};
     use std::collections::{HashMap, HashSet};
     use std::sync::Arc;
@@ -130,9 +129,9 @@ mod tests {
 
     #[test]
     fn test_spatial_query_matches_now_template() {
-        // Spatial: window equals the scrape interval (1s), GROUP BY all labels
+        // Window equals the scrape interval (1s), GROUP BY all labels — classifies
+        // the same as every other shape: SpatioTemporal.
         let template = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
-        // scrape_interval=1, window=1 → classified as Spatial by the matcher
         let engine = build_sql_engine(template, 1, 1000);
 
         let incoming = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4";
@@ -147,7 +146,7 @@ mod tests {
 
     #[test]
     fn test_temporal_quantile_query_matches_now_template() {
-        // TemporalQuantile: QUANTILE aggregation, window > scrape interval, GROUP BY all labels
+        // QUANTILE aggregation, window > scrape interval, GROUP BY all labels
         let template = "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
         let engine = build_sql_engine(template, 1, 10_000);
 
@@ -162,8 +161,9 @@ mod tests {
     }
 
     #[test]
-    fn test_spatial_of_temporal_subquery_matches_now_template() {
-        // Spatial-of-temporal: outer GROUP BY L1 (subset), inner GROUP BY all labels
+    fn test_spatial_of_temporal_subquery_is_rejected() {
+        // Nested SQL (spatial-of-temporal subquery) is unsupported: the matcher rejects
+        // it with QueryError::NestedQueryUnsupported instead of mis-executing it (#499).
         let template = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1";
         let engine = build_sql_engine(template, 1, 10_000);
 
@@ -172,28 +172,25 @@ mod tests {
 
         let context = engine.build_query_execution_context_sql(incoming.to_string(), query_time);
         assert!(
-            context.is_some(),
-            "Expected build_query_execution_context_sql to return Some for spatial-of-temporal subquery, got None."
+            context.is_none(),
+            "Expected build_query_execution_context_sql to return None for a nested subquery."
         );
     }
 
     #[test]
-    fn nested_order_by_limit_is_not_topk() {
-        // Outer ORDER BY + LIMIT on a spatial-over-temporal query must not be routed
-        // through CountMinSketchWithHeap; the inner temporal SUM is not a flat top-k.
+    fn nested_order_by_limit_query_is_rejected() {
+        // Nested SQL with an outer ORDER BY + LIMIT is unsupported for the same reason:
+        // the matcher rejects it before topk detection ever runs.
         let template = "SELECT L1, SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) sub GROUP BY L1";
         let engine = build_sql_engine(template, 1, 10_000);
 
         let incoming = "SELECT L1, SUM(result) AS rollup FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4) sub GROUP BY L1 ORDER BY rollup DESC LIMIT 10";
         let query_time = 1727740810.0_f64;
 
-        let context = engine
-            .build_query_execution_context_sql(incoming.to_string(), query_time)
-            .expect("nested spatial-of-temporal query should build a context");
-        assert_ne!(
-            context.metadata.statistic_to_compute,
-            Statistic::Topk,
-            "top-k detection skips nested OneTemporalOneSpatial; outer ORDER BY LIMIT must stay on the plain SUM path",
+        let context = engine.build_query_execution_context_sql(incoming.to_string(), query_time);
+        assert!(
+            context.is_none(),
+            "Expected build_query_execution_context_sql to return None for a nested subquery."
         );
     }
 

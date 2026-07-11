@@ -1,13 +1,17 @@
 use asap_types::enums::{CleanupPolicy, WindowType};
-use promql_utilities::ast_matching::PromQLMatchResult;
-use promql_utilities::query_logics::enums::QueryPatternType;
 
 use super::window::get_effective_repeat;
 
+/// `data_range_ms` is the query's own requested duration (from
+/// `QueryRequirements.data_range_ms` — for a spatial-only query this equals
+/// `data_ingestion_interval_ms` by construction), used directly as the
+/// lookback: once `set_window_parameters`'s invariant holds
+/// (`data_range_ms >= t_repeat_ms >= data_ingestion_interval_ms`), this is
+/// exactly equivalent to the old pattern-type-gated `t_repeat_ms`-vs-range-duration
+/// split, with no shape check needed (see #508).
 pub fn get_cleanup_param(
     cleanup_policy: CleanupPolicy,
-    query_pattern_type: QueryPatternType,
-    match_result: &PromQLMatchResult,
+    data_range_ms: u64,
     t_repeat_ms: u64,
     window_type: WindowType,
     range_duration_ms: u64,
@@ -22,19 +26,7 @@ pub fn get_cleanup_param(
     }
 
     let is_range_query = step_ms > 0;
-
-    let t_lookback: u64 = if query_pattern_type == QueryPatternType::OnlySpatial {
-        t_repeat_ms
-    } else {
-        match_result
-            .get_range_duration()
-            .map(|d| {
-                let ms = d.num_milliseconds();
-                debug_assert!(ms >= 0, "PromQL range duration should never be negative");
-                ms as u64
-            })
-            .ok_or_else(|| "No range_vector token found".to_string())?
-    };
+    let t_lookback: u64 = data_range_ms;
 
     if window_type == WindowType::Sliding {
         let result = if is_range_query {
@@ -98,34 +90,15 @@ pub fn get_sql_cleanup_param(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::planner::patterns::build_patterns;
-
-    use promql_utilities::ast_matching::PromQLMatchResult;
-    use promql_utilities::query_logics::enums::QueryPatternType;
-
-    fn match_query(query: &str) -> (QueryPatternType, PromQLMatchResult) {
-        let ast = promql_parser::parser::parse(query).unwrap();
-        let patterns = build_patterns();
-        for (pt, pattern) in &patterns {
-            let result = pattern.matches(&ast);
-            if result.matches {
-                return (*pt, result);
-            }
-        }
-        panic!("no pattern matched query: {}", query);
-    }
 
     #[test]
     fn cleanup_param_circular_buffer_spatial_instant_query() {
-        let (pt, mr) = match_query("sum(some_metric)");
-        assert_eq!(pt, QueryPatternType::OnlySpatial);
-        // t_lookback = t_repeat_ms = 300_000 (OnlySpatial path)
+        // data_range_ms = t_lookback = 300_000 (a spatial-only query's canonical range)
         // effective_repeat = 300_000 (step_ms=0)
         // ceil((300_000 + 0) / 300_000) = 1
         let result = get_cleanup_param(
             CleanupPolicy::CircularBuffer,
-            pt,
-            &mr,
+            300_000,
             300_000,
             WindowType::Tumbling,
             0,
@@ -137,13 +110,11 @@ mod tests {
 
     #[test]
     fn cleanup_param_circular_buffer_spatial_range_query() {
-        let (pt, mr) = match_query("sum(some_metric)");
-        // t_lookback = t_repeat_ms = 300_000, effective_repeat = min(300_000, 30_000) = 30_000
+        // t_lookback = data_range_ms = 300_000, effective_repeat = min(300_000, 30_000) = 30_000
         // ceil((300_000 + 3_600_000) / 30_000) = ceil(130) = 130
         let result = get_cleanup_param(
             CleanupPolicy::CircularBuffer,
-            pt,
-            &mr,
+            300_000,
             300_000,
             WindowType::Tumbling,
             3_600_000,
@@ -155,12 +126,10 @@ mod tests {
 
     #[test]
     fn cleanup_param_read_based_spatial_instant_query() {
-        let (pt, mr) = match_query("sum(some_metric)");
         // lookback_buckets = ceil(300_000/300_000) = 1, num_steps = 1 → result = 1
         let result = get_cleanup_param(
             CleanupPolicy::ReadBased,
-            pt,
-            &mr,
+            300_000,
             300_000,
             WindowType::Tumbling,
             0,
@@ -172,13 +141,11 @@ mod tests {
 
     #[test]
     fn cleanup_param_read_based_spatial_range_query() {
-        let (pt, mr) = match_query("sum(some_metric)");
         // lookback_buckets = ceil(300_000/30_000) = 10, num_steps = 3_600_000/30_000 + 1 = 121
         // result = 10 * 121 = 1210
         let result = get_cleanup_param(
             CleanupPolicy::ReadBased,
-            pt,
-            &mr,
+            300_000,
             300_000,
             WindowType::Tumbling,
             3_600_000,
@@ -190,14 +157,11 @@ mod tests {
 
     #[test]
     fn cleanup_param_circular_buffer_temporal_instant_query() {
-        let (pt, mr) = match_query("rate(some_metric[5m])");
-        assert_eq!(pt, QueryPatternType::OnlyTemporal);
-        // t_lookback = 5m = 300_000ms (from [5m] range vector), range_duration_ms=0, step_ms=0
+        // data_range_ms = 5m = 300_000ms (from a [5m] range vector), range_duration_ms=0, step_ms=0
         // effective_repeat = 60_000, ceil((300_000 + 0) / 60_000) = 5
         let result = get_cleanup_param(
             CleanupPolicy::CircularBuffer,
-            pt,
-            &mr,
+            300_000,
             60_000,
             WindowType::Tumbling,
             0,
@@ -209,11 +173,9 @@ mod tests {
 
     #[test]
     fn cleanup_param_no_cleanup_returns_error() {
-        let (pt, mr) = match_query("sum(some_metric)");
         let result = get_cleanup_param(
             CleanupPolicy::NoCleanup,
-            pt,
-            &mr,
+            300_000,
             300_000,
             WindowType::Tumbling,
             0,
@@ -224,12 +186,10 @@ mod tests {
 
     #[test]
     fn cleanup_param_mismatched_range_and_step_returns_error() {
-        let (pt, mr) = match_query("sum(some_metric)");
         // range_duration_ms > 0 but step_ms == 0 is invalid
         let result = get_cleanup_param(
             CleanupPolicy::CircularBuffer,
-            pt,
-            &mr,
+            300_000,
             300_000,
             WindowType::Tumbling,
             3_600_000,

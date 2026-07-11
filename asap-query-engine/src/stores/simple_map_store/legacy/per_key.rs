@@ -122,7 +122,7 @@ impl LegacySimpleMapStorePerKey {
         // Collect windows where read_count >= threshold
         let mut windows_to_remove: Vec<TimestampRange> = Vec::new();
 
-        for (timestamp_range, _) in data.time_map.iter() {
+        for timestamp_range in data.time_map.keys() {
             let read_count = data.read_counts.get(timestamp_range).copied().unwrap_or(0);
 
             if read_count >= threshold {

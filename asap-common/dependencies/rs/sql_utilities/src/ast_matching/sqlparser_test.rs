@@ -99,7 +99,7 @@ mod tests {
         if let Some(query_data) = SQLPatternParser::new(&schema, time).parse_query(&statements) {
             let result = matcher.query_info_to_pattern(&query_data);
             assert!(result.is_valid());
-            assert_eq!(result.query_type, vec![QueryType::Spatial]);
+            assert_eq!(result.query_type, vec![QueryType::SpatioTemporal]);
         }
     }
 
@@ -109,7 +109,7 @@ mod tests {
     fn test_dated_temporal_sum() {
         check_query(
             "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalGeneric],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -118,7 +118,7 @@ mod tests {
     fn test_dated_temporal_quantile() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -127,7 +127,7 @@ mod tests {
     fn test_dated_spatial_avg() {
         check_query(
             "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' GROUP BY L1, L2, L3, L4",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -136,7 +136,7 @@ mod tests {
     fn test_dated_spatial_quantile() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' GROUP BY L1",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -145,8 +145,8 @@ mod tests {
     fn test_dated_spatial_of_temporal_quantile_max() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM (SELECT MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -156,7 +156,7 @@ mod tests {
     fn test_temporal_quantile() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -165,7 +165,7 @@ mod tests {
     fn test_temporal_sum() {
         check_query(
             "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalGeneric],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -174,7 +174,7 @@ mod tests {
     fn test_temporal_max() {
         check_query(
             "SELECT MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalGeneric],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -183,7 +183,7 @@ mod tests {
     fn test_temporal_min() {
         check_query(
             "SELECT MIN(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalGeneric],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -192,7 +192,7 @@ mod tests {
     fn test_temporal_avg() {
         check_query(
             "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalGeneric],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -203,7 +203,7 @@ mod tests {
     fn test_spatial_sum() {
         check_query(
             "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -212,7 +212,7 @@ mod tests {
     fn test_spatial_max() {
         check_query(
             "SELECT MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -221,7 +221,7 @@ mod tests {
     fn test_spatial_min() {
         check_query(
             "SELECT MIN(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2, L3",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -230,7 +230,7 @@ mod tests {
     fn test_spatial_avg() {
         check_query(
             "SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -239,7 +239,7 @@ mod tests {
     fn test_spatial_quantile() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -250,8 +250,8 @@ mod tests {
     fn test_spatial_of_temporal_sum_sum() {
         check_query(
             "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -259,8 +259,8 @@ mod tests {
     fn test_spatial_of_temporal_sum_min() {
         check_query(
             "SELECT SUM(result) FROM (SELECT MIN(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -268,8 +268,8 @@ mod tests {
     fn test_spatial_of_temporal_sum_max() {
         check_query(
             "SELECT SUM(result) FROM (SELECT MAX(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2, L3",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -277,8 +277,8 @@ mod tests {
     fn test_spatial_of_temporal_sum_avg() {
         check_query(
             "SELECT SUM(result) FROM (SELECT AVG(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2, L3, L4",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -286,8 +286,8 @@ mod tests {
     fn test_spatial_of_temporal_max_sum() {
         check_query(
             "SELECT MAX(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -295,8 +295,8 @@ mod tests {
     fn test_spatial_of_temporal_max_min() {
         check_query(
             "SELECT MAX(result) FROM (SELECT MIN(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -304,8 +304,8 @@ mod tests {
     fn test_spatial_of_temporal_max_max() {
         check_query(
             "SELECT MAX(result) FROM (SELECT MAX(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2, L3",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -313,8 +313,8 @@ mod tests {
     fn test_spatial_of_temporal_max_avg() {
         check_query(
             "SELECT MAX(result) FROM (SELECT AVG(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2, L3, L4",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -322,8 +322,8 @@ mod tests {
     fn test_spatial_of_temporal_quantile_max() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM (SELECT MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -331,8 +331,8 @@ mod tests {
     fn test_spatial_of_temporal_quantile_min() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM (SELECT MIN(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -340,8 +340,8 @@ mod tests {
     fn test_spatial_of_temporal_quantile_sum() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM (SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -349,8 +349,8 @@ mod tests {
     fn test_spatial_of_temporal_quantile_avg() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM (SELECT AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -358,8 +358,8 @@ mod tests {
     fn test_spatial_of_temporal_avg_quantile() {
         check_query(
             "SELECT AVG(result) FROM (SELECT QUANTILE(0.95, value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2",
-            vec![QueryType::Spatial, QueryType::TemporalQuantile],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -367,8 +367,8 @@ mod tests {
     fn test_spatial_of_temporal_quantile_quantile() {
         check_query(
             "SELECT QUANTILE(0.95, value) FROM (SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1, L2, L3",
-            vec![QueryType::Spatial, QueryType::TemporalQuantile],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -425,7 +425,7 @@ mod tests {
     fn test_temporal_percentile() {
         check_query(
             "SELECT PERCENTILE(value, 95) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -434,7 +434,7 @@ mod tests {
     fn test_spatial_percentile() {
         check_query(
             "SELECT PERCENTILE(value, 95) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -452,8 +452,8 @@ mod tests {
     fn test_spatial_of_temporal_percentile_max() {
         check_query(
             "SELECT PERCENTILE(value, 95) FROM (SELECT MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -464,7 +464,7 @@ mod tests {
     fn test_clickhouse_temporal_quantile() {
         check_query(
             "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -473,7 +473,7 @@ mod tests {
     fn test_clickhouse_spatial_quantile() {
         check_query(
             "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY L1",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -491,8 +491,8 @@ mod tests {
     fn test_clickhouse_spatial_of_temporal_quantile_max() {
         check_query(
             "SELECT quantile(0.95)(value) FROM (SELECT MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1",
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -504,7 +504,7 @@ mod tests {
     fn test_clickhouse_explicit_datetime_temporal_quantile() {
         check_query(
             "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01 00:00:00' AND '2025-10-01 00:00:10' GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -516,7 +516,7 @@ mod tests {
     fn test_asap_only_iso_z_temporal_quantile() {
         check_query(
             "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01T00:00:00Z' AND '2025-10-01T00:00:10Z' GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -528,7 +528,7 @@ mod tests {
     fn test_iso_no_z_treated_as_local_time_temporal_quantile() {
         check_query(
             "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01T00:00:00' AND '2025-10-01T00:00:10' GROUP BY L1, L2, L3, L4",
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -537,7 +537,7 @@ mod tests {
     fn test_clickhouse_explicit_datetime_spatial_quantile() {
         check_query(
             "SELECT quantile(0.95)(value) FROM cpu_usage WHERE time BETWEEN '2025-10-01 00:00:00' AND '2025-10-01 00:00:01' GROUP BY L1",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -738,7 +738,7 @@ mod tests {
              WHERE time BETWEEN DATEADD(s, -15, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
              GROUP BY L1, L2, L3, L4",
             15.0,
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -751,12 +751,12 @@ mod tests {
              WHERE time BETWEEN DATEADD(s, -30, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
              GROUP BY L1, L2, L3, L4",
             15.0,
-            vec![QueryType::TemporalGeneric],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
 
-    /// scraped_intervals = 30/15 = 2.0 with QUANTILE agg → TemporalQuantile
+    /// scraped_intervals = 30/15 = 2.0 with QUANTILE agg → SpatioTemporal
     #[test]
     fn test_bug_201_temporal_quantile_not_rejected() {
         check_query_with_interval(
@@ -764,7 +764,7 @@ mod tests {
              WHERE time BETWEEN DATEADD(s, -30, '2025-10-01 00:00:00') AND '2025-10-01 00:00:00' \
              GROUP BY L1, L2, L3, L4",
             15.0,
-            vec![QueryType::TemporalQuantile],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }
@@ -782,9 +782,10 @@ mod tests {
         );
     }
 
-    /// Spatial-of-temporal: outer has UNUSED time (not checked), inner scraped_intervals = 30/15 = 2.0
+    /// Nested query with a fine inner duration (30/15 = 2.0, so the bug-201 guard
+    /// wouldn't false-positive) still gets rejected as unsupported, not matched.
     #[test]
-    fn test_bug_201_spatial_of_temporal_not_rejected() {
+    fn test_bug_201_spatial_of_temporal_rejected_as_nested() {
         check_query_with_interval(
             "SELECT SUM(result) FROM \
              (SELECT SUM(value) AS result FROM cpu_usage \
@@ -792,8 +793,8 @@ mod tests {
               GROUP BY L1, L2, L3, L4) \
              GROUP BY L1",
             15.0,
-            vec![QueryType::Spatial, QueryType::TemporalGeneric],
-            None,
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
         );
     }
 
@@ -1304,7 +1305,7 @@ mod tests {
             "SELECT SUM(value) FROM cpu_usage \
              WHERE time >= DATEADD(s, -1, NOW()) AND time < NOW() \
              GROUP BY L1",
-            vec![QueryType::Spatial],
+            vec![QueryType::SpatioTemporal],
             None,
         );
     }

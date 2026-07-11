@@ -486,6 +486,59 @@ mod tests {
     }
 
     // ========================================================================
+    // Non-collapsable spatial-of-temporal combinations must be rejected (#508)
+    //
+    // Before this fix, any spatial op could wrap any temporal function
+    // structurally, and a non-collapsable combination (e.g. `sum(min_over_time(...))`)
+    // silently dropped the outer aggregation instead of being rejected — returning
+    // ungrouped per-series values as if the outer `sum(...)` had never been
+    // written. `get_is_collapsable` only allows sum+sum_over_time,
+    // sum+count_over_time, min+min_over_time, max+max_over_time.
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_non_collapsable_sum_of_min_over_time_is_rejected() {
+        let query = "sum(min_over_time(http_requests[5s]))";
+        let engine = create_engine_multi_timestamp_with_window(
+            "http_requests",
+            AggregationType::Sum,
+            vec!["host"],
+            vec![],
+            query,
+            5_000,
+            WindowType::Tumbling,
+        );
+
+        assert!(
+            engine
+                .build_query_execution_context_promql(query.to_string(), QUERY_TIME)
+                .is_none(),
+            "sum+min_over_time is not collapsable and must not match any pattern"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_non_collapsable_avg_of_rate_is_rejected() {
+        let query = "avg(rate(http_requests[5s]))";
+        let engine = create_engine_multi_timestamp_with_window(
+            "http_requests",
+            AggregationType::Sum,
+            vec!["host"],
+            vec![],
+            query,
+            5_000,
+            WindowType::Tumbling,
+        );
+
+        assert!(
+            engine
+                .build_query_execution_context_promql(query.to_string(), QUERY_TIME)
+                .is_none(),
+            "avg+rate is not collapsable and must not match any pattern"
+        );
+    }
+
+    // ========================================================================
     // Old-vs-New comparison tests for temporal queries
     // ========================================================================
 

@@ -317,59 +317,41 @@ mod tests {
     }
 
     #[test]
-    fn test_spatial_of_temporal_sum_equivalence() {
+    fn test_spatial_of_temporal_sql_is_rejected() {
+        // PromQL still supports (and collapses) sum(sum_over_time(...)) by (label);
+        // the SQL equivalent is a nested subquery, which the matcher now rejects
+        // outright with QueryError::NestedQueryUnsupported (#499) rather than
+        // mis-executing it, so there's no longer a SQL context to compare.
         let scrape_interval_ms = 1000;
         let promql_query = "sum(sum_over_time(cpu_usage[10s])) by (L1)";
         let sql_query = "SELECT SUM(result) FROM (SELECT SUM(value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4) GROUP BY L1";
-        // let all_labels = vec!["L1", "L2", "L3", "L4"];
         let grouping_labels = vec!["L1"];
         let rollup_labels = vec!["L2", "L3", "L4"];
         let window_size_ms = 10_000;
 
-        // Setup test configuration
-        // Using SUM of SUM which is collapsable (spatial="sum", temporal="sum_over_time")
-        let (promql_config, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
+        let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
             .with_grouping_labels(grouping_labels)
             .with_rollup_labels(rollup_labels)
             .with_scrape_interval_ms(scrape_interval_ms)
             .add_spatial_of_temporal_query(promql_query, sql_query, 3, window_size_ms)
             .build_both();
 
-        // Create engines
-        let promql_engine = SimpleEngine::new(
-            Arc::new(NoOpStore),
-            // None,
-            promql_config,
-            streaming_config.clone(),
-            scrape_interval_ms,
-            QueryLanguage::promql,
-        );
-
         let sql_engine = SimpleEngine::new(
             Arc::new(NoOpStore),
-            // None,
             sql_config,
             streaming_config,
             scrape_interval_ms,
             QueryLanguage::sql,
         );
 
-        // Extract contexts
         let query_time_sec: f64 = 1_000.0; // Arbitrary timestamp in seconds
 
-        let promql_context = promql_engine
-            .build_query_execution_context_promql(promql_query.to_string(), query_time_sec)
-            .expect("Failed to build PromQL context");
+        let sql_context =
+            sql_engine.build_query_execution_context_sql(sql_query.to_string(), query_time_sec);
 
-        let sql_context = sql_engine
-            .build_query_execution_context_sql(sql_query.to_string(), query_time_sec)
-            .expect("Failed to build SQL context");
-
-        // Assert equivalence
-        assert_execution_context_equivalent(
-            &promql_context,
-            &sql_context,
-            "spatial_of_temporal_sum",
+        assert!(
+            sql_context.is_none(),
+            "Expected build_query_execution_context_sql to return None for a nested subquery."
         );
     }
 

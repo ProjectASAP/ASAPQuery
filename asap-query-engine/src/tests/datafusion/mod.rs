@@ -11,6 +11,7 @@ pub mod plan_execution_arithmetic_tests;
 pub mod plan_execution_dual_input_tests;
 pub mod plan_execution_temporal_tests;
 pub mod plan_execution_tests;
+pub mod range_query_arithmetic_tests;
 pub mod rate_increase_extrapolation_tests;
 pub mod rate_increase_synthetic_tests;
 pub mod structural_matching_tests;

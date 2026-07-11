@@ -541,6 +541,8 @@ mod tests {
         // DataFusion path (arroyo/MessagePack serde), so execute_plan succeeds and
         // applies Prometheus extrapolation. A 2-sample window [10@992s → 70@997s]
         // over the query range [990s, 1000s] extrapolates to 106 (fallback: 60).
+        // (Uses a bare OnlyTemporal query: post-#508 Increase is never collapsable
+        // with a spatial aggregation, so `sum(increase(...))` matches no pattern.)
         let mut inc = IncreaseAccumulator::new(
             Measurement::new(10.0),
             992_000,
