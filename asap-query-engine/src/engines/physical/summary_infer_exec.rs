@@ -24,7 +24,7 @@ use datafusion::physical_plan::{
 };
 use datafusion_summary_library::{InferOperation, SketchType, SummaryInfer};
 use futures::stream;
-use promql_utilities::query_logics::enums::Statistic;
+use promql_utilities::query_logics::enums::{Statistic, RANGE_END_MS_KWARG, RANGE_START_MS_KWARG};
 use std::any::Any;
 use std::collections::HashMap;
 use std::fmt;
@@ -150,8 +150,8 @@ impl SummaryInferExec {
             InferOperation::ExtractCount => Statistic::Count,
             InferOperation::ExtractMin => Statistic::Min,
             InferOperation::ExtractMax => Statistic::Max,
-            InferOperation::ExtractIncrease => Statistic::Increase,
-            InferOperation::ExtractRate => Statistic::Rate,
+            InferOperation::ExtractIncrease(_) => Statistic::Increase,
+            InferOperation::ExtractRate(_) => Statistic::Rate,
             InferOperation::CountDistinct => Statistic::Cardinality,
             InferOperation::Quantile(_) | InferOperation::Median => Statistic::Quantile,
             InferOperation::TopK(_) => Statistic::Topk,
@@ -164,6 +164,12 @@ impl SummaryInferExec {
     ///
     /// Some operations embed parameters (e.g. Quantile embeds the quantile value,
     /// TopK embeds k) that accumulators need via the kwargs HashMap.
+    ///
+    /// For `ExtractRate`/`ExtractIncrease` the embedded `(range_start_ms,
+    /// range_end_ms)` boundaries are re-materialized into
+    /// [`RANGE_START_MS_KWARG`]/[`RANGE_END_MS_KWARG`] so `IncreaseAccumulator`
+    /// applies Prometheus extrapolation instead of the reset-corrected fallback.
+    /// Without a payload (`None`), no kwargs are produced and the fallback stands.
     fn infer_op_to_kwargs(op: &InferOperation) -> Option<HashMap<String, String>> {
         match op {
             InferOperation::Quantile(q_u16) => {
@@ -180,6 +186,13 @@ impl SummaryInferExec {
             InferOperation::TopK(k) => {
                 let mut kwargs = HashMap::new();
                 kwargs.insert("k".to_string(), k.to_string());
+                Some(kwargs)
+            }
+            InferOperation::ExtractIncrease(Some((range_start_ms, range_end_ms)))
+            | InferOperation::ExtractRate(Some((range_start_ms, range_end_ms))) => {
+                let mut kwargs = HashMap::new();
+                kwargs.insert(RANGE_START_MS_KWARG.to_string(), range_start_ms.to_string());
+                kwargs.insert(RANGE_END_MS_KWARG.to_string(), range_end_ms.to_string());
                 Some(kwargs)
             }
             _ => None,

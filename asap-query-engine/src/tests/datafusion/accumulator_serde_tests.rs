@@ -211,25 +211,47 @@ mod tests {
         assert_eq!(keys.len(), 1);
     }
 
+    #[test]
+    fn test_round_trip_increase() {
+        use promql_utilities::query_logics::enums::{RANGE_END_MS_KWARG, RANGE_START_MS_KWARG};
+
+        // A 2-sample counter window (built the way ingest does), round-tripped
+        // through the Arroyo MessagePack form.
+        let mut acc =
+            IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(10.0), 1000);
+        acc.update(Measurement::new(70.0), 3000);
+        let bytes = serialize_accumulator_arroyo(&acc);
+
+        let restored = deserialize_accumulator(&bytes, &SketchType::Increase).unwrap();
+        assert_eq!(restored.get_accumulator_type(), AggregationType::Increase);
+
+        // Fallback (no range vector): reset-corrected increase = 70 - 10 = 60.
+        let single = deserialize_single_subpopulation(&bytes, &SketchType::Increase).unwrap();
+        let increase = single.query(Statistic::Increase, None).unwrap();
+        assert!(
+            (increase - 60.0).abs() < 1e-10,
+            "expected 60, got {increase}"
+        );
+
+        // The sample_count field survives the round-trip, so extrapolation is
+        // well-defined and matches the source accumulator exactly.
+        let mut kwargs = HashMap::new();
+        kwargs.insert(RANGE_START_MS_KWARG.to_string(), "0".to_string());
+        kwargs.insert(RANGE_END_MS_KWARG.to_string(), "4000".to_string());
+        let extrapolated = deserialize_single_subpopulation(&bytes, &SketchType::Increase)
+            .unwrap()
+            .query(Statistic::Increase, Some(&kwargs))
+            .unwrap();
+        let expected = acc.extrapolated(false, 0, 4000).unwrap();
+        assert!(
+            (extrapolated - expected).abs() < 1e-9,
+            "round-tripped extrapolation {extrapolated} != source {expected}"
+        );
+    }
+
     // ========================================================================
     // Not-implemented types
     // ========================================================================
-
-    #[test]
-    fn test_not_implemented_increase() {
-        let bytes = vec![1, 2, 3, 4];
-        let result = deserialize_accumulator(&bytes, &SketchType::Increase);
-        assert!(result.is_err());
-        let err_msg = match result {
-            Err(e) => format!("{}", e),
-            Ok(_) => panic!("Expected error"),
-        };
-        assert!(
-            err_msg.contains("Not") || err_msg.contains("not"),
-            "Expected NotImplemented error, got: {}",
-            err_msg
-        );
-    }
 
     #[test]
     fn test_not_implemented_minmax() {

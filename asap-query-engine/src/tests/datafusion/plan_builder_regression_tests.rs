@@ -143,6 +143,7 @@ mod tests {
     #[test]
     fn test_rate_to_extract_rate() {
         use datafusion_summary_library::InferOperation;
+        // No range kwargs -> no embedded bounds -> reset-corrected fallback at query time.
         let ctx = create_context(
             Statistic::Rate,
             AggregationType::Increase,
@@ -151,7 +152,29 @@ mod tests {
         );
         assert!(matches!(
             ctx.map_statistic_to_infer_operation().unwrap(),
-            InferOperation::ExtractRate
+            InferOperation::ExtractRate(None)
+        ));
+    }
+
+    #[test]
+    fn test_rate_with_range_kwargs_embeds_bounds() {
+        use datafusion_summary_library::InferOperation;
+        use promql_utilities::query_logics::enums::{RANGE_END_MS_KWARG, RANGE_START_MS_KWARG};
+        // The binary-arithmetic instant path supplies range-vector boundaries; they
+        // must be embedded in the InferOperation so extrapolation survives to the
+        // physical SummaryInferExec.
+        let mut kwargs = HashMap::new();
+        kwargs.insert(RANGE_START_MS_KWARG.to_string(), "1000".to_string());
+        kwargs.insert(RANGE_END_MS_KWARG.to_string(), "301000".to_string());
+        let ctx = create_context(
+            Statistic::Rate,
+            AggregationType::Increase,
+            vec!["host"],
+            kwargs,
+        );
+        assert!(matches!(
+            ctx.map_statistic_to_infer_operation().unwrap(),
+            InferOperation::ExtractRate(Some((1000, 301000)))
         ));
     }
 

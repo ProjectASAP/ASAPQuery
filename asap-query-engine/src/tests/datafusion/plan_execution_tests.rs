@@ -536,29 +536,42 @@ mod tests {
     // ========================================================================
 
     #[tokio::test]
-    async fn test_execute_plan_not_implemented_increase() {
-        // IncreaseAccumulator has no arroyo serde, so execute_plan should fail
-        let inc = IncreaseAccumulator::new(Measurement::new(0.0), 0, Measurement::new(100.0), 10);
+    async fn test_execute_plan_increase_single_pop_extrapolates() {
+        // Single-population IncreaseAccumulator now round-trips through the
+        // DataFusion path (arroyo/MessagePack serde), so execute_plan succeeds and
+        // applies Prometheus extrapolation. A 2-sample window [10@992s → 70@997s]
+        // over the query range [990s, 1000s] extrapolates to 106 (fallback: 60).
+        let mut inc = IncreaseAccumulator::new(
+            Measurement::new(10.0),
+            992_000,
+            Measurement::new(10.0),
+            992_000,
+        );
+        inc.update(Measurement::new(70.0), 997_000);
 
         let engine = create_engine_single_pop(
             "http_requests_total",
             AggregationType::Increase,
             vec!["host"],
             vec![(Some(vec!["host-a".to_string()]), Box::new(inc))],
-            "sum(increase(http_requests_total[10s])) by (host)",
+            "increase(http_requests_total[10s])",
         );
 
         let context = engine
             .build_query_execution_context_promql(
-                "sum(increase(http_requests_total[10s])) by (host)".to_string(),
+                "increase(http_requests_total[10s])".to_string(),
                 1000.0,
             )
             .expect("Should build context");
 
         let result = engine.execute_plan(&context).await;
+        assert!(result.is_ok(), "execute_plan failed: {:?}", result.err());
+        let results = result.unwrap();
+        assert_eq!(results.len(), 1, "expected 1 result, got {}", results.len());
         assert!(
-            result.is_err(),
-            "execute_plan should fail for IncreaseAccumulator (no arroyo serde)"
+            (results[0].value - 106.0).abs() < 1e-6,
+            "expected extrapolated 106, got {}",
+            results[0].value
         );
     }
 

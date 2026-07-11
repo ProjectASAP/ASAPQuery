@@ -12,8 +12,8 @@ use datafusion_summary_library::SketchType;
 use crate::data_model::{MultipleSubpopulationAggregate, SingleSubpopulationAggregate};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, DatasketchesKLLAccumulator, DeltaSetAggregatorAccumulator,
-    HllAccumulator, HydraKllSketchAccumulator, MultipleIncreaseAccumulator, MultipleSumAccumulator,
-    SetAggregatorAccumulator, SumAccumulator,
+    HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator, MultipleIncreaseAccumulator,
+    MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator,
 };
 use crate::AggregateCore;
 
@@ -40,9 +40,12 @@ pub fn deserialize_accumulator(
             })?;
             Ok(Box::new(acc))
         }
-        SketchType::Increase => Err(DataFusionError::NotImplemented(
-            "Increase Arroyo deserialization not implemented".to_string(),
-        )),
+        SketchType::Increase => {
+            let acc = IncreaseAccumulator::deserialize_from_bytes_arroyo(bytes).map_err(|e| {
+                DataFusionError::Internal(format!("Failed to deserialize Increase: {}", e))
+            })?;
+            Ok(Box::new(acc))
+        }
         SketchType::MinMax => Err(DataFusionError::NotImplemented(
             "MinMax Arroyo deserialization not implemented".to_string(),
         )),
@@ -151,6 +154,9 @@ pub fn serialize_accumulator_arroyo(acc: &dyn AggregateCore) -> Vec<u8> {
     if let Some(set_acc) = acc.as_any().downcast_ref::<SetAggregatorAccumulator>() {
         return set_acc.serialize_to_bytes_arroyo();
     }
+    if let Some(inc_acc) = acc.as_any().downcast_ref::<IncreaseAccumulator>() {
+        return inc_acc.serialize_to_bytes_arroyo();
+    }
     if let Some(inc_acc) = acc.as_any().downcast_ref::<MultipleIncreaseAccumulator>() {
         return inc_acc.serialize_to_bytes_arroyo();
     }
@@ -178,9 +184,12 @@ pub fn deserialize_single_subpopulation(
             })?;
             Ok(Box::new(acc))
         }
-        SketchType::Increase => Err(DataFusionError::NotImplemented(
-            "Increase Arroyo deserialization not implemented".to_string(),
-        )),
+        SketchType::Increase => {
+            let acc = IncreaseAccumulator::deserialize_from_bytes_arroyo(bytes).map_err(|e| {
+                DataFusionError::Internal(format!("Failed to deserialize Increase: {}", e))
+            })?;
+            Ok(Box::new(acc))
+        }
         SketchType::MinMax => Err(DataFusionError::NotImplemented(
             "MinMax Arroyo deserialization not implemented".to_string(),
         )),

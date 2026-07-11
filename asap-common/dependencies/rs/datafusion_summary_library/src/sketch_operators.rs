@@ -180,11 +180,21 @@ pub enum InferOperation {
     /// Extract maximum value from MinMax/HydraMinMax accumulator
     ExtractMax,
 
-    /// Extract increase value from Increase/HydraIncrease accumulator
-    ExtractIncrease,
+    /// Extract increase value from Increase/HydraIncrease accumulator.
+    ///
+    /// The optional payload carries the range-vector boundaries
+    /// `(range_start_ms, range_end_ms)` of the instant query being evaluated.
+    /// When present, the accumulator reproduces Prometheus `extrapolatedRate`
+    /// (counter-reset correction + extrapolation); when `None` (callers without a
+    /// range vector, e.g. SQL/Elastic), it falls back to the plain reset-corrected
+    /// increase. Embedded here so it survives the logical→physical boundary, the
+    /// same way `Quantile`/`TopK` carry their parameters.
+    ExtractIncrease(Option<(i64, i64)>),
 
-    /// Extract rate (increase / time_range) from Increase accumulator
-    ExtractRate,
+    /// Extract rate (increase / time_range) from Increase accumulator. Carries the
+    /// same optional `(range_start_ms, range_end_ms)` payload as
+    /// [`InferOperation::ExtractIncrease`].
+    ExtractRate(Option<(i64, i64)>),
 
     // ========================================================================
     // Sketch operations
@@ -262,8 +272,8 @@ impl fmt::Display for InferOperation {
             InferOperation::ExtractCount => write!(f, "EXTRACT_COUNT"),
             InferOperation::ExtractMin => write!(f, "EXTRACT_MIN"),
             InferOperation::ExtractMax => write!(f, "EXTRACT_MAX"),
-            InferOperation::ExtractIncrease => write!(f, "EXTRACT_INCREASE"),
-            InferOperation::ExtractRate => write!(f, "EXTRACT_RATE"),
+            InferOperation::ExtractIncrease(_) => write!(f, "EXTRACT_INCREASE"),
+            InferOperation::ExtractRate(_) => write!(f, "EXTRACT_RATE"),
             // Sketch operations
             InferOperation::CountDistinct => write!(f, "COUNT_DISTINCT"),
             InferOperation::Quantile(p) => write!(f, "QUANTILE({:.4})", *p as f64 / 10000.0),
@@ -1112,8 +1122,8 @@ impl SummaryInfer {
                 InferOperation::ExtractCount => DataType::Float64,
                 InferOperation::ExtractMin => DataType::Float64,
                 InferOperation::ExtractMax => DataType::Float64,
-                InferOperation::ExtractIncrease => DataType::Float64,
-                InferOperation::ExtractRate => DataType::Float64,
+                InferOperation::ExtractIncrease(_) => DataType::Float64,
+                InferOperation::ExtractRate(_) => DataType::Float64,
                 // Sketch operations
                 InferOperation::CountDistinct => DataType::UInt64,
                 InferOperation::Quantile(_) | InferOperation::Median => DataType::Float64,

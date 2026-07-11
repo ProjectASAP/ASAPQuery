@@ -15,7 +15,9 @@ use datafusion_summary_library::{
     InferOperation, PrecomputedSummaryRead, SketchType, SummaryInfer, SummaryMergeMultiple,
 };
 use promql_parser::parser::token::{self, T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
-use promql_utilities::query_logics::enums::{AggregationType, Statistic};
+use promql_utilities::query_logics::enums::{
+    AggregationType, Statistic, RANGE_END_MS_KWARG, RANGE_START_MS_KWARG,
+};
 use std::sync::Arc;
 
 use crate::engines::simple_engine::{QueryExecutionContext, StoreQueryParams};
@@ -189,8 +191,8 @@ impl QueryExecutionContext {
             Statistic::Min => Ok(InferOperation::ExtractMin),
             Statistic::Max => Ok(InferOperation::ExtractMax),
             Statistic::Count => Ok(InferOperation::ExtractCount),
-            Statistic::Increase => Ok(InferOperation::ExtractIncrease),
-            Statistic::Rate => Ok(InferOperation::ExtractRate),
+            Statistic::Increase => Ok(InferOperation::ExtractIncrease(self.range_bounds_ms())),
+            Statistic::Rate => Ok(InferOperation::ExtractRate(self.range_bounds_ms())),
             Statistic::Quantile => {
                 // Extract quantile parameter from query_kwargs
                 let q = self
@@ -213,6 +215,30 @@ impl QueryExecutionContext {
                 Ok(InferOperation::TopK(k))
             }
         }
+    }
+
+    /// Parse the range-vector boundaries `(range_start_ms, range_end_ms)` from the
+    /// query kwargs.
+    ///
+    /// The PromQL layer populates these for rate()/increase() instant queries via
+    /// `build_query_kwargs_promql`; embedding them in the `InferOperation` carries
+    /// them across the logical→physical boundary so `IncreaseAccumulator` can
+    /// extrapolate. Returns `None` when absent (non-range callers), leaving the
+    /// accumulator on its reset-corrected fallback.
+    fn range_bounds_ms(&self) -> Option<(i64, i64)> {
+        let start = self
+            .metadata
+            .query_kwargs
+            .get(RANGE_START_MS_KWARG)?
+            .parse::<i64>()
+            .ok()?;
+        let end = self
+            .metadata
+            .query_kwargs
+            .get(RANGE_END_MS_KWARG)?
+            .parse::<i64>()
+            .ok()?;
+        Some((start, end))
     }
 
     /// Map aggregation type to SketchType (SummaryType) for the value accumulator

@@ -13,6 +13,27 @@ use promql_utilities::query_logics::enums::{Statistic, RANGE_END_MS_KWARG, RANGE
 /// extrapolation well-defined instead of dividing by `sample_count - 1 == 0`.
 const DEFAULT_LEGACY_SAMPLE_COUNT: u64 = 2;
 
+/// MessagePack ("Arroyo") wire form of an [`IncreaseAccumulator`]: the window
+/// endpoints plus the reset correction and sample count, with the measurements
+/// flattened to `f64`.
+///
+/// The field order/types intentionally mirror the per-key `MeasurementData`
+/// struct inside `MultipleIncreaseAccumulator`, so a single-population Increase
+/// blob is byte-identical to one MultipleIncrease entry (rmp-serde encodes
+/// structs as positional arrays). `#[serde(default)]` on the trailing fields
+/// lets legacy 4-field blobs (from before reset support) still decode.
+#[derive(Serialize, Deserialize)]
+struct ArroyoIncrease {
+    starting_measurement: f64,
+    starting_timestamp: i64,
+    last_seen_measurement: f64,
+    last_seen_timestamp: i64,
+    #[serde(default)]
+    counter_reset_correction: f64,
+    #[serde(default)]
+    sample_count: u64,
+}
+
 /// Accumulator for tracking increases in counter metrics.
 ///
 /// Stores the starting and last-seen measurements with timestamps, plus the
@@ -348,6 +369,49 @@ impl IncreaseAccumulator {
             last_seen_measurement,
             last_seen_timestamp,
             counter_reset_correction,
+            sample_count,
+        ))
+    }
+
+    /// Serialize to the Arroyo-compatible MessagePack form (see [`ArroyoIncrease`]).
+    ///
+    /// This is the format the DataFusion read path emits for single-population
+    /// Increase sketches (via `serialize_accumulator_arroyo`), so downstream
+    /// operators can reconstruct the accumulator with
+    /// [`deserialize_from_bytes_arroyo`](Self::deserialize_from_bytes_arroyo).
+    pub fn serialize_to_bytes_arroyo(&self) -> Vec<u8> {
+        let wire = ArroyoIncrease {
+            starting_measurement: self.starting_measurement.value,
+            starting_timestamp: self.starting_timestamp,
+            last_seen_measurement: self.last_seen_measurement.value,
+            last_seen_timestamp: self.last_seen_timestamp,
+            counter_reset_correction: self.counter_reset_correction,
+            sample_count: self.sample_count,
+        };
+        rmp_serde::to_vec(&wire).expect("Failed to serialize IncreaseAccumulator to MessagePack")
+    }
+
+    /// Deserialize from the Arroyo-compatible MessagePack form. Mirrors
+    /// `MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo`, including the
+    /// legacy handling where an absent `sample_count` (decoded as 0) falls back to
+    /// [`DEFAULT_LEGACY_SAMPLE_COUNT`] so extrapolation stays well-defined.
+    pub fn deserialize_from_bytes_arroyo(
+        buffer: &[u8],
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let wire: ArroyoIncrease = rmp_serde::from_slice(buffer).map_err(|e| {
+            format!("Failed to deserialize IncreaseAccumulator from MessagePack: {e}")
+        })?;
+        let sample_count = if wire.sample_count == 0 {
+            DEFAULT_LEGACY_SAMPLE_COUNT
+        } else {
+            wire.sample_count
+        };
+        Ok(Self::new_full(
+            Measurement::new(wire.starting_measurement),
+            wire.starting_timestamp,
+            Measurement::new(wire.last_seen_measurement),
+            wire.last_seen_timestamp,
+            wire.counter_reset_correction,
             sample_count,
         ))
     }
@@ -919,5 +983,44 @@ mod tests {
         assert_eq!(back.counter_reset_correction, 0.0);
         assert_eq!(back.sample_count, DEFAULT_LEGACY_SAMPLE_COUNT);
         assert_eq!(back.last_seen_measurement.value, 25.0);
+    }
+
+    #[test]
+    fn test_arroyo_roundtrip_preserves_all_fields() {
+        // A window with a reset so every field is non-default.
+        let acc = feed(&[(1000, 10.0), (2000, 100.0), (3000, 5.0), (4000, 30.0)]);
+        let bytes = acc.serialize_to_bytes_arroyo();
+        let back = IncreaseAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
+        assert_eq!(back.starting_measurement.value, 10.0);
+        assert_eq!(back.starting_timestamp, 1000);
+        assert_eq!(back.last_seen_measurement.value, 30.0);
+        assert_eq!(back.last_seen_timestamp, 4000);
+        assert_eq!(back.counter_reset_correction, 100.0);
+        assert_eq!(back.sample_count, 4);
+        assert_eq!(back.corrected_increase(), 120.0);
+    }
+
+    #[test]
+    fn test_arroyo_legacy_4field_blob_defaults_sample_count() {
+        // A legacy 4-field MessagePack blob (from before reset support) must decode
+        // with sample_count defaulted so extrapolation stays well-defined.
+        #[derive(serde::Serialize)]
+        struct LegacyFour {
+            starting_measurement: f64,
+            starting_timestamp: i64,
+            last_seen_measurement: f64,
+            last_seen_timestamp: i64,
+        }
+        let bytes = rmp_serde::to_vec(&LegacyFour {
+            starting_measurement: 10.0,
+            starting_timestamp: 1000,
+            last_seen_measurement: 40.0,
+            last_seen_timestamp: 2000,
+        })
+        .unwrap();
+        let back = IncreaseAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
+        assert_eq!(back.counter_reset_correction, 0.0);
+        assert_eq!(back.sample_count, DEFAULT_LEGACY_SAMPLE_COUNT);
+        assert_eq!(back.corrected_increase(), 30.0);
     }
 }

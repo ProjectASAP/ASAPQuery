@@ -29,15 +29,20 @@ mod tests {
             let key = KeyByLabelValues {
                 labels: key_labels.iter().map(|s| s.to_string()).collect(),
             };
-            increases.insert(
-                key,
-                IncreaseAccumulator::new(
-                    Measurement::new(start_val),
-                    0,
-                    Measurement::new(end_val),
-                    10,
-                ),
+            // Build the accumulator the way ingest does: first sample via `new`,
+            // then a second via `update`. This yields sample_count == 2, so the
+            // accumulator is valid for Prometheus extrapolation (rate/increase
+            // needs >= 2 points) — the path now exercised end-to-end via the
+            // DataFusion plan. A single-sample `new(start, .., end, ..)` would be a
+            // physically impossible state that real ingest never produces.
+            let mut acc = IncreaseAccumulator::new(
+                Measurement::new(start_val),
+                0,
+                Measurement::new(start_val),
+                0,
             );
+            acc.update(Measurement::new(end_val), 10);
+            increases.insert(key, acc);
         }
         MultipleIncreaseAccumulator::new_with_increases(increases)
     }
@@ -102,6 +107,88 @@ mod tests {
             1,
             "Expected 1 result (1 sub-key), got {}",
             results.len()
+        );
+    }
+
+    /// Regression guard for the counter-reset/extrapolation fix on the DataFusion
+    /// physical path (the plumbing shared by the binary-arithmetic instant path):
+    /// the range-vector boundaries must survive the logical→physical boundary so
+    /// `IncreaseAccumulator` applies Prometheus `extrapolatedRate` instead of the
+    /// reset-corrected fallback. Previously they were dropped and the fallback was
+    /// silently used. Asserts the exact extrapolated value, computed from the same
+    /// boundaries the engine derives for the query.
+    #[tokio::test]
+    async fn test_self_keyed_multiple_increase_applies_extrapolation() {
+        use crate::data_model::SingleSubpopulationAggregate;
+        use promql_utilities::query_logics::enums::{
+            Statistic, RANGE_END_MS_KWARG, RANGE_START_MS_KWARG,
+        };
+
+        const QUERY_TIME: f64 = 1000.0;
+
+        // A single-sub-key MultipleIncrease with a 2-sample counter window inside
+        // the query range [990s, 1000s], built the way ingest does (new + update).
+        let build_inner = || {
+            let mut a = IncreaseAccumulator::new(
+                Measurement::new(10.0),
+                992_000,
+                Measurement::new(10.0),
+                992_000,
+            );
+            a.update(Measurement::new(70.0), 997_000);
+            a
+        };
+        let key = KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "endpoint-1".to_string()],
+        };
+        let mut increases = HashMap::new();
+        increases.insert(key, build_inner());
+        let acc = MultipleIncreaseAccumulator::new_with_increases(increases);
+
+        let engine = create_engine_single_pop_with_aggregated(
+            "http_requests_total",
+            AggregationType::MultipleIncrease,
+            vec![],
+            vec!["host", "endpoint"],
+            vec![(None, Box::new(acc))],
+            "increase(http_requests_total[10s])",
+        );
+
+        // Read the actual range-vector boundaries the engine derives for the query.
+        let ctx = engine
+            .build_query_execution_context_promql(
+                "increase(http_requests_total[10s])".to_string(),
+                QUERY_TIME,
+            )
+            .expect("build context");
+        let start_ms: i64 = ctx.metadata.query_kwargs[RANGE_START_MS_KWARG]
+            .parse()
+            .unwrap();
+        let end_ms: i64 = ctx.metadata.query_kwargs[RANGE_END_MS_KWARG]
+            .parse()
+            .unwrap();
+
+        // Expected = Prometheus extrapolated increase over those boundaries. It must
+        // differ from the naive reset-corrected fallback, else the check is vacuous.
+        let expected = build_inner()
+            .extrapolated(false, start_ms, end_ms)
+            .expect("extrapolation should produce a value");
+        let fallback =
+            SingleSubpopulationAggregate::query(&build_inner(), Statistic::Increase, None).unwrap();
+        assert!(
+            (expected - fallback).abs() > 1e-9,
+            "test setup should distinguish extrapolation ({expected}) from fallback ({fallback})"
+        );
+
+        let results =
+            execute_new_plan(&engine, "increase(http_requests_total[10s])", QUERY_TIME).await;
+        assert_eq!(results.len(), 1, "expected 1 sub-key result");
+        assert!(
+            (results[0].value - expected).abs() < 1e-6,
+            "physical path must apply extrapolation: got {}, expected {} (fallback would be {})",
+            results[0].value,
+            expected,
+            fallback
         );
     }
 
