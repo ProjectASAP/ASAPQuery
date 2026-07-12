@@ -3,6 +3,7 @@ import json
 import time
 import argparse
 import subprocess
+import threading
 import yaml
 import signal
 from loguru import logger
@@ -348,15 +349,34 @@ def main(args):
         node_offset=args.node_offset,
     )
 
+    # Bulk ClickHouse ingest can spawn many short-lived children; walking them
+    # recursively blocks the monitor loop long enough to miss the stop signal.
+    include_children = args.execution_mode != "ingest"
+
     monitor, control_pipe, monitor_pipe = process_monitor.start_monitor(
         pids,
         keywords_expanded,
-        1,
+        args.monitor_interval_seconds,
         ["memory_info", "cpu_percent"],
-        include_children=True,
+        include_children=include_children,
         hooks=monitor_hooks,
         thread_attribution_keyword=(
-            constants.QUERY_ENGINE_RS_CONTAINER_NAME
+            # Attribute pc-worker (precompute) vs other (query) threads. The
+            # monitored keyword differs by deployment: containerized runs use
+            # the container name, bare-metal runs use the process keyword. Pick
+            # whichever is actually being monitored so attribution turns on for
+            # both (bare-metal ClickHouse runs use QUERY_ENGINE_RS_PROCESS_KEYWORD).
+            next(
+                (
+                    kw
+                    for kw in (
+                        constants.QUERY_ENGINE_RS_CONTAINER_NAME,
+                        constants.QUERY_ENGINE_RS_PROCESS_KEYWORD,
+                    )
+                    if kw in args.keywords
+                ),
+                None,
+            )
             if args.streaming_engine == "precompute"
             and args.experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
             else None
@@ -381,6 +401,16 @@ def main(args):
         )
 
     if args.execution_mode == "prometheus_client":
+        # Wait out the precompute/ingest phase while the monitor is already
+        # sampling, so a single monitor_output.json captures precompute CPU
+        # (pc-worker threads) during ingest and query CPU during the client run.
+        if args.pre_query_wait_seconds > 0:
+            logger.debug(
+                "Waiting {} seconds for precompute/ingest before query client",
+                args.pre_query_wait_seconds,
+            )
+            time.sleep(args.pre_query_wait_seconds)
+
         logger.debug("Starting prometheus client")
         # Create CloudLab local provider for local execution with CloudLab paths
         provider = CloudLabLocalProvider(username="user", use_cloudlab_ips=False)
@@ -415,6 +445,28 @@ def main(args):
     elif args.execution_mode == "interactive":
         logger.debug("Waiting for user input to stop monitoring")
         input("Press Enter to stop monitoring...")
+    elif args.execution_mode == "ingest":
+        stop_file = os.path.join(
+            args.experiment_output_dir, constants.INGEST_MONITOR_STOP_FILE
+        )
+        if os.path.exists(stop_file):
+            os.remove(stop_file)
+        logger.debug("Monitoring ingest until stop file or SIGTERM")
+        shutdown = threading.Event()
+
+        def _request_shutdown(signum, _frame):
+            logger.debug("Ingest monitor received signal {}, shutting down", signum)
+            shutdown.set()
+
+        signal.signal(signal.SIGTERM, _request_shutdown)
+        signal.signal(signal.SIGINT, _request_shutdown)
+        while not shutdown.is_set():
+            if os.path.exists(stop_file):
+                logger.debug("Ingest monitor stop file detected, shutting down")
+                os.remove(stop_file)
+                shutdown.set()
+                break
+            shutdown.wait(timeout=0.5)
     elif args.execution_mode == "timed":
         logger.debug(f"Running for {args.time_to_run} seconds")
         time.sleep(args.time_to_run)
@@ -438,6 +490,11 @@ def main(args):
 
     logger.debug("Stopping process monitors")
     monitor_info = process_monitor.stop_monitor(monitor, control_pipe, monitor_pipe)
+    if monitor_info is None:
+        logger.error(
+            "Process monitor did not return data before timeout; "
+            f"{args.monitor_output_file} will be empty"
+        )
 
     monitor_output_file = os.path.join(
         remote_monitor_output_dir, args.monitor_output_file
@@ -454,8 +511,8 @@ if __name__ == "__main__":
         "--execution_mode",
         type=str,
         required=True,
-        choices=["interactive", "timed", "prometheus_client"],
-        help="Execution mode: interactive, timed, or prometheus_client",
+        choices=["interactive", "timed", "ingest", "prometheus_client"],
+        help="Execution mode: interactive, timed, ingest (until SIGTERM), or prometheus_client",
     )
     parser.add_argument("--experiment_mode", type=str, required=True)
     parser.add_argument(
@@ -525,6 +582,26 @@ if __name__ == "__main__":
         type=str,
         required=True,
         help="Query backend for prometheus-client (prometheus or clickhouse)",
+    )
+    parser.add_argument(
+        "--monitor_interval_seconds",
+        type=float,
+        default=1.0,
+        help=(
+            "Seconds between process/thread CPU+memory samples. Smaller values "
+            "(e.g. 0.1) capture short precompute/query CPU spikes that 1s "
+            "sampling rounds to zero, at the cost of a larger monitor_output.json."
+        ),
+    )
+    parser.add_argument(
+        "--pre_query_wait_seconds",
+        type=int,
+        default=0,
+        help=(
+            "Seconds to wait (monitor already running) before launching the "
+            "query client, to capture the precompute/ingest phase in the same "
+            "monitor session as the query phase."
+        ),
     )
     args = parser.parse_args()
     args.keywords = args.keywords.strip().split(",")

@@ -189,13 +189,20 @@ class MyMonitor(multiprocessing.Process):
 
         try:
             while True:
+                if self.pipe.poll(0):
+                    break
+
                 if self.thread_attribution_keyword is not None:
                     now = time.monotonic()
                     elapsed = now - self._prev_poll_monotonic
                     self._prev_poll_monotonic = now
 
                 iteration_info = []
+                stop_requested = False
                 for pid, p in self.psutil_handles.items():
+                    if self.pipe.poll(0):
+                        stop_requested = True
+                        break
                     iteration_info += self.update_pid_monitor_map(p)
                     if (
                         self.thread_attribution_keyword is not None
@@ -205,6 +212,9 @@ class MyMonitor(multiprocessing.Process):
                         self._compute_thread_group_cpu(pid, elapsed)
                     if self.include_children:
                         for child in p.children(recursive=True):
+                            if self.pipe.poll(0):
+                                stop_requested = True
+                                break
                             if child.pid not in self.pid_monitor_map:
                                 self.add_child_pid_to_map(pid, child.pid)
                                 self.child_handles[child.pid] = child
@@ -216,6 +226,11 @@ class MyMonitor(multiprocessing.Process):
                                 == self.thread_attribution_keyword
                             ):
                                 self._compute_thread_group_cpu(handle.pid, elapsed)
+                        if stop_requested:
+                            break
+
+                if stop_requested:
+                    break
 
                 self.update_hooks(iteration_info)
                 stop = self.pipe.poll(self.interval)
@@ -257,14 +272,14 @@ def start_monitor(
     return monitor, control_pipe, monitor_pipe
 
 
-def stop_monitor(monitor, control_pipe, monitor_pipe):
+def stop_monitor(monitor, control_pipe, monitor_pipe, timeout=30):
     control_pipe.send("stop")
-    can_read = control_pipe.poll(10)
+    can_read = control_pipe.poll(timeout)
     if can_read:
         monitor_info = control_pipe.recv()
-        monitor.join()
+        monitor.join(timeout=10)
     else:
         monitor_info = None
         monitor.terminate()
-        monitor.join()
+        monitor.join(timeout=10)
     return monitor_info
