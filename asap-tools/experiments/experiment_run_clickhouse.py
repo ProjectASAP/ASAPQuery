@@ -297,9 +297,7 @@ def _run_clickhouse_ingest_with_monitor(
                 experiment_output_dir=baseline_output_dir,
             )
         finally:
-            remote_monitor_service.cleanup_ingest_monitor_stop_file(
-                baseline_output_dir
-            )
+            remote_monitor_service.cleanup_ingest_monitor_stop_file(baseline_output_dir)
 
     sync.rsync_experiment_data(
         provider,
