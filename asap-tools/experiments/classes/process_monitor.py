@@ -282,4 +282,9 @@ def stop_monitor(monitor, control_pipe, monitor_pipe, timeout=30):
         monitor_info = None
         monitor.terminate()
         monitor.join(timeout=10)
+    # terminate/join can still leave a stuck sampler; escalate so callers
+    # do not leak orphaned monitor processes across experiment phases.
+    if monitor.is_alive():
+        monitor.kill()
+        monitor.join(timeout=5)
     return monitor_info

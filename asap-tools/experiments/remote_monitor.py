@@ -351,6 +351,8 @@ def main(args):
 
     # Bulk ClickHouse ingest can spawn many short-lived children; walking them
     # recursively blocks the monitor loop long enough to miss the stop signal.
+    # Trade-off: ingest samples only the main matched process (e.g. clickhouse
+    # server), not helper children.
     include_children = args.execution_mode != "ingest"
 
     monitor, control_pipe, monitor_pipe = process_monitor.start_monitor(
@@ -451,7 +453,10 @@ def main(args):
         )
         if os.path.exists(stop_file):
             os.remove(stop_file)
-        logger.debug("Monitoring ingest until stop file or SIGTERM")
+        logger.debug(
+            "Monitoring ingest until stop file ({}) or SIGTERM/SIGINT",
+            constants.INGEST_MONITOR_STOP_FILE,
+        )
         shutdown = threading.Event()
 
         def _request_shutdown(signum, _frame):
@@ -490,17 +495,20 @@ def main(args):
 
     logger.debug("Stopping process monitors")
     monitor_info = process_monitor.stop_monitor(monitor, control_pipe, monitor_pipe)
-    if monitor_info is None:
-        logger.error(
-            "Process monitor did not return data before timeout; "
-            f"{args.monitor_output_file} will be empty"
-        )
 
     monitor_output_file = os.path.join(
         remote_monitor_output_dir, args.monitor_output_file
     )
-    with open(monitor_output_file, "w") as f:
-        json.dump(monitor_info, f)
+    if monitor_info is None:
+        logger.error(
+            "Process monitor did not return data before timeout; "
+            f"not writing {args.monitor_output_file} (leave file absent)"
+        )
+        if os.path.exists(monitor_output_file):
+            os.remove(monitor_output_file)
+    else:
+        with open(monitor_output_file, "w") as f:
+            json.dump(monitor_info, f)
 
     logger.debug("Done")
 
@@ -512,7 +520,11 @@ if __name__ == "__main__":
         type=str,
         required=True,
         choices=["interactive", "timed", "ingest", "prometheus_client"],
-        help="Execution mode: interactive, timed, ingest (until SIGTERM), or prometheus_client",
+        help=(
+            "Execution mode: interactive, timed, ingest (until stop file "
+            f"{constants.INGEST_MONITOR_STOP_FILE} or SIGTERM/SIGINT), "
+            "or prometheus_client"
+        ),
     )
     parser.add_argument("--experiment_mode", type=str, required=True)
     parser.add_argument(

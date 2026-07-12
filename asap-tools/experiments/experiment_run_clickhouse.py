@@ -205,6 +205,8 @@ def _run_query_workload(
                 minimum_experiment_running_time + pre_query_wait_seconds
             ),
             polling_interval=REMOTE_PROCESS_POLLING_INTERVAL,
+            execution_mode="prometheus_client",
+            experiment_output_dir=experiment_output_dir,
         )
 
 
@@ -258,7 +260,11 @@ def _run_clickhouse_ingest_with_monitor(
         monitor_output_file=CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
         manual_mode=manual_remote_monitor,
     )
-    remote_monitor_service.wait_for_remote_monitor_start(timeout=30)
+    remote_monitor_service.wait_for_remote_monitor_start(
+        timeout=30,
+        execution_mode="ingest",
+        experiment_output_dir=baseline_output_dir,
+    )
     time.sleep(1)
 
     try:
@@ -274,11 +280,22 @@ def _run_clickhouse_ingest_with_monitor(
         print("Stopping ClickHouse ingest monitor...")
         remote_monitor_service.signal_ingest_monitor_stop(baseline_output_dir)
         try:
-            remote_monitor_service.wait_for_remote_monitor_process_exit(timeout=60)
+            remote_monitor_service.wait_for_remote_monitor_process_exit(
+                timeout=60,
+                execution_mode="ingest",
+                experiment_output_dir=baseline_output_dir,
+            )
         except RuntimeError:
             print("Ingest monitor did not exit gracefully; forcing kill...")
-            remote_monitor_service.kill_remote_monitor()
-            remote_monitor_service.wait_for_remote_monitor_process_exit(timeout=30)
+            remote_monitor_service.kill_remote_monitor(
+                execution_mode="ingest",
+                experiment_output_dir=baseline_output_dir,
+            )
+            remote_monitor_service.wait_for_remote_monitor_process_exit(
+                timeout=30,
+                execution_mode="ingest",
+                experiment_output_dir=baseline_output_dir,
+            )
         finally:
             remote_monitor_service.cleanup_ingest_monitor_stop_file(
                 baseline_output_dir
@@ -298,16 +315,17 @@ def _run_clickhouse_ingest_with_monitor(
     if os.path.isfile(ingest_monitor_path):
         with open(ingest_monitor_path) as f:
             ingest_data = json.load(f)
-        if ingest_data is None:
+        if not ingest_data:
             raise RuntimeError(
-                f"ClickHouse ingest monitor wrote no data to {ingest_monitor_path}. "
-                "Check baseline/remote_monitor.out and "
+                f"ClickHouse ingest monitor wrote empty/null data to "
+                f"{ingest_monitor_path}. Check baseline/remote_monitor.out and "
                 "baseline/remote_monitor_output/remote_monitor.log on the node."
             )
     elif not manual_remote_monitor:
         raise RuntimeError(
             "ClickHouse ingest monitor output file was not created at "
-            f"{ingest_monitor_path}. Check baseline/remote_monitor.out on the node."
+            f"{ingest_monitor_path} (absent after stop timeout or write skip). "
+            "Check baseline/remote_monitor.out on the node."
         )
     print(f"ClickHouse ingest monitor output: {ingest_monitor_path}")
 
