@@ -33,3 +33,9 @@ pub const INGEST_MEM_WEIGHT: f64 = 1e-9;
 pub const INGEST_CPU_WEIGHT: f64 = 1.0;
 pub const QUERY_MEM_WEIGHT: f64 = 1e-9;
 pub const QUERY_CPU_WEIGHT: f64 = 1.0;
+
+/// Subpopulation count: 1 if subpopulation_aware else the distinct label-group
+/// count for this config. The label-group count isn't profiled yet (needs
+/// Prometheus series-count data) — use 1 as a placeholder; both branches
+/// collapse to the same value until that lands.
+pub const SUBPOPULATION_COUNT: f64 = 1.0;
