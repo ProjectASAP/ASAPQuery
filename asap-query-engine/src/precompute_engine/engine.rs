@@ -74,6 +74,10 @@ pub struct PrecomputeEngine {
     receivers: Option<Vec<mpsc::Receiver<WorkerMessage>>>,
     /// Shared ingest agg_configs, swappable at runtime.
     ingest_agg_configs: Arc<ArcSwap<Vec<Arc<AggregationConfig>>>>,
+    /// Test-support wall-clock override, applied to every spawned worker.
+    /// See `with_now_ms_fn`. `None` in production — each worker keeps its
+    /// default `SystemTime::now`-backed clock.
+    now_ms_fn: Option<Arc<dyn Fn() -> i64 + Send + Sync>>,
 }
 
 impl PrecomputeEngine {
@@ -119,12 +123,23 @@ impl PrecomputeEngine {
             senders,
             receivers: Some(receivers),
             ingest_agg_configs,
+            now_ms_fn: None,
         }
     }
 
     /// Get a handle to worker diagnostics, readable even after `run()` starts.
     pub fn diagnostics(&self) -> Arc<PrecomputeWorkerDiagnostics> {
         self.diagnostics.clone()
+    }
+
+    /// Test-support builder: override the wall-clock source used by every
+    /// worker's wall-clock fallback (`flush_all`). Lets integration tests
+    /// drive the fallback deterministically through the real ingest pipeline
+    /// instead of racing a real clock with `tokio::time::sleep`. Must be
+    /// called before `run()`. Production code never calls this.
+    pub fn with_now_ms_fn(mut self, f: impl Fn() -> i64 + Send + Sync + 'static) -> Self {
+        self.now_ms_fn = Some(Arc::new(f));
+        self
     }
 
     /// Return a handle for applying runtime config updates to this engine.
@@ -160,7 +175,7 @@ impl PrecomputeEngine {
         // Spawn workers
         let mut worker_handles = Vec::with_capacity(num_workers);
         for (id, rx) in receivers.into_iter().enumerate() {
-            let worker = Worker::new(
+            let mut worker = Worker::new(
                 id,
                 rx,
                 self.output_sink.clone(),
@@ -177,6 +192,10 @@ impl PrecomputeEngine {
                 self.diagnostics.worker_watermarks[id].clone(),
                 self.diagnostics.worker_watermarks.to_vec(),
             );
+            if let Some(now_ms_fn) = &self.now_ms_fn {
+                let now_ms_fn = now_ms_fn.clone();
+                worker.set_now_ms_fn(Box::new(move || now_ms_fn()));
+            }
             let handle = tokio::spawn(async move {
                 worker.run().await;
             });

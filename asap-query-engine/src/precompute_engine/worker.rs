@@ -112,7 +112,8 @@ pub struct Worker {
     wall_clock_grace_period_ms: i64,
     /// Injectable clock returning current wall-clock time in milliseconds
     /// since the unix epoch. Production uses `SystemTime::now`; tests
-    /// override with a deterministic fake via `set_now_ms_fn`.
+    /// override with a deterministic fake via `set_now_ms_fn` (directly, or
+    /// via `PrecomputeEngine::with_now_ms_fn` for integration tests).
     now_ms_fn: Box<dyn Fn() -> i64 + Send + Sync>,
 }
 
@@ -154,12 +155,14 @@ impl Worker {
         }
     }
 
-    /// Test/diagnostic-only setter for the wall-clock source. Replaces the
-    /// default `SystemTime::now`-backed clock with a deterministic fake so
-    /// unit tests can drive the wall-clock fallback in `flush_all` without
-    /// `std::thread::sleep`. Production code never calls this.
-    #[cfg(test)]
-    pub fn set_now_ms_fn(&mut self, f: Box<dyn Fn() -> i64 + Send + Sync>) {
+    /// Test-support setter for the wall-clock source. Replaces the default
+    /// `SystemTime::now`-backed clock with a deterministic fake so tests can
+    /// drive the wall-clock fallback in `flush_all` without real sleeping.
+    /// Crate-visible (not `#[cfg(test)]`-gated) so `PrecomputeEngine::
+    /// with_now_ms_fn` can reach it from integration tests in `tests/`,
+    /// which link the library normally and don't see `#[cfg(test)]` items.
+    /// Production code never calls this.
+    pub(crate) fn set_now_ms_fn(&mut self, f: Box<dyn Fn() -> i64 + Send + Sync>) {
         self.now_ms_fn = f;
     }
 
