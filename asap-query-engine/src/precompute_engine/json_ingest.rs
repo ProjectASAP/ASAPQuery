@@ -42,6 +42,14 @@ pub struct JsonFileIngestConfig {
     pub timestamp_col: String,
     pub timestamp_unit: TimestampUnit,
     pub batch_size: usize,
+    /// Test-support only: real delay after sending each batch, in
+    /// milliseconds. `0` (the only value any production config uses) is a
+    /// no-op — the reader sends batches as fast as it can, unchanged from
+    /// before this field existed. A nonzero value exists so integration
+    /// tests can force ingest to span real wall-clock time deterministically
+    /// (e.g. to give a periodic flush timer real chances to fire mid-ingest),
+    /// instead of hoping incidental scheduling overhead is enough.
+    pub batch_delay_ms: u64,
 }
 
 pub struct JsonFileIngestSource {
@@ -192,11 +200,19 @@ impl IngestSource for JsonFileIngestSource {
                         if tx.blocking_send(send_batch).is_err() {
                             break;
                         }
+                        if config.batch_delay_ms > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                config.batch_delay_ms,
+                            ));
+                        }
                     }
                 }
 
                 if !batch.is_empty() {
                     let _ = tx.blocking_send(batch);
+                    if config.batch_delay_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(config.batch_delay_ms));
+                    }
                 }
 
                 Ok(row_count)
