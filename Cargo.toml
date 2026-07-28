@@ -37,7 +37,9 @@ asap_types = { path = "asap-common/dependencies/rs/asap_types" }
 datafusion_summary_library = { path = "asap-common/dependencies/rs/datafusion_summary_library" }
 elastic_dsl_utilities = { path = "asap-common/dependencies/rs/elastic_dsl_utilities" }
 asap_planner = { path = "asap-planner-rs" }
-asap_sketchlib = "0.2.2"
+# Pin past crates.io 0.2.2 to pick up the CMS estimate i32::MAX clamp fix
+# (ProjectASAP/asap_sketchlib#76). Revert to a published version once released.
+asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", rev = "94d76f6b772a33e82991ac284355800053ad30bf" }
 indexmap = { version = "2.0", features = ["serde"] }
 
 [profile.release]
