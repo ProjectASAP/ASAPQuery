@@ -482,7 +482,10 @@ class ClickHouseDataLoaderService(BaseService):
                 nohup=False,
                 popen=False,
             )
-            if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
+            if (
+                isinstance(result, subprocess.CompletedProcess)
+                and result.returncode != 0
+            ):
                 detail = (result.stderr or result.stdout or "").strip()[:300]
                 raise RuntimeError(f"{dataset_label} data load failed: {detail}")
         finally:
@@ -514,9 +517,7 @@ class ClickHouseDataLoaderService(BaseService):
     ) -> None:
         """Stream a JSON-lines file (optionally gzipped) into ClickHouse."""
         print(f"Loading ClickBench data from {remote_data_file!r}...")
-        self._load_json_batched(
-            remote_data_file, url, table, max_rows, "ClickBench"
-        )
+        self._load_json_batched(remote_data_file, url, table, max_rows, "ClickBench")
 
     def _load_h2o(
         self, remote_data_file: str, url: str, batch_size: int, max_rows: int
@@ -568,6 +569,4 @@ class ClickHouseDataLoaderService(BaseService):
                 f"Unsupported file format for {remote_data_file!r}. "
                 "Use dataset_name='h2o' for CSV files."
             )
-        self._load_json_batched(
-            remote_data_file, url, table, max_rows, "Custom"
-        )
+        self._load_json_batched(remote_data_file, url, table, max_rows, "Custom")
