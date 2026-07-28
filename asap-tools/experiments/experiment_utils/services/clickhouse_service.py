@@ -459,7 +459,7 @@ class ClickHouseDataLoaderService(BaseService):
         dataset_label: str,
         batch_size: int = JSON_BATCH_SIZE,
     ) -> None:
-        """Load JSON-lines via batched HTTP INSERTs (safe for multi-GB files)."""
+        """Load JSON-lines in bounded batches via clickhouse-client."""
         local_script = os.path.join(self._ASSETS_DIR, self.JSON_LOADER_SCRIPT)
         remote_script = f"/tmp/json_loader_{os.getpid()}.py"
         self._rsync_to_remote(local_script, remote_script)
