@@ -413,8 +413,7 @@ dependencies = [
 [[package]]
 name = "asap_sketchlib"
 version = "0.2.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d71e22a03cabb3fbbde6078a6ce493d4c21d007b895ad1d32ae986cfa7b1ac65"
+source = "git+https://github.com/ProjectASAP/asap_sketchlib?rev=94d76f6b772a33e82991ac284355800053ad30bf#94d76f6b772a33e82991ac284355800053ad30bf"
 dependencies = [
  "bytes",
  "prost",
@@ -422,6 +421,7 @@ dependencies = [
  "rmp-serde",
  "serde",
  "serde-big-array",
+ "serde_bytes",
  "smallvec",
  "twox-hash 2.1.2",
  "xxhash-rust",
@@ -2395,15 +2395,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "itertools"
-version = "0.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
-dependencies = [
- "either",
-]
-
-[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3384,7 +3375,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -3846,6 +3837,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11fc7cc2c76d73e0f27ee52abbd64eec84d46f370c88371120433196934e4b7f"
 dependencies = [
  "serde",
+]
+
+[[package]]
+name = "serde_bytes"
+version = "0.11.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]
