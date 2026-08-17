@@ -5,7 +5,6 @@ ClickHouse Docker service management and data loading for SQL experiment infrast
 import os
 import shlex
 import subprocess
-import time
 from typing import Optional
 from jinja2 import Template
 
@@ -13,6 +12,25 @@ from .base import BaseService, DockerServiceBase
 from experiment_utils.providers.base import InfrastructureProvider
 import constants
 import utils
+
+
+def _clickhouse_ping_ok(
+    provider: InfrastructureProvider, node_offset: int, http_port: int
+) -> bool:
+    """True iff ClickHouse's HTTP /ping on ``http_port`` returns exactly 'Ok.'."""
+    result = provider.execute_command(
+        node_idx=node_offset,
+        cmd=f"curl -sS http://localhost:{http_port}/ping",
+        cmd_dir=None,
+        nohup=False,
+        popen=False,
+        ignore_errors=True,
+    )
+    return (
+        isinstance(result, subprocess.CompletedProcess)
+        and result.returncode == 0
+        and result.stdout.strip() == "Ok."
+    )
 
 
 class ClickHouseService(DockerServiceBase):
@@ -46,17 +64,7 @@ class ClickHouseService(DockerServiceBase):
 
     def is_healthy(self) -> bool:
         """ClickHouse is ready only when /ping returns exactly 'Ok.'"""
-        result = self.provider.execute_command(
-            node_idx=self.node_offset,
-            cmd=f"curl -s http://localhost:{self._http_port}/ping",
-            cmd_dir=None,
-            nohup=False,
-            popen=False,
-            ignore_errors=True,
-        )
-        if not isinstance(result, subprocess.CompletedProcess):
-            return False
-        return result.returncode == 0 and result.stdout.strip() == "Ok."
+        return _clickhouse_ping_ok(self.provider, self.node_offset, self._http_port)
 
     def start(
         self,
@@ -216,6 +224,12 @@ class ClickHouseDataLoaderService(BaseService):
         self.clickhouse_http_port = clickhouse_http_port
         self.remote_data_file: Optional[str] = None
 
+    def is_healthy(self) -> bool:
+        """ClickHouse is ready only when /ping returns exactly 'Ok.'"""
+        return _clickhouse_ping_ok(
+            self.provider, self.node_offset, self.clickhouse_http_port
+        )
+
     def prepare(self, local_data_file: str, remote_dir: str) -> str:
         """Rsync a local data file to the remote node.
 
@@ -289,6 +303,7 @@ class ClickHouseDataLoaderService(BaseService):
             )
 
         url = f"http://localhost:{self.clickhouse_http_port}/"
+        self._ensure_clickhouse_http_ready()
 
         if init_sql_file is not None:
             # init SQL owns DROP/CREATE for the raw table and any MVs / agg
@@ -309,12 +324,13 @@ class ClickHouseDataLoaderService(BaseService):
                 self._exec_sql_file(remote_ddl, url)
             finally:
                 self._remote_rm(remote_ddl)
-        elif dataset_name != "custom":
+        elif dataset_name == "custom":
+            print(f"Dropping table {table!r}...")
+            self._exec_sql(f"DROP TABLE IF EXISTS {table}", url)
+        else:
             raise ValueError(
                 f"No built-in DDL for dataset_name={dataset_name!r}; pass init_sql_file"
             )
-
-        self._ensure_clickhouse_http_ready(url)
 
         if dataset_name == "clickbench":
             self._load_clickbench(remote_data_file, url, table, max_rows)
@@ -410,45 +426,26 @@ class ClickHouseDataLoaderService(BaseService):
         for stmt in (s.strip() for s in result.stdout.split(";") if s.strip()):
             self._exec_sql(stmt, url)
 
-    def _ensure_clickhouse_http_ready(self, url: str, max_retries: int = 30) -> None:
+    def _ensure_clickhouse_http_ready(self, max_retries: int = 30) -> None:
         """Wait until ClickHouse HTTP /ping returns Ok. before bulk load."""
-        ping_url = url.rstrip("/") + "/ping"
-        for attempt in range(max_retries):
-            result = self.provider.execute_command(
+        try:
+            self.wait_until_ready(timeout=max_retries * 2)
+        except RuntimeError as exc:
+            logs = self.provider.execute_command(
                 node_idx=self.node_offset,
-                cmd=f"curl -sS {shlex.quote(ping_url)}",
+                cmd=f"docker logs {shlex.quote(ClickHouseService.CONTAINER_NAME)} --tail 30 2>&1",
                 cmd_dir=None,
                 nohup=False,
                 popen=False,
                 ignore_errors=True,
             )
-            if (
-                isinstance(result, subprocess.CompletedProcess)
-                and result.returncode == 0
-                and result.stdout.strip() == "Ok."
-            ):
-                return
-            print(
-                f"Waiting for ClickHouse HTTP before data load... "
-                f"({attempt + 1}/{max_retries})"
-            )
-            time.sleep(2)
-
-        logs = self.provider.execute_command(
-            node_idx=self.node_offset,
-            cmd="docker logs clickhouse-server --tail 30 2>&1",
-            cmd_dir=None,
-            nohup=False,
-            popen=False,
-            ignore_errors=True,
-        )
-        log_tail = ""
-        if isinstance(logs, subprocess.CompletedProcess):
-            log_tail = (logs.stdout or logs.stderr or "").strip()[-500:]
-        raise RuntimeError(
-            "ClickHouse HTTP is not ready before data load. "
-            f"Check clickhouse_logs/ on the experiment node. Recent logs: {log_tail}"
-        )
+            log_tail = ""
+            if isinstance(logs, subprocess.CompletedProcess):
+                log_tail = (logs.stdout or logs.stderr or "").strip()[-500:]
+            raise RuntimeError(
+                "ClickHouse HTTP is not ready before data load. "
+                f"Check clickhouse_logs/ on the experiment node. Recent logs: {log_tail}"
+            ) from exc
 
     def _load_json_batched(
         self,

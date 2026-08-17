@@ -103,7 +103,7 @@ def load(
     with _open_data_file(data_file) as fin:
         for raw_line in fin:
             file_line_no += 1
-            if max_rows > 0 and total >= max_rows:
+            if max_rows > 0 and total + len(batch) >= max_rows:
                 break
             stripped = _validate_line(raw_line, file_line_no)
             if not stripped:
