@@ -25,6 +25,11 @@ PROMETHEUS_HEALTH_POLLING_INTERVAL = 5
 
 SKETCHDB_EXPERIMENT_NAME = "sketchdb"
 BASELINE_EXPERIMENT_NAME = "baseline"
+# ClickHouse precompute-strategy arms (issue #491): same raw table/queries as
+# baseline, but querying via ClickHouse's own precompute mechanisms.
+BASELINE_SKETCH_EXPERIMENT_NAME = "baseline_sketch"
+BASELINE_MV_EXPERIMENT_NAME = "baseline_mv"
+BASELINE_MV_SKETCH_EXPERIMENT_NAME = "baseline_mv_sketch"
 AVOID_REMOTE_MONITOR_LONG_SSH = True
 AVOID_RUN_ARROYOSKETCH_LONG_SSH = True
 

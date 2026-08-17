@@ -80,6 +80,29 @@ def _is_clickhouse_experiment(experiment_params: DictConfig) -> bool:
     return "dataset" in experiment_params
 
 
+def _resolve_sql_file(sql_file: Any, mode: str, idx: int, group_name: str) -> str:
+    """Resolve the sql_file path for one query group and mode.
+
+    ``sql_file`` is a dict keyed by mode name (e.g.
+    baseline/baseline_sketch/baseline_mv/...). sketchdb always resolves
+    through baseline's entry — ASAP's SQL-mode query engine must see the
+    exact same SQL text as baseline to pattern-match it against available
+    sketches, so it never gets its own dict entry.
+    """
+    lookup_mode = (
+        constants.BASELINE_EXPERIMENT_NAME
+        if mode == constants.SKETCHDB_EXPERIMENT_NAME
+        else mode
+    )
+    path = sql_file.get(lookup_mode)
+    if not path:
+        raise ValueError(
+            f"Query group {idx} ({group_name!r}) missing sql_file entry for "
+            f"mode {lookup_mode!r}"
+        )
+    return path
+
+
 def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> None:
     """Validate experiment_params for a ClickHouse experiment."""
     # Validate dataset section
@@ -118,6 +141,13 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
         raise ValueError(
             "At least one query group must be defined in experiment config."
         )
+    if not experiment_params.get("experiment"):
+        raise ValueError(
+            "At least one mode must be defined in experiment_params.experiment."
+        )
+    experiment_modes = {m["mode"] for m in experiment_params.experiment}
+    experiment_modes.discard(constants.SKETCHDB_EXPERIMENT_NAME)
+
     for i, group in enumerate(experiment_params.query_groups):
         sql_file = group.get("sql_file")
         if not sql_file or sql_file == "???":
@@ -125,8 +155,14 @@ def _validate_clickhouse_experiment_config(experiment_params: DictConfig) -> Non
                 f"Query group {i} missing 'sql_file'. "
                 "Generate SQL files with benchmark/generate_queries.py first."
             )
-        if not os.path.exists(sql_file):
-            raise ValueError(f"Query group {i} sql_file={sql_file!r} does not exist.")
+        group_name = group.get("name", str(i))
+        for mode in experiment_modes:
+            path = _resolve_sql_file(sql_file, mode, i, group_name)
+            if not os.path.exists(path):
+                raise ValueError(
+                    f"Query group {i} sql_file for mode {mode!r} "
+                    f"({path!r}) does not exist."
+                )
 
 
 def validate_experiment_config(
@@ -717,34 +753,39 @@ def generate_clickhouse_client_configs(
     else:
         query_groups_list = list(query_groups)
 
-    # Build query groups with SQL inlined from files
-    built_groups = []
-    for idx, group in enumerate(query_groups_list):
-        sql_file = group.get("sql_file")
-        if not sql_file:
-            name = group.get("name", str(idx))
-            raise ValueError(f"Query group {idx!r} ({name!r}) missing 'sql_file'")
-
-        queries = _load_sql_queries(sql_file)
-        if not queries:
-            raise ValueError(f"No SQL statements found in {sql_file!r}")
-
-        client_opts = dict(group.get("client_options") or {})
-        client_opts.setdefault("starting_delay", 0)
-        client_opts.setdefault("repetitions", 1)
-
-        built_groups.append(
-            {
-                "id": idx,
-                "queries": queries,
-                "repetition_delay_ms": group.get("repetition_delay_ms", 0),
-                "client_options": client_opts,
-                "time_window_seconds": group.get("time_window_seconds"),
-            }
-        )
-
     modes = list(mode_server_urls.keys())
     for mode, url in mode_server_urls.items():
+        # Each mode may target a different sql_file (e.g. baseline_mv queries a
+        # materialized view, baseline_sketch swaps in a sketch function) — see
+        # _resolve_sql_file for the sketchdb-falls-back-to-baseline rule.
+        built_groups = []
+        for idx, group in enumerate(query_groups_list):
+            sql_file = group.get("sql_file")
+            if not sql_file:
+                name = group.get("name", str(idx))
+                raise ValueError(f"Query group {idx!r} ({name!r}) missing 'sql_file'")
+            sql_file = _resolve_sql_file(
+                sql_file, mode, idx, group.get("name", str(idx))
+            )
+
+            queries = _load_sql_queries(sql_file)
+            if not queries:
+                raise ValueError(f"No SQL statements found in {sql_file!r}")
+
+            client_opts = dict(group.get("client_options") or {})
+            client_opts.setdefault("starting_delay", 0)
+            client_opts.setdefault("repetitions", 1)
+
+            built_groups.append(
+                {
+                    "id": idx,
+                    "queries": queries,
+                    "repetition_delay_ms": group.get("repetition_delay_ms", 0),
+                    "client_options": client_opts,
+                    "time_window_seconds": group.get("time_window_seconds"),
+                }
+            )
+
         config: Dict[str, Any] = {
             "servers": [
                 {
@@ -808,6 +849,13 @@ def generate_sql_planner_input(query_groups: Any, dataset_cfg: Any) -> str:
         sql_file = group.get("sql_file")
         if not sql_file:
             raise ValueError(f"query_groups[{idx}] missing 'sql_file'")
+        # sketchdb always plans against baseline's SQL text (see _resolve_sql_file).
+        sql_file = _resolve_sql_file(
+            sql_file,
+            constants.SKETCHDB_EXPERIMENT_NAME,
+            idx,
+            group.get("name", str(idx)),
+        )
         queries = _load_sql_queries(sql_file)
         if not queries:
             raise ValueError(f"No SQL statements found in {sql_file!r}")
