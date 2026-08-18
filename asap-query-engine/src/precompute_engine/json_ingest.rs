@@ -42,6 +42,11 @@ pub struct JsonFileIngestConfig {
     pub timestamp_col: String,
     pub timestamp_unit: TimestampUnit,
     pub batch_size: usize,
+    /// Delay after sending each batch, in milliseconds. `0` (the default)
+    /// sends batches as fast as possible, unchanged from before this field
+    /// existed. A nonzero value throttles ingestion to a real, deterministic
+    /// pace.
+    pub batch_delay_ms: u64,
 }
 
 pub struct JsonFileIngestSource {
@@ -192,11 +197,19 @@ impl IngestSource for JsonFileIngestSource {
                         if tx.blocking_send(send_batch).is_err() {
                             break;
                         }
+                        if config.batch_delay_ms > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(
+                                config.batch_delay_ms,
+                            ));
+                        }
                     }
                 }
 
                 if !batch.is_empty() {
                     let _ = tx.blocking_send(batch);
+                    if config.batch_delay_ms > 0 {
+                        std::thread::sleep(std::time::Duration::from_millis(config.batch_delay_ms));
+                    }
                 }
 
                 Ok(row_count)

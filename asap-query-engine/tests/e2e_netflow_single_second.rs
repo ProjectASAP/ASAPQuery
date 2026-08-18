@@ -108,6 +108,7 @@ async fn netflow_single_second_batch_is_not_lost_on_shutdown() {
         timestamp_col: "timestamp".to_string(),
         timestamp_unit: TimestampUnit::Seconds,
         batch_size: 1024,
+        batch_delay_ms: 0,
     };
 
     let sink = Arc::new(CapturingOutputSink::new());

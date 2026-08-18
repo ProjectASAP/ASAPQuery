@@ -263,6 +263,7 @@ async fn main() -> Result<()> {
                     timestamp_col: timestamp_col.clone(),
                     timestamp_unit: unit,
                     batch_size: *batch_size,
+                    batch_delay_ms: 0,
                 }))]
             }
             IngestConfig::HttpRemoteWrite { port } => {
