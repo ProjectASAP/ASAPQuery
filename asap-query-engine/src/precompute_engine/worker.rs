@@ -37,6 +37,15 @@ struct GroupState {
     /// `pane_start_ms`, mirroring `active_panes`. Entries are GC'd by
     /// `prune_pane_wall_clock_last_touch` after each window-close cycle so
     /// the bookkeeping doesn't leak as panes turn over.
+    ///
+    /// No absolute ceiling on pane lifetime is enforced here by design: a
+    /// pane touched forever without ever going idle (e.g. a misbehaving
+    /// source stuck emitting a stagnant timestamp at a low but nonzero rate)
+    /// stays open, growing memory, until process shutdown force-closes it
+    /// via `force_close_all`. Deferred rather than bolted on speculatively —
+    /// distinct failure mode from the bulk-load case this field fixes, with
+    /// no evidence it happens in practice. Add `now - first_touch >= max_ms`
+    /// if it does.
     pane_wall_clock_last_touch_ms: BTreeMap<i64, i64>,
 }
 
@@ -2855,7 +2864,16 @@ aggregations:
             arc_configs(agg_configs),
             WorkerRuntimeConfig {
                 max_buffer_per_series: 10_000,
-                allowed_lateness_ms: 0,
+                // 1, not 0: every flush_all() call unconditionally nudges the
+                // event-time watermark forward by 1ms (the "+1ms boundary
+                // advance" that lets an idle stream make progress),
+                // independent of the wall-clock fallback these tests target.
+                // A test that calls flush_all() and then processes another
+                // same-timestamp touch would otherwise have that 1ms of
+                // drift alone mark the touch "late" and drop it via a wholly
+                // different code path. 1ms is the exact amount one
+                // intervening flush contributes, not an arbitrary buffer.
+                allowed_lateness_ms: 1,
                 pass_raw_samples: false,
                 raw_mode_aggregation_id: 0,
                 late_data_policy: LateDataPolicy::Drop,
@@ -2968,7 +2986,7 @@ aggregations:
         // but the pane is touched once per simulated wall-clock second for
         // 7 seconds straight — actively receiving data the whole time.
         let mut expected_sum = 0.0;
-        for i in 0..8 {
+        for i in 0..7 {
             wall_clock.store(1_000_000 + i * 1_000, Ordering::Relaxed);
             let val = 1.0 + i as f64;
             expected_sum += val;
@@ -2989,6 +3007,15 @@ aggregations:
             "a pane still actively receiving samples must not be force-closed \
              just because it has been open longer than window_size + grace"
         );
+
+        // Ingest continues past the mid-ingest check: an 8th touch lands at
+        // wall_clock = 1_007_000, refreshing last-touch again.
+        wall_clock.store(1_000_000 + 7_000, Ordering::Relaxed);
+        let val = 1.0 + 7_f64;
+        expected_sum += val;
+        worker
+            .process_group_samples(7, "", group_samples("netflow_bytes", vec![(0, val)]))
+            .expect("ingest must accept frozen-event-time samples");
 
         // Ingest stops after the 8th touch (wall_clock = 1_007_000). Advance
         // past last_touch + window_size + grace and flush: NOW the fallback
