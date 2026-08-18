@@ -636,6 +636,15 @@ class Args:
         """Get the coordinator node index (first node in the range)."""
         return self.node_offset
 
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-serializable snapshot of this Args instance.
+
+        `provider` holds a live InfrastructureProvider object, so it's
+        swapped for its repr() (e.g. "CloudLabProvider(username='...', ...)")
+        rather than dropped.
+        """
+        return {k: (repr(v) if k == "provider" else v) for k, v in vars(self).items()}
+
 
 def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
     """

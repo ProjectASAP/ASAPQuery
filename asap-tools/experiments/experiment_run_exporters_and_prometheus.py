@@ -44,7 +44,7 @@ def main(cfg: DictConfig):
 
     # Also dump args to a file for backward compatibility
     with open(os.path.join(local_experiment_root_dir, "cmdline_args.txt"), "w") as f:
-        json.dump(vars(args), f)
+        json.dump(args.to_dict(), f)
 
     experiment_root_output_dir = (
         f"{constants.CLOUDLAB_HOME_DIR}/experiment_outputs/{args.experiment_name}"
