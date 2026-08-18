@@ -50,10 +50,10 @@ class RemoteMonitorService(BaseService):
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
         backend_protocol: str,
+        pre_query_wait_seconds: int,
+        monitor_interval_seconds: float,
         backend_tool: Optional[str] = None,
         timed_duration: Optional[int] = None,
-        pre_query_wait_seconds: int = 0,
-        monitor_interval_seconds: float = 1.0,
     ) -> None:
         """
         Start remote monitor processes.
@@ -381,8 +381,8 @@ class RemoteMonitorService(BaseService):
 
     def wait_for_remote_monitor_start(
         self,
-        timeout: int = 30,
-        polling_interval: int = 1,
+        timeout: int,
+        polling_interval: int,
         execution_mode: Optional[str] = None,
         experiment_output_dir: Optional[str] = None,
     ) -> None:
@@ -403,25 +403,15 @@ class RemoteMonitorService(BaseService):
 
     def wait_for_remote_monitor_process_exit(
         self,
-        polling_interval: int = 2,
-        timeout: int = 300,
+        polling_interval: int,
         execution_mode: Optional[str] = None,
         experiment_output_dir: Optional[str] = None,
     ) -> None:
         """Poll until matching ``remote_monitor.py`` processes have exited."""
-        start = time.time()
-        while True:
-            if not self.is_remote_monitor_running(
-                execution_mode=execution_mode,
-                experiment_output_dir=experiment_output_dir,
-            ):
-                return
-            if time.time() - start > timeout:
-                mode_desc = execution_mode or "any"
-                raise RuntimeError(
-                    f"remote_monitor.py ({mode_desc}) did not exit within "
-                    f"{timeout}s after stop()"
-                )
+        while self.is_remote_monitor_running(
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+        ):
             print(
                 "Waiting for remote monitor to exit "
                 f"(checking again in {polling_interval}s)..."
@@ -487,8 +477,7 @@ class RemoteMonitorService(BaseService):
     def wait_for_remote_monitor_to_finish(
         self,
         minimum_experiment_running_time: int,
-        polling_interval: int = 10,
-        timeout: int = 600,
+        polling_interval: int,
         execution_mode: Optional[str] = None,
         experiment_output_dir: Optional[str] = None,
     ) -> None:
@@ -498,7 +487,6 @@ class RemoteMonitorService(BaseService):
         Args:
             minimum_experiment_running_time: Minimum time to wait before polling
             polling_interval: Interval between polling checks
-            timeout: Max seconds to poll after the minimum wait before force-kill
             execution_mode: If set, only match this ``--execution_mode``
             experiment_output_dir: Optional path to further disambiguate the process
         """
@@ -510,29 +498,10 @@ class RemoteMonitorService(BaseService):
         time.sleep(minimum_experiment_running_time)
         print("Done waiting for remote monitor to finish. Will start polling")
 
-        poll_start = time.time()
-        while True:
-            if not self.is_remote_monitor_running(
-                execution_mode=execution_mode,
-                experiment_output_dir=experiment_output_dir,
-            ):
-                break
-            if time.time() - poll_start > timeout:
-                print(
-                    "Remote monitor still running after {}s; forcing kill".format(
-                        timeout
-                    )
-                )
-                self.kill_remote_monitor(
-                    execution_mode=execution_mode,
-                    experiment_output_dir=experiment_output_dir,
-                )
-                self.wait_for_remote_monitor_process_exit(
-                    timeout=60,
-                    execution_mode=execution_mode,
-                    experiment_output_dir=experiment_output_dir,
-                )
-                break
+        while self.is_remote_monitor_running(
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+        ):
             print(
                 "Remote monitor is still running. Will check again in {} seconds".format(
                     polling_interval

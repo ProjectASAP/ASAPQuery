@@ -624,8 +624,10 @@ def main(cfg: DictConfig):
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             use_container_prometheus_client=args.use_container_prometheus_client,
             prometheus_client_parallel=args.prometheus_client_parallel,
-            backend_tool=cfg.experiment_params.monitoring.tool,
             backend_protocol="prometheus",
+            pre_query_wait_seconds=0,
+            monitor_interval_seconds=float(cfg.flow.monitor_interval_seconds),
+            backend_tool=cfg.experiment_params.monitoring.tool,
             timed_duration=minimum_experiment_running_time if skip_querying else None,
         )
 

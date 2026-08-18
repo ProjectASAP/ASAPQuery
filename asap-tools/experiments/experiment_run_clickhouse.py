@@ -260,12 +260,14 @@ def _run_clickhouse_ingest_with_monitor(
         monitor_output_file=CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
         manual_mode=manual_remote_monitor,
     )
-    remote_monitor_service.wait_for_remote_monitor_start(
-        timeout=30,
-        execution_mode="ingest",
-        experiment_output_dir=baseline_output_dir,
-    )
-    time.sleep(1)
+    if not manual_remote_monitor:
+        remote_monitor_service.wait_for_remote_monitor_start(
+            timeout=constants.REMOTE_MONITOR_START_TIMEOUT_SECONDS,
+            polling_interval=constants.REMOTE_MONITOR_START_POLL_INTERVAL_SECONDS,
+            execution_mode="ingest",
+            experiment_output_dir=baseline_output_dir,
+        )
+        time.sleep(1)
 
     try:
         print("Loading data into ClickHouse...")
@@ -281,18 +283,7 @@ def _run_clickhouse_ingest_with_monitor(
         remote_monitor_service.signal_ingest_monitor_stop(baseline_output_dir)
         try:
             remote_monitor_service.wait_for_remote_monitor_process_exit(
-                timeout=60,
-                execution_mode="ingest",
-                experiment_output_dir=baseline_output_dir,
-            )
-        except RuntimeError:
-            print("Ingest monitor did not exit gracefully; forcing kill...")
-            remote_monitor_service.kill_remote_monitor(
-                execution_mode="ingest",
-                experiment_output_dir=baseline_output_dir,
-            )
-            remote_monitor_service.wait_for_remote_monitor_process_exit(
-                timeout=30,
+                polling_interval=constants.REMOTE_MONITOR_EXIT_POLL_INTERVAL_SECONDS,
                 execution_mode="ingest",
                 experiment_output_dir=baseline_output_dir,
             )

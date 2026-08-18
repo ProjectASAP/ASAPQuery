@@ -5,6 +5,8 @@ import traceback
 from typing import List, Any, Optional
 from classes.ProcessMonitorHook import ProcessMonitorHook, ProcessMetricSnapshot
 
+import constants
+
 _PRECOMPUTE_THREAD_PREFIX = "pc-worker"
 
 
@@ -272,19 +274,19 @@ def start_monitor(
     return monitor, control_pipe, monitor_pipe
 
 
-def stop_monitor(monitor, control_pipe, monitor_pipe, timeout=30):
+def stop_monitor(monitor, control_pipe, monitor_pipe, timeout: float):
     control_pipe.send("stop")
     can_read = control_pipe.poll(timeout)
     if can_read:
         monitor_info = control_pipe.recv()
-        monitor.join(timeout=10)
+        monitor.join(timeout=constants.PROCESS_MONITOR_JOIN_TIMEOUT_SECONDS)
     else:
         monitor_info = None
         monitor.terminate()
-        monitor.join(timeout=10)
+        monitor.join(timeout=constants.PROCESS_MONITOR_JOIN_TIMEOUT_SECONDS)
     # terminate/join can still leave a stuck sampler; escalate so callers
     # do not leak orphaned monitor processes across experiment phases.
     if monitor.is_alive():
         monitor.kill()
-        monitor.join(timeout=5)
+        monitor.join(timeout=constants.PROCESS_MONITOR_JOIN_TIMEOUT_SECONDS)
     return monitor_info

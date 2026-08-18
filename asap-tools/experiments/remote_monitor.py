@@ -471,7 +471,9 @@ def main(args):
                 os.remove(stop_file)
                 shutdown.set()
                 break
-            shutdown.wait(timeout=0.5)
+            shutdown.wait(
+                timeout=constants.INGEST_MONITOR_SHUTDOWN_POLL_INTERVAL_SECONDS
+            )
     elif args.execution_mode == "timed":
         logger.debug(f"Running for {args.time_to_run} seconds")
         time.sleep(args.time_to_run)
@@ -494,7 +496,12 @@ def main(args):
         convert_query_engine_perf_data(args.experiment_output_dir)
 
     logger.debug("Stopping process monitors")
-    monitor_info = process_monitor.stop_monitor(monitor, control_pipe, monitor_pipe)
+    monitor_info = process_monitor.stop_monitor(
+        monitor,
+        control_pipe,
+        monitor_pipe,
+        timeout=constants.PROCESS_MONITOR_STOP_TIMEOUT_SECONDS,
+    )
 
     monitor_output_file = os.path.join(
         remote_monitor_output_dir, args.monitor_output_file
@@ -598,7 +605,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--monitor_interval_seconds",
         type=float,
-        default=1.0,
+        required=True,
         help=(
             "Seconds between process/thread CPU+memory samples. Smaller values "
             "(e.g. 0.1) capture short precompute/query CPU spikes that 1s "
