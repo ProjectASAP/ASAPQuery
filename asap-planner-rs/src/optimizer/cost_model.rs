@@ -4,7 +4,7 @@ use super::candidate_gen::CandidateConfig;
 use super::constants::{
     EXACT_QUERY_CPU_SECS, INGEST_CPU_WEIGHT, INGEST_MEM_WEIGHT, INSERT_CPU_SECS,
     MEM_BYTES_PER_INSTANCE, MERGE_CPU_SECS, QUERY_CPU_SECS, QUERY_CPU_WEIGHT, QUERY_MEM_WEIGHT,
-    SUBTRACT_CPU_SECS,
+    SUBPOPULATION_COUNT, SUBTRACT_CPU_SECS,
 };
 use super::sketch_properties::sketch_properties;
 use super::solution::{QueryMethod, AQE};
@@ -75,11 +75,7 @@ pub fn ingest_cost(
         return 0.0; // EXACT: no streaming config deployed.
     };
 
-    // Subpopulation count: 1 if subpopulation_aware else the distinct
-    // label-group count for this config. The label-group count isn't profiled
-    // yet (needs Prometheus series-count data) — use 1 as a placeholder; both
-    // branches collapse to the same value until that lands.
-    let subpopulation_count = 1.0_f64;
+    let subpopulation_count = SUBPOPULATION_COUNT;
 
     // Defensive floor: slide_interval_ms is a plain u64 on a widely-shared struct;
     // guard against div-by-zero producing `inf` and poisoning cost comparisons.
@@ -112,7 +108,7 @@ pub fn query_cost(
     };
 
     // Subpopulation count; see ingest_cost comment.
-    let subpopulation_count = 1.0_f64;
+    let subpopulation_count = SUBPOPULATION_COUNT;
     let props = sketch_properties(agg_config.aggregation_type);
 
     let (cpu, mem) = match &candidate.query_method {

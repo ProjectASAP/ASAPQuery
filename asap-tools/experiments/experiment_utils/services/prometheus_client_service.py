@@ -237,10 +237,11 @@ class QueryClientService(BaseService):
 
     def _stop_bare_metal(self):
         """Kill Prometheus client processes."""
-        cmd = "pkill -f main_prometheus_client.py"
+        # Keep pkill from matching the local shell that invokes it.
+        cmd = "pkill -f '[m]ain_prometheus_client.py'"
         if not self.provider.is_remote():
-            # If running on localhost, use pkill to stop the process (e.g. from remote_monitor)
-            utils.run_cmd(cmd, popen=False)
+            # A missing process is an already-stopped client, not an error.
+            utils.run_cmd(cmd, popen=False, ignore_errors=True)
         else:
             self.provider.execute_command(
                 node_idx=self.node_offset,
