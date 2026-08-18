@@ -5,7 +5,8 @@ use asap_types::PromQLSchema;
 use crate::config::input::ControllerConfig;
 
 use super::aqe_extractor::{extract_aqes, RQE};
-use super::cost_model::{AtomicCosts, CostWeights};
+use super::atomic_costs::AtomicCostTable;
+use super::cost_model::CostWeights;
 use super::greedy::greedy_assign;
 use super::solution::{OptimizerSolution, AQE};
 use super::translator::{translate, TranslationSummary};
@@ -73,13 +74,14 @@ pub fn run_greedy_pipeline(
     schema: &PromQLSchema,
     scrape_interval_ms: u64,
     arrival_rate_hz: f64,
+    atomic_cost_table: &AtomicCostTable,
 ) -> (StreamingConfig, InferenceConfig) {
     run_pipeline(config, schema, scrape_interval_ms, "greedy", |aqes| {
         greedy_assign(
             aqes,
             scrape_interval_ms,
             arrival_rate_hz,
-            &AtomicCosts::default(),
+            atomic_cost_table,
             &CostWeights::default(),
         )
     })
@@ -145,7 +147,8 @@ mod tests {
     fn greedy_pipeline_deploys_a_config_for_a_mergeable_aqe() {
         let config = make_config(&[("min_over_time(metric[5m])", 60_000)]);
         let schema = PromQLSchema::new();
-        let (streaming, inference) = run_greedy_pipeline(&config, &schema, 60_000, 1.0);
+        let (streaming, inference) =
+            run_greedy_pipeline(&config, &schema, 60_000, 1.0, &AtomicCostTable::default());
         assert!(!streaming.get_all_aggregation_configs().is_empty());
         assert!(!inference.query_configs.is_empty());
     }

@@ -5,11 +5,15 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use asap_planner::{
-    optimizer::{enumerate_candidates, extract_aqes, CandidateConfig, RQE},
+    optimizer::{
+        enumerate_candidates, extract_aqes, load_atomic_cost_table, resolve_atomic_costs,
+        AtomicCostTable, AtomicCosts, CandidateConfig, RQE,
+    },
     ControllerConfig,
 };
 use asap_types::enums::WindowType;
 use clap::Parser;
+use promql_utilities::query_logics::enums::AggregationType;
 use serde_json::Value;
 
 #[derive(Parser)]
@@ -23,10 +27,22 @@ struct Args {
 
     #[arg(long = "data-ingestion-interval-ms")]
     scrape_interval_ms: u64,
+
+    /// Path to sketch-bench's exported atomic-cost table (see ASAPQuery#524).
+    /// When given, each params row also prints its resolved AtomicCosts --
+    /// real (from the table) or the flat stub (unbenchmarked family, or this
+    /// exact param point missing from the table) -- labeled which.
+    #[arg(long = "atomic-costs")]
+    atomic_costs: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    let atomic_cost_table = match &args.atomic_costs {
+        Some(path) => load_atomic_cost_table(path)?,
+        None => AtomicCostTable::default(),
+    };
 
     let yaml_str = std::fs::read_to_string(&args.input_config)?;
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
@@ -59,7 +75,7 @@ fn main() -> anyhow::Result<()> {
         println!("  queries: {:?}", aqe.query_strings);
 
         let candidates = enumerate_candidates(aqe, args.scrape_interval_ms);
-        print_candidates_grouped(&candidates);
+        print_candidates_grouped(&candidates, &atomic_cost_table);
     }
 
     Ok(())
@@ -72,14 +88,16 @@ fn main() -> anyhow::Result<()> {
 ///     params (M)  [× N windows = NM total]:
 ///       ...
 /// EXACT is printed last as a single line.
-fn print_candidates_grouped(candidates: &[CandidateConfig]) {
+fn print_candidates_grouped(candidates: &[CandidateConfig], atomic_cost_table: &AtomicCostTable) {
     // Collect unique (agg_type_str, sub_type) keys in first-seen order.
     let mut group_order: Vec<(String, String)> = Vec::new();
-    // (agg_type_str, sub_type) -> (unique windows, unique params)
+    // (agg_type_str, sub_type) -> (agg_type, unique windows, unique params)
     type WindowKey = (WindowType, u64, u64, u64); // (type, size, slide, n)
     #[allow(clippy::type_complexity)]
-    let mut groups: HashMap<(String, String), (Vec<WindowKey>, Vec<Vec<(String, Value)>>)> =
-        HashMap::new();
+    let mut groups: HashMap<
+        (String, String),
+        (AggregationType, Vec<WindowKey>, Vec<Vec<(String, Value)>>),
+    > = HashMap::new();
 
     let mut has_exact = false;
 
@@ -96,7 +114,7 @@ fn print_candidates_grouped(candidates: &[CandidateConfig]) {
 
         let entry = groups.entry(key.clone()).or_insert_with(|| {
             group_order.push(key);
-            (Vec::new(), Vec::new())
+            (cfg.aggregation_type, Vec::new(), Vec::new())
         });
 
         let wk: WindowKey = (
@@ -105,8 +123,8 @@ fn print_candidates_grouped(candidates: &[CandidateConfig]) {
             cfg.slide_interval_ms,
             c.n_windows,
         );
-        if !entry.0.contains(&wk) {
-            entry.0.push(wk);
+        if !entry.1.contains(&wk) {
+            entry.1.push(wk);
         }
 
         let mut params: Vec<(String, Value)> = cfg
@@ -115,15 +133,15 @@ fn print_candidates_grouped(candidates: &[CandidateConfig]) {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         params.sort_by(|(a, _), (b, _)| a.cmp(b));
-        if !entry.1.contains(&params) {
-            entry.1.push(params);
+        if !entry.2.contains(&params) {
+            entry.2.push(params);
         }
     }
 
     let total_sketch: usize = group_order
         .iter()
         .map(|k| {
-            let (ws, ps) = &groups[k];
+            let (_, ws, ps) = &groups[k];
             ws.len() * ps.len()
         })
         .sum();
@@ -135,7 +153,7 @@ fn print_candidates_grouped(candidates: &[CandidateConfig]) {
     );
 
     for key in &group_order {
-        let (windows, params) = &groups[key];
+        let (agg_type, windows, params) = &groups[key];
         let (agg_type_str, sub_type) = key;
         let sub = if sub_type.is_empty() {
             String::new()
@@ -169,11 +187,39 @@ fn print_candidates_grouped(candidates: &[CandidateConfig]) {
         println!("      params:");
         for p in params {
             let kv: Vec<_> = p.iter().map(|(k, v)| format!("{k}: {v}")).collect();
-            println!("        {{{}}}", kv.join(", "));
+            let costs_str = if atomic_cost_table.is_empty() {
+                String::new()
+            } else {
+                let param_map: HashMap<String, Value> =
+                    p.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+                match resolve_atomic_costs(atomic_cost_table, *agg_type, &param_map) {
+                    Some(costs) => {
+                        let label = if costs == AtomicCosts::default() {
+                            "stub"
+                        } else {
+                            "real"
+                        };
+                        format!("  -> [{label}] {}", format_costs(&costs))
+                    }
+                    None => "  -> DROPPED (no matching table row)".to_string(),
+                }
+            };
+            println!("        {{{}}}{costs_str}", kv.join(", "));
         }
     }
 
     if has_exact {
         println!("\n    [EXACT]");
     }
+}
+
+fn format_costs(costs: &AtomicCosts) -> String {
+    format!(
+        "mem={:.0}B insert={:.3e}s merge={:.3e}s subtract={:.3e}s query={:.3e}s",
+        costs.mem_bytes_per_instance,
+        costs.insert_cpu_secs,
+        costs.merge_cpu_secs,
+        costs.subtract_cpu_secs,
+        costs.query_cpu_secs,
+    )
 }

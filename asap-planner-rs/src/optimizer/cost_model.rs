@@ -11,7 +11,7 @@ use super::solution::{QueryMethod, AQE};
 
 /// Per-operation costs for one sketch instance. Stub defaults for v1 — real
 /// values come from sketch-bench in Phase 3 (see implementation plan, 3c).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtomicCosts {
     pub mem_bytes_per_instance: f64,
     pub insert_cpu_secs: f64,

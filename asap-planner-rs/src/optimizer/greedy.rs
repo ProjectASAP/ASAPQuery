@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use asap_types::aggregation_config::AggregationConfig;
 use tracing::debug;
 
+use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
 use super::candidate_gen::enumerate_candidates;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
 use super::solution::{AQEAssignment, OptimizerSolution, AQE};
@@ -16,11 +17,16 @@ use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 /// `arrival_rate_hz` is the per-item arrival rate used for every candidate's IngestCost.
 /// Real per-config rates need Prometheus scrape-rate × series-count data,
 /// which isn't wired up yet — a single placeholder value is applied uniformly.
+///
+/// Each candidate is costed at its own `(sketch_type, params)` via
+/// `atomic_cost_table` (see ASAPQuery#524) rather than one cost applied to
+/// every candidate; a candidate whose config has no matching table entry is
+/// dropped from consideration (`resolve_atomic_costs` returns `None`).
 pub fn greedy_assign(
     aqes: Vec<AQE>,
     scrape_interval_ms: u64,
     arrival_rate_hz: f64,
-    costs: &AtomicCosts,
+    atomic_cost_table: &AtomicCostTable,
     weights: &CostWeights,
 ) -> OptimizerSolution {
     let mut deployed_configs: HashMap<u64, AggregationConfig> = HashMap::new();
@@ -32,19 +38,32 @@ pub fn greedy_assign(
     for aqe in aqes {
         let candidates = enumerate_candidates(&aqe, scrape_interval_ms);
 
-        let best = candidates
+        let (best, costs) = candidates
             .into_iter()
-            .map(|c| {
-                let cost = total_cost_rate(&aqe, &c, arrival_rate_hz, costs, weights);
-                (c, cost)
+            .filter_map(|c| {
+                // EXACT (config: None) always costs at the flat stub — it has
+                // no sketch_type/params for the table to key on.
+                let costs = match &c.config {
+                    None => AtomicCosts::default(),
+                    Some(cfg) => resolve_atomic_costs(
+                        atomic_cost_table,
+                        cfg.aggregation_type,
+                        &cfg.parameters,
+                    )?,
+                };
+                let cost = total_cost_rate(&aqe, &c, arrival_rate_hz, &costs, weights);
+                Some((c, costs, cost))
             })
             // total_cmp (not partial_cmp().unwrap()) so a stray NaN cost can't panic.
-            .min_by(|(_, a), (_, b)| a.total_cmp(b))
-            .map(|(c, _)| c)
-            .expect("enumerate_candidates always returns at least the EXACT fallback");
+            .min_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
+            .map(|(c, costs, _)| (c, costs))
+            .expect(
+                "enumerate_candidates always returns at least the EXACT fallback, \
+                 which always resolves (flat stub, no table lookup)",
+            );
 
-        let ingest = ingest_cost(&best, arrival_rate_hz, costs, weights);
-        let query_rate = aqe.query_frequency_hz * query_cost(&aqe, &best, costs, weights);
+        let ingest = ingest_cost(&best, arrival_rate_hz, &costs, weights);
+        let query_rate = aqe.query_frequency_hz * query_cost(&aqe, &best, &costs, weights);
         let query_method = best.query_method.clone();
 
         let aggregation_id = match best.config {
@@ -121,7 +140,7 @@ mod tests {
             aqes,
             60_000,
             1.0,
-            &AtomicCosts::default(),
+            &AtomicCostTable::default(),
             &CostWeights::default(),
         );
 
@@ -155,7 +174,7 @@ mod tests {
             vec![aqe],
             60_000,
             1.0,
-            &AtomicCosts::default(),
+            &AtomicCostTable::default(),
             &CostWeights::default(),
         );
         assert_eq!(solution.num_exact_fallback(), 1);
