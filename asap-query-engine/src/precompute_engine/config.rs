@@ -34,9 +34,13 @@ pub struct PrecomputeEngineConfig {
     /// `flush_all`. When event-time stagnates (e.g. a one-shot batch where
     /// every record carries the same timestamp), `flush_all`'s `+1ms`
     /// watermark advance is a no-op and idle windows never close. The
-    /// wall-clock fallback closes a pane whose creation has been older
-    /// than `window_size_ms + wall_clock_grace_period_ms` of *wall-clock*
-    /// time, regardless of where event-time is. The grace period tolerates
+    /// wall-clock fallback closes a pane that has gone *idle* — untouched by
+    /// a sample — for `window_size_ms + wall_clock_grace_period_ms` of
+    /// *wall-clock* time, regardless of where event-time is. A pane still
+    /// actively receiving samples is never force-closed this way, no matter
+    /// how long it's been open (e.g. a bulk load whose rows all share one
+    /// event-time and takes longer than the grace period to ingest keeps its
+    /// window open for the duration of the load). The grace period tolerates
     /// late-arriving events that would otherwise be evicted as "the window
     /// already closed". Set to `<= 0` to opt out and keep strict
     /// event-time-only semantics. Default: 5000 ms (matches

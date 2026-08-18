@@ -29,22 +29,34 @@ struct GroupState {
     /// series in this group on this worker.
     previous_watermark_ms: i64,
     /// Wall-clock-time (ms since epoch) at which each currently-open pane
-    /// was first opened. Used by `flush_all`'s wall-clock fallback to
-    /// close panes that have been alive too long when event-time has
-    /// stagnated. Keyed by `pane_start_ms`, mirroring `active_panes`.
-    /// Entries are GC'd by `prune_pane_wall_clock_starts` after each
-    /// window-close cycle so the bookkeeping doesn't leak as panes turn over.
-    pane_wall_clock_starts_ms: BTreeMap<i64, i64>,
+    /// was last touched by a sample. Refreshed on every touch, not just the
+    /// first. Used by `flush_all`'s wall-clock fallback to close panes that
+    /// have been *idle* too long when event-time has stagnated — a pane
+    /// still receiving samples is never "too old," no matter how long it's
+    /// been open, only a pane nothing has touched in a while is. Keyed by
+    /// `pane_start_ms`, mirroring `active_panes`. Entries are GC'd by
+    /// `prune_pane_wall_clock_last_touch` after each window-close cycle so
+    /// the bookkeeping doesn't leak as panes turn over.
+    ///
+    /// No absolute ceiling on pane lifetime is enforced here by design: a
+    /// pane touched forever without ever going idle (e.g. a misbehaving
+    /// source stuck emitting a stagnant timestamp at a low but nonzero rate)
+    /// stays open, growing memory, until process shutdown force-closes it
+    /// via `force_close_all`. Deferred rather than bolted on speculatively —
+    /// distinct failure mode from the bulk-load case this field fixes, with
+    /// no evidence it happens in practice. Add `now - first_touch >= max_ms`
+    /// if it does.
+    pane_wall_clock_last_touch_ms: BTreeMap<i64, i64>,
 }
 
 impl GroupState {
-    /// Drop wall-clock-start entries whose pane no longer exists in
+    /// Drop wall-clock-last-touch entries whose pane no longer exists in
     /// `active_panes`. Called after window-close cycles in
     /// `process_group_samples` and `flush_all` so the bookkeeping doesn't
     /// leak as panes turn over.
-    fn prune_pane_wall_clock_starts(&mut self) {
+    fn prune_pane_wall_clock_last_touch(&mut self) {
         let active = &self.active_panes;
-        self.pane_wall_clock_starts_ms
+        self.pane_wall_clock_last_touch_ms
             .retain(|ps, _| active.contains_key(ps));
     }
 }
@@ -352,7 +364,7 @@ impl Worker {
                 config,
                 active_panes: BTreeMap::new(),
                 previous_watermark_ms: i64::MIN,
-                pane_wall_clock_starts_ms: BTreeMap::new(),
+                pane_wall_clock_last_touch_ms: BTreeMap::new(),
             };
             self.group_states
                 .entry(agg_id)
@@ -456,13 +468,15 @@ impl Worker {
             }
 
             // Normal path: route sample to its single pane accumulator.
-            // Record the pane's wall-clock birth time the first time we
-            // touch it, so the wall-clock fallback in `flush_all` can age
-            // it out even if event-time freezes.
+            // Refresh the pane's last-touch wall-clock time on every touch
+            // (not just the first) so the wall-clock fallback in `flush_all`
+            // only ages out panes that have gone idle, never a pane still
+            // actively receiving samples — e.g. a bulk load whose rows all
+            // share one event-time and take longer than the grace period to
+            // ingest must not have its window force-closed mid-ingest.
             state
-                .pane_wall_clock_starts_ms
-                .entry(pane_start)
-                .or_insert(now_ms);
+                .pane_wall_clock_last_touch_ms
+                .insert(pane_start, now_ms);
             let updater = match state.active_panes.entry(pane_start) {
                 std::collections::btree_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::btree_map::Entry::Vacant(e) => {
@@ -494,7 +508,7 @@ impl Worker {
         }
 
         state.previous_watermark_ms = current_wm;
-        state.prune_pane_wall_clock_starts();
+        state.prune_pane_wall_clock_last_touch();
 
         // Emit to output sink
         if !emit_batch.is_empty() {
@@ -595,14 +609,19 @@ impl Worker {
                 // freezes and `closed_windows(prev, prev+1)` returns empty
                 // forever — the window never closes and the store stays empty
                 // even though data has been ingested. Force `effective_wm`
-                // past `pane_start + window_size_ms` for any pane older than
-                // `window_size + grace` of WALL-CLOCK time. Set
+                // past `pane_start + window_size_ms` for any pane that has
+                // gone *idle* — untouched by a sample — for `window_size +
+                // grace` of WALL-CLOCK time. This deliberately does NOT
+                // trigger for a pane still actively receiving samples (e.g. a
+                // bulk load taking longer than the grace period to ingest):
+                // `pane_wall_clock_last_touch_ms` is refreshed on every touch,
+                // so only silence, not age, ages a pane out. Set
                 // `wall_clock_grace_period_ms <= 0` to opt out and keep strict
                 // event-time semantics.
                 if grace_ms > 0 {
                     let window_size_ms = state.window_manager.window_size_ms();
-                    for (&pane_start, &pane_birth_ms) in &state.pane_wall_clock_starts_ms {
-                        if now_ms.saturating_sub(pane_birth_ms) >= window_size_ms + grace_ms {
+                    for (&pane_start, &pane_last_touch_ms) in &state.pane_wall_clock_last_touch_ms {
+                        if now_ms.saturating_sub(pane_last_touch_ms) >= window_size_ms + grace_ms {
                             let force_to = pane_start.saturating_add(window_size_ms);
                             if force_to > effective_wm {
                                 effective_wm = force_to;
@@ -641,7 +660,7 @@ impl Worker {
                     state.previous_watermark_ms = effective_wm;
                 }
 
-                state.prune_pane_wall_clock_starts();
+                state.prune_pane_wall_clock_last_touch();
             }
         }
 
@@ -720,7 +739,7 @@ impl Worker {
                 if force_wm > state.previous_watermark_ms {
                     state.previous_watermark_ms = force_wm;
                 }
-                state.prune_pane_wall_clock_starts();
+                state.prune_pane_wall_clock_last_touch();
             }
         }
 
@@ -2845,7 +2864,16 @@ aggregations:
             arc_configs(agg_configs),
             WorkerRuntimeConfig {
                 max_buffer_per_series: 10_000,
-                allowed_lateness_ms: 0,
+                // 1, not 0: every flush_all() call unconditionally nudges the
+                // event-time watermark forward by 1ms (the "+1ms boundary
+                // advance" that lets an idle stream make progress),
+                // independent of the wall-clock fallback these tests target.
+                // A test that calls flush_all() and then processes another
+                // same-timestamp touch would otherwise have that 1ms of
+                // drift alone mark the touch "late" and drop it via a wholly
+                // different code path. 1ms is the exact amount one
+                // intervening flush contributes, not an arbitrary buffer.
+                allowed_lateness_ms: 1,
                 pass_raw_samples: false,
                 raw_mode_aggregation_id: 0,
                 late_data_policy: LateDataPolicy::Drop,
@@ -2923,6 +2951,99 @@ aggregations:
         // wall-clock bookkeeping, so a subsequent flush must not re-emit.
         worker.flush_all().unwrap();
         assert_eq!(sink.len(), 0, "already-closed window must not re-emit");
+    }
+
+    // Regression test for issue #474: a bulk one-shot load whose rows all
+    // share one event-time can take longer than `window_size_ms +
+    // wall_clock_grace_period_ms` to ingest. Before the fix, the wall-clock
+    // fallback measured age since a pane was *first* touched, so it force-
+    // closed the window mid-ingest and every sample arriving afterward hit
+    // the (hardcoded-Drop) late-data path — a silent, uniform undercount.
+    // The fix refreshes the pane's wall-clock bookkeeping on every touch, so
+    // the fallback only fires once a pane has gone genuinely idle.
+    #[test]
+    fn wall_clock_fallback_does_not_close_a_pane_still_receiving_samples() {
+        // Production defaults: 1s tumbling window, 5s grace ⇒ old birth-time
+        // deadline was window_size + grace = 6s.
+        let cfg = make_agg_config(
+            7,
+            "netflow_bytes",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            1_000,
+            0,
+            vec![],
+        );
+        let agg_configs = HashMap::from([(7, cfg)]);
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker_with_grace(agg_configs, sink.clone(), 5_000);
+
+        let wall_clock = Arc::new(AtomicI64::new(1_000_000));
+        let wc_clone = wall_clock.clone();
+        worker.set_now_ms_fn(Box::new(move || wc_clone.load(Ordering::Relaxed)));
+
+        // Every sample shares event-time 0 (the degenerate bulk-load case),
+        // but the pane is touched once per simulated wall-clock second for
+        // 7 seconds straight — actively receiving data the whole time.
+        let mut expected_sum = 0.0;
+        for i in 0..7 {
+            wall_clock.store(1_000_000 + i * 1_000, Ordering::Relaxed);
+            let val = 1.0 + i as f64;
+            expected_sum += val;
+            worker
+                .process_group_samples(7, "", group_samples("netflow_bytes", vec![(0, val)]))
+                .expect("ingest must accept frozen-event-time samples");
+        }
+
+        // Flush at wall_clock = birth(1_000_000) + 6_500ms — past the OLD
+        // birth-time deadline of birth + window_size + grace = 1_006_000,
+        // but the pane was last touched at 1_006_000 (i=6), only 500ms ago.
+        // A pane still this fresh must not be force-closed.
+        wall_clock.store(1_000_000 + 6_500, Ordering::Relaxed);
+        worker.flush_all().unwrap();
+        assert_eq!(
+            sink.len(),
+            0,
+            "a pane still actively receiving samples must not be force-closed \
+             just because it has been open longer than window_size + grace"
+        );
+
+        // Ingest continues past the mid-ingest check: an 8th touch lands at
+        // wall_clock = 1_007_000, refreshing last-touch again.
+        wall_clock.store(1_000_000 + 7_000, Ordering::Relaxed);
+        let val = 1.0 + 7_f64;
+        expected_sum += val;
+        worker
+            .process_group_samples(7, "", group_samples("netflow_bytes", vec![(0, val)]))
+            .expect("ingest must accept frozen-event-time samples");
+
+        // Ingest stops after the 8th touch (wall_clock = 1_007_000). Advance
+        // past last_touch + window_size + grace and flush: NOW the fallback
+        // must close the window, with every sample's contribution intact.
+        wall_clock.store(1_000_000 + 7_000 + 1_000 + 5_000 + 1, Ordering::Relaxed);
+        worker.flush_all().unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(
+            captured.len(),
+            1,
+            "pane must close once it actually goes idle, with no data lost \
+             from any of the 8 touches"
+        );
+        let (output, acc) = &captured[0];
+        assert_eq!(output.aggregation_id, 7);
+        assert_eq!(output.start_timestamp, 0);
+        assert_eq!(output.end_timestamp, 1_000);
+        let sum_acc = acc
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("Sum aggregation should emit a SumAccumulator");
+        assert!(
+            (sum_acc.sum - expected_sum).abs() < 1e-9,
+            "expected all 8 touches merged: expected {}, got {}",
+            expected_sum,
+            sum_acc.sum
+        );
     }
 
     #[test]
