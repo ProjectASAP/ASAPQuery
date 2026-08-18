@@ -14,7 +14,6 @@ from omegaconf import DictConfig, OmegaConf
 
 import constants
 from experiment_utils import config
-from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
     FlinkService,
@@ -55,9 +54,7 @@ def main(cfg: DictConfig):
     # Validate configuration (minimal validation for provider setup)
     config.validate_config(cfg)
     args = config.Args(cfg)
-
-    # Create infrastructure provider
-    provider = create_provider(cfg)
+    provider = args.provider
 
     num_nodes_in_experiment = args.num_nodes
 

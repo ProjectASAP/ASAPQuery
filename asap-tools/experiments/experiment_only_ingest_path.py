@@ -8,7 +8,6 @@ from omegaconf import DictConfig, OmegaConf
 import constants
 import experiment_utils
 from experiment_utils import sync, config
-from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
     ExporterServiceFactory,
@@ -74,11 +73,9 @@ def main(cfg: DictConfig):
     is_v2 = experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
 
     # Convert config to args-like object for backward compatibility
+    # (also constructs the infrastructure provider, exposed as args.provider)
     args = config.Args(cfg)
-
-    # Create infrastructure provider
-    provider = create_provider(cfg)
-    args.remote_write_ip = provider.get_node_ip(args.node_offset)
+    provider = args.provider
 
     local_experiment_root_dir = os.path.join(
         constants.LOCAL_EXPERIMENT_DIR, args.experiment_name

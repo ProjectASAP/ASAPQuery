@@ -7,7 +7,6 @@ from omegaconf import DictConfig, OmegaConf
 import constants
 import experiment_utils
 from experiment_utils import sync, config
-from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     ExporterServiceFactory,
     SystemExportersService,
@@ -30,10 +29,9 @@ def main(cfg: DictConfig):
     # Validate experiment configuration
     config.validate_experiment_config(cfg.experiment_params)
     # Convert config to args-like object for backward compatibility
+    # (also constructs the infrastructure provider, exposed as args.provider)
     args = config.Args(cfg)
-
-    # Create infrastructure provider
-    provider = create_provider(cfg)
+    provider = args.provider
 
     local_experiment_root_dir = os.path.join(
         constants.LOCAL_EXPERIMENT_DIR, args.experiment_name
