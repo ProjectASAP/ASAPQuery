@@ -42,13 +42,10 @@ pub struct JsonFileIngestConfig {
     pub timestamp_col: String,
     pub timestamp_unit: TimestampUnit,
     pub batch_size: usize,
-    /// Test-support only: real delay after sending each batch, in
-    /// milliseconds. `0` (the only value any production config uses) is a
-    /// no-op — the reader sends batches as fast as it can, unchanged from
-    /// before this field existed. A nonzero value exists so integration
-    /// tests can force ingest to span real wall-clock time deterministically
-    /// (e.g. to give a periodic flush timer real chances to fire mid-ingest),
-    /// instead of hoping incidental scheduling overhead is enough.
+    /// Delay after sending each batch, in milliseconds. `0` (the default)
+    /// sends batches as fast as possible, unchanged from before this field
+    /// existed. A nonzero value throttles ingestion to a real, deterministic
+    /// pace.
     pub batch_delay_ms: u64,
 }
 

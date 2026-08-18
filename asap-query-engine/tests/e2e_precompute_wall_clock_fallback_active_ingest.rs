@@ -1,37 +1,42 @@
-//! End-to-end regression test for issue #474: a bulk one-shot ingest whose
-//! rows all share one event-time (so the watermark never advances) can take
-//! longer, in real wall-clock time, than `window_size_ms +
-//! wall_clock_grace_period_ms` to fully land. Before the fix, the wall-clock
-//! fallback in `flush_all` aged a pane by time-since-*first-touch*, so it
-//! force-closed the window mid-ingest and every row arriving afterward hit
-//! the (hardcoded-Drop) late-data path — a silent, uniform undercount.
+//! End-to-end test: JSON file ingestion of a bulk one-shot batch whose rows
+//! all share one event-time (so the watermark never advances) must not lose
+//! rows even when ingestion takes longer, in real wall-clock time, than
+//! `window_size_ms + wall_clock_grace_period_ms`. The wall-clock fallback in
+//! `flush_all` exists to force-close a window when event-time stagnates, but
+//! it must only do so once a pane has gone genuinely idle — never while a
+//! pane is still actively receiving samples, however long it's been open.
+//! (A prior bug aged a pane by time-since-*first-touch* instead of
+//! time-since-*last-touch*, so it force-closed the window mid-ingest and
+//! every row arriving afterward hit the hardcoded-Drop late-data path — a
+//! silent, uniform undercount.)
 //!
 //! This drives the real `JsonFileIngestSource → PrecomputeEngine → sink`
 //! path, not `Worker` directly, to catch wiring gaps the `worker.rs` unit
 //! test (`wall_clock_fallback_does_not_close_a_pane_still_receiving_samples`)
 //! can't — e.g. `PrecomputeEngineConfig` not actually reaching the workers.
-//! That unit test remains the precise, fully deterministic proof of the fix;
-//! this test is a wiring sanity check on top, and needs two pieces of
-//! test-only support to be deterministic-by-construction rather than
+//! That unit test remains the precise, fully deterministic proof of the
+//! fallback's behavior; this test is a wiring sanity check on top, and
+//! relies on two things to be deterministic-by-construction rather than
 //! best-effort:
 //!
 //! 1. `PrecomputeEngine::with_now_ms_fn` (a real, not `#[cfg(test)]`-gated,
-//!    hook) — used here with an *unscaled* real clock (no multiplier). An
-//!    earlier version of this test scaled real elapsed time up 50x to reach
-//!    a multi-second-equivalent deadline in tens of real milliseconds, but
-//!    that amplifies ordinary scheduling jitter right along with intentional
-//!    delay — a batch arriving a few tens of ms late (a common, harmless
-//!    hiccup under load) reads as *seconds* of simulated time, enough to
-//!    spuriously cross the deadline between two consecutive touches. Using
-//!    the real clock as-is with seconds-scale delays (below) avoids that:
-//!    jitter stays a small fraction of the margin instead of dominating it.
-//! 2. `JsonFileIngestConfig::batch_delay_ms` — a real, explicit delay after
-//!    each batch send, so ingest is *guaranteed* (not merely likely, given
-//!    incidental scheduling overhead) to span real wall-clock time. Combined
-//!    with a short `flush_interval_ms`, the periodic flush timer is given
-//!    many real chances to land mid-ingest, not just one narrow shot.
-//!
-//! Both default to off/zero and are unused by every production code path.
+//!    test-only hook) — used here with an *unscaled* real clock (no
+//!    multiplier). An earlier version of this test scaled real elapsed time
+//!    up 50x to reach a multi-second-equivalent deadline in tens of real
+//!    milliseconds, but that amplifies ordinary scheduling jitter right
+//!    along with intentional delay — a batch arriving a few tens of ms late
+//!    (a common, harmless hiccup under load) reads as *seconds* of
+//!    simulated time, enough to spuriously cross the deadline between two
+//!    consecutive touches. Using the real clock as-is with seconds-scale
+//!    delays (below) avoids that: jitter stays a small fraction of the
+//!    margin instead of dominating it.
+//! 2. `JsonFileIngestConfig::batch_delay_ms` — an ordinary throttling knob
+//!    (not test-only; it just has no other caller yet) set here to a real,
+//!    explicit delay after each batch send, so ingest is *guaranteed* (not
+//!    merely likely, given incidental scheduling overhead) to span real
+//!    wall-clock time. Combined with a short `flush_interval_ms`, the
+//!    periodic flush timer is given many real chances to land mid-ingest,
+//!    not just one narrow shot.
 //!
 //! Timing margins (deliberately generous, not tight):
 //! - deadline (window_size_ms + wall_clock_grace_period_ms) = 3000ms.
