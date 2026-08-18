@@ -13,14 +13,9 @@
 //! This drives the real `JsonFileIngestSource → PrecomputeEngine → sink`
 //! path, not `Worker` directly, to catch wiring gaps the `worker.rs` unit
 //! test (`wall_clock_fallback_does_not_close_a_pane_still_receiving_samples`)
-//! can't — e.g. `PrecomputeEngineConfig` not actually reaching the workers.
-//! That unit test remains the precise, fully deterministic proof of the
-//! fallback's behavior; this test is a wiring sanity check on top, and
-//! relies on two things to be deterministic-by-construction rather than
-//! best-effort:
+//! can't
 //!
-//! 1. `PrecomputeEngine::with_now_ms_fn` (a real, not `#[cfg(test)]`-gated,
-//!    test-only hook) — used here with an *unscaled* real clock (no
+//! 1. `PrecomputeEngine::with_now_ms_fn` — used here with an *unscaled* real clock (no
 //!    multiplier). An earlier version of this test scaled real elapsed time
 //!    up 50x to reach a multi-second-equivalent deadline in tens of real
 //!    milliseconds, but that amplifies ordinary scheduling jitter right
@@ -31,20 +26,8 @@
 //!    delays (below) avoids that: jitter stays a small fraction of the
 //!    margin instead of dominating it.
 //! 2. `JsonFileIngestConfig::batch_delay_ms` — an ordinary throttling knob
-//!    (not test-only; it just has no other caller yet) set here to a real,
-//!    explicit delay after each batch send, so ingest is *guaranteed* (not
-//!    merely likely, given incidental scheduling overhead) to span real
-//!    wall-clock time. Combined with a short `flush_interval_ms`, the
-//!    periodic flush timer is given many real chances to land mid-ingest,
-//!    not just one narrow shot.
-//!
-//! Timing margins (deliberately generous, not tight):
-//! - deadline (window_size_ms + wall_clock_grace_period_ms) = 3000ms.
-//! - batch_delay_ms = 400ms nominal per-gap, ~7.5x under the deadline — even
-//!   a few hundred ms of scheduling jitter on any single gap is absorbed.
-//! - 10 batches x 400ms ≈ 4000ms total ingest span, comfortably past the
-//!   3000ms deadline, so the old birth-time bug (were it still present)
-//!   would have real room to force-close mid-stream and drop later batches.
+//!    set here to a real, explicit delay after each batch send, so ingest is *guaranteed* to span real
+//!    wall-clock time.
 //!
 //! This trades test runtime (~4-5 real seconds) for robustness against jitter.
 
