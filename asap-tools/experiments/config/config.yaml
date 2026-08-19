@@ -70,7 +70,7 @@ streaming:
 # Prometheus configuration
 prometheus:
   # Global Prometheus settings
-  scrape_interval: "10s"  # How frequently to scrape targets
+  scrape_interval: "1s"  # How frequently to scrape targets
   evaluation_interval: "10s"  # How frequently to evaluate rules
   # query_log_file: "/scratch/sketch_db_for_prometheus/prometheus/queries.log"  # Disabled to avoid permission issues in Docker
   # Recording rules settings

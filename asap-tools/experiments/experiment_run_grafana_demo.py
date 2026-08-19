@@ -8,7 +8,6 @@ from omegaconf import DictConfig, OmegaConf
 import constants
 import experiment_utils
 from experiment_utils import sync, config
-from experiment_utils.providers.factory import create_provider
 from experiment_utils.services import (
     KafkaService,
     QueryEngineRustService,
@@ -51,11 +50,9 @@ def main(cfg: DictConfig):
     # Validate experiment configuration
     config.validate_experiment_config(cfg.experiment_params)
     # Convert config to args-like object for backward compatibility
+    # (also constructs the infrastructure provider, exposed as args.provider)
     args = config.Args(cfg)
-
-    # Create infrastructure provider
-    provider = create_provider(cfg)
-    args.remote_write_ip = provider.get_node_ip(args.node_offset)
+    provider = args.provider
 
     args.forward_unsupported_queries = True
     print("Forcing forward_unsupported_queries to True for Grafana demo")
@@ -71,7 +68,7 @@ def main(cfg: DictConfig):
 
     # Also dump args to a file for backward compatibility
     with open(os.path.join(local_experiment_root_dir, "cmdline_args.txt"), "w") as f:
-        json.dump(vars(args), f)
+        json.dump(args.to_dict(), f)
 
     experiment_root_output_dir = (
         f"{constants.CLOUDLAB_HOME_DIR}/experiment_outputs/{args.experiment_name}"

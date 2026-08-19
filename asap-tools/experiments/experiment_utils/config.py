@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Tuple
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 import constants
+from experiment_utils.providers.factory import create_provider
 
 
 def validate_basic_config(
@@ -532,6 +533,19 @@ class Args:
             self.cloudlab_username = cfg.providers.cloudlab.username
             self.hostname_suffix = cfg.providers.cloudlab.hostname_suffix
 
+        # Single source of truth for the infrastructure provider: build it here
+        # (from cfg alone) so every node-dependent value derived from it —
+        # remote_write_ip included — is computed in exactly one place instead
+        # of being re-derived (and potentially forgotten) in each script.
+        self.provider = create_provider(cfg)
+
+        # Remote write IP (127.0.0.1 for local mode, CloudLab's 10.10.1.x
+        # scheme otherwise). Written back onto cfg.streaming.remote_write.ip
+        # too, since generate_prometheus_config reads it from cfg directly
+        # rather than through this Args object.
+        self.remote_write_ip = self.provider.get_node_ip(self.node_offset)
+        cfg.streaming.remote_write.ip = self.remote_write_ip
+
         # Logging and debugging
         self.log_level = cfg.logging.level
 
@@ -565,10 +579,8 @@ class Args:
         self.do_local_flink = cfg.streaming.do_local_flink
         self.forward_unsupported_queries = cfg.streaming.forward_unsupported_queries
         self.use_kafka_ingest = cfg.streaming.use_kafka_ingest
-        # Remote write configuration
-        self.remote_write_ip = (
-            None  # set by caller: provider.get_node_ip(self.node_offset)
-        )
+        # Remote write configuration (self.remote_write_ip set above, near
+        # provider construction)
         self.remote_write_base_port = cfg.streaming.remote_write.base_port
         self.remote_write_path = cfg.streaming.remote_write.path
 
@@ -623,6 +635,15 @@ class Args:
     def get_coordinator_node(self) -> int:
         """Get the coordinator node index (first node in the range)."""
         return self.node_offset
+
+    def to_dict(self) -> Dict[str, Any]:
+        """JSON-serializable snapshot of this Args instance.
+
+        `provider` holds a live InfrastructureProvider object, so it's
+        swapped for its repr() (e.g. "CloudLabProvider(username='...', ...)")
+        rather than dropped.
+        """
+        return {k: (repr(v) if k == "provider" else v) for k, v in vars(self).items()}
 
 
 def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
