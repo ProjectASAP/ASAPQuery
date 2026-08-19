@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use asap_planner::optimizer::run_greedy_pipeline;
+use asap_planner::optimizer::{load_atomic_cost_table, run_greedy_pipeline, AtomicCostTable};
 use asap_planner::ControllerConfig;
 use clap::Parser;
 
@@ -28,6 +28,14 @@ struct Args {
     /// in .design_docs/optimizer-v1-implementation-plan.md.
     #[arg(long = "rho", default_value = "1.0", value_parser = parse_positive_finite)]
     rho: f64,
+
+    /// Path to the atomic-cost table sketch-bench's `atomic-costs` subcommand
+    /// exports (see ASAPQuery#524, sketch-bench#30). Omitted: every
+    /// benchmarked-family candidate (CMS/HLL/KLL) is dropped, since there is
+    /// no data to cost it at — only trivial accumulators and EXACT remain
+    /// selectable.
+    #[arg(long = "atomic-costs")]
+    atomic_costs: Option<PathBuf>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -56,8 +64,23 @@ fn main() -> anyhow::Result<()> {
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
     let schema = config.schema_from_hints();
 
-    let (streaming, inference) =
-        run_greedy_pipeline(&config, &schema, args.data_ingestion_interval_ms, args.rho);
+    let atomic_cost_table = match &args.atomic_costs {
+        Some(path) => load_atomic_cost_table(path)?,
+        None => {
+            tracing::warn!(
+                "no --atomic-costs supplied; CMS/HLL/KLL candidates will never be selected"
+            );
+            AtomicCostTable::default()
+        }
+    };
+
+    let (streaming, inference) = run_greedy_pipeline(
+        &config,
+        &schema,
+        args.data_ingestion_interval_ms,
+        args.rho,
+        &atomic_cost_table,
+    );
 
     let deployed = streaming.get_all_aggregation_configs();
     println!("=== Deployed streaming configs: {} ===", deployed.len());

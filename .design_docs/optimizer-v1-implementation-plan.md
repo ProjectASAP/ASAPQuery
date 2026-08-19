@@ -80,6 +80,8 @@ asap-planner-rs/src/optimizer/
 ├── candidate_gen.rs       enumerate candidate configs per AQE         [Phase 2b, done]
 ├── cost_model.rs          ingest/query cost formulas                  [Phase 2c, done]
 ├── greedy.rs              per-AQE greedy assignment                   [Phase 2e, done]
+├── atomic_costs.rs        (sketch_type, params) → AtomicCosts, from
+│                          sketch-bench's exported table                [Phase 2f, done, #549]
 │
 │  ── TO BE ADDED ──
 ├── feasibility.rs          Feasible(a,g) predicate — only meaningful once configs
@@ -222,6 +224,33 @@ placeholder value applied uniformly to every candidate — see open TODO below.
 a real `aggregation_id`, emits one `QueryConfig` per original query string, with
 `num_aggregates_to_retain` from `retention_count_for_assignment()`.
 
+#### 2f — `atomic_costs.rs` (done, issue #549, carved out of #524)
+
+`greedy.rs` no longer applies one global `AtomicCosts` to every candidate. Per candidate:
+
+```rust
+pub fn resolve_atomic_costs(table: &AtomicCostTable, agg_type: AggregationType,
+                             params: &HashMap<String, Value>) -> Option<AtomicCosts>
+```
+
+- `CountMinSketch` / `HLL` / `DatasketchesKLL`: translated to sketch-bench's `(algorithm, params)`
+  key (`sketch_bench_key()` — field names are duplicated from `candidate_gen.rs`'s `param_grid()`,
+  not derived from it, so a rename on either side without the other panics loudly instead of
+  silently mismatching) and looked up by exact key in the table. No match for that exact param
+  point → `None`, candidate dropped.
+- Every other `AggregationType` (trivial accumulators like `Sum`/`MinMax`, and sketches
+  sketch-bench doesn't wrap yet like `CountMinSketchWithHeap`/`HydraKLL`) → `Some(AtomicCosts::default())`,
+  the pre-#549 flat stub, with a `tracing::warn!`. **This means costs for those families are still
+  param-invariant** (e.g. `CountMinSketchWithHeap` currently costs identically regardless of
+  `depth`/`width`/`heapsize` — see #524 for the analytic memory bound that's supposed to replace
+  the stub for it).
+- No `subtract_cpu_secs` in the table (asap_sketchlib has no `subtract` yet — asap_sketchlib#69) —
+  always comes from the stub constant regardless of family.
+
+`AtomicCostEntry`/`AtomicCostTable` are a deliberate duplicate of sketch-bench's
+`aqpbm_core::atomic_costs` types (same reasoning as the field-name duplication above: sketch-bench's
+schema is still actively churning, so no shared crate dependency yet — see PR #547's discussion).
+
 ---
 
 ### 🔲 Phase 3 — Full MIP with Cross-AQE Sharing
@@ -236,11 +265,18 @@ Add `run_mip_pipeline()` to `pipeline.rs`.
 Relax `labels_compatible()` in `asap_types::capability_matching` at line 86 (TODO comment already there).
 Allow a config with labels ⊇ query labels to serve that AQE. This is what enables cross-AQE sharing.
 
-#### 3c — sketch-bench cardinality sweep
+#### 3c — real `AtomicCosts` from sketch-bench
 
-- Add cardinality to sweep grids in `sketch-bench`
-- Add `CountMinSketchWithHeap` wrapper in `sketch-cli/src/wrappers/`
-- Plug real `AtomicCosts` values into cost model
+- ✅ Plug real `AtomicCosts` values into cost model — done for CMS/HLL/KLL, see 2f above and
+  "Running with real sketch-bench costs" below.
+- ❌ Add `CountMinSketchWithHeap` wrapper in sketch-bench, so it stops always costing at the flat
+  stub. Its memory is meant to be an analytic bound (`heap_size · avg_key_size`), not a
+  sketch-bench lookup at all, per #524 — that formula still needs implementing in
+  `atomic_costs.rs`/`cost_model.rs`.
+- ~~Add cardinality to sweep grids in `sketch-bench`~~ — decided unnecessary: CPU/mem costs for
+  CMS/HLL/KLL are functions of structural params (depth×width, lg_k, K), not cardinality: only
+  `CountMinSketchWithHeap` is cardinality-dependent, and that's the analytic-bound case above, not
+  a sketch-bench sweep axis.
 
 #### 3d — Accuracy constraint
 
@@ -265,14 +301,45 @@ standalone `asap-optimizer-cli` binary (`asap-planner-rs/src/bin/optimizer_cli.r
 ```
 cargo run -p asap_planner --bin asap-optimizer-cli -- \
   --input_config <path/to/workload.yaml> \
-  --prometheus_scrape_interval 60 \
-  [--rho 1.0]
+  --data-ingestion-interval-ms 60000 \
+  [--rho 1.0] \
+  [--atomic-costs <path/to/atomic_costs.json>]
 ```
 
 Takes the same `ControllerConfig` YAML format as `asap-planner --input_config`
 (with a `metrics:` hints block for label schema — no live Prometheus needed).
 Prints deployed streaming configs and query configs to stdout. `--rho` is the
-placeholder arrival rate (see TODOs below — not real yet).
+placeholder arrival rate (see TODOs below — not real yet). `--atomic-costs` is
+optional; omit it and every candidate costs at the flat stub, same as before #549.
+
+### Running with real sketch-bench costs
+
+**1. Generate the table, in the `sketch-bench` repo:**
+
+```
+./scripts/export_atomic_costs.sh
+# → out/atomic_costs.json — one row per (sketch, params) point in ASAPQuery's grid,
+#   built by looping candidate_gen.rs's CMS_DEPTHS×CMS_WIDTHS/HLL_PRECISIONS/KLL_KS
+#   through `approxbench sketchbench --flat` and reducing with `approxbench atomic-costs`.
+```
+
+**2. Feed it to ASAPQuery**, either binary:
+
+```
+# See what each candidate would cost, before selection:
+cargo run -p asap_planner --bin candidate-gen-dump -- \
+  --input_config workload.yaml --data-ingestion-interval-ms 60000 \
+  --atomic-costs path/to/atomic_costs.json
+
+# Run the actual optimizer:
+cargo run -p asap_planner --bin asap-optimizer-cli -- \
+  --input_config workload.yaml --data-ingestion-interval-ms 60000 \
+  --atomic-costs path/to/atomic_costs.json
+```
+
+`candidate-gen-dump`'s output labels each params row `[real]` (resolved from the table) or
+`[stub]` (fell through to `AtomicCosts::default()` — either an unbenchmarked family, or a
+benchmarked family's param point missing from the table).
 
 Wire-in decision (deferred): once Phase 3 (MIP + feasibility + label superset
 matching) lands, swap `Controller::generate()` to call `run_mip_pipeline()`

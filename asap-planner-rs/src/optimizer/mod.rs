@@ -1,4 +1,5 @@
 pub mod aqe_extractor;
+pub mod atomic_costs;
 pub mod candidate_gen;
 pub mod constants;
 pub mod cost_model;
@@ -9,6 +10,9 @@ pub mod solution;
 pub mod translator;
 
 pub use aqe_extractor::{extract_aqes, RQE};
+pub use atomic_costs::{
+    load_atomic_cost_table, resolve_atomic_costs, AtomicCostEntry, AtomicCostTable,
+};
 pub use candidate_gen::{enumerate_candidates, CandidateConfig};
 pub use cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
 pub use greedy::greedy_assign;
