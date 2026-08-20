@@ -268,8 +268,9 @@ class ClickHouseDataLoaderService(BaseService):
             table: Target table name. Defaults to the dataset's standard table
                 (``hits`` for clickbench, ``h2o_groupby`` for h2o).
             batch_size: INSERT batch size for H2O loading (default 50 000).
-            init_sql_file: Path to a DDL SQL file *already on the remote node*.
-                When ``None``, the built-in ``*_init.sql`` is rsynced and used.
+            init_sql_file: Path to a local DDL SQL file; rsynced to the remote
+                node and executed. When ``None``, the built-in ``*_init.sql``
+                is rsynced and used instead.
             max_rows: Maximum rows to load (0 = all).
         """
         if remote_data_file is None:
@@ -292,7 +293,12 @@ class ClickHouseDataLoaderService(BaseService):
 
         if init_sql_file is not None:
             print(f"Running init SQL from {init_sql_file!r}...")
-            self._exec_sql_file(init_sql_file, url)
+            remote_ddl = f"/tmp/{dataset_name}_init_{os.getpid()}.sql"
+            self._rsync_to_remote(init_sql_file, remote_ddl)
+            try:
+                self._exec_sql_file(remote_ddl, url)
+            finally:
+                self._remote_rm(remote_ddl)
         elif dataset_name in self.BUILTIN_DDL_FILES:
             local_ddl = os.path.join(
                 self._ASSETS_DIR, self.BUILTIN_DDL_FILES[dataset_name]
