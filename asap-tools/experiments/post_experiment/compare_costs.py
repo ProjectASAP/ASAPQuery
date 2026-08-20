@@ -105,6 +105,15 @@ def calculate_query_cpu(
         else:
             # Fallback heuristic: 5th percentile of this run's own CPU series.
             prometheus_ingestion_cost = np.percentile(prometheus_cpu, 5)
+            print(
+                "\n" + "!" * 70 + "\n"
+                "WARNING: no --ingest_only_experiment_name given. Estimating "
+                "Prometheus ingest cost as the 5th percentile of this run's own "
+                "CPU series (a heuristic guess), instead of a directly-measured "
+                "baseline from a skip_querying run. Query CPU numbers below may "
+                "be inaccurate.\n" + "!" * 70 + "\n",
+                file=sys.stderr,
+            )
 
         # Subtract ingestion cost from each time point
         query_cpu = [cpu - prometheus_ingestion_cost for cpu in prometheus_cpu]
