@@ -333,8 +333,17 @@ class QueryEngineRustService(BaseQueryEngineService):
         cmd_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-query-engine"
         )
+        # Force UTC so naive datetime-string time literals in incoming SQL
+        # queries parse the same way here as in ClickHouse (UTC by default)
+        # and in asap-planner (see misc.py's ControllerService for the same
+        # fix) -- otherwise absolute-timestamp queries could silently
+        # disagree by the shell's local UTC offset.
         cmd = (
-            f"../target/release/query_engine_rust"
+            # `env` (not a bare `TZ=UTC` prefix) since this runs under nohup,
+            # which execs argv[0] directly rather than re-parsing through a
+            # shell -- a bare `VAR=val` prefix would make nohup try (and
+            # fail) to exec "TZ=UTC" itself as the program name.
+            f"env TZ=UTC ../target/release/query_engine_rust"
             f" --config-file {output_dir}/engine_config.yaml"
             f" > {output_dir}/query_engine_rust.out 2>&1 &"
         )
