@@ -30,13 +30,44 @@ def pretty_print(key, value):
         print(key, round(value, 2))
 
 
-def calculate_query_cpu(monitor_info, experiment_mode):
+def measure_prometheus_ingest_cost(ingest_only_experiment_name: str) -> float:
+    """
+    Median CPU% of the prometheus process during a skip_querying (ingest-only,
+    no queries executed) run, i.e. a directly-measured ingestion baseline
+    rather than an inferred percentile.
+    """
+    monitor_info_file = os.path.join(
+        constants.LOCAL_EXPERIMENT_DIR,
+        ingest_only_experiment_name,
+        constants.BASELINE_EXPERIMENT_NAME,
+        "remote_monitor_output",
+        "monitor_output.json",
+    )
+    with open(monitor_info_file, "r") as f:
+        monitor_info = json.load(f)
+
+    for pid in monitor_info:
+        if monitor_info[pid]["keyword"] == PROMETHEUS_PROCESS_KEYWORD:
+            return float(np.median(monitor_info[pid]["cpu_percent"]))
+
+    raise ValueError(
+        f"No prometheus PID found in ingest-only experiment "
+        f"{ingest_only_experiment_name}"
+    )
+
+
+def calculate_query_cpu(
+    monitor_info, experiment_mode, ingest_baseline_cpu_percent=None
+):
     """
     Calculate Query CPU timeseries for the given experiment mode.
 
     Args:
         monitor_info: Dictionary with PIDs as keys and monitoring data as values
         experiment_mode: Name of the current experiment mode
+        ingest_baseline_cpu_percent: For baseline mode, a directly-measured
+            ingestion CPU% (see measure_prometheus_ingest_cost) to subtract
+            instead of the 5th-percentile heuristic.
 
     Returns:
         List of Query CPU values (timeseries)
@@ -69,8 +100,20 @@ def calculate_query_cpu(monitor_info, experiment_mode):
         if prometheus_cpu is None:
             raise ValueError(f"No prometheus PID found in mode {experiment_mode}")
 
-        # Calculate 5th percentile (ingestion cost)
-        prometheus_ingestion_cost = np.percentile(prometheus_cpu, 5)
+        if ingest_baseline_cpu_percent is not None:
+            prometheus_ingestion_cost = ingest_baseline_cpu_percent
+        else:
+            # Fallback heuristic: 5th percentile of this run's own CPU series.
+            prometheus_ingestion_cost = np.percentile(prometheus_cpu, 5)
+            print(
+                "\n" + "!" * 70 + "\n"
+                "WARNING: no --ingest_only_experiment_name given. Estimating "
+                "Prometheus ingest cost as the 5th percentile of this run's own "
+                "CPU series (a heuristic guess), instead of a directly-measured "
+                "baseline from a skip_querying run. Query CPU numbers below may "
+                "be inaccurate.\n" + "!" * 70 + "\n",
+                file=sys.stderr,
+            )
 
         # Subtract ingestion cost from each time point
         query_cpu = [cpu - prometheus_ingestion_cost for cpu in prometheus_cpu]
@@ -284,6 +327,18 @@ def main(args):
     if not args.machine_readable:
         print(f"Experiment modes to analyze: {experiment_modes}")
 
+    ingest_baseline_cpu_percent = None
+    if args.ingest_only_experiment_name:
+        ingest_baseline_cpu_percent = measure_prometheus_ingest_cost(
+            args.ingest_only_experiment_name
+        )
+        if not args.machine_readable:
+            print(
+                f"Using measured Prometheus ingest baseline from "
+                f"{args.ingest_only_experiment_name}: "
+                f"{round(ingest_baseline_cpu_percent, 2)}%"
+            )
+
     experiment_mode_to_overall_resource_usage = {}
     experiment_mode_to_query_cpu = {}
     experiment_mode_to_precompute_cpu = {}
@@ -346,7 +401,15 @@ def main(args):
 
         # Calculate Query CPU for this experiment mode
         try:
-            query_cpu = calculate_query_cpu(monitor_info, experiment_mode)
+            query_cpu = calculate_query_cpu(
+                monitor_info,
+                experiment_mode,
+                ingest_baseline_cpu_percent=(
+                    ingest_baseline_cpu_percent
+                    if experiment_mode == constants.BASELINE_EXPERIMENT_NAME
+                    else None
+                ),
+            )
             experiment_mode_to_query_cpu[experiment_mode] = query_cpu
         except (AssertionError, ValueError) as e:
             if not args.machine_readable:
@@ -533,6 +596,17 @@ if __name__ == "__main__":
         "--save_to_experiment_dir",
         action="store_true",
         help="Save to experiment directory",
+    )
+    parser.add_argument(
+        "--ingest_only_experiment_name",
+        type=str,
+        required=False,
+        help=(
+            "Name of a skip_querying (ingest-only) experiment run. When set, "
+            "the baseline mode's Query CPU is computed by subtracting the "
+            "median Prometheus CPU%% measured in that run, instead of the "
+            "5th-percentile-of-this-run heuristic."
+        ),
     )
     parser.add_argument(
         "--machine-readable",
