@@ -98,13 +98,14 @@ extended to loop. Net: less code than today.
 ### 4. Epoch/slide-interval alignment
 
 Worker buckets sit on the `slide_interval_ms` grid, anchored at Unix epoch 0
-(`precompute_engine/window_manager.rs`). Two things need alignment, and
-they're different in kind:
+(`precompute_engine/window_manager.rs`). The fix differs between instant and
+range queries, because §5 gives range queries a way to guarantee alignment
+by construction instead of re-deriving it defensively on every step.
 
-- **The fetch bounds** (`[end - k*W, end)`) don't need to be grid-aligned —
-  `query_precomputed_output` is a plain numeric range scan, not a grid
-  lookup, so a generously-bounded span is fine as long as it covers
-  everything needed.
+- **The fetch bounds** (`[end - k*W, end)`), in both cases, don't need to be
+  grid-aligned — `query_precomputed_output` is a plain numeric range scan,
+  not a grid lookup, so a generously-bounded span is fine as long as it
+  covers everything needed.
 - **The walk's lookup points** (`window_start`, and each `t` stepped by `W`)
   *do* need grid alignment — they're exact-timestamp `HashMap` lookups
   against `slide_interval_ms`-grid keys. Misalignment doesn't error, it
@@ -113,40 +114,62 @@ they're different in kind:
   not a crash. **This is exactly the kind of thing that needs a code comment
   at the alignment call site**, since the failure mode gives no signal that
   something's wrong.
-- **Fix location:** the walk helper itself (shared by both instant and
-  range-query callers per §2) floor-aligns `current_time`/`window_start` to
-  `slide_interval_ms` from epoch 0, **per invocation** — not just once
-  upfront. `step_ms` need not be a multiple of `S`, so alignment can drift
-  right back off the grid between range-query steps if only done once at the
-  start.
-- **Strategy:** silent floor-align + `warn!` log, same precedent as the
-  existing `data_ingestion_interval_ms` alignment in
-  `align_end_timestamp_promql`.
+- **Instant queries:** floor-align `current_time` to `slide_interval_ms`
+  once per call, silently + `warn!`, same precedent as the existing
+  `data_ingestion_interval_ms` alignment in `align_end_timestamp_promql`.
+  There's no `step` to reason about for a single point, so this bounded
+  (up to one `S`) staleness is unavoidable here — tracked as a known gap in
+  #558, not fixed in this issue.
+- **Range queries:** floor-align only the **first** `current_time` (the
+  query's `start`), once, before the loop — not per step. §5's new
+  `step % slide_interval_ms == 0` validation guarantees every subsequent
+  `current_time = start + n*step` stays exactly on the grid by construction
+  (adding `S`-divisible increments to a grid-aligned point can't drift off
+  the grid), and since `S | W` always holds for a valid config, every
+  `W`-strided walk point inside each step stays grid-aligned too. **Zero**
+  staleness for range queries that pass validation — strictly better than
+  the instant-query floor-align-and-hope approach, and it's why §5 exists
+  as a real check rather than dead weight.
 - **Scope:** only the values used inside the walk change.
-  `timestamps.end_timestamp` / each range-query step's nominal `current_time`
-  (what's reported back as the answer's timestamp) stays untouched.
-- Tracked as a known gap, not fixed here: #558 (silent alignment staleness)
-  — both this and the existing ingestion-interval alignment silently serve
-  staler-than-requested data with only a log line to show for it.
+  `timestamps.end_timestamp` / the query's nominal `start` (what's reported
+  back as the answer's timestamp(s)) stays untouched.
 
 ### 5. `validate_range_query_params`
 
-Confirmed **not load-bearing** for the live range-query algorithm: the real
-loop increments `current_time += step_ms` directly (`mod.rs:1567`);
-`buckets_per_step`/`lookback_bucket_count` are computed but only ever used in
-a debug log line. The check (`step % window_size_ms == 0`) appears to be a
-leftover from an earlier, superseded index-based sliding-window algorithm —
-the test module's `simulate_sliding_window`/`simulate_sliding_window_with_alignment`
-(index-based) vs. `simulate_timestamp_based_lookup` (current, explicitly
-commented *"the new implementation that handles gaps in data correctly"*)
-are fossil evidence of that evolution.
+Initially thought to be dead: the check (`step % window_size_ms == 0`) isn't
+load-bearing for the live Tumbling algorithm's actual control flow — the
+real loop increments `current_time += step_ms` directly (`mod.rs:1567`), and
+`buckets_per_step`/`lookback_bucket_count` (the values that would need this
+invariant) are computed but only ever used in a debug log line. Fossil
+evidence in the test module (`simulate_sliding_window`, index-based, vs.
+`simulate_timestamp_based_lookup`, current, explicitly commented *"the new
+implementation that handles gaps in data correctly"*) suggests it's a
+leftover from an earlier, superseded index-based algorithm.
 
-**Decision:** delete the check entirely (not just relax it for Sliding) —
-confirm via the existing test suite that nothing else depends on it before
-removing. Rename the parameter from `tumbling_window_ms` to `window_size_ms`
-throughout (`validate_range_query_params`, `RangeQueryExecutionContext`,
-etc.) since the logic was never actually tumbling-specific, just named as if
-it were.
+**Decision, revised: leave Tumbling's check completely untouched** — "not
+load-bearing today" isn't the same as "safe to delete," and this is the one
+piece of #557 that could otherwise touch **live** Tumbling query behavior.
+Zero risk beats a marginal cleanup; if it's truly dead, that's a separate,
+independently-reviewable janitorial change, not bundled into this issue.
+
+**Add a new, real (not vestigial) Sliding branch instead: `step %
+slide_interval_ms == 0`, not `window_size_ms`.** This isn't a mechanical
+copy of Tumbling's check with `S` swapped in for `W` — it's doing different
+work. Tumbling's check (to the extent it ever mattered) was about bucket
+alignment; Sliding's is what makes §4's "align the range-query start once,
+not every step" simplification correct — it guarantees the grid-alignment
+invariant is preserved across every step by construction, turning a
+would-be silent per-step misalignment (bounded staleness, easy to miss) into
+a loud rejection at the query boundary instead. `step % window_size_ms == 0`
+would be **stricter than necessary** for Sliding: since `S | W` always holds,
+`step % S == 0` alone is sufficient to keep every `W`-strided walk point on
+the grid, and using `W` as the divisor would wrongly reject queries like
+`step == S` (refresh every slide interval) — exactly the natural cadence
+you'd want to allow.
+
+Rename the parameter from `tumbling_window_ms` to `window_size_ms` at the
+same time, since Tumbling's arm was never actually tumbling-specific logic,
+just named as if it were — but that's the only change on the Tumbling side.
 
 ### 6. `cleanup.rs`
 
@@ -242,30 +265,50 @@ by 1 — not just the `k` that were merged — to lock in the §6 semantics
 against a future "optimize the fetch to only touch what's merged" change
 that would silently break the cleanup-threshold math.
 
-## Implementation approach: TDD, staged
+## Implementation approach: TDD, stacked PRs
 
 This is correctness-critical query-serving logic (wrong-but-plausible
 results, not crashes, are the failure mode — double-counted merges,
-silently-dropped alignment). Implement test-first, in the same order as the
-"Decisions" sections above:
+silently-dropped alignment). Test-first, and staged as separately-reviewable
+stacked PRs rather than one large diff.
 
-1. Write the §"Test plan" matrix first (`k=1,2,3,6`, instant + range
-   variants, plus the read-count accounting test from §6) against a
-   hand-built `Sliding` config — confirm each fails against the current code
-   for the reason the design predicts (e.g. `k>1` cases fail with "expected
-   1 precompute per key", not some unrelated error).
-2. Land §1 (`capability_matching.rs`) and §5 (delete the dead
-   `validate_range_query_params` check) independently — small, mechanical,
-   each verifiable on its own before touching the fetch/merge machinery.
-3. Land §2–4 (unification + alignment) together, since they're one
-   coherent change to the same code path — re-run the full matrix after,
-   not just the cases that were previously failing.
-4. Land §6 (`cleanup.rs`) last, with its own dedicated read-count test,
-   since it depends on §2's fetch shape being final.
+The key fact enabling this: `should_use_sliding_window()` is hardcoded
+`false` (planner can't emit a Sliding config until #555 unblocks), so
+**every piece of this stack is inert in production** — nothing a real query
+can reach changes until the final PR lands. And `engine_factories.rs`'s test
+harness registers configs via explicit `query_configs` entries, which
+`promql.rs:1034` checks *before* falling back to capability matching — so
+the execution-side tests can hand-register a `k>1` Sliding config and
+exercise it directly, completely bypassing `window_compatible`. That's what
+makes the ordering below safe: execution gets built and proven correct
+*before* capability matching is relaxed to let real queries reach it.
 
-Stop after each stage for review/commit rather than landing this as one
-large diff — matches how prior critical-path refactors in this repo have
-been staged.
+1. **PR A — §5, `validate_range_query_params`.** Add the Sliding-only
+   `step % slide_interval_ms == 0` branch; Tumbling's existing check is
+   untouched. Independent of the rest of the stack.
+2. **PR B — §2–4, execution unification (base of the stack).** Shared
+   stride-`W` walk helper; Sliding's instant path reuses it instead of
+   `merge_precomputed_outputs`; delete the old "skip merge, expecting 1
+   precompute per key" branch; alignment fix (instant: floor-align once per
+   call; range: floor-align only the start, relying on PR A's validation).
+   Tested via hand-built `k=1,2,3,6` configs registered through
+   `query_configs`, covering both instant and range-query callers of the
+   shared walk helper, plus the "sum of `k` strided buckets, not all
+   `S`-spaced buckets" regression assertion from the Test plan.
+3. **PR C — §6, `cleanup.rs` (stacked on B).** Needs B's fetch shape final
+   for the `slide_interval_ms`-based `read_count_threshold` formula. Own
+   dedicated read-count accounting test (Test plan, last paragraph).
+4. **PR D — §1, `capability_matching.rs` relaxation (stacked last, the
+   "activation" PR).** Only lands once B/C are proven — this is what
+   actually lets `find_compatible_aggregation` select a `k>1` Sliding
+   config, so capability matching never promises more than execution can
+   already deliver.
+
+Write each PR's test subset first, confirm it fails against the current code
+for the reason the design predicts (e.g. PR B's `k>1` cases should fail with
+"expected 1 precompute per key," not some unrelated error), then implement.
+Stop after each PR for review/commit rather than landing the stack in one
+shot.
 
 ## Follow-up issues (not part of #557)
 
