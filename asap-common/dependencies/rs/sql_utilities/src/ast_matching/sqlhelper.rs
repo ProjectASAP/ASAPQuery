@@ -89,6 +89,9 @@ impl SQLSchema {
 #[derive(Debug, Clone)]
 pub struct SQLQueryData {
     pub aggregation_info: AggregationInfo,
+    /// Metadata predicates from WHERE after removing the time predicate.
+    /// Example: collector = 'rrc00' or collector IN ('rrc00').
+    pub spatial_filter: Option<String>,
     /// Alias of the aggregate function in SELECT, e.g. `agg(v) AS p99` → `Some("p99")`.
     /// Captured separately from `aggregation_info` because it's presentational only:
     /// two queries that differ solely in alias must still match the same template.
@@ -102,6 +105,43 @@ pub struct SQLQueryData {
     pub order_by: Vec<OrderByItem>,
     /// `LIMIT N`. None when no LIMIT is present. Excluded from `matches_sql_pattern`.
     pub limit: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SQLBucketedCountIfOutput {
+    pub alias: String,
+    /// Extra per-output filter extracted from countIf(...).
+    /// Example: operation = 'A'
+    pub filter: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SQLBucketedCountIfQueryData {
+    pub metric: String,
+    pub time_info: TimeInfo,
+    pub bucket_alias: String,
+    pub bucket_ms: u64,
+    /// WHERE predicates after removing the time predicate.
+    /// Example: collector = 'rrc00'
+    pub base_spatial_filter: Option<String>,
+    pub outputs: Vec<SQLBucketedCountIfOutput>,
+    pub order_by: Vec<OrderByItem>,
+}
+
+impl SQLBucketedCountIfQueryData {
+    /// Match reusable bucketed templates by structure, not by absolute timestamps.
+    pub fn matches_bucketed_pattern(&self, template: &SQLBucketedCountIfQueryData) -> bool {
+        self.metric == template.metric
+            && self.time_info.get_time_col_name() == template.time_info.get_time_col_name()
+            && self.bucket_ms == template.bucket_ms
+            && self.base_spatial_filter == template.base_spatial_filter
+            && self.outputs.len() == template.outputs.len()
+            && self
+                .outputs
+                .iter()
+                .zip(template.outputs.iter())
+                .all(|(a, b)| a.alias == b.alias && a.filter == b.filter)
+    }
 }
 
 /// Single `ORDER BY` clause item: a column reference plus sort direction.

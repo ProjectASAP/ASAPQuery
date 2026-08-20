@@ -123,9 +123,29 @@ impl QueryResponseAdapter for ClickHouseHttpAdapter {
                     output.push('\n');
                 }
             }
-            QueryResult::Matrix(_) => {
-                // ClickHouse adapter doesn't support Matrix results
-                return Err(StatusCode::NOT_IMPLEMENTED);
+            QueryResult::Matrix(range_vector) => {
+                // Format range-vector results as TabSeparated rows:
+                //
+                // output_label<TAB>timestamp_ms<TAB>value
+                //
+                // For bucketed SQL queries, each range-vector element is one output
+                // column such as "announcements" or "withdrawals", and each sample
+                // timestamp is the bucket timestamp.
+                for element in &range_vector.values {
+                    for sample in &element.samples {
+                        for (i, _label_name) in label_names.iter().enumerate() {
+                            let label_value =
+                                element.labels.get(i).map(|s| s.as_str()).unwrap_or("");
+                            output.push_str(label_value);
+                            output.push('\t');
+                        }
+
+                        output.push_str(&sample.timestamp.to_string());
+                        output.push('\t');
+                        output.push_str(&sample.value.to_string());
+                        output.push('\n');
+                    }
+                }
             }
         };
 

@@ -178,20 +178,28 @@ async fn process_query_request(
         }
     }
 
+    let local_engine_query = SimpleEngine::rewrite_recognized_pattern(&parsed_request.query);
+    if local_engine_query != parsed_request.query {
+        tracing::warn!(
+            "HTTP pattern rewrite produced local SQL: {}",
+            local_engine_query
+        );
+    }
+
     // Record query for passive auto-discovery (if tracker is enabled)
     if let Some(tracker) = &state.query_tracker {
-        tracker.record_instant(&parsed_request.query, parsed_request.time);
+        tracker.record_instant(&local_engine_query, parsed_request.time);
     }
 
     // Step 2: Execute query with engine (using parsed request)
     let query_start_time = Instant::now();
     debug!(
         "About to call query_engine.handle_query with query='{}' and time={}",
-        parsed_request.query, parsed_request.time
+        local_engine_query, parsed_request.time
     );
     match state
         .query_engine
-        .handle_query(parsed_request.query.clone(), parsed_request.time)
+        .handle_query(local_engine_query.clone(), parsed_request.time)
     {
         Some((query_output_labels, query_result)) => {
             let query_duration = query_start_time.elapsed();

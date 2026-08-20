@@ -1,0 +1,2686 @@
+workload_name: bgp_jan2024_rrc00_200_query_workload
+month: 2024-01
+collector: rrc00
+table: bgp.bgp_updates
+queries:
+  - id: q001
+    title: "Total update volume on a single day"
+    analyst_question: "How many total BGP updates did rrc00 receive on Jan 3, 2024?"
+    window: 1 day
+    sql: |
+      SELECT count(*) AS total_updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-03 00:00:00' AND timestamp < '2024-01-04 00:00:00';
+
+  - id: q002
+    title: "Announcement vs withdrawal split (1 day)"
+    analyst_question: "What is the ratio of announcements to withdrawals on Jan 3, 2024?"
+    window: 1 day
+    sql: |
+      SELECT operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-03 00:00:00' AND timestamp < '2024-01-04 00:00:00'
+      GROUP BY operation
+      ORDER BY cnt DESC;
+
+  - id: q003
+    title: "Hourly update volume across a full day"
+    analyst_question: "How does update volume change hour by hour on Jan 5, 2024?"
+    window: 1 day
+    sql: |
+      SELECT toStartOfHour(timestamp) AS hour, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-05 00:00:00' AND timestamp < '2024-01-06 00:00:00'
+      GROUP BY hour
+      ORDER BY hour;
+
+  - id: q004
+    title: "Daily update volume for full month"
+    analyst_question: "What is the total daily update volume across all of January 2024?"
+    window: full month
+    sql: |
+      SELECT toDate(timestamp) AS day, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q005
+    title: "Update volume in a tight 5-minute window"
+    analyst_question: "How many updates arrived between 08:00 and 08:05 on Jan 15?"
+    window: 5 minutes
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-15 08:00:00' AND timestamp < '2024-01-15 08:05:00';
+
+  - id: q006
+    title: "Update volume in a 15-minute window by operation"
+    analyst_question: "What was the announcement/withdrawal mix between 12:00 and 12:15 on Jan 10?"
+    window: 15 minutes
+    sql: |
+      SELECT operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-10 12:00:00' AND timestamp < '2024-01-10 12:15:00'
+      GROUP BY operation
+      ORDER BY cnt DESC;
+
+  - id: q007
+    title: "Top 20 most-updated prefixes (1 hour)"
+    analyst_question: "Which prefixes received the most updates between 09:00 and 10:00 on Jan 5?"
+    window: 1 hour
+    sql: |
+      SELECT prefix, count(*) AS updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-05 09:00:00' AND timestamp < '2024-01-05 10:00:00'
+      GROUP BY prefix
+      ORDER BY updates DESC
+      LIMIT 20;
+
+  - id: q008
+    title: "Top 20 most-updated prefixes over a full week"
+    analyst_question: "Which prefixes were updated most often during the first week of January?"
+    window: 1 week
+    sql: |
+      SELECT prefix, count(*) AS updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY prefix
+      ORDER BY updates DESC
+      LIMIT 20;
+
+  - id: q009
+    title: "Top origin ASNs by announcement count (1 day)"
+    analyst_question: "Which origin ASNs announced the most prefixes on Jan 12?"
+    window: 1 day
+    sql: |
+      SELECT origin, count(*) AS announcements
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-12 00:00:00' AND timestamp < '2024-01-13 00:00:00'
+      GROUP BY origin
+      ORDER BY announcements DESC
+      LIMIT 20;
+
+  - id: q010
+    title: "Top peer ASNs by total updates over the month"
+    analyst_question: "Which peer ASNs sent rrc00 the most updates over the entire month?"
+    window: full month
+    sql: |
+      SELECT peer_asn, count(*) AS updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY updates DESC
+      LIMIT 25;
+
+  - id: q011
+    title: "Peer count active in a 6-hour window"
+    analyst_question: "How many distinct peers sent updates between midnight and 06:00 on Jan 8?"
+    window: 6 hours
+    sql: |
+      SELECT uniqExact(peer_ip) AS distinct_peers
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-08 06:00:00';
+
+  - id: q012
+    title: "Distinct prefixes seen per day (full month)"
+    analyst_question: "How many distinct prefixes were seen each day in January?"
+    window: full month
+    sql: |
+      SELECT toDate(timestamp) AS day, uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q013
+    title: "Average AS path length by day (1 week)"
+    analyst_question: "How does average AS path length trend across the first week of January?"
+    window: 1 week
+    sql: |
+      SELECT toDate(timestamp) AS day,
+             avg(length(splitByChar(' ', as_path))) AS avg_path_len
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q014
+    title: "Longest AS paths observed (1 day)"
+    analyst_question: "What are the 15 longest AS paths seen on Jan 20?"
+    window: 1 day
+    sql: |
+      SELECT prefix, as_path, length(splitByChar(' ', as_path)) AS path_len
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-20 00:00:00' AND timestamp < '2024-01-21 00:00:00'
+      ORDER BY path_len DESC
+      LIMIT 15;
+
+  - id: q015
+    title: "Shortest (direct) AS paths (1 day)"
+    analyst_question: "Which announcements had single-hop AS paths on Jan 20?"
+    window: 1 day
+    sql: |
+      SELECT prefix, as_path, origin
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-20 00:00:00' AND timestamp < '2024-01-21 00:00:00'
+        AND length(splitByChar(' ', as_path)) = 1
+      LIMIT 50;
+
+  - id: q016
+    title: "Paths transiting AS3356 (Lumen) in a 1-hour window"
+    analyst_question: "Which prefixes had AS3356 (Lumen) somewhere in the AS path between 14:00 and 15:00 on Jan 9?"
+    window: 1 hour
+    sql: |
+      SELECT prefix, as_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-09 14:00:00' AND timestamp < '2024-01-09 15:00:00'
+        AND has(splitByChar(' ', as_path), '3356')
+      LIMIT 100;
+
+  - id: q017
+    title: "Count of updates transiting AS174 (Cogent) over a day"
+    analyst_question: "How many updates on Jan 11 had AS174 (Cogent) in the path?"
+    window: 1 day
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-11 00:00:00' AND timestamp < '2024-01-12 00:00:00'
+        AND has(splitByChar(' ', as_path), '174');
+
+  - id: q018
+    title: "Prefixes originated by AS15169 (Google) over a week"
+    analyst_question: "Which prefixes did Google (AS15169) originate during the first week of January?"
+    window: 1 week
+    sql: |
+      SELECT DISTINCT prefix
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND origin = '15169'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      ORDER BY prefix
+      LIMIT 200;
+
+  - id: q019
+    title: "Update activity for AS13335 (Cloudflare) prefixes (1 day)"
+    analyst_question: "How many announcements and withdrawals involved Cloudflare-originated prefixes on Jan 18?"
+    window: 1 day
+    sql: |
+      SELECT operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '13335'
+        AND timestamp >= '2024-01-18 00:00:00' AND timestamp < '2024-01-19 00:00:00'
+      GROUP BY operation;
+
+  - id: q020
+    title: "Well-known prefix 8.8.8.0/24 update history (1 week)"
+    analyst_question: "What updates were seen for 8.8.8.0/24 during the first week of January?"
+    window: 1 week
+    sql: |
+      SELECT timestamp, operation, as_path, next_hop, local_pref, med
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '8.8.8.0/24'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      ORDER BY timestamp;
+
+  - id: q021
+    title: "Well-known prefix 1.1.1.0/24 update history (1 day)"
+    analyst_question: "What updates touched Cloudflare's 1.1.1.0/24 anycast prefix on Jan 22?"
+    window: 1 day
+    sql: |
+      SELECT timestamp, operation, peer_asn, as_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '1.1.1.0/24'
+        AND timestamp >= '2024-01-22 00:00:00' AND timestamp < '2024-01-23 00:00:00'
+      ORDER BY timestamp;
+
+  - id: q022
+    title: "Prefixes with more than one distinct origin ASN (potential MOAS) in a day"
+    analyst_question: "Which prefixes were announced by more than one origin AS on Jan 14 (possible MOAS)?"
+    window: 1 day
+    sql: |
+      SELECT prefix, uniqExact(origin) AS distinct_origins
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-14 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+      GROUP BY prefix
+      HAVING distinct_origins > 1
+      ORDER BY distinct_origins DESC
+      LIMIT 50;
+
+  - id: q023
+    title: "MOAS detail listing for a specific prefix over a week"
+    analyst_question: "What origin ASNs and timestamps were involved for prefix 192.0.2.0/24 across the first week?"
+    window: 1 week
+    sql: |
+      SELECT timestamp, origin, as_path, peer_asn
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '192.0.2.0/24'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      ORDER BY timestamp;
+
+  - id: q024
+    title: "Prefixes with origin AS changes using window functions (1 day)"
+    analyst_question: "Which prefixes changed origin AS between consecutive announcements on Jan 16?"
+    window: 1 day
+    sql: |
+      SELECT prefix, timestamp, origin, prev_origin
+      FROM (
+        SELECT prefix, timestamp, origin,
+               lagInFrame(origin) OVER (PARTITION BY prefix ORDER BY timestamp) AS prev_origin
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND operation = 'A'
+          AND timestamp >= '2024-01-16 00:00:00' AND timestamp < '2024-01-17 00:00:00'
+      )
+      WHERE prev_origin IS NOT NULL AND origin != prev_origin
+      ORDER BY prefix, timestamp
+      LIMIT 100;
+
+  - id: q025
+    title: "AS path change detection via window function (6 hours)"
+    analyst_question: "Which prefixes had their AS path change between consecutive updates between 00:00 and 06:00 on Jan 8?"
+    window: 6 hours
+    sql: |
+      SELECT prefix, timestamp, as_path, prev_path
+      FROM (
+        SELECT prefix, timestamp, as_path,
+               lagInFrame(as_path) OVER (PARTITION BY prefix ORDER BY timestamp) AS prev_path
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND operation = 'A'
+          AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-08 06:00:00'
+      )
+      WHERE prev_path IS NOT NULL AND as_path != prev_path
+      ORDER BY prefix, timestamp
+      LIMIT 200;
+
+  - id: q026
+    title: "Route flapping detection: prefixes with high update churn (1 day)"
+    analyst_question: "Which prefixes flapped (announce/withdraw repeatedly) the most on Jan 25?"
+    window: 1 day
+    sql: |
+      SELECT prefix, count(*) AS total_events,
+             countIf(operation = 'A') AS announcements,
+             countIf(operation = 'W') AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-25 00:00:00' AND timestamp < '2024-01-26 00:00:00'
+      GROUP BY prefix
+      HAVING withdrawals > 5 AND announcements > 5
+      ORDER BY total_events DESC
+      LIMIT 30;
+
+  - id: q027
+    title: "Flap rate per peer over a 3-day window"
+    analyst_question: "Which peers generated the most withdrawal churn between Jan 1 and Jan 4?"
+    window: 3 days
+    sql: |
+      SELECT peer_ip, peer_asn,
+             countIf(operation = 'W') AS withdrawals,
+             count(*) AS total
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-04 00:00:00'
+      GROUP BY peer_ip, peer_asn
+      ORDER BY withdrawals DESC
+      LIMIT 25;
+
+  - id: q028
+    title: "Prefixes withdrawn without a prior seen announcement in-window (1 hour)"
+    analyst_question: "Were there withdrawals between 09:00 and 10:00 on Jan 5 for prefixes not announced earlier that hour?"
+    window: 1 hour
+    sql: |
+      SELECT DISTINCT w.prefix
+      FROM bgp.bgp_updates AS w
+      WHERE w.collector = 'rrc00'
+        AND w.operation = 'W'
+        AND w.timestamp >= '2024-01-05 09:00:00' AND w.timestamp < '2024-01-05 10:00:00'
+        AND w.prefix NOT IN (
+          SELECT prefix FROM bgp.bgp_updates
+          WHERE collector = 'rrc00'
+            AND operation = 'A'
+            AND timestamp >= '2024-01-05 09:00:00' AND timestamp < '2024-01-05 10:00:00'
+        )
+      LIMIT 100;
+
+  - id: q029
+    title: "Community value frequency (1 day)"
+    analyst_question: "Which BGP communities appeared most frequently on Jan 6?"
+    window: 1 day
+    sql: |
+      SELECT communities, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+        AND communities != ''
+      GROUP BY communities
+      ORDER BY cnt DESC
+      LIMIT 30;
+
+  - id: q030
+    title: "Updates tagged with no-export community (1 day)"
+    analyst_question: "How many updates on Jan 6 carried the well-known no-export community (65535:65281)?"
+    window: 1 day
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+        AND positionCaseInsensitive(communities, '65535:65281') > 0;
+
+  - id: q031
+    title: "Updates tagged with no-advertise community (1 week)"
+    analyst_question: "How many updates in the first week carried the no-advertise community (65535:65282)?"
+    window: 1 week
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+        AND positionCaseInsensitive(communities, '65535:65282') > 0;
+
+  - id: q032
+    title: "Distinct community values used by a specific peer ASN (full month)"
+    analyst_question: "What distinct community strings did peer ASN 3356 use during January?"
+    window: full month
+    sql: |
+      SELECT DISTINCT communities
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_asn = '3356'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+        AND communities != ''
+      LIMIT 100;
+
+  - id: q033
+    title: "Number of communities attached per update (1 day)"
+    analyst_question: "What is the distribution of community-tag counts per update on Jan 9?"
+    window: 1 day
+    sql: |
+      SELECT length(splitByChar(' ', communities)) AS community_count, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-09 00:00:00' AND timestamp < '2024-01-10 00:00:00'
+        AND communities != ''
+      GROUP BY community_count
+      ORDER BY community_count;
+
+  - id: q034
+    title: "MED value distribution (1 day)"
+    analyst_question: "What does the MED value distribution look like on Jan 7?"
+    window: 1 day
+    sql: |
+      SELECT med, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-07 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY med
+      ORDER BY cnt DESC
+      LIMIT 30;
+
+  - id: q035
+    title: "Average MED per origin ASN (1 week)"
+    analyst_question: "What is the average MED value set by each origin AS during the first week?"
+    window: 1 week
+    sql: |
+      SELECT origin, avg(toFloat64OrZero(toString(med))) AS avg_med, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY origin
+      HAVING cnt > 10
+      ORDER BY avg_med DESC
+      LIMIT 25;
+
+  - id: q036
+    title: "Local preference value distribution (1 day)"
+    analyst_question: "What local_pref values were observed on Jan 19 and how common is each?"
+    window: 1 day
+    sql: |
+      SELECT local_pref, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-19 00:00:00' AND timestamp < '2024-01-20 00:00:00'
+      GROUP BY local_pref
+      ORDER BY cnt DESC
+      LIMIT 30;
+
+  - id: q037
+    title: "Updates with non-default local preference (6 hours)"
+    analyst_question: "Which updates between 00:00 and 06:00 on Jan 8 had a local_pref other than 100?"
+    window: 6 hours
+    sql: |
+      SELECT prefix, peer_asn, local_pref, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-08 06:00:00'
+        AND toString(local_pref) != '100' AND toString(local_pref) != ''
+      ORDER BY timestamp
+      LIMIT 200;
+
+  - id: q038
+    title: "Next-hop diversity per prefix (1 day)"
+    analyst_question: "Which prefixes were announced with multiple distinct next-hop addresses on Jan 21?"
+    window: 1 day
+    sql: |
+      SELECT prefix, uniqExact(next_hop) AS distinct_next_hops
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-21 00:00:00' AND timestamp < '2024-01-22 00:00:00'
+      GROUP BY prefix
+      HAVING distinct_next_hops > 1
+      ORDER BY distinct_next_hops DESC
+      LIMIT 30;
+
+  - id: q039
+    title: "Top next-hop addresses by announcement count (1 week)"
+    analyst_question: "Which next-hop IPs were used most frequently during the first week?"
+    window: 1 week
+    sql: |
+      SELECT next_hop, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY next_hop
+      ORDER BY cnt DESC
+      LIMIT 25;
+
+  - id: q040
+    title: "Atomic aggregate flag frequency (1 day)"
+    analyst_question: "How many updates on Jan 13 were marked with the atomic aggregate flag?"
+    window: 1 day
+    sql: |
+      SELECT atomic, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-13 00:00:00' AND timestamp < '2024-01-14 00:00:00'
+      GROUP BY atomic;
+
+  - id: q041
+    title: "Prefixes with atomic aggregate and their aggregator info (1 day)"
+    analyst_question: "Which prefixes on Jan 13 had the atomic flag set, and who aggregated them?"
+    window: 1 day
+    sql: |
+      SELECT prefix, aggr_asn, aggr_ip, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-13 00:00:00' AND timestamp < '2024-01-14 00:00:00'
+        AND toString(atomic) IN ('1', 'true', 'True', 'TRUE')
+      LIMIT 100;
+
+  - id: q042
+    title: "Top aggregator ASNs (1 week)"
+    analyst_question: "Which ASNs appear most often as the aggregator (aggr_asn) during the first week?"
+    window: 1 week
+    sql: |
+      SELECT aggr_asn, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+        AND aggr_asn != ''
+      GROUP BY aggr_asn
+      ORDER BY cnt DESC
+      LIMIT 20;
+
+  - id: q043
+    title: "Origin attribute distribution (IGP/EGP/incomplete) over a day"
+    analyst_question: "How are origin attribute types (IGP, EGP, INCOMPLETE) distributed on Jan 4?"
+    window: 1 day
+    sql: |
+      SELECT origin, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-04 00:00:00' AND timestamp < '2024-01-05 00:00:00'
+      GROUP BY origin
+      ORDER BY cnt DESC;
+
+  - id: q044
+    title: "Prefix length (mask) distribution (1 day)"
+    analyst_question: "What is the distribution of announced prefix lengths on Jan 17?"
+    window: 1 day
+    sql: |
+      SELECT splitByChar('/', prefix)[2] AS prefix_len, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-17 00:00:00' AND timestamp < '2024-01-18 00:00:00'
+      GROUP BY prefix_len
+      ORDER BY toUInt8OrZero(prefix_len);
+
+  - id: q045
+    title: "Count of highly specific /24-and-longer announcements (1 day)"
+    analyst_question: "How many /24 or longer prefixes were announced on Jan 17?"
+    window: 1 day
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-17 00:00:00' AND timestamp < '2024-01-18 00:00:00'
+        AND toUInt8OrZero(splitByChar('/', prefix)[2]) >= 24
+        AND NOT match(prefix, ':');
+
+  - id: q046
+    title: "IPv4 vs IPv6 update split (1 day)"
+    analyst_question: "What proportion of updates on Jan 23 were IPv4 versus IPv6?"
+    window: 1 day
+    sql: |
+      SELECT
+        countIf(NOT match(prefix, ':')) AS ipv4_updates,
+        countIf(match(prefix, ':')) AS ipv6_updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-23 00:00:00' AND timestamp < '2024-01-24 00:00:00';
+
+  - id: q047
+    title: "IPv6 prefix length distribution (1 week)"
+    analyst_question: "What IPv6 prefix lengths were seen during the first week of January?"
+    window: 1 week
+    sql: |
+      SELECT splitByChar('/', prefix)[2] AS prefix_len, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND match(prefix, ':')
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY prefix_len
+      ORDER BY toUInt8OrZero(prefix_len);
+
+  - id: q048
+    title: "Bogon/private ASN presence in AS paths (1 day)"
+    analyst_question: "Which updates on Jan 26 had a private-range ASN (64512-65534) in the AS path?"
+    window: 1 day
+    sql: |
+      SELECT prefix, as_path, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-26 00:00:00' AND timestamp < '2024-01-27 00:00:00'
+        AND arrayExists(x -> toUInt32OrZero(x) BETWEEN 64512 AND 65534, splitByChar(' ', as_path))
+      LIMIT 100;
+
+  - id: q049
+    title: "32-bit private ASN range presence in origin (1 week)"
+    analyst_question: "Were any prefixes originated by 32-bit private ASNs (4200000000-4294967294) during the first week?"
+    window: 1 week
+    sql: |
+      SELECT prefix, origin, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+        AND toUInt64OrZero(origin) BETWEEN 4200000000 AND 4294967294
+      LIMIT 100;
+
+  - id: q050
+    title: "AS path prepending detection (1 day)"
+    analyst_question: "Which announcements on Jan 24 showed AS path prepending (same ASN repeated consecutively)?"
+    window: 1 day
+    sql: |
+      SELECT prefix, as_path, origin
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-24 00:00:00' AND timestamp < '2024-01-25 00:00:00'
+        AND length(splitByChar(' ', as_path)) > uniqArray(splitByChar(' ', as_path))
+      LIMIT 100;
+
+  - id: q051
+    title: "Prefixes with the highest prepend counts (1 day)"
+    analyst_question: "Which prefixes on Jan 24 had the most AS path prepending?"
+    window: 1 day
+    sql: |
+      SELECT prefix, as_path,
+             (length(splitByChar(' ', as_path)) - uniqArray(splitByChar(' ', as_path))) AS prepend_count
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-24 00:00:00' AND timestamp < '2024-01-25 00:00:00'
+      ORDER BY prepend_count DESC
+      LIMIT 20;
+
+  - id: q052
+    title: "Raw sample of recent updates for a peer (15 minutes)"
+    analyst_question: "What do the raw update records for peer 192.0.2.1 look like between 12:00 and 12:15 on Jan 10?"
+    window: 15 minutes
+    sql: |
+      SELECT timestamp, operation, prefix, as_path, next_hop, local_pref, med
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_ip = '192.0.2.1'
+        AND timestamp >= '2024-01-10 12:00:00' AND timestamp < '2024-01-10 12:15:00'
+      ORDER BY timestamp
+      LIMIT 500;
+
+  - id: q053
+    title: "Raw sample of all updates in a 5-minute burst"
+    analyst_question: "What raw updates arrived between 08:00 and 08:05 on Jan 15?"
+    window: 5 minutes
+    sql: |
+      SELECT *
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-15 08:00:00' AND timestamp < '2024-01-15 08:05:00'
+      ORDER BY timestamp
+      LIMIT 500;
+
+  - id: q054
+    title: "Peer first-seen and last-seen timestamps (full month)"
+    analyst_question: "What is the first and last update timestamp for each peer during January?"
+    window: full month
+    sql: |
+      SELECT peer_ip, min(timestamp) AS first_seen, max(timestamp) AS last_seen, count(*) AS total_updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY peer_ip
+      ORDER BY total_updates DESC
+      LIMIT 30;
+
+  - id: q055
+    title: "New peers that appear mid-month (3 days)"
+    analyst_question: "Which peer IPs first appeared between Jan 15 and Jan 18?"
+    window: 3 days
+    sql: |
+      SELECT peer_ip, min(timestamp) AS first_seen
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-15 00:00:00' AND timestamp < '2024-01-18 00:00:00'
+      GROUP BY peer_ip
+      HAVING first_seen >= '2024-01-15 00:00:00'
+      ORDER BY first_seen
+      LIMIT 50;
+
+  - id: q056
+    title: "Peer session gap detection using window functions (1 day)"
+    analyst_question: "Were there any large gaps (>10 min) between consecutive updates from the same peer on Jan 27?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip, timestamp, prev_ts, dateDiff('second', prev_ts, timestamp) AS gap_seconds
+      FROM (
+        SELECT peer_ip, timestamp,
+               lagInFrame(timestamp) OVER (PARTITION BY peer_ip ORDER BY timestamp) AS prev_ts
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND timestamp >= '2024-01-27 00:00:00' AND timestamp < '2024-01-28 00:00:00'
+      )
+      WHERE prev_ts IS NOT NULL AND dateDiff('second', prev_ts, timestamp) > 600
+      ORDER BY gap_seconds DESC
+      LIMIT 50;
+
+  - id: q057
+    title: "Update rate per minute for a specific peer (1 hour)"
+    analyst_question: "What was the per-minute update rate for peer_asn 6939 between 09:00 and 10:00 on Jan 5?"
+    window: 1 hour
+    sql: |
+      SELECT toStartOfMinute(timestamp) AS minute, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_asn = '6939'
+        AND timestamp >= '2024-01-05 09:00:00' AND timestamp < '2024-01-05 10:00:00'
+      GROUP BY minute
+      ORDER BY minute;
+
+  - id: q058
+    title: "Withdrawal spike detection per 5-minute bucket (1 day)"
+    analyst_question: "Are there any 5-minute windows on Jan 30 with an unusually high number of withdrawals?"
+    window: 1 day
+    sql: |
+      SELECT toStartOfFiveMinutes(timestamp) AS bucket, count(*) AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-30 00:00:00' AND timestamp < '2024-01-31 00:00:00'
+      GROUP BY bucket
+      ORDER BY withdrawals DESC
+      LIMIT 20;
+
+  - id: q059
+    title: "Announcement spike detection per hour (1 week)"
+    analyst_question: "Which hours during the second week had the highest announcement volume?"
+    window: 1 week
+    sql: |
+      SELECT toStartOfHour(timestamp) AS hour, count(*) AS announcements
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+      GROUP BY hour
+      ORDER BY announcements DESC
+      LIMIT 20;
+
+  - id: q060
+    title: "Distinct source files ingested (1 day)"
+    analyst_question: "How many distinct source files contributed updates on Jan 2?"
+    window: 1 day
+    sql: |
+      SELECT source_file, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-02 00:00:00' AND timestamp < '2024-01-03 00:00:00'
+      GROUP BY source_file
+      ORDER BY cnt DESC
+      LIMIT 50;
+
+  - id: q061
+    title: "Update count per source file over the full month"
+    analyst_question: "How many updates did each ingested source file contribute during January?"
+    window: full month
+    sql: |
+      SELECT source_file, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY source_file
+      ORDER BY cnt DESC
+      LIMIT 60;
+
+  - id: q062
+    title: "Top prefixes by withdrawal count (1 day)"
+    analyst_question: "Which prefixes had the most withdrawals on Jan 29?"
+    window: 1 day
+    sql: |
+      SELECT prefix, count(*) AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-29 00:00:00' AND timestamp < '2024-01-30 00:00:00'
+      GROUP BY prefix
+      ORDER BY withdrawals DESC
+      LIMIT 25;
+
+  - id: q063
+    title: "Prefixes announced then withdrawn within the same hour"
+    analyst_question: "Which prefixes were both announced and withdrawn within the same hour on Jan 11?"
+    window: 1 hour
+    sql: |
+      SELECT prefix,
+             countIf(operation = 'A') AS ann_cnt,
+             countIf(operation = 'W') AS with_cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-11 15:00:00' AND timestamp < '2024-01-11 16:00:00'
+      GROUP BY prefix
+      HAVING ann_cnt > 0 AND with_cnt > 0
+      ORDER BY (ann_cnt + with_cnt) DESC
+      LIMIT 30;
+
+  - id: q064
+    title: "Update volume by peer_asn and operation over 6 hours"
+    analyst_question: "How does update volume split by peer ASN and operation type between 00:00 and 06:00 on Jan 8?"
+    window: 6 hours
+    sql: |
+      SELECT peer_asn, operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-08 06:00:00'
+      GROUP BY peer_asn, operation
+      ORDER BY peer_asn, cnt DESC;
+
+  - id: q065
+    title: "Distinct AS paths seen for a given prefix (1 week)"
+    analyst_question: "How many distinct AS paths were used to reach prefix 9.9.9.0/24 during the first week?"
+    window: 1 week
+    sql: |
+      SELECT DISTINCT as_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '9.9.9.0/24'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      LIMIT 100;
+
+  - id: q066
+    title: "Peer diversity per prefix (1 day)"
+    analyst_question: "Which prefixes were seen from the most distinct peers on Jan 3?"
+    window: 1 day
+    sql: |
+      SELECT prefix, uniqExact(peer_ip) AS distinct_peers
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-03 00:00:00' AND timestamp < '2024-01-04 00:00:00'
+      GROUP BY prefix
+      ORDER BY distinct_peers DESC
+      LIMIT 25;
+
+  - id: q067
+    title: "AS adjacency extraction (edges) for a 1-hour window"
+    analyst_question: "What AS-to-AS adjacencies appeared in AS paths between 09:00 and 10:00 on Jan 5?"
+    window: 1 hour
+    sql: |
+      SELECT arrayJoin(arrayZip(
+               arraySlice(splitByChar(' ', as_path), 1, length(splitByChar(' ', as_path)) - 1),
+               arraySlice(splitByChar(' ', as_path), 2, length(splitByChar(' ', as_path)) - 1)
+             )) AS as_edge,
+             count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-05 09:00:00' AND timestamp < '2024-01-05 10:00:00'
+        AND length(splitByChar(' ', as_path)) > 1
+      GROUP BY as_edge
+      ORDER BY cnt DESC
+      LIMIT 50;
+
+  - id: q068
+    title: "First-hop AS (nearest peer AS) frequency (1 day)"
+    analyst_question: "Which ASNs appear most often as the first hop in AS paths on Jan 6?"
+    window: 1 day
+    sql: |
+      SELECT splitByChar(' ', as_path)[1] AS first_hop_asn, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+      GROUP BY first_hop_asn
+      ORDER BY cnt DESC
+      LIMIT 25;
+
+  - id: q069
+    title: "Origin AS (last hop) frequency compared to origin field (1 day)"
+    analyst_question: "Does the last ASN in as_path always match the origin field on Jan 6?"
+    window: 1 day
+    sql: |
+      SELECT
+        countIf(splitByChar(' ', as_path)[-1] = origin) AS matching,
+        countIf(splitByChar(' ', as_path)[-1] != origin) AS mismatched
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00';
+
+  - id: q070
+    title: "Mismatched origin vs last-path-hop listing (1 day)"
+    analyst_question: "Which specific updates on Jan 6 had a mismatch between origin and the last AS-path hop?"
+    window: 1 day
+    sql: |
+      SELECT prefix, as_path, origin, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+        AND splitByChar(' ', as_path)[-1] != origin
+      LIMIT 100;
+
+  - id: q071
+    title: "Update count comparison across three consecutive days"
+    analyst_question: "How did total update volume compare across Jan 10, 11, and 12?"
+    window: 3 days
+    sql: |
+      SELECT toDate(timestamp) AS day, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-10 00:00:00' AND timestamp < '2024-01-13 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q072
+    title: "Percentile analysis of AS path length (1 week)"
+    analyst_question: "What are the median and 95th percentile AS path lengths during the first week?"
+    window: 1 week
+    sql: |
+      SELECT
+        quantile(0.5)(length(splitByChar(' ', as_path))) AS median_len,
+        quantile(0.95)(length(splitByChar(' ', as_path))) AS p95_len,
+        max(length(splitByChar(' ', as_path))) AS max_len
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00';
+
+  - id: q073
+    title: "Peer with the largest routing table contribution (1 day)"
+    analyst_question: "Which peer announced the most distinct prefixes on Jan 15?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip, peer_asn, uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-15 00:00:00' AND timestamp < '2024-01-16 00:00:00'
+      GROUP BY peer_ip, peer_asn
+      ORDER BY distinct_prefixes DESC
+      LIMIT 20;
+
+  - id: q074
+    title: "Community-tagged traffic engineering events (1 day)"
+    analyst_question: "Which updates on Jan 28 carried communities suggesting traffic engineering (containing ':666' or ':777' style tags)?"
+    window: 1 day
+    sql: |
+      SELECT prefix, communities, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-28 00:00:00' AND timestamp < '2024-01-29 00:00:00'
+        AND (positionCaseInsensitive(communities, ':666') > 0 OR positionCaseInsensitive(communities, ':777') > 0)
+      LIMIT 100;
+
+  - id: q075
+    title: "Updates from a specific peer IP over a full week"
+    analyst_question: "What is the full update history for peer 198.51.100.1 during the first week?"
+    window: 1 week
+    sql: |
+      SELECT timestamp, operation, prefix, as_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_ip = '198.51.100.1'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      ORDER BY timestamp
+      LIMIT 1000;
+
+  - id: q076
+    title: "Comparing morning vs evening update volume (1 day)"
+    analyst_question: "How does update volume in the morning (00:00-12:00) compare to the evening (12:00-24:00) on Jan 9?"
+    window: 1 day
+    sql: |
+      SELECT
+        countIf(toHour(timestamp) < 12) AS morning_updates,
+        countIf(toHour(timestamp) >= 12) AS evening_updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-09 00:00:00' AND timestamp < '2024-01-10 00:00:00';
+
+  - id: q077
+    title: "Top 10 busiest 15-minute intervals over a day"
+    analyst_question: "What were the busiest 15-minute intervals on Jan 31?"
+    window: 1 day
+    sql: |
+      SELECT toStartOfInterval(timestamp, INTERVAL 15 minute) AS bucket, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-31 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY bucket
+      ORDER BY cnt DESC
+      LIMIT 10;
+
+  - id: q078
+    title: "Prefix update count histogram (1 day)"
+    analyst_question: "What is the distribution of update counts per prefix on Jan 2 (histogram of churn levels)?"
+    window: 1 day
+    sql: |
+      SELECT update_count, count(*) AS num_prefixes
+      FROM (
+        SELECT prefix, count(*) AS update_count
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND timestamp >= '2024-01-02 00:00:00' AND timestamp < '2024-01-03 00:00:00'
+        GROUP BY prefix
+      )
+      GROUP BY update_count
+      ORDER BY update_count;
+
+  - id: q079
+    title: "Distinct AS path count per prefix over a week (path instability)"
+    analyst_question: "Which prefixes used the most distinct AS paths during the first week (instability indicator)?"
+    window: 1 week
+    sql: |
+      SELECT prefix, uniqExact(as_path) AS distinct_paths
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY prefix
+      ORDER BY distinct_paths DESC
+      LIMIT 30;
+
+  - id: q080
+    title: "Updates for AS32934 (Meta) prefixes over a day"
+    analyst_question: "What updates involved Meta (AS32934) originated prefixes on Jan 16?"
+    window: 1 day
+    sql: |
+      SELECT timestamp, operation, prefix, peer_asn
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '32934'
+        AND timestamp >= '2024-01-16 00:00:00' AND timestamp < '2024-01-17 00:00:00'
+      ORDER BY timestamp
+      LIMIT 300;
+
+  - id: q081
+    title: "Updates for AS16509 (Amazon) prefixes over 6 hours"
+    analyst_question: "What Amazon (AS16509) prefix activity occurred between 06:00 and 12:00 on Jan 19?"
+    window: 6 hours
+    sql: |
+      SELECT prefix, operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '16509'
+        AND timestamp >= '2024-01-19 06:00:00' AND timestamp < '2024-01-19 12:00:00'
+      GROUP BY prefix, operation
+      ORDER BY cnt DESC
+      LIMIT 50;
+
+  - id: q082
+    title: "Updates for AS8075 (Microsoft) prefixes over a 3-day window"
+    analyst_question: "What was Microsoft's (AS8075) announcement pattern between Jan 22 and Jan 25?"
+    window: 3 days
+    sql: |
+      SELECT toDate(timestamp) AS day, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '8075'
+        AND timestamp >= '2024-01-22 00:00:00' AND timestamp < '2024-01-25 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q083
+    title: "Prefix withdrawal burst for a specific origin AS (1 hour)"
+    analyst_question: "Did AS7018 (AT&T) show any withdrawal bursts between 20:00 and 21:00 on Jan 27?"
+    window: 1 hour
+    sql: |
+      SELECT toStartOfMinute(timestamp) AS minute, count(*) AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '7018'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-27 20:00:00' AND timestamp < '2024-01-27 21:00:00'
+      GROUP BY minute
+      ORDER BY minute;
+
+  - id: q084
+    title: "Peer ASN diversity feeding a specific prefix (full month)"
+    analyst_question: "How many distinct peer ASNs announced prefix 8.8.8.0/24 at any point during January?"
+    window: full month
+    sql: |
+      SELECT uniqExact(peer_asn) AS distinct_peer_asns
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '8.8.8.0/24'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q085
+    title: "Communities containing a specific ASN prefix tag (1 day)"
+    analyst_question: "Which updates on Jan 20 carried a community tag starting with '13335:' (Cloudflare)?"
+    window: 1 day
+    sql: |
+      SELECT prefix, communities, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-20 00:00:00' AND timestamp < '2024-01-21 00:00:00'
+        AND positionCaseInsensitive(communities, '13335:') > 0
+      LIMIT 100;
+
+  - id: q086
+    title: "Raw listing of withdrawals only for a peer (15 minutes)"
+    analyst_question: "What withdrawal messages came from peer_asn 6461 between 12:00 and 12:15 on Jan 10?"
+    window: 15 minutes
+    sql: |
+      SELECT timestamp, prefix, peer_ip
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_asn = '6461'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-10 12:00:00' AND timestamp < '2024-01-10 12:15:00'
+      ORDER BY timestamp;
+
+  - id: q087
+    title: "Full-month total announcements vs withdrawals"
+    analyst_question: "What is the overall announcement-to-withdrawal ratio for all of January?"
+    window: full month
+    sql: |
+      SELECT operation, count(*) AS cnt, round(count(*) * 100.0 / sum(count(*)) OVER (), 2) AS pct
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY operation;
+
+  - id: q088
+    title: "Weekly update volume trend across January"
+    analyst_question: "How did weekly update totals trend across January 2024?"
+    window: full month
+    sql: |
+      SELECT toStartOfWeek(timestamp) AS week_start, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY week_start
+      ORDER BY week_start;
+
+  - id: q089
+    title: "Prefixes only ever withdrawn, never announced, in-window (1 day)"
+    analyst_question: "Were there prefixes withdrawn on Jan 31 that had no corresponding announcement that day?"
+    window: 1 day
+    sql: |
+      SELECT prefix, count(*) AS withdrawal_events
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-31 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+        AND prefix NOT IN (
+          SELECT prefix FROM bgp.bgp_updates
+          WHERE collector = 'rrc00' AND operation = 'A'
+            AND timestamp >= '2024-01-31 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+        )
+      GROUP BY prefix
+      ORDER BY withdrawal_events DESC
+      LIMIT 30;
+
+  - id: q090
+    title: "Peer update volume trend over a week using daily buckets"
+    analyst_question: "How did peer_asn 3356's daily update volume trend during the first week?"
+    window: 1 week
+    sql: |
+      SELECT toDate(timestamp) AS day, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_asn = '3356'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q091
+    title: "Correlation between path length and MED (1 day)"
+    analyst_question: "Is there a relationship between AS path length and MED value on Jan 14?"
+    window: 1 day
+    sql: |
+      SELECT length(splitByChar(' ', as_path)) AS path_len,
+             avg(toFloat64OrZero(toString(med))) AS avg_med,
+             count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-14 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+      GROUP BY path_len
+      ORDER BY path_len;
+
+  - id: q092
+    title: "Top 15 most common full AS paths (1 day)"
+    analyst_question: "What were the most common complete AS paths observed on Jan 4?"
+    window: 1 day
+    sql: |
+      SELECT as_path, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-04 00:00:00' AND timestamp < '2024-01-05 00:00:00'
+      GROUP BY as_path
+      ORDER BY cnt DESC
+      LIMIT 15;
+
+  - id: q093
+    title: "Updates missing a next_hop value (1 day)"
+    analyst_question: "Were there any announcements on Jan 8 with an empty next_hop field?"
+    window: 1 day
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-09 00:00:00'
+        AND (next_hop = '' OR next_hop IS NULL);
+
+  - id: q094
+    title: "Updates with empty communities field vs populated (1 day)"
+    analyst_question: "What proportion of updates on Jan 8 had no community tags at all?"
+    window: 1 day
+    sql: |
+      SELECT
+        countIf(communities = '') AS no_communities,
+        countIf(communities != '') AS with_communities
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-09 00:00:00';
+
+  - id: q095
+    title: "Prefix churn ranking with announcement/withdrawal breakdown (3 days)"
+    analyst_question: "Which prefixes churned the most between Jan 5 and Jan 8, broken down by operation type?"
+    window: 3 days
+    sql: |
+      SELECT prefix,
+             countIf(operation = 'A') AS announcements,
+             countIf(operation = 'W') AS withdrawals,
+             count(*) AS total
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-05 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY prefix
+      ORDER BY total DESC
+      LIMIT 30;
+
+  - id: q096
+    title: "Distinct origin ASNs seen overall (full month)"
+    analyst_question: "How many distinct origin ASNs were observed announcing prefixes throughout January?"
+    window: full month
+    sql: |
+      SELECT uniqExact(origin) AS distinct_origin_asns
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q097
+    title: "Distinct prefixes seen overall (full month)"
+    analyst_question: "How many distinct prefixes were observed in total throughout January?"
+    window: full month
+    sql: |
+      SELECT uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q098
+    title: "Update volume by peer for a 6-hour evening window"
+    analyst_question: "How did update volume vary by peer between 18:00 and 24:00 on Jan 24?"
+    window: 6 hours
+    sql: |
+      SELECT peer_asn, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-24 18:00:00' AND timestamp < '2024-01-25 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY cnt DESC
+      LIMIT 25;
+
+  - id: q099
+    title: "Prefixes announced exactly once in a day (stable routes)"
+    analyst_question: "Which prefixes were announced exactly once (no churn) on Jan 21, indicating stability?"
+    window: 1 day
+    sql: |
+      SELECT prefix
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-21 00:00:00' AND timestamp < '2024-01-22 00:00:00'
+      GROUP BY prefix
+      HAVING count(*) = 1
+      LIMIT 100;
+
+  - id: q100
+    title: "Update volume comparison: weekday vs weekend (full month)"
+    analyst_question: "Was there a notable difference in update volume between weekdays and weekends in January?"
+    window: full month
+    sql: |
+      SELECT
+        countIf(toDayOfWeek(timestamp) IN (6,7)) AS weekend_updates,
+        countIf(toDayOfWeek(timestamp) NOT IN (6,7)) AS weekday_updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q101
+    title: "AS path array explosion for graph analysis (1 hour)"
+    analyst_question: "What is the full flattened list of ASNs appearing anywhere in AS paths between 09:00 and 10:00 on Jan 5?"
+    window: 1 hour
+    sql: |
+      SELECT arrayJoin(splitByChar(' ', as_path)) AS asn, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-05 09:00:00' AND timestamp < '2024-01-05 10:00:00'
+      GROUP BY asn
+      ORDER BY cnt DESC
+      LIMIT 40;
+
+  - id: q102
+    title: "Prefixes announced by AS6939 (Hurricane Electric) over a week"
+    analyst_question: "What prefixes did AS6939 (Hurricane Electric) originate during the first week?"
+    window: 1 week
+    sql: |
+      SELECT DISTINCT prefix
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '6939'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      LIMIT 200;
+
+  - id: q103
+    title: "Updates involving prefix 185.1.0.0/16 across the month"
+    analyst_question: "What is the full monthly history of updates for prefix 185.1.0.0/16?"
+    window: full month
+    sql: |
+      SELECT timestamp, operation, peer_asn, as_path, local_pref, med
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '185.1.0.0/16'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      ORDER BY timestamp
+      LIMIT 1000;
+
+  - id: q104
+    title: "Top 10 prefixes by peer diversity over the month"
+    analyst_question: "Which prefixes were visible from the widest set of distinct peers during January?"
+    window: full month
+    sql: |
+      SELECT prefix, uniqExact(peer_ip) AS peer_count
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY prefix
+      ORDER BY peer_count DESC
+      LIMIT 10;
+
+  - id: q105
+    title: "Local pref anomalies compared to peer's usual value (1 day)"
+    analyst_question: "Which peers used an unusual local_pref value compared to their most common value on Jan 12?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip, local_pref, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-12 00:00:00' AND timestamp < '2024-01-13 00:00:00'
+      GROUP BY peer_ip, local_pref
+      ORDER BY peer_ip, cnt DESC
+      LIMIT 200;
+
+  - id: q106
+    title: "Aggregated route counts by aggr_ip (1 week)"
+    analyst_question: "Which aggregator IPs were used most often during the first week?"
+    window: 1 week
+    sql: |
+      SELECT aggr_ip, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND aggr_ip != ''
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY aggr_ip
+      ORDER BY cnt DESC
+      LIMIT 20;
+
+  - id: q107
+    title: "Updates around a suspected outage window (15 minutes)"
+    analyst_question: "What was the update activity between 03:00 and 03:15 on Jan 18 (suspected outage window)?"
+    window: 15 minutes
+    sql: |
+      SELECT operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-18 03:00:00' AND timestamp < '2024-01-18 03:15:00'
+      GROUP BY operation;
+
+  - id: q108
+    title: "Prefixes affected during a suspected outage window (15 minutes)"
+    analyst_question: "Which specific prefixes were withdrawn between 03:00 and 03:15 on Jan 18?"
+    window: 15 minutes
+    sql: |
+      SELECT prefix, peer_asn, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-18 03:00:00' AND timestamp < '2024-01-18 03:15:00'
+      ORDER BY timestamp
+      LIMIT 200;
+
+  - id: q109
+    title: "Recovery pattern after outage window (1 hour)"
+    analyst_question: "How did announcements recover in the hour following the Jan 18 03:00 event?"
+    window: 1 hour
+    sql: |
+      SELECT toStartOfMinute(timestamp) AS minute, countIf(operation = 'A') AS anns, countIf(operation = 'W') AS withs
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-18 03:00:00' AND timestamp < '2024-01-18 04:00:00'
+      GROUP BY minute
+      ORDER BY minute;
+
+  - id: q110
+    title: "Distinct peer ASN count trend across the month (daily)"
+    analyst_question: "How many distinct peer ASNs were active on each day of January?"
+    window: full month
+    sql: |
+      SELECT toDate(timestamp) AS day, uniqExact(peer_asn) AS distinct_peer_asns
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q111
+    title: "Updates with communities matching regexp pattern (1 day)"
+    analyst_question: "Which updates on Jan 13 had a community value matching a blackhole pattern like 'xxx:666'?"
+    window: 1 day
+    sql: |
+      SELECT prefix, communities, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-13 00:00:00' AND timestamp < '2024-01-14 00:00:00'
+        AND match(communities, '[0-9]+:666')
+      LIMIT 100;
+
+  - id: q112
+    title: "RTBH (blackhole) community usage trend over the month"
+    analyst_question: "How did use of blackhole-style communities (':666') trend across January?"
+    window: full month
+    sql: |
+      SELECT toDate(timestamp) AS day, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+        AND match(communities, '[0-9]+:666')
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q113
+    title: "Peer withdrawal-only sessions (1 day)"
+    analyst_question: "Were there peers on Jan 29 that only sent withdrawals, no announcements (possible session reset)?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip, count(*) AS withdrawal_cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-29 00:00:00' AND timestamp < '2024-01-30 00:00:00'
+      GROUP BY peer_ip
+      HAVING countIf(operation = 'A') = 0 AND countIf(operation = 'W') > 0
+      ORDER BY withdrawal_cnt DESC
+      LIMIT 20;
+
+  - id: q114
+    title: "Median update inter-arrival time per peer (1 day)"
+    analyst_question: "What is the median time between consecutive updates from each peer on Jan 7?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip, quantile(0.5)(gap) AS median_gap_seconds
+      FROM (
+        SELECT peer_ip, timestamp,
+               dateDiff('second', lagInFrame(timestamp) OVER (PARTITION BY peer_ip ORDER BY timestamp), timestamp) AS gap
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND timestamp >= '2024-01-07 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      )
+      WHERE gap IS NOT NULL AND gap > 0
+      GROUP BY peer_ip
+      ORDER BY median_gap_seconds
+      LIMIT 30;
+
+  - id: q115
+    title: "Announcement count per origin AS across the month (top 30)"
+    analyst_question: "Which origin ASNs announced the most total prefixes across all of January?"
+    window: full month
+    sql: |
+      SELECT origin, count(*) AS announcements, uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY origin
+      ORDER BY announcements DESC
+      LIMIT 30;
+
+  - id: q116
+    title: "Prefixes with a suspiciously large number of distinct origins over the month"
+    analyst_question: "Which prefixes had 3 or more distinct origin ASNs across January (strong MOAS candidates)?"
+    window: full month
+    sql: |
+      SELECT prefix, uniqExact(origin) AS distinct_origins, groupArray(DISTINCT origin) AS origins
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY prefix
+      HAVING distinct_origins >= 3
+      ORDER BY distinct_origins DESC
+      LIMIT 30;
+
+  - id: q117
+    title: "Time to first announcement of the month for select prefixes"
+    analyst_question: "When was prefix 203.0.113.0/24 first announced during January?"
+    window: full month
+    sql: |
+      SELECT min(timestamp) AS first_announcement
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '203.0.113.0/24'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q118
+    title: "Last known state of a prefix before month end"
+    analyst_question: "What was the last recorded state (announce/withdraw) of prefix 203.0.113.0/24 before month end?"
+    window: full month
+    sql: |
+      SELECT timestamp, operation, as_path, next_hop
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '203.0.113.0/24'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      ORDER BY timestamp DESC
+      LIMIT 1;
+
+  - id: q119
+    title: "Community tag co-occurrence (1 day)"
+    analyst_question: "Which pairs of community values co-occurred most often on Jan 26?"
+    window: 1 day
+    sql: |
+      SELECT communities, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-26 00:00:00' AND timestamp < '2024-01-27 00:00:00'
+        AND length(splitByChar(' ', communities)) >= 2
+      GROUP BY communities
+      ORDER BY cnt DESC
+      LIMIT 20;
+
+  - id: q120
+    title: "Updates per operation type over a 3-day rolling comparison"
+    analyst_question: "How did daily announcement and withdrawal totals compare over Jan 20-22?"
+    window: 3 days
+    sql: |
+      SELECT toDate(timestamp) AS day,
+             countIf(operation = 'A') AS announcements,
+             countIf(operation = 'W') AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-20 00:00:00' AND timestamp < '2024-01-23 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q121
+    title: "Distinct next_hop count for a specific origin AS (1 week)"
+    analyst_question: "How many distinct next-hop addresses did AS15169 (Google) use during the first week?"
+    window: 1 week
+    sql: |
+      SELECT uniqExact(next_hop) AS distinct_next_hops
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '15169'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00';
+
+  - id: q122
+    title: "Rare AS path patterns (paths seen only once) in a day"
+    analyst_question: "Which AS paths appeared exactly once on Jan 3 (unusual/rare paths)?"
+    window: 1 day
+    sql: |
+      SELECT as_path, prefix
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-03 00:00:00' AND timestamp < '2024-01-04 00:00:00'
+      GROUP BY as_path, prefix
+      HAVING count(*) = 1
+      LIMIT 100;
+
+  - id: q123
+    title: "Updates arriving out of chronological order check (5 minutes)"
+    analyst_question: "Were there any updates between 08:00 and 08:05 on Jan 15 with timestamps that appear inconsistent with source_file ordering?"
+    window: 5 minutes
+    sql: |
+      SELECT source_file, min(timestamp) AS min_ts, max(timestamp) AS max_ts, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-15 08:00:00' AND timestamp < '2024-01-15 08:05:00'
+      GROUP BY source_file
+      ORDER BY min_ts;
+
+  - id: q124
+    title: "Peer ASN to prefix count matrix (top peers, 1 day)"
+    analyst_question: "For the top 10 busiest peers on Jan 6, how many distinct prefixes did each announce?"
+    window: 1 day
+    sql: |
+      SELECT peer_asn, uniqExact(prefix) AS distinct_prefixes, count(*) AS total_updates
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY total_updates DESC
+      LIMIT 10;
+
+  - id: q125
+    title: "Updates for a specific /8 supernet block over a day"
+    analyst_question: "What update activity occurred for prefixes within 10.0.0.0/8 on Jan 9 (private space leak check)?"
+    window: 1 day
+    sql: |
+      SELECT prefix, operation, peer_asn, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND startsWith(prefix, '10.')
+        AND timestamp >= '2024-01-09 00:00:00' AND timestamp < '2024-01-10 00:00:00'
+      LIMIT 100;
+
+  - id: q126
+    title: "RFC1918 private prefix leak check (1 week)"
+    analyst_question: "Were any RFC1918 private prefixes (192.168.x.x, 172.16-31.x.x) leaked into rrc00 during the first week?"
+    window: 1 week
+    sql: |
+      SELECT prefix, peer_asn, as_path, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+        AND (startsWith(prefix, '192.168.') OR startsWith(prefix, '10.'))
+      LIMIT 100;
+
+  - id: q127
+    title: "Update volume grouped by 3-day totals across the month"
+    analyst_question: "What are the 3-day rolling totals of updates across January?"
+    window: full month
+    sql: |
+      SELECT toStartOfInterval(timestamp, INTERVAL 3 day) AS bucket, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY bucket
+      ORDER BY bucket;
+
+  - id: q128
+    title: "Peer with most withdrawals relative to announcements (1 day)"
+    analyst_question: "Which peer had the highest withdrawal-to-announcement ratio on Jan 15?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip,
+             countIf(operation = 'W') AS withdrawals,
+             countIf(operation = 'A') AS announcements,
+             countIf(operation = 'W') / greatest(countIf(operation = 'A'), 1) AS ratio
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-15 00:00:00' AND timestamp < '2024-01-16 00:00:00'
+      GROUP BY peer_ip
+      HAVING announcements + withdrawals > 20
+      ORDER BY ratio DESC
+      LIMIT 20;
+
+  - id: q129
+    title: "Community usage by top origin ASNs (1 day)"
+    analyst_question: "Which communities did the top 5 origin ASNs by volume use on Jan 10?"
+    window: 1 day
+    sql: |
+      SELECT origin, communities, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND communities != ''
+        AND timestamp >= '2024-01-10 00:00:00' AND timestamp < '2024-01-11 00:00:00'
+        AND origin IN (
+          SELECT origin FROM bgp.bgp_updates
+          WHERE collector = 'rrc00' AND operation = 'A'
+            AND timestamp >= '2024-01-10 00:00:00' AND timestamp < '2024-01-11 00:00:00'
+          GROUP BY origin ORDER BY count(*) DESC LIMIT 5
+        )
+      GROUP BY origin, communities
+      ORDER BY origin, cnt DESC;
+
+  - id: q130
+    title: "Update event count for specific source file (1 day)"
+    analyst_question: "How many events came from source file 'rrc00.20240111.0800.bz2' if present?"
+    window: 1 day
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND source_file = 'rrc00.20240111.0800.bz2'
+        AND timestamp >= '2024-01-11 00:00:00' AND timestamp < '2024-01-12 00:00:00';
+
+  - id: q131
+    title: "Announcement rate acceleration check (5-minute buckets, 1 hour)"
+    analyst_question: "Did announcement rates spike suspiciously in any 5-minute bucket between 14:00 and 15:00 on Jan 9?"
+    window: 1 hour
+    sql: |
+      SELECT toStartOfFiveMinutes(timestamp) AS bucket, countIf(operation = 'A') AS anns
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-09 14:00:00' AND timestamp < '2024-01-09 15:00:00'
+      GROUP BY bucket
+      ORDER BY bucket;
+
+  - id: q132
+    title: "Top 10 peer ASNs by distinct prefix coverage over the month"
+    analyst_question: "Which peer ASNs provided visibility into the largest number of distinct prefixes over all of January?"
+    window: full month
+    sql: |
+      SELECT peer_asn, uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY distinct_prefixes DESC
+      LIMIT 10;
+
+  - id: q133
+    title: "Origin AS churn: distinct origins per prefix trend by week"
+    analyst_question: "How did MOAS-prefix counts (2+ distinct origins) trend week over week in January?"
+    window: full month
+    sql: |
+      SELECT toStartOfWeek(timestamp) AS week_start, count(*) AS moas_prefix_count
+      FROM (
+        SELECT toStartOfWeek(timestamp) AS timestamp, prefix, uniqExact(origin) AS origins
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND operation = 'A'
+          AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+        GROUP BY timestamp, prefix
+        HAVING origins > 1
+      )
+      GROUP BY week_start
+      ORDER BY week_start;
+
+  - id: q134
+    title: "Peer session churn: distinct peers per hour over a day"
+    analyst_question: "How did the number of distinct active peers vary hour by hour on Jan 30?"
+    window: 1 day
+    sql: |
+      SELECT toStartOfHour(timestamp) AS hour, uniqExact(peer_ip) AS distinct_peers
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-30 00:00:00' AND timestamp < '2024-01-31 00:00:00'
+      GROUP BY hour
+      ORDER BY hour;
+
+  - id: q135
+    title: "Longest single AS path of the month"
+    analyst_question: "What was the single longest AS path observed anywhere in January?"
+    window: full month
+    sql: |
+      SELECT prefix, as_path, length(splitByChar(' ', as_path)) AS path_len, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      ORDER BY path_len DESC
+      LIMIT 1;
+
+  - id: q136
+    title: "Updates with local_pref higher than typical default (1 day)"
+    analyst_question: "Which updates on Jan 17 had a local_pref greater than 200 (unusually high)?"
+    window: 1 day
+    sql: |
+      SELECT prefix, peer_asn, local_pref, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-17 00:00:00' AND timestamp < '2024-01-18 00:00:00'
+        AND toInt64OrZero(toString(local_pref)) > 200
+      ORDER BY toInt64OrZero(toString(local_pref)) DESC
+      LIMIT 50;
+
+  - id: q137
+    title: "Updates with negative or zero MED (1 day)"
+    analyst_question: "Were there any updates on Jan 17 with a MED of zero or an invalid negative value?"
+    window: 1 day
+    sql: |
+      SELECT prefix, peer_asn, med, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-17 00:00:00' AND timestamp < '2024-01-18 00:00:00'
+        AND toInt64OrZero(toString(med)) <= 0
+      LIMIT 50;
+
+  - id: q138
+    title: "Distinct communities count trend across the month (weekly)"
+    analyst_question: "How did the number of distinct community strings used trend week by week in January?"
+    window: full month
+    sql: |
+      SELECT toStartOfWeek(timestamp) AS week_start, uniqExact(communities) AS distinct_communities
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND communities != ''
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY week_start
+      ORDER BY week_start;
+
+  - id: q139
+    title: "Prefix reachability status snapshot (argMax) at end of a day"
+    analyst_question: "What is the last known operation for each prefix as of end-of-day Jan 5?"
+    window: 1 day
+    sql: |
+      SELECT prefix, argMax(operation, timestamp) AS last_operation, max(timestamp) AS last_seen
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-05 00:00:00' AND timestamp < '2024-01-06 00:00:00'
+      GROUP BY prefix
+      LIMIT 200;
+
+  - id: q140
+    title: "Latest AS path per prefix snapshot (argMax) in a 6-hour window"
+    analyst_question: "What is the most recent AS path used for each prefix between 00:00 and 06:00 on Jan 8?"
+    window: 6 hours
+    sql: |
+      SELECT prefix, argMax(as_path, timestamp) AS latest_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-08 06:00:00'
+      GROUP BY prefix
+      LIMIT 200;
+
+  - id: q141
+    title: "Peers that stopped sending updates mid-window (1 day)"
+    analyst_question: "Which peers were active in the first half of Jan 22 but silent in the second half?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-22 00:00:00' AND timestamp < '2024-01-22 12:00:00'
+      GROUP BY peer_ip
+      HAVING peer_ip NOT IN (
+        SELECT DISTINCT peer_ip FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND timestamp >= '2024-01-22 12:00:00' AND timestamp < '2024-01-23 00:00:00'
+      )
+      LIMIT 30;
+
+  - id: q142
+    title: "New prefixes first observed in a given week"
+    analyst_question: "Which prefixes were seen for the first time during the second week of January (not seen in week 1)?"
+    window: 1 week
+    sql: |
+      SELECT DISTINCT prefix
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+        AND prefix NOT IN (
+          SELECT DISTINCT prefix FROM bgp.bgp_updates
+          WHERE collector = 'rrc00'
+            AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+        )
+      LIMIT 100;
+
+  - id: q143
+    title: "Prefixes that disappeared after a given week (potential deaggregation/withdrawal)"
+    analyst_question: "Which prefixes seen in week 1 were never seen again during week 2?"
+    window: 1 week
+    sql: |
+      SELECT DISTINCT prefix
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+        AND prefix NOT IN (
+          SELECT DISTINCT prefix FROM bgp.bgp_updates
+          WHERE collector = 'rrc00'
+            AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+        )
+      LIMIT 100;
+
+  - id: q144
+    title: "Update count per collector sanity check (1 day)"
+    analyst_question: "As a sanity check, confirm all returned rows for Jan 1 are indeed from rrc00."
+    window: 1 day
+    sql: |
+      SELECT collector, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-02 00:00:00'
+      GROUP BY collector;
+
+  - id: q145
+    title: "Peer ASN with the shortest average AS path (1 day)"
+    analyst_question: "Which peer ASN reported the shortest average AS paths on Jan 19, suggesting close proximity?"
+    window: 1 day
+    sql: |
+      SELECT peer_asn, avg(length(splitByChar(' ', as_path))) AS avg_len, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-19 00:00:00' AND timestamp < '2024-01-20 00:00:00'
+      GROUP BY peer_asn
+      HAVING cnt > 50
+      ORDER BY avg_len ASC
+      LIMIT 20;
+
+  - id: q146
+    title: "Update volume for /16 aggregate blocks (1 day)"
+    analyst_question: "Aggregating by /16 supernet, which blocks had the most update activity on Jan 25?"
+    window: 1 day
+    sql: |
+      SELECT splitByChar('.', prefix)[1] || '.' || splitByChar('.', prefix)[2] || '.0.0/16' AS supernet,
+             count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND NOT match(prefix, ':')
+        AND timestamp >= '2024-01-25 00:00:00' AND timestamp < '2024-01-26 00:00:00'
+      GROUP BY supernet
+      ORDER BY cnt DESC
+      LIMIT 25;
+
+  - id: q147
+    title: "Communities frequency ranked by distinct prefixes tagged (1 week)"
+    analyst_question: "Which communities were applied to the widest range of distinct prefixes during the first week?"
+    window: 1 week
+    sql: |
+      SELECT communities, uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND communities != ''
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY communities
+      ORDER BY distinct_prefixes DESC
+      LIMIT 20;
+
+  - id: q148
+    title: "Update volume around a known internet event (6 hours)"
+    analyst_question: "What update activity occurred between 12:00 and 18:00 on Jan 1, 2024 (New Year holiday traffic)?"
+    window: 6 hours
+    sql: |
+      SELECT toStartOfHour(timestamp) AS hour, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 12:00:00' AND timestamp < '2024-01-01 18:00:00'
+      GROUP BY hour
+      ORDER BY hour;
+
+  - id: q149
+    title: "Distinct as_path count for a single peer across the month"
+    analyst_question: "How many distinct AS paths did peer_ip 203.0.113.5 report throughout January?"
+    window: full month
+    sql: |
+      SELECT uniqExact(as_path) AS distinct_paths
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_ip = '203.0.113.5'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q150
+    title: "Prefixes overlapping a target supernet (1 day)"
+    analyst_question: "Which more-specific prefixes overlap with 172.217.0.0/16 (Google range) on Jan 16?"
+    window: 1 day
+    sql: |
+      SELECT DISTINCT prefix
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND startsWith(prefix, '172.217.')
+        AND timestamp >= '2024-01-16 00:00:00' AND timestamp < '2024-01-17 00:00:00'
+      LIMIT 100;
+
+  - id: q151
+    title: "Update-type breakdown by hour for a specific origin AS (1 day)"
+    analyst_question: "How did announcement/withdrawal activity for AS701 (Verizon) vary hourly on Jan 2?"
+    window: 1 day
+    sql: |
+      SELECT toStartOfHour(timestamp) AS hour,
+             countIf(operation = 'A') AS anns,
+             countIf(operation = 'W') AS withs
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '701'
+        AND timestamp >= '2024-01-02 00:00:00' AND timestamp < '2024-01-03 00:00:00'
+      GROUP BY hour
+      ORDER BY hour;
+
+  - id: q152
+    title: "Cross-tabulation of operation by prefix length (1 day)"
+    analyst_question: "Are withdrawals more common for longer prefixes on Jan 23?"
+    window: 1 day
+    sql: |
+      SELECT toUInt8OrZero(splitByChar('/', prefix)[2]) AS prefix_len, operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND NOT match(prefix, ':')
+        AND timestamp >= '2024-01-23 00:00:00' AND timestamp < '2024-01-24 00:00:00'
+      GROUP BY prefix_len, operation
+      ORDER BY prefix_len, operation;
+
+  - id: q153
+    title: "Top 5 peer ASNs contributing withdrawals in a 3-day window"
+    analyst_question: "Which peer ASNs generated the most withdrawal messages between Jan 27 and Jan 30?"
+    window: 3 days
+    sql: |
+      SELECT peer_asn, count(*) AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-27 00:00:00' AND timestamp < '2024-01-30 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY withdrawals DESC
+      LIMIT 5;
+
+  - id: q154
+    title: "Update count for specific next_hop address over a week"
+    analyst_question: "How many updates used next_hop 198.51.100.254 during the first week?"
+    window: 1 week
+    sql: |
+      SELECT count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND next_hop = '198.51.100.254'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00';
+
+  - id: q155
+    title: "Deduplicated distinct update signatures in a 5-minute window"
+    analyst_question: "How many unique (prefix, operation, as_path) combinations occurred between 08:00 and 08:05 on Jan 15?"
+    window: 5 minutes
+    sql: |
+      SELECT uniqExact(prefix, operation, as_path) AS distinct_signatures
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-15 08:00:00' AND timestamp < '2024-01-15 08:05:00';
+
+  - id: q156
+    title: "Percent of updates from top 5 peers (1 day)"
+    analyst_question: "What percentage of Jan 6 updates came from the 5 busiest peers?"
+    window: 1 day
+    sql: |
+      SELECT peer_asn, count(*) AS cnt, round(count(*) * 100.0 / sum(count(*)) OVER (), 2) AS pct_of_day
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY cnt DESC
+      LIMIT 5;
+
+  - id: q157
+    title: "Updates for a large CDN prefix range over 3 days"
+    analyst_question: "What update activity did prefix 104.16.0.0/12-range (Cloudflare CDN) prefixes show between Jan 12 and Jan 15?"
+    window: 3 days
+    sql: |
+      SELECT prefix, operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND startsWith(prefix, '104.16.')
+        AND timestamp >= '2024-01-12 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+      GROUP BY prefix, operation
+      ORDER BY cnt DESC
+      LIMIT 50;
+
+  - id: q158
+    title: "Communities value length distribution (1 day)"
+    analyst_question: "How long (in characters) are the community strings observed on Jan 5, and how are they distributed?"
+    window: 1 day
+    sql: |
+      SELECT length(communities) AS comm_len, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-05 00:00:00' AND timestamp < '2024-01-06 00:00:00'
+        AND communities != ''
+      GROUP BY comm_len
+      ORDER BY comm_len;
+
+  - id: q159
+    title: "Peer ASN update volume rank change over two weeks"
+    analyst_question: "How did the ranking of top peer ASNs by volume differ between week 1 and week 2 of January?"
+    window: full month
+    sql: |
+      SELECT peer_asn,
+             countIf(timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00') AS week1_cnt,
+             countIf(timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-15 00:00:00') AS week2_cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY week1_cnt DESC
+      LIMIT 20;
+
+  - id: q160
+    title: "Prefix-level snapshot join comparing start-of-month vs mid-month state"
+    analyst_question: "For prefixes seen on Jan 1, what was their most recent AS path as of Jan 15?"
+    window: full month
+    sql: |
+      SELECT prefix, argMax(as_path, timestamp) AS latest_path_by_jan15
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+        AND prefix IN (
+          SELECT DISTINCT prefix FROM bgp.bgp_updates
+          WHERE collector = 'rrc00' AND operation = 'A'
+            AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-02 00:00:00'
+        )
+      GROUP BY prefix
+      LIMIT 100;
+
+  - id: q161
+    title: "Update burst comparison: two adjacent 15-minute windows"
+    analyst_question: "How did update volume compare between 12:00-12:15 and 12:15-12:30 on Jan 10?"
+    window: 15 minutes
+    sql: |
+      SELECT
+        countIf(timestamp >= '2024-01-10 12:00:00' AND timestamp < '2024-01-10 12:15:00') AS window1,
+        countIf(timestamp >= '2024-01-10 12:15:00' AND timestamp < '2024-01-10 12:30:00') AS window2
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-10 12:00:00' AND timestamp < '2024-01-10 12:30:00';
+
+  - id: q162
+    title: "Origin AS with the most withdrawal activity (1 day)"
+    analyst_question: "Which origin AS had the highest withdrawal count on Jan 31?"
+    window: 1 day
+    sql: |
+      SELECT origin, count(*) AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-31 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY origin
+      ORDER BY withdrawals DESC
+      LIMIT 20;
+
+  - id: q163
+    title: "AS path containing two specific transit ASNs in sequence (1 day)"
+    analyst_question: "Which updates on Jan 9 had AS3356 directly followed by AS174 in the path?"
+    window: 1 day
+    sql: |
+      SELECT prefix, as_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-09 00:00:00' AND timestamp < '2024-01-10 00:00:00'
+        AND positionCaseInsensitive(as_path, '3356 174') > 0
+      LIMIT 50;
+
+  - id: q164
+    title: "Update rate normalized per peer per hour (6 hours)"
+    analyst_question: "What is the average updates-per-hour rate for each peer between 00:00 and 06:00 on Jan 8?"
+    window: 6 hours
+    sql: |
+      SELECT peer_asn, count(*) / 6.0 AS avg_updates_per_hour
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-08 00:00:00' AND timestamp < '2024-01-08 06:00:00'
+      GROUP BY peer_asn
+      ORDER BY avg_updates_per_hour DESC
+      LIMIT 25;
+
+  - id: q165
+    title: "Origin ASN stability check: same origin across full month for a prefix"
+    analyst_question: "Did prefix 8.8.8.0/24 keep a consistent origin AS throughout January?"
+    window: full month
+    sql: |
+      SELECT uniqExact(origin) AS distinct_origins, groupArray(DISTINCT origin) AS origins_list
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '8.8.8.0/24'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q166
+    title: "Update volume vs distinct prefix count correlation (daily, full month)"
+    analyst_question: "Across January, how does total daily update volume compare to the number of distinct prefixes touched?"
+    window: full month
+    sql: |
+      SELECT toDate(timestamp) AS day, count(*) AS total_updates, uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY day
+      ORDER BY day;
+
+  - id: q167
+    title: "Peer ASNs seen only briefly (single-day presence) across the month"
+    analyst_question: "Which peer ASNs appeared on only one calendar day during all of January?"
+    window: full month
+    sql: |
+      SELECT peer_asn, uniqExact(toDate(timestamp)) AS active_days
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY peer_asn
+      HAVING active_days = 1
+      LIMIT 30;
+
+  - id: q168
+    title: "Consistently active peer ASNs across the month"
+    analyst_question: "Which peer ASNs sent updates on every single day of January?"
+    window: full month
+    sql: |
+      SELECT peer_asn, uniqExact(toDate(timestamp)) AS active_days
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY peer_asn
+      HAVING active_days = 31
+      ORDER BY peer_asn
+      LIMIT 30;
+
+  - id: q169
+    title: "Prefix count by first octet range (1 day)"
+    analyst_question: "How are announced IPv4 prefixes on Jan 27 distributed across first-octet ranges?"
+    window: 1 day
+    sql: |
+      SELECT toUInt16OrZero(splitByChar('.', prefix)[1]) AS first_octet, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND NOT match(prefix, ':')
+        AND timestamp >= '2024-01-27 00:00:00' AND timestamp < '2024-01-28 00:00:00'
+      GROUP BY first_octet
+      ORDER BY first_octet;
+
+  - id: q170
+    title: "Updates joined with their preceding state for local_pref changes (1 day)"
+    analyst_question: "Which prefixes had a local_pref change between consecutive announcements on Jan 3?"
+    window: 1 day
+    sql: |
+      SELECT prefix, timestamp, local_pref, prev_local_pref
+      FROM (
+        SELECT prefix, timestamp, local_pref,
+               lagInFrame(local_pref) OVER (PARTITION BY prefix ORDER BY timestamp) AS prev_local_pref
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND operation = 'A'
+          AND timestamp >= '2024-01-03 00:00:00' AND timestamp < '2024-01-04 00:00:00'
+      )
+      WHERE prev_local_pref IS NOT NULL AND toString(local_pref) != toString(prev_local_pref)
+      ORDER BY prefix, timestamp
+      LIMIT 100;
+
+  - id: q171
+    title: "Next-hop change detection via window function (1 day)"
+    analyst_question: "Which prefixes changed next_hop between consecutive announcements on Jan 3?"
+    window: 1 day
+    sql: |
+      SELECT prefix, timestamp, next_hop, prev_next_hop
+      FROM (
+        SELECT prefix, timestamp, next_hop,
+               lagInFrame(next_hop) OVER (PARTITION BY prefix ORDER BY timestamp) AS prev_next_hop
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND operation = 'A'
+          AND timestamp >= '2024-01-03 00:00:00' AND timestamp < '2024-01-04 00:00:00'
+      )
+      WHERE prev_next_hop IS NOT NULL AND next_hop != prev_next_hop
+      ORDER BY prefix, timestamp
+      LIMIT 100;
+
+  - id: q172
+    title: "Aggregate flag change over time for a prefix (full month)"
+    analyst_question: "Did prefix 172.217.0.0/16 ever toggle its atomic aggregate flag during January?"
+    window: full month
+    sql: |
+      SELECT timestamp, atomic, aggr_asn, aggr_ip
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND prefix = '172.217.0.0/16'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      ORDER BY timestamp;
+
+  - id: q173
+    title: "Update volume filtered to a specific origin and time-of-day window (1 hour)"
+    analyst_question: "What did AS13335 (Cloudflare) announcement activity look like between 03:00 and 04:00 on Jan 21?"
+    window: 1 hour
+    sql: |
+      SELECT timestamp, prefix, operation
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND origin = '13335'
+        AND timestamp >= '2024-01-21 03:00:00' AND timestamp < '2024-01-21 04:00:00'
+      ORDER BY timestamp
+      LIMIT 200;
+
+  - id: q174
+    title: "Count of updates by AS path first two hops (1 day)"
+    analyst_question: "What are the most common two-hop AS path prefixes (first two ASNs) seen on Jan 12?"
+    window: 1 day
+    sql: |
+      SELECT arraySlice(splitByChar(' ', as_path), 1, 2) AS first_two_hops, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-12 00:00:00' AND timestamp < '2024-01-13 00:00:00'
+        AND length(splitByChar(' ', as_path)) >= 2
+      GROUP BY first_two_hops
+      ORDER BY cnt DESC
+      LIMIT 25;
+
+  - id: q175
+    title: "Update timestamp granularity check (distinct seconds with activity, 1 hour)"
+    analyst_question: "How many distinct seconds within 09:00-10:00 on Jan 5 had at least one update?"
+    window: 1 hour
+    sql: |
+      SELECT uniqExact(timestamp) AS distinct_seconds_with_activity
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-05 09:00:00' AND timestamp < '2024-01-05 10:00:00';
+
+  - id: q176
+    title: "Updates grouped by peer_asn and prefix length category (1 day)"
+    analyst_question: "For each peer on Jan 24, what proportion of their announcements were /24 or longer vs shorter?"
+    window: 1 day
+    sql: |
+      SELECT peer_asn,
+             countIf(toUInt8OrZero(splitByChar('/', prefix)[2]) >= 24) AS long_prefixes,
+             countIf(toUInt8OrZero(splitByChar('/', prefix)[2]) < 24) AS short_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND NOT match(prefix, ':')
+        AND timestamp >= '2024-01-24 00:00:00' AND timestamp < '2024-01-25 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY long_prefixes DESC
+      LIMIT 25;
+
+  - id: q177
+    title: "Update volume comparison across three different collectors' worth of rrc00 peers grouped by ASN family"
+    analyst_question: "How do updates from Tier-1 transit ASNs (174, 3356, 6939, 1299) compare in volume on Jan 6?"
+    window: 1 day
+    sql: |
+      SELECT peer_asn, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_asn IN ('174', '3356', '6939', '1299')
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY cnt DESC;
+
+  - id: q178
+    title: "Distinct prefix count for Tier-1 transit peers over a week"
+    analyst_question: "How many distinct prefixes did Tier-1 peers (174, 3356, 6939, 1299) collectively show during week 1?"
+    window: 1 week
+    sql: |
+      SELECT uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND peer_asn IN ('174', '3356', '6939', '1299')
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00';
+
+  - id: q179
+    title: "Withdrawal count trend across the month by week"
+    analyst_question: "How did total weekly withdrawal counts trend across January?"
+    window: full month
+    sql: |
+      SELECT toStartOfWeek(timestamp) AS week_start, count(*) AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY week_start
+      ORDER BY week_start;
+
+  - id: q180
+    title: "Announcement count trend across the month by week"
+    analyst_question: "How did total weekly announcement counts trend across January?"
+    window: full month
+    sql: |
+      SELECT toStartOfWeek(timestamp) AS week_start, count(*) AS announcements
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY week_start
+      ORDER BY week_start;
+
+  - id: q181
+    title: "Prefixes with communities but no local_pref set (1 day)"
+    analyst_question: "Were there updates on Jan 14 that had communities attached but no local_pref value?"
+    window: 1 day
+    sql: |
+      SELECT prefix, communities, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-14 00:00:00' AND timestamp < '2024-01-15 00:00:00'
+        AND communities != ''
+        AND (toString(local_pref) = '' OR local_pref IS NULL)
+      LIMIT 50;
+
+  - id: q182
+    title: "Peer_ip vs peer_asn consistency check (1 day)"
+    analyst_question: "Did any peer_ip on Jan 18 report more than one distinct peer_asn (possible renumbering or data issue)?"
+    window: 1 day
+    sql: |
+      SELECT peer_ip, uniqExact(peer_asn) AS distinct_asns
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-18 00:00:00' AND timestamp < '2024-01-19 00:00:00'
+      GROUP BY peer_ip
+      HAVING distinct_asns > 1
+      LIMIT 20;
+
+  - id: q183
+    title: "Update volume for a targeted incident window (5 minutes)"
+    analyst_question: "What exact updates occurred between 16:32 and 16:37 on Jan 29 during a reported incident?"
+    window: 5 minutes
+    sql: |
+      SELECT timestamp, operation, prefix, peer_asn, as_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-29 16:32:00' AND timestamp < '2024-01-29 16:37:00'
+      ORDER BY timestamp
+      LIMIT 500;
+
+  - id: q184
+    title: "Prefix deaggregation check: more-specifics of a supernet appearing suddenly (1 day)"
+    analyst_question: "Were there new /24 announcements within 203.0.113.0/24's parent block on Jan 29 suggesting deaggregation?"
+    window: 1 day
+    sql: |
+      SELECT prefix, operation, timestamp, as_path
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND startsWith(prefix, '203.0.113.')
+        AND operation = 'A'
+        AND timestamp >= '2024-01-29 00:00:00' AND timestamp < '2024-01-30 00:00:00'
+      ORDER BY timestamp
+      LIMIT 100;
+
+  - id: q185
+    title: "Community usage percentage by peer (1 day)"
+    analyst_question: "What percentage of each peer's announcements on Jan 20 carried at least one community?"
+    window: 1 day
+    sql: |
+      SELECT peer_asn,
+             countIf(communities != '') AS with_comm,
+             count(*) AS total,
+             round(countIf(communities != '') * 100.0 / count(*), 2) AS pct_with_comm
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-20 00:00:00' AND timestamp < '2024-01-21 00:00:00'
+      GROUP BY peer_asn
+      ORDER BY pct_with_comm DESC
+      LIMIT 25;
+
+  - id: q186
+    title: "Origin AS with widest next-hop diversity (1 week)"
+    analyst_question: "Which origin AS used the greatest number of distinct next-hop addresses during the first week?"
+    window: 1 week
+    sql: |
+      SELECT origin, uniqExact(next_hop) AS distinct_next_hops
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY origin
+      ORDER BY distinct_next_hops DESC
+      LIMIT 20;
+
+  - id: q187
+    title: "Updates sampled every 5-minute bucket showing avg path length trend (1 day)"
+    analyst_question: "How did average AS path length trend across 5-minute buckets on Jan 5?"
+    window: 1 day
+    sql: |
+      SELECT toStartOfFiveMinutes(timestamp) AS bucket, avg(length(splitByChar(' ', as_path))) AS avg_path_len
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-05 00:00:00' AND timestamp < '2024-01-06 00:00:00'
+      GROUP BY bucket
+      ORDER BY bucket
+      LIMIT 300;
+
+  - id: q188
+    title: "Ranking prefixes by update rate per hour using window function (1 day)"
+    analyst_question: "Using a running rank, which prefixes were consistently in the top 5 most-updated per hour on Jan 11?"
+    window: 1 day
+    sql: |
+      SELECT hour, prefix, cnt, rnk
+      FROM (
+        SELECT toStartOfHour(timestamp) AS hour, prefix, count(*) AS cnt,
+               row_number() OVER (PARTITION BY toStartOfHour(timestamp) ORDER BY count(*) DESC) AS rnk
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND timestamp >= '2024-01-11 00:00:00' AND timestamp < '2024-01-12 00:00:00'
+        GROUP BY hour, prefix
+      )
+      WHERE rnk <= 5
+      ORDER BY hour, rnk;
+
+  - id: q189
+    title: "Detecting simultaneous withdrawals across many prefixes from one peer (5 minutes)"
+    analyst_question: "Did any single peer withdraw an unusually large batch of prefixes between 16:32 and 16:37 on Jan 29?"
+    window: 5 minutes
+    sql: |
+      SELECT peer_ip, count(*) AS withdrawal_count, uniqExact(prefix) AS distinct_prefixes
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'W'
+        AND timestamp >= '2024-01-29 16:32:00' AND timestamp < '2024-01-29 16:37:00'
+      GROUP BY peer_ip
+      ORDER BY withdrawal_count DESC
+      LIMIT 20;
+
+  - id: q190
+    title: "Cross-check: origin AS present in as_path array at all (1 day)"
+    analyst_question: "Are there announcements on Jan 6 where the declared origin AS does not appear anywhere in the AS path?"
+    window: 1 day
+    sql: |
+      SELECT prefix, origin, as_path, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-06 00:00:00' AND timestamp < '2024-01-07 00:00:00'
+        AND NOT has(splitByChar(' ', as_path), origin)
+      LIMIT 100;
+
+  - id: q191
+    title: "Update volume by peer for entire month, ranked with running total"
+    analyst_question: "What is the cumulative update contribution of each peer ranked over the full month?"
+    window: full month
+    sql: |
+      SELECT peer_asn, cnt, sum(cnt) OVER (ORDER BY cnt DESC) AS running_total
+      FROM (
+        SELECT peer_asn, count(*) AS cnt
+        FROM bgp.bgp_updates
+        WHERE collector = 'rrc00'
+          AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+        GROUP BY peer_asn
+      )
+      ORDER BY cnt DESC
+      LIMIT 40;
+
+  - id: q192
+    title: "Update volume for a specific 3-day incident investigation window"
+    analyst_question: "What was the daily breakdown of updates during Jan 29-31 following a reported instability period?"
+    window: 3 days
+    sql: |
+      SELECT toDate(timestamp) AS day, operation, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-29 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY day, operation
+      ORDER BY day, operation;
+
+  - id: q193
+    title: "Distinct AS path prefix (first ASN) diversity per collector day"
+    analyst_question: "How many distinct first-hop ASNs (immediate neighbors) were seen on Jan 13?"
+    window: 1 day
+    sql: |
+      SELECT uniqExact(splitByChar(' ', as_path)[1]) AS distinct_first_hops
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-13 00:00:00' AND timestamp < '2024-01-14 00:00:00';
+
+  - id: q194
+    title: "Updates containing an empty AS path (possible iBGP or origin-only route) (1 day)"
+    analyst_question: "Were there any announcements on Jan 13 with a completely empty as_path?"
+    window: 1 day
+    sql: |
+      SELECT prefix, peer_asn, origin, timestamp
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND operation = 'A'
+        AND timestamp >= '2024-01-13 00:00:00' AND timestamp < '2024-01-14 00:00:00'
+        AND (as_path = '' OR as_path IS NULL)
+      LIMIT 50;
+
+  - id: q195
+    title: "Prefix-level summary table for a specific day (comprehensive)"
+    analyst_question: "Provide a full per-prefix summary (announcements, withdrawals, distinct origins, distinct peers) for Jan 15."
+    window: 1 day
+    sql: |
+      SELECT prefix,
+             countIf(operation = 'A') AS announcements,
+             countIf(operation = 'W') AS withdrawals,
+             uniqExact(origin) AS distinct_origins,
+             uniqExact(peer_ip) AS distinct_peers
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-15 00:00:00' AND timestamp < '2024-01-16 00:00:00'
+      GROUP BY prefix
+      ORDER BY announcements + withdrawals DESC
+      LIMIT 50;
+
+  - id: q196
+    title: "Peer-level summary table for a full week"
+    analyst_question: "Provide a per-peer summary (total updates, distinct prefixes, announce/withdraw split) for the first week."
+    window: 1 week
+    sql: |
+      SELECT peer_ip, peer_asn,
+             count(*) AS total_updates,
+             uniqExact(prefix) AS distinct_prefixes,
+             countIf(operation = 'A') AS announcements,
+             countIf(operation = 'W') AS withdrawals
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-01-08 00:00:00'
+      GROUP BY peer_ip, peer_asn
+      ORDER BY total_updates DESC
+      LIMIT 50;
+
+  - id: q197
+    title: "Full-month executive summary of collector activity"
+    analyst_question: "Provide a single-row executive summary of rrc00 activity for all of January (totals and diversity metrics)."
+    window: full month
+    sql: |
+      SELECT count(*) AS total_updates,
+             countIf(operation = 'A') AS announcements,
+             countIf(operation = 'W') AS withdrawals,
+             uniqExact(prefix) AS distinct_prefixes,
+             uniqExact(origin) AS distinct_origin_asns,
+             uniqExact(peer_ip) AS distinct_peers
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';
+
+  - id: q198
+    title: "Hour-of-day seasonality across the full month"
+    analyst_question: "Is there a consistent hour-of-day pattern in update volume across all of January?"
+    window: full month
+    sql: |
+      SELECT toHour(timestamp) AS hour_of_day, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY hour_of_day
+      ORDER BY hour_of_day;
+
+  - id: q199
+    title: "Day-of-week seasonality across the full month"
+    analyst_question: "Does update volume vary systematically by day of week across January?"
+    window: full month
+    sql: |
+      SELECT toDayOfWeek(timestamp) AS day_of_week, count(*) AS cnt
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00'
+      GROUP BY day_of_week
+      ORDER BY day_of_week;
+
+  - id: q200
+    title: "Final data quality check: rows with unparseable numeric fields"
+    analyst_question: "How many rows in January have non-numeric or malformed local_pref or med values, indicating a data quality issue?"
+    window: full month
+    sql: |
+      SELECT
+        countIf(toString(local_pref) != '' AND toInt64OrNull(toString(local_pref)) IS NULL) AS bad_local_pref,
+        countIf(toString(med) != '' AND toInt64OrNull(toString(med)) IS NULL) AS bad_med
+      FROM bgp.bgp_updates
+      WHERE collector = 'rrc00'
+        AND timestamp >= '2024-01-01 00:00:00' AND timestamp < '2024-02-01 00:00:00';

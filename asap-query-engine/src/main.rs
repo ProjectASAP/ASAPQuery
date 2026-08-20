@@ -218,10 +218,12 @@ async fn main() -> Result<()> {
                 metric_name,
                 value_col,
                 label_cols,
+                computed_label_cols,
                 timestamp_col,
                 start_ts_ms,
                 ts_step_ms,
                 batch_size,
+                stateful_transitions,
             } => {
                 // ts_step_ms is only used for timestamp synthesis (when timestamp_col is absent).
                 // check_config ensures it is present in that case.
@@ -231,11 +233,68 @@ async fn main() -> Result<()> {
                     0
                 };
                 info!("File ingest mode: {}", path);
+                // Merge stateful transitions the planner auto-detected (carried in
+                // streaming_config.yaml) with any hand-written in this engine
+                // config's ingest section, deduped by metric_name so a manual
+                // override still wins if both specify the same derived stream.
+                // Previously stateful_transitions only ever came from the
+                // hand-written side - the planner had no way to contribute here.
+                let mut merged_stateful_transitions = stateful_transitions.clone();
+                let manual_metric_names: std::collections::HashSet<&str> =
+                    stateful_transitions.iter().map(|t| t.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.stateful_transitions {
+                    if !manual_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_stateful_transitions.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.stateful_transitions.is_empty() {
+                    info!(
+                        "{} stateful transition(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.stateful_transitions.len(),
+                        merged_stateful_transitions.len()
+                    );
+                }
+
+                // Same merge as stateful_transitions above, for computed labels
+                // (e.g. origin-ASN extraction) the planner auto-detected.
+                let mut merged_computed_label_cols = computed_label_cols.clone();
+                for (label_name, cfg) in &streaming_config.computed_label_cols {
+                    merged_computed_label_cols
+                        .entry(label_name.clone())
+                        .or_insert_with(|| cfg.clone());
+                }
+                if !streaming_config.computed_label_cols.is_empty() {
+                    info!(
+                        "{} computed label(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.computed_label_cols.len(),
+                        merged_computed_label_cols.len()
+                    );
+                }
+
+                // csv_ingest.rs only ever computes a label for columns that
+                // also appear in label_cols (it iterates label_cols and
+                // *then* checks computed_label_cols for a rule) - a computed
+                // label absent from label_cols is silently never computed at
+                // all, which is exactly the sort of "config split across two
+                // fields that must be kept in sync by hand" gap the rest of
+                // this merge exists to close. Every merged computed label
+                // must be in label_cols too.
+                let mut merged_label_cols = label_cols.clone();
+                for label_name in merged_computed_label_cols.keys() {
+                    if !merged_label_cols.iter().any(|c| c == label_name) {
+                        merged_label_cols.push(label_name.clone());
+                    }
+                }
+
                 vec![Box::new(CsvFileIngestSource::new(CsvFileIngestConfig {
                     path: path.clone(),
                     metric_name: metric_name.clone(),
                     value_col: value_col.clone(),
-                    label_cols: label_cols.clone(),
+                    label_cols: merged_label_cols,
+                    computed_label_cols: merged_computed_label_cols,
+                    stateful_transitions: merged_stateful_transitions,
                     timestamp_col: timestamp_col.clone(),
                     start_ts_ms: *start_ts_ms,
                     ts_step_ms: ts_step,

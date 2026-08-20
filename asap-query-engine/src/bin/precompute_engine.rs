@@ -186,6 +186,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Arc::new(StoreOutputSink::new(store))
         };
 
+    let file_ingest_mode = args.input_file.is_some();
+
     let sources: Vec<Box<dyn query_engine_rust::precompute_engine::IngestSource>> =
         if let Some(path) = args.input_file {
             let metric_name = args
@@ -213,9 +215,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             vec![Box::new(CsvFileIngestSource::new(CsvFileIngestConfig {
                 path,
                 metric_name,
-                value_col,
+                value_col: Some(value_col),
                 label_cols,
                 timestamp_col: args.csv_timestamp_col,
+                computed_label_cols: std::collections::HashMap::new(),
+                stateful_transitions: Vec::new(),
                 start_ts_ms: args.csv_start_ts_ms,
                 ts_step_ms,
                 batch_size: args.csv_batch_size,
@@ -229,8 +233,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Build and run the engine
     let engine = PrecomputeEngine::new(engine_config, streaming_config, output_sink, sources);
 
+    // In file-ingest mode, CSV ingestion is finite. The CSV source flushes
+    // active windows and gracefully shuts down the precompute workers when
+    // EOF is reached. Keep the process alive afterward so the HTTP query
+    // server can continue serving the materialized precomputed store.
+    let keep_query_server_alive = file_ingest_mode && args.query_port != 0;
+
     info!("Starting precompute engine...");
     engine.run().await?;
+
+    if keep_query_server_alive {
+        info!(
+            "File ingest/precompute complete; query server remains available on port {}",
+            args.query_port
+        );
+        std::future::pending::<()>().await;
+    }
 
     Ok(())
 }

@@ -3,9 +3,11 @@
 //! Contains all SQL-specific context building, pattern matching, and query dispatch.
 
 use super::SimpleEngine;
-use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps};
-use crate::data_model::{AggregationIdInfo, QueryConfig, SchemaConfig};
-use crate::engines::query_result::{InstantVector, InstantVectorElement, QueryResult};
+use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps, StoreQueryParams};
+use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
+use crate::engines::query_result::{
+    InstantVector, InstantVectorElement, QueryResult, RangeVectorElement,
+};
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
@@ -13,10 +15,15 @@ use promql_utilities::query_logics::enums::Statistic;
 use sql_utilities::ast_matching::{
     detect_sql_topk, SQLPatternMatcher, SQLPatternParser, SQLQuery, SqlTopk, TopkWeighting,
 };
-use sql_utilities::sqlhelper::{OrderByItem, SQLQueryData};
+use sql_utilities::ast_matching::pattern_rewrites::{
+    build_moas_surrogate, build_multi_aggregate_surrogates, looks_like_moas_registered_sql,
+    looks_like_moas_sql, parse_moas_query, parse_multi_aggregate_query,
+    rewrite_lag_transition_query, rewrite_token_explode_query, rewrite_token_select_query,
+};
+use sql_utilities::sqlhelper::{OrderByItem, SQLBucketedCountIfQueryData, SQLQueryData};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::{debug, warn};
 
 /// SQL-only post-processing produced alongside a `QueryExecutionContext`:
@@ -276,6 +283,20 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let query = Self::rewrite_recognized_pattern(&query);
+
+        if let Some(result) = self.handle_moas_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_bucketed_countif_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_multi_aggregate_sql(&query, time) {
+            return Some(result);
+        }
+
         let (context, post) =
             self.build_query_execution_context_sql_with_post_processing(query, time)?;
         let is_topk = context.metadata.statistic_to_compute == Statistic::Topk;
@@ -292,6 +313,40 @@ impl SimpleEngine {
         Some((output_labels, result))
     }
 
+    /// Tries each recognized complex-SQL-shape rewrite in turn (lag-
+    /// transition, token-select, token-explode) and returns the first one
+    /// that fires, or the original query unchanged if none do. These are
+    /// the same detectors asap-planner-rs uses to decide what to build -
+    /// shared via sql_utilities::ast_matching::pattern_rewrites so the two
+    /// can never silently disagree about what a given raw query means.
+    pub(crate) fn rewrite_recognized_pattern(sql: &str) -> String {
+        // MOAS has its own detection + surrogate-building (parse_moas_query /
+        // handle_moas_sql) that must run on the *raw* query text. The
+        // tokenized MOAS shape also satisfies looks_like_token_select_sql
+        // (both tokenize as_path and index [-1]), so without this early
+        // return the token-select rewrite below would mangle a MOAS query
+        // into a broken surrogate before MOAS ever saw the original text -
+        // and every caller of this function (not just handle_query_sql)
+        // needs that guarantee, since this is the single shared rewrite
+        // entry point.
+        if looks_like_moas_sql(sql) {
+            return sql.to_string();
+        }
+        if let Some(rewritten) = rewrite_lag_transition_query(sql) {
+            warn!("lag-transition rewrite produced SQL: {}", rewritten);
+            return rewritten;
+        }
+        if let Some(rewritten) = rewrite_token_select_query(sql) {
+            warn!("token-select rewrite produced SQL: {}", rewritten);
+            return rewritten;
+        }
+        if let Some(rewritten) = rewrite_token_explode_query(sql) {
+            warn!("token-explode rewrite produced SQL: {}", rewritten);
+            return rewritten;
+        }
+        sql.to_string()
+    }
+
     /// Public entry point retained for tests that only need the execution
     /// context (e.g. assertions on `agg_info` or `metadata`). Discards the
     /// SQL post-processing side-channel since it isn't applied without a
@@ -305,6 +360,428 @@ impl SimpleEngine {
             .map(|(ctx, _)| ctx)
     }
 
+    fn find_query_config_sql_moas(&self) -> Option<QueryConfig> {
+        let ic = self.inference_config.read().unwrap();
+
+        ic.query_configs
+            .iter()
+            .find(|config| looks_like_moas_registered_sql(&config.query))
+            .cloned()
+    }
+
+    fn handle_moas_sql(&self, query: &str, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+        if !looks_like_moas_sql(query) {
+            return None;
+        }
+
+        warn!("MOAS handler matched query");
+
+        let schema = match &self.inference_config.read().unwrap().schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
+            SchemaConfig::PromQL(_) => {
+                warn!("MOAS handler: non-SQL schema");
+                return None;
+            }
+            &SchemaConfig::ElasticQueryDSL(_) => {
+                warn!("MOAS handler: ElasticQueryDSL schema");
+                return None;
+            }
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
+        };
+
+        let m = match parse_moas_query(query) {
+            Some(m) => m,
+            None => {
+                warn!("MOAS handler: could not parse MOAS query");
+                return None;
+            }
+        };
+        let surrogate = build_moas_surrogate(&m);
+        warn!("MOAS surrogate query: {}", surrogate);
+
+        let statements = match parser::parse_sql(&GenericDialect {}, surrogate.as_str()) {
+            Ok(statements) => statements,
+            Err(e) => {
+                warn!("MOAS handler: could not parse surrogate query: {}", e);
+                return None;
+            }
+        };
+
+        let query_data = match SQLPatternParser::new(&schema, time).parse_query(&statements) {
+            Some(qd) => qd,
+            None => {
+                warn!("MOAS handler: SQLPatternParser rejected surrogate query");
+                return None;
+            }
+        };
+
+        let query_config = match self.find_query_config_sql_moas() {
+            Some(config) => config,
+            None => {
+                warn!("MOAS handler: no MOAS query_config found");
+                return None;
+            }
+        };
+
+        let aggregation_id = match query_config.aggregations.first() {
+            Some(agg) => agg.aggregation_id,
+            None => {
+                warn!("MOAS handler: query_config has no aggregations");
+                return None;
+            }
+        };
+
+        warn!(
+            "MOAS handler: using aggregation_id={} metric={} duration_s={}",
+            aggregation_id,
+            query_data.metric,
+            query_data.time_info.get_duration()
+        );
+
+        let end_timestamp = self.align_end_timestamp_sql(Self::convert_query_time_to_data_time(
+            query_data.time_info.get_start() + query_data.time_info.get_duration(),
+        ));
+        let duration_ms = (query_data.time_info.get_duration() * 1000.0).round() as u64;
+        let start_timestamp = match end_timestamp.checked_sub(duration_ms) {
+            Some(ts) => ts,
+            None => {
+                warn!("MOAS handler: invalid start/end timestamps");
+                return None;
+            }
+        };
+
+        let params = StoreQueryParams {
+            metric: query_data.metric.clone(),
+            aggregation_id,
+            start_timestamp,
+            end_timestamp,
+            is_exact_query: false,
+        };
+
+        let timestamped_map = match self.execute_store_query(&params) {
+            Ok(map) => map,
+            Err(e) => {
+                warn!("MOAS handler: store query failed: {}", e);
+                return None;
+            }
+        };
+
+        warn!(
+            "MOAS handler: store returned {} {} groups",
+            timestamped_map.len(),
+            m.group_by
+        );
+
+        let mut rows: Vec<(String, Vec<String>)> = Vec::new();
+
+        for (group_key, timestamped_buckets) in timestamped_map {
+            let Some(group_key_values) = group_key else {
+                continue;
+            };
+
+            let group_value = group_key_values
+                .get(0)
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            if group_value.is_empty() {
+                continue;
+            }
+
+            let mut origins: HashSet<String> = HashSet::new();
+
+            for (_bucket, precompute) in timestamped_buckets {
+                if let Some(keys) = precompute.get_keys() {
+                    for key in keys {
+                        if let Some(origin) = key.get(0) {
+                            if !origin.is_empty() {
+                                origins.insert(origin.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            if origins.len() > 1 {
+                let mut origins_vec: Vec<String> = origins.into_iter().collect();
+                origins_vec.sort();
+                rows.push((group_value, origins_vec));
+            }
+        }
+
+        warn!("MOAS handler: produced {} MOAS rows", rows.len());
+
+        rows.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+
+        let values: Vec<InstantVectorElement> = rows
+            .into_iter()
+            .map(|(group_value, origins)| {
+                let origin_count = origins.len() as f64;
+                let origins_joined = origins.join(",");
+                InstantVectorElement::new(
+                    KeyByLabelValues::new_with_labels(vec![group_value, origins_joined]),
+                    origin_count,
+                )
+            })
+            .collect();
+
+        let output_labels = KeyByLabelNames::new(vec![m.group_by.clone(), "origins".to_string()]);
+
+        Some((output_labels, QueryResult::vector(values, end_timestamp)))
+    }
+
+    /// Finds the query configuration for a bucketed countIf SQL query.
+    ///
+    /// This is parallel to `find_query_config_sql`: the classic SQL path matches
+    /// one aggregate, while bucketed countIf has one time-bucket expression and
+    /// multiple independent count outputs.
+    fn find_query_config_sql_bucketed(
+        &self,
+        query_data: &SQLBucketedCountIfQueryData,
+    ) -> Option<QueryConfig> {
+        let ic = self.inference_config.read().unwrap();
+        let schema = match &ic.schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
+            _ => return None,
+        };
+
+        ic.query_configs
+            .iter()
+            .find(|config| {
+                let template_statements =
+                    match parser::parse_sql(&GenericDialect {}, config.query.as_str()) {
+                        Ok(stmts) => stmts,
+                        Err(_) => return false,
+                    };
+
+                let template_data = match SQLPatternParser::new(&schema, 0.0)
+                    .parse_bucketed_countif_query(&template_statements)
+                {
+                    Some(data) => data,
+                    None => return false,
+                };
+
+                query_data.matches_bucketed_pattern(&template_data)
+            })
+            .cloned()
+    }
+
+    fn handle_bucketed_countif_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let schema = match &self.inference_config.read().unwrap().schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
+            SchemaConfig::PromQL(_) => return None,
+            &SchemaConfig::ElasticQueryDSL(_) => return None,
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
+        };
+
+        let statements = match parser::parse_sql(&GenericDialect {}, query) {
+            Ok(statements) => statements,
+            Err(_) => return None,
+        };
+
+        let bucketed =
+            SQLPatternParser::new(&schema, time).parse_bucketed_countif_query(&statements)?;
+
+        let query_config = self.find_query_config_sql_bucketed(&bucketed)?;
+
+        if query_config.aggregations.len() < bucketed.outputs.len() {
+            warn!(
+                "Bucketed countIf query has {} outputs but query_config only has {} aggregation refs",
+                bucketed.outputs.len(),
+                query_config.aggregations.len()
+            );
+            return None;
+        }
+
+        let end_timestamp = self.align_end_timestamp_sql(Self::convert_query_time_to_data_time(
+            bucketed.time_info.get_start() + bucketed.time_info.get_duration(),
+        ));
+        let duration_ms = (bucketed.time_info.get_duration() * 1000.0).round() as u64;
+        let raw_start_timestamp = end_timestamp.checked_sub(duration_ms)?;
+
+        // The precompute store keys tumbling windows by bucket_ms-aligned
+        // absolute timestamps (bucket_start_ts = floor(t / bucket_ms) * bucket_ms).
+        // raw_start_timestamp is only guaranteed aligned to
+        // data_ingestion_interval_ms via align_end_timestamp_sql above, which can
+        // differ from bucket_ms. Without this, the read loop below probes
+        // timestamps that never land on a real stored key and every sample
+        // silently reads back as 0.0.
+        let start_timestamp = if bucketed.bucket_ms == 0 {
+            raw_start_timestamp
+        } else {
+            (raw_start_timestamp / bucketed.bucket_ms) * bucketed.bucket_ms
+        };
+
+        let mut range_elements = Vec::new();
+
+        for (idx, output) in bucketed.outputs.iter().enumerate() {
+            let aggregation_id = query_config.aggregations[idx].aggregation_id;
+
+            let params = StoreQueryParams {
+                metric: bucketed.metric.clone(),
+                aggregation_id,
+                start_timestamp,
+                end_timestamp,
+                is_exact_query: false,
+            };
+
+            let timestamped_map = self
+                .execute_store_query(&params)
+                .map_err(|e| {
+                    warn!(
+                        "Failed to execute bucketed countIf store query for '{}': {}",
+                        output.alias, e
+                    );
+                    e
+                })
+                .ok()?;
+
+            let mut values_by_bucket: HashMap<u64, f64> = HashMap::new();
+            for (_key, timestamped_buckets) in timestamped_map {
+                for ((bucket_start_ts, _bucket_end_ts), precompute) in timestamped_buckets {
+                    let scalar_key = Some(KeyByLabelValues::new_with_labels(vec![]));
+
+                    let value = self
+                        .query_precompute_for_statistic(
+                            precompute.as_ref(),
+                            &Statistic::Count,
+                            &scalar_key,
+                            &HashMap::new(),
+                        )
+                        .map_err(|e| {
+                            warn!(
+                                "Failed to query bucketed countIf precompute for '{}': {}",
+                                output.alias, e
+                            );
+                            e
+                        })
+                        .ok()?;
+
+                    values_by_bucket.insert(bucket_start_ts, value);
+                }
+            }
+
+            let mut element =
+                RangeVectorElement::new(KeyByLabelValues::new_with_labels(vec![output
+                    .alias
+                    .clone()]));
+
+            let mut ts = start_timestamp;
+            while ts < end_timestamp {
+                let value = values_by_bucket.get(&ts).copied().unwrap_or(0.0);
+                element.add_sample(ts, value);
+                ts += bucketed.bucket_ms;
+            }
+
+            range_elements.push(element);
+        }
+
+        let output_labels = KeyByLabelNames::new(vec!["output".to_string()]);
+        Some((output_labels, QueryResult::matrix(range_elements)))
+    }
+
+    /// Alias of a `<expr> AS <alias>` SELECT-list item, e.g.
+    /// "uniqExact(prefix) AS distinct_prefixes" -> "distinct_prefixes".
+    fn alias_of(expr: &str) -> Option<String> {
+        let lower = expr.to_lowercase();
+        let as_idx = lower.rfind(" as ")?;
+        Some(expr[as_idx + 4..].trim().to_string())
+    }
+
+    /// Serves a multi-aggregate classic query (e.g. `SELECT k1, k2, count()
+    /// AS a, uniqExact(v) AS b FROM ... GROUP BY k1, k2`) by splitting it
+    /// into N independent single-aggregate surrogates - the same split the
+    /// planner uses to plan and separately register each one (see
+    /// generate_sql_plan in the planner crate) - and running each through
+    /// the existing single-aggregate execution path unchanged. Each
+    /// surrogate's own text is what's registered in inference_config.yaml,
+    /// so the ordinary structural matcher (find_query_config_sql) finds it
+    /// directly. Results are merged back into one row per group key: the
+    /// first aggregate's value stays the primary numeric value, and every
+    /// other aggregate's value is appended to the output labels (matching
+    /// the format handle_moas_sql already established for "more than one
+    /// output value per row").
+    fn handle_multi_aggregate_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_multi_aggregate_query(query)?;
+
+        warn!(
+            "multi-aggregate handler matched query with {} aggregates",
+            m.aggregate_exprs.len()
+        );
+
+        let surrogates = build_multi_aggregate_surrogates(&m);
+
+        let mut per_aggregate: Vec<(KeyByLabelNames, InstantVector)> = Vec::new();
+        for surrogate in &surrogates {
+            let Some((context, post)) =
+                self.build_query_execution_context_sql_with_post_processing(surrogate.clone(), time)
+            else {
+                warn!("multi-aggregate handler: failed to build execution context for surrogate");
+                return None;
+            };
+            let Some((output_labels, result)) = self.execute_context(context, false, false) else {
+                warn!("multi-aggregate handler: failed to execute context for surrogate");
+                return None;
+            };
+            let result = post.apply(&output_labels, result);
+            let QueryResult::Vector(vector) = result else {
+                warn!("multi-aggregate handler: expected instant vector result");
+                return None;
+            };
+            per_aggregate.push((output_labels, vector));
+        }
+
+        let mut iter = per_aggregate.into_iter();
+        // The grouping-label *order* here comes from whichever surrogate's
+        // own execution context produced it (KeyByLabelNames may reorder
+        // relative to the SELECT list), not from `m.group_by_cols` - the
+        // element values below are keyed by that same order, so the output
+        // label names must track it exactly or labels and values misalign.
+        let (first_labels, first_vector) = iter.next()?;
+        let end_timestamp = first_vector.timestamp;
+
+        let extra_maps: Vec<HashMap<Vec<String>, f64>> = iter
+            .map(|(_labels, vector)| {
+                vector
+                    .values
+                    .into_iter()
+                    .map(|element| (element.labels.labels, element.value))
+                    .collect()
+            })
+            .collect();
+
+        let mut output_label_names = first_labels.labels.clone();
+        for expr in m.aggregate_exprs.iter().skip(1) {
+            output_label_names.push(Self::alias_of(expr).unwrap_or_else(|| expr.clone()));
+        }
+        let output_labels = KeyByLabelNames::new(output_label_names);
+
+        let values: Vec<InstantVectorElement> = first_vector
+            .values
+            .into_iter()
+            .map(|element| {
+                let mut label_values = element.labels.labels.clone();
+                for map in &extra_maps {
+                    let v = map.get(&element.labels.labels).copied().unwrap_or(0.0);
+                    label_values.push(v.to_string());
+                }
+                InstantVectorElement::new(KeyByLabelValues::new_with_labels(label_values), element.value)
+            })
+            .collect();
+
+        warn!("multi-aggregate handler: produced {} rows", values.len());
+
+        Some((output_labels, QueryResult::vector(values, end_timestamp)))
+    }
+
     /// Internal: parses + plans a SQL query and returns both the execution
     /// context (shared with PromQL/Elastic engines) and the SQL-only
     /// post-processing rules (ORDER BY / LIMIT / alias resolution).
@@ -313,6 +790,8 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<(QueryExecutionContext, SqlPostProcessing)> {
+        let query = Self::rewrite_recognized_pattern(&query);
+
         // Get SQL schema from inference config
         let schema = match &self.inference_config.read().unwrap().schema {
             SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
@@ -596,6 +1075,7 @@ mod detect_topk_tests {
             ),
             aggregation_alias: Some("transfer_events".to_string()),
             metric: "netflow_table".to_string(),
+            spatial_filter: None,
             labels: HashSet::from(["srcip".to_string()]),
             time_info: TimeInfo::new("time".to_string(), 0.0, 1.0),
             subquery: None,

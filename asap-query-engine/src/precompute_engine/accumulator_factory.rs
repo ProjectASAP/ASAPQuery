@@ -1,9 +1,9 @@
 use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
-    HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator, MinMaxAccumulator,
-    MultipleIncreaseAccumulator, MultipleMinMaxAccumulator, MultipleSumAccumulator, SumAccumulator,
-    DEFAULT_HLL_PRECISION,
+    DeltaSetAggregatorAccumulator, HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator,
+    MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
+    MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
 };
 use asap_types::aggregation_config::AggregationConfig;
 
@@ -676,6 +676,107 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 }
 
 // ---------------------------------------------------------------------------
+// SetAggregatorAccumulatorUpdater
+// ---------------------------------------------------------------------------
+
+pub struct SetAggregatorAccumulatorUpdater {
+    acc: SetAggregatorAccumulator,
+}
+
+impl SetAggregatorAccumulatorUpdater {
+    pub fn new() -> Self {
+        Self {
+            acc: SetAggregatorAccumulator::new(),
+        }
+    }
+}
+
+impl Default for SetAggregatorAccumulatorUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AccumulatorUpdater for SetAggregatorAccumulatorUpdater {
+    fn update_single(&mut self, _value: f64, _timestamp_ms: i64) {
+        debug_assert!(
+            false,
+            "update_single called on SetAggregator; use update_keyed"
+        );
+    }
+
+    fn update_keyed(&mut self, key: &KeyByLabelValues, _value: f64, _timestamp_ms: i64) {
+        self.acc.add_key(key.clone());
+    }
+
+    impl_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc = SetAggregatorAccumulator::new();
+    }
+
+    fn is_keyed(&self) -> bool {
+        true
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        std::mem::size_of::<SetAggregatorAccumulator>()
+            + self.acc.added.len() * std::mem::size_of::<KeyByLabelValues>()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DeltaSetAggregatorAccumulatorUpdater
+// ---------------------------------------------------------------------------
+
+pub struct DeltaSetAggregatorAccumulatorUpdater {
+    acc: DeltaSetAggregatorAccumulator,
+}
+
+impl DeltaSetAggregatorAccumulatorUpdater {
+    pub fn new() -> Self {
+        Self {
+            acc: DeltaSetAggregatorAccumulator::new(),
+        }
+    }
+}
+
+impl Default for DeltaSetAggregatorAccumulatorUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AccumulatorUpdater for DeltaSetAggregatorAccumulatorUpdater {
+    fn update_single(&mut self, _value: f64, _timestamp_ms: i64) {
+        debug_assert!(
+            false,
+            "update_single called on DeltaSetAggregator; use update_keyed"
+        );
+    }
+
+    fn update_keyed(&mut self, key: &KeyByLabelValues, _value: f64, _timestamp_ms: i64) {
+        self.acc.add_key(key.clone());
+    }
+
+    impl_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc = DeltaSetAggregatorAccumulator::new();
+    }
+
+    fn is_keyed(&self) -> bool {
+        true
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        std::mem::size_of::<DeltaSetAggregatorAccumulator>()
+            + (self.acc.added.len() + self.acc.removed.len())
+                * std::mem::size_of::<KeyByLabelValues>()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Config helpers
 // ---------------------------------------------------------------------------
 
@@ -695,6 +796,8 @@ pub fn config_is_keyed(config: &AggregationConfig) -> bool {
             | AggregationType::CountMinSketch
             | AggregationType::CountMinSketchWithHeap
             | AggregationType::HydraKLL
+            | AggregationType::SetAggregator
+            | AggregationType::DeltaSetAggregator
     )
 }
 
@@ -887,6 +990,10 @@ pub fn create_accumulator_updater(
         AggregationType::HLL => Ok(Box::new(HllAccumulatorUpdater::new(hll_precision_param(
             config,
         )))),
+        AggregationType::SetAggregator => Ok(Box::new(SetAggregatorAccumulatorUpdater::new())),
+        AggregationType::DeltaSetAggregator => {
+            Ok(Box::new(DeltaSetAggregatorAccumulatorUpdater::new()))
+        }
         other => {
             tracing::warn!(
                 "Unknown aggregation_type '{:?}', defaulting to SingleSubpopulation Sum",

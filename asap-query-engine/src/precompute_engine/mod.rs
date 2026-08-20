@@ -1,4 +1,5 @@
 pub mod accumulator_factory;
+pub mod computed_labels;
 pub mod config;
 pub mod csv_ingest;
 mod engine;
@@ -16,3 +17,5 @@ pub use engine::{PrecomputeEngine, PrecomputeEngineHandle, PrecomputeWorkerDiagn
 pub use ingest_handler::{HttpIngestConfig, HttpIngestSource};
 pub use ingest_source::{IngestContext, IngestSource};
 pub use json_ingest::{JsonFileIngestConfig, JsonFileIngestSource, TimestampUnit};
+
+pub mod stateful_transition;
