@@ -137,6 +137,7 @@ class RemoteMonitorService(BaseService):
                 self.node_offset,
                 streaming_engine,
             )
+            cmd += " --backend_protocol {}".format(backend_protocol)
 
             cmd_dir = os.path.join(
                 self.provider.get_home_dir(), "code", "asap-tools", "experiments"
