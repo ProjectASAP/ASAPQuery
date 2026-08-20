@@ -1438,13 +1438,51 @@ impl SimpleEngine {
     //     Some((output_labels, QueryResult::matrix(range_elements)))
     // }
 
+    /// Extracted from `execute_range_query_pipeline`'s per-step loop
+    /// (unchanged logic) so it can also be called once, not per-step, from
+    /// Sliding's instant-query path (#557 design doc §2). Walking by `W`
+    /// against `S`-grid keys only ever touches the non-overlapping
+    /// `W`-strided subset of the store's denser `S`-spaced buckets, since
+    /// `S | W` always holds for a valid sliding config — that's what makes
+    /// merging them safe without separate overlap accounting.
+    /// `Ok(None)` means no buckets were found at all (distinct from `Err`,
+    /// which means buckets were found but merging them failed) — callers
+    /// log these two cases differently.
+    fn merge_window_at_timestamp(
+        bucket_map: &HashMap<u64, &dyn AggregateCore>,
+        current_time: u64,
+        lookback_ms: u64,
+        window_size_ms: u64,
+        accumulator_type: AggregationType,
+    ) -> Result<Option<Box<dyn AggregateCore>>, String> {
+        use crate::engines::window_merger::create_window_merger;
+
+        let window_start = current_time.saturating_sub(lookback_ms);
+        let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
+
+        let mut t = window_start;
+        while t < current_time {
+            if let Some(bucket) = bucket_map.get(&t) {
+                window_buckets.push((*bucket).clone_boxed_core());
+            }
+            t += window_size_ms;
+        }
+
+        if window_buckets.is_empty() {
+            return Ok(None);
+        }
+
+        let mut merger = create_window_merger(accumulator_type);
+        merger.initialize(window_buckets);
+        merger.get_merged().map(Some)
+    }
+
     /// Execute the range query pipeline
     fn execute_range_query_pipeline(
         &self,
         context: &RangeQueryExecutionContext,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
         use crate::engines::query_result::RangeVectorElement;
-        use crate::engines::window_merger::create_window_merger;
 
         // Step 1: Fetch all data needed for the entire range
         let all_data = self.execute_store_query(&context.base.store_plan.values_query)?;
@@ -1523,64 +1561,49 @@ impl SimpleEngine {
             // Iterate by OUTPUT timestamp, not by bucket index
             let mut current_time = start_ms;
             while current_time <= end_ms {
-                // Window covers [current_time - lookback_ms, current_time)
-                // This means we look at buckets that START within this range
-                let window_start = current_time.saturating_sub(lookback_ms);
-
-                // Collect all AVAILABLE buckets in this window (skip missing ones)
-                let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
-
-                let mut t = window_start;
-                while t < current_time {
-                    if let Some(bucket) = bucket_map.get(&t) {
-                        window_buckets.push((*bucket).clone_boxed_core());
-                    }
-                    // If bucket missing at timestamp t, just skip it (partial data is okay)
-                    t += tumbling_window_ms;
-                }
-
-                if !window_buckets.is_empty() {
-                    // Merge available buckets
-                    let mut merger = create_window_merger(*accumulator_type);
-                    merger.initialize(window_buckets);
-
-                    match merger.get_merged() {
-                        Ok(merged) => {
-                            // Query statistic and emit sample at current_time
-                            match self.query_precompute_for_statistic(
-                                merged.as_ref(),
-                                &context.base.metadata.statistic_to_compute,
-                                &Some(key.clone()),
-                                &context.base.metadata.query_kwargs,
-                            ) {
-                                Ok(value) => {
-                                    debug!(
-                                        "Key {:?}: emitting sample (t={}, value={})",
-                                        key, current_time, value
-                                    );
-                                    element.add_sample(current_time, value);
-                                }
-                                Err(e) => {
-                                    debug!(
-                                        "Failed to query statistic at t={} for key {:?}: {}",
-                                        current_time, key, e
-                                    );
-                                }
+                match Self::merge_window_at_timestamp(
+                    &bucket_map,
+                    current_time,
+                    lookback_ms,
+                    tumbling_window_ms,
+                    *accumulator_type,
+                ) {
+                    Ok(Some(merged)) => {
+                        // Query statistic and emit sample at current_time
+                        match self.query_precompute_for_statistic(
+                            merged.as_ref(),
+                            &context.base.metadata.statistic_to_compute,
+                            &Some(key.clone()),
+                            &context.base.metadata.query_kwargs,
+                        ) {
+                            Ok(value) => {
+                                debug!(
+                                    "Key {:?}: emitting sample (t={}, value={})",
+                                    key, current_time, value
+                                );
+                                element.add_sample(current_time, value);
+                            }
+                            Err(e) => {
+                                debug!(
+                                    "Failed to query statistic at t={} for key {:?}: {}",
+                                    current_time, key, e
+                                );
                             }
                         }
-                        Err(e) => {
-                            debug!(
-                                "Failed to get merged result at t={} for key {:?}: {}",
-                                current_time, key, e
-                            );
-                        }
                     }
-                } else {
-                    // No data at all for this window - skip sample
-                    debug!(
-                        "Key {:?}: skipping sample at {} - no data in window [{}, {})",
-                        key, current_time, window_start, current_time
-                    );
+                    Ok(None) => {
+                        // No data at all for this window - skip sample
+                        debug!(
+                            "Key {:?}: skipping sample at {} - no data in window",
+                            key, current_time
+                        );
+                    }
+                    Err(e) => {
+                        debug!(
+                            "Failed to get merged result at t={} for key {:?}: {}",
+                            current_time, key, e
+                        );
+                    }
                 }
 
                 current_time += step_ms;
@@ -1787,6 +1810,101 @@ mod range_query_tests {
             _query_kwargs: &std::collections::HashMap<String, String>,
         ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
             Err("MockBucketAccumulator does not support query_statistic".into())
+        }
+    }
+
+    mod merge_window_at_timestamp_tests {
+        use super::*;
+        use crate::engines::simple_engine::SimpleEngine;
+        use std::collections::HashMap;
+
+        /// Builds owned `(start_timestamp, bucket)` pairs; the caller turns
+        /// these into a `bucket_map` (a separate step, since the map borrows
+        /// from these and both must live in the caller's own scope).
+        fn owned_buckets(entries: &[(u64, f64)]) -> Vec<(u64, Box<dyn AggregateCore>)> {
+            entries
+                .iter()
+                .map(|(ts, v)| {
+                    (
+                        *ts,
+                        Box::new(MockBucketAccumulator::new(*ts, *v)) as Box<dyn AggregateCore>,
+                    )
+                })
+                .collect()
+        }
+
+        fn bucket_map(owned: &[(u64, Box<dyn AggregateCore>)]) -> HashMap<u64, &dyn AggregateCore> {
+            owned.iter().map(|(ts, b)| (*ts, b.as_ref())).collect()
+        }
+
+        fn merged_value(result: &Option<Box<dyn AggregateCore>>) -> f64 {
+            result
+                .as_ref()
+                .unwrap()
+                .as_any()
+                .downcast_ref::<MockBucketAccumulator>()
+                .unwrap()
+                .value
+        }
+
+        #[test]
+        fn single_bucket_exact_match_k1() {
+            // W=300_000, one bucket at exactly current_time - W.
+            let owned = owned_buckets(&[(0, 10.0)]);
+            let map = bucket_map(&owned);
+            let result = SimpleEngine::merge_window_at_timestamp(
+                &map,
+                300_000,
+                300_000,
+                300_000,
+                AggregationType::Sum,
+            )
+            .unwrap();
+            assert_eq!(merged_value(&result), 10.0);
+        }
+
+        #[test]
+        fn strided_merge_ignores_denser_intermediate_buckets() {
+            // W=300_000, S=60_000. Store holds every 60_000 slot (S-grid),
+            // but only the 300_000-strided ones (0, 300_000, 600_000) should
+            // be picked up for a k=3 query ending at 900_000. If this test
+            // ever starts asserting 150.0 (sum of all 15 S-spaced buckets)
+            // instead of 30.0, the walk stopped ignoring the denser grid and
+            // is double-counting.
+            let entries: Vec<(u64, f64)> = (0..15).map(|i| (i * 60_000, 10.0)).collect();
+            let owned = owned_buckets(&entries);
+            let map = bucket_map(&owned);
+
+            let result = SimpleEngine::merge_window_at_timestamp(
+                &map,
+                900_000,
+                900_000,
+                300_000,
+                AggregationType::Sum,
+            )
+            .unwrap();
+            assert_eq!(merged_value(&result), 30.0); // 3 strided buckets, not 15
+        }
+
+        #[test]
+        fn tolerates_missing_buckets_within_the_window() {
+            // W=100. Positions 0, 100, 200 expected; 100 is missing.
+            let owned = owned_buckets(&[(0, 1.0), (200, 4.0)]);
+            let map = bucket_map(&owned);
+            let result =
+                SimpleEngine::merge_window_at_timestamp(&map, 300, 300, 100, AggregationType::Sum)
+                    .unwrap();
+            assert_eq!(merged_value(&result), 5.0); // 1.0 + 4.0, 100 silently skipped
+        }
+
+        #[test]
+        fn no_buckets_found_returns_ok_none() {
+            let owned = owned_buckets(&[(999_999, 1.0)]); // nowhere near the window
+            let map = bucket_map(&owned);
+            let result =
+                SimpleEngine::merge_window_at_timestamp(&map, 300, 300, 100, AggregationType::Sum)
+                    .unwrap();
+            assert!(result.is_none());
         }
     }
 
