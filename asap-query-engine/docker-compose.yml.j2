@@ -10,6 +10,10 @@ services:
     environment:
       - RUST_LOG={{ log_level }}
       - RUST_BACKTRACE=1
+      # Naive datetime-string time literals in incoming SQL queries must parse
+      # the same way here as in ClickHouse (UTC by default) and in bare-metal
+      # query_engine_rust (see experiment_utils/services/query_engine.py).
+      - TZ=UTC
     ports:
       - "{{ http_port }}:8088"
     network_mode: "host"

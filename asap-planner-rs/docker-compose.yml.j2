@@ -2,6 +2,11 @@ services:
   controller:
     image: sketchdb-controller:latest
     container_name: {{ container_name }}
+    environment:
+      # Naive datetime-string time literals in SQL queries must parse the
+      # same way here as in ClickHouse (UTC by default) and in bare-metal
+      # asap-planner (see experiment_utils/services/misc.py).
+      - TZ=UTC
     volumes:
       - {{ input_config_path }}:/app/input/config.yaml:ro
       - {{ output_dir }}:/app/output
