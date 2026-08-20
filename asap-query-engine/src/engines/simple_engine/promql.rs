@@ -497,19 +497,26 @@ impl SimpleEngine {
         let end_ms = Self::convert_query_time_to_data_time(end);
         let step_ms = (step * 1000.0) as u64;
 
-        let tumbling_window_ms = self
+        let (tumbling_window_ms, window_type, slide_interval_ms) = self
             .streaming_config
             .read()
             .unwrap()
             .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(|c| c.window_size_ms)?;
+            .map(|c| (c.window_size_ms, c.window_type, c.slide_interval_ms))?;
 
-        self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
-            .map_err(|e| {
-                warn!("Range arm query validation failed: {}", e);
-                e
-            })
-            .ok()?;
+        SimpleEngine::validate_range_query_params(
+            start_ms,
+            end_ms,
+            step_ms,
+            tumbling_window_ms,
+            window_type,
+            slide_interval_ms,
+        )
+        .map_err(|e| {
+            warn!("Range arm query validation failed: {}", e);
+            e
+        })
+        .ok()?;
 
         let lookback_ms = base_context.store_plan.values_query.end_timestamp
             - base_context.store_plan.values_query.start_timestamp;
@@ -1114,20 +1121,33 @@ impl SimpleEngine {
         let step_ms = (step * 1000.0) as u64;
 
         // Get window size
-        let tumbling_window_ms = self
+        let (tumbling_window_ms, window_type, slide_interval_ms) = self
             .streaming_config
             .read()
             .unwrap()
             .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(|config| config.window_size_ms)?;
+            .map(|config| {
+                (
+                    config.window_size_ms,
+                    config.window_type,
+                    config.slide_interval_ms,
+                )
+            })?;
 
         // Validate parameters
-        self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
-            .map_err(|e| {
-                warn!("Range query validation failed: {}", e);
-                e
-            })
-            .ok()?;
+        SimpleEngine::validate_range_query_params(
+            start_ms,
+            end_ms,
+            step_ms,
+            tumbling_window_ms,
+            window_type,
+            slide_interval_ms,
+        )
+        .map_err(|e| {
+            warn!("Range query validation failed: {}", e);
+            e
+        })
+        .ok()?;
 
         // Calculate lookback from the base context's store plan
         let lookback_ms = base_context.store_plan.values_query.end_timestamp

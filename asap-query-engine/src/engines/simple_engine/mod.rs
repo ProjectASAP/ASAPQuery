@@ -1281,13 +1281,20 @@ impl SimpleEngine {
     // Range Query Support
     // ============================================================
 
-    /// Validate range query parameters
+    /// Validate range query parameters.
+    ///
+    /// Sliding checks `step % slide_interval_ms`, not `window_size_ms`: the
+    /// per-step walk in `execute_range_query_pipeline` floor-aligns only the
+    /// first step to the storage grid, and `S | W` always holds for a valid
+    /// sliding config, so `step % slide_interval_ms == 0` is what keeps
+    /// every later step grid-aligned. See design doc for #557.
     fn validate_range_query_params(
-        &self,
         start: u64,
         end: u64,
         step: u64,
-        tumbling_window_ms: u64,
+        window_size_ms: u64,
+        window_type: WindowType,
+        slide_interval_ms: u64,
     ) -> Result<(), String> {
         if start >= end {
             return Err("start must be before end".to_string());
@@ -1295,11 +1302,23 @@ impl SimpleEngine {
         if step == 0 {
             return Err("step must be positive".to_string());
         }
-        if !step.is_multiple_of(tumbling_window_ms) {
-            return Err(format!(
-                "step ({} ms) must be a multiple of tumbling window size ({} ms)",
-                step, tumbling_window_ms
-            ));
+        match window_type {
+            WindowType::Tumbling => {
+                if !step.is_multiple_of(window_size_ms) {
+                    return Err(format!(
+                        "step ({} ms) must be a multiple of tumbling window size ({} ms)",
+                        step, window_size_ms
+                    ));
+                }
+            }
+            WindowType::Sliding => {
+                if !step.is_multiple_of(slide_interval_ms) {
+                    return Err(format!(
+                        "step ({} ms) must be a multiple of slide interval ({} ms)",
+                        step, slide_interval_ms
+                    ));
+                }
+            }
         }
         Ok(())
     }
@@ -1581,6 +1600,117 @@ impl SimpleEngine {
 
         // Convert to Vec
         Ok(results.into_values().collect())
+    }
+}
+
+#[cfg(test)]
+mod validate_range_query_params_tests {
+    use super::*;
+
+    #[test]
+    fn tumbling_accepts_step_that_is_multiple_of_window_size() {
+        assert!(SimpleEngine::validate_range_query_params(
+            0,
+            600_000,
+            300_000,
+            300_000,
+            WindowType::Tumbling,
+            300_000,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn tumbling_rejects_step_that_is_not_multiple_of_window_size() {
+        let err = SimpleEngine::validate_range_query_params(
+            0,
+            600_000,
+            200_000,
+            300_000,
+            WindowType::Tumbling,
+            300_000,
+        )
+        .unwrap_err();
+        assert!(err.contains("tumbling window size"));
+    }
+
+    #[test]
+    fn sliding_accepts_step_that_is_multiple_of_slide_interval_but_not_window_size() {
+        // W=300_000 (5m), S=60_000 (1m). step=120_000 (2m) is a
+        // multiple of S but NOT of W - Sliding must accept it even
+        // though Tumbling, with the same W, would reject it.
+        assert!(SimpleEngine::validate_range_query_params(
+            0,
+            600_000,
+            120_000,
+            300_000,
+            WindowType::Sliding,
+            60_000,
+        )
+        .is_ok());
+
+        assert!(SimpleEngine::validate_range_query_params(
+            0,
+            600_000,
+            120_000,
+            300_000,
+            WindowType::Tumbling,
+            60_000,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn sliding_rejects_step_that_is_not_multiple_of_slide_interval() {
+        let err = SimpleEngine::validate_range_query_params(
+            0,
+            600_000,
+            90_000,
+            300_000,
+            WindowType::Sliding,
+            60_000,
+        )
+        .unwrap_err();
+        assert!(err.contains("slide interval"));
+    }
+
+    #[test]
+    fn sliding_accepts_step_equal_to_slide_interval() {
+        assert!(SimpleEngine::validate_range_query_params(
+            0,
+            600_000,
+            60_000,
+            300_000,
+            WindowType::Sliding,
+            60_000,
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn start_must_be_before_end() {
+        assert!(SimpleEngine::validate_range_query_params(
+            600_000,
+            600_000,
+            60_000,
+            300_000,
+            WindowType::Tumbling,
+            300_000,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn step_must_be_positive() {
+        assert!(SimpleEngine::validate_range_query_params(
+            0,
+            600_000,
+            0,
+            300_000,
+            WindowType::Tumbling,
+            300_000,
+        )
+        .is_err());
     }
 }
 
