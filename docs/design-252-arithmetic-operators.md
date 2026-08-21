@@ -1,5 +1,14 @@
 # Design: PromQL Arithmetic Operator Acceleration (Issue #252)
 
+> **Superseded (#567):** the DataFusion execution path described below
+> (`execute_plan`/`execute_logical_plan`, the `Join + Projection` plan) was
+> replaced by a purely native execution path in `handle_binary_expr_promql` /
+> `evaluate_binary_arm` / `combine_vector_vector` / `combine_scalar`
+> (`asap-query-engine/src/engines/simple_engine/promql.rs`). The DataFusion
+> code is kept only for its own dedicated tests and is no longer reachable
+> from production. This doc is retained as the historical record of the
+> original design decision.
+
 ## Problem
 
 ASAPQuery accelerates PromQL queries by pre-computing sketches over streaming data and serving answers from those sketches at query time, bypassing the underlying TSDB for supported query patterns.

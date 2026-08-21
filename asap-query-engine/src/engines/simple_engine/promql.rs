@@ -66,9 +66,9 @@ fn combine_vector_vector(
         lhs_results
             .into_iter()
             .filter_map(|lhs_elem| {
-                rhs_map.get(&lhs_elem.labels).map(|&rhs_val| {
+                rhs_map.get(&lhs_elem.labels).map(move |&rhs_val| {
                     let value = SimpleEngine::apply_range_binary_op(op, lhs_elem.value, rhs_val);
-                    InstantVectorElement::new(lhs_elem.labels.clone(), value)
+                    InstantVectorElement::new(lhs_elem.labels, value)
                 })
             })
             .collect(),
@@ -469,7 +469,7 @@ impl SimpleEngine {
                     .execute_query_pipeline(&ctx, true, true)
                     .map_err(|e| {
                         warn!(
-                            "Binary-expr arm for metric '{}' produced no results ({}) — \
+                            "Binary-expr arm for metric '{}' failed ({}) — \
                              falls back to Prometheus for the whole expression rather than \
                              returning an empty result for just this arm",
                             ctx.metric, e
