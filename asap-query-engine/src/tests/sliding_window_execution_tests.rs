@@ -1,5 +1,5 @@
-//! End-to-end correctness tests for sliding-window instant-query execution
-//! (issue #557). `should_use_sliding_window()` is hardcoded `false`, so the
+//! End-to-end correctness tests for sliding-window instant- and range-query
+//! execution (issue #557). `should_use_sliding_window()` is hardcoded `false`, so the
 //! live planner can't emit a `Sliding` config yet — these hand-construct one
 //! directly and register it via `query_configs` (which `promql.rs` checks
 //! before falling back to capability matching), the same bypass
@@ -212,6 +212,76 @@ fn k6_merges_six_strided_buckets() {
     // i=0,5,10,15,20,25 -> values 1,6,11,16,21,26 = 81.
     let engine = engine_with_sliding_buckets(W, S, 30, "sum_over_time(reqs[1800s])");
     assert_eq!(query_sum(&engine, 1800, 1800.0), 81.0);
+}
+
+// --- Range queries ---
+
+/// Runs `sum_over_time(reqs[range_seconds])` as a range query and returns
+/// `(timestamp, value)` samples for the `pod="a"` series.
+fn range_query_samples(
+    engine: &SimpleEngine,
+    range_seconds: u64,
+    start_seconds: f64,
+    end_seconds: f64,
+    step_seconds: f64,
+) -> Vec<(u64, f64)> {
+    let query = format!("sum_over_time({METRIC}[{range_seconds}s])");
+    let (_labels, result) = engine
+        .handle_range_query_promql(query, start_seconds, end_seconds, step_seconds)
+        .expect("range query should resolve via the registered query_config");
+    match result {
+        QueryResult::Matrix(matrix) => {
+            assert_eq!(matrix.values.len(), 1, "expected exactly one series");
+            matrix.values[0]
+                .samples
+                .iter()
+                .map(|s| (s.timestamp, s.value))
+                .collect()
+        }
+        other => panic!("expected a range vector, got {other:?}"),
+    }
+}
+
+#[test]
+fn range_query_merges_strided_buckets_at_each_step() {
+    // k=3 query (range=900s=3*W), step=300s (=W, a multiple of S=60s per
+    // PR A's validation). Buckets 0..30 cover [0, 1_800_000). Output points
+    // at 900s, 1200s, 1500s, 1800s, each summing its own 3 strided buckets
+    // -- not the same "sum everything" answer at every step.
+    let engine = engine_with_sliding_buckets(W, S, 30, "sum_over_time(reqs[900s])");
+    let samples = range_query_samples(&engine, 900, 900.0, 1800.0, 300.0);
+    assert_eq!(
+        samples,
+        vec![
+            (900_000, 18.0),   // i=0,5,10 -> 1+6+11
+            (1_200_000, 33.0), // i=5,10,15 -> 6+11+16
+            (1_500_000, 48.0), // i=10,15,20 -> 11+16+21
+            (1_800_000, 63.0), // i=15,20,25 -> 16+21+26
+        ]
+    );
+}
+
+#[test]
+fn range_query_misaligned_start_reports_requested_timestamps_not_aligned_ones() {
+    // start=905s is 5s off the 60s slide grid; step=300s is a multiple of
+    // S so PR A's validation passes regardless of start's alignment.
+    // §4 keeps the *reported* timestamps exactly as requested (905, 1205,
+    // ...) even though the lookup anchor internally floor-aligns to 900s
+    // for every step (a fixed 5s offset, since step is S-aligned) - the
+    // data is a few seconds stale, but the response's time axis matches
+    // what the client asked for. Same values as the aligned test above,
+    // just relabeled.
+    let engine = engine_with_sliding_buckets(W, S, 30, "sum_over_time(reqs[900s])");
+    let samples = range_query_samples(&engine, 900, 905.0, 1805.0, 300.0);
+    assert_eq!(
+        samples,
+        vec![
+            (905_000, 18.0),
+            (1_205_000, 33.0),
+            (1_505_000, 48.0),
+            (1_805_000, 63.0),
+        ]
+    );
 }
 
 #[test]

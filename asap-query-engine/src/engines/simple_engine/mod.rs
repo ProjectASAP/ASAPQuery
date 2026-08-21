@@ -106,8 +106,16 @@ pub struct RangeQueryParams {
 pub struct RangeQueryExecutionContext {
     /// Base context (metric, metadata, store_plan, etc.)
     pub base: QueryExecutionContext,
-    /// Range-specific parameters
+    /// Range-specific parameters. `range_params.start` is the client's
+    /// requested start, unmodified -- reported sample timestamps are always
+    /// derived from this, never from `aligned_start_ms`.
     pub range_params: RangeQueryParams,
+    /// Sliding's floor-aligned version of `range_params.start` (equal to
+    /// it for Tumbling). The walk uses this -- via a fixed offset computed
+    /// once in `execute_range_query_pipeline` -- to stay grid-aligned
+    /// without shifting what gets reported back to the client. See design
+    /// doc §4 for #557.
+    pub aligned_start_ms: u64,
     /// Number of buckets per step (step / tumbling_window)
     pub buckets_per_step: usize,
     /// Number of buckets in lookback window
@@ -1560,6 +1568,14 @@ impl SimpleEngine {
         let buckets_per_step = context.buckets_per_step;
         let lookback_bucket_count = context.lookback_bucket_count;
 
+        // Fixed for the whole query: how far below the client's requested
+        // `start_ms` the grid-aligned lookup anchor sits (0 for Tumbling,
+        // or Sliding already on-grid). Subtracting this from each step's
+        // `current_time` keeps the walk grid-aligned without changing what
+        // gets reported back as each sample's timestamp -- see
+        // `RangeQueryExecutionContext::aligned_start_ms`.
+        let lookup_offset_ms = start_ms.saturating_sub(context.aligned_start_ms);
+
         let window_mode = if buckets_per_step <= lookback_bucket_count {
             "sliding (slide <= size)"
         } else {
@@ -1612,9 +1628,10 @@ impl SimpleEngine {
             // Iterate by OUTPUT timestamp, not by bucket index
             let mut current_time = start_ms;
             while current_time <= end_ms {
+                let lookup_time = current_time.saturating_sub(lookup_offset_ms);
                 match Self::merge_window_at_timestamp(
                     &bucket_map,
-                    current_time,
+                    lookup_time,
                     lookback_ms,
                     tumbling_window_ms,
                     *accumulator_type,

@@ -10,6 +10,7 @@ use super::{
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{QueryResult, RangeVectorElement};
+use asap_types::enums::WindowType;
 use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
@@ -518,6 +519,21 @@ impl SimpleEngine {
         })
         .ok()?;
 
+        // Sliding floor-aligns the loop's lookup anchor once, here -- the
+        // validation above (step % slide_interval_ms == 0) is what
+        // guarantees every later step stays grid-aligned without
+        // re-aligning per-step. `start_ms` itself (what the client asked
+        // for) is untouched -- it still seeds `range_params.start`, so
+        // reported sample timestamps never shift. Only the fetch bound and
+        // `aligned_start_ms` (which the walk anchors on) use the aligned
+        // value. See design doc §4/§5 for #557.
+        let aligned_start_ms = match window_type {
+            WindowType::Sliding => {
+                SimpleEngine::align_to_slide_interval(start_ms, slide_interval_ms)
+            }
+            WindowType::Tumbling => start_ms,
+        };
+
         let lookback_ms = base_context.store_plan.values_query.end_timestamp
             - base_context.store_plan.values_query.start_timestamp;
 
@@ -525,7 +541,8 @@ impl SimpleEngine {
         let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
 
         let mut extended_store_plan = base_context.store_plan.clone();
-        extended_store_plan.values_query.start_timestamp = start_ms.saturating_sub(lookback_ms);
+        extended_store_plan.values_query.start_timestamp =
+            aligned_start_ms.saturating_sub(lookback_ms);
         extended_store_plan.values_query.end_timestamp = end_ms;
         extended_store_plan.values_query.is_exact_query = false;
 
@@ -539,6 +556,7 @@ impl SimpleEngine {
                 end: end_ms,
                 step: step_ms,
             },
+            aligned_start_ms,
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,
@@ -1149,6 +1167,21 @@ impl SimpleEngine {
         })
         .ok()?;
 
+        // Sliding floor-aligns the loop's lookup anchor once, here -- the
+        // validation above (step % slide_interval_ms == 0) is what
+        // guarantees every later step stays grid-aligned without
+        // re-aligning per-step. `start_ms` itself (what the client asked
+        // for) is untouched -- it still seeds `range_params.start`, so
+        // reported sample timestamps never shift. Only the fetch bound and
+        // `aligned_start_ms` (which the walk anchors on) use the aligned
+        // value. See design doc §4/§5 for #557.
+        let aligned_start_ms = match window_type {
+            WindowType::Sliding => {
+                SimpleEngine::align_to_slide_interval(start_ms, slide_interval_ms)
+            }
+            WindowType::Tumbling => start_ms,
+        };
+
         // Calculate lookback from the base context's store plan
         let lookback_ms = base_context.store_plan.values_query.end_timestamp
             - base_context.store_plan.values_query.start_timestamp;
@@ -1158,7 +1191,8 @@ impl SimpleEngine {
 
         // Modify the store plan to cover the entire range
         let mut extended_store_plan = base_context.store_plan.clone();
-        extended_store_plan.values_query.start_timestamp = start_ms.saturating_sub(lookback_ms);
+        extended_store_plan.values_query.start_timestamp =
+            aligned_start_ms.saturating_sub(lookback_ms);
         extended_store_plan.values_query.end_timestamp = end_ms;
         // Range queries always use range fetch, not exact
         extended_store_plan.values_query.is_exact_query = false;
@@ -1173,6 +1207,7 @@ impl SimpleEngine {
                 end: end_ms,
                 step: step_ms,
             },
+            aligned_start_ms,
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,
