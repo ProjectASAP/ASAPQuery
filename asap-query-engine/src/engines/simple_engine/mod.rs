@@ -390,6 +390,24 @@ impl SimpleEngine {
         })
     }
 
+    /// Floor-aligns `timestamp` down to the nearest `slide_interval_ms`
+    /// boundary from Unix epoch 0 -- the grid sliding-window worker buckets
+    /// sit on (`precompute_engine/window_manager.rs`). Silent + warn on
+    /// misalignment, same precedent as `align_end_timestamp_promql`'s
+    /// ingestion-interval alignment.
+    fn align_to_slide_interval(timestamp: u64, slide_interval_ms: u64) -> u64 {
+        if timestamp.is_multiple_of(slide_interval_ms) {
+            return timestamp;
+        }
+        let aligned = (timestamp / slide_interval_ms) * slide_interval_ms;
+        warn!(
+            "Sliding-window query timestamp {} is not aligned with slide interval of {} ms; \
+             aligning down to {}.",
+            timestamp, slide_interval_ms, aligned
+        );
+        aligned
+    }
+
     /// Creates a plan for querying the store based on aggregation configuration.
     /// Also derives `do_merge`: true when the requested time range spans more
     /// than one stored window, i.e. `range_ms > window_size_ms`.
@@ -411,19 +429,23 @@ impl SimpleEngine {
             })?;
 
         let window_type = aggregation_config_for_value.window_type;
-        let is_exact_query = window_type == WindowType::Sliding;
         let range_ms = timestamps.end_timestamp - timestamps.start_timestamp;
         let do_merge = range_ms > aggregation_config_for_value.window_size_ms;
 
-        // Determine start/end for values query based on window type
-        let (values_start, values_end) = if is_exact_query {
-            // Sliding window: exact window match
-            let exact_start =
-                timestamps.end_timestamp - aggregation_config_for_value.window_size_ms;
-            (exact_start, timestamps.end_timestamp)
-        } else {
-            // Tumbling window: range query
-            (timestamps.start_timestamp, timestamps.end_timestamp)
+        // Determine start/end for values query based on window type. Sliding
+        // floor-aligns its end timestamp to the worker's slide_interval_ms
+        // grid first (design doc §4, #557) -- store lookups are exact-
+        // timestamp keyed, and misalignment silently looks like missing
+        // data rather than erroring.
+        let (values_start, values_end) = match window_type {
+            WindowType::Sliding => {
+                let aligned_end = Self::align_to_slide_interval(
+                    timestamps.end_timestamp,
+                    aggregation_config_for_value.slide_interval_ms,
+                );
+                (aligned_end.saturating_sub(range_ms), aligned_end)
+            }
+            WindowType::Tumbling => (timestamps.start_timestamp, timestamps.end_timestamp),
         };
 
         let values_query = StoreQueryParams {
@@ -431,7 +453,7 @@ impl SimpleEngine {
             aggregation_id: agg_info.aggregation_id_for_value,
             start_timestamp: values_start,
             end_timestamp: values_end,
-            is_exact_query,
+            is_exact_query: false,
         };
 
         // Determine if we need a separate keys query
@@ -542,44 +564,73 @@ impl SimpleEngine {
         debug!("Store query returned {} unique keys", values_map.len());
 
         let merge_start_time = Instant::now();
-        let window_type = if plan.values_query.is_exact_query {
-            WindowType::Sliding
-        } else {
-            WindowType::Tumbling
+        let (window_type, window_size_ms) = {
+            let sc = self.streaming_config.read().unwrap();
+            let config = sc
+                .get_aggregation_config(agg_info.aggregation_id_for_value)
+                .ok_or_else(|| {
+                    format!(
+                        "Aggregation config not found for aggregation_id: {}",
+                        agg_info.aggregation_id_for_value
+                    )
+                })?;
+            (config.window_type, config.window_size_ms)
         };
 
-        let merged_values = if plan.values_query.is_exact_query {
-            // Sliding window: no merge needed, extract buckets from timestamped data
-            debug!("Sliding window mode: Skipping merge (expecting 1 precompute per key)");
-            values_map
-                .into_iter()
-                .map(|(key, timestamped_buckets)| {
-                    if timestamped_buckets.len() != 1 {
-                        warn!(
-                            "Sliding window expected 1 precompute per key, found {}. Using first.",
-                            timestamped_buckets.len()
-                        );
+        let merged_values = match window_type {
+            WindowType::Sliding => {
+                // Reuses the range query's stride-window_size_ms walk,
+                // called once instead of per-step (design doc §2/§3, #557).
+                // Keys with no data in the window, or where merging failed,
+                // are skipped rather than failing the whole query -- same
+                // tolerance merge_precomputed_outputs already has for keys
+                // with an empty bucket list.
+                let lookback_ms =
+                    plan.values_query.end_timestamp - plan.values_query.start_timestamp;
+                let mut merged = HashMap::with_capacity(values_map.len());
+                for (key, timestamped_buckets) in &values_map {
+                    let bucket_map: HashMap<u64, &dyn AggregateCore> = timestamped_buckets
+                        .iter()
+                        .map(|((start, _), bucket)| (*start, bucket.as_ref()))
+                        .collect();
+                    match Self::merge_window_at_timestamp(
+                        &bucket_map,
+                        plan.values_query.end_timestamp,
+                        lookback_ms,
+                        window_size_ms,
+                        agg_info.aggregation_type_for_value,
+                    ) {
+                        Ok(Some(merged_bucket)) => {
+                            merged.insert(key.clone(), merged_bucket);
+                        }
+                        Ok(None) => {
+                            debug!("Sliding window: no data in window for key {:?}", key);
+                        }
+                        Err(e) => {
+                            warn!(
+                                "Sliding window: failed to merge window for key {:?}: {}",
+                                key, e
+                            );
+                        }
                     }
-                    // Extract bucket from timestamped tuple
-                    let (_, bucket) = timestamped_buckets.into_iter().next().unwrap();
-                    (key, bucket.as_ref().clone_boxed_core())
-                })
-                .collect()
-        } else {
-            // Tumbling window: merge needed
-            debug!("Tumbling window mode: Merging {} outputs", values_map.len());
-            self.merge_precomputed_outputs(
-                &values_map,
-                do_merge,
-                agg_info.aggregation_type_for_value,
-            )
+                }
+                merged
+            }
+            WindowType::Tumbling => {
+                debug!("Tumbling window mode: Merging {} outputs", values_map.len());
+                self.merge_precomputed_outputs(
+                    &values_map,
+                    do_merge,
+                    agg_info.aggregation_type_for_value,
+                )
+            }
         };
 
         let merge_duration = merge_start_time.elapsed();
         debug!(
             "[LATENCY] Precomputed output processing ({}): {:.2}ms, resulted in {} merged outputs",
             if window_type == WindowType::Sliding {
-                "no merge"
+                "sliding walk"
             } else {
                 "merge"
             },
