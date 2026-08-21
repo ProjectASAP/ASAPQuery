@@ -40,28 +40,39 @@ fn detect_scalar_arm<'a>(
 /// joins two arms' results by label key and applies `op` per matching key,
 /// dropping non-matches (inner-join semantics, matching DataFusion's
 /// `build_binary_vector_plan`). Positional `KeyByLabelValues` equality is
-/// safe here: label *names* are always canonically sorted by
-/// `KeyByLabelNames::new()`, and every source of PromQL label-name ordering
-/// routes through it — see #567's label-order investigation.
+/// safe *once `lhs_labels == rhs_labels` is confirmed*: label names are
+/// canonically sorted by `KeyByLabelNames::new()`, so two arms with the same
+/// label set always order their values the same way. Returns `None` if the
+/// two arms don't share the same label set — mirroring DataFusion's
+/// `build_binary_vector_plan`, which fails to resolve a join column that
+/// only exists on one side.
 fn combine_vector_vector_native(
     lhs_results: Vec<InstantVectorElement>,
+    lhs_labels: &[String],
     rhs_results: Vec<InstantVectorElement>,
+    rhs_labels: &[String],
     op: &promql_parser::parser::token::TokenType,
-) -> Vec<InstantVectorElement> {
+) -> Option<Vec<InstantVectorElement>> {
+    if lhs_labels != rhs_labels {
+        return None;
+    }
+
     let rhs_map: HashMap<KeyByLabelValues, f64> = rhs_results
         .into_iter()
         .map(|elem| (elem.labels, elem.value))
         .collect();
 
-    lhs_results
-        .into_iter()
-        .filter_map(|lhs_elem| {
-            rhs_map.get(&lhs_elem.labels).map(|&rhs_val| {
-                let value = SimpleEngine::apply_range_binary_op(op, lhs_elem.value, rhs_val);
-                InstantVectorElement::new(lhs_elem.labels.clone(), value)
+    Some(
+        lhs_results
+            .into_iter()
+            .filter_map(|lhs_elem| {
+                rhs_map.get(&lhs_elem.labels).map(|&rhs_val| {
+                    let value = SimpleEngine::apply_range_binary_op(op, lhs_elem.value, rhs_val);
+                    InstantVectorElement::new(lhs_elem.labels.clone(), value)
+                })
             })
-        })
-        .collect()
+            .collect(),
+    )
 }
 
 /// Native scalar combiner for one binary-expr level (instant query):
@@ -528,8 +539,14 @@ impl SimpleEngine {
             Expr::Binary(binary) => {
                 // Nested binary expression — recurse on both sides
                 let (lhs_results, lhs_labels) = self.evaluate_arm_native(&binary.lhs, time)?;
-                let (rhs_results, _) = self.evaluate_arm_native(&binary.rhs, time)?;
-                let combined = combine_vector_vector_native(lhs_results, rhs_results, &binary.op);
+                let (rhs_results, rhs_labels) = self.evaluate_arm_native(&binary.rhs, time)?;
+                let combined = combine_vector_vector_native(
+                    lhs_results,
+                    &lhs_labels,
+                    rhs_results,
+                    &rhs_labels,
+                    &binary.op,
+                )?;
                 Some((combined, lhs_labels))
             }
             _ => {
@@ -595,8 +612,9 @@ impl SimpleEngine {
 
         // Vector–vector
         let (lhs_results, lhs_labels) = self.evaluate_arm_native(lhs, time)?;
-        let (rhs_results, _) = self.evaluate_arm_native(rhs, time)?;
-        let combined = combine_vector_vector_native(lhs_results, rhs_results, op);
+        let (rhs_results, rhs_labels) = self.evaluate_arm_native(rhs, time)?;
+        let combined =
+            combine_vector_vector_native(lhs_results, &lhs_labels, rhs_results, &rhs_labels, op)?;
         let output_labels = KeyByLabelNames::new(lhs_labels);
         Some((output_labels, QueryResult::vector(combined, query_time)))
     }
