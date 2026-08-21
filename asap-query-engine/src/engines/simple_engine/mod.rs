@@ -557,8 +557,7 @@ impl SimpleEngine {
             // rest (see #567).
             const EXPECTED_BUCKETS_PER_KEY: usize = 1;
             debug!("Sliding window mode: merging {} keys", values_map.len());
-            let mut merged = HashMap::with_capacity(values_map.len());
-            for (key, timestamped_buckets) in values_map.into_iter() {
+            for timestamped_buckets in values_map.values() {
                 if timestamped_buckets.is_empty() {
                     continue;
                 }
@@ -569,20 +568,10 @@ impl SimpleEngine {
                         timestamped_buckets.len()
                     );
                 }
-                let precomputes: Vec<Box<dyn AggregateCore>> = timestamped_buckets
-                    .into_iter()
-                    .map(|(_, bucket)| bucket.as_ref().clone_boxed_core())
-                    .collect();
-                match self.merge_accumulators(&precomputes) {
-                    Ok(merged_accumulator) => {
-                        merged.insert(key, merged_accumulator);
-                    }
-                    Err(e) => {
-                        warn!("Failed to merge accumulators for key {:?}: {}", key, e);
-                    }
-                }
             }
-            merged
+            // Sliding windows always merge (all buckets belong to one
+            // logical window) — reuse the same merge path as Tumbling.
+            self.merge_precomputed_outputs(&values_map, true, agg_info.aggregation_type_for_value)
         } else {
             // Tumbling window: merge needed
             debug!("Tumbling window mode: Merging {} outputs", values_map.len());
@@ -594,13 +583,12 @@ impl SimpleEngine {
         };
 
         let merge_duration = merge_start_time.elapsed();
+        let did_merge = window_type == WindowType::Sliding
+            || do_merge
+            || agg_info.aggregation_type_for_value == AggregationType::DeltaSetAggregator;
         debug!(
             "[LATENCY] Precomputed output processing ({}): {:.2}ms, resulted in {} merged outputs",
-            if window_type == WindowType::Sliding {
-                "no merge"
-            } else {
-                "merge"
-            },
+            if did_merge { "merge" } else { "no merge" },
             merge_duration.as_secs_f64() * 1000.0,
             merged_values.len()
         );
@@ -1098,7 +1086,7 @@ impl SimpleEngine {
                     debug!("  Merging accumulators (should_merge=true)");
                     #[cfg(feature = "extra_debugging")]
                     let merge_start = Instant::now();
-                    match self.merge_accumulators(&precomputes) {
+                    match self.merge_accumulators(precomputes) {
                         Ok(merged_accumulator) => {
                             #[cfg(feature = "extra_debugging")]
                             let merge_duration = merge_start.elapsed();
@@ -1141,21 +1129,21 @@ impl SimpleEngine {
     /// This follows the Python merge_accumulators approach
     fn merge_accumulators(
         &self,
-        accumulators: &[Box<dyn crate::data_model::AggregateCore>],
+        accumulators: Vec<Box<dyn crate::data_model::AggregateCore>>,
     ) -> Result<Box<dyn crate::data_model::AggregateCore>, AccumulatorError> {
         if accumulators.is_empty() {
             return Err(AccumulatorError::EmptySlice);
         }
 
         if accumulators.len() == 1 {
-            return Ok(accumulators[0].clone_boxed_core());
+            return Ok(accumulators.into_iter().next().unwrap());
         }
 
         // Try to use optimized batch merge for KLL accumulators
         if accumulators[0].get_accumulator_type() == AggregationType::DatasketchesKLL {
             use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 
-            match DatasketchesKLLAccumulator::merge_multiple(accumulators) {
+            match DatasketchesKLLAccumulator::merge_multiple(&accumulators) {
                 Ok(merged) => return Ok(Box::new(merged)),
                 Err(e) => {
                     warn!(
@@ -1171,7 +1159,7 @@ impl SimpleEngine {
         if accumulators[0].get_accumulator_type() == AggregationType::CountMinSketch {
             use crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator;
 
-            match CountMinSketchAccumulator::merge_multiple(accumulators) {
+            match CountMinSketchAccumulator::merge_multiple(&accumulators) {
                 Ok(merged) => return Ok(Box::new(merged)),
                 Err(e) => {
                     warn!(
