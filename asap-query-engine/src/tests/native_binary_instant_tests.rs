@@ -295,4 +295,178 @@ mod tests {
 
         assert_eq!(sorted(vector_values(new_qr)), sorted(vector_values(old_qr)));
     }
+
+    // --- Regression tests: combine_vector_vector_native joins purely on
+    // positional KeyByLabelValues equality (raw Vec<String> of values, no
+    // label names attached at all -- see key_by_label_values.rs). DataFusion's
+    // build_binary_vector_plan joins on named columns (lhs.{label} =
+    // rhs.{label}) instead, so it fails to resolve (-> None) whenever the two
+    // arms don't share the same label set. Native has no equivalent check, so
+    // it can silently join two arms grouped by *different* labels whenever
+    // their values happen to coincide. These tests are expected to be RED
+    // against the current implementation -- they exist to prove the
+    // divergence before combine_vector_vector_native is fixed.
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn native_mismatched_label_names_with_colliding_values_diverges_from_datafusion() {
+        // metric_a grouped by (host), metric_b grouped by (region) -- disjoint
+        // label sets -- but both happen to produce the value "us-east".
+        // DataFusion can't join lhs.host against a plan with no "host" column
+        // -> None. Native joins on the bare value vector ["us-east"] ==
+        // ["us-east"] -> a spurious combined result.
+        let engine = create_engine_two_metrics(
+            "metric_a",
+            AggregationType::Sum,
+            vec!["host"],
+            vec![(
+                Some(vec!["us-east".to_string()]),
+                Box::new(SumAccumulator::with_sum(10.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_a) by (host)",
+            "metric_b",
+            AggregationType::Sum,
+            vec!["region"],
+            vec![(
+                Some(vec!["us-east".to_string()]),
+                Box::new(SumAccumulator::with_sum(20.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_b) by (region)",
+        );
+
+        let query = "sum(metric_a) by (host) + sum(metric_b) by (region)";
+        let old_result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let new_result = engine.handle_query_promql_native(query.to_string(), QUERY_TIME);
+
+        match old_result {
+            None => assert!(
+                new_result.is_none(),
+                "BUG: DataFusion refuses to join arms with different label sets (None), \
+                 but native silently produced {new_result:?} by matching on value alone"
+            ),
+            Some((_, old_qr)) => assert_eq!(
+                new_result.map(|(_, qr)| sorted(vector_values(qr))),
+                Some(sorted(vector_values(old_qr))),
+                "native and DataFusion must agree when both produce a result"
+            ),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn native_mismatched_label_names_multi_label_full_collision_diverges_from_datafusion() {
+        // Same bug with a 2-label grouping: (host, dc) vs (region, zone), but
+        // the *entire* ordered value vector coincides ("us-east", "az1" on
+        // both sides) -- confirms the collision isn't a single-label fluke.
+        let engine = create_engine_two_metrics(
+            "metric_a",
+            AggregationType::Sum,
+            vec!["host", "dc"],
+            vec![(
+                Some(vec!["us-east".to_string(), "az1".to_string()]),
+                Box::new(SumAccumulator::with_sum(10.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_a) by (host, dc)",
+            "metric_b",
+            AggregationType::Sum,
+            vec!["region", "zone"],
+            vec![(
+                Some(vec!["us-east".to_string(), "az1".to_string()]),
+                Box::new(SumAccumulator::with_sum(20.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_b) by (region, zone)",
+        );
+
+        let query = "sum(metric_a) by (host, dc) + sum(metric_b) by (region, zone)";
+        let old_result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let new_result = engine.handle_query_promql_native(query.to_string(), QUERY_TIME);
+
+        match old_result {
+            None => assert!(
+                new_result.is_none(),
+                "BUG: DataFusion refuses to join arms with different label sets (None), \
+                 but native silently produced {new_result:?} by matching on value alone"
+            ),
+            Some((_, old_qr)) => assert_eq!(
+                new_result.map(|(_, qr)| sorted(vector_values(qr))),
+                Some(sorted(vector_values(old_qr))),
+                "native and DataFusion must agree when both produce a result"
+            ),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn native_mismatched_label_names_non_colliding_values_still_diverges_from_datafusion() {
+        // Same disjoint label sets (host vs region), but this time the values
+        // don't collide ("us-east" vs "eu-west"). DataFusion still can't
+        // resolve the join (column doesn't exist, independent of the data)
+        // -> None. Native's join correctly finds no match on the *value*, but
+        // that's incidental -- it still returns Some(empty) instead of None,
+        // because it never checked whether the label sets matched at all.
+        let engine = create_engine_two_metrics(
+            "metric_a",
+            AggregationType::Sum,
+            vec!["host"],
+            vec![(
+                Some(vec!["us-east".to_string()]),
+                Box::new(SumAccumulator::with_sum(10.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_a) by (host)",
+            "metric_b",
+            AggregationType::Sum,
+            vec!["region"],
+            vec![(
+                Some(vec!["eu-west".to_string()]),
+                Box::new(SumAccumulator::with_sum(20.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_b) by (region)",
+        );
+
+        let query = "sum(metric_a) by (host) + sum(metric_b) by (region)";
+        let old_result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let new_result = engine.handle_query_promql_native(query.to_string(), QUERY_TIME);
+
+        assert_eq!(
+            old_result.is_none(),
+            new_result.is_none(),
+            "BUG: DataFusion returns {old_result:?} (no such column to join on), native \
+             returns {new_result:?} -- native never checks that the two arms' label sets match"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn native_same_label_set_no_matching_values_both_agree_empty() {
+        // Control case: identical label sets (host on both sides) but
+        // disjoint values -- both paths should agree there's no match. This
+        // isolates the bug to *differing* label sets, not "no match" in
+        // general.
+        let engine = create_engine_two_metrics(
+            "metric_a",
+            AggregationType::Sum,
+            vec!["host"],
+            vec![(
+                Some(vec!["host-a".to_string()]),
+                Box::new(SumAccumulator::with_sum(10.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_a) by (host)",
+            "metric_b",
+            AggregationType::Sum,
+            vec!["host"],
+            vec![(
+                Some(vec!["host-b".to_string()]),
+                Box::new(SumAccumulator::with_sum(20.0)) as Box<dyn AggregateCore>,
+            )],
+            "sum(metric_b) by (host)",
+        );
+
+        let query = "sum(metric_a) by (host) + sum(metric_b) by (host)";
+        let (_, old_qr) = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("old path failed");
+        let (_, new_qr) = engine
+            .handle_query_promql_native(query.to_string(), QUERY_TIME)
+            .expect("new path failed");
+
+        let old_values = vector_values(old_qr);
+        assert_eq!(old_values, Vec::new());
+        assert_eq!(sorted(vector_values(new_qr)), sorted(old_values));
+    }
 }
