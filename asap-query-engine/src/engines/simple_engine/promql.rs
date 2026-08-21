@@ -36,8 +36,8 @@ fn detect_scalar_arm<'a>(
     }
 }
 
-/// Native vector-vector combiner for one binary-expr level (instant query):
-/// joins two arms' results by label key and applies `op` per matching key,
+/// Vector-vector combiner for one binary-expr level (instant query): joins
+/// two arms' results by label key and applies `op` per matching key,
 /// dropping non-matches (inner-join semantics, matching DataFusion's
 /// `build_binary_vector_plan`). Positional `KeyByLabelValues` equality is
 /// safe *once `lhs_labels == rhs_labels` is confirmed*: label names are
@@ -46,7 +46,7 @@ fn detect_scalar_arm<'a>(
 /// two arms don't share the same label set — mirroring DataFusion's
 /// `build_binary_vector_plan`, which fails to resolve a join column that
 /// only exists on one side.
-fn combine_vector_vector_native(
+fn combine_vector_vector(
     lhs_results: Vec<InstantVectorElement>,
     lhs_labels: &[String],
     rhs_results: Vec<InstantVectorElement>,
@@ -75,10 +75,10 @@ fn combine_vector_vector_native(
     )
 }
 
-/// Native scalar combiner for one binary-expr level (instant query):
-/// applies `op(scalar, value)` or `op(value, scalar)` per `scalar_on_left`
-/// to every element of the vector arm's results.
-fn combine_scalar_native(
+/// Scalar combiner for one binary-expr level (instant query): applies
+/// `op(scalar, value)` or `op(value, scalar)` per `scalar_on_left` to every
+/// element of the vector arm's results.
+fn combine_scalar(
     vector_results: Vec<InstantVectorElement>,
     scalar: f64,
     op: &promql_parser::parser::token::TokenType,
@@ -395,7 +395,7 @@ impl SimpleEngine {
     /// Recursively unwraps `Paren`, then structurally resolves a leaf PromQL
     /// arm (i.e. not `Binary` or `NumberLiteral`) to its `QueryConfig` and
     /// base `QueryExecutionContext`. Shared leaf-resolution step for both
-    /// `build_arm_logical_plan` (instant) and `build_arm_range_context` (range).
+    /// `evaluate_binary_arm` (instant) and `build_arm_range_context` (range).
     ///
     /// Returns `None` for `Binary` arms (caller handles recursion) and
     /// `NumberLiteral` arms (caller handles scalars).
@@ -418,115 +418,17 @@ impl SimpleEngine {
         }
     }
 
-    /// Recursively builds a DataFusion logical plan for one arm of a binary
-    /// arithmetic expression.
+    /// Recursively evaluates one arm of a binary arithmetic expression via
+    /// the native pipeline (`execute_query_pipeline`).
     ///
     /// - Leaf arm (supported PromQL pattern): resolved via `resolve_arm_leaf_context`,
-    ///   returning its `to_logical_plan()` together with the output label names.
-    /// - Binary arm: recursively build both sub-arms and combine with
-    ///   `build_binary_vector_plan`.
+    ///   executed through `execute_query_pipeline`.
+    /// - Binary arm: recursively evaluate both sub-arms and combine with
+    ///   `combine_vector_vector`. Nested `Binary` arms are combined as
+    ///   vector-vector only — a scalar inside a nested arm (e.g. `(a+5)*b`)
+    ///   is not supported (tracked separately, same as before this cutover).
     /// - Scalar literal: returns `None` (handled by the caller separately).
-    fn build_arm_logical_plan(
-        &self,
-        arm_ast: &promql_parser::parser::Expr,
-        time: f64,
-    ) -> Option<(datafusion::logical_expr::LogicalPlan, Vec<String>)> {
-        use crate::engines::logical::plan_builder::build_binary_vector_plan;
-        use promql_parser::parser::Expr;
-
-        match arm_ast {
-            Expr::NumberLiteral(_) => None, // caller handles scalars
-            Expr::Paren(paren) => self.build_arm_logical_plan(&paren.expr, time),
-            Expr::Binary(binary) => {
-                // Nested binary expression — recurse on both sides
-                let (lhs_plan, lhs_labels) = self.build_arm_logical_plan(&binary.lhs, time)?;
-                let (rhs_plan, _) = self.build_arm_logical_plan(&binary.rhs, time)?;
-                let combined =
-                    build_binary_vector_plan(lhs_plan, rhs_plan, &binary.op, lhs_labels.clone())
-                        .ok()?;
-                Some((combined, lhs_labels))
-            }
-            _ => {
-                let (ctx, label_names) = self.resolve_arm_leaf_context(arm_ast, time)?;
-                let plan = ctx.to_logical_plan().ok()?;
-                Some((plan, label_names))
-            }
-        }
-    }
-
-    /// Handles a binary arithmetic PromQL expression by building a combined
-    /// DataFusion plan (vector–vector join or scalar projection) and executing it.
-    ///
-    /// Returns `None` if any arm is not acceleratable (caller falls back to Prometheus).
-    fn handle_binary_expr_promql(
-        &self,
-        ast: &promql_parser::parser::Expr,
-        time: f64,
-    ) -> Option<(KeyByLabelNames, QueryResult)> {
-        use crate::engines::logical::plan_builder::{build_binary_vector_plan, build_scalar_plan};
-        use promql_parser::parser::Expr;
-
-        let query_time = Self::convert_query_time_to_data_time(time);
-
-        let binary = match ast {
-            Expr::Binary(b) => b,
-            _ => return None,
-        };
-
-        let lhs = binary.lhs.as_ref();
-        let rhs = binary.rhs.as_ref();
-        let op = &binary.op;
-
-        if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
-            let (vector_plan, label_names) = self.build_arm_logical_plan(vector_arm, time)?;
-            let combined =
-                build_scalar_plan(vector_plan, scalar, op, scalar_on_left, label_names.clone())
-                    .ok()?;
-            let results = tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(self.execute_logical_plan(
-                    combined,
-                    label_names.clone(),
-                    "",
-                    &Statistic::Sum,
-                ))
-            })
-            .ok()?;
-            return Some((
-                KeyByLabelNames::new(label_names),
-                QueryResult::vector(results, query_time),
-            ));
-        }
-
-        // Vector–vector
-        let (lhs_plan, lhs_labels) = self.build_arm_logical_plan(lhs, time)?;
-        let (rhs_plan, _) = self.build_arm_logical_plan(rhs, time)?;
-        let combined = build_binary_vector_plan(lhs_plan, rhs_plan, op, lhs_labels.clone()).ok()?;
-        let results = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(self.execute_logical_plan(
-                combined,
-                lhs_labels.clone(),
-                "",
-                &Statistic::Sum,
-            ))
-        })
-        .ok()?;
-        let output_labels = KeyByLabelNames::new(lhs_labels);
-        Some((output_labels, QueryResult::vector(results, query_time)))
-    }
-
-    /// Recursively evaluates one arm of a binary arithmetic expression via
-    /// the native pipeline (`execute_query_pipeline`), instead of building a
-    /// DataFusion plan. Mirrors `build_arm_logical_plan`'s shape exactly,
-    /// including its limitation: nested `Binary` arms are combined as
-    /// vector-vector only — a scalar inside a nested arm (e.g. `(a+5)*b`)
-    /// is not supported, matching today's DataFusion path.
-    ///
-    /// - Leaf arm: resolved via `resolve_arm_leaf_context`, executed through
-    ///   `execute_query_pipeline`.
-    /// - Binary arm: recursively evaluate both sides then combine with
-    ///   `combine_vector_vector_native`.
-    /// - Scalar literal: returns `None` (handled by the caller separately).
-    fn evaluate_arm_native(
+    fn evaluate_binary_arm(
         &self,
         arm_ast: &promql_parser::parser::Expr,
         time: f64,
@@ -535,12 +437,12 @@ impl SimpleEngine {
 
         match arm_ast {
             Expr::NumberLiteral(_) => None, // caller handles scalars
-            Expr::Paren(paren) => self.evaluate_arm_native(&paren.expr, time),
+            Expr::Paren(paren) => self.evaluate_binary_arm(&paren.expr, time),
             Expr::Binary(binary) => {
                 // Nested binary expression — recurse on both sides
-                let (lhs_results, lhs_labels) = self.evaluate_arm_native(&binary.lhs, time)?;
-                let (rhs_results, rhs_labels) = self.evaluate_arm_native(&binary.rhs, time)?;
-                let combined = combine_vector_vector_native(
+                let (lhs_results, lhs_labels) = self.evaluate_binary_arm(&binary.lhs, time)?;
+                let (rhs_results, rhs_labels) = self.evaluate_binary_arm(&binary.rhs, time)?;
+                let combined = combine_vector_vector(
                     lhs_results,
                     &lhs_labels,
                     rhs_results,
@@ -551,9 +453,9 @@ impl SimpleEngine {
             }
             _ => {
                 let (ctx, label_names) = self.resolve_arm_leaf_context(arm_ast, time)?;
-                // Unlike DataFusion's PrecomputedSummaryReadExec (which streams
-                // whatever rows exist, including zero, so a currently-empty arm
-                // still returns Some(empty vector)), execute_query_pipeline errors
+                // Unlike DataFusion's PrecomputedSummaryReadExec (which streamed
+                // whatever rows existed, including zero, so a currently-empty arm
+                // used to return Some(empty vector)), execute_query_pipeline errors
                 // when the store has no precomputed outputs at all for this arm —
                 // that propagates to None here, triggering a full Prometheus
                 // fallback for the whole expression instead of an empty result
@@ -567,10 +469,9 @@ impl SimpleEngine {
                     .execute_query_pipeline(&ctx, true, true)
                     .map_err(|e| {
                         warn!(
-                            "Native binary-expr arm for metric '{}' produced no results \
-                             ({}) — unlike DataFusion, this falls back to Prometheus for \
-                             the whole expression rather than returning an empty result \
-                             for just this arm",
+                            "Binary-expr arm for metric '{}' produced no results ({}) — \
+                             falls back to Prometheus for the whole expression rather than \
+                             returning an empty result for just this arm",
                             ctx.metric, e
                         );
                         e
@@ -581,13 +482,11 @@ impl SimpleEngine {
         }
     }
 
-    /// Native (non-DataFusion) implementation of binary-expr handling,
-    /// staged ahead of #567's cutover so it can be equivalence-tested
-    /// against the DataFusion path (`handle_binary_expr_promql`) before
-    /// that path is rewired to call this one. Not yet reachable from
-    /// `handle_query_promql` — see `handle_query_promql_native` for a
-    /// test-facing entrypoint.
-    pub fn handle_binary_expr_promql_native(
+    /// Handles a binary arithmetic PromQL expression via the native pipeline
+    /// (vector–vector join or scalar combine).
+    ///
+    /// Returns `None` if any arm is not acceleratable (caller falls back to Prometheus).
+    fn handle_binary_expr_promql(
         &self,
         ast: &promql_parser::parser::Expr,
         time: f64,
@@ -606,8 +505,8 @@ impl SimpleEngine {
         let op = &binary.op;
 
         if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
-            let (vector_results, label_names) = self.evaluate_arm_native(vector_arm, time)?;
-            let combined = combine_scalar_native(vector_results, scalar, op, scalar_on_left);
+            let (vector_results, label_names) = self.evaluate_binary_arm(vector_arm, time)?;
+            let combined = combine_scalar(vector_results, scalar, op, scalar_on_left);
             return Some((
                 KeyByLabelNames::new(label_names),
                 QueryResult::vector(combined, query_time),
@@ -615,24 +514,12 @@ impl SimpleEngine {
         }
 
         // Vector–vector
-        let (lhs_results, lhs_labels) = self.evaluate_arm_native(lhs, time)?;
-        let (rhs_results, rhs_labels) = self.evaluate_arm_native(rhs, time)?;
+        let (lhs_results, lhs_labels) = self.evaluate_binary_arm(lhs, time)?;
+        let (rhs_results, rhs_labels) = self.evaluate_binary_arm(rhs, time)?;
         let combined =
-            combine_vector_vector_native(lhs_results, &lhs_labels, rhs_results, &rhs_labels, op)?;
+            combine_vector_vector(lhs_results, &lhs_labels, rhs_results, &rhs_labels, op)?;
         let output_labels = KeyByLabelNames::new(lhs_labels);
         Some((output_labels, QueryResult::vector(combined, query_time)))
-    }
-
-    /// Parses `query` and dispatches to `handle_binary_expr_promql_native`.
-    /// Test-facing convenience wrapper — mirrors the binary-expr branch of
-    /// `handle_query_promql`, but for the native path.
-    pub fn handle_query_promql_native(
-        &self,
-        query: String,
-        time: f64,
-    ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let ast = promql_parser::parser::parse(&query).ok()?;
-        self.handle_binary_expr_promql_native(&ast, time)
     }
 
     /// Applies a PromQL binary arithmetic operator to two f64 values.
@@ -657,7 +544,7 @@ impl SimpleEngine {
     /// arithmetic expression.
     ///
     /// Leaf resolution (Paren-unwrap + structural config lookup) is shared
-    /// with `build_arm_logical_plan` via `resolve_arm_leaf_context`. Note this
+    /// with `evaluate_binary_arm` via `resolve_arm_leaf_context`. Note this
     /// does not support nested `Binary` arms (e.g. `(a+b)*c` over a range) —
     /// tracked separately in #516.
     fn build_arm_range_context(
