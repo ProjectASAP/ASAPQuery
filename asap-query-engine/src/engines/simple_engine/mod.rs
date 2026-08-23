@@ -1074,7 +1074,12 @@ impl SimpleEngine {
         let mut merged = HashMap::with_capacity(precomputed_outputs_map.len());
 
         for (key, timestamped_buckets) in precomputed_outputs_map.iter() {
-            if !timestamped_buckets.is_empty() {
+            if timestamped_buckets.is_empty() {
+                warn!(
+                    "Store returned key {:?} with no precompute buckets; skipping",
+                    key
+                );
+            } else {
                 // Extract just the buckets (without timestamps) for merging
                 let precomputes: Vec<Box<dyn AggregateCore>> = timestamped_buckets
                     .iter()
