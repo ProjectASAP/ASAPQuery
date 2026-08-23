@@ -9,7 +9,7 @@ use super::{
     RangeQueryParams,
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
-use crate::engines::query_result::{QueryResult, RangeVectorElement};
+use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
 use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
@@ -34,6 +34,67 @@ fn detect_scalar_arm<'a>(
         (Expr::NumberLiteral(nl), _) => Some((nl.val, rhs, true)),
         _ => None,
     }
+}
+
+/// Native vector-vector combiner for one binary-expr level (instant query):
+/// joins two arms' results by label key and applies `op` per matching key,
+/// dropping non-matches (inner-join semantics, matching DataFusion's
+/// `build_binary_vector_plan`). Positional `KeyByLabelValues` equality is
+/// safe *once `lhs_labels == rhs_labels` is confirmed*: label names are
+/// canonically sorted by `KeyByLabelNames::new()`, so two arms with the same
+/// label set always order their values the same way. Returns `None` if the
+/// two arms don't share the same label set — mirroring DataFusion's
+/// `build_binary_vector_plan`, which fails to resolve a join column that
+/// only exists on one side.
+fn combine_vector_vector_native(
+    lhs_results: Vec<InstantVectorElement>,
+    lhs_labels: &[String],
+    rhs_results: Vec<InstantVectorElement>,
+    rhs_labels: &[String],
+    op: &promql_parser::parser::token::TokenType,
+) -> Option<Vec<InstantVectorElement>> {
+    if lhs_labels != rhs_labels {
+        return None;
+    }
+
+    let rhs_map: HashMap<KeyByLabelValues, f64> = rhs_results
+        .into_iter()
+        .map(|elem| (elem.labels, elem.value))
+        .collect();
+
+    Some(
+        lhs_results
+            .into_iter()
+            .filter_map(|lhs_elem| {
+                rhs_map.get(&lhs_elem.labels).map(|&rhs_val| {
+                    let value = SimpleEngine::apply_range_binary_op(op, lhs_elem.value, rhs_val);
+                    InstantVectorElement::new(lhs_elem.labels.clone(), value)
+                })
+            })
+            .collect(),
+    )
+}
+
+/// Native scalar combiner for one binary-expr level (instant query):
+/// applies `op(scalar, value)` or `op(value, scalar)` per `scalar_on_left`
+/// to every element of the vector arm's results.
+fn combine_scalar_native(
+    vector_results: Vec<InstantVectorElement>,
+    scalar: f64,
+    op: &promql_parser::parser::token::TokenType,
+    scalar_on_left: bool,
+) -> Vec<InstantVectorElement> {
+    vector_results
+        .into_iter()
+        .map(|elem| {
+            let value = if scalar_on_left {
+                SimpleEngine::apply_range_binary_op(op, scalar, elem.value)
+            } else {
+                SimpleEngine::apply_range_binary_op(op, elem.value, scalar)
+            };
+            InstantVectorElement::new(elem.labels, value)
+        })
+        .collect()
 }
 
 impl SimpleEngine {
@@ -451,6 +512,127 @@ impl SimpleEngine {
         .ok()?;
         let output_labels = KeyByLabelNames::new(lhs_labels);
         Some((output_labels, QueryResult::vector(results, query_time)))
+    }
+
+    /// Recursively evaluates one arm of a binary arithmetic expression via
+    /// the native pipeline (`execute_query_pipeline`), instead of building a
+    /// DataFusion plan. Mirrors `build_arm_logical_plan`'s shape exactly,
+    /// including its limitation: nested `Binary` arms are combined as
+    /// vector-vector only — a scalar inside a nested arm (e.g. `(a+5)*b`)
+    /// is not supported, matching today's DataFusion path.
+    ///
+    /// - Leaf arm: resolved via `resolve_arm_leaf_context`, executed through
+    ///   `execute_query_pipeline`.
+    /// - Binary arm: recursively evaluate both sides then combine with
+    ///   `combine_vector_vector_native`.
+    /// - Scalar literal: returns `None` (handled by the caller separately).
+    fn evaluate_arm_native(
+        &self,
+        arm_ast: &promql_parser::parser::Expr,
+        time: f64,
+    ) -> Option<(Vec<InstantVectorElement>, Vec<String>)> {
+        use promql_parser::parser::Expr;
+
+        match arm_ast {
+            Expr::NumberLiteral(_) => None, // caller handles scalars
+            Expr::Paren(paren) => self.evaluate_arm_native(&paren.expr, time),
+            Expr::Binary(binary) => {
+                // Nested binary expression — recurse on both sides
+                let (lhs_results, lhs_labels) = self.evaluate_arm_native(&binary.lhs, time)?;
+                let (rhs_results, rhs_labels) = self.evaluate_arm_native(&binary.rhs, time)?;
+                let combined = combine_vector_vector_native(
+                    lhs_results,
+                    &lhs_labels,
+                    rhs_results,
+                    &rhs_labels,
+                    &binary.op,
+                )?;
+                Some((combined, lhs_labels))
+            }
+            _ => {
+                let (ctx, label_names) = self.resolve_arm_leaf_context(arm_ast, time)?;
+                // Unlike DataFusion's PrecomputedSummaryReadExec (which streams
+                // whatever rows exist, including zero, so a currently-empty arm
+                // still returns Some(empty vector)), execute_query_pipeline errors
+                // when the store has no precomputed outputs at all for this arm —
+                // that propagates to None here, triggering a full Prometheus
+                // fallback for the whole expression instead of an empty result
+                // for just this arm. Accepted behavior change (#567); warn loudly
+                // so it's visible rather than silent.
+                let results = self
+                    // (true, true): safe unconditionally — both flags are
+                    // self-gated on statistic == Topk / a "k" kwarg being
+                    // present, same as the main instant-query path (see
+                    // execute_query_pipeline's doc comment).
+                    .execute_query_pipeline(&ctx, true, true)
+                    .map_err(|e| {
+                        warn!(
+                            "Native binary-expr arm for metric '{}' produced no results \
+                             ({}) — unlike DataFusion, this falls back to Prometheus for \
+                             the whole expression rather than returning an empty result \
+                             for just this arm",
+                            ctx.metric, e
+                        );
+                        e
+                    })
+                    .ok()?;
+                Some((results, label_names))
+            }
+        }
+    }
+
+    /// Native (non-DataFusion) implementation of binary-expr handling,
+    /// staged ahead of #567's cutover so it can be equivalence-tested
+    /// against the DataFusion path (`handle_binary_expr_promql`) before
+    /// that path is rewired to call this one. Not yet reachable from
+    /// `handle_query_promql` — see `handle_query_promql_native` for a
+    /// test-facing entrypoint.
+    pub fn handle_binary_expr_promql_native(
+        &self,
+        ast: &promql_parser::parser::Expr,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        use promql_parser::parser::Expr;
+
+        let query_time = Self::convert_query_time_to_data_time(time);
+
+        let binary = match ast {
+            Expr::Binary(b) => b,
+            _ => return None,
+        };
+
+        let lhs = binary.lhs.as_ref();
+        let rhs = binary.rhs.as_ref();
+        let op = &binary.op;
+
+        if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
+            let (vector_results, label_names) = self.evaluate_arm_native(vector_arm, time)?;
+            let combined = combine_scalar_native(vector_results, scalar, op, scalar_on_left);
+            return Some((
+                KeyByLabelNames::new(label_names),
+                QueryResult::vector(combined, query_time),
+            ));
+        }
+
+        // Vector–vector
+        let (lhs_results, lhs_labels) = self.evaluate_arm_native(lhs, time)?;
+        let (rhs_results, rhs_labels) = self.evaluate_arm_native(rhs, time)?;
+        let combined =
+            combine_vector_vector_native(lhs_results, &lhs_labels, rhs_results, &rhs_labels, op)?;
+        let output_labels = KeyByLabelNames::new(lhs_labels);
+        Some((output_labels, QueryResult::vector(combined, query_time)))
+    }
+
+    /// Parses `query` and dispatches to `handle_binary_expr_promql_native`.
+    /// Test-facing convenience wrapper — mirrors the binary-expr branch of
+    /// `handle_query_promql`, but for the native path.
+    pub fn handle_query_promql_native(
+        &self,
+        query: String,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let ast = promql_parser::parser::parse(&query).ok()?;
+        self.handle_binary_expr_promql_native(&ast, time)
     }
 
     /// Applies a PromQL binary arithmetic operator to two f64 values.
@@ -1472,6 +1654,66 @@ mod topk_pipeline_tests {
             .collect();
         for pair in wire_values.windows(2) {
             assert!(pair[0] >= pair[1]);
+        }
+    }
+
+    /// A topk leaf wrapped in a binary expr (`topk(10, ...) + 0`) must still
+    /// get the same top-10 truncation and metric-name-prefixed formatting as
+    /// the bare `topk(10, ...)` query — evaluate_arm_native's leaf branch
+    /// used to hardcode (false, false) for enable_topk_limiting/formatting,
+    /// which would have returned all 15 unformatted (single-label) rows here
+    /// instead of the top 10 with the metric-name prefix.
+    #[test]
+    fn topk_wrapped_in_binary_expr_still_truncates_and_formats() {
+        let (engine, store) = build_topk_engine();
+
+        let context = engine
+            .build_query_execution_context_promql(TOPK_QUERY.to_string(), QUERY_TIME)
+            .expect("context should build");
+        let window = &context.store_plan.values_query;
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for i in 1..=15u64 {
+            let srcip = format!("10.0.0.{i}");
+            sketch.inner.update(&srcip, (i * 10) as f64);
+        }
+
+        let output =
+            PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .expect("insert should succeed");
+
+        let (_, query_result) = engine
+            .handle_query_promql_native(format!("{TOPK_QUERY} + 0"), QUERY_TIME)
+            .expect("binary-expr-wrapped topk should still resolve via the native path");
+
+        let results = match query_result {
+            QueryResult::Vector(iv) => iv.values,
+            other => panic!("expected a vector result, got {other:?}"),
+        };
+
+        assert_eq!(
+            results.len(),
+            10,
+            "topk(10, ...) + 0 must still truncate to 10 rows"
+        );
+        for pair in results.windows(2) {
+            assert!(
+                pair[0].value >= pair[1].value,
+                "results must stay sorted by count descending"
+            );
+        }
+        assert_eq!(
+            results[0].labels.labels,
+            vec![METRIC.to_string(), "10.0.0.15".to_string()],
+        );
+        assert_eq!(results[0].value, 150.0);
+        for element in &results {
+            assert_eq!(
+                element.labels.labels[0], METRIC,
+                "binary-expr path must still prepend the metric name (PromQL top-k formatting)",
+            );
         }
     }
 }
