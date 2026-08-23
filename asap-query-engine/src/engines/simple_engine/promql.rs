@@ -1572,8 +1572,8 @@ mod topk_pipeline_tests {
             .expect("insert should succeed");
 
         let (_, query_result) = engine
-            .handle_query_promql_native(format!("{TOPK_QUERY} + 0"), QUERY_TIME)
-            .expect("binary-expr-wrapped topk should still resolve via the native path");
+            .handle_query_promql(format!("{TOPK_QUERY} + 0"), QUERY_TIME)
+            .expect("binary-expr-wrapped topk should still resolve");
 
         let results = match query_result {
             QueryResult::Vector(iv) => iv.values,
