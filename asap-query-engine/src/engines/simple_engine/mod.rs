@@ -1456,6 +1456,22 @@ impl SimpleEngine {
             all_data.values().map(|v| v.len()).sum::<usize>()
         );
 
+        // Dual-population metrics (separate key/value aggregations) need the
+        // keys side merged once up front, then expanded per value group below
+        // — mirrors execute_and_merge_store_queries/collect_results_separate_keys
+        // (#580: this pipeline previously never read keys_query at all).
+        let merged_keys: Option<MergedOutputsMap> =
+            if let Some(keys_params) = &context.base.store_plan.keys_query {
+                let keys_map = self.execute_store_query(keys_params)?;
+                Some(self.merge_precomputed_outputs(
+                    &keys_map,
+                    true,
+                    context.base.agg_info.aggregation_type_for_key,
+                ))
+            } else {
+                None
+            };
+
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
         // Determine accumulator type for merger selection
@@ -1467,6 +1483,8 @@ impl SimpleEngine {
         let end_ms = context.range_params.end;
         let buckets_per_step = context.buckets_per_step;
         let lookback_bucket_count = context.lookback_bucket_count;
+        let tumbling_window_ms = context.tumbling_window_ms;
+        let lookback_ms = (lookback_bucket_count as u64) * tumbling_window_ms;
 
         let window_mode = if buckets_per_step <= lookback_bucket_count {
             "sliding (slide <= size)"
@@ -1479,42 +1497,42 @@ impl SimpleEngine {
             start_ms,
             end_ms,
             step_ms,
-            context.tumbling_window_ms,
+            tumbling_window_ms,
             buckets_per_step,
             lookback_bucket_count,
             window_mode
         );
 
-        // Process each key independently
-        for (key_opt, timestamped_buckets) in &all_data {
-            let key = match key_opt {
-                Some(k) => k.clone(),
-                None => continue, // Skip None keys for now
+        // Process each value group independently
+        for (group_key, timestamped_buckets) in &all_data {
+            // Resolve which output label-keys this value group serves: its
+            // own key for single-population metrics, or every key the merged
+            // keys aggregation expands it to for dual-population metrics.
+            let expansion_keys: Vec<KeyByLabelValues> = match &merged_keys {
+                Some(keys_map) => match keys_map.get(group_key).and_then(|kp| kp.get_keys()) {
+                    Some(ks) => ks,
+                    None => continue,
+                },
+                None => match group_key {
+                    Some(k) => vec![k.clone()],
+                    None => continue, // Skip None keys for now
+                },
             };
 
-            // Build lookup: bucket_start_timestamp -> bucket for O(1) access
-            let bucket_map: HashMap<u64, &dyn AggregateCore> = timestamped_buckets
-                .iter()
-                .map(|((start, _), bucket)| (*start, bucket.as_ref()))
-                .collect();
+            // Build lookup: bucket_start_timestamp -> all buckets sharing
+            // that start. A Sliding aggregation can legitimately return more
+            // than one bucket per start timestamp (#567/#570) — every one of
+            // them must be merged, not just the last one collected here.
+            let mut bucket_map: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
+            for ((start, _), bucket) in timestamped_buckets {
+                bucket_map.entry(*start).or_default().push(bucket.as_ref());
+            }
 
             debug!(
-                "Key {:?}: built bucket_map with {} entries, timestamps: {:?}",
-                key,
+                "Group {:?}: built bucket_map with {} start-timestamps, expands to {} key(s)",
+                group_key,
                 bucket_map.len(),
-                bucket_map.keys().collect::<Vec<_>>()
-            );
-
-            // Create result element for this key
-            let mut element = RangeVectorElement::new(key.clone());
-
-            // Calculate window parameters
-            let tumbling_window_ms = context.tumbling_window_ms;
-            let lookback_ms = (lookback_bucket_count as u64) * tumbling_window_ms;
-
-            debug!(
-                "Key {:?}: range [{}, {}], step={}, lookback_ms={}, tumbling_window_ms={}",
-                key, start_ms, end_ms, step_ms, lookback_ms, tumbling_window_ms
+                expansion_keys.len()
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
@@ -1529,10 +1547,10 @@ impl SimpleEngine {
 
                 let mut t = window_start;
                 while t < current_time {
-                    if let Some(bucket) = bucket_map.get(&t) {
-                        window_buckets.push((*bucket).clone_boxed_core());
+                    if let Some(buckets) = bucket_map.get(&t) {
+                        window_buckets.extend(buckets.iter().map(|b| b.clone_boxed_core()));
                     }
-                    // If bucket missing at timestamp t, just skip it (partial data is okay)
+                    // If no bucket at timestamp t, just skip it (partial data is okay)
                     t += tumbling_window_ms;
                 }
 
@@ -1543,55 +1561,46 @@ impl SimpleEngine {
 
                     match merger.get_merged() {
                         Ok(merged) => {
-                            // Query statistic and emit sample at current_time
-                            match self.query_precompute_for_statistic(
-                                merged.as_ref(),
-                                &context.base.metadata.statistic_to_compute,
-                                &Some(key.clone()),
-                                &context.base.metadata.query_kwargs,
-                            ) {
-                                Ok(value) => {
-                                    debug!(
-                                        "Key {:?}: emitting sample (t={}, value={})",
-                                        key, current_time, value
-                                    );
-                                    element.add_sample(current_time, value);
-                                }
-                                Err(e) => {
-                                    debug!(
-                                        "Failed to query statistic at t={} for key {:?}: {}",
-                                        current_time, key, e
-                                    );
+                            // Query statistic and emit a sample at current_time
+                            // for every expanded key sharing this value group.
+                            for key in &expansion_keys {
+                                match self.query_precompute_for_statistic(
+                                    merged.as_ref(),
+                                    &context.base.metadata.statistic_to_compute,
+                                    &Some(key.clone()),
+                                    &context.base.metadata.query_kwargs,
+                                ) {
+                                    Ok(value) => {
+                                        results
+                                            .entry(key.clone())
+                                            .or_insert_with(|| RangeVectorElement::new(key.clone()))
+                                            .add_sample(current_time, value);
+                                    }
+                                    Err(e) => {
+                                        debug!(
+                                            "Failed to query statistic at t={} for key {:?}: {}",
+                                            current_time, key, e
+                                        );
+                                    }
                                 }
                             }
                         }
                         Err(e) => {
                             debug!(
-                                "Failed to get merged result at t={} for key {:?}: {}",
-                                current_time, key, e
+                                "Failed to get merged result at t={} for group {:?}: {}",
+                                current_time, group_key, e
                             );
                         }
                     }
                 } else {
                     // No data at all for this window - skip sample
                     debug!(
-                        "Key {:?}: skipping sample at {} - no data in window [{}, {})",
-                        key, current_time, window_start, current_time
+                        "Group {:?}: skipping sample at {} - no data in window [{}, {})",
+                        group_key, current_time, window_start, current_time
                     );
                 }
 
                 current_time += step_ms;
-            }
-
-            debug!(
-                "Key {:?}: finished with {} samples",
-                key,
-                element.samples.len()
-            );
-
-            // Only include keys with samples
-            if !element.samples.is_empty() {
-                results.insert(key, element);
             }
         }
 

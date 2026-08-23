@@ -32,9 +32,7 @@ mod tests {
     use crate::precompute_operators::{CountMinSketchAccumulator, DeltaSetAggregatorAccumulator};
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
-    use crate::tests::test_utilities::engine_factories::{
-        create_engine_dual_input, create_engine_multi_timestamp_with_window,
-    };
+    use crate::tests::test_utilities::engine_factories::create_engine_multi_timestamp_with_window;
     use crate::AggregateCore;
     use promql_utilities::data_model::KeyByLabelNames;
     use std::collections::HashMap;
@@ -49,6 +47,9 @@ mod tests {
         }
     }
 
+    /// One tumbling-window bucket: (bucket end timestamp ms, label values, accumulator).
+    type TimeSeriesData = Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>;
+
     /// Dual-population counterpart to
     /// datafusion::range_query_arithmetic_tests::create_range_engine_two_metrics:
     /// one metric, separate value/key aggregations, data spread across
@@ -61,8 +62,8 @@ mod tests {
         key_agg_type: AggregationType,
         grouping_labels: Vec<&str>,
         aggregated_labels: Vec<&str>,
-        value_data: Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>,
-        keys_data: Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>,
+        value_data: TimeSeriesData,
+        keys_data: TimeSeriesData,
         promql_query: &str,
     ) -> SimpleEngine {
         let grouping_label_strings: Vec<String> =
@@ -164,28 +165,31 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn range_query_dual_population_returns_key_expansion() {
-        // Same fixture as native_binary_instant_tests::binary_expr_vector_vector_dual_population,
+        // Same dual-population shape as native_binary_instant_tests::binary_expr_vector_vector_dual_population,
         // but queried as a plain range instead of an instant/binary-expr query.
-        // Data lands at data-time 1_000_000ms (see create_engine_dual_input).
+        // Uses create_range_engine_dual_input (not create_engine_dual_input):
+        // the latter places its bucket at (timestamp, timestamp), a zero-width
+        // window tuned for the instant-query fetch path, which never lines up
+        // with the range pipeline's bucket_map (keyed by timestamp - window_size).
         let cms = CountMinSketchAccumulator::new(2, 3);
         let mut keys = DeltaSetAggregatorAccumulator::new();
         keys.add_key(KeyByLabelValues {
             labels: vec!["host-a".to_string(), "evt-1".to_string()],
         });
 
-        let engine = create_engine_dual_input(
+        let engine = create_range_engine_dual_input(
             "event_frequency",
             AggregationType::CountMinSketch,
             AggregationType::DeltaSetAggregator,
             vec![],
             vec!["host", "event"],
-            vec![(None, Box::new(cms))],
-            vec![(None, Box::new(keys))],
+            vec![(1000, None, Box::new(cms) as Box<dyn AggregateCore>)],
+            vec![(1000, None, Box::new(keys) as Box<dyn AggregateCore>)],
             "count(event_frequency) by (host, event)",
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1000.0, 1000.5, 1.0);
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
         let (_, qr) = result.expect("range query failed");
         assert!(
             !matrix_values(qr).is_empty(),
