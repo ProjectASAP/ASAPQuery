@@ -594,37 +594,50 @@ impl SimpleEngine {
         );
 
         // Query and merge keys if needed
-        let merged_keys = if let Some(keys_params) = &plan.keys_query {
-            let keys_store_query_start_time = Instant::now();
-            let keys_map = self.execute_store_query(keys_params).map_err(|e| {
-                warn!("Error querying store for keys: {}", e);
-                e
-            })?;
-            debug!(
-                "[LATENCY] Keys store query (metric: {}, agg: {}): {}ms",
-                &keys_params.metric,
-                keys_params.aggregation_id,
-                keys_store_query_start_time.elapsed().as_millis()
-            );
-            debug!("Keys query returned {} unique keys", keys_map.len());
-
-            let keys_merge_start_time = Instant::now();
-            let merged = self.merge_precomputed_outputs(
-                &keys_map,
-                do_merge,
-                agg_info.aggregation_type_for_key,
-            );
-            debug!(
-                "[LATENCY] Keys merge operation: {:.2}ms, resulted in {} merged outputs",
-                keys_merge_start_time.elapsed().as_secs_f64() * 1000.0,
-                merged.len()
-            );
-            Some(merged)
-        } else {
-            None
-        };
+        let merged_keys = self.fetch_and_merge_keys(
+            &plan.keys_query,
+            agg_info.aggregation_type_for_key,
+            do_merge,
+        )?;
 
         Ok((merged_values, merged_keys))
+    }
+
+    /// Fetches and merges the keys side of a dual-population query plan, if
+    /// present. Shared by `execute_and_merge_store_queries` (instant) and
+    /// `execute_range_query_pipeline` (range) — both build a `StoreQueryPlan`
+    /// that may carry a separate `keys_query` and need it merged the same way.
+    fn fetch_and_merge_keys(
+        &self,
+        keys_query: &Option<StoreQueryParams>,
+        key_aggregation_type: AggregationType,
+        do_merge: bool,
+    ) -> Result<Option<MergedOutputsMap>, String> {
+        let Some(keys_params) = keys_query else {
+            return Ok(None);
+        };
+
+        let keys_store_query_start_time = Instant::now();
+        let keys_map = self.execute_store_query(keys_params).map_err(|e| {
+            warn!("Error querying store for keys: {}", e);
+            e
+        })?;
+        debug!(
+            "[LATENCY] Keys store query (metric: {}, agg: {}): {}ms",
+            &keys_params.metric,
+            keys_params.aggregation_id,
+            keys_store_query_start_time.elapsed().as_millis()
+        );
+        debug!("Keys query returned {} unique keys", keys_map.len());
+
+        let keys_merge_start_time = Instant::now();
+        let merged = self.merge_precomputed_outputs(&keys_map, do_merge, key_aggregation_type);
+        debug!(
+            "[LATENCY] Keys merge operation: {:.2}ms, resulted in {} merged outputs",
+            keys_merge_start_time.elapsed().as_secs_f64() * 1000.0,
+            merged.len()
+        );
+        Ok(Some(merged))
     }
 
     /// Collects all results based on whether keys are separate or not
@@ -1113,12 +1126,27 @@ impl SimpleEngine {
                         }
                     }
                 } else {
-                    assert_eq!(
-                        precomputes.len(),
-                        1,
-                        "Spatial queries should have exactly 1 precompute per key"
-                    );
-                    merged.insert(key.clone(), precomputes[0].clone_boxed_core());
+                    // Spatial queries (do_merge=false) normally see exactly 1
+                    // precompute per key. A range query's widened fetch can
+                    // surface more than expected even when do_merge was
+                    // computed false for the base instant range, and future
+                    // Sliding-window support may make >1 legitimate here too
+                    // — warn and merge instead of asserting/panicking.
+                    if precomputes.len() != 1 {
+                        warn!(
+                            "Spatial query expected 1 precompute per key {:?}, found {}. Merging anyway.",
+                            key,
+                            precomputes.len()
+                        );
+                    }
+                    match self.merge_accumulators(precomputes) {
+                        Ok(merged_accumulator) => {
+                            merged.insert(key.clone(), merged_accumulator);
+                        }
+                        Err(e) => {
+                            warn!("Failed to merge accumulators for key {:?}: {}", key, e);
+                        }
+                    }
                 }
             }
         }
@@ -1460,17 +1488,11 @@ impl SimpleEngine {
         // keys side merged once up front, then expanded per value group below
         // — mirrors execute_and_merge_store_queries/collect_results_separate_keys
         // (#580: this pipeline previously never read keys_query at all).
-        let merged_keys: Option<MergedOutputsMap> =
-            if let Some(keys_params) = &context.base.store_plan.keys_query {
-                let keys_map = self.execute_store_query(keys_params)?;
-                Some(self.merge_precomputed_outputs(
-                    &keys_map,
-                    true,
-                    context.base.agg_info.aggregation_type_for_key,
-                ))
-            } else {
-                None
-            };
+        let merged_keys = self.fetch_and_merge_keys(
+            &context.base.store_plan.keys_query,
+            context.base.agg_info.aggregation_type_for_key,
+            context.base.do_merge,
+        )?;
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
@@ -1503,22 +1525,39 @@ impl SimpleEngine {
             window_mode
         );
 
-        // Process each value group independently
-        for (group_key, timestamped_buckets) in &all_data {
-            // Resolve which output label-keys this value group serves: its
-            // own key for single-population metrics, or every key the merged
-            // keys aggregation expands it to for dual-population metrics.
-            let expansion_keys: Vec<KeyByLabelValues> = match &merged_keys {
-                Some(keys_map) => match keys_map.get(group_key).and_then(|kp| kp.get_keys()) {
-                    Some(ks) => ks,
-                    None => continue,
-                },
-                None => match group_key {
-                    Some(k) => vec![k.clone()],
-                    None => continue, // Skip None keys for now
-                },
-            };
+        // Resolve, for every value group, which output label-keys it serves:
+        // its own key for single-population metrics, or every key the merged
+        // keys aggregation expands it to for dual-population metrics. Mirrors
+        // collect_results_separate_keys exactly, including its error
+        // semantics — an unresolvable key set fails the whole range query
+        // (so callers fall back to Prometheus) instead of silently returning
+        // a partial result. See #582 review.
+        let groups: Vec<(
+            &Vec<crate::stores::TimestampedBucket>,
+            Vec<KeyByLabelValues>,
+        )> = match &merged_keys {
+            Some(keys_map) => keys_map
+                .iter()
+                .map(|(group_key, keys_precompute)| {
+                    let timestamped_buckets = all_data
+                        .get(group_key)
+                        .ok_or_else(|| format!("No value for key: {:?}", group_key))?;
+                    let expansion_keys = keys_precompute
+                        .get_keys()
+                        .ok_or_else(|| "Keys required for separate aggregation".to_string())?;
+                    Ok((timestamped_buckets, expansion_keys))
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+            None => all_data
+                .iter()
+                .filter_map(|(group_key, buckets)| {
+                    group_key.as_ref().map(|k| (buckets, vec![k.clone()]))
+                })
+                .collect(),
+        };
 
+        // Process each value group independently
+        for (timestamped_buckets, expansion_keys) in groups {
             // Build lookup: bucket_start_timestamp -> all buckets sharing
             // that start. A Sliding aggregation can legitimately return more
             // than one bucket per start timestamp (#567/#570) — every one of
@@ -1529,10 +1568,9 @@ impl SimpleEngine {
             }
 
             debug!(
-                "Group {:?}: built bucket_map with {} start-timestamps, expands to {} key(s)",
-                group_key,
+                "Group with {} start-timestamps, expands to keys: {:?}",
                 bucket_map.len(),
-                expansion_keys.len()
+                expansion_keys
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
@@ -1587,16 +1625,16 @@ impl SimpleEngine {
                         }
                         Err(e) => {
                             debug!(
-                                "Failed to get merged result at t={} for group {:?}: {}",
-                                current_time, group_key, e
+                                "Failed to get merged result at t={} for keys {:?}: {}",
+                                current_time, expansion_keys, e
                             );
                         }
                     }
                 } else {
                     // No data at all for this window - skip sample
                     debug!(
-                        "Group {:?}: skipping sample at {} - no data in window [{}, {})",
-                        group_key, current_time, window_start, current_time
+                        "Keys {:?}: skipping sample at {} - no data in window [{}, {})",
+                        expansion_keys, current_time, window_start, current_time
                     );
                 }
 
