@@ -549,22 +549,29 @@ impl SimpleEngine {
         };
 
         let merged_values = if plan.values_query.is_exact_query {
-            // Sliding window: no merge needed, extract buckets from timestamped data
-            debug!("Sliding window mode: Skipping merge (expecting 1 precompute per key)");
-            values_map
-                .into_iter()
-                .map(|(key, timestamped_buckets)| {
-                    if timestamped_buckets.len() != 1 {
-                        warn!(
-                            "Sliding window expected 1 precompute per key, found {}. Using first.",
-                            timestamped_buckets.len()
-                        );
-                    }
-                    // Extract bucket from timestamped tuple
-                    let (_, bucket) = timestamped_buckets.into_iter().next().unwrap();
-                    (key, bucket.as_ref().clone_boxed_core())
-                })
-                .collect()
+            // Sliding window: expected exactly 1 precompute per key today
+            // (ponytail: hardcoded, #554 will make >1 legitimate — don't
+            // block on it). The store can legitimately return more than
+            // expected for one exact window; merge whatever came back
+            // instead of arbitrarily keeping the first and dropping the
+            // rest (see #567).
+            const EXPECTED_BUCKETS_PER_KEY: usize = 1;
+            debug!("Sliding window mode: merging {} keys", values_map.len());
+            for timestamped_buckets in values_map.values() {
+                if timestamped_buckets.is_empty() {
+                    continue;
+                }
+                if timestamped_buckets.len() != EXPECTED_BUCKETS_PER_KEY {
+                    warn!(
+                        "Sliding window expected {} precompute(s) per key, found {}. Merging all.",
+                        EXPECTED_BUCKETS_PER_KEY,
+                        timestamped_buckets.len()
+                    );
+                }
+            }
+            // Sliding windows always merge (all buckets belong to one
+            // logical window) — reuse the same merge path as Tumbling.
+            self.merge_precomputed_outputs(&values_map, true, agg_info.aggregation_type_for_value)
         } else {
             // Tumbling window: merge needed
             debug!("Tumbling window mode: Merging {} outputs", values_map.len());
@@ -576,13 +583,12 @@ impl SimpleEngine {
         };
 
         let merge_duration = merge_start_time.elapsed();
+        let did_merge = window_type == WindowType::Sliding
+            || do_merge
+            || agg_info.aggregation_type_for_value == AggregationType::DeltaSetAggregator;
         debug!(
             "[LATENCY] Precomputed output processing ({}): {:.2}ms, resulted in {} merged outputs",
-            if window_type == WindowType::Sliding {
-                "no merge"
-            } else {
-                "merge"
-            },
+            if did_merge { "merge" } else { "no merge" },
             merge_duration.as_secs_f64() * 1000.0,
             merged_values.len()
         );
@@ -1068,7 +1074,12 @@ impl SimpleEngine {
         let mut merged = HashMap::with_capacity(precomputed_outputs_map.len());
 
         for (key, timestamped_buckets) in precomputed_outputs_map.iter() {
-            if !timestamped_buckets.is_empty() {
+            if timestamped_buckets.is_empty() {
+                warn!(
+                    "Store returned key {:?} with no precompute buckets; skipping",
+                    key
+                );
+            } else {
                 // Extract just the buckets (without timestamps) for merging
                 let precomputes: Vec<Box<dyn AggregateCore>> = timestamped_buckets
                     .iter()
@@ -1080,7 +1091,7 @@ impl SimpleEngine {
                     debug!("  Merging accumulators (should_merge=true)");
                     #[cfg(feature = "extra_debugging")]
                     let merge_start = Instant::now();
-                    match self.merge_accumulators(&precomputes) {
+                    match self.merge_accumulators(precomputes) {
                         Ok(merged_accumulator) => {
                             #[cfg(feature = "extra_debugging")]
                             let merge_duration = merge_start.elapsed();
@@ -1123,21 +1134,21 @@ impl SimpleEngine {
     /// This follows the Python merge_accumulators approach
     fn merge_accumulators(
         &self,
-        accumulators: &[Box<dyn crate::data_model::AggregateCore>],
+        accumulators: Vec<Box<dyn crate::data_model::AggregateCore>>,
     ) -> Result<Box<dyn crate::data_model::AggregateCore>, AccumulatorError> {
         if accumulators.is_empty() {
             return Err(AccumulatorError::EmptySlice);
         }
 
         if accumulators.len() == 1 {
-            return Ok(accumulators[0].clone_boxed_core());
+            return Ok(accumulators.into_iter().next().unwrap());
         }
 
         // Try to use optimized batch merge for KLL accumulators
         if accumulators[0].get_accumulator_type() == AggregationType::DatasketchesKLL {
             use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 
-            match DatasketchesKLLAccumulator::merge_multiple(accumulators) {
+            match DatasketchesKLLAccumulator::merge_multiple(&accumulators) {
                 Ok(merged) => return Ok(Box::new(merged)),
                 Err(e) => {
                     warn!(
@@ -1153,7 +1164,7 @@ impl SimpleEngine {
         if accumulators[0].get_accumulator_type() == AggregationType::CountMinSketch {
             use crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator;
 
-            match CountMinSketchAccumulator::merge_multiple(accumulators) {
+            match CountMinSketchAccumulator::merge_multiple(&accumulators) {
                 Ok(merged) => return Ok(Box::new(merged)),
                 Err(e) => {
                     warn!(
