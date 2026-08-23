@@ -2,7 +2,8 @@
 //!
 //! Verify that binary arithmetic queries (vector/vector and scalar/vector)
 //! produce numerically correct results when executed end-to-end through
-//! `handle_binary_expr_promql` via DataFusion.
+//! `handle_binary_expr_promql`, natively as of #567's Stage 3 cutover
+//! (previously via DataFusion).
 
 #[cfg(test)]
 mod tests {
