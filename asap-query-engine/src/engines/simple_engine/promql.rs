@@ -540,6 +540,66 @@ impl SimpleEngine {
         }
     }
 
+    /// Extends an instant `QueryExecutionContext` into a `RangeQueryExecutionContext`:
+    /// computes the lookback window from the aggregation's tumbling window size,
+    /// validates the range params, and widens the store plan to cover
+    /// `[start - lookback, end]` as a range (non-exact) fetch.
+    ///
+    /// Shared tail for `build_arm_range_context` (one binary-expr arm) and
+    /// `build_range_query_execution_context_from_parsed` (the whole query) —
+    /// they differ only in how `base_context` itself is obtained.
+    fn finish_range_context(
+        &self,
+        base_context: QueryExecutionContext,
+        start: f64,
+        end: f64,
+        step: f64,
+    ) -> Option<RangeQueryExecutionContext> {
+        let start_ms = Self::convert_query_time_to_data_time(start);
+        let end_ms = Self::convert_query_time_to_data_time(end);
+        let step_ms = (step * 1000.0) as u64;
+
+        let tumbling_window_ms = self
+            .streaming_config
+            .read()
+            .unwrap()
+            .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
+            .map(|c| c.window_size_ms)?;
+
+        self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
+            .map_err(|e| {
+                warn!("Range query validation failed: {}", e);
+                e
+            })
+            .ok()?;
+
+        let lookback_ms = base_context.store_plan.values_query.end_timestamp
+            - base_context.store_plan.values_query.start_timestamp;
+
+        let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
+        let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
+
+        let mut extended_store_plan = base_context.store_plan.clone();
+        extended_store_plan.values_query.start_timestamp = start_ms.saturating_sub(lookback_ms);
+        extended_store_plan.values_query.end_timestamp = end_ms;
+        extended_store_plan.values_query.is_exact_query = false;
+
+        Some(RangeQueryExecutionContext {
+            base: QueryExecutionContext {
+                store_plan: extended_store_plan,
+                ..base_context
+            },
+            range_params: RangeQueryParams {
+                start: start_ms,
+                end: end_ms,
+                step: step_ms,
+            },
+            buckets_per_step,
+            lookback_bucket_count,
+            tumbling_window_ms,
+        })
+    }
+
     /// Recursively builds a range execution context for one arm of a binary
     /// arithmetic expression.
     ///
@@ -561,50 +621,7 @@ impl SimpleEngine {
         }
 
         let (base_context, label_names) = self.resolve_arm_leaf_context(arm_ast, end)?;
-
-        let start_ms = Self::convert_query_time_to_data_time(start);
-        let end_ms = Self::convert_query_time_to_data_time(end);
-        let step_ms = (step * 1000.0) as u64;
-
-        let tumbling_window_ms = self
-            .streaming_config
-            .read()
-            .unwrap()
-            .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(|c| c.window_size_ms)?;
-
-        self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
-            .map_err(|e| {
-                warn!("Range arm query validation failed: {}", e);
-                e
-            })
-            .ok()?;
-
-        let lookback_ms = base_context.store_plan.values_query.end_timestamp
-            - base_context.store_plan.values_query.start_timestamp;
-
-        let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
-        let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
-
-        let mut extended_store_plan = base_context.store_plan.clone();
-        extended_store_plan.values_query.start_timestamp = start_ms.saturating_sub(lookback_ms);
-        extended_store_plan.values_query.end_timestamp = end_ms;
-        extended_store_plan.values_query.is_exact_query = false;
-
-        let range_context = RangeQueryExecutionContext {
-            base: QueryExecutionContext {
-                store_plan: extended_store_plan,
-                ..base_context
-            },
-            range_params: RangeQueryParams {
-                start: start_ms,
-                end: end_ms,
-                step: step_ms,
-            },
-            buckets_per_step,
-            lookback_bucket_count,
-            tumbling_window_ms,
-        };
+        let range_context = self.finish_range_context(base_context, start, end, step)?;
 
         Some((range_context, label_names))
     }
@@ -1185,55 +1202,7 @@ impl SimpleEngine {
         // Use 'end' as the reference time for parsing
         let base_context = self.build_query_execution_context_from_parsed(ast, query, end)?;
 
-        // Convert to milliseconds
-        let start_ms = Self::convert_query_time_to_data_time(start);
-        let end_ms = Self::convert_query_time_to_data_time(end);
-        let step_ms = (step * 1000.0) as u64;
-
-        // Get window size
-        let tumbling_window_ms = self
-            .streaming_config
-            .read()
-            .unwrap()
-            .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(|config| config.window_size_ms)?;
-
-        // Validate parameters
-        self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
-            .map_err(|e| {
-                warn!("Range query validation failed: {}", e);
-                e
-            })
-            .ok()?;
-
-        // Calculate lookback from the base context's store plan
-        let lookback_ms = base_context.store_plan.values_query.end_timestamp
-            - base_context.store_plan.values_query.start_timestamp;
-
-        let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
-        let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
-
-        // Modify the store plan to cover the entire range
-        let mut extended_store_plan = base_context.store_plan.clone();
-        extended_store_plan.values_query.start_timestamp = start_ms.saturating_sub(lookback_ms);
-        extended_store_plan.values_query.end_timestamp = end_ms;
-        // Range queries always use range fetch, not exact
-        extended_store_plan.values_query.is_exact_query = false;
-
-        Some(RangeQueryExecutionContext {
-            base: QueryExecutionContext {
-                store_plan: extended_store_plan,
-                ..base_context
-            },
-            range_params: RangeQueryParams {
-                start: start_ms,
-                end: end_ms,
-                step: step_ms,
-            },
-            buckets_per_step,
-            lookback_bucket_count,
-            tumbling_window_ms,
-        })
+        self.finish_range_context(base_context, start, end, step)
     }
 
     /// Main entry point for range queries
