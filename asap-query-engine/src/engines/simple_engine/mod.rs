@@ -823,10 +823,12 @@ impl SimpleEngine {
 
     /// Executes a pre-built DataFusion logical plan and returns results.
     ///
-    /// This was the shared execution kernel for `execute_plan` and the DataFusion-based
-    /// binary arithmetic dispatch path; the latter was cut over to a native implementation
-    /// in #567, leaving this unused in production. Kept alongside `execute_plan` as part
-    /// of the still-exercised DataFusion path (see its dedicated tests).
+    /// This was the entry point for the DataFusion-based binary arithmetic
+    /// dispatch path, cut over to a native implementation in #567. Unlike its
+    /// sibling `execute_plan` (still called by DataFusion-path tests), this
+    /// function has zero callers anywhere in the repo, including tests — it
+    /// is genuinely dead code, kept only in case the native cutover needs to
+    /// be reverted.
     #[allow(dead_code)]
     pub async fn execute_logical_plan(
         &self,
