@@ -651,9 +651,17 @@ impl SimpleEngine {
             return Some((KeyByLabelNames::new(labels), QueryResult::matrix(combined)));
         }
 
-        // Vector-vector: evaluate both arms, join by label key, apply op per matching timestamp
+        // Vector-vector: evaluate both arms, join by label key, apply op per matching timestamp.
+        // Reject mismatched label sets up front — same guard as the instant-query
+        // combine_vector_vector, and for the same reason: positional
+        // KeyByLabelValues equality below is only safe once the label *names*
+        // match (they're canonically sorted by KeyByLabelNames::new(), so two
+        // arms with the same label set always order their values the same way).
         let (lhs_ctx, lhs_labels) = self.build_arm_range_context(lhs, start, end, step)?;
-        let (rhs_ctx, _) = self.build_arm_range_context(rhs, start, end, step)?;
+        let (rhs_ctx, rhs_labels) = self.build_arm_range_context(rhs, start, end, step)?;
+        if lhs_labels != rhs_labels {
+            return None;
+        }
         let lhs_results = self.execute_range_query_pipeline(&lhs_ctx).ok()?;
         let rhs_results = self.execute_range_query_pipeline(&rhs_ctx).ok()?;
 

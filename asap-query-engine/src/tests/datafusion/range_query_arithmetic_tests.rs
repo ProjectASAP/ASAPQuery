@@ -36,18 +36,22 @@ mod tests {
     /// `engine_factories::create_engine_two_metrics` (single timestamp, instant
     /// queries only), this inserts one bucket per `(timestamp, value)` pair so
     /// range queries have more than one output sample to join across.
+    #[allow(clippy::too_many_arguments)]
     fn create_range_engine_two_metrics(
         metric_a: &str,
+        labels_a: Vec<&str>,
         data_a: TimeSeriesData,
         query_a: &str,
         metric_b: &str,
+        labels_b: Vec<&str>,
         data_b: TimeSeriesData,
         query_b: &str,
     ) -> SimpleEngine {
-        let labels = vec!["host".to_string()];
+        let labels_a: Vec<String> = labels_a.iter().map(|s| s.to_string()).collect();
+        let labels_b: Vec<String> = labels_b.iter().map(|s| s.to_string()).collect();
 
         let mut aggregation_configs = HashMap::new();
-        for (id, metric) in [(1u64, metric_a), (2u64, metric_b)] {
+        for (id, metric, labels) in [(1u64, metric_a, &labels_a), (2u64, metric_b, &labels_b)] {
             aggregation_configs.insert(
                 id,
                 AggregationConfig {
@@ -91,8 +95,8 @@ mod tests {
         }
 
         let promql_schema = PromQLSchema::new()
-            .add_metric(metric_a.to_string(), KeyByLabelNames::new(labels.clone()))
-            .add_metric(metric_b.to_string(), KeyByLabelNames::new(labels));
+            .add_metric(metric_a.to_string(), KeyByLabelNames::new(labels_a))
+            .add_metric(metric_b.to_string(), KeyByLabelNames::new(labels_b));
 
         let inference_config = InferenceConfig {
             schema: SchemaConfig::PromQL(promql_schema),
@@ -143,9 +147,11 @@ mod tests {
         let data_requests = host_a_series([(1000, 200.0), (2000, 300.0)]);
         let engine = create_range_engine_two_metrics(
             "errors_total",
+            vec!["host"],
             data_errors,
             "sum(errors_total) by (host)",
             "requests_total",
+            vec!["host"],
             data_requests,
             "sum(requests_total) by (host)",
         );
@@ -174,9 +180,11 @@ mod tests {
         let data_b = host_a_series([(1000, 20.0), (2000, 25.0)]);
         let engine = create_range_engine_two_metrics(
             "metric_a",
+            vec!["host"],
             data_a,
             "sum(metric_a) by (host)",
             "metric_b",
+            vec!["host"],
             data_b,
             "sum(metric_b) by (host)",
         );
@@ -199,10 +207,12 @@ mod tests {
         let data_a = host_a_series([(1000, 5.0), (2000, 6.0)]);
         let engine = create_range_engine_two_metrics(
             "metric_a",
+            vec!["host"],
             data_a,
             "sum(metric_a) by (host)",
             // second metric not used but the helper requires it; empty data.
             "dummy",
+            vec!["host"],
             vec![],
             "sum(dummy) by (host)",
         );
@@ -225,9 +235,11 @@ mod tests {
         let data_a = host_a_series([(1000, 0.9), (2000, 0.75)]);
         let engine = create_range_engine_two_metrics(
             "metric_a",
+            vec!["host"],
             data_a,
             "sum(metric_a) by (host)",
             "dummy",
+            vec!["host"],
             vec![],
             "sum(dummy) by (host)",
         );
@@ -242,5 +254,36 @@ mod tests {
         let by_ts: HashMap<u64, f64> = samples.iter().map(|s| (s.timestamp, s.value)).collect();
         assert!((by_ts[&1000] - 0.1).abs() < 1e-10);
         assert!((by_ts[&2000] - 0.25).abs() < 1e-10);
+    }
+
+    // Regression test: handle_binary_expr_range_promql's vector-vector join
+    // used to match purely on positional KeyByLabelValues equality (rhs
+    // labels discarded), unlike the instant-query combine_vector_vector,
+    // which rejects a join between arms grouped by different label sets. Two
+    // arms grouped by disjoint labels ((host) vs (region)) that happen to
+    // produce the same value could silently join into a wrong-but-plausible
+    // result across the whole range.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_vector_vector_mismatched_label_sets_return_none() {
+        let data_a = host_a_series([(1000, 10.0), (2000, 15.0)]);
+        let data_b = host_a_series([(1000, 10.0), (2000, 15.0)]);
+        let engine = create_range_engine_two_metrics(
+            "metric_a",
+            vec!["host"],
+            data_a,
+            "sum(metric_a) by (host)",
+            "metric_b",
+            vec!["region"],
+            data_b,
+            "sum(metric_b) by (region)",
+        );
+
+        let query = "sum(metric_a) by (host) + sum(metric_b) by (region)";
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        assert!(
+            result.is_none(),
+            "BUG: arms grouped by different label sets must not join, even when their \
+             values coincide, got {result:?}"
+        );
     }
 }
