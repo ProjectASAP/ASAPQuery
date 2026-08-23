@@ -86,7 +86,14 @@ pub struct AQEAssignment {
 pub struct OptimizerSolution {
     /// Deployed streaming configs (y_g = 1 in the MIP). Keyed by aggregation_id.
     /// Empty for all-EXACT solutions (Phase 1 scaffolding).
-    pub deployed_configs: HashMap<u64, AggregationConfig>,
+    ///
+    /// Private: the only way to add an entry is `register_config`, which
+    /// assigns the id. This keeps candidate_gen.rs's placeholder id (0) from
+    /// ever reaching a deployed config — see ASAPQuery#564.
+    deployed_configs: HashMap<u64, AggregationConfig>,
+
+    /// Next id `register_config` will hand out.
+    next_id: u64,
 
     /// One entry per deduplicated AQE across the full RQE workload.
     pub assignments: Vec<AQEAssignment>,
@@ -100,10 +107,38 @@ pub struct OptimizerSolution {
 }
 
 impl OptimizerSolution {
+    /// An empty solution with no assignments or deployed configs yet, ready
+    /// to be built up incrementally (e.g. by a solver's assignment loop).
+    pub fn empty() -> Self {
+        Self {
+            deployed_configs: HashMap::new(),
+            next_id: 1,
+            assignments: Vec::new(),
+            estimated_ingest_cost_per_sec: 0.0,
+            estimated_total_cost_per_sec: 0.0,
+        }
+    }
+
+    /// Register a candidate config as deployed: assigns it a fresh unique id
+    /// (overwriting whatever placeholder candidate_gen.rs set), stores it,
+    /// and returns the id. The only way to populate `deployed_configs`.
+    pub fn register_config(&mut self, mut config: AggregationConfig) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        config.aggregation_id = id;
+        self.deployed_configs.insert(id, config);
+        id
+    }
+
+    pub fn deployed_configs(&self) -> &HashMap<u64, AggregationConfig> {
+        &self.deployed_configs
+    }
+
     /// Construct an all-EXACT solution: every AQE falls back to raw data,
     /// no streaming configs are deployed. Used as the Phase 1 scaffolding baseline.
     pub fn all_exact(aqes: Vec<AQE>) -> Self {
-        let assignments = aqes
+        let mut solution = Self::empty();
+        solution.assignments = aqes
             .into_iter()
             .map(|aqe| AQEAssignment {
                 aqe,
@@ -112,13 +147,7 @@ impl OptimizerSolution {
                 estimated_query_cost_per_sec: 0.0,
             })
             .collect();
-
-        Self {
-            deployed_configs: HashMap::new(),
-            assignments,
-            estimated_ingest_cost_per_sec: 0.0,
-            estimated_total_cost_per_sec: 0.0,
-        }
+        solution
     }
 
     /// Number of AQEs served by an approximate sketch (not EXACT fallback).
@@ -135,5 +164,57 @@ impl OptimizerSolution {
             .iter()
             .filter(|a| a.query_method == QueryMethod::Exact)
             .count()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asap_types::enums::WindowType;
+    use promql_utilities::data_model::KeyByLabelNames;
+    use promql_utilities::query_logics::enums::AggregationType;
+
+    fn candidate_config() -> AggregationConfig {
+        // aggregation_id: 0, matching candidate_gen.rs's placeholder — the
+        // thing register_config must always overwrite (ASAPQuery#564).
+        AggregationConfig::new(
+            0,
+            AggregationType::CountMinSketch,
+            "sum".into(),
+            HashMap::new(),
+            KeyByLabelNames::empty(),
+            KeyByLabelNames::empty(),
+            KeyByLabelNames::empty(),
+            String::new(),
+            60_000,
+            60_000,
+            WindowType::Tumbling,
+            String::new(),
+            "test_metric".into(),
+            Some(1),
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn register_config_never_leaves_the_placeholder_id() {
+        let mut solution = OptimizerSolution::empty();
+        let id = solution.register_config(candidate_config());
+        assert_ne!(
+            id, 0,
+            "register_config must not hand out the placeholder id"
+        );
+        assert_eq!(solution.deployed_configs()[&id].aggregation_id, id);
+    }
+
+    #[test]
+    fn register_config_assigns_distinct_ids() {
+        let mut solution = OptimizerSolution::empty();
+        let id1 = solution.register_config(candidate_config());
+        let id2 = solution.register_config(candidate_config());
+        assert_ne!(id1, id2);
+        assert_eq!(solution.deployed_configs().len(), 2);
     }
 }

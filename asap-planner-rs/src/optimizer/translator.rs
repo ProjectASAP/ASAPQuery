@@ -19,7 +19,7 @@ pub fn translate(solution: &OptimizerSolution) -> (StreamingConfig, InferenceCon
 
 fn build_streaming_config(solution: &OptimizerSolution) -> StreamingConfig {
     // Deployed configs map directly to AggregationConfigs — the types are the same.
-    StreamingConfig::new(solution.deployed_configs.clone())
+    StreamingConfig::new(solution.deployed_configs().clone())
 }
 
 fn build_inference_config(solution: &OptimizerSolution) -> InferenceConfig {
@@ -74,7 +74,7 @@ pub struct TranslationSummary {
 impl TranslationSummary {
     pub fn from_solution(solution: &OptimizerSolution) -> Self {
         Self {
-            num_deployed_configs: solution.deployed_configs.len(),
+            num_deployed_configs: solution.deployed_configs().len(),
             num_sketch_assignments: solution.num_sketch_served(),
             num_exact_fallbacks: solution.num_exact_fallback(),
         }
