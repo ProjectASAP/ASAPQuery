@@ -172,7 +172,9 @@ fn determine_query_method(
     }
 }
 
-/// Build an AggregationConfig from candidate parameters. aggregation_id = 0 (placeholder).
+/// Build an AggregationConfig from candidate parameters. aggregation_id = 0 is a
+/// placeholder never used past cost evaluation — OptimizerSolution::register_config
+/// overwrites it with a real id when (if) a solver deploys this candidate.
 #[allow(clippy::too_many_arguments)]
 fn build_config(
     aqe: &AQE,
@@ -185,7 +187,7 @@ fn build_config(
     n_windows: u64,
 ) -> AggregationConfig {
     AggregationConfig::new(
-        0, // placeholder; replaced by greedy/MIP solver when deploying
+        0, // placeholder; overwritten by OptimizerSolution::register_config when deployed
         agg_type,
         sub_type.to_string(),
         params.clone(),

@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-
-use asap_types::aggregation_config::AggregationConfig;
 use tracing::debug;
 
 use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
@@ -29,11 +26,7 @@ pub fn greedy_assign(
     atomic_cost_table: &AtomicCostTable,
     weights: &CostWeights,
 ) -> OptimizerSolution {
-    let mut deployed_configs: HashMap<u64, AggregationConfig> = HashMap::new();
-    let mut assignments = Vec::new();
-    let mut estimated_ingest_cost_per_sec = 0.0;
-    let mut estimated_total_cost_per_sec = 0.0;
-    let mut next_id: u64 = 1;
+    let mut solution = OptimizerSolution::empty();
 
     for aqe in aqes {
         let candidates = enumerate_candidates(&aqe, scrape_interval_ms);
@@ -66,16 +59,7 @@ pub fn greedy_assign(
         let query_rate = aqe.query_frequency_hz * query_cost(&aqe, &best, &costs, weights);
         let query_method = best.query_method.clone();
 
-        let aggregation_id = match best.config {
-            None => None,
-            Some(mut config) => {
-                let id = next_id;
-                next_id += 1;
-                config.aggregation_id = id;
-                deployed_configs.insert(id, config);
-                Some(id)
-            }
-        };
+        let aggregation_id = best.config.map(|config| solution.register_config(config));
 
         debug!(
             metric = %aqe.requirements.metric,
@@ -86,10 +70,10 @@ pub fn greedy_assign(
             "greedy: assigned AQE"
         );
 
-        estimated_ingest_cost_per_sec += ingest;
-        estimated_total_cost_per_sec += ingest + query_rate;
+        solution.estimated_ingest_cost_per_sec += ingest;
+        solution.estimated_total_cost_per_sec += ingest + query_rate;
 
-        assignments.push(AQEAssignment {
+        solution.assignments.push(AQEAssignment {
             aqe,
             aggregation_id,
             query_method,
@@ -97,12 +81,7 @@ pub fn greedy_assign(
         });
     }
 
-    OptimizerSolution {
-        deployed_configs,
-        assignments,
-        estimated_ingest_cost_per_sec,
-        estimated_total_cost_per_sec,
-    }
+    solution
 }
 
 #[cfg(test)]
@@ -145,7 +124,7 @@ mod tests {
         );
 
         let mut seen_ids: StdHashMap<u64, ()> = StdHashMap::new();
-        for id in solution.deployed_configs.keys() {
+        for id in solution.deployed_configs().keys() {
             assert!(
                 seen_ids.insert(*id, ()).is_none(),
                 "duplicate aggregation_id"
@@ -178,6 +157,6 @@ mod tests {
             &CostWeights::default(),
         );
         assert_eq!(solution.num_exact_fallback(), 1);
-        assert!(solution.deployed_configs.is_empty());
+        assert!(solution.deployed_configs().is_empty());
     }
 }
