@@ -560,7 +560,11 @@ impl SimpleEngine {
                 // for just this arm. Accepted behavior change (#567); warn loudly
                 // so it's visible rather than silent.
                 let results = self
-                    .execute_query_pipeline(&ctx, false, false)
+                    // (true, true): safe unconditionally — both flags are
+                    // self-gated on statistic == Topk / a "k" kwarg being
+                    // present, same as the main instant-query path (see
+                    // execute_query_pipeline's doc comment).
+                    .execute_query_pipeline(&ctx, true, true)
                     .map_err(|e| {
                         warn!(
                             "Native binary-expr arm for metric '{}' produced no results \
@@ -1650,6 +1654,66 @@ mod topk_pipeline_tests {
             .collect();
         for pair in wire_values.windows(2) {
             assert!(pair[0] >= pair[1]);
+        }
+    }
+
+    /// A topk leaf wrapped in a binary expr (`topk(10, ...) + 0`) must still
+    /// get the same top-10 truncation and metric-name-prefixed formatting as
+    /// the bare `topk(10, ...)` query — evaluate_arm_native's leaf branch
+    /// used to hardcode (false, false) for enable_topk_limiting/formatting,
+    /// which would have returned all 15 unformatted (single-label) rows here
+    /// instead of the top 10 with the metric-name prefix.
+    #[test]
+    fn topk_wrapped_in_binary_expr_still_truncates_and_formats() {
+        let (engine, store) = build_topk_engine();
+
+        let context = engine
+            .build_query_execution_context_promql(TOPK_QUERY.to_string(), QUERY_TIME)
+            .expect("context should build");
+        let window = &context.store_plan.values_query;
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for i in 1..=15u64 {
+            let srcip = format!("10.0.0.{i}");
+            sketch.inner.update(&srcip, (i * 10) as f64);
+        }
+
+        let output =
+            PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .expect("insert should succeed");
+
+        let (_, query_result) = engine
+            .handle_query_promql_native(format!("{TOPK_QUERY} + 0"), QUERY_TIME)
+            .expect("binary-expr-wrapped topk should still resolve via the native path");
+
+        let results = match query_result {
+            QueryResult::Vector(iv) => iv.values,
+            other => panic!("expected a vector result, got {other:?}"),
+        };
+
+        assert_eq!(
+            results.len(),
+            10,
+            "topk(10, ...) + 0 must still truncate to 10 rows"
+        );
+        for pair in results.windows(2) {
+            assert!(
+                pair[0].value >= pair[1].value,
+                "results must stay sorted by count descending"
+            );
+        }
+        assert_eq!(
+            results[0].labels.labels,
+            vec![METRIC.to_string(), "10.0.0.15".to_string()],
+        );
+        assert_eq!(results[0].value, 150.0);
+        for element in &results {
+            assert_eq!(
+                element.labels.labels[0], METRIC,
+                "binary-expr path must still prepend the metric name (PromQL top-k formatting)",
+            );
         }
     }
 }
