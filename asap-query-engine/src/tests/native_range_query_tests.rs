@@ -29,7 +29,9 @@ mod tests {
     use crate::engines::query_result::{QueryResult, RangeVectorElement};
     use crate::engines::simple_engine::SimpleEngine;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
-    use crate::precompute_operators::{CountMinSketchAccumulator, DeltaSetAggregatorAccumulator};
+    use crate::precompute_operators::{
+        CountMinSketchAccumulator, DeltaSetAggregatorAccumulator, SetAggregatorAccumulator,
+    };
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
     use crate::tests::test_utilities::engine_factories::create_engine_multi_timestamp_with_window;
@@ -369,6 +371,157 @@ mod tests {
             std::collections::HashSet::from([1000, 2000]),
             "expected keys expansion at every output step, not just the first, got {:?}",
             timestamps
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_dual_population_key_appearing_midrange_has_no_phantom_earlier_sample() {
+        // Issue #583: execute_range_query_pipeline fetches/merges keys_query
+        // once (anchored at the range's end) and reuses that single snapshot
+        // for every output step. host-b's DeltaSetAggregator "added" delta
+        // only appears in the bucket at t=2000, so the correct per-step key
+        // set at t=1000 must not include host-b yet — but the current
+        // single-snapshot merge folds host-b's later add into the whole
+        // range, giving it a phantom sample at t=1000 before it existed.
+        let cms_1 = CountMinSketchAccumulator::new(2, 3);
+        let cms_2 = CountMinSketchAccumulator::new(2, 3);
+        let mut keys_1 = DeltaSetAggregatorAccumulator::new();
+        keys_1.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let mut keys_2 = DeltaSetAggregatorAccumulator::new();
+        keys_2.add_key(KeyByLabelValues {
+            labels: vec!["host-b".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![
+                (1000, None, Box::new(cms_1) as Box<dyn AggregateCore>),
+                (2000, None, Box::new(cms_2) as Box<dyn AggregateCore>),
+            ],
+            vec![
+                (1000, None, Box::new(keys_1) as Box<dyn AggregateCore>),
+                (2000, None, Box::new(keys_2) as Box<dyn AggregateCore>),
+            ],
+            "count(event_frequency) by (host, event)",
+        );
+
+        let query = "count(event_frequency) by (host, event)";
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+
+        let host_b_series = elements
+            .iter()
+            .find(|e| e.labels.labels.contains(&"host-b".to_string()));
+        let host_b_timestamps: std::collections::HashSet<u64> = host_b_series
+            .map(|e| e.samples.iter().map(|s| s.timestamp).collect())
+            .unwrap_or_default();
+
+        assert!(
+            !host_b_timestamps.contains(&1000),
+            "host-b's key delta only appears at t=2000, so it must not have a \
+             phantom sample at t=1000 (before it existed), got samples at {:?}",
+            host_b_timestamps
+        );
+        assert!(
+            host_b_timestamps.contains(&2000),
+            "host-b should have a sample at t=2000, once its key delta appears, \
+             got samples at {:?}",
+            host_b_timestamps
+        );
+
+        // DeltaSetAggregator accumulates: once added, a key stays in the
+        // reconstructed set for every later step too (no removal here), so
+        // host-a — added at t=1000 — must still be present at t=2000.
+        let host_a_series = elements
+            .iter()
+            .find(|e| e.labels.labels.contains(&"host-a".to_string()));
+        let host_a_timestamps: std::collections::HashSet<u64> = host_a_series
+            .map(|e| e.samples.iter().map(|s| s.timestamp).collect())
+            .unwrap_or_default();
+        assert!(
+            host_a_timestamps.contains(&2000),
+            "host-a was added at t=1000 and DeltaSetAggregator never removes it, \
+             so it should still have a sample at t=2000, got samples at {:?}",
+            host_a_timestamps
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_set_aggregator_earlier_key_not_silently_dropped() {
+        // Issue #583 (second half): for SetAggregator ("latest window only"),
+        // create_keys_query_params scopes keys_query to [end-window_size, end]
+        // — a single instant-anchored window at the *range's* end, not each
+        // step's own window. host-a's full-snapshot bucket only exists at
+        // t=1000; with range end=2000 and window_size=1000, the keys fetch
+        // window is [1000, 2000], which excludes host-a's bucket (0..1000)
+        // entirely — its start (0) falls before the query window's start (1000).
+        // Since the range loop iterates merged_keys (not all_data), host-a
+        // never gets iterated at all — its whole series silently vanishes
+        // from the output, even though it had a real sample at t=1000.
+        let cms_1 = CountMinSketchAccumulator::new(2, 3);
+        let cms_2 = CountMinSketchAccumulator::new(2, 3);
+        let mut keys_1 = SetAggregatorAccumulator::new();
+        keys_1.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let mut keys_2 = SetAggregatorAccumulator::new();
+        keys_2.add_key(KeyByLabelValues {
+            labels: vec!["host-b".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![
+                (1000, None, Box::new(cms_1) as Box<dyn AggregateCore>),
+                (2000, None, Box::new(cms_2) as Box<dyn AggregateCore>),
+            ],
+            vec![
+                (1000, None, Box::new(keys_1) as Box<dyn AggregateCore>),
+                (2000, None, Box::new(keys_2) as Box<dyn AggregateCore>),
+            ],
+            "count(event_frequency) by (host, event)",
+        );
+
+        let query = "count(event_frequency) by (host, event)";
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+
+        // SetAggregator is a full snapshot per window, not a delta: host-a is
+        // the live set only for the window ending at t=1000, and is replaced
+        // by host-b in the window ending at t=2000. So the correct output has
+        // host-a present at t=1000 but absent at t=2000.
+        let host_a_series = elements
+            .iter()
+            .find(|e| e.labels.labels.contains(&"host-a".to_string()));
+        let host_a_timestamps: std::collections::HashSet<u64> = host_a_series
+            .map(|e| e.samples.iter().map(|s| s.timestamp).collect())
+            .unwrap_or_default();
+
+        assert!(
+            host_a_timestamps.contains(&1000),
+            "host-a existed at t=1000 (its own window) but was dropped entirely \
+             from the range output because the final keys snapshot (scoped to \
+             the range's end window) no longer contains it; got samples at {:?}",
+            host_a_timestamps
+        );
+        assert!(
+            !host_a_timestamps.contains(&2000),
+            "host-a's SetAggregator snapshot at t=2000 no longer contains it \
+             (host-b replaced it), so it must not have a sample at t=2000, \
+             got samples at {:?}",
+            host_a_timestamps
         );
     }
 }
