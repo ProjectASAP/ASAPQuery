@@ -49,6 +49,16 @@ mod tests {
         }
     }
 
+    /// True if the output series for `host_label` (matched by label value) has
+    /// a sample at `ts`. False if the series is absent entirely, or present
+    /// but without a sample at that timestamp.
+    fn key_has_sample_at(elements: &[RangeVectorElement], host_label: &str, ts: u64) -> bool {
+        elements
+            .iter()
+            .find(|e| e.labels.labels.contains(&host_label.to_string()))
+            .is_some_and(|e| e.samples.iter().any(|s| s.timestamp == ts))
+    }
+
     /// One tumbling-window bucket: (bucket end timestamp ms, label values, accumulator).
     type TimeSeriesData = Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>;
 
@@ -416,40 +426,28 @@ mod tests {
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
-        let host_b_series = elements
-            .iter()
-            .find(|e| e.labels.labels.contains(&"host-b".to_string()));
-        let host_b_timestamps: std::collections::HashSet<u64> = host_b_series
-            .map(|e| e.samples.iter().map(|s| s.timestamp).collect())
-            .unwrap_or_default();
-
-        assert!(
-            !host_b_timestamps.contains(&1000),
-            "host-b's key delta only appears at t=2000, so it must not have a \
-             phantom sample at t=1000 (before it existed), got samples at {:?}",
-            host_b_timestamps
-        );
-        assert!(
-            host_b_timestamps.contains(&2000),
-            "host-b should have a sample at t=2000, once its key delta appears, \
-             got samples at {:?}",
-            host_b_timestamps
-        );
-
         // DeltaSetAggregator accumulates: once added, a key stays in the
-        // reconstructed set for every later step too (no removal here), so
-        // host-a — added at t=1000 — must still be present at t=2000.
-        let host_a_series = elements
-            .iter()
-            .find(|e| e.labels.labels.contains(&"host-a".to_string()));
-        let host_a_timestamps: std::collections::HashSet<u64> = host_a_series
-            .map(|e| e.samples.iter().map(|s| s.timestamp).collect())
-            .unwrap_or_default();
+        // reconstructed set at every later step too (no removal here).
+        // host-a is added at t=1000, so it should be present at both steps.
+        // host-b is added only at t=2000, so it must be absent at t=1000
+        // (not yet added) and present at t=2000.
         assert!(
-            host_a_timestamps.contains(&2000),
+            key_has_sample_at(&elements, "host-a", 1000),
+            "host-a was added at t=1000, so it should have a sample there"
+        );
+        assert!(
+            key_has_sample_at(&elements, "host-a", 2000),
             "host-a was added at t=1000 and DeltaSetAggregator never removes it, \
-             so it should still have a sample at t=2000, got samples at {:?}",
-            host_a_timestamps
+             so it should still have a sample at t=2000"
+        );
+        assert!(
+            !key_has_sample_at(&elements, "host-b", 1000),
+            "host-b's key delta only appears at t=2000, so it must not have a \
+             phantom sample at t=1000 (before it existed)"
+        );
+        assert!(
+            key_has_sample_at(&elements, "host-b", 2000),
+            "host-b should have a sample at t=2000, once its key delta appears"
         );
     }
 
@@ -500,28 +498,28 @@ mod tests {
 
         // SetAggregator is a full snapshot per window, not a delta: host-a is
         // the live set only for the window ending at t=1000, and is replaced
-        // by host-b in the window ending at t=2000. So the correct output has
-        // host-a present at t=1000 but absent at t=2000.
-        let host_a_series = elements
-            .iter()
-            .find(|e| e.labels.labels.contains(&"host-a".to_string()));
-        let host_a_timestamps: std::collections::HashSet<u64> = host_a_series
-            .map(|e| e.samples.iter().map(|s| s.timestamp).collect())
-            .unwrap_or_default();
-
+        // by host-b in the window ending at t=2000 — each step's own snapshot
+        // is disjoint from the other's, unlike DeltaSetAggregator's accumulation.
         assert!(
-            host_a_timestamps.contains(&1000),
+            key_has_sample_at(&elements, "host-a", 1000),
             "host-a existed at t=1000 (its own window) but was dropped entirely \
              from the range output because the final keys snapshot (scoped to \
-             the range's end window) no longer contains it; got samples at {:?}",
-            host_a_timestamps
+             the range's end window) no longer contains it"
         );
         assert!(
-            !host_a_timestamps.contains(&2000),
+            !key_has_sample_at(&elements, "host-a", 2000),
             "host-a's SetAggregator snapshot at t=2000 no longer contains it \
-             (host-b replaced it), so it must not have a sample at t=2000, \
-             got samples at {:?}",
-            host_a_timestamps
+             (host-b replaced it), so it must not have a sample at t=2000"
+        );
+        assert!(
+            !key_has_sample_at(&elements, "host-b", 1000),
+            "host-b doesn't appear until the window ending at t=2000, so it \
+             must not have a sample at t=1000"
+        );
+        assert!(
+            key_has_sample_at(&elements, "host-b", 2000),
+            "host-b is the live set for the window ending at t=2000, so it \
+             should have a sample there"
         );
     }
 }
