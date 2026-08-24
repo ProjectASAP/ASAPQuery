@@ -114,6 +114,19 @@ pub struct RangeQueryExecutionContext {
     pub lookback_bucket_count: usize,
     /// Tumbling window size in ms
     pub tumbling_window_ms: u64,
+    /// Per-step lookback for the keys aggregation (#583): `keys_query.end -
+    /// keys_query.start` from the instant window `create_keys_query_params`
+    /// computed before widening. `None` when there's no separate
+    /// `keys_query`. Reused, unmodified, as the per-step
+    /// `current_time.saturating_sub(keys_lookback_ms)` window start for
+    /// every output step -- this single value is what makes `SetAggregator`
+    /// a normal sliding window and `DeltaSetAggregator` always replay from
+    /// `0`, with no `AggregationType` branching needed here.
+    pub keys_lookback_ms: Option<u64>,
+    /// Bucket width for the keys aggregation, separate from
+    /// `tumbling_window_ms` (which is the *value* aggregation's width) --
+    /// the two can legitimately differ.
+    pub keys_tumbling_window_ms: Option<u64>,
 }
 
 // /// Parsed components of a sketch query, extracted either via the PromQL AST

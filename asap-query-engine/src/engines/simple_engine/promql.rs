@@ -584,6 +584,37 @@ impl SimpleEngine {
         extended_store_plan.values_query.end_timestamp = end_ms;
         extended_store_plan.values_query.is_exact_query = false;
 
+        // #583: widen keys_query the same way, using the instant window
+        // create_keys_query_params already computed for it as the source of
+        // truth for "how far back does this aggregation type look." This
+        // needs no AggregationType branching: for SetAggregator the instant
+        // window is [end-window_size, end], so keys_lookback_ms == window_size
+        // and this widens to a normal sliding window; for DeltaSetAggregator
+        // the instant window is [0, end], so keys_lookback_ms == end_ms,
+        // which saturating_sub's to 0 for every current_time <= end_ms in
+        // the per-step loop -- i.e. "replay from the beginning," for free.
+        let keys_lookback_ms = base_context
+            .store_plan
+            .keys_query
+            .as_ref()
+            .map(|kq| kq.end_timestamp - kq.start_timestamp);
+        let keys_tumbling_window_ms = match keys_lookback_ms {
+            Some(_) => Some(
+                self.streaming_config
+                    .read()
+                    .unwrap()
+                    .get_aggregation_config(base_context.agg_info.aggregation_id_for_key)
+                    .map(|c| c.window_size_ms)?,
+            ),
+            None => None,
+        };
+        if let (Some(keys_query), Some(lookback)) =
+            (extended_store_plan.keys_query.as_mut(), keys_lookback_ms)
+        {
+            keys_query.start_timestamp = start_ms.saturating_sub(lookback);
+            keys_query.end_timestamp = end_ms;
+        }
+
         Some(RangeQueryExecutionContext {
             base: QueryExecutionContext {
                 store_plan: extended_store_plan,
@@ -597,6 +628,8 @@ impl SimpleEngine {
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,
+            keys_lookback_ms,
+            keys_tumbling_window_ms,
         })
     }
 
