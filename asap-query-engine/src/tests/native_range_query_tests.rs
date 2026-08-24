@@ -29,7 +29,9 @@ mod tests {
     use crate::engines::query_result::{QueryResult, RangeVectorElement};
     use crate::engines::simple_engine::SimpleEngine;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
-    use crate::precompute_operators::{CountMinSketchAccumulator, DeltaSetAggregatorAccumulator};
+    use crate::precompute_operators::{
+        CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DeltaSetAggregatorAccumulator,
+    };
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
     use crate::tests::test_utilities::engine_factories::create_engine_multi_timestamp_with_window;
@@ -195,6 +197,55 @@ mod tests {
             !matrix_values(qr).is_empty(),
             "expected keys_query expansion to produce at least one series over the range, \
              matching the instant-query dual-population path"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_dual_population_self_keyed_value_still_uses_keys_query() {
+        // Real, tested capability-matching config (sql.rs): CountMinSketchWithHeap
+        // (self-keyed) as the VALUE aggregation, paired with a separate
+        // DeltaSetAggregator KEYS aggregation. collect_results_separate_keys
+        // (instant path) never consults the value accumulator's own
+        // get_keys() -- it always expands via the keys aggregation. A range
+        // pipeline that calls merged.get_keys() unconditionally on the merged
+        // VALUE accumulator would incorrectly let the heap's own internal
+        // top-k keys override the keys_query's expansion.
+        let mut heap = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        // Heap's own top-k keys are deliberately disjoint from the keys_query's
+        // key, so a wrong implementation is caught by key-set mismatch, not
+        // just a wrong value.
+        heap.inner.update("host-x;evt-x", 30.0);
+        heap.inner.update("host-y;evt-y", 20.0);
+
+        let mut keys = DeltaSetAggregatorAccumulator::new();
+        keys.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input(
+            "event_frequency",
+            AggregationType::CountMinSketchWithHeap,
+            AggregationType::DeltaSetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![(1000, None, Box::new(heap) as Box<dyn AggregateCore>)],
+            vec![(1000, None, Box::new(keys) as Box<dyn AggregateCore>)],
+            "count(event_frequency) by (host, event)",
+        );
+
+        let query = "count(event_frequency) by (host, event)";
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+
+        let returned: std::collections::HashSet<Vec<String>> =
+            elements.iter().map(|e| e.labels.labels.clone()).collect();
+        assert_eq!(
+            returned,
+            std::collections::HashSet::from([vec!["host-a".to_string(), "evt-1".to_string()]]),
+            "expected the keys_query's key (host-a, evt-1), not the value accumulator's own \
+             top-k keys (host-x/host-y), got: {:?}",
+            returned
         );
     }
 
@@ -369,6 +420,231 @@ mod tests {
             std::collections::HashSet::from([1000, 2000]),
             "expected keys expansion at every output step, not just the first, got {:?}",
             timestamps
+        );
+    }
+
+    /// Single-population counterpart to `create_range_engine_dual_input`: one
+    /// `CountMinSketchWithHeap` (self-keyed, top-k) aggregation, no separate
+    /// keys aggregation, values stored with `group_key = None`.
+    fn create_range_engine_self_keyed(
+        metric: &str,
+        aggregated_label: &str,
+        data: Vec<(u64, CountMinSketchWithHeapAccumulator)>,
+        promql_query: &str,
+    ) -> SimpleEngine {
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::CountMinSketchWithHeap,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::empty(),
+                aggregated_labels: KeyByLabelNames::new(vec![aggregated_label.to_string()]),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: WINDOW_MS,
+                slide_interval_ms: WINDOW_MS,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: metric.to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        for (timestamp, acc) in data {
+            let output = PrecomputedOutput::new(timestamp - WINDOW_MS, timestamp, None, 1);
+            store
+                .insert_precomputed_output(output, Box::new(acc))
+                .unwrap();
+        }
+
+        let promql_schema = PromQLSchema::new().add_metric(
+            metric.to_string(),
+            KeyByLabelNames::new(vec![aggregated_label.to_string()]),
+        );
+
+        let query_config = QueryConfig::new(promql_query.to_string())
+            .add_aggregation(AggregationReference::new(1, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            WINDOW_MS,
+            QueryLanguage::promql,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_self_keyed_topk_expands_without_keys_query() {
+        // #584: execute_range_query_pipeline's single-population branch (no
+        // separate keys_query) used each value group's own group_key
+        // directly and never called get_keys() on the value accumulator
+        // itself. A self-keyed accumulator like CountMinSketchWithHeap
+        // (top-k) is stored with group_key = None (single population, no
+        // keys_query) and only exposes its output keys via get_keys() on the
+        // merged accumulator -- exactly what the instant path
+        // (collect_results_same_aggregation) already does. Without that
+        // call, this None-keyed group is dropped and the range query returns
+        // empty instead of the expanded top-k keys.
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        sketch.inner.update("host-a", 30.0);
+        sketch.inner.update("host-b", 20.0);
+        sketch.inner.update("host-c", 10.0);
+
+        let query = "topk(5, transfer_events)";
+        let engine =
+            create_range_engine_self_keyed("transfer_events", "srcip", vec![(1000, sketch)], query);
+
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+
+        assert_eq!(
+            elements.len(),
+            3,
+            "expected the self-keyed accumulator's top-k heap to expand into 3 \
+             separate series (one per key) instead of being dropped as an empty result, got: {:?}",
+            elements
+                .iter()
+                .map(|e| e.labels.labels.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let returned: std::collections::HashSet<String> = elements
+            .iter()
+            .map(|e| e.labels.labels.last().cloned().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            returned,
+            std::collections::HashSet::from([
+                "host-a".to_string(),
+                "host-b".to_string(),
+                "host-c".to_string(),
+            ]),
+            "expected one expanded series per top-k key"
+        );
+
+        let host_a = elements
+            .iter()
+            .find(|e| e.labels.labels.last().map(String::as_str) == Some("host-a"))
+            .expect("host-a series should be present among the expanded top-k keys");
+        assert_eq!(host_a.samples.len(), 1);
+        assert!(
+            (host_a.samples[0].value - 30.0).abs() < 1e-9,
+            "expected host-a's count-min-sketch estimate (30.0), got {}",
+            host_a.samples[0].value
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_self_keyed_topk_expands_with_non_none_outer_key() {
+        // Same bug as range_query_self_keyed_topk_expands_without_keys_query,
+        // but the value data is stored under a real, non-None outer
+        // group_key -- mirrors what real Arroyo/worker.rs ingestion actually
+        // writes for "empty grouping" self-keyed accumulators (deserialize_
+        // from_json_arroyo always wraps Some(key), even for empty grouping;
+        // "None" is specific to this codebase's existing CountMinSketchWithHeap
+        // test convention, not a guarantee). A fix that only calls
+        // merged.get_keys() when the outer key is None (rather than always,
+        // like collect_results_same_aggregation does) would still miss this
+        // case.
+        let metric = "transfer_events";
+        let aggregated_label = "srcip";
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::CountMinSketchWithHeap,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::empty(),
+                aggregated_labels: KeyByLabelNames::new(vec![aggregated_label.to_string()]),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: WINDOW_MS,
+                slide_interval_ms: WINDOW_MS,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: metric.to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        sketch.inner.update("host-a", 30.0);
+        sketch.inner.update("host-b", 20.0);
+        sketch.inner.update("host-c", 10.0);
+
+        // Non-None outer key -- e.g. Some(KeyByLabelValues{labels: [""]}),
+        // exactly what deserialize_from_json_arroyo produces for "" grouping.
+        let non_none_key = Some(KeyByLabelValues::new_with_labels(vec![String::new()]));
+        let output = PrecomputedOutput::new(0, 1000, non_none_key, 1);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .unwrap();
+
+        let promql_schema = PromQLSchema::new().add_metric(
+            metric.to_string(),
+            KeyByLabelNames::new(vec![aggregated_label.to_string()]),
+        );
+        let query = "topk(5, transfer_events)";
+        let query_config =
+            QueryConfig::new(query.to_string()).add_aggregation(AggregationReference::new(1, None));
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            WINDOW_MS,
+            QueryLanguage::promql,
+        );
+
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+        assert_eq!(
+            elements.len(),
+            3,
+            "expected top-k expansion even though the outer group_key is Some(..), not None, got: {:?}",
+            elements.iter().map(|e| e.labels.labels.clone()).collect::<Vec<_>>()
         );
     }
 }

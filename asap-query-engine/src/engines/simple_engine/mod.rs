@@ -1525,13 +1525,28 @@ impl SimpleEngine {
             window_mode
         );
 
-        // Resolve, for every value group, which output label-keys it serves:
-        // its own key for single-population metrics, or every key the merged
-        // keys aggregation expands it to for dual-population metrics. Mirrors
-        // collect_results_separate_keys exactly, including its error
-        // semantics — an unresolvable key set fails the whole range query
-        // (so callers fall back to Prometheus) instead of silently returning
-        // a partial result. See #582 review.
+        // Whether the value accumulator's own get_keys() is even consulted
+        // depends on the query SHAPE (dual- vs single-population), not on a
+        // per-group fallback — mirrors collect_all_results exactly:
+        //   - dual-population (separate keys_query present): always expand
+        //     via the keys aggregation's get_keys(), full stop. The value
+        //     accumulator's own get_keys() is never consulted, even if the
+        //     value accumulator itself happens to be self-keyed (e.g. a
+        //     CountMinSketchWithHeap value paired with a DeltaSetAggregator
+        //     keys aggregation is a real capability-matched config, see
+        //     sql.rs). Otherwise a self-keyed value accumulator's own
+        //     (possibly different, window-to-window-shifting) keys would
+        //     silently override the keys aggregation's expansion. See #587
+        //     review.
+        //   - single-population (no separate keys_query): the value
+        //     accumulator's own get_keys() takes priority whenever present
+        //     (#584, self-keyed accumulators like top-k), falling back to
+        //     the store-level group key otherwise.
+        let is_dual_population = merged_keys.is_some();
+
+        // Resolve, for every value group, a fallback key list — used
+        // directly for dual-population groups, or as a fallback for
+        // single-population groups whose value accumulator doesn't self-key.
         let groups: Vec<(
             &Vec<crate::stores::TimestampedBucket>,
             Vec<KeyByLabelValues>,
@@ -1542,22 +1557,20 @@ impl SimpleEngine {
                     let timestamped_buckets = all_data
                         .get(group_key)
                         .ok_or_else(|| format!("No value for key: {:?}", group_key))?;
-                    let expansion_keys = keys_precompute
+                    let fallback_keys = keys_precompute
                         .get_keys()
                         .ok_or_else(|| "Keys required for separate aggregation".to_string())?;
-                    Ok((timestamped_buckets, expansion_keys))
+                    Ok((timestamped_buckets, fallback_keys))
                 })
                 .collect::<Result<Vec<_>, String>>()?,
             None => all_data
                 .iter()
-                .filter_map(|(group_key, buckets)| {
-                    group_key.as_ref().map(|k| (buckets, vec![k.clone()]))
-                })
+                .map(|(group_key, buckets)| (buckets, group_key.clone().into_iter().collect()))
                 .collect(),
         };
 
         // Process each value group independently
-        for (timestamped_buckets, expansion_keys) in groups {
+        for (timestamped_buckets, fallback_keys) in groups {
             // Build lookup: bucket_start_timestamp -> all buckets sharing
             // that start. A Sliding aggregation can legitimately return more
             // than one bucket per start timestamp (#567/#570) — every one of
@@ -1568,9 +1581,9 @@ impl SimpleEngine {
             }
 
             debug!(
-                "Group with {} start-timestamps, expands to keys: {:?}",
+                "Group with {} start-timestamps, fallback keys: {:?}",
                 bucket_map.len(),
-                expansion_keys
+                fallback_keys
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
@@ -1599,9 +1612,22 @@ impl SimpleEngine {
 
                     match merger.get_merged() {
                         Ok(merged) => {
+                            // See is_dual_population above: dual-population
+                            // always trusts the keys aggregation's expansion;
+                            // only single-population lets the value
+                            // accumulator's own get_keys() (read after
+                            // merging this window, since e.g. a top-k heap's
+                            // keys depend on the window's data) take
+                            // priority, falling back to the store-level
+                            // group key otherwise.
+                            let resolved_keys = if is_dual_population {
+                                fallback_keys.clone()
+                            } else {
+                                merged.get_keys().unwrap_or_else(|| fallback_keys.clone())
+                            };
                             // Query statistic and emit a sample at current_time
                             // for every expanded key sharing this value group.
-                            for key in &expansion_keys {
+                            for key in &resolved_keys {
                                 match self.query_precompute_for_statistic(
                                     merged.as_ref(),
                                     &context.base.metadata.statistic_to_compute,
@@ -1626,7 +1652,7 @@ impl SimpleEngine {
                         Err(e) => {
                             debug!(
                                 "Failed to get merged result at t={} for keys {:?}: {}",
-                                current_time, expansion_keys, e
+                                current_time, fallback_keys, e
                             );
                         }
                     }
@@ -1634,7 +1660,7 @@ impl SimpleEngine {
                     // No data at all for this window - skip sample
                     debug!(
                         "Keys {:?}: skipping sample at {} - no data in window [{}, {})",
-                        expansion_keys, current_time, window_start, current_time
+                        fallback_keys, current_time, window_start, current_time
                     );
                 }
 
