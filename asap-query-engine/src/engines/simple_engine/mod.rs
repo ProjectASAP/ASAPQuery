@@ -1525,13 +1525,16 @@ impl SimpleEngine {
             window_mode
         );
 
-        // Resolve, for every value group, which output label-keys it serves:
-        // its own key for single-population metrics, or every key the merged
-        // keys aggregation expands it to for dual-population metrics. Mirrors
-        // collect_results_separate_keys exactly, including its error
-        // semantics — an unresolvable key set fails the whole range query
-        // (so callers fall back to Prometheus) instead of silently returning
-        // a partial result. See #582 review.
+        // Resolve, for every value group, a fallback key list — used only if
+        // the merged value accumulator itself doesn't self-key (see below).
+        //  - dual-population metrics: every key the merged keys aggregation
+        //    expands it to. Mirrors collect_results_separate_keys exactly,
+        //    including its error semantics — an unresolvable key set fails
+        //    the whole range query (so callers fall back to Prometheus)
+        //    instead of silently returning a partial result. See #582
+        //    review.
+        //  - single-population metrics: just its own store-level group key
+        //    (0 or 1 keys).
         let groups: Vec<(
             &Vec<crate::stores::TimestampedBucket>,
             Vec<KeyByLabelValues>,
@@ -1542,22 +1545,20 @@ impl SimpleEngine {
                     let timestamped_buckets = all_data
                         .get(group_key)
                         .ok_or_else(|| format!("No value for key: {:?}", group_key))?;
-                    let expansion_keys = keys_precompute
+                    let fallback_keys = keys_precompute
                         .get_keys()
                         .ok_or_else(|| "Keys required for separate aggregation".to_string())?;
-                    Ok((timestamped_buckets, expansion_keys))
+                    Ok((timestamped_buckets, fallback_keys))
                 })
                 .collect::<Result<Vec<_>, String>>()?,
             None => all_data
                 .iter()
-                .filter_map(|(group_key, buckets)| {
-                    group_key.as_ref().map(|k| (buckets, vec![k.clone()]))
-                })
+                .map(|(group_key, buckets)| (buckets, group_key.clone().into_iter().collect()))
                 .collect(),
         };
 
         // Process each value group independently
-        for (timestamped_buckets, expansion_keys) in groups {
+        for (timestamped_buckets, fallback_keys) in groups {
             // Build lookup: bucket_start_timestamp -> all buckets sharing
             // that start. A Sliding aggregation can legitimately return more
             // than one bucket per start timestamp (#567/#570) — every one of
@@ -1568,9 +1569,9 @@ impl SimpleEngine {
             }
 
             debug!(
-                "Group with {} start-timestamps, expands to keys: {:?}",
+                "Group with {} start-timestamps, fallback keys: {:?}",
                 bucket_map.len(),
-                expansion_keys
+                fallback_keys
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
@@ -1599,9 +1600,20 @@ impl SimpleEngine {
 
                     match merger.get_merged() {
                         Ok(merged) => {
+                            // Mirrors collect_results_same_aggregation
+                            // (instant path): a self-keyed accumulator's own
+                            // get_keys() always takes priority when present
+                            // (#584) — it can only be read after merging this
+                            // window's buckets, since which keys are "in" e.g.
+                            // a top-k heap depends on the window's data.
+                            // Non-self-keyed accumulators always return None
+                            // here, so this falls through to fallback_keys
+                            // unchanged from before.
+                            let resolved_keys =
+                                merged.get_keys().unwrap_or_else(|| fallback_keys.clone());
                             // Query statistic and emit a sample at current_time
                             // for every expanded key sharing this value group.
-                            for key in &expansion_keys {
+                            for key in &resolved_keys {
                                 match self.query_precompute_for_statistic(
                                     merged.as_ref(),
                                     &context.base.metadata.statistic_to_compute,
@@ -1626,7 +1638,7 @@ impl SimpleEngine {
                         Err(e) => {
                             debug!(
                                 "Failed to get merged result at t={} for keys {:?}: {}",
-                                current_time, expansion_keys, e
+                                current_time, fallback_keys, e
                             );
                         }
                     }
@@ -1634,7 +1646,7 @@ impl SimpleEngine {
                     // No data at all for this window - skip sample
                     debug!(
                         "Keys {:?}: skipping sample at {} - no data in window [{}, {})",
-                        expansion_keys, current_time, window_start, current_time
+                        fallback_keys, current_time, window_start, current_time
                     );
                 }
 
