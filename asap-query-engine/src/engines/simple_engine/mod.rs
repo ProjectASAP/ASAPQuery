@@ -617,9 +617,11 @@ impl SimpleEngine {
     }
 
     /// Fetches and merges the keys side of a dual-population query plan, if
-    /// present. Shared by `execute_and_merge_store_queries` (instant) and
-    /// `execute_range_query_pipeline` (range) — both build a `StoreQueryPlan`
-    /// that may carry a separate `keys_query` and need it merged the same way.
+    /// present. Used by `execute_and_merge_store_queries` (instant) only —
+    /// `execute_range_query_pipeline` (range) fetches keys raw via
+    /// `execute_store_query` and merges them per output step instead (#583),
+    /// since a single merged snapshot can't answer "what did the key set
+    /// look like at an earlier timestamp."
     fn fetch_and_merge_keys(
         &self,
         keys_query: &Option<StoreQueryParams>,
@@ -1476,6 +1478,45 @@ impl SimpleEngine {
     //     Some((output_labels, QueryResult::matrix(range_elements)))
     // }
 
+    /// Builds a lookup from bucket start-timestamp to every bucket sharing
+    /// that start. A Sliding aggregation can legitimately return more than
+    /// one bucket per start timestamp (#567/#570) — every one of them must
+    /// be merged, not just the last one collected here. Used identically by
+    /// `execute_range_query_pipeline` for both the value side and (#583)
+    /// the keys side.
+    fn build_bucket_map(
+        buckets: &[crate::stores::TimestampedBucket],
+    ) -> HashMap<u64, Vec<&dyn AggregateCore>> {
+        let mut bucket_map: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
+        for ((start, _), bucket) in buckets {
+            bucket_map.entry(*start).or_default().push(bucket.as_ref());
+        }
+        bucket_map
+    }
+
+    /// Collects every bucket in `bucket_map` whose start falls in
+    /// `[window_start, window_end)`, stepping by `step_increment`. Missing
+    /// buckets at a given start are skipped (partial data is okay). Used
+    /// identically by `execute_range_query_pipeline` for both the value
+    /// side and (#583) the keys side — the only difference between the two
+    /// call sites is which map/lookback/bucket-width they pass in.
+    fn scan_window(
+        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        window_start: u64,
+        window_end: u64,
+        step_increment: u64,
+    ) -> Vec<Box<dyn AggregateCore>> {
+        let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
+        let mut t = window_start;
+        while t < window_end {
+            if let Some(buckets) = bucket_map.get(&t) {
+                window_buckets.extend(buckets.iter().map(|b| b.clone_boxed_core()));
+            }
+            t += step_increment;
+        }
+        window_buckets
+    }
+
     /// Execute the range query pipeline
     fn execute_range_query_pipeline(
         &self,
@@ -1596,25 +1637,14 @@ impl SimpleEngine {
 
         // Process each value group independently
         for (timestamped_buckets, keys_source) in groups {
-            // Build lookup: bucket_start_timestamp -> all buckets sharing
-            // that start. A Sliding aggregation can legitimately return more
-            // than one bucket per start timestamp (#567/#570) — every one of
-            // them must be merged, not just the last one collected here.
-            let mut bucket_map: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
-            for ((start, _), bucket) in timestamped_buckets {
-                bucket_map.entry(*start).or_default().push(bucket.as_ref());
-            }
+            let bucket_map = Self::build_bucket_map(timestamped_buckets);
 
             // Same idea, for keys (#583) — only built for dual-population
             // groups; Fixed groups have nothing to window.
             let keys_bucket_map: Option<HashMap<u64, Vec<&dyn AggregateCore>>> = match &keys_source
             {
                 KeysSource::PerStep(raw_keys_buckets) => {
-                    let mut m: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
-                    for ((start, _), bucket) in raw_keys_buckets.iter() {
-                        m.entry(*start).or_default().push(bucket.as_ref());
-                    }
-                    Some(m)
+                    Some(Self::build_bucket_map(raw_keys_buckets))
                 }
                 KeysSource::Fixed(_) => None,
             };
@@ -1642,15 +1672,12 @@ impl SimpleEngine {
                             .expect("PerStep implies keys_tumbling_window_ms is Some");
 
                         let keys_window_start = current_time.saturating_sub(keys_lookback_ms);
-                        let mut keys_window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
-                        let mut kt = keys_window_start;
-                        while kt < current_time {
-                            if let Some(buckets) = keys_bucket_map.get(&kt) {
-                                keys_window_buckets
-                                    .extend(buckets.iter().map(|b| b.clone_boxed_core()));
-                            }
-                            kt += keys_tumbling_window_ms;
-                        }
+                        let keys_window_buckets = Self::scan_window(
+                            keys_bucket_map,
+                            keys_window_start,
+                            current_time,
+                            keys_tumbling_window_ms,
+                        );
 
                         if keys_window_buckets.is_empty() {
                             Vec::new()
@@ -1682,16 +1709,8 @@ impl SimpleEngine {
                 let window_start = current_time.saturating_sub(lookback_ms);
 
                 // Collect all AVAILABLE buckets in this window (skip missing ones)
-                let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
-
-                let mut t = window_start;
-                while t < current_time {
-                    if let Some(buckets) = bucket_map.get(&t) {
-                        window_buckets.extend(buckets.iter().map(|b| b.clone_boxed_core()));
-                    }
-                    // If no bucket at timestamp t, just skip it (partial data is okay)
-                    t += tumbling_window_ms;
-                }
+                let window_buckets =
+                    Self::scan_window(&bucket_map, window_start, current_time, tumbling_window_ms);
 
                 if !window_buckets.is_empty() {
                     // Merge available buckets
