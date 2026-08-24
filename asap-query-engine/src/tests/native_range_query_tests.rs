@@ -201,6 +201,55 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_dual_population_self_keyed_value_still_uses_keys_query() {
+        // Real, tested capability-matching config (sql.rs): CountMinSketchWithHeap
+        // (self-keyed) as the VALUE aggregation, paired with a separate
+        // DeltaSetAggregator KEYS aggregation. collect_results_separate_keys
+        // (instant path) never consults the value accumulator's own
+        // get_keys() -- it always expands via the keys aggregation. A range
+        // pipeline that calls merged.get_keys() unconditionally on the merged
+        // VALUE accumulator would incorrectly let the heap's own internal
+        // top-k keys override the keys_query's expansion.
+        let mut heap = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        // Heap's own top-k keys are deliberately disjoint from the keys_query's
+        // key, so a wrong implementation is caught by key-set mismatch, not
+        // just a wrong value.
+        heap.inner.update("host-x;evt-x", 30.0);
+        heap.inner.update("host-y;evt-y", 20.0);
+
+        let mut keys = DeltaSetAggregatorAccumulator::new();
+        keys.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input(
+            "event_frequency",
+            AggregationType::CountMinSketchWithHeap,
+            AggregationType::DeltaSetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![(1000, None, Box::new(heap) as Box<dyn AggregateCore>)],
+            vec![(1000, None, Box::new(keys) as Box<dyn AggregateCore>)],
+            "count(event_frequency) by (host, event)",
+        );
+
+        let query = "count(event_frequency) by (host, event)";
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+
+        let returned: std::collections::HashSet<Vec<String>> =
+            elements.iter().map(|e| e.labels.labels.clone()).collect();
+        assert_eq!(
+            returned,
+            std::collections::HashSet::from([vec!["host-a".to_string(), "evt-1".to_string()]]),
+            "expected the keys_query's key (host-a, evt-1), not the value accumulator's own \
+             top-k keys (host-x/host-y), got: {:?}",
+            returned
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn range_query_sliding_window_merges_both_buckets() {
         // Same fixture as
         // native_binary_instant_tests::binary_expr_sliding_window_end_to_end_merges_correctly,

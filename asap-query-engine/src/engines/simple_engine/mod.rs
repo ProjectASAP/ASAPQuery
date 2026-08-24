@@ -1525,16 +1525,28 @@ impl SimpleEngine {
             window_mode
         );
 
-        // Resolve, for every value group, a fallback key list — used only if
-        // the merged value accumulator itself doesn't self-key (see below).
-        //  - dual-population metrics: every key the merged keys aggregation
-        //    expands it to. Mirrors collect_results_separate_keys exactly,
-        //    including its error semantics — an unresolvable key set fails
-        //    the whole range query (so callers fall back to Prometheus)
-        //    instead of silently returning a partial result. See #582
-        //    review.
-        //  - single-population metrics: just its own store-level group key
-        //    (0 or 1 keys).
+        // Whether the value accumulator's own get_keys() is even consulted
+        // depends on the query SHAPE (dual- vs single-population), not on a
+        // per-group fallback — mirrors collect_all_results exactly:
+        //   - dual-population (separate keys_query present): always expand
+        //     via the keys aggregation's get_keys(), full stop. The value
+        //     accumulator's own get_keys() is never consulted, even if the
+        //     value accumulator itself happens to be self-keyed (e.g. a
+        //     CountMinSketchWithHeap value paired with a DeltaSetAggregator
+        //     keys aggregation is a real capability-matched config, see
+        //     sql.rs). Otherwise a self-keyed value accumulator's own
+        //     (possibly different, window-to-window-shifting) keys would
+        //     silently override the keys aggregation's expansion. See #587
+        //     review.
+        //   - single-population (no separate keys_query): the value
+        //     accumulator's own get_keys() takes priority whenever present
+        //     (#584, self-keyed accumulators like top-k), falling back to
+        //     the store-level group key otherwise.
+        let is_dual_population = merged_keys.is_some();
+
+        // Resolve, for every value group, a fallback key list — used
+        // directly for dual-population groups, or as a fallback for
+        // single-population groups whose value accumulator doesn't self-key.
         let groups: Vec<(
             &Vec<crate::stores::TimestampedBucket>,
             Vec<KeyByLabelValues>,
@@ -1600,17 +1612,19 @@ impl SimpleEngine {
 
                     match merger.get_merged() {
                         Ok(merged) => {
-                            // Mirrors collect_results_same_aggregation
-                            // (instant path): a self-keyed accumulator's own
-                            // get_keys() always takes priority when present
-                            // (#584) — it can only be read after merging this
-                            // window's buckets, since which keys are "in" e.g.
-                            // a top-k heap depends on the window's data.
-                            // Non-self-keyed accumulators always return None
-                            // here, so this falls through to fallback_keys
-                            // unchanged from before.
-                            let resolved_keys =
-                                merged.get_keys().unwrap_or_else(|| fallback_keys.clone());
+                            // See is_dual_population above: dual-population
+                            // always trusts the keys aggregation's expansion;
+                            // only single-population lets the value
+                            // accumulator's own get_keys() (read after
+                            // merging this window, since e.g. a top-k heap's
+                            // keys depend on the window's data) take
+                            // priority, falling back to the store-level
+                            // group key otherwise.
+                            let resolved_keys = if is_dual_population {
+                                fallback_keys.clone()
+                            } else {
+                                merged.get_keys().unwrap_or_else(|| fallback_keys.clone())
+                            };
                             // Query statistic and emit a sample at current_time
                             // for every expanded key sharing this value group.
                             for key in &resolved_keys {
