@@ -1497,20 +1497,25 @@ impl SimpleEngine {
             all_data.values().map(|v| v.len()).sum::<usize>()
         );
 
-        // Dual-population metrics (separate key/value aggregations) need the
-        // keys side merged once up front, then expanded per value group below
-        // — mirrors execute_and_merge_store_queries/collect_results_separate_keys
-        // (#580: this pipeline previously never read keys_query at all).
-        let merged_keys = self.fetch_and_merge_keys(
-            &context.base.store_plan.keys_query,
-            context.base.agg_info.aggregation_type_for_key,
-            context.base.do_merge,
-        )?;
+        // #583: fetch keys raw (no merge). Unlike keys, values have always
+        // been fetched raw here and merged per-step below (see the loop);
+        // keys used to go through fetch_and_merge_keys, which collapses
+        // every fetched bucket into ONE snapshot before this function ever
+        // sees it. That collapse is the bug: once buckets are merged
+        // together there's no way to ask what the key set looked like at
+        // any specific earlier timestamp. Fetching raw and merging per-step,
+        // mirroring the values loop, is the fix.
+        let keys_raw_data: Option<TimestampedBucketsMap> = match &context.base.store_plan.keys_query
+        {
+            Some(keys_query) => Some(self.execute_store_query(keys_query)?),
+            None => None,
+        };
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
         // Determine accumulator type for merger selection
         let accumulator_type = &context.base.agg_info.aggregation_type_for_value;
+        let key_accumulator_type = context.base.agg_info.aggregation_type_for_key;
 
         // Calculate step parameters
         let step_ms = context.range_params.step;
@@ -1520,6 +1525,8 @@ impl SimpleEngine {
         let lookback_bucket_count = context.lookback_bucket_count;
         let tumbling_window_ms = context.tumbling_window_ms;
         let lookback_ms = (lookback_bucket_count as u64) * tumbling_window_ms;
+        let keys_lookback_ms = context.keys_lookback_ms;
+        let keys_tumbling_window_ms = context.keys_tumbling_window_ms;
 
         let window_mode = if buckets_per_step <= lookback_bucket_count {
             "sliding (slide <= size)"
@@ -1538,39 +1545,57 @@ impl SimpleEngine {
             window_mode
         );
 
-        // Resolve, for every value group, which output label-keys it serves:
-        // its own key for single-population metrics, or every key the merged
-        // keys aggregation expands it to for dual-population metrics. Mirrors
-        // collect_results_separate_keys exactly, including its error
-        // semantics — an unresolvable key set fails the whole range query
-        // (so callers fall back to Prometheus) instead of silently returning
-        // a partial result. See #582 review.
-        let groups: Vec<(
-            &Vec<crate::stores::TimestampedBucket>,
-            Vec<KeyByLabelValues>,
-        )> = match &merged_keys {
+        // #583: where a group's output label-keys come from. `Fixed` for
+        // single-population metrics — the value's own key IS the output
+        // key at every timestamp, nothing to merge. `PerStep` for
+        // dual-population metrics — a reference to that group's raw
+        // (unmerged) keys buckets, windowed and merged fresh at every
+        // output timestamp in the loop below, instead of once up front.
+        enum KeysSource<'a> {
+            Fixed(Vec<KeyByLabelValues>),
+            PerStep(&'a Vec<crate::stores::TimestampedBucket>),
+        }
+
+        // Resolve, for every value group, which groups exist at all (a
+        // one-time operation — see design doc) and where their expansion
+        // keys come from. A group with keys data but no value data
+        // anywhere in the queried range is skipped with a warning instead
+        // of failing the whole range query (#583; previously
+        // `.ok_or_else(...)?` here hard-failed everything for one missing
+        // group). See #582 review for collect_results_separate_keys parity.
+        let groups: Vec<(&Vec<crate::stores::TimestampedBucket>, KeysSource)> = match &keys_raw_data
+        {
             Some(keys_map) => keys_map
                 .iter()
-                .map(|(group_key, keys_precompute)| {
-                    let timestamped_buckets = all_data
-                        .get(group_key)
-                        .ok_or_else(|| format!("No value for key: {:?}", group_key))?;
-                    let expansion_keys = keys_precompute
-                        .get_keys()
-                        .ok_or_else(|| "Keys required for separate aggregation".to_string())?;
-                    Ok((timestamped_buckets, expansion_keys))
-                })
-                .collect::<Result<Vec<_>, String>>()?,
+                .filter_map(
+                    |(group_key, raw_keys_buckets)| match all_data.get(group_key) {
+                        Some(timestamped_buckets) => {
+                            Some((timestamped_buckets, KeysSource::PerStep(raw_keys_buckets)))
+                        }
+                        None => {
+                            warn!(
+                                "Range query: group {:?} has keys data but no value data \
+                             anywhere in the queried range — skipping this group instead \
+                             of failing the whole query (#583)",
+                                group_key
+                            );
+                            None
+                        }
+                    },
+                )
+                .collect(),
             None => all_data
                 .iter()
                 .filter_map(|(group_key, buckets)| {
-                    group_key.as_ref().map(|k| (buckets, vec![k.clone()]))
+                    group_key
+                        .as_ref()
+                        .map(|k| (buckets, KeysSource::Fixed(vec![k.clone()])))
                 })
                 .collect(),
         };
 
         // Process each value group independently
-        for (timestamped_buckets, expansion_keys) in groups {
+        for (timestamped_buckets, keys_source) in groups {
             // Build lookup: bucket_start_timestamp -> all buckets sharing
             // that start. A Sliding aggregation can legitimately return more
             // than one bucket per start timestamp (#567/#570) — every one of
@@ -1580,15 +1605,78 @@ impl SimpleEngine {
                 bucket_map.entry(*start).or_default().push(bucket.as_ref());
             }
 
+            // Same idea, for keys (#583) — only built for dual-population
+            // groups; Fixed groups have nothing to window.
+            let keys_bucket_map: Option<HashMap<u64, Vec<&dyn AggregateCore>>> = match &keys_source
+            {
+                KeysSource::PerStep(raw_keys_buckets) => {
+                    let mut m: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
+                    for ((start, _), bucket) in raw_keys_buckets.iter() {
+                        m.entry(*start).or_default().push(bucket.as_ref());
+                    }
+                    Some(m)
+                }
+                KeysSource::Fixed(_) => None,
+            };
+
             debug!(
-                "Group with {} start-timestamps, expands to keys: {:?}",
+                "Group with {} start-timestamps ({} keys start-timestamps)",
                 bucket_map.len(),
-                expansion_keys
+                keys_bucket_map.as_ref().map(|m| m.len()).unwrap_or(0)
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
             let mut current_time = start_ms;
             while current_time <= end_ms {
+                // #583: resolve THIS step's own expansion keys — not a
+                // single snapshot reused for every step.
+                let expansion_keys: Vec<KeyByLabelValues> = match &keys_source {
+                    KeysSource::Fixed(keys) => keys.clone(),
+                    KeysSource::PerStep(_) => {
+                        let keys_bucket_map = keys_bucket_map
+                            .as_ref()
+                            .expect("PerStep implies keys_bucket_map is Some");
+                        let keys_lookback_ms =
+                            keys_lookback_ms.expect("PerStep implies keys_lookback_ms is Some");
+                        let keys_tumbling_window_ms = keys_tumbling_window_ms
+                            .expect("PerStep implies keys_tumbling_window_ms is Some");
+
+                        let keys_window_start = current_time.saturating_sub(keys_lookback_ms);
+                        let mut keys_window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
+                        let mut kt = keys_window_start;
+                        while kt < current_time {
+                            if let Some(buckets) = keys_bucket_map.get(&kt) {
+                                keys_window_buckets
+                                    .extend(buckets.iter().map(|b| b.clone_boxed_core()));
+                            }
+                            kt += keys_tumbling_window_ms;
+                        }
+
+                        if keys_window_buckets.is_empty() {
+                            Vec::new()
+                        } else {
+                            let mut key_merger = create_window_merger(key_accumulator_type);
+                            key_merger.initialize(keys_window_buckets);
+                            match key_merger.get_merged() {
+                                Ok(merged) => merged.get_keys().unwrap_or_default(),
+                                Err(e) => {
+                                    debug!("Failed to merge keys at t={}: {}", current_time, e);
+                                    Vec::new()
+                                }
+                            }
+                        }
+                    }
+                };
+
+                if expansion_keys.is_empty() {
+                    debug!(
+                        "No expansion keys resolved at t={} — skipping this step for this group",
+                        current_time
+                    );
+                    current_time += step_ms;
+                    continue;
+                }
+
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
                 let window_start = current_time.saturating_sub(lookback_ms);
