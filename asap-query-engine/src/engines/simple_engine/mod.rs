@@ -1586,12 +1586,25 @@ impl SimpleEngine {
             window_mode
         );
 
-        // #583: where a group's output label-keys come from. `Fixed` for
-        // single-population metrics — the value's own key IS the output
-        // key at every timestamp, nothing to merge. `PerStep` for
-        // dual-population metrics — a reference to that group's raw
-        // (unmerged) keys buckets, windowed and merged fresh at every
-        // output timestamp in the loop below, instead of once up front.
+        // Whether the value accumulator's own get_keys() is even consulted
+        // depends on the query SHAPE (dual- vs single-population), not on a
+        // per-group fallback — mirrors collect_all_results exactly:
+        //   - dual-population (KeysSource::PerStep below, separate
+        //     keys_query present): always expand via the keys aggregation's
+        //     per-step merge (#583). The value accumulator's own get_keys()
+        //     is never consulted, even if the value accumulator itself
+        //     happens to be self-keyed (e.g. a CountMinSketchWithHeap value
+        //     paired with a DeltaSetAggregator keys aggregation is a real
+        //     capability-matched config, see sql.rs). Otherwise a
+        //     self-keyed value accumulator's own (possibly different,
+        //     window-to-window-shifting) keys would silently override the
+        //     keys aggregation's expansion. See #587 review.
+        //   - single-population (KeysSource::Fixed below, no separate
+        //     keys_query): the value accumulator's own get_keys() takes
+        //     priority whenever present (#584, self-keyed accumulators like
+        //     top-k), evaluated AFTER merging the window's value buckets
+        //     (a top-k heap's keys can depend on that window's data),
+        //     falling back to the store-level group key otherwise.
         enum KeysSource<'a> {
             Fixed(Vec<KeyByLabelValues>),
             PerStep(&'a Vec<crate::stores::TimestampedBucket>),
@@ -1625,12 +1638,19 @@ impl SimpleEngine {
                     },
                 )
                 .collect(),
+            // #584/#587: keep every group, including group_key=None — that's
+            // exactly where a self-keyed single-population accumulator
+            // (e.g. top-k) is typically stored. An empty fallback list here
+            // is fine; the per-step loop below tries the value
+            // accumulator's own get_keys() first and only falls back to
+            // this list.
             None => all_data
                 .iter()
-                .filter_map(|(group_key, buckets)| {
-                    group_key
-                        .as_ref()
-                        .map(|k| (buckets, KeysSource::Fixed(vec![k.clone()])))
+                .map(|(group_key, buckets)| {
+                    (
+                        buckets,
+                        KeysSource::Fixed(group_key.clone().into_iter().collect()),
+                    )
                 })
                 .collect(),
         };
@@ -1658,10 +1678,14 @@ impl SimpleEngine {
             // Iterate by OUTPUT timestamp, not by bucket index
             let mut current_time = start_ms;
             while current_time <= end_ms {
-                // #583: resolve THIS step's own expansion keys — not a
-                // single snapshot reused for every step.
-                let expansion_keys: Vec<KeyByLabelValues> = match &keys_source {
-                    KeysSource::Fixed(keys) => keys.clone(),
+                // #583: dual-population groups resolve their expansion keys
+                // from the keys aggregation, per step — not a single
+                // snapshot reused for every step — and (#587) never from
+                // the value accumulator's own get_keys(). If nothing
+                // resolves at this step, skip it before ever touching the
+                // value merge below. Fixed (single-population) groups defer
+                // key resolution until after the value merge (#584/#587).
+                let per_step_keys: Option<Vec<KeyByLabelValues>> = match &keys_source {
                     KeysSource::PerStep(_) => {
                         let keys_bucket_map = keys_bucket_map
                             .as_ref()
@@ -1679,7 +1703,7 @@ impl SimpleEngine {
                             keys_tumbling_window_ms,
                         );
 
-                        if keys_window_buckets.is_empty() {
+                        let expansion_keys = if keys_window_buckets.is_empty() {
                             Vec::new()
                         } else {
                             let mut key_merger = create_window_merger(key_accumulator_type);
@@ -1691,18 +1715,20 @@ impl SimpleEngine {
                                     Vec::new()
                                 }
                             }
-                        }
-                    }
-                };
+                        };
 
-                if expansion_keys.is_empty() {
-                    debug!(
-                        "No expansion keys resolved at t={} — skipping this step for this group",
-                        current_time
-                    );
-                    current_time += step_ms;
-                    continue;
-                }
+                        if expansion_keys.is_empty() {
+                            debug!(
+                                "No expansion keys resolved at t={} — skipping this step for this group",
+                                current_time
+                            );
+                            current_time += step_ms;
+                            continue;
+                        }
+                        Some(expansion_keys)
+                    }
+                    KeysSource::Fixed(_) => None,
+                };
 
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
@@ -1719,9 +1745,25 @@ impl SimpleEngine {
 
                     match merger.get_merged() {
                         Ok(merged) => {
+                            // See the note above KeysSource: dual-population
+                            // (per_step_keys already resolved, non-empty)
+                            // always uses that; single-population lets the
+                            // value accumulator's own get_keys() (read after
+                            // merging this window, since e.g. a top-k heap's
+                            // keys depend on the window's data) take
+                            // priority, falling back to the store-level
+                            // group key otherwise.
+                            let resolved_keys = match &keys_source {
+                                KeysSource::PerStep(_) => per_step_keys.expect(
+                                    "PerStep always sets per_step_keys above, or continues",
+                                ),
+                                KeysSource::Fixed(fallback_keys) => {
+                                    merged.get_keys().unwrap_or_else(|| fallback_keys.clone())
+                                }
+                            };
                             // Query statistic and emit a sample at current_time
                             // for every expanded key sharing this value group.
-                            for key in &expansion_keys {
+                            for key in &resolved_keys {
                                 match self.query_precompute_for_statistic(
                                     merged.as_ref(),
                                     &context.base.metadata.statistic_to_compute,
@@ -1745,16 +1787,16 @@ impl SimpleEngine {
                         }
                         Err(e) => {
                             debug!(
-                                "Failed to get merged result at t={} for keys {:?}: {}",
-                                current_time, expansion_keys, e
+                                "Failed to get merged result at t={} (per_step_keys={:?}): {}",
+                                current_time, per_step_keys, e
                             );
                         }
                     }
                 } else {
                     // No data at all for this window - skip sample
                     debug!(
-                        "Keys {:?}: skipping sample at {} - no data in window [{}, {})",
-                        expansion_keys, current_time, window_start, current_time
+                        "Skipping sample at {} (per_step_keys={:?}) - no data in window [{}, {})",
+                        current_time, per_step_keys, window_start, current_time
                     );
                 }
 
