@@ -6,7 +6,7 @@
 use super::SimpleEngine;
 use super::{
     QueryExecutionContext, QueryMetadata, QueryTimestamps, RangeQueryExecutionContext,
-    RangeQueryParams,
+    RangeQueryParams, StoreQueryParams,
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
@@ -540,6 +540,23 @@ impl SimpleEngine {
         }
     }
 
+    /// Widens `query`'s window to `[start_ms - lookback, end_ms]`, where
+    /// `lookback` is the width `query` already had (`end_timestamp -
+    /// start_timestamp`) before this call. Re-anchors whatever window an
+    /// aggregation's instant fetch already computed so it slides across the
+    /// whole range, without needing to know *why* that window is that width
+    /// — e.g. it's what lets the same call widen a Tumbling `values_query`,
+    /// a Sliding-window instant fetch, or (per #583) a `SetAggregator`'s
+    /// `[end-window_size, end]` keys window or a `DeltaSetAggregator`'s
+    /// `[0, end]` one, identically. Returns the lookback so callers can
+    /// derive bucket-count/step metadata from it.
+    fn widen_query_window(query: &mut StoreQueryParams, start_ms: u64, end_ms: u64) -> u64 {
+        let lookback_ms = query.end_timestamp - query.start_timestamp;
+        query.start_timestamp = start_ms.saturating_sub(lookback_ms);
+        query.end_timestamp = end_ms;
+        lookback_ms
+    }
+
     /// Extends an instant `QueryExecutionContext` into a `RangeQueryExecutionContext`:
     /// computes the lookback window from the aggregation's tumbling window size,
     /// validates the range params, and widens the store plan to cover
@@ -573,16 +590,13 @@ impl SimpleEngine {
             })
             .ok()?;
 
-        let lookback_ms = base_context.store_plan.values_query.end_timestamp
-            - base_context.store_plan.values_query.start_timestamp;
+        let mut extended_store_plan = base_context.store_plan.clone();
+        let lookback_ms =
+            Self::widen_query_window(&mut extended_store_plan.values_query, start_ms, end_ms);
+        extended_store_plan.values_query.is_exact_query = false;
 
         let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
         let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
-
-        let mut extended_store_plan = base_context.store_plan.clone();
-        extended_store_plan.values_query.start_timestamp = start_ms.saturating_sub(lookback_ms);
-        extended_store_plan.values_query.end_timestamp = end_ms;
-        extended_store_plan.values_query.is_exact_query = false;
 
         // #583: widen keys_query the same way, using the instant window
         // create_keys_query_params already computed for it as the source of
@@ -593,11 +607,10 @@ impl SimpleEngine {
         // the instant window is [0, end], so keys_lookback_ms == end_ms,
         // which saturating_sub's to 0 for every current_time <= end_ms in
         // the per-step loop -- i.e. "replay from the beginning," for free.
-        let keys_lookback_ms = base_context
-            .store_plan
+        let keys_lookback_ms = extended_store_plan
             .keys_query
-            .as_ref()
-            .map(|kq| kq.end_timestamp - kq.start_timestamp);
+            .as_mut()
+            .map(|keys_query| Self::widen_query_window(keys_query, start_ms, end_ms));
         let keys_tumbling_window_ms = match keys_lookback_ms {
             Some(_) => Some(
                 self.streaming_config
@@ -608,12 +621,6 @@ impl SimpleEngine {
             ),
             None => None,
         };
-        if let (Some(keys_query), Some(lookback)) =
-            (extended_store_plan.keys_query.as_mut(), keys_lookback_ms)
-        {
-            keys_query.start_timestamp = start_ms.saturating_sub(lookback);
-            keys_query.end_timestamp = end_ms;
-        }
 
         Some(RangeQueryExecutionContext {
             base: QueryExecutionContext {
