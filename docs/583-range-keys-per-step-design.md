@@ -233,10 +233,42 @@ all multi-assertion tests in the file.
 the value vs. key aggregation configs, needed for the Q4 test; existing call
 sites untouched.
 
-## Not yet done
+## Status
 
-- The actual fix implementation (this session was design + tests only, by
-  explicit request).
+The fix landed (PR [#595](https://github.com/ProjectASAP/ASAPQuery/pull/595),
+draft), staged as planned:
+
+- Stage 1 — widened `keys_query`'s window in `finish_range_context`
+  (`keys_lookback_ms`/`keys_tumbling_window_ms` on
+  `RangeQueryExecutionContext`), behavior-inert on its own.
+- Stage 2 — the actual per-step keys merge in
+  `execute_range_query_pipeline` (raw fetch, `KeysSource` enum, per-step
+  windowed merge, Q6's non-fatal group skip).
+- Stage 3 — confirmed the binary-expr arm path needed no separate code
+  change, as predicted.
+- Stage 4 — full regression pass, 0 failures.
+
+All 16 `native_range_query_tests` pass; full workspace suite (`cargo test
+--workspace`) passes with 0 failures.
+
+Follow-up refactor (`widen_query_window`, dedupping the values/keys window
+formula) and a broader duplication survey against the instant-query path
+were also done post-fix. Two items came out of that survey as genuine
+design decisions rather than mechanical refactors, and were filed as
+separate issues rather than folded into #583:
+
+- [#596](https://github.com/ProjectASAP/ASAPQuery/issues/596) — range
+  queries never got the CMS/KLL batch-merge fast path the instant path has
+  (`NaiveMerger` only does the sequential fallback); the two fallback
+  implementations also differ in error-handling policy, so unifying them
+  isn't free.
+- [#597](https://github.com/ProjectASAP/ASAPQuery/issues/597) — #583's Q6
+  (skip a group with keys-but-no-value-data instead of hard-failing) was
+  only applied to the range path; the instant path
+  (`collect_results_separate_keys`) still hard-fails on the identical case.
+
+## Explicitly not done here
+
 - Incremental carry-forward merging for `DeltaSetAggregator` (Q3) — deferred
   until proven necessary.
 - Broader unification with #581 — out of scope for #583, but this fix moves
