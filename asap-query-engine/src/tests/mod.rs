@@ -6,6 +6,7 @@ pub mod elastic_forwarding_tests;
 pub mod native_binary_arithmetic_plan_tests;
 pub mod native_binary_instant_tests;
 pub mod native_pipeline_merge_tests;
+pub mod native_range_query_tests;
 pub mod prometheus_forwarding_tests;
 pub mod query_equivalence_tests;
 pub mod sql_pattern_matching_tests;
