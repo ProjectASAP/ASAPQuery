@@ -63,7 +63,11 @@ mod tests {
     /// values are present -- needed once there's more than one grouping
     /// label (e.g. region + host), since a bare host value alone can't tell
     /// "host-b under region=eu" apart from "host-b under region=us".
-    fn labels_have_sample_at(elements: &[RangeVectorElement], label_values: &[&str], ts: u64) -> bool {
+    fn labels_have_sample_at(
+        elements: &[RangeVectorElement],
+        label_values: &[&str],
+        ts: u64,
+    ) -> bool {
         elements
             .iter()
             .find(|e| {
@@ -86,7 +90,9 @@ mod tests {
             .filter_map(|(labels, ts, expected, reason)| {
                 let actual = labels_have_sample_at(elements, labels, *ts);
                 (actual != *expected).then(|| {
-                    format!("{labels:?}@{ts}: expected present={expected}, got {actual} -- {reason}")
+                    format!(
+                        "{labels:?}@{ts}: expected present={expected}, got {actual} -- {reason}"
+                    )
                 })
             })
             .collect();
@@ -716,10 +722,26 @@ mod tests {
             labels: vec!["host-a".to_string(), "evt-1".to_string()],
         });
         let keys_data: TimeSeriesData = vec![
-            (1000, None, Box::new(keys_add.clone()) as Box<dyn AggregateCore>),
-            (2000, None, Box::new(keys_remove.clone()) as Box<dyn AggregateCore>),
-            (3000, None, Box::new(keys_add.clone()) as Box<dyn AggregateCore>),
-            (4000, None, Box::new(keys_remove.clone()) as Box<dyn AggregateCore>),
+            (
+                1000,
+                None,
+                Box::new(keys_add.clone()) as Box<dyn AggregateCore>,
+            ),
+            (
+                2000,
+                None,
+                Box::new(keys_remove.clone()) as Box<dyn AggregateCore>,
+            ),
+            (
+                3000,
+                None,
+                Box::new(keys_add.clone()) as Box<dyn AggregateCore>,
+            ),
+            (
+                4000,
+                None,
+                Box::new(keys_remove.clone()) as Box<dyn AggregateCore>,
+            ),
             (5000, None, Box::new(keys_add) as Box<dyn AggregateCore>),
         ];
 
@@ -1054,15 +1076,43 @@ mod tests {
             vec!["region"],
             vec!["host", "event"],
             vec![
-                (1000, Some(vec!["us".to_string()]), Box::new(cms_us_1) as Box<dyn AggregateCore>),
-                (2000, Some(vec!["us".to_string()]), Box::new(cms_us_2) as Box<dyn AggregateCore>),
-                (1000, Some(vec!["eu".to_string()]), Box::new(cms_eu_1) as Box<dyn AggregateCore>),
-                (2000, Some(vec!["eu".to_string()]), Box::new(cms_eu_2) as Box<dyn AggregateCore>),
+                (
+                    1000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(cms_us_1) as Box<dyn AggregateCore>,
+                ),
+                (
+                    2000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(cms_us_2) as Box<dyn AggregateCore>,
+                ),
+                (
+                    1000,
+                    Some(vec!["eu".to_string()]),
+                    Box::new(cms_eu_1) as Box<dyn AggregateCore>,
+                ),
+                (
+                    2000,
+                    Some(vec!["eu".to_string()]),
+                    Box::new(cms_eu_2) as Box<dyn AggregateCore>,
+                ),
             ],
             vec![
-                (1000, Some(vec!["us".to_string()]), Box::new(keys_us_1000) as Box<dyn AggregateCore>),
-                (2000, Some(vec!["us".to_string()]), Box::new(keys_us_2000) as Box<dyn AggregateCore>),
-                (1000, Some(vec!["eu".to_string()]), Box::new(keys_eu_1000) as Box<dyn AggregateCore>),
+                (
+                    1000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(keys_us_1000) as Box<dyn AggregateCore>,
+                ),
+                (
+                    2000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(keys_us_2000) as Box<dyn AggregateCore>,
+                ),
+                (
+                    1000,
+                    Some(vec!["eu".to_string()]),
+                    Box::new(keys_eu_1000) as Box<dyn AggregateCore>,
+                ),
             ],
             "count(event_frequency) by (region, host, event)",
         );
@@ -1075,15 +1125,30 @@ mod tests {
         assert_all_at(
             &elements,
             &[
-                (&["us", "host-a"], 1000, true, "region=us has host-a from the start"),
+                (
+                    &["us", "host-a"],
+                    1000,
+                    true,
+                    "region=us has host-a from the start",
+                ),
                 (
                     &["us", "host-b"],
                     1000,
                     false,
                     "region=us's host-b is only added at t=2000",
                 ),
-                (&["us", "host-b"], 2000, true, "region=us's host-b was added by t=2000"),
-                (&["eu", "host-x"], 1000, true, "region=eu has host-x from the start"),
+                (
+                    &["us", "host-b"],
+                    2000,
+                    true,
+                    "region=us's host-b was added by t=2000",
+                ),
+                (
+                    &["eu", "host-x"],
+                    1000,
+                    true,
+                    "region=eu has host-x from the start",
+                ),
                 (
                     &["eu", "host-x"],
                     2000,
@@ -1153,16 +1218,48 @@ mod tests {
             vec!["region"],
             vec!["host", "event"],
             vec![
-                (1000, Some(vec!["us".to_string()]), Box::new(cms_us_1) as Box<dyn AggregateCore>),
-                (2000, Some(vec!["us".to_string()]), Box::new(cms_us_2) as Box<dyn AggregateCore>),
-                (1000, Some(vec!["eu".to_string()]), Box::new(cms_eu_1) as Box<dyn AggregateCore>),
-                (2000, Some(vec!["eu".to_string()]), Box::new(cms_eu_2) as Box<dyn AggregateCore>),
+                (
+                    1000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(cms_us_1) as Box<dyn AggregateCore>,
+                ),
+                (
+                    2000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(cms_us_2) as Box<dyn AggregateCore>,
+                ),
+                (
+                    1000,
+                    Some(vec!["eu".to_string()]),
+                    Box::new(cms_eu_1) as Box<dyn AggregateCore>,
+                ),
+                (
+                    2000,
+                    Some(vec!["eu".to_string()]),
+                    Box::new(cms_eu_2) as Box<dyn AggregateCore>,
+                ),
             ],
             vec![
-                (1000, Some(vec!["us".to_string()]), Box::new(keys_us_1000) as Box<dyn AggregateCore>),
-                (2000, Some(vec!["us".to_string()]), Box::new(keys_us_2000) as Box<dyn AggregateCore>),
-                (1000, Some(vec!["eu".to_string()]), Box::new(keys_eu_1000) as Box<dyn AggregateCore>),
-                (2000, Some(vec!["eu".to_string()]), Box::new(keys_eu_2000) as Box<dyn AggregateCore>),
+                (
+                    1000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(keys_us_1000) as Box<dyn AggregateCore>,
+                ),
+                (
+                    2000,
+                    Some(vec!["us".to_string()]),
+                    Box::new(keys_us_2000) as Box<dyn AggregateCore>,
+                ),
+                (
+                    1000,
+                    Some(vec!["eu".to_string()]),
+                    Box::new(keys_eu_1000) as Box<dyn AggregateCore>,
+                ),
+                (
+                    2000,
+                    Some(vec!["eu".to_string()]),
+                    Box::new(keys_eu_2000) as Box<dyn AggregateCore>,
+                ),
             ],
             "count(event_frequency) by (region, host, event)",
         );
@@ -1228,11 +1325,19 @@ mod tests {
 
         let mut keys_normal = DeltaSetAggregatorAccumulator::new();
         keys_normal.add_key(KeyByLabelValues {
-            labels: vec!["normal".to_string(), "host-a".to_string(), "evt-1".to_string()],
+            labels: vec![
+                "normal".to_string(),
+                "host-a".to_string(),
+                "evt-1".to_string(),
+            ],
         });
         let mut keys_orphan = DeltaSetAggregatorAccumulator::new();
         keys_orphan.add_key(KeyByLabelValues {
-            labels: vec!["orphan".to_string(), "host-z".to_string(), "evt-1".to_string()],
+            labels: vec![
+                "orphan".to_string(),
+                "host-z".to_string(),
+                "evt-1".to_string(),
+            ],
         });
 
         let engine = create_range_engine_dual_input(
@@ -1383,7 +1488,12 @@ mod tests {
                     "host-b's bucket collides with host-a's at (start=0,end=1000) -- \
                      both must be merged (unioned), not one dropped in favor of the other",
                 ),
-                (&["host-c"], 1000, false, "host-c's bucket doesn't exist until t=2000"),
+                (
+                    &["host-c"],
+                    1000,
+                    false,
+                    "host-c's bucket doesn't exist until t=2000",
+                ),
                 (
                     &["host-a"],
                     2000,
@@ -1398,7 +1508,12 @@ mod tests {
                     "SetAggregator is latest-window-only: host-c's window replaces \
                      host-a/host-b's, it doesn't accumulate alongside them",
                 ),
-                (&["host-c"], 2000, true, "host-c is the live set for the window ending at t=2000"),
+                (
+                    &["host-c"],
+                    2000,
+                    true,
+                    "host-c is the live set for the window ending at t=2000",
+                ),
             ],
         );
     }
