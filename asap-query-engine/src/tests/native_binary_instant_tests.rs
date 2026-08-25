@@ -258,6 +258,87 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn instant_query_dual_population_group_with_no_value_data_is_skipped_not_fatal() {
+        // Instant-query counterpart to
+        // native_range_query_tests::range_query_dual_population_group_with_no_value_data_is_skipped_not_fatal.
+        // collect_results_separate_keys used to hard-fail the ENTIRE instant
+        // query if any group resolved from merged_keys had no matching entry
+        // in merged_values: `merged_values.get(key).ok_or_else(|| "No value
+        // for key")?`. region=orphan has keys data (a real DeltaSetAggregator
+        // key) but never has any value/CMS data at all -- that poisoned the
+        // WHOLE query, so even region=normal's perfectly good data
+        // disappeared. Per #597 (bringing the instant path in line with
+        // #583's range-query fix), this is now skipped with a warning
+        // instead, and the rest of the query's results still return.
+        let cms_normal = CountMinSketchAccumulator::new(2, 3);
+
+        let mut keys_normal = DeltaSetAggregatorAccumulator::new();
+        keys_normal.add_key(KeyByLabelValues {
+            labels: vec![
+                "normal".to_string(),
+                "host-a".to_string(),
+                "evt-1".to_string(),
+            ],
+        });
+        let mut keys_orphan = DeltaSetAggregatorAccumulator::new();
+        keys_orphan.add_key(KeyByLabelValues {
+            labels: vec![
+                "orphan".to_string(),
+                "host-z".to_string(),
+                "evt-1".to_string(),
+            ],
+        });
+
+        let engine = create_engine_dual_input(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
+            vec!["region"],
+            vec!["host", "event"],
+            vec![(
+                Some(vec!["normal".to_string()]),
+                Box::new(cms_normal) as Box<dyn AggregateCore>,
+            )],
+            // Deliberately NO value data for region=orphan.
+            vec![
+                (
+                    Some(vec!["normal".to_string()]),
+                    Box::new(keys_normal) as Box<dyn AggregateCore>,
+                ),
+                (
+                    Some(vec!["orphan".to_string()]),
+                    Box::new(keys_orphan) as Box<dyn AggregateCore>,
+                ),
+            ],
+            "count(event_frequency) by (region, host, event)",
+        );
+
+        let query = "count(event_frequency) by (region, host, event)";
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect(
+                "instant query should succeed by skipping the value-less region=orphan \
+                 group, not fail the entire query because of it",
+            );
+        let values = vector_values(qr);
+
+        assert!(
+            values
+                .iter()
+                .any(|(labels, _)| labels.contains(&"normal".to_string())),
+            "region=normal has real value data and should be unaffected by \
+             region=orphan having none"
+        );
+        assert!(
+            !values
+                .iter()
+                .any(|(labels, _)| labels.contains(&"orphan".to_string())),
+            "region=orphan has keys data but no value data anywhere -- it must be \
+             silently skipped, not appear as an (empty or otherwise) series"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn binary_expr_sliding_window_end_to_end_merges_correctly() {
         // Ties Stage 1's sliding-bucket merge fix (#570) to the actual
         // production entrypoint this issue changes: 2 buckets for the same

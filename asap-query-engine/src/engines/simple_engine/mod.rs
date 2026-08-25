@@ -1258,11 +1258,20 @@ impl SimpleEngine {
                 .get_keys()
                 .ok_or_else(|| "Keys required for separate aggregation".to_string())?;
 
-            for key_for_this_precompute in keys_for_this_precompute {
-                let value_precompute = merged_values
-                    .get(key)
-                    .ok_or_else(|| format!("No value for key: {:?}", key))?;
+            // A group with keys data but no matching value data is skipped
+            // instead of failing the whole query, mirroring the range
+            // query's #583 behavior (previously `.ok_or_else(...)?` here
+            // hard-failed everything for one missing group; see #597).
+            let Some(value_precompute) = merged_values.get(key) else {
+                warn!(
+                    "Instant query: group {:?} has keys data but no value data -- \
+                     skipping this group instead of failing the whole query (#597)",
+                    key
+                );
+                continue;
+            };
 
+            for key_for_this_precompute in keys_for_this_precompute {
                 let value = self
                     .query_precompute_for_statistic(
                         value_precompute.as_ref(),
