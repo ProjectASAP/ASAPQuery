@@ -1271,6 +1271,13 @@ impl SimpleEngine {
             return Err(AccumulatorError::EmptySlice);
         }
 
+        // Move rather than clone in the common single-bucket case (this owns
+        // `accumulators`, unlike NaiveMerger which merges from a borrowed
+        // Vec it needs to keep around for the next slide()).
+        if accumulators.len() == 1 {
+            return Ok(accumulators.into_iter().next().unwrap());
+        }
+
         crate::engines::merge_utils::merge_accumulators_batch(&accumulators)
             .map_err(|e| AccumulatorError::MergeFailed(e.to_string()))
     }
@@ -2626,7 +2633,9 @@ mod merge_accumulators_regression_tests_596 {
         AccumulatorError, CountMinSketchAccumulator, DatasketchesKLLAccumulator, SumAccumulator,
     };
     use crate::stores::{Store, TimestampedBucketsMap};
-    use asap_sketchlib::CountMinSketch;
+    use crate::tests::test_utilities::{
+        cms_from_matrix, oracle_sequential_fold, PoisonableAccumulator,
+    };
     use serde_json::Value;
     use std::any::Any;
     use std::collections::HashMap;
@@ -2689,32 +2698,6 @@ mod merge_accumulators_regression_tests_596 {
             15,
             QueryLanguage::promql,
         )
-    }
-
-    fn cms_from_matrix(
-        matrix: Vec<Vec<f64>>,
-        rows: usize,
-        cols: usize,
-    ) -> CountMinSketchAccumulator {
-        CountMinSketchAccumulator {
-            inner: CountMinSketch::from_legacy_matrix(matrix, rows, cols),
-        }
-    }
-
-    /// Independent oracle: a plain sequential `merge_with` fold, computed
-    /// without going through either `NaiveMerger` or `merge_accumulators`.
-    fn oracle_sequential_fold(buckets: &[Box<dyn AggregateCore>]) -> Box<dyn AggregateCore> {
-        let mut iter = buckets.iter();
-        let mut acc = iter
-            .next()
-            .expect("oracle needs at least one bucket")
-            .clone();
-        for b in iter {
-            acc = acc
-                .merge_with(b.as_ref())
-                .expect("oracle sequential fold's merge_with failed");
-        }
-        acc
     }
 
     fn naive_merger_result(
@@ -2960,65 +2943,6 @@ mod merge_accumulators_regression_tests_596 {
     /// Mock accumulator whose `merge_with` fails under a condition the test
     /// fully controls (a `poisoned` flag), independent of any real
     /// accumulator's library-specific error conditions.
-    #[derive(Clone, Debug)]
-    struct PoisonableAccumulator {
-        id: u32,
-        poisoned: bool,
-    }
-
-    impl SerializableToSink for PoisonableAccumulator {
-        fn serialize_to_json(&self) -> Value {
-            serde_json::json!({"id": self.id})
-        }
-        fn serialize_to_bytes(&self) -> Vec<u8> {
-            self.id.to_le_bytes().to_vec()
-        }
-    }
-
-    impl AggregateCore for PoisonableAccumulator {
-        fn clone_boxed_core(&self) -> Box<dyn AggregateCore> {
-            Box::new(self.clone())
-        }
-        fn type_name(&self) -> &'static str {
-            "PoisonableAccumulator"
-        }
-        fn as_any(&self) -> &dyn Any {
-            self
-        }
-        fn merge_with(
-            &self,
-            other: &dyn AggregateCore,
-        ) -> Result<Box<dyn AggregateCore>, Box<dyn std::error::Error + Send + Sync>> {
-            let other_p = other
-                .as_any()
-                .downcast_ref::<PoisonableAccumulator>()
-                .ok_or("Cannot merge with different accumulator type")?;
-            if self.poisoned || other_p.poisoned {
-                return Err(
-                    format!("poisoned merge involving id {} / {}", self.id, other_p.id).into(),
-                );
-            }
-            Ok(Box::new(PoisonableAccumulator {
-                id: self.id.max(other_p.id),
-                poisoned: false,
-            }))
-        }
-        fn get_accumulator_type(&self) -> AggregationType {
-            AggregationType::Sum
-        }
-        fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
-            None
-        }
-        fn query_statistic(
-            &self,
-            _statistic: promql_utilities::query_logics::enums::Statistic,
-            _key: &Option<KeyByLabelValues>,
-            _query_kwargs: &std::collections::HashMap<String, String>,
-        ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-            Err("PoisonableAccumulator does not support query_statistic".into())
-        }
-    }
-
     #[test]
     fn merge_accumulators_and_naive_merger_abort_on_mid_batch_error_not_silent_drop() {
         // Buckets 1 and 2 merge fine; bucket 3 poisons the fold partway
