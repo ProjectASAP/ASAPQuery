@@ -662,11 +662,11 @@ impl Store for SimpleMapStorePerKey {
         #[cfg(feature = "lock_profiling")]
         let rwlock_wait_start = Instant::now();
 
-        // Opt 1: exact_query takes &mut self (lazy index build), so we need a write lock.
-        // Range queries still use a read lock — only exact queries pay the write-lock cost.
-        let mut data = store_data_lock.write().map_err(|e| {
+        // exact_query takes &self (its lazy index build is behind its own inner lock,
+        // see MutableEpoch::exact_query / issue #607), so a read lock suffices here too.
+        let data = store_data_lock.read().map_err(|e| {
             format!(
-                "Failed to acquire write lock for exact query aggregation_id {}: {}",
+                "Failed to acquire read lock for exact query aggregation_id {}: {}",
                 store_key, e
             )
         })?;
@@ -688,7 +688,7 @@ impl Store for SimpleMapStorePerKey {
         let timestamp_range = (exact_start, exact_end);
 
         // Opt 1: exact_query on the mutable epoch builds the lazy offset index if absent,
-        // then looks up the window in O(m). Returns an owned Vec — the &mut borrow ends here.
+        // then looks up the window in O(m). Takes &self (issue #607) — no write lock needed.
         let entries_opt: Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> =
             data.current_epoch.exact_query(timestamp_range).or_else(|| {
                 data.sealed_epochs
@@ -727,7 +727,8 @@ impl Store for SimpleMapStorePerKey {
             );
         }
 
-        // Update read count — write lock already held, no inner Mutex needed
+        // Update read count. Outer lock is now only a read lock (issue #607), so this
+        // inner Mutex is what actually serializes concurrent read-count updates.
         if found_match {
             let mut read_counts = data.read_counts.lock().unwrap();
             *read_counts.entry(timestamp_range).or_insert(0) += 1;

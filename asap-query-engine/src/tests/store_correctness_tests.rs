@@ -186,6 +186,14 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     test_single_insert_exact_query_hit(strategy);
     test_single_insert_exact_query_wrong_start_returns_empty(strategy);
     test_single_insert_exact_query_wrong_end_returns_empty(strategy);
+
+    // Exact-query cache correctness (Issue: query_precomputed_output_exact over-locking)
+    test_exact_query_is_stable_across_repeated_calls(strategy);
+    test_exact_query_sees_window_inserted_after_a_prior_exact_query(strategy);
+    test_exact_query_miss_then_hit_after_insert(strategy);
+    test_exact_query_correct_across_interleaved_inserts_and_queries(strategy);
+    test_exact_query_correct_after_epoch_rotation(strategy);
+
     test_batch_insert_full_range_query_returns_all(strategy);
     test_batch_insert_results_are_chronologically_ordered(strategy);
     test_range_query_returns_only_windows_within_range(strategy);
@@ -343,6 +351,201 @@ fn test_single_insert_exact_query_wrong_end_returns_empty(strategy: LockStrategy
         "[{}] exact query with wrong end timestamp must return empty",
         label(strategy)
     );
+}
+
+// ── exact-query cache correctness ─────────────────────────────────────────────
+//
+// `query_precomputed_output_exact` is used by sliding-window instant queries to
+// fetch a precompute with an exactly-matching timestamp range, no merging. Some
+// implementations (PerKey's `MutableEpoch`) maintain a lazy internal lookup
+// index for this path, built on first use and invalidated on the next insert.
+// These tests pin the observable contract that must hold regardless of how
+// (or whether) that caching is implemented: exact queries must always reflect
+// the store's true current contents, never a stale snapshot from before the
+// most recent write, and must remain correct across repeated calls.
+
+fn test_exact_query_is_stable_across_repeated_calls(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+    let (out, acc) = sum_entry(1, 1_000, 2_000, 42.0);
+    store.insert_precomputed_output(out, acc).unwrap();
+
+    let mut jsons = Vec::new();
+    for call in 0..5 {
+        let result = store
+            .query_precomputed_output_exact("cpu_usage", 1, 1_000, 2_000)
+            .unwrap();
+        assert_eq!(
+            total_bucket_count(&result),
+            1,
+            "[{}] call #{call}: repeated exact query must keep finding the inserted window",
+            label(strategy)
+        );
+        jsons.push(result.get(&None).unwrap()[0].1.serialize_to_json());
+    }
+    assert!(
+        jsons.iter().all(|j| j == &jsons[0]),
+        "[{}] repeated exact queries for the same window must return identical values \
+         across calls (any internal lookup cache must not corrupt results)",
+        label(strategy)
+    );
+}
+
+fn test_exact_query_sees_window_inserted_after_a_prior_exact_query(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+    let (out1, acc1) = sum_entry(1, 1_000, 2_000, 1.0);
+    store.insert_precomputed_output(out1, acc1).unwrap();
+
+    // First exact query — on implementations with a lazy lookup index (e.g. PerKey's
+    // `MutableEpoch::exact_query`), this call is what builds/populates that index.
+    let first = store
+        .query_precomputed_output_exact("cpu_usage", 1, 1_000, 2_000)
+        .unwrap();
+    assert_eq!(
+        total_bucket_count(&first),
+        1,
+        "[{}] sanity: first exact query must find the inserted window",
+        label(strategy)
+    );
+
+    // A brand-new window inserted after that must be visible to exact queries —
+    // whatever cache the query above populated must not shadow it.
+    let (out2, acc2) = sum_entry(1, 3_000, 4_000, 2.0);
+    store.insert_precomputed_output(out2, acc2).unwrap();
+
+    let second = store
+        .query_precomputed_output_exact("cpu_usage", 1, 3_000, 4_000)
+        .unwrap();
+    assert_eq!(
+        total_bucket_count(&second),
+        1,
+        "[{}] exact query must find a window inserted after a previous exact query \
+         populated any internal cache — must not return stale/empty results",
+        label(strategy)
+    );
+
+    // The original window must still be correctly retrievable too.
+    let first_again = store
+        .query_precomputed_output_exact("cpu_usage", 1, 1_000, 2_000)
+        .unwrap();
+    assert_eq!(
+        total_bucket_count(&first_again),
+        1,
+        "[{}] original window must remain correctly retrievable after a later insert",
+        label(strategy)
+    );
+}
+
+fn test_exact_query_miss_then_hit_after_insert(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+
+    // Query for a window that doesn't exist yet. On PerKey this still builds
+    // (an empty-for-this-range) lazy index as a side effect.
+    let miss = store
+        .query_precomputed_output_exact("cpu_usage", 1, 5_000, 6_000)
+        .unwrap();
+    assert!(
+        miss.is_empty(),
+        "[{}] query for a nonexistent window must be empty",
+        label(strategy)
+    );
+
+    // Now insert exactly that window.
+    let (out, acc) = sum_entry(1, 5_000, 6_000, 9.0);
+    store.insert_precomputed_output(out, acc).unwrap();
+
+    let hit = store
+        .query_precomputed_output_exact("cpu_usage", 1, 5_000, 6_000)
+        .unwrap();
+    assert_eq!(
+        total_bucket_count(&hit),
+        1,
+        "[{}] a window inserted after a prior miss must be found on the next exact query \
+         — any cache built by the miss must be invalidated by the insert",
+        label(strategy)
+    );
+}
+
+fn test_exact_query_correct_across_interleaved_inserts_and_queries(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+    let n = 30u64;
+    for i in 0..n {
+        let (out, acc) = sum_entry(1, i * 1_000, (i + 1) * 1_000, i as f64);
+        store.insert_precomputed_output(out, acc).unwrap();
+
+        // After each insert, re-verify every window inserted so far — including this
+        // one — is retrievable with its own correct value. This interleaves cache
+        // invalidation (insert) with cache use (exact query) on every iteration, and
+        // checks that a rebuilt lookup index never mixes up offsets across windows.
+        for j in 0..=i {
+            let result = store
+                .query_precomputed_output_exact("cpu_usage", 1, j * 1_000, (j + 1) * 1_000)
+                .unwrap();
+            assert_eq!(
+                total_bucket_count(&result),
+                1,
+                "[{}] window {j} must be retrievable after inserting window {i}",
+                label(strategy)
+            );
+            let expected = SumAccumulator::with_sum(j as f64).serialize_to_json();
+            let actual = result.get(&None).unwrap()[0].1.serialize_to_json();
+            assert_eq!(
+                actual,
+                expected,
+                "[{}] window {j} must return its own value, not another window's, \
+                 after inserting window {i}",
+                label(strategy)
+            );
+        }
+    }
+}
+
+fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
+    // capacity=2, max_epochs=4 (hardcoded in StoreKeyData/PerKeyState) =>
+    // retention_limit = 8. Inserting 10 windows evicts exactly the oldest 2
+    // (windows 0 and 1, both in the oldest sealed epoch), leaving windows
+    // 2..10 spread across sealed epochs and the current (still-open) epoch.
+    let store = make_store(
+        strategy,
+        CleanupPolicy::CircularBuffer,
+        &[(1, AggregationType::Sum, Some(2), None)],
+    );
+    let n = 10u64;
+    for i in 0..n {
+        let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
+        store.insert_precomputed_output(out, acc).unwrap();
+    }
+
+    for i in 0u64..2 {
+        let evicted = store
+            .query_precomputed_output_exact("cpu_usage", 1, i * 60_000, (i + 1) * 60_000)
+            .unwrap();
+        assert!(
+            evicted.is_empty(),
+            "[{}] window {i} must have been evicted by circular-buffer rotation",
+            label(strategy)
+        );
+    }
+
+    for i in 2u64..n {
+        let result = store
+            .query_precomputed_output_exact("cpu_usage", 1, i * 60_000, (i + 1) * 60_000)
+            .unwrap();
+        assert_eq!(
+            total_bucket_count(&result),
+            1,
+            "[{}] window {i} must be retrievable via exact query after epoch rotation",
+            label(strategy)
+        );
+        let expected = SumAccumulator::with_sum(i as f64).serialize_to_json();
+        let actual = result.get(&None).unwrap()[0].1.serialize_to_json();
+        assert_eq!(
+            actual,
+            expected,
+            "[{}] window {i} must return its own value after epoch rotation, \
+             not a value from a sealed epoch's stale offset",
+            label(strategy)
+        );
+    }
 }
 
 // ── batch insert correctness ──────────────────────────────────────────────────
@@ -1044,6 +1247,187 @@ fn test_concurrent_reads_return_complete_results(strategy: LockStrategy) {
             label(strategy)
         );
     }
+}
+
+// ── lock-contention characterization (PerKey only) ─────────────────────────────
+//
+// `SimpleMapStoreGlobal` has no lock granularity to have a bug in (one giant
+// `Mutex` for everything), so this section targets `LockStrategy::PerKey` only.
+
+/// Characterizes a known over-locking bug in `SimpleMapStorePerKey`:
+/// `query_precomputed_output_exact` takes the shard's `RwLock` as a *write*
+/// lock (see `per_key.rs`, driven by `MutableEpoch::exact_query` taking
+/// `&mut self` to lazily build/cache an internal lookup index) even though it
+/// never mutates any queryable data. `query_precomputed_output` correctly
+/// takes only a `.read()` lock on the same shard.
+///
+/// Consequently, a long-running exact query currently blocks — rather than
+/// runs concurrently with — a cheap, unrelated range query on the same
+/// aggregation shard.
+///
+/// # Method
+///
+/// 1. Insert a large number of distinct windows into aggregation_id=1's
+///    current (still-open) epoch, then insert one more to guarantee the
+///    lazy `window_to_ids` lookup index is invalidated. This makes the next
+///    exact query pay a full O(current-epoch-size) index rebuild under
+///    whatever lock it takes — a large, unambiguous, easily measured
+///    critical section (tens of milliseconds), instead of a cheap cache hit.
+/// 2. Spawn reader threads that continuously issue range queries for a time
+///    range with **no overlap with any inserted data**. Per `per_key.rs`,
+///    this still requires acquiring the shard's lock (the `DashMap` entry
+///    exists), but the scan itself is skipped via an O(1) time-bounds check
+///    — so each call's *uncontended* cost is on the order of microseconds,
+///    regardless of how much data the shard holds.
+/// 3. While readers are looping, issue the single expensive exact query and
+///    record its duration.
+/// 4. Track the maximum single-call latency observed by any reader across
+///    the whole run.
+///
+/// A cheap, non-blocked reader call should never take anywhere near as long
+/// as the exact query's own multi-millisecond lock hold — regardless of that
+/// duration — because a read lock only excludes writers, not other readers.
+/// If exact queries instead exclude readers (the bug), at least one reader
+/// call will be observed stalled for a duration comparable to the exact
+/// query's, since it has to wait out the writer's turn before proceeding.
+///
+/// # Expected result on the current (pre-fix) implementation
+///
+/// FAILS: `max_reader_latency` comes out a large fraction of `exact_duration`
+/// (in practice, close to 100% — some reader gets stuck waiting the entire
+/// time) instead of staying near the reader's own uncontended cost. This
+/// assertion encodes the *desired* post-fix behavior, so it is expected to
+/// start passing once `query_precomputed_output_exact` no longer requires a
+/// write lock for this path.
+///
+/// # Flakiness note
+///
+/// This is a timing-based test. `n_windows` is chosen large enough that the
+/// forced index rebuild takes tens of milliseconds — comfortably above
+/// normal OS scheduling jitter (typically sub-millisecond to a few ms) — so
+/// the 20% threshold has a wide margin in both directions. Extreme host
+/// contention (e.g. a heavily oversubscribed CI runner) could in principle
+/// still perturb timing; if this test flakes, prefer raising `n_windows` or
+/// loosening the threshold over deleting it.
+#[test]
+fn test_exact_query_does_not_block_concurrent_range_queries_per_key() {
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    let n_windows = 500_000u64;
+    let store = Arc::new(make_store(
+        LockStrategy::PerKey,
+        CleanupPolicy::NoCleanup,
+        &[(1, AggregationType::Sum, None, None)],
+    ));
+    let batch: Vec<_> = (0..n_windows)
+        .map(|i| sum_entry(1, i * 10, i * 10 + 1, i as f64))
+        .collect();
+    store.insert_precomputed_output_batch(batch).unwrap();
+
+    // One more insert to guarantee the next exact query's lazy index is
+    // invalidated and must be rebuilt from scratch under its lock.
+    let extra_ts = n_windows * 10;
+    let (out, acc) = sum_entry(1, extra_ts, extra_ts + 1, 0.0);
+    store.insert_precomputed_output(out, acc).unwrap();
+
+    // Sanity: the exact query must still find its window (also serves as a
+    // warm-up call, though it is not the one that gets timed below).
+    let sanity = store
+        .query_precomputed_output_exact("cpu_usage", 1, extra_ts, extra_ts + 1)
+        .unwrap();
+    assert_eq!(total_bucket_count(&sanity), 1);
+
+    // A second insert to invalidate the index again for the timed call.
+    let extra_ts2 = extra_ts + 1;
+    let (out2, acc2) = sum_entry(1, extra_ts2, extra_ts2 + 1, 0.0);
+    store.insert_precomputed_output(out2, acc2).unwrap();
+
+    // Readers query a range far outside all inserted data (max inserted
+    // timestamp is extra_ts2 + 1), so the per-epoch time-bounds check skips
+    // any real scan — this call is cheap purely from lock acquisition +
+    // bookkeeping, independent of shard size.
+    let far_start = u64::MAX - 1_000;
+    let far_end = u64::MAX;
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let max_reader_latency_ns = Arc::new(AtomicU64::new(0));
+    let n_readers = 4;
+
+    let reader_handles: Vec<_> = (0..n_readers)
+        .map(|_| {
+            let store = store.clone();
+            let stop = stop.clone();
+            let max_latency = max_reader_latency_ns.clone();
+            std::thread::spawn(move || {
+                let mut iters = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    let call_start = Instant::now();
+                    let result = store
+                        .query_precomputed_output("cpu_usage", 1, far_start, far_end)
+                        .unwrap();
+                    debug_assert!(result.is_empty());
+                    let elapsed_ns = call_start.elapsed().as_nanos() as u64;
+                    max_latency.fetch_max(elapsed_ns, Ordering::Relaxed);
+                    iters += 1;
+                }
+                iters
+            })
+        })
+        .collect();
+
+    // Let readers start looping before the exact query fires.
+    std::thread::sleep(Duration::from_millis(20));
+
+    let exact_start = Instant::now();
+    let result = store
+        .query_precomputed_output_exact("cpu_usage", 1, extra_ts2, extra_ts2 + 1)
+        .unwrap();
+    let exact_duration = exact_start.elapsed();
+    assert_eq!(
+        total_bucket_count(&result),
+        1,
+        "sanity: the timed exact query must still find its window"
+    );
+
+    // Let readers keep looping briefly after, then stop them.
+    std::thread::sleep(Duration::from_millis(20));
+    stop.store(true, Ordering::Relaxed);
+    let total_reader_iters: u64 = reader_handles.into_iter().map(|h| h.join().unwrap()).sum();
+
+    let max_reader_latency = Duration::from_nanos(max_reader_latency_ns.load(Ordering::Relaxed));
+
+    eprintln!(
+        "[PerKey exact-query lock contention] exact_duration={:?}, \
+         max_reader_latency={:?}, total_reader_iters={total_reader_iters} \
+         (ratio max_reader_latency/exact_duration = {:.3})",
+        exact_duration,
+        max_reader_latency,
+        max_reader_latency.as_secs_f64() / exact_duration.as_secs_f64().max(1e-12)
+    );
+
+    // Sanity floor: make sure the forced rebuild actually took long enough
+    // for this to be a meaningful signal (not swallowed by noise).
+    assert!(
+        exact_duration >= Duration::from_millis(1),
+        "exact query completed in {:?}, too fast to reliably characterize lock \
+         contention — increase n_windows",
+        exact_duration
+    );
+
+    assert!(
+        max_reader_latency.as_nanos() * 5 <= exact_duration.as_nanos(),
+        "a concurrent range query was stalled for {:?} while a single exact query \
+         ran for {:?} (ratio {:.3}, allowed <= 0.20) — this indicates \
+         query_precomputed_output_exact is blocking concurrent range queries on \
+         the same PerKey shard for the duration of its lock hold. This failure is \
+         expected on the current implementation (which takes a write lock for \
+         exact queries even though it doesn't mutate queryable data); it should \
+         start passing once that lock is narrowed to a read lock.",
+        max_reader_latency,
+        exact_duration,
+        max_reader_latency.as_secs_f64() / exact_duration.as_secs_f64().max(1e-12)
+    );
 }
 
 // ── test entry points ─────────────────────────────────────────────────────────

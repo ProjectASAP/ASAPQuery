@@ -1,6 +1,6 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 pub type MetricID = u32;
 pub type EpochID = u64;
@@ -77,9 +77,16 @@ impl InternTable {
 ///
 /// **Opt 1 + 2 — Lazy offset index**: `window_to_ids` is built on the *first* `exact_query`
 /// after any write batch and stores u32 column offsets rather than Arc clones.  Any `insert`
-/// simply sets the field to `None` (one pointer-width write); there are no HashMap lookups,
-/// no `HashSet::insert` calls for the index, and no atomic refcount bumps on the hot insert
+/// invalidates it via `RwLock::get_mut` (one pointer-width write, no lock acquisition since
+/// `&mut self` already proves exclusive access); there are no HashMap lookups, no
+/// `HashSet::insert` calls for the index, and no atomic refcount bumps on the hot insert
 /// path.  The index is rebuilt in O(M) on demand from `windows_col` alone.
+///
+/// The index lives behind its own inner `RwLock`, independent of the outer per-shard lock
+/// callers take to reach a `MutableEpoch`. That lets `exact_query` take `&self` and use
+/// double-checked locking to build the index at most once per invalidation, so concurrent
+/// exact queries only ever need shared (read) access to the containing epoch — see
+/// `exact_query` below. (Issue #607.)
 ///
 /// **Opt 3 — Monotonic ingest fast path**: `last_window` tracks the most recently inserted
 /// window.  Consecutive inserts to the same window (multiple label combinations for one time
@@ -102,7 +109,9 @@ pub struct MutableEpoch {
 
     // Lazy offset index: built on first exact_query, invalidated on any insert (Opt 1 + 2).
     // Stores column indices (u32) instead of Arc clones — zero atomic ops during insert.
-    window_to_ids: Option<HashMap<TimestampRange, Vec<u32>>>,
+    // Behind its own RwLock (independent of the outer per-shard lock) so exact_query can
+    // take &self and build it under double-checked locking (issue #607).
+    window_to_ids: RwLock<Option<HashMap<TimestampRange, Vec<u32>>>>,
 
     /// Epoch time bounds for O(1) skip check, updated incrementally on insert.
     min_start: Option<u64>,
@@ -123,7 +132,7 @@ impl MutableEpoch {
             aggregates_col: Vec::with_capacity(cap),
             windows_set: HashSet::new(),
             last_window: None,
-            window_to_ids: None,
+            window_to_ids: RwLock::new(None),
             min_start: None,
             max_end: None,
         }
@@ -171,8 +180,9 @@ impl MutableEpoch {
         self.metric_ids_col.push(metric_id);
         self.aggregates_col.push(agg);
 
-        // Opt 1: invalidate lazy index at zero cost
-        self.window_to_ids = None;
+        // Opt 1: invalidate lazy index at zero cost. get_mut() needs &mut RwLock, which
+        // &mut self already grants exclusively — no lock acquisition on this path.
+        *self.window_to_ids.get_mut().unwrap() = None;
 
         self.min_start = Some(self.min_start.map_or(range.0, |m| m.min(range.0)));
         self.max_end = Some(self.max_end.map_or(range.1, |m| m.max(range.1)));
@@ -231,29 +241,55 @@ impl MutableEpoch {
     /// The offset index (`HashMap<TimestampRange, Vec<u32>>`) is constructed from `windows_col`
     /// on the first call after any write batch, then cached.  Building it scans `windows_col`
     /// once with no Arc clones (only integer offsets are stored).  The index remains valid
-    /// until the next `insert`, which sets `window_to_ids = None`.
+    /// until the next `insert`, which invalidates it via `RwLock::get_mut`.
     ///
-    /// Takes `&mut self` because building the index mutates `window_to_ids`.
-    /// Callers must hold exclusive (write) access to the containing epoch.
+    /// Takes `&self`: the index lives behind its own inner `RwLock`, independent of the outer
+    /// per-shard lock callers hold to reach this epoch. Double-checked locking (read-check,
+    /// then write-and-recheck) means the index is built at most once per invalidation even
+    /// under concurrent callers, and callers only need shared (read) access to the epoch —
+    /// see the `window_to_ids` field doc for why this is safe (issue #607).
     pub fn exact_query(
-        &mut self,
+        &self,
         range: TimestampRange,
     ) -> Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> {
-        if self.window_to_ids.is_none() {
+        // Fast path: index already built (the common case after the first call).
+        if let Some(map) = self.window_to_ids.read().unwrap().as_ref() {
+            return Self::lookup_offsets(map, range, &self.metric_ids_col, &self.aggregates_col);
+        }
+
+        // Slow path: build under the inner write lock. Re-check after acquiring it —
+        // another thread may have built the index while we were waiting.
+        let mut guard = self.window_to_ids.write().unwrap();
+        if guard.is_none() {
             let mut idx: HashMap<TimestampRange, Vec<u32>> =
                 HashMap::with_capacity(self.windows_set.len());
             for (i, &tr) in self.windows_col.iter().enumerate() {
                 idx.entry(tr).or_default().push(i as u32);
             }
-            self.window_to_ids = Some(idx);
+            *guard = Some(idx);
         }
-        let offsets = self.window_to_ids.as_ref().unwrap().get(&range)?;
+        Self::lookup_offsets(
+            guard.as_ref().unwrap(),
+            range,
+            &self.metric_ids_col,
+            &self.aggregates_col,
+        )
+    }
+
+    /// Resolves a window's offsets (from the lazy index) into (MetricID, aggregate) pairs.
+    fn lookup_offsets(
+        index: &HashMap<TimestampRange, Vec<u32>>,
+        range: TimestampRange,
+        metric_ids_col: &[MetricID],
+        aggregates_col: &[Arc<dyn AggregateCore>],
+    ) -> Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> {
+        let offsets = index.get(&range)?;
         Some(
             offsets
                 .iter()
                 .map(|&i| {
                     let i = i as usize;
-                    (self.metric_ids_col[i], Arc::clone(&self.aggregates_col[i]))
+                    (metric_ids_col[i], Arc::clone(&aggregates_col[i]))
                 })
                 .collect(),
         )
@@ -281,7 +317,7 @@ impl MutableEpoch {
         }
 
         // Invalidate lazy index and monotonic fast-path hint.
-        self.window_to_ids = None;
+        *self.window_to_ids.get_mut().unwrap() = None;
         self.last_window = None;
 
         // Recompute bounds (cleanup is rare; linear scan is fine).
