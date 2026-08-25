@@ -12,6 +12,10 @@ pub enum AccumulatorError {
     EmptySlice,
     /// Returned when merging accumulators whose `sub_type` fields disagree.
     MergeTypeMismatch { expected: String, got: String },
+    /// Returned by `SimpleEngine::merge_accumulators` when a `merge_with`
+    /// call in the sequential fallback fold fails. Aborts the merge rather
+    /// than skipping the failed accumulator, matching `NaiveMerger::merge_all`.
+    MergeFailed(String),
 }
 
 impl fmt::Display for AccumulatorError {
@@ -23,6 +27,7 @@ impl fmt::Display for AccumulatorError {
                 f,
                 "cannot merge accumulators: expected sub_type '{expected}', got '{got}'"
             ),
+            Self::MergeFailed(e) => write!(f, "failed to merge accumulators: {e}"),
         }
     }
 }
