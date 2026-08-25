@@ -656,6 +656,89 @@ impl SimpleEngine {
     }
 
     /// Collects all results based on whether keys are separate or not
+    /// Resolves a value group's expansion keys and queries `statistic` for
+    /// each, returning `(key, value)` pairs. Shared by both
+    /// `collect_results_*` (instant, called once per group) and
+    /// `execute_range_query_pipeline` (range, called once per group per
+    /// output step) -- the single place "how do keys get resolved and
+    /// queried" is decided, so the two pipelines can't drift apart on it
+    /// again (#570, #582, #587, #597 were all instances of exactly that
+    /// drift). See #581.
+    ///
+    /// - `value_precompute`: `None` means a dual-population group whose keys
+    ///   accumulator has data but whose value accumulator doesn't -- skipped
+    ///   with a warning, not a hard failure (#597).
+    /// - `keys_precompute`: `Some` for dual-population groups (a separate
+    ///   keys aggregation exists) -- its `get_keys()` supplies the expansion
+    ///   keys, and `value_precompute`'s own `get_keys()` is never consulted
+    ///   (#587). `get_keys()` returning `None` (e.g. a DeltaSetAggregator
+    ///   invariant violation) skips the group with a warning, not a hard
+    ///   failure. `None` for single-population groups -- `value_precompute`'s
+    ///   own `get_keys()` takes priority if present (e.g. a top-k heap);
+    ///   otherwise exactly one row is emitted using `fallback_key` verbatim
+    ///   (the store-level group key, which may itself be `None` for a fully
+    ///   ungrouped query).
+    /// - A resolved key whose `query_precompute_for_statistic` call fails
+    ///   (e.g. keys/value skew for a dual-population metric) is skipped with
+    ///   a warning; the rest of the group's keys still return.
+    fn resolve_and_query_group(
+        &self,
+        value_precompute: Option<&dyn AggregateCore>,
+        keys_precompute: Option<&dyn AggregateCore>,
+        fallback_key: &Option<KeyByLabelValues>,
+        statistic: &Statistic,
+        query_kwargs: &HashMap<String, String>,
+    ) -> Vec<(Option<KeyByLabelValues>, f64)> {
+        let Some(value_precompute) = value_precompute else {
+            warn!(
+                "Group {:?} has keys data but no value data -- skipping this group instead of \
+                 failing the whole query (#597)",
+                fallback_key
+            );
+            return Vec::new();
+        };
+
+        let resolved_keys: Vec<Option<KeyByLabelValues>> = match keys_precompute {
+            Some(kp) => match kp.get_keys() {
+                Some(keys) => keys.into_iter().map(Some).collect(),
+                None => {
+                    warn!(
+                        "Group {:?}'s keys accumulator produced no resolvable key set -- \
+                         skipping this group instead of failing the whole query",
+                        fallback_key
+                    );
+                    return Vec::new();
+                }
+            },
+            None => match value_precompute.get_keys() {
+                Some(keys) => keys.into_iter().map(Some).collect(),
+                None => vec![fallback_key.clone()],
+            },
+        };
+
+        resolved_keys
+            .into_iter()
+            .filter_map(|key| {
+                match self.query_precompute_for_statistic(
+                    value_precompute,
+                    statistic,
+                    &key,
+                    query_kwargs,
+                ) {
+                    Ok(value) => Some((key, value)),
+                    Err(e) => {
+                        warn!(
+                            "Failed to query statistic for key {:?} in group {:?}: {} -- \
+                             skipping this key instead of failing the whole query",
+                            key, fallback_key, e
+                        );
+                        None
+                    }
+                }
+            })
+            .collect()
+    }
+
     fn collect_all_results(
         &self,
         merged_values: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
@@ -1253,35 +1336,16 @@ impl SimpleEngine {
     ) -> Result<HashMap<Option<KeyByLabelValues>, f64>, String> {
         let mut unformatted_results = HashMap::new();
 
-        for (key, precompute) in merged_keys {
-            let keys_for_this_precompute = precompute
-                .get_keys()
-                .ok_or_else(|| "Keys required for separate aggregation".to_string())?;
-
-            // A group with keys data but no matching value data is skipped
-            // instead of failing the whole query, mirroring the range
-            // query's #583 behavior (previously `.ok_or_else(...)?` here
-            // hard-failed everything for one missing group; see #597).
-            let Some(value_precompute) = merged_values.get(key) else {
-                warn!(
-                    "Instant query: group {:?} has keys data but no value data -- \
-                     skipping this group instead of failing the whole query (#597)",
-                    key
-                );
-                continue;
-            };
-
-            for key_for_this_precompute in keys_for_this_precompute {
-                let value = self
-                    .query_precompute_for_statistic(
-                        value_precompute.as_ref(),
-                        statistic,
-                        &Some(key_for_this_precompute.clone()),
-                        query_kwargs,
-                    )
-                    .map_err(|e| format!("Query failed: {}", e))?;
-
-                unformatted_results.insert(Some(key_for_this_precompute.clone()), value);
+        for (group_key, keys_precompute) in merged_keys {
+            let value_precompute = merged_values.get(group_key).map(|b| b.as_ref());
+            for (key, value) in self.resolve_and_query_group(
+                value_precompute,
+                Some(keys_precompute.as_ref()),
+                group_key,
+                statistic,
+                query_kwargs,
+            ) {
+                unformatted_results.insert(key, value);
             }
         }
 
@@ -1304,31 +1368,15 @@ impl SimpleEngine {
     ) -> Result<HashMap<Option<KeyByLabelValues>, f64>, String> {
         let mut unformatted_results = HashMap::new();
 
-        for (key, precompute) in merged_outputs {
-            if let Some(unwrapped_keys) = precompute.get_keys() {
-                for key_for_this_precompute in unwrapped_keys {
-                    let value = self
-                        .query_precompute_for_statistic(
-                            precompute.as_ref(),
-                            statistic,
-                            &Some(key_for_this_precompute.clone()),
-                            query_kwargs,
-                        )
-                        .map_err(|e| format!("Query failed: {}", e))?;
-
-                    unformatted_results.insert(Some(key_for_this_precompute.clone()), value);
-                }
-            } else {
-                let value = self
-                    .query_precompute_for_statistic(
-                        precompute.as_ref(),
-                        statistic,
-                        &None,
-                        query_kwargs,
-                    )
-                    .map_err(|e| format!("Query failed: {}", e))?;
-
-                unformatted_results.insert(key.clone(), value);
+        for (group_key, value_precompute) in merged_outputs {
+            for (key, value) in self.resolve_and_query_group(
+                Some(value_precompute.as_ref()),
+                None,
+                group_key,
+                statistic,
+                query_kwargs,
+            ) {
+                unformatted_results.insert(key, value);
             }
         }
 

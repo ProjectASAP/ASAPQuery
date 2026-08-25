@@ -12,7 +12,9 @@ mod tests {
     use crate::data_model::{AggregationType, KeyByLabelValues, WindowType};
     use crate::engines::query_result::QueryResult;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
-    use crate::precompute_operators::{CountMinSketchAccumulator, DeltaSetAggregatorAccumulator};
+    use crate::precompute_operators::{
+        CountMinSketchAccumulator, DeltaSetAggregatorAccumulator, MultipleSumAccumulator,
+    };
     use crate::tests::test_utilities::engine_factories::{
         create_engine_dual_input, create_engine_multi_timestamp_with_window,
         create_engine_single_pop, create_engine_three_metrics, create_engine_two_metrics,
@@ -335,6 +337,140 @@ mod tests {
                 .any(|(labels, _)| labels.contains(&"orphan".to_string())),
             "region=orphan has keys data but no value data anywhere -- it must be \
              silently skipped, not appear as an (empty or otherwise) series"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_query_dual_population_unresolvable_key_set_is_skipped_not_fatal() {
+        // collect_results_separate_keys used to hard-fail the ENTIRE instant
+        // query if the keys precompute's get_keys() returned None:
+        // `.ok_or_else(|| "Keys required for separate aggregation")?`.
+        // region=broken's DeltaSetAggregator has the same key in both
+        // `added` and `removed` -- the invariant get_keys() checks for --
+        // so it resolves to None. Per #581, this now skips just that group
+        // with a warning instead of failing the whole query.
+        let cms_normal = CountMinSketchAccumulator::new(2, 3);
+        let cms_broken = CountMinSketchAccumulator::new(2, 3);
+
+        let mut keys_normal = DeltaSetAggregatorAccumulator::new();
+        keys_normal.add_key(KeyByLabelValues {
+            labels: vec![
+                "normal".to_string(),
+                "host-a".to_string(),
+                "evt-1".to_string(),
+            ],
+        });
+        let broken_key = KeyByLabelValues {
+            labels: vec![
+                "broken".to_string(),
+                "host-z".to_string(),
+                "evt-1".to_string(),
+            ],
+        };
+        let mut keys_broken = DeltaSetAggregatorAccumulator::new();
+        keys_broken.add_key(broken_key.clone());
+        keys_broken.remove_key(broken_key);
+
+        let engine = create_engine_dual_input(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
+            vec!["region"],
+            vec!["host", "event"],
+            vec![
+                (
+                    Some(vec!["normal".to_string()]),
+                    Box::new(cms_normal) as Box<dyn AggregateCore>,
+                ),
+                (
+                    Some(vec!["broken".to_string()]),
+                    Box::new(cms_broken) as Box<dyn AggregateCore>,
+                ),
+            ],
+            vec![
+                (
+                    Some(vec!["normal".to_string()]),
+                    Box::new(keys_normal) as Box<dyn AggregateCore>,
+                ),
+                (
+                    Some(vec!["broken".to_string()]),
+                    Box::new(keys_broken) as Box<dyn AggregateCore>,
+                ),
+            ],
+            "count(event_frequency) by (region, host, event)",
+        );
+
+        let query = "count(event_frequency) by (region, host, event) + 0";
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect(
+                "instant query should succeed by skipping the unresolvable region=broken group",
+            );
+        let values = vector_values(qr);
+
+        assert!(
+            values
+                .iter()
+                .any(|(labels, _)| labels.contains(&"normal".to_string())),
+            "region=normal has a resolvable key set and should be unaffected"
+        );
+        assert!(
+            !values
+                .iter()
+                .any(|(labels, _)| labels.contains(&"broken".to_string())),
+            "region=broken's key set is unresolvable (added/removed invariant violated) -- \
+             must be silently skipped, not appear or fail the query"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_query_dual_population_key_missing_from_value_accumulator_is_skipped_not_fatal()
+    {
+        // collect_results_separate_keys used to hard-fail the ENTIRE instant
+        // query if a single resolved key's query_precompute_for_statistic
+        // call failed: `.map_err(...)?`. Keys and value data come from
+        // independently-computed accumulators for a dual-population metric,
+        // so they CAN skew: a key the DeltaSetAggregator (keys side) knows
+        // about may have no entry in the MultipleSum (value side)
+        // accumulator at all. Per #581, that one key is now skipped with a
+        // warning instead of failing every other key in the same query.
+        let present_key = KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        };
+        let missing_key = KeyByLabelValues {
+            labels: vec!["host-b".to_string(), "evt-2".to_string()],
+        };
+
+        let mut value = MultipleSumAccumulator::new();
+        value.add_sum(present_key.clone(), 42.0);
+        // Deliberately no entry for `missing_key`.
+
+        let mut keys = DeltaSetAggregatorAccumulator::new();
+        keys.add_key(present_key.clone());
+        keys.add_key(missing_key.clone());
+
+        let engine = create_engine_dual_input(
+            "event_frequency",
+            AggregationType::MultipleSum,
+            AggregationType::DeltaSetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![(None, Box::new(value) as Box<dyn AggregateCore>)],
+            vec![(None, Box::new(keys) as Box<dyn AggregateCore>)],
+            "sum(event_frequency) by (host, event)",
+        );
+
+        let query = "sum(event_frequency) by (host, event) + 0";
+        let (_, qr) = engine.handle_query_promql(query.to_string(), QUERY_TIME).expect(
+            "instant query should succeed by skipping the one key missing from the value accumulator",
+        );
+        let values = sorted(vector_values(qr));
+
+        assert_eq!(
+            values,
+            vec![(vec!["host-a".to_string(), "evt-1".to_string()], 42.0)],
+            "host-b/evt-2 has keys data but no entry in the value accumulator -- must be \
+             silently skipped, not appear or fail the query"
         );
     }
 
