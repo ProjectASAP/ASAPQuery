@@ -51,6 +51,15 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<Candidate
             for (window_type, w, slide_interval, n) in
                 window_candidates(range_a_ms, aqe.t_repeat_gcd_ms, scrape_interval_ms)
             {
+                // DeltaSetAggregator only tracks added/removed keys since the
+                // last window, so it's only correct for non-overlapping
+                // (tumbling) windows (#588).
+                if agg_type == AggregationType::DeltaSetAggregator
+                    && window_type == WindowType::Sliding
+                {
+                    continue;
+                }
+
                 let Some(qm) = determine_query_method(n, &props) else {
                     continue;
                 };
@@ -513,5 +522,69 @@ mod tests {
             }),
             "partial Sliding with subtractable sketch should produce Subtract"
         );
+    }
+
+    /// Issue #588: DeltaSetAggregator only tracks added/removed keys since
+    /// the last window, so it's only correct for non-overlapping (tumbling)
+    /// windows. `Statistic::Cardinality` is compatible with DeltaSetAggregator
+    /// (see `compatible_agg_types`), and with the same range/t_repeat/scrape
+    /// parameters as `partial_width_sliding_candidates_are_generated` above,
+    /// the window-candidate grid does include Sliding entries -- the
+    /// optimizer must never turn one of those into a DeltaSetAggregator
+    /// candidate.
+    #[test]
+    fn delta_set_aggregator_never_gets_a_sliding_candidate() {
+        let aqe = make_aqe(Statistic::Cardinality, 600_000, 30_000);
+        let candidates = enumerate_candidates(&aqe, 30_000);
+
+        let sliding_delta = candidates.iter().find(|c| {
+            c.config.as_ref().is_some_and(|cfg| {
+                cfg.aggregation_type == AggregationType::DeltaSetAggregator
+                    && cfg.window_type == WindowType::Sliding
+            })
+        });
+
+        assert!(
+            sliding_delta.is_none(),
+            "DeltaSetAggregator must never be enumerated as a Sliding candidate, found: {sliding_delta:?}"
+        );
+    }
+
+    /// Regression guard: DeltaSetAggregator must still be enumerated as a
+    /// Tumbling candidate (the fix filters Sliding, not the agg type itself).
+    #[test]
+    fn delta_set_aggregator_still_gets_tumbling_candidates() {
+        let aqe = make_aqe(Statistic::Cardinality, 600_000, 30_000);
+        let candidates = enumerate_candidates(&aqe, 30_000);
+
+        assert!(
+            candidates.iter().any(|c| {
+                c.config.as_ref().is_some_and(|cfg| {
+                    cfg.aggregation_type == AggregationType::DeltaSetAggregator
+                        && cfg.window_type == WindowType::Tumbling
+                })
+            }),
+            "DeltaSetAggregator should still get Tumbling candidates"
+        );
+    }
+
+    /// Regression guard: sibling Cardinality-compatible agg types that ARE
+    /// safe under Sliding windows (SetAggregator, HLL) must be unaffected by
+    /// the DeltaSetAggregator-specific filter.
+    #[test]
+    fn set_aggregator_and_hll_still_get_sliding_candidates() {
+        let aqe = make_aqe(Statistic::Cardinality, 600_000, 30_000);
+        let candidates = enumerate_candidates(&aqe, 30_000);
+
+        for agg_type in [AggregationType::SetAggregator, AggregationType::HLL] {
+            assert!(
+                candidates.iter().any(|c| {
+                    c.config.as_ref().is_some_and(|cfg| {
+                        cfg.aggregation_type == agg_type && cfg.window_type == WindowType::Sliding
+                    })
+                }),
+                "{agg_type:?} should still be able to get Sliding candidates"
+            );
+        }
     }
 }
