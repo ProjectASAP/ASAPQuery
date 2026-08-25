@@ -1589,7 +1589,11 @@ impl SimpleEngine {
         let keys_lookback_ms = context.keys_lookback_ms;
         let keys_tumbling_window_ms = context.keys_tumbling_window_ms;
 
-        let window_mode = if buckets_per_step <= lookback_bucket_count {
+        // Named distinctly from `WindowType` (Sliding/Tumbling, picks the store
+        // fetch call) -- this describes step-to-step overlap in the OUTPUT
+        // iteration, an unrelated concept that happens to reuse the words
+        // "sliding"/"hopping". See #581.
+        let step_overlap_mode = if buckets_per_step <= lookback_bucket_count {
             "sliding (slide <= size)"
         } else {
             "hopping (slide > size)"
@@ -1603,7 +1607,7 @@ impl SimpleEngine {
             tumbling_window_ms,
             buckets_per_step,
             lookback_bucket_count,
-            window_mode
+            step_overlap_mode
         );
 
         // Whether the value accumulator's own get_keys() is even consulted
