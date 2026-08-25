@@ -403,10 +403,13 @@ mod tests {
         acc3.add_key(key4.clone());
 
         let buckets = [acc1, acc2, acc3];
-        let expected: [(&[KeyByLabelValues], &[KeyByLabelValues]); 3] = [
-            (&[key1.clone(), key2.clone(), key3.clone()], &[]),
-            (&[key1.clone()], &[key2.clone(), key3.clone()]),
-            (&[key1.clone(), key2.clone(), key4.clone()], &[key3.clone()]),
+        let expected: [(Vec<KeyByLabelValues>, Vec<KeyByLabelValues>); 3] = [
+            (vec![key1.clone(), key2.clone(), key3.clone()], vec![]),
+            (vec![key1.clone()], vec![key2.clone(), key3.clone()]),
+            (
+                vec![key1.clone(), key2.clone(), key4.clone()],
+                vec![key3.clone()],
+            ),
         ];
 
         for (i, (expected_added, expected_removed)) in expected.iter().enumerate() {
