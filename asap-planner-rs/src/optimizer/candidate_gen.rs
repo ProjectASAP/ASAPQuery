@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use asap_types::aggregation_config::AggregationConfig;
-use asap_types::capability_matching::compatible_agg_types;
+use asap_types::capability_matching::{compatible_agg_types, key_agg_window_valid};
 use asap_types::enums::WindowType;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, Statistic};
@@ -53,10 +53,9 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<Candidate
             {
                 // DeltaSetAggregator only tracks added/removed keys since the
                 // last window, so it's only correct for non-overlapping
-                // (tumbling) windows (#588).
-                if agg_type == AggregationType::DeltaSetAggregator
-                    && window_type == WindowType::Sliding
-                {
+                // (tumbling) windows (#588) -- same invariant enforced by
+                // capability_matching's window_compatible() at query time.
+                if !key_agg_window_valid(agg_type, window_type) {
                     continue;
                 }
 

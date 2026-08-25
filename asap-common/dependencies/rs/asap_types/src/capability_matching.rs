@@ -270,19 +270,23 @@ pub fn find_compatible_aggregation(
     // separate key aggregation just like any other multi-population value type.
     let key_agg: &AggregationConfig = if is_multi_population_value_type(value_agg.aggregation_type)
     {
-        let is_key_agg_on_metric = |c: &&AggregationConfig| {
-            c.metric == requirements.metric && is_key_agg_type(c.aggregation_type)
-        };
+        // Single pass: take the first window-valid key agg on this metric,
+        // but also remember the first window-*invalid* one seen (e.g. a
+        // Sliding DeltaSetAggregator) so the miss path below can report the
+        // specific reason instead of a generic "none found" (#588).
+        let mut invalid_window: Option<&AggregationConfig> = None;
         let ka = configs.values().find(|c| {
-            is_key_agg_on_metric(c) && key_agg_window_valid(c.aggregation_type, c.window_type)
+            if c.metric != requirements.metric || !is_key_agg_type(c.aggregation_type) {
+                return false;
+            }
+            if key_agg_window_valid(c.aggregation_type, c.window_type) {
+                true
+            } else {
+                invalid_window.get_or_insert(c);
+                false
+            }
         });
         if ka.is_none() {
-            // Distinguish "a key agg exists but its window_type is invalid for
-            // its aggregation_type" (e.g. a Sliding DeltaSetAggregator) from
-            // "genuinely no key agg on this metric" -- both mean "treat as
-            // absent" for matching purposes, but the former is a silent
-            // planning bug worth calling out specifically (#588).
-            let invalid_window = configs.values().find(is_key_agg_on_metric);
             match invalid_window {
                 Some(bad) => warn!(
                     metric = %requirements.metric,
