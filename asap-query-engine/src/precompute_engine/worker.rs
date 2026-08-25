@@ -1019,7 +1019,16 @@ fn merge_panes_for_window(
         if let Some(acc) = pane_acc {
             merged = Some(match merged {
                 None => acc,
-                Some(existing) => existing.merge_with(acc.as_ref()).unwrap_or(existing),
+                Some(existing) => match existing.merge_with(acc.as_ref()) {
+                    Ok(merged) => merged,
+                    Err(e) => {
+                        warn!(
+                            "Failed to merge pane at start={ps}: {e} -- keeping prior state, \
+                             discarding this pane's contribution"
+                        );
+                        existing
+                    }
+                },
             });
         }
     }

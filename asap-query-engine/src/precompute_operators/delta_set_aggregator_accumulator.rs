@@ -5,6 +5,7 @@ use crate::data_model::{
 use asap_sketchlib::{message_pack_format::MessagePackCodec, DeltaResult};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use tracing::warn;
 
 use promql_utilities::query_logics::enums::Statistic;
 
@@ -249,14 +250,18 @@ impl AggregateCore for DeltaSetAggregatorAccumulator {
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
         // A well-formed accumulator (raw or merged) never has the same key in
-        // both sets — see merge_accumulators, which enforces this at every
-        // fold step. `difference` is a defensive no-op under that invariant;
-        // debug_assert catches it loudly if the invariant is ever violated.
-        debug_assert!(
-            self.added.is_disjoint(&self.removed),
-            "DeltaSetAggregatorAccumulator invariant violated: {} key(s) present in both added and removed",
-            self.added.intersection(&self.removed).count()
-        );
+        // both sets -- see merge_accumulators, which enforces this at every
+        // fold step. This should never happen; if it does, fail loudly
+        // (warn + None) rather than silently computing a possibly-wrong key
+        // set via `difference`.
+        if !self.added.is_disjoint(&self.removed) {
+            warn!(
+                "DeltaSetAggregatorAccumulator::get_keys invariant violated: {} key(s) \
+                 present in both added and removed -- returning None",
+                self.added.intersection(&self.removed).count()
+            );
+            return None;
+        }
         Some(self.added.difference(&self.removed).cloned().collect())
     }
 
@@ -313,15 +318,19 @@ impl MergeableAccumulator<DeltaSetAggregatorAccumulator> for DeltaSetAggregatorA
         // added/removed -- a single window can't both gain and lose the
         // same key. This is a hard error, not a self-heal: it means the
         // input itself is corrupt, not just an artifact of folding order.
+        // Warn (in addition to the Err) since callers vary in how loudly
+        // they surface a returned Err -- this should never happen, so it
+        // must not go unnoticed even if a caller's Err-handling is quiet.
         fn check_disjoint(
             acc: &DeltaSetAggregatorAccumulator,
         ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if !acc.added.is_disjoint(&acc.removed) {
-                return Err(format!(
+                let msg = format!(
                     "DeltaSetAggregatorAccumulator bucket has {} key(s) in both added and removed",
                     acc.added.intersection(&acc.removed).count()
-                )
-                .into());
+                );
+                warn!("{msg}");
+                return Err(msg.into());
             }
             Ok(())
         }
@@ -340,13 +349,18 @@ impl MergeableAccumulator<DeltaSetAggregatorAccumulator> for DeltaSetAggregatorA
             // Holds because real callers always grow this fold forward from
             // a true starting point (e.g. NaiveMerger only ever appends
             // later buckets, never merges an arbitrary mid-range fragment).
-            debug_assert!(
-                accumulator.removed.is_subset(&added),
-                "DeltaSetAggregatorAccumulator merge received a bucket removing {} key(s) \
-                 not currently known present -- buckets must be chronologically ordered \
-                 and the fold must start from a valid prior state",
-                accumulator.removed.difference(&added).count()
-            );
+            // Hard error (not debug_assert!): a panic here would bypass the
+            // Ok/Err handling callers already have in place for this fold.
+            if !accumulator.removed.is_subset(&added) {
+                let msg = format!(
+                    "DeltaSetAggregatorAccumulator merge received a bucket removing {} key(s) \
+                     not currently known present -- buckets must be chronologically ordered \
+                     and the fold must start from a valid prior state",
+                    accumulator.removed.difference(&added).count()
+                );
+                warn!("{msg}");
+                return Err(msg.into());
+            }
             for key in &accumulator.removed {
                 added.remove(key);
             }
@@ -494,6 +508,23 @@ mod tests {
         assert_eq!(keys, vec![present_key]);
     }
 
+    /// A key present in both `added` and `removed` violates the
+    /// disjointness invariant merge_accumulators is supposed to maintain.
+    /// This should never happen -- if it does, get_keys() must fail loudly
+    /// (None) rather than silently computing a possibly-wrong key set.
+    #[test]
+    fn test_get_keys_returns_none_when_disjointness_invariant_violated() {
+        let mut acc = DeltaSetAggregatorAccumulator::new();
+        let key = create_test_key("corrupt");
+        acc.add_key(key.clone());
+        acc.remove_key(key);
+
+        assert!(
+            acc.get_keys().is_none(),
+            "get_keys must return None when a key is in both added and removed"
+        );
+    }
+
     /// Bug #586 (#1): `merge_accumulators` must fold buckets in chronological
     /// order, not union all added/removed sets and strip same-key
     /// "conflicts". A key toggled more than twice across the merged buckets
@@ -533,12 +564,11 @@ mod tests {
     }
 
     /// The chronological-fold invariant (a bucket can't remove a key the
-    /// fold doesn't yet believe is present) is a `debug_assert!`, not a hard
-    /// `Err` -- only checked in debug builds, so this test is too.
+    /// fold doesn't yet believe is present) is a hard `Err`, not a
+    /// `debug_assert!` -- a panic would bypass the Ok/Err handling callers
+    /// already have in place around this fold.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "not currently known present")]
-    fn test_merge_accumulators_debug_asserts_on_removal_without_prior_add() {
+    fn test_merge_accumulators_errors_on_removal_without_prior_add() {
         let key = create_test_key("phantom");
 
         // First bucket is a valid, empty starting state -- it never saw `key`.
@@ -548,10 +578,12 @@ mod tests {
         let mut removes_unseen_key = DeltaSetAggregatorAccumulator::new();
         removes_unseen_key.remove_key(key);
 
-        let _ = DeltaSetAggregatorAccumulator::merge_accumulators(vec![
+        let err = DeltaSetAggregatorAccumulator::merge_accumulators(vec![
             starting_state,
             removes_unseen_key,
-        ]);
+        ])
+        .expect_err("removing a never-added key must be rejected");
+        assert!(err.to_string().contains("not currently known present"));
     }
 
     /// A bucket with the same key in both its own `added` and `removed` is
