@@ -290,6 +290,18 @@ impl MultipleSubpopulationAggregate for DeltaSetAggregatorAccumulator {
 }
 
 impl MergeableAccumulator<DeltaSetAggregatorAccumulator> for DeltaSetAggregatorAccumulator {
+    /// Unlike its sibling accumulators, this merge is **not** commutative:
+    /// `added`/`removed` represent chronological key churn, so `accumulators`
+    /// must already be in chronological (ascending bucket start-timestamp)
+    /// order, and the first element is treated as the starting state (it may
+    /// itself already be a merged multi-bucket result, e.g. `self` in a
+    /// pairwise `merge_with` fold — not necessarily a single raw bucket).
+    /// Each subsequent bucket is folded in as: a key it removes is cleared
+    /// from the running `added` set, a key it adds is cleared from the
+    /// running `removed` set, then its own added/removed keys are recorded —
+    /// so the result always reflects the current, order-correct state
+    /// (present vs. known-explicitly-absent) rather than a naive union of
+    /// every bucket's sets.
     fn merge_accumulators(
         accumulators: Vec<DeltaSetAggregatorAccumulator>,
     ) -> Result<DeltaSetAggregatorAccumulator, Box<dyn std::error::Error + Send + Sync>> {
@@ -297,25 +309,35 @@ impl MergeableAccumulator<DeltaSetAggregatorAccumulator> for DeltaSetAggregatorA
             return Err("No accumulators to merge".into());
         }
 
-        let mut all_added = HashSet::new();
-        let mut all_removed = HashSet::new();
+        let mut iter = accumulators.into_iter();
+        let first = iter.next().unwrap();
+        let mut added = first.added;
+        let mut removed = first.removed;
 
-        for accumulator in accumulators {
-            all_added.extend(accumulator.added);
-            all_removed.extend(accumulator.removed);
+        for accumulator in iter {
+            // A bucket can only remove a key the fold so far believes is
+            // present -- a key can't disappear before it's ever appeared.
+            // Holds because real callers always grow this fold forward from
+            // a true starting point (e.g. NaiveMerger only ever appends
+            // later buckets, never merges an arbitrary mid-range fragment).
+            debug_assert!(
+                accumulator.removed.is_subset(&added),
+                "DeltaSetAggregatorAccumulator merge received a bucket removing {} key(s) \
+                 not currently known present -- buckets must be chronologically ordered \
+                 and the fold must start from a valid prior state",
+                accumulator.removed.difference(&added).count()
+            );
+            for key in &accumulator.removed {
+                added.remove(key);
+            }
+            for key in &accumulator.added {
+                removed.remove(key);
+            }
+            added.extend(accumulator.added);
+            removed.extend(accumulator.removed);
         }
 
-        let conflicts: HashSet<KeyByLabelValues> =
-            all_added.intersection(&all_removed).cloned().collect();
-        for key in &conflicts {
-            all_added.remove(key);
-            all_removed.remove(key);
-        }
-
-        Ok(DeltaSetAggregatorAccumulator {
-            added: all_added,
-            removed: all_removed,
-        })
+        Ok(DeltaSetAggregatorAccumulator { added, removed })
     }
 }
 
@@ -348,32 +370,61 @@ mod tests {
     }
 
     #[test]
+    ///
+    /// Checks the merged result after each prefix of buckets (through t1,
+    /// through t1+t2, through t1+t2+t3), not just the final one -- a fold
+    /// that's only correct at the end can't hide here. The first bucket
+    /// (t1) only adds keys, never removes -- a bucket can't legitimately
+    /// remove a key that no earlier bucket ever added, and t1 has no
+    /// earlier bucket. `key2` is removed at t2 and re-added at t3, so from
+    /// t3 onward it must be *present* (`added`), not cancelled out of both
+    /// sets the way the old union-then-strip-conflicts algorithm used to
+    /// leave it.
     fn test_delta_set_aggregator_merge() {
-        let mut acc1 = DeltaSetAggregatorAccumulator::new();
-        let mut acc2 = DeltaSetAggregatorAccumulator::new();
-        let mut acc3 = DeltaSetAggregatorAccumulator::new();
-
         let key1 = create_test_key("web");
         let key2 = create_test_key("api");
         let key3 = create_test_key("db");
         let key4 = create_test_key("cache");
 
+        // t1: key1, key2, key3 all first appear. No removals -- valid first bucket.
+        let mut acc1 = DeltaSetAggregatorAccumulator::new();
         acc1.add_key(key1.clone());
-        acc1.remove_key(key2.clone());
-        acc2.add_key(key2.clone());
+        acc1.add_key(key2.clone());
+        acc1.add_key(key3.clone());
+
+        // t2: key2 and key3 disappear (both were added at t1).
+        let mut acc2 = DeltaSetAggregatorAccumulator::new();
+        acc2.remove_key(key2.clone());
         acc2.remove_key(key3.clone());
+
+        // t3: key2 reappears, key4 appears for the first time.
+        let mut acc3 = DeltaSetAggregatorAccumulator::new();
+        acc3.add_key(key2.clone());
         acc3.add_key(key4.clone());
 
-        let merged =
-            DeltaSetAggregatorAccumulator::merge_accumulators(vec![acc1, acc2, acc3]).unwrap();
+        let buckets = [acc1, acc2, acc3];
+        let expected: [(&[KeyByLabelValues], &[KeyByLabelValues]); 3] = [
+            (&[key1.clone(), key2.clone(), key3.clone()], &[]),
+            (&[key1.clone()], &[key2.clone(), key3.clone()]),
+            (&[key1.clone(), key2.clone(), key4.clone()], &[key3.clone()]),
+        ];
 
-        assert!(merged.added.contains(&key1));
-        assert!(merged.added.contains(&key4));
-        assert!(!merged.added.contains(&key2));
-        assert!(merged.removed.contains(&key3));
-        assert!(!merged.removed.contains(&key2));
-        assert_eq!(merged.added.len(), 2);
-        assert_eq!(merged.removed.len(), 1);
+        for (i, (expected_added, expected_removed)) in expected.iter().enumerate() {
+            let prefix = buckets[..=i].to_vec();
+            let merged = DeltaSetAggregatorAccumulator::merge_accumulators(prefix).unwrap();
+            assert_eq!(
+                merged.added,
+                expected_added.iter().cloned().collect(),
+                "added set wrong after folding through t{}",
+                i + 1
+            );
+            assert_eq!(
+                merged.removed,
+                expected_removed.iter().cloned().collect(),
+                "removed set wrong after folding through t{}",
+                i + 1
+            );
+        }
     }
 
     #[test]
@@ -456,6 +507,28 @@ mod tests {
             "key removed last chronologically must be recorded as removed, \
              not silently dropped from both sets"
         );
+    }
+
+    /// The chronological-fold invariant (a bucket can't remove a key the
+    /// fold doesn't yet believe is present) is a `debug_assert!`, not a hard
+    /// `Err` -- only checked in debug builds, so this test is too.
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "not currently known present")]
+    fn test_merge_accumulators_debug_asserts_on_removal_without_prior_add() {
+        let key = create_test_key("phantom");
+
+        // First bucket is a valid, empty starting state -- it never saw `key`.
+        let starting_state = DeltaSetAggregatorAccumulator::new();
+
+        // Second bucket claims to remove a key nothing before it ever added.
+        let mut removes_unseen_key = DeltaSetAggregatorAccumulator::new();
+        removes_unseen_key.remove_key(key);
+
+        let _ = DeltaSetAggregatorAccumulator::merge_accumulators(vec![
+            starting_state,
+            removes_unseen_key,
+        ]);
     }
 
     #[test]
