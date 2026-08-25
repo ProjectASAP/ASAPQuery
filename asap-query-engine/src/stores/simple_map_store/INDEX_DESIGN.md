@@ -56,8 +56,8 @@ MutableEpoch {
     // Monotonic ingest fast path (Opt 3)
     last_window:     Option<TimestampRange>
 
-    // Lazy offset index (Opt 1 + 2): built on first exact_query, None after any insert
-    window_to_ids:   Option<HashMap<TimestampRange, Vec<u32>>>
+    // Lazy offset index (Opt 1 + 2): built on first exact_query, cleared on any insert
+    window_to_ids:   OnceLock<HashMap<TimestampRange, Vec<u32>>>
 
     // Epoch bounds for O(1) skip check (updated incrementally on insert)
     min_start:       Option<u64>
@@ -68,14 +68,15 @@ MutableEpoch {
 **Insert** (`O(1)` amortized):
 - Opt 3: if incoming window == `last_window`, skip `windows_set.insert` entirely
 - Three `Vec::push` calls — no secondary index maintenance
-- `window_to_ids = None` — single pointer-width write to invalidate the index
+- `window_to_ids.take()` — through `&mut self`, so no synchronization needed to invalidate the index
 
 **`seal()` → `SealedEpoch`** (`O(M log M)`, paid once at rotation):
 - Zips the three columns into tuples, sorts by `(TimestampRange, MetricID)`, moves `Arc`s without cloning
 
-**`exact_query(&mut self)`** (`O(M)` first call after a write, `O(m)` cached):
-- Opt 1 + 2: if `window_to_ids` is `None`, build it from `windows_col` in one pass storing `u32` offsets
-- Cache is valid until the next `insert`
+**`exact_query(&self)`** (`O(M)` first call after a write, `O(m)` cached):
+- Opt 1 + 2: `window_to_ids.get_or_init(...)` builds the index from `windows_col` in one pass storing `u32` offsets if not already built; otherwise returns the cached index directly
+- `OnceLock` gives build-at-most-once semantics under concurrent callers for free — no external locking needed to call this, and no poisoning risk if the build closure ever panicked
+- Cache is valid until the next `insert` (or `remove_windows`), which calls `window_to_ids.take()`
 
 **`range_query_into`** (`O(M)` mutable epoch):
 - Opt 5: hot loop iterates only `windows_col`; aggregate pointer only chased on match
@@ -200,11 +201,13 @@ No inner `Mutex` for `read_counts` — the outer `Mutex` already serializes all 
 
 ### Exact Query `(exact_start, exact_end)`
 
-1. Acquire **write lock** (needed to potentially build the lazy `window_to_ids` index)
-2. Try `current_epoch.exact_query(range)` — builds/uses cached `window_to_ids`
+1. Acquire **read lock** on `StoreKeyData` — same as a range query. `window_to_ids` lives in its
+   own `OnceLock`, independent of this outer lock, so building it (if needed) doesn't require
+   exclusive access here (issue #607).
+2. Try `current_epoch.exact_query(range)` — builds/uses cached `window_to_ids` via `get_or_init`
 3. If not found, iterate `sealed_epochs.values().rev()` calling `SealedEpoch::exact_query`
-4. Return owned `Vec<(MetricID, Arc<dyn AggregateCore>)>`, drop write lock
-5. Re-acquire read lock to resolve MetricIDs → labels
+4. Resolve MetricIDs → labels via `InternTable`, still under the same read lock
+5. Briefly acquire inner `Mutex` to update `read_counts`
 
 ---
 
@@ -239,7 +242,14 @@ No eviction — data accumulates indefinitely.
 |-----------|------|
 | **Insert** | `RwLock::write` for the batch duration |
 | **Range query** | `RwLock::read` → brief `Mutex::lock` on `read_counts` |
-| **Exact query** | `RwLock::write` (lazy index build) → drop → `RwLock::read` for label resolution |
+| **Exact query** | `RwLock::read` (lazy index build no longer needs exclusive access — see below) → brief `Mutex::lock` on `read_counts` |
 | **Cleanup** | Under existing write lock; `Mutex::get_mut()` bypasses inner lock |
 
-Multiple readers per `aggregation_id` run concurrently. Writers only block readers of the same `aggregation_id`.
+Multiple readers per `aggregation_id` run concurrently, including range and exact queries running
+concurrently with each other. Writers only block readers of the same `aggregation_id`.
+
+Before issue #607's fix, exact queries took `RwLock::write` solely because building
+`window_to_ids` required `&mut self`, serializing them against every other concurrent
+reader/writer of the shard even though no queryable data was mutated. Switching `window_to_ids`
+to a `OnceLock` let `exact_query` take `&self`, so its call site only ever needs `RwLock::read`,
+same as a range query.

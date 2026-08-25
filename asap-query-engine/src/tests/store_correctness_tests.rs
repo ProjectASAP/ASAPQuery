@@ -1406,6 +1406,18 @@ fn test_exact_query_does_not_block_concurrent_range_queries_per_key() {
         max_reader_latency.as_secs_f64() / exact_duration.as_secs_f64().max(1e-12)
     );
 
+    // Sanity floor: make sure reader threads actually ran and recorded a sample.
+    // Without this, a run where every reader got starved of scheduler time during
+    // the timed window would leave max_reader_latency_ns at its initial 0, and the
+    // ratio assertion below would pass vacuously (0 <= anything) without having
+    // measured contention at all.
+    assert!(
+        total_reader_iters >= n_readers as u64 && max_reader_latency_ns.load(Ordering::Relaxed) > 0,
+        "no reader thread recorded a latency sample (total_reader_iters={total_reader_iters}) \
+         — readers may have been starved of scheduler time during this run, so it \
+         doesn't validate anything; rerun, or investigate scheduler contention on this host"
+    );
+
     // Sanity floor: make sure the forced rebuild actually took long enough
     // for this to be a meaningful signal (not swallowed by noise).
     assert!(
