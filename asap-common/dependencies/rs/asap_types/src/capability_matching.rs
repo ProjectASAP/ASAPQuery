@@ -60,12 +60,29 @@ fn is_key_agg_type(agg_type: AggregationType) -> bool {
     agg_type.is_key_agg_type()
 }
 
+/// Whether `agg_type` may legitimately be planned/served with `window_type`.
+///
+/// DeltaSetAggregator only tracks added/removed keys since the last window,
+/// so it's only correct for non-overlapping (tumbling) windows (#588) --
+/// unlike its sibling key aggregations (SetAggregator, HLL), which are fine
+/// under Sliding. This is the single source of truth for that invariant;
+/// both producer sites (the live planner's agg_config.rs and the optimizer's
+/// candidate_gen.rs) are expected to never emit a Sliding DeltaSetAggregator
+/// config, but this predicate is the defensive check that stops one from
+/// ever being *selected* to serve a query, regardless of how it was produced.
+pub fn key_agg_window_valid(agg_type: AggregationType, window_type: WindowType) -> bool {
+    !(agg_type == AggregationType::DeltaSetAggregator && window_type == WindowType::Sliding)
+}
+
 /// Window compatibility: can `config` serve a query needing `data_range_ms`?
 ///
 /// - Tumbling: `data_range_ms` must be a positive integer multiple of `window_size_ms`.
 /// - Sliding: `data_range_ms` must equal `window_size_ms` exactly (a sliding window
 ///   precomputes one fixed range per timestamp; overlapping windows cannot be merged).
 pub fn window_compatible(config: &AggregationConfig, data_range_ms: u64) -> bool {
+    if !key_agg_window_valid(config.aggregation_type, config.window_type) {
+        return false;
+    }
     let window_ms = config.window_size_ms;
     if window_ms == 0 || data_range_ms == 0 {
         return false;
@@ -253,15 +270,37 @@ pub fn find_compatible_aggregation(
     // separate key aggregation just like any other multi-population value type.
     let key_agg: &AggregationConfig = if is_multi_population_value_type(value_agg.aggregation_type)
     {
-        let ka = configs
-            .values()
-            .find(|c| c.metric == requirements.metric && is_key_agg_type(c.aggregation_type));
+        // Single pass: take the first window-valid key agg on this metric,
+        // but also remember the first window-*invalid* one seen (e.g. a
+        // Sliding DeltaSetAggregator) so the miss path below can report the
+        // specific reason instead of a generic "none found" (#588).
+        let mut invalid_window: Option<&AggregationConfig> = None;
+        let ka = configs.values().find(|c| {
+            if c.metric != requirements.metric || !is_key_agg_type(c.aggregation_type) {
+                return false;
+            }
+            if key_agg_window_valid(c.aggregation_type, c.window_type) {
+                true
+            } else {
+                invalid_window.get_or_insert(c);
+                false
+            }
+        });
         if ka.is_none() {
-            warn!(
-                metric = %requirements.metric,
-                value_agg_type = %value_agg.aggregation_type,
-                "capability matching: multi-population value agg requires a key agg (SetAggregator/DeltaSetAggregator) but none found",
-            );
+            match invalid_window {
+                Some(bad) => warn!(
+                    metric = %requirements.metric,
+                    value_agg_type = %value_agg.aggregation_type,
+                    key_agg_type = %bad.aggregation_type,
+                    key_agg_window_type = ?bad.window_type,
+                    "capability matching: found a key agg on this metric but its window_type is invalid for its aggregation_type (e.g. DeltaSetAggregator must be Tumbling) -- treating as absent",
+                ),
+                None => warn!(
+                    metric = %requirements.metric,
+                    value_agg_type = %value_agg.aggregation_type,
+                    "capability matching: multi-population value agg requires a key agg (SetAggregator/DeltaSetAggregator) but none found",
+                ),
+            }
         }
         ka?
     } else {
@@ -808,6 +847,145 @@ mod tests {
             &req("req", &[Statistic::Topk], 300_000, &[], ""),
         );
         assert!(result.is_none());
+    }
+
+    // --- issue #588: DeltaSetAggregator must be restricted to tumbling windows ---
+
+    #[test]
+    fn key_agg_window_valid_rejects_delta_set_aggregator_sliding() {
+        assert!(!key_agg_window_valid(
+            AggregationType::DeltaSetAggregator,
+            WindowType::Sliding
+        ));
+    }
+
+    #[test]
+    fn key_agg_window_valid_accepts_delta_set_aggregator_tumbling() {
+        assert!(key_agg_window_valid(
+            AggregationType::DeltaSetAggregator,
+            WindowType::Tumbling
+        ));
+    }
+
+    #[test]
+    fn key_agg_window_valid_accepts_set_aggregator_sliding() {
+        // SetAggregator (unlike DeltaSetAggregator) legitimately supports sliding.
+        assert!(key_agg_window_valid(
+            AggregationType::SetAggregator,
+            WindowType::Sliding
+        ));
+    }
+
+    #[test]
+    fn window_compatible_rejects_sliding_delta_set_aggregator_even_on_exact_range_match() {
+        // data_range_ms == window_size_ms would normally satisfy the Sliding
+        // rule -- the rejection must come from the aggregation_type check,
+        // not the range/window_size arithmetic.
+        let config = make_config(
+            1,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            300_000,
+            "sliding",
+            &[],
+            "",
+        );
+        assert!(!window_compatible(&config, 300_000));
+    }
+
+    #[test]
+    fn window_compatible_still_accepts_sliding_set_aggregator() {
+        let config = make_config(1, "req", "SetAggregator", "", 300_000, "sliding", &[], "");
+        assert!(window_compatible(&config, 300_000));
+    }
+
+    #[test]
+    fn window_compatible_still_accepts_tumbling_delta_set_aggregator() {
+        let config = make_config(
+            1,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        assert!(window_compatible(&config, 900_000));
+    }
+
+    #[test]
+    fn multi_pop_rejects_sliding_delta_set_aggregator_key_agg() {
+        // The key-agg pairing lookup used to match by (metric, is_key_agg_type)
+        // alone, bypassing window_compatible entirely -- a Sliding
+        // DeltaSetAggregator could be paired even though it can only ever
+        // give incorrect merged add/remove sets under sliding windows.
+        let mut configs = HashMap::new();
+        configs.insert(
+            10,
+            make_config(
+                10,
+                "req",
+                "CountMinSketchWithHeap",
+                "",
+                300_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+        configs.insert(
+            11,
+            make_config(
+                11,
+                "req",
+                "DeltaSetAggregator",
+                "",
+                300_000,
+                "sliding",
+                &[],
+                "",
+            ),
+        );
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("req", &[Statistic::Topk], 300_000, &[], ""),
+        );
+        assert!(
+            result.is_none(),
+            "a Sliding DeltaSetAggregator must never be selected as the paired key agg"
+        );
+    }
+
+    #[test]
+    fn multi_pop_accepts_sliding_set_aggregator_key_agg() {
+        // Regression guard: the DeltaSetAggregator-specific rejection must not
+        // block SetAggregator, which legitimately supports sliding windows.
+        let mut configs = HashMap::new();
+        configs.insert(
+            10,
+            make_config(
+                10,
+                "req",
+                "CountMinSketchWithHeap",
+                "",
+                300_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+        configs.insert(
+            11,
+            make_config(11, "req", "SetAggregator", "", 300_000, "sliding", &[], ""),
+        );
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("req", &[Statistic::Topk], 300_000, &[], ""),
+        );
+        let info = result.expect("Sliding SetAggregator must still be accepted as a key agg");
+        assert_eq!(info.aggregation_id_for_key, 11);
     }
 
     // --- avg (Vec<Statistic>) ---
