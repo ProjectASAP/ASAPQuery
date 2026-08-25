@@ -1767,7 +1767,7 @@ impl SimpleEngine {
                                     }
                                 },
                                 Err(e) => {
-                                    debug!("Failed to merge keys at t={}: {}", current_time, e);
+                                    warn!("Failed to merge keys at t={}: {}", current_time, e);
                                     Vec::new()
                                 }
                             }

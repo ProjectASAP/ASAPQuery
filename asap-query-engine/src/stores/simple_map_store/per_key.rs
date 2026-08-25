@@ -2,7 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    EpochID, InternTable, MetricBucketMap, MetricID, MutableEpoch, SealedEpoch, TimestampRange,
+    sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap, MetricID, MutableEpoch,
+    SealedEpoch, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
@@ -568,8 +569,9 @@ impl Store for SimpleMapStorePerKey {
 
         // Resolve MetricIDs → labels in a single pass
         let mut results: TimestampedBucketsMap = HashMap::with_capacity(mid.len());
-        for (metric_id, buckets) in mid {
+        for (metric_id, mut buckets) in mid {
             total_entries += buckets.len();
+            sort_buckets_chronologically(&mut buckets);
             let label = data.intern.resolve(metric_id).clone();
             results.insert(label, buckets);
         }

@@ -408,11 +408,17 @@ mod tests {
     /// then that result `.merge_with(buckets[2])`, and so on) rather than
     /// passing the whole slice to a single flat N-way merge. For most
     /// accumulators the distinction is invisible (merging is associative and
-    /// commutative). It is NOT invisible for `DeltaSetAggregatorAccumulator`:
-    /// its merge treats a key present in both the added set and the removed
-    /// set as a cancelling conflict (see `merge_accumulators`), so a key that
-    /// toggles more than once within the merged buckets only nets out to the
-    /// chronologically correct state if the deltas are folded in order.
+    /// commutative). For `DeltaSetAggregatorAccumulator` it used to matter:
+    /// before #586, a flat N-way `merge_accumulators` call unioned every
+    /// bucket's added/removed sets before resolving conflicts, so a key that
+    /// toggled more than once lost its final state, while the pairwise
+    /// sequential fold folded each toggle in order and got it right. After
+    /// #586's fix, `merge_accumulators` itself folds its input in order
+    /// (treating the first element as the starting state and each
+    /// subsequent one as the next chronological bucket), so a flat call over
+    /// a chronologically-ordered `Vec` and a pairwise-sequential fold over
+    /// the same buckets are now equivalent -- both are just a left-fold in
+    /// the same order, expressed two different ways.
     ///
     /// Grows the window one bucket at a time (add, remove, add, remove, add)
     /// via `slide(0, ..)` -- mirroring how the range pipeline's per-step
@@ -421,10 +427,10 @@ mod tests {
     /// so a fold that's only correct at the boundary (e.g. an implementation
     /// that happens to get the last step right by luck) can't hide.
     ///
-    /// If a future change to the range-query pipeline (or to `WindowMerger`
-    /// itself) ever collects a `DeltaSetAggregator` window's buckets and
-    /// merges them with one flat call instead of `NaiveMerger`'s sequential
-    /// fold, this test is the tripwire that catches it.
+    /// If a future change ever makes `merge_accumulators` order-insensitive
+    /// again (e.g. reverting to a union-based approach), the final assertion
+    /// below -- that a flat call agrees with the pairwise sequential fold --
+    /// is the tripwire that catches it.
     #[test]
     fn naive_merger_sequential_fold_replays_delta_set_toggles_at_every_window() {
         use crate::data_model::traits::MergeableAccumulator;
@@ -471,19 +477,15 @@ mod tests {
              at every window, not just the final one -- diverged at: {mismatches:?}"
         );
 
-        // Contrast: the same 5 buckets merged in one flat call (not a
-        // sequential fold) lose the key entirely, proving these are NOT
-        // interchangeable for DeltaSetAggregator.
+        // Contrast: the same 5 buckets merged in one flat call now agree
+        // with the pairwise sequential fold -- both are a left-fold over the
+        // same chronologically-ordered buckets, just expressed differently.
         let flat_result = DeltaSetAggregatorAccumulator::merge_accumulators(deltas.to_vec())
-            .expect("flat merge should still succeed, just give the wrong answer");
+            .expect("flat merge should succeed");
         assert!(
-            !flat_result
-                .get_keys()
-                .expect("no unresolved removals after the flat merge either")
-                .contains(&key),
-            "a flat (non-sequential) merge_accumulators call over the same 5 buckets \
-             must NOT net the key to present -- this is exactly the mistake the \
-             sequential fold above avoids"
+            flat_result.get_keys().unwrap().contains(&key),
+            "a flat merge_accumulators call over chronologically-ordered buckets must \
+             agree with NaiveMerger's pairwise sequential fold over the same buckets"
         );
     }
 }

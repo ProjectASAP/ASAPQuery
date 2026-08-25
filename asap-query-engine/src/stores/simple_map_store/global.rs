@@ -2,7 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    EpochID, InternTable, MetricBucketMap, MutableEpoch, SealedEpoch, TimestampRange,
+    sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap, MutableEpoch, SealedEpoch,
+    TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -516,8 +517,9 @@ impl Store for SimpleMapStoreGlobal {
         let results: TimestampedBucketsMap = {
             let per_key = data.stores.get(&store_key).unwrap();
             let mut r = HashMap::with_capacity(mid.len());
-            for (metric_id, buckets) in mid.drain() {
+            for (metric_id, mut buckets) in mid.drain() {
                 total_entries += buckets.len();
+                sort_buckets_chronologically(&mut buckets);
                 let label = per_key.intern.resolve(metric_id).clone();
                 r.insert(label, buckets);
             }
