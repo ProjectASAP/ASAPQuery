@@ -111,8 +111,17 @@ pub fn build_agg_configs_for_statistics(
             configs.push(IntermediateAggConfig {
                 aggregation_type: AggregationType::DeltaSetAggregator,
                 aggregation_sub_type: String::new(),
-                window_type: window_cfg.window_type,
-                window_size_ms: window_cfg.window_size_ms,
+                // DeltaSetAggregator only tracks added/removed keys since the
+                // last window, so it's only correct for non-overlapping
+                // (tumbling) windows (#588). Always plan it as Tumbling,
+                // decoupled from the sibling value aggregation's window_type,
+                // sized to the sibling's slide_interval_ms -- the pane
+                // granularity it already emits at (window_manager.rs) -- so
+                // its buckets align with existing pane-close events. This is
+                // a no-op when window_cfg is already Tumbling, since
+                // window_size_ms == slide_interval_ms there.
+                window_type: WindowType::Tumbling,
+                window_size_ms: window_cfg.slide_interval_ms,
                 slide_interval_ms: window_cfg.slide_interval_ms,
                 spatial_filter: spatial_filter.to_string(),
                 metric: metric.to_string(),
@@ -221,5 +230,127 @@ mod tests {
         cfg2.parameters
             .insert("depth".to_string(), Value::Number(3.into()));
         assert_eq!(cfg1.identifying_key(), cfg2.identifying_key());
+    }
+
+    /// Builds configs for a single `CountMinSketch`-triggering statistic
+    /// (`Statistic::Count` under `Approximate` treatment maps to
+    /// `AggregationType::CountMinSketch`, see `map_statistic_to_precompute_operator`),
+    /// which is what makes `build_agg_configs_for_statistics` emit a paired
+    /// `DeltaSetAggregator` companion config.
+    fn configs_for_count_min_sketch(
+        window_cfg: &IntermediateWindowConfig,
+    ) -> Vec<IntermediateAggConfig> {
+        build_agg_configs_for_statistics(
+            &[Statistic::Count],
+            QueryTreatmentType::Approximate,
+            &KeyByLabelNames::empty(),
+            &KeyByLabelNames::empty(),
+            window_cfg,
+            "http_requests_total",
+            None,
+            None,
+            "",
+            |_, _| Ok(HashMap::new()),
+        )
+        .expect("building configs for Statistic::Count should succeed")
+    }
+
+    /// Issue #588: DeltaSetAggregator only tracks added/removed keys since
+    /// the last window, so it's only correct for non-overlapping (tumbling)
+    /// windows. When the surrounding query is planned with a Sliding
+    /// window_type, the companion DeltaSetAggregator config must still be
+    /// planned as Tumbling -- never silently copy Sliding through.
+    #[test]
+    fn sliding_query_window_forces_delta_set_aggregator_to_tumbling() {
+        let window_cfg = IntermediateWindowConfig {
+            window_type: WindowType::Sliding,
+            window_size_ms: 300_000,
+            slide_interval_ms: 60_000,
+        };
+
+        let configs = configs_for_count_min_sketch(&window_cfg);
+
+        let delta = configs
+            .iter()
+            .find(|c| c.aggregation_type == AggregationType::DeltaSetAggregator)
+            .expect("CountMinSketch statistic must emit a paired DeltaSetAggregator config");
+
+        assert_eq!(
+            delta.window_type,
+            WindowType::Tumbling,
+            "DeltaSetAggregator must never be planned as Sliding"
+        );
+    }
+
+    /// The decoupled DeltaSetAggregator bucket must be sized to the sibling's
+    /// slide_interval_ms (the pane granularity the value aggregator already
+    /// emits at -- see window_manager.rs::panes_for_window), not its full
+    /// window_size_ms, so its tumbling buckets align with existing pane-close
+    /// events instead of requiring a second, independent emission schedule.
+    #[test]
+    fn sliding_query_window_sizes_delta_set_aggregator_to_slide_interval() {
+        let window_cfg = IntermediateWindowConfig {
+            window_type: WindowType::Sliding,
+            window_size_ms: 300_000,
+            slide_interval_ms: 60_000,
+        };
+
+        let configs = configs_for_count_min_sketch(&window_cfg);
+
+        let delta = configs
+            .iter()
+            .find(|c| c.aggregation_type == AggregationType::DeltaSetAggregator)
+            .unwrap();
+
+        assert_eq!(delta.window_size_ms, window_cfg.slide_interval_ms);
+        assert_eq!(delta.slide_interval_ms, window_cfg.slide_interval_ms);
+    }
+
+    /// The sibling value aggregation (CountMinSketch) keeps the query's
+    /// original Sliding window untouched -- only the DeltaSetAggregator
+    /// companion is forced to Tumbling.
+    #[test]
+    fn sliding_query_window_leaves_value_aggregation_sliding() {
+        let window_cfg = IntermediateWindowConfig {
+            window_type: WindowType::Sliding,
+            window_size_ms: 300_000,
+            slide_interval_ms: 60_000,
+        };
+
+        let configs = configs_for_count_min_sketch(&window_cfg);
+
+        let value_cfg = configs
+            .iter()
+            .find(|c| c.aggregation_type == AggregationType::CountMinSketch)
+            .expect("value aggregation config must be present");
+
+        assert_eq!(value_cfg.window_type, WindowType::Sliding);
+        assert_eq!(value_cfg.window_size_ms, window_cfg.window_size_ms);
+        assert_eq!(value_cfg.slide_interval_ms, window_cfg.slide_interval_ms);
+    }
+
+    /// Regression guard: under a Tumbling query window (window_size_ms ==
+    /// slide_interval_ms, the only case the live planner produces today --
+    /// see window.rs::should_use_sliding_window), the DeltaSetAggregator
+    /// companion's window fields must stay exactly what they were before
+    /// this fix -- copied straight from window_cfg.
+    #[test]
+    fn tumbling_query_window_delta_set_aggregator_unchanged() {
+        let window_cfg = IntermediateWindowConfig {
+            window_type: WindowType::Tumbling,
+            window_size_ms: 60_000,
+            slide_interval_ms: 60_000,
+        };
+
+        let configs = configs_for_count_min_sketch(&window_cfg);
+
+        let delta = configs
+            .iter()
+            .find(|c| c.aggregation_type == AggregationType::DeltaSetAggregator)
+            .unwrap();
+
+        assert_eq!(delta.window_type, WindowType::Tumbling);
+        assert_eq!(delta.window_size_ms, 60_000);
+        assert_eq!(delta.slide_interval_ms, 60_000);
     }
 }
