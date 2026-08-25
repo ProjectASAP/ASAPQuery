@@ -114,6 +114,19 @@ pub struct RangeQueryExecutionContext {
     pub lookback_bucket_count: usize,
     /// Tumbling window size in ms
     pub tumbling_window_ms: u64,
+    /// Per-step lookback for the keys aggregation (#583): `keys_query.end -
+    /// keys_query.start` from the instant window `create_keys_query_params`
+    /// computed before widening. `None` when there's no separate
+    /// `keys_query`. Reused, unmodified, as the per-step
+    /// `current_time.saturating_sub(keys_lookback_ms)` window start for
+    /// every output step -- this single value is what makes `SetAggregator`
+    /// a normal sliding window and `DeltaSetAggregator` always replay from
+    /// `0`, with no `AggregationType` branching needed here.
+    pub keys_lookback_ms: Option<u64>,
+    /// Bucket width for the keys aggregation, separate from
+    /// `tumbling_window_ms` (which is the *value* aggregation's width) --
+    /// the two can legitimately differ.
+    pub keys_tumbling_window_ms: Option<u64>,
 }
 
 // /// Parsed components of a sketch query, extracted either via the PromQL AST
@@ -604,9 +617,11 @@ impl SimpleEngine {
     }
 
     /// Fetches and merges the keys side of a dual-population query plan, if
-    /// present. Shared by `execute_and_merge_store_queries` (instant) and
-    /// `execute_range_query_pipeline` (range) — both build a `StoreQueryPlan`
-    /// that may carry a separate `keys_query` and need it merged the same way.
+    /// present. Used by `execute_and_merge_store_queries` (instant) only —
+    /// `execute_range_query_pipeline` (range) fetches keys raw via
+    /// `execute_store_query` and merges them per output step instead (#583),
+    /// since a single merged snapshot can't answer "what did the key set
+    /// look like at an earlier timestamp."
     fn fetch_and_merge_keys(
         &self,
         keys_query: &Option<StoreQueryParams>,
@@ -1463,6 +1478,56 @@ impl SimpleEngine {
     //     Some((output_labels, QueryResult::matrix(range_elements)))
     // }
 
+    /// Builds a lookup from bucket start-timestamp to every bucket sharing
+    /// that start. A Sliding aggregation can legitimately return more than
+    /// one bucket per start timestamp (#567/#570) — every one of them must
+    /// be merged, not just the last one collected here. Used identically by
+    /// `execute_range_query_pipeline` for both the value side and (#583)
+    /// the keys side.
+    fn build_bucket_map(
+        buckets: &[crate::stores::TimestampedBucket],
+    ) -> HashMap<u64, Vec<&dyn AggregateCore>> {
+        let mut bucket_map: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
+        for ((start, _), bucket) in buckets {
+            bucket_map.entry(*start).or_default().push(bucket.as_ref());
+        }
+        bucket_map
+    }
+
+    /// Collects every bucket in `bucket_map` whose start falls in
+    /// `[window_start, window_end)`, stepping by `step_increment`. Missing
+    /// buckets at a given start are skipped (partial data is okay). Used
+    /// identically by `execute_range_query_pipeline` for both the value
+    /// side and (#583) the keys side — the only difference between the two
+    /// call sites is which map/lookback/bucket-width they pass in.
+    fn scan_window(
+        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        window_start: u64,
+        window_end: u64,
+        step_increment: u64,
+    ) -> Vec<Box<dyn AggregateCore>> {
+        // A zero step never advances `t`, so the loop below would never
+        // terminate. This is the single caller-facing guard for that hazard
+        // -- callers upstream may also validate their own step sources, but
+        // this function has two callers (values, keys) and should not rely
+        // on either of them to have done so. Kept active in release builds
+        // (assert!, not debug_assert!): a hung query is a production
+        // incident, not just a debug-time nicety.
+        assert!(
+            step_increment > 0,
+            "scan_window: step_increment must be nonzero, or this loop never terminates"
+        );
+        let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
+        let mut t = window_start;
+        while t < window_end {
+            if let Some(buckets) = bucket_map.get(&t) {
+                window_buckets.extend(buckets.iter().map(|b| b.clone_boxed_core()));
+            }
+            t += step_increment;
+        }
+        window_buckets
+    }
+
     /// Execute the range query pipeline
     fn execute_range_query_pipeline(
         &self,
@@ -1484,20 +1549,25 @@ impl SimpleEngine {
             all_data.values().map(|v| v.len()).sum::<usize>()
         );
 
-        // Dual-population metrics (separate key/value aggregations) need the
-        // keys side merged once up front, then expanded per value group below
-        // — mirrors execute_and_merge_store_queries/collect_results_separate_keys
-        // (#580: this pipeline previously never read keys_query at all).
-        let merged_keys = self.fetch_and_merge_keys(
-            &context.base.store_plan.keys_query,
-            context.base.agg_info.aggregation_type_for_key,
-            context.base.do_merge,
-        )?;
+        // #583: fetch keys raw (no merge). Unlike keys, values have always
+        // been fetched raw here and merged per-step below (see the loop);
+        // keys used to go through fetch_and_merge_keys, which collapses
+        // every fetched bucket into ONE snapshot before this function ever
+        // sees it. That collapse is the bug: once buckets are merged
+        // together there's no way to ask what the key set looked like at
+        // any specific earlier timestamp. Fetching raw and merging per-step,
+        // mirroring the values loop, is the fix.
+        let keys_raw_data: Option<TimestampedBucketsMap> = match &context.base.store_plan.keys_query
+        {
+            Some(keys_query) => Some(self.execute_store_query(keys_query)?),
+            None => None,
+        };
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
         // Determine accumulator type for merger selection
         let accumulator_type = &context.base.agg_info.aggregation_type_for_value;
+        let key_accumulator_type = context.base.agg_info.aggregation_type_for_key;
 
         // Calculate step parameters
         let step_ms = context.range_params.step;
@@ -1507,6 +1577,8 @@ impl SimpleEngine {
         let lookback_bucket_count = context.lookback_bucket_count;
         let tumbling_window_ms = context.tumbling_window_ms;
         let lookback_ms = (lookback_bucket_count as u64) * tumbling_window_ms;
+        let keys_lookback_ms = context.keys_lookback_ms;
+        let keys_tumbling_window_ms = context.keys_tumbling_window_ms;
 
         let window_mode = if buckets_per_step <= lookback_bucket_count {
             "sliding (slide <= size)"
@@ -1528,82 +1600,190 @@ impl SimpleEngine {
         // Whether the value accumulator's own get_keys() is even consulted
         // depends on the query SHAPE (dual- vs single-population), not on a
         // per-group fallback — mirrors collect_all_results exactly:
-        //   - dual-population (separate keys_query present): always expand
-        //     via the keys aggregation's get_keys(), full stop. The value
-        //     accumulator's own get_keys() is never consulted, even if the
-        //     value accumulator itself happens to be self-keyed (e.g. a
-        //     CountMinSketchWithHeap value paired with a DeltaSetAggregator
-        //     keys aggregation is a real capability-matched config, see
-        //     sql.rs). Otherwise a self-keyed value accumulator's own
-        //     (possibly different, window-to-window-shifting) keys would
-        //     silently override the keys aggregation's expansion. See #587
-        //     review.
-        //   - single-population (no separate keys_query): the value
-        //     accumulator's own get_keys() takes priority whenever present
-        //     (#584, self-keyed accumulators like top-k), falling back to
-        //     the store-level group key otherwise.
-        let is_dual_population = merged_keys.is_some();
+        //   - dual-population (KeysSource::PerStep below, separate
+        //     keys_query present): always expand via the keys aggregation's
+        //     per-step merge (#583). The value accumulator's own get_keys()
+        //     is never consulted, even if the value accumulator itself
+        //     happens to be self-keyed (e.g. a CountMinSketchWithHeap value
+        //     paired with a DeltaSetAggregator keys aggregation is a real
+        //     capability-matched config, see sql.rs). Otherwise a
+        //     self-keyed value accumulator's own (possibly different,
+        //     window-to-window-shifting) keys would silently override the
+        //     keys aggregation's expansion. See #587 review.
+        //   - single-population (KeysSource::Fixed below, no separate
+        //     keys_query): the value accumulator's own get_keys() takes
+        //     priority whenever present (#584, self-keyed accumulators like
+        //     top-k), evaluated AFTER merging the window's value buckets
+        //     (a top-k heap's keys can depend on that window's data),
+        //     falling back to the store-level group key otherwise.
+        // PerStep bundles everything a dual-population group's per-step
+        // resolution needs (bucket_map, lookback_ms, tumbling_window_ms) in
+        // one place, built once at group-construction time — rather than
+        // three separate Option fields at function scope that only
+        // happened to be Some together by convention, each re-unwrapped via
+        // .expect() on every iteration of the per-step loop. Making the
+        // invalid state (PerStep present but one companion value missing)
+        // unrepresentable is the same reasoning that motivated this enum
+        // over two raw Option fields in the first place — just applied all
+        // the way through instead of partway.
+        enum KeysSource<'a> {
+            Fixed(Vec<KeyByLabelValues>),
+            PerStep {
+                bucket_map: HashMap<u64, Vec<&'a dyn AggregateCore>>,
+                lookback_ms: u64,
+                tumbling_window_ms: u64,
+            },
+        }
 
-        // Resolve, for every value group, a fallback key list — used
-        // directly for dual-population groups, or as a fallback for
-        // single-population groups whose value accumulator doesn't self-key.
-        let groups: Vec<(
-            &Vec<crate::stores::TimestampedBucket>,
-            Vec<KeyByLabelValues>,
-        )> = match &merged_keys {
-            Some(keys_map) => keys_map
-                .iter()
-                .map(|(group_key, keys_precompute)| {
-                    let timestamped_buckets = all_data
-                        .get(group_key)
-                        .ok_or_else(|| format!("No value for key: {:?}", group_key))?;
-                    let fallback_keys = keys_precompute
-                        .get_keys()
-                        .ok_or_else(|| "Keys required for separate aggregation".to_string())?;
-                    Ok((timestamped_buckets, fallback_keys))
-                })
-                .collect::<Result<Vec<_>, String>>()?,
+        // Resolve, for every value group, which groups exist at all (a
+        // one-time operation — see design doc) and where their expansion
+        // keys come from. A group with keys data but no value data
+        // anywhere in the queried range is skipped with a warning instead
+        // of failing the whole range query (#583; previously
+        // `.ok_or_else(...)?` here hard-failed everything for one missing
+        // group). See #582 review for collect_results_separate_keys parity.
+        let groups: Vec<(&Vec<crate::stores::TimestampedBucket>, KeysSource)> = match &keys_raw_data
+        {
+            Some(keys_map) => {
+                // keys_raw_data is Some, so context.keys_lookback_ms /
+                // context.keys_tumbling_window_ms are guaranteed Some too
+                // (both derived from the same keys_query.is_some() check in
+                // finish_range_context) -- resolved once here instead of
+                // re-unwrapped per group per step.
+                let keys_lookback_ms =
+                    keys_lookback_ms.expect("keys_raw_data implies keys_lookback_ms is Some");
+                let keys_tumbling_window_ms = keys_tumbling_window_ms
+                    .expect("keys_raw_data implies keys_tumbling_window_ms is Some");
+                keys_map
+                    .iter()
+                    .filter_map(
+                        |(group_key, raw_keys_buckets)| match all_data.get(group_key) {
+                            Some(timestamped_buckets) => Some((
+                                timestamped_buckets,
+                                KeysSource::PerStep {
+                                    bucket_map: Self::build_bucket_map(raw_keys_buckets),
+                                    lookback_ms: keys_lookback_ms,
+                                    tumbling_window_ms: keys_tumbling_window_ms,
+                                },
+                            )),
+                            None => {
+                                warn!(
+                                    "Range query: group {:?} has keys data but no value data \
+                             anywhere in the queried range — skipping this group instead \
+                             of failing the whole query (#583)",
+                                    group_key
+                                );
+                                None
+                            }
+                        },
+                    )
+                    .collect()
+            }
+            // #584/#587: keep every group, including group_key=None — that's
+            // exactly where a self-keyed single-population accumulator
+            // (e.g. top-k) is typically stored. An empty fallback list here
+            // is fine; the per-step loop below tries the value
+            // accumulator's own get_keys() first and only falls back to
+            // this list.
             None => all_data
                 .iter()
-                .map(|(group_key, buckets)| (buckets, group_key.clone().into_iter().collect()))
+                .map(|(group_key, buckets)| {
+                    (
+                        buckets,
+                        KeysSource::Fixed(group_key.clone().into_iter().collect()),
+                    )
+                })
                 .collect(),
         };
 
         // Process each value group independently
-        for (timestamped_buckets, fallback_keys) in groups {
-            // Build lookup: bucket_start_timestamp -> all buckets sharing
-            // that start. A Sliding aggregation can legitimately return more
-            // than one bucket per start timestamp (#567/#570) — every one of
-            // them must be merged, not just the last one collected here.
-            let mut bucket_map: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
-            for ((start, _), bucket) in timestamped_buckets {
-                bucket_map.entry(*start).or_default().push(bucket.as_ref());
-            }
+        for (timestamped_buckets, keys_source) in groups {
+            let bucket_map = Self::build_bucket_map(timestamped_buckets);
 
             debug!(
-                "Group with {} start-timestamps, fallback keys: {:?}",
+                "Group with {} start-timestamps ({} keys start-timestamps)",
                 bucket_map.len(),
-                fallback_keys
+                match &keys_source {
+                    KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
+                    KeysSource::Fixed(_) => 0,
+                }
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
             let mut current_time = start_ms;
             while current_time <= end_ms {
+                // #583: dual-population groups resolve their expansion keys
+                // from the keys aggregation, per step — not a single
+                // snapshot reused for every step — and (#587) never from
+                // the value accumulator's own get_keys(). If nothing
+                // resolves at this step, skip it before ever touching the
+                // value merge below. Fixed (single-population) groups defer
+                // key resolution until after the value merge (#584/#587).
+                let per_step_keys: Option<Vec<KeyByLabelValues>> = match &keys_source {
+                    KeysSource::PerStep {
+                        bucket_map: keys_bucket_map,
+                        lookback_ms: keys_lookback_ms,
+                        tumbling_window_ms: keys_tumbling_window_ms,
+                    } => {
+                        let keys_window_start = current_time.saturating_sub(*keys_lookback_ms);
+                        let keys_window_buckets = Self::scan_window(
+                            keys_bucket_map,
+                            keys_window_start,
+                            current_time,
+                            *keys_tumbling_window_ms,
+                        );
+
+                        let expansion_keys = if keys_window_buckets.is_empty() {
+                            Vec::new()
+                        } else {
+                            let mut key_merger = create_window_merger(key_accumulator_type);
+                            key_merger.initialize(keys_window_buckets);
+                            match key_merger.get_merged() {
+                                Ok(merged) => match merged.get_keys() {
+                                    Some(keys) => keys,
+                                    None => {
+                                        // e.g. a DeltaSetAggregator "remove" with no
+                                        // matching "add" resolved in this window --
+                                        // distinct from (and louder than) the routine,
+                                        // expected "no buckets in this window at all"
+                                        // case below, since it means a merge DID
+                                        // happen but couldn't resolve a key set.
+                                        warn!(
+                                            "Keys merge at t={} produced an unresolved key \
+                                             set (get_keys() returned None) -- skipping \
+                                             this step for this group",
+                                            current_time
+                                        );
+                                        Vec::new()
+                                    }
+                                },
+                                Err(e) => {
+                                    debug!("Failed to merge keys at t={}: {}", current_time, e);
+                                    Vec::new()
+                                }
+                            }
+                        };
+
+                        if expansion_keys.is_empty() {
+                            debug!(
+                                "No expansion keys resolved at t={} — skipping this step for this group",
+                                current_time
+                            );
+                            current_time += step_ms;
+                            continue;
+                        }
+                        Some(expansion_keys)
+                    }
+                    KeysSource::Fixed(_) => None,
+                };
+
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
                 let window_start = current_time.saturating_sub(lookback_ms);
 
                 // Collect all AVAILABLE buckets in this window (skip missing ones)
-                let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
-
-                let mut t = window_start;
-                while t < current_time {
-                    if let Some(buckets) = bucket_map.get(&t) {
-                        window_buckets.extend(buckets.iter().map(|b| b.clone_boxed_core()));
-                    }
-                    // If no bucket at timestamp t, just skip it (partial data is okay)
-                    t += tumbling_window_ms;
-                }
+                let window_buckets =
+                    Self::scan_window(&bucket_map, window_start, current_time, tumbling_window_ms);
 
                 if !window_buckets.is_empty() {
                     // Merge available buckets
@@ -1612,18 +1792,21 @@ impl SimpleEngine {
 
                     match merger.get_merged() {
                         Ok(merged) => {
-                            // See is_dual_population above: dual-population
-                            // always trusts the keys aggregation's expansion;
-                            // only single-population lets the value
-                            // accumulator's own get_keys() (read after
+                            // See the note above KeysSource: dual-population
+                            // (per_step_keys already resolved, non-empty)
+                            // always uses that; single-population lets the
+                            // value accumulator's own get_keys() (read after
                             // merging this window, since e.g. a top-k heap's
                             // keys depend on the window's data) take
                             // priority, falling back to the store-level
                             // group key otherwise.
-                            let resolved_keys = if is_dual_population {
-                                fallback_keys.clone()
-                            } else {
-                                merged.get_keys().unwrap_or_else(|| fallback_keys.clone())
+                            let resolved_keys = match &keys_source {
+                                KeysSource::PerStep { .. } => per_step_keys.expect(
+                                    "PerStep always sets per_step_keys above, or continues",
+                                ),
+                                KeysSource::Fixed(fallback_keys) => {
+                                    merged.get_keys().unwrap_or_else(|| fallback_keys.clone())
+                                }
                             };
                             // Query statistic and emit a sample at current_time
                             // for every expanded key sharing this value group.
@@ -1651,16 +1834,16 @@ impl SimpleEngine {
                         }
                         Err(e) => {
                             debug!(
-                                "Failed to get merged result at t={} for keys {:?}: {}",
-                                current_time, fallback_keys, e
+                                "Failed to get merged result at t={} (per_step_keys={:?}): {}",
+                                current_time, per_step_keys, e
                             );
                         }
                     }
                 } else {
                     // No data at all for this window - skip sample
                     debug!(
-                        "Keys {:?}: skipping sample at {} - no data in window [{}, {})",
-                        fallback_keys, current_time, window_start, current_time
+                        "Skipping sample at {} (per_step_keys={:?}) - no data in window [{}, {})",
+                        current_time, per_step_keys, window_start, current_time
                     );
                 }
 

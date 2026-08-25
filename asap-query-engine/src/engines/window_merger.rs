@@ -401,4 +401,89 @@ mod tests {
             .unwrap();
         assert_eq!(mock3.value, 120.0);
     }
+
+    /// Pins a subtle, easy-to-miss requirement that `execute_range_query_pipeline`'s
+    /// per-step keys merge (#583) depends on: `NaiveMerger` folds buckets
+    /// *pairwise, left-to-right* (each `get_merged` walks `buckets[0].merge_with(buckets[1])`,
+    /// then that result `.merge_with(buckets[2])`, and so on) rather than
+    /// passing the whole slice to a single flat N-way merge. For most
+    /// accumulators the distinction is invisible (merging is associative and
+    /// commutative). It is NOT invisible for `DeltaSetAggregatorAccumulator`:
+    /// its merge treats a key present in both the added set and the removed
+    /// set as a cancelling conflict (see `merge_accumulators`), so a key that
+    /// toggles more than once within the merged buckets only nets out to the
+    /// chronologically correct state if the deltas are folded in order.
+    ///
+    /// Grows the window one bucket at a time (add, remove, add, remove, add)
+    /// via `slide(0, ..)` -- mirroring how the range pipeline's per-step
+    /// window for `DeltaSetAggregator` only ever grows, never expires -- and
+    /// checks `get_merged()` after *every* addition, not just the final one,
+    /// so a fold that's only correct at the boundary (e.g. an implementation
+    /// that happens to get the last step right by luck) can't hide.
+    ///
+    /// If a future change to the range-query pipeline (or to `WindowMerger`
+    /// itself) ever collects a `DeltaSetAggregator` window's buckets and
+    /// merges them with one flat call instead of `NaiveMerger`'s sequential
+    /// fold, this test is the tripwire that catches it.
+    #[test]
+    fn naive_merger_sequential_fold_replays_delta_set_toggles_at_every_window() {
+        use crate::data_model::traits::MergeableAccumulator;
+        use crate::precompute_operators::DeltaSetAggregatorAccumulator;
+
+        let key = KeyByLabelValues::new_with_labels(vec!["host-a".to_string()]);
+
+        let mut add = DeltaSetAggregatorAccumulator::new();
+        add.add_key(key.clone());
+        let mut remove = DeltaSetAggregatorAccumulator::new();
+        remove.remove_key(key.clone());
+
+        // add, remove, add, remove, add -> present, absent, present, absent, present
+        let deltas = [
+            add.clone(),
+            remove.clone(),
+            add.clone(),
+            remove.clone(),
+            add.clone(),
+        ];
+        let expected_present = [true, false, true, false, true];
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(vec![Box::new(deltas[0].clone())]);
+        let mismatches: Vec<String> = expected_present
+            .iter()
+            .enumerate()
+            .filter_map(|(i, &expected)| {
+                if i > 0 {
+                    merger.slide(0, vec![Box::new(deltas[i].clone())]);
+                }
+                let merged = merger.get_merged().unwrap();
+                let actual = merged
+                    .get_keys()
+                    .expect("no unresolved removals after a sequential fold")
+                    .contains(&key);
+                (actual != expected)
+                    .then(|| format!("window {}: expected {expected}, got {actual}", i + 1))
+            })
+            .collect();
+        assert!(
+            mismatches.is_empty(),
+            "NaiveMerger's sequential left-fold must replay each toggle chronologically \
+             at every window, not just the final one -- diverged at: {mismatches:?}"
+        );
+
+        // Contrast: the same 5 buckets merged in one flat call (not a
+        // sequential fold) lose the key entirely, proving these are NOT
+        // interchangeable for DeltaSetAggregator.
+        let flat_result = DeltaSetAggregatorAccumulator::merge_accumulators(deltas.to_vec())
+            .expect("flat merge should still succeed, just give the wrong answer");
+        assert!(
+            !flat_result
+                .get_keys()
+                .expect("no unresolved removals after the flat merge either")
+                .contains(&key),
+            "a flat (non-sequential) merge_accumulators call over the same 5 buckets \
+             must NOT net the key to present -- this is exactly the mistake the \
+             sequential fold above avoids"
+        );
+    }
 }
