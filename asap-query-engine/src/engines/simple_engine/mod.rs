@@ -1688,7 +1688,7 @@ impl SimpleEngine {
         // over two raw Option fields in the first place — just applied all
         // the way through instead of partway.
         enum KeysSource<'a> {
-            Fixed(Vec<KeyByLabelValues>),
+            Fixed(Option<KeyByLabelValues>),
             PerStep {
                 bucket_map: HashMap<u64, Vec<&'a dyn AggregateCore>>,
                 lookback_ms: u64,
@@ -1748,12 +1748,7 @@ impl SimpleEngine {
             // this list.
             None => all_data
                 .iter()
-                .map(|(group_key, buckets)| {
-                    (
-                        buckets,
-                        KeysSource::Fixed(group_key.clone().into_iter().collect()),
-                    )
-                })
+                .map(|(group_key, buckets)| (buckets, KeysSource::Fixed(group_key.clone())))
                 .collect(),
         };
 
@@ -1775,12 +1770,12 @@ impl SimpleEngine {
             while current_time <= end_ms {
                 // #583: dual-population groups resolve their expansion keys
                 // from the keys aggregation, per step — not a single
-                // snapshot reused for every step — and (#587) never from
-                // the value accumulator's own get_keys(). If nothing
-                // resolves at this step, skip it before ever touching the
-                // value merge below. Fixed (single-population) groups defer
-                // key resolution until after the value merge (#584/#587).
-                let per_step_keys: Option<Vec<KeyByLabelValues>> = match &keys_source {
+                // snapshot reused for every step. If nothing resolves at
+                // this step, skip it before ever touching the value merge
+                // below (avoids wasted merge work on steps outside the
+                // key's lifetime). Fixed (single-population) groups have no
+                // separate keys accumulator to merge here at all.
+                let keys_precompute: Option<Box<dyn AggregateCore>> = match &keys_source {
                     KeysSource::PerStep {
                         bucket_map: keys_bucket_map,
                         lookback_ms: keys_lookback_ms,
@@ -1794,46 +1789,25 @@ impl SimpleEngine {
                             *keys_tumbling_window_ms,
                         );
 
-                        let expansion_keys = if keys_window_buckets.is_empty() {
-                            Vec::new()
-                        } else {
-                            let mut key_merger = create_window_merger(key_accumulator_type);
-                            key_merger.initialize(keys_window_buckets);
-                            match key_merger.get_merged() {
-                                Ok(merged) => match merged.get_keys() {
-                                    Some(keys) => keys,
-                                    None => {
-                                        // e.g. a DeltaSetAggregator "remove" with no
-                                        // matching "add" resolved in this window --
-                                        // distinct from (and louder than) the routine,
-                                        // expected "no buckets in this window at all"
-                                        // case below, since it means a merge DID
-                                        // happen but couldn't resolve a key set.
-                                        warn!(
-                                            "Keys merge at t={} produced an unresolved key \
-                                             set (get_keys() returned None) -- skipping \
-                                             this step for this group",
-                                            current_time
-                                        );
-                                        Vec::new()
-                                    }
-                                },
-                                Err(e) => {
-                                    warn!("Failed to merge keys at t={}: {}", current_time, e);
-                                    Vec::new()
-                                }
-                            }
-                        };
-
-                        if expansion_keys.is_empty() {
+                        if keys_window_buckets.is_empty() {
                             debug!(
-                                "No expansion keys resolved at t={} — skipping this step for this group",
+                                "No keys data in window at t={} — skipping this step for this group",
                                 current_time
                             );
                             current_time += step_ms;
                             continue;
                         }
-                        Some(expansion_keys)
+
+                        let mut key_merger = create_window_merger(key_accumulator_type);
+                        key_merger.initialize(keys_window_buckets);
+                        match key_merger.get_merged() {
+                            Ok(merged_keys) => Some(merged_keys),
+                            Err(e) => {
+                                warn!("Failed to merge keys at t={}: {}", current_time, e);
+                                current_time += step_ms;
+                                continue;
+                            }
+                        }
                     }
                     KeysSource::Fixed(_) => None,
                 };
@@ -1846,66 +1820,57 @@ impl SimpleEngine {
                 let window_buckets =
                     Self::scan_window(&bucket_map, window_start, current_time, tumbling_window_ms);
 
-                if !window_buckets.is_empty() {
-                    // Merge available buckets
-                    let mut merger = create_window_merger(*accumulator_type);
-                    merger.initialize(window_buckets);
-
-                    match merger.get_merged() {
-                        Ok(merged) => {
-                            // See the note above KeysSource: dual-population
-                            // (per_step_keys already resolved, non-empty)
-                            // always uses that; single-population lets the
-                            // value accumulator's own get_keys() (read after
-                            // merging this window, since e.g. a top-k heap's
-                            // keys depend on the window's data) take
-                            // priority, falling back to the store-level
-                            // group key otherwise.
-                            let resolved_keys = match &keys_source {
-                                KeysSource::PerStep { .. } => per_step_keys.expect(
-                                    "PerStep always sets per_step_keys above, or continues",
-                                ),
-                                KeysSource::Fixed(fallback_keys) => {
-                                    merged.get_keys().unwrap_or_else(|| fallback_keys.clone())
-                                }
-                            };
-                            // Query statistic and emit a sample at current_time
-                            // for every expanded key sharing this value group.
-                            for key in &resolved_keys {
-                                match self.query_precompute_for_statistic(
-                                    merged.as_ref(),
-                                    &context.base.metadata.statistic_to_compute,
-                                    &Some(key.clone()),
-                                    &context.base.metadata.query_kwargs,
-                                ) {
-                                    Ok(value) => {
-                                        results
-                                            .entry(key.clone())
-                                            .or_insert_with(|| RangeVectorElement::new(key.clone()))
-                                            .add_sample(current_time, value);
-                                    }
-                                    Err(e) => {
-                                        debug!(
-                                            "Failed to query statistic at t={} for key {:?}: {}",
-                                            current_time, key, e
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            debug!(
-                                "Failed to get merged result at t={} (per_step_keys={:?}): {}",
-                                current_time, per_step_keys, e
-                            );
-                        }
-                    }
-                } else {
+                if window_buckets.is_empty() {
                     // No data at all for this window - skip sample
                     debug!(
-                        "Skipping sample at {} (per_step_keys={:?}) - no data in window [{}, {})",
-                        current_time, per_step_keys, window_start, current_time
+                        "Skipping sample at {} - no data in window [{}, {})",
+                        current_time, window_start, current_time
                     );
+                    current_time += step_ms;
+                    continue;
+                }
+
+                let mut merger = create_window_merger(*accumulator_type);
+                merger.initialize(window_buckets);
+
+                let merged = match merger.get_merged() {
+                    Ok(merged) => merged,
+                    Err(e) => {
+                        debug!("Failed to get merged result at t={}: {}", current_time, e);
+                        current_time += step_ms;
+                        continue;
+                    }
+                };
+
+                let fallback_key = match &keys_source {
+                    KeysSource::Fixed(fallback_key) => fallback_key.clone(),
+                    KeysSource::PerStep { .. } => None,
+                };
+
+                // See the note above KeysSource: dual-population always
+                // resolves via keys_precompute; single-population lets the
+                // value accumulator's own get_keys() (read after merging
+                // this window, since e.g. a top-k heap's keys depend on the
+                // window's data) take priority, falling back to
+                // fallback_key otherwise. Same resolver instant uses
+                // (resolve_and_query_group) -- see #581.
+                for (key, value) in self.resolve_and_query_group(
+                    Some(merged.as_ref()),
+                    keys_precompute.as_deref(),
+                    &fallback_key,
+                    &context.base.metadata.statistic_to_compute,
+                    &context.base.metadata.query_kwargs,
+                ) {
+                    // A fully unlabeled result (fallback_key was None and
+                    // the value accumulator has no self-keys) has no
+                    // RangeVectorElement representation (labels:
+                    // KeyByLabelValues, not Option) -- matches today's
+                    // behavior of producing no sample for this combination.
+                    let Some(key) = key else { continue };
+                    results
+                        .entry(key.clone())
+                        .or_insert_with(|| RangeVectorElement::new(key))
+                        .add_sample(current_time, value);
                 }
 
                 current_time += step_ms;
