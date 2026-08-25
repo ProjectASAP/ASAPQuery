@@ -50,13 +50,8 @@ impl NaiveMerger {
             return Err("No buckets to merge".to_string());
         }
 
-        let mut result = self.buckets[0].clone_boxed_core();
-        for bucket in &self.buckets[1..] {
-            result = result
-                .merge_with(bucket.as_ref())
-                .map_err(|e| format!("Merge failed: {}", e))?;
-        }
-        Ok(result)
+        crate::engines::merge_utils::merge_accumulators_batch(&self.buckets)
+            .map_err(|e| format!("Merge failed: {}", e))
     }
 }
 
@@ -108,6 +103,10 @@ pub fn create_window_merger(_accumulator_type: AggregationType) -> Box<dyn Windo
 mod tests {
     use super::*;
     use crate::data_model::{KeyByLabelValues, SerializableToSink};
+    use crate::precompute_operators::{
+        CountMinSketchAccumulator, DatasketchesKLLAccumulator, SumAccumulator,
+    };
+    use asap_sketchlib::CountMinSketch;
     use serde_json::Value;
     use std::any::Any;
 
@@ -486,6 +485,377 @@ mod tests {
             flat_result.get_keys().unwrap().contains(&key),
             "a flat merge_accumulators call over chronologically-ordered buckets must \
              agree with NaiveMerger's pairwise sequential fold over the same buckets"
+        );
+    }
+
+    // ---- Issue #596 regression tests ----
+    //
+    // NaiveMerger::merge_all is supposed to gain the CMS/KLL batch-merge fast
+    // path (merge_multiple) that SimpleEngine::merge_accumulators already had,
+    // falling back to a sequential fold that ABORTS on the first merge_with
+    // error (rather than warning-and-continuing or silently dropping a bucket).
+    //
+    // These tests only observe behavior through the public WindowMerger API
+    // (initialize/slide/get_merged/is_initialized) and a manually-computed
+    // oracle fold, so they don't assume which code path (fast or fallback)
+    // NaiveMerger actually takes for a given input.
+
+    fn cms_from_matrix(
+        matrix: Vec<Vec<f64>>,
+        rows: usize,
+        cols: usize,
+    ) -> CountMinSketchAccumulator {
+        CountMinSketchAccumulator {
+            inner: CountMinSketch::from_legacy_matrix(matrix, rows, cols),
+        }
+    }
+
+    /// Independent oracle: a plain sequential `merge_with` fold, computed
+    /// without going through NaiveMerger or any batch-merge fast path.
+    fn oracle_sequential_fold(buckets: &[Box<dyn AggregateCore>]) -> Box<dyn AggregateCore> {
+        let mut iter = buckets.iter();
+        let mut acc = iter
+            .next()
+            .expect("oracle needs at least one bucket")
+            .clone();
+        for b in iter {
+            acc = acc
+                .merge_with(b.as_ref())
+                .expect("oracle sequential fold's merge_with failed");
+        }
+        acc
+    }
+
+    #[test]
+    fn naive_merger_cms_batch_matches_manual_sequential_fold() {
+        let cms_boxes: Vec<Box<dyn AggregateCore>> = vec![
+            Box::new(cms_from_matrix(
+                vec![vec![5.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]],
+                2,
+                3,
+            )),
+            Box::new(cms_from_matrix(
+                vec![vec![2.0, 3.0, 0.0], vec![0.0, 0.0, 4.0]],
+                2,
+                3,
+            )),
+            Box::new(cms_from_matrix(
+                vec![vec![0.0, 0.0, 7.0], vec![1.0, 0.0, 0.0]],
+                2,
+                3,
+            )),
+        ];
+        let for_merger: Vec<Box<dyn AggregateCore>> = cms_boxes.to_vec();
+
+        let oracle = oracle_sequential_fold(&cms_boxes);
+        let oracle_cms = oracle
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .unwrap();
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(for_merger);
+        let merged = merger
+            .get_merged()
+            .expect("NaiveMerger should merge a same-typed CMS batch");
+        let merged_cms = merged
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .unwrap();
+
+        assert_eq!(
+            merged_cms.inner.sketch(),
+            oracle_cms.inner.sketch(),
+            "NaiveMerger's CMS batch merge must match a manual sequential merge_with fold"
+        );
+    }
+
+    #[test]
+    fn naive_merger_kll_batch_matches_manual_sequential_fold() {
+        let mut k1 = DatasketchesKLLAccumulator::new(200);
+        for i in 1..=5 {
+            k1.update(i as f64);
+        }
+        let mut k2 = DatasketchesKLLAccumulator::new(200);
+        for i in 6..=10 {
+            k2.update(i as f64);
+        }
+        let mut k3 = DatasketchesKLLAccumulator::new(200);
+        for i in 11..=15 {
+            k3.update(i as f64);
+        }
+
+        let boxes: Vec<Box<dyn AggregateCore>> = vec![Box::new(k1), Box::new(k2), Box::new(k3)];
+        let for_merger: Vec<Box<dyn AggregateCore>> = boxes.to_vec();
+
+        let oracle = oracle_sequential_fold(&boxes);
+        let oracle_kll = oracle
+            .as_any()
+            .downcast_ref::<DatasketchesKLLAccumulator>()
+            .unwrap();
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(for_merger);
+        let merged = merger
+            .get_merged()
+            .expect("NaiveMerger should merge a same-typed KLL batch");
+        let merged_kll = merged
+            .as_any()
+            .downcast_ref::<DatasketchesKLLAccumulator>()
+            .unwrap();
+
+        assert_eq!(merged_kll.inner.count(), oracle_kll.inner.count());
+        assert_eq!(merged_kll.get_quantile(0.0), oracle_kll.get_quantile(0.0));
+        assert_eq!(merged_kll.get_quantile(1.0), oracle_kll.get_quantile(1.0));
+    }
+
+    #[test]
+    fn naive_merger_single_cms_accumulator_passes_through_unchanged() {
+        let matrix = vec![vec![3.0, 0.0, 5.0], vec![0.0, 7.0, 0.0]];
+        let cms = cms_from_matrix(matrix.clone(), 2, 3);
+        let boxes: Vec<Box<dyn AggregateCore>> = vec![Box::new(cms)];
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(boxes);
+        let merged = merger
+            .get_merged()
+            .expect("single-bucket CMS merge should succeed");
+        let merged_cms = merged
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .unwrap();
+
+        assert_eq!(merged_cms.inner.sketch(), matrix);
+    }
+
+    #[test]
+    fn naive_merger_single_kll_accumulator_passes_through_unchanged() {
+        let mut kll = DatasketchesKLLAccumulator::new(200);
+        for i in 1..=7 {
+            kll.update(i as f64);
+        }
+        let expected_count = kll.inner.count();
+        let expected_min = kll.get_quantile(0.0);
+        let expected_max = kll.get_quantile(1.0);
+
+        let boxes: Vec<Box<dyn AggregateCore>> = vec![Box::new(kll)];
+        let mut merger = NaiveMerger::new();
+        merger.initialize(boxes);
+        let merged = merger
+            .get_merged()
+            .expect("single-bucket KLL merge should succeed");
+        let merged_kll = merged
+            .as_any()
+            .downcast_ref::<DatasketchesKLLAccumulator>()
+            .unwrap();
+
+        assert_eq!(merged_kll.inner.count() as usize, expected_count as usize);
+        assert_eq!(merged_kll.get_quantile(0.0), expected_min);
+        assert_eq!(merged_kll.get_quantile(1.0), expected_max);
+    }
+
+    #[test]
+    fn naive_merger_large_cms_batch_merges_every_bucket_not_just_a_prefix() {
+        const N: usize = 80;
+        let mut boxes: Vec<Box<dyn AggregateCore>> = Vec::with_capacity(N);
+        for i in 0..N {
+            // Each bucket sets exactly one cell to 1.0. The merged row-0 total
+            // can only equal N if every single bucket actually contributed --
+            // a fast path that silently truncates to a prefix (or skips
+            // entirely and falls through to some default) would under-count.
+            let col = i % 3;
+            let mut row0 = vec![0.0, 0.0, 0.0];
+            row0[col] = 1.0;
+            let matrix = vec![row0, vec![0.0, 0.0, 0.0]];
+            boxes.push(Box::new(cms_from_matrix(matrix, 2, 3)));
+        }
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(boxes);
+        let merged = merger.get_merged().expect("large CMS batch should merge");
+        let merged_cms = merged
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .unwrap();
+        let total: f64 = merged_cms.inner.sketch()[0].iter().sum();
+
+        assert_eq!(
+            total, N as f64,
+            "merged CMS row-0 total mass ({total}) must equal the number of buckets ({N}) -- \
+             a truncated or skipped fast path would under-count"
+        );
+    }
+
+    #[test]
+    fn naive_merger_large_kll_batch_merges_every_bucket_not_just_a_prefix() {
+        const N: usize = 70;
+        const PER_BUCKET: usize = 4;
+        let mut boxes: Vec<Box<dyn AggregateCore>> = Vec::with_capacity(N);
+        for i in 0..N {
+            let mut kll = DatasketchesKLLAccumulator::new(200);
+            for j in 0..PER_BUCKET {
+                kll.update((i * PER_BUCKET + j) as f64);
+            }
+            boxes.push(Box::new(kll));
+        }
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(boxes);
+        let merged = merger.get_merged().expect("large KLL batch should merge");
+        let merged_kll = merged
+            .as_any()
+            .downcast_ref::<DatasketchesKLLAccumulator>()
+            .unwrap();
+
+        assert_eq!(
+            merged_kll.inner.count() as usize,
+            N * PER_BUCKET,
+            "merged KLL total count must reflect every bucket's updates -- \
+             a truncated or skipped fast path would under-count"
+        );
+    }
+
+    #[test]
+    fn naive_merger_cms_batch_with_wrong_type_mixed_in_errors_consistently() {
+        let cms1 = cms_from_matrix(vec![vec![1.0, 0.0], vec![0.0, 1.0]], 2, 2);
+        let cms2 = cms_from_matrix(vec![vec![2.0, 0.0], vec![0.0, 2.0]], 2, 2);
+        let wrong_type: Box<dyn AggregateCore> = Box::new(SumAccumulator::new());
+
+        let buckets: Vec<Box<dyn AggregateCore>> = vec![Box::new(cms1), Box::new(cms2), wrong_type];
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(buckets);
+        let result = merger.get_merged();
+
+        assert!(
+            result.is_err(),
+            "a batch mixing CMS accumulators with an incompatible accumulator type must \
+             fail -- whether the CMS batch-merge fast path's type-guard rejects it up \
+             front, or the sequential fallback fold's merge_with rejects the type \
+             mismatch -- it must never silently produce an Ok result over only the \
+             CMS-typed subset"
+        );
+    }
+
+    #[test]
+    fn naive_merger_kll_batch_with_wrong_type_mixed_in_errors_consistently() {
+        let mut kll1 = DatasketchesKLLAccumulator::new(200);
+        kll1.update(1.0);
+        let mut kll2 = DatasketchesKLLAccumulator::new(200);
+        kll2.update(2.0);
+        let wrong_type: Box<dyn AggregateCore> = Box::new(SumAccumulator::new());
+
+        let buckets: Vec<Box<dyn AggregateCore>> = vec![Box::new(kll1), Box::new(kll2), wrong_type];
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(buckets);
+        let result = merger.get_merged();
+
+        assert!(
+            result.is_err(),
+            "a batch mixing KLL accumulators with an incompatible accumulator type must \
+             fail -- whether the KLL batch-merge fast path's type-guard rejects it up \
+             front, or the sequential fallback fold's merge_with rejects the type \
+             mismatch -- it must never silently produce an Ok result over only the \
+             KLL-typed subset"
+        );
+    }
+
+    /// Mock accumulator whose `merge_with` fails under a condition the test
+    /// fully controls (a `poisoned` flag), independent of any real
+    /// accumulator's library-specific error conditions.
+    #[derive(Clone, Debug)]
+    struct PoisonableAccumulator {
+        id: u32,
+        poisoned: bool,
+    }
+
+    impl SerializableToSink for PoisonableAccumulator {
+        fn serialize_to_json(&self) -> Value {
+            serde_json::json!({"id": self.id})
+        }
+        fn serialize_to_bytes(&self) -> Vec<u8> {
+            self.id.to_le_bytes().to_vec()
+        }
+    }
+
+    impl AggregateCore for PoisonableAccumulator {
+        fn clone_boxed_core(&self) -> Box<dyn AggregateCore> {
+            Box::new(self.clone())
+        }
+        fn type_name(&self) -> &'static str {
+            "PoisonableAccumulator"
+        }
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn merge_with(
+            &self,
+            other: &dyn AggregateCore,
+        ) -> Result<Box<dyn AggregateCore>, Box<dyn std::error::Error + Send + Sync>> {
+            let other_p = other
+                .as_any()
+                .downcast_ref::<PoisonableAccumulator>()
+                .ok_or("Cannot merge with different accumulator type")?;
+            if self.poisoned || other_p.poisoned {
+                return Err(
+                    format!("poisoned merge involving id {} / {}", self.id, other_p.id).into(),
+                );
+            }
+            Ok(Box::new(PoisonableAccumulator {
+                id: self.id.max(other_p.id),
+                poisoned: false,
+            }))
+        }
+        fn get_accumulator_type(&self) -> AggregationType {
+            AggregationType::Sum
+        }
+        fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
+            None
+        }
+        fn query_statistic(
+            &self,
+            _statistic: promql_utilities::query_logics::enums::Statistic,
+            _key: &Option<KeyByLabelValues>,
+            _query_kwargs: &std::collections::HashMap<String, String>,
+        ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+            Err("PoisonableAccumulator does not support query_statistic".into())
+        }
+    }
+
+    #[test]
+    fn naive_merger_aborts_whole_merge_on_mid_batch_error_not_silent_drop() {
+        // Buckets 1 and 2 merge fine; bucket 3 poisons the fold partway
+        // through; bucket 4 would also merge fine if reached. A correct
+        // implementation aborts the ENTIRE merge (Err), not just drops
+        // bucket 3 and returns Ok(merge(1, 2, 4)) or Ok(merge(1, 2)).
+        let buckets: Vec<Box<dyn AggregateCore>> = vec![
+            Box::new(PoisonableAccumulator {
+                id: 1,
+                poisoned: false,
+            }),
+            Box::new(PoisonableAccumulator {
+                id: 2,
+                poisoned: false,
+            }),
+            Box::new(PoisonableAccumulator {
+                id: 3,
+                poisoned: true,
+            }),
+            Box::new(PoisonableAccumulator {
+                id: 4,
+                poisoned: false,
+            }),
+        ];
+
+        let mut merger = NaiveMerger::new();
+        merger.initialize(buckets);
+        let result = merger.get_merged();
+
+        assert!(
+            result.is_err(),
+            "a merge_with failure partway through the batch must abort the whole merge \
+             (propagate Err), not silently drop the failed bucket and return a partial Ok"
         );
     }
 }

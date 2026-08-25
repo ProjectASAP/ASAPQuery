@@ -1,4 +1,5 @@
 pub mod logical;
+pub(crate) mod merge_utils;
 pub mod physical;
 pub mod query_result;
 pub mod simple_engine;
