@@ -605,38 +605,33 @@ impl Store for SimpleMapStoreGlobal {
 
         let timestamp_range = (exact_start, exact_end);
 
-        // Opt 1: exact_query now takes &mut self (lazy index build).
-        // Call it inside a scoped block so the &mut borrow on data.stores ends before we
-        // re-borrow data.stores immutably to resolve MetricIDs → labels.
-        let entries_opt: Option<Vec<_>> = {
-            let per_key = match data.stores.get_mut(&store_key) {
-                Some(pk) => pk,
-                None => {
-                    debug!("Metric {} not found in store for exact query", metric);
-                    return Ok(HashMap::new());
-                }
-            };
-            // Check current epoch first (newest). exact_query returns an owned Vec so the
-            // &mut borrow of per_key ends immediately — no lifetime overlap with the
-            // sealed_epochs scan below.
-            per_key
-                .current_epoch
-                .exact_query(timestamp_range)
-                .or_else(|| {
-                    per_key
-                        .sealed_epochs
-                        .values()
-                        .rev()
-                        .find_map(|epoch| epoch.exact_query(timestamp_range))
-                })
-        }; // &mut borrow of data.stores ends here
+        // exact_query takes &self (its lazy index build is behind its own inner lock,
+        // see MutableEpoch::exact_query / issue #607) — no &mut borrow of data.stores
+        // needed, so per_key can be looked up once and reused below.
+        let per_key = match data.stores.get(&store_key) {
+            Some(pk) => pk,
+            None => {
+                debug!("Metric {} not found in store for exact query", metric);
+                return Ok(HashMap::new());
+            }
+        };
+        // Check current epoch first (newest), then sealed epochs newest-to-oldest.
+        let entries_opt: Option<Vec<_>> = per_key
+            .current_epoch
+            .exact_query(timestamp_range)
+            .or_else(|| {
+                per_key
+                    .sealed_epochs
+                    .values()
+                    .rev()
+                    .find_map(|epoch| epoch.exact_query(timestamp_range))
+            });
 
         let mut results: TimestampedBucketsMap = HashMap::new();
         let mut total_entries = 0;
         let found_match = entries_opt.is_some();
 
         if let Some(entries) = entries_opt {
-            let per_key = data.stores.get(&store_key).unwrap();
             for (metric_id, agg) in entries {
                 let label = per_key.intern.resolve(metric_id).clone();
                 results
