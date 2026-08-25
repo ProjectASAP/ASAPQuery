@@ -568,8 +568,14 @@ impl Store for SimpleMapStorePerKey {
 
         // Resolve MetricIDs → labels in a single pass
         let mut results: TimestampedBucketsMap = HashMap::with_capacity(mid.len());
-        for (metric_id, buckets) in mid {
+        for (metric_id, mut buckets) in mid {
             total_entries += buckets.len();
+            // range_query_into is called once per epoch (current epoch first,
+            // then sealed epochs oldest-to-newest), so buckets from different
+            // epochs land in this Vec out of chronological order once the
+            // current epoch holds newer windows than a sealed one. Sort here
+            // so callers can rely on chronological order unconditionally.
+            buckets.sort_by_key(|(range, _)| *range);
             let label = data.intern.resolve(metric_id).clone();
             results.insert(label, buckets);
         }

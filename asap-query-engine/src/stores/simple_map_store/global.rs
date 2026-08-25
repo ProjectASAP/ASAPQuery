@@ -516,8 +516,15 @@ impl Store for SimpleMapStoreGlobal {
         let results: TimestampedBucketsMap = {
             let per_key = data.stores.get(&store_key).unwrap();
             let mut r = HashMap::with_capacity(mid.len());
-            for (metric_id, buckets) in mid.drain() {
+            for (metric_id, mut buckets) in mid.drain() {
                 total_entries += buckets.len();
+                // range_query_into is called once per epoch (current epoch
+                // first, then sealed epochs oldest-to-newest), so buckets
+                // from different epochs land in this Vec out of
+                // chronological order once the current epoch holds newer
+                // windows than a sealed one. Sort here so callers can rely
+                // on chronological order unconditionally.
+                buckets.sort_by_key(|(range, _)| *range);
                 let label = per_key.intern.resolve(metric_id).clone();
                 r.insert(label, buckets);
             }
