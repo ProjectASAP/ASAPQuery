@@ -199,6 +199,7 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     test_cleanup_read_based_evicts_after_threshold_reads(strategy);
     test_cleanup_read_based_unread_window_is_retained(strategy);
     test_delta_set_aggregator_bypasses_cleanup(strategy);
+    test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy);
 
     // Keyed (label-grouped) entries
     test_keyed_entries_grouped_by_key(strategy);
@@ -648,6 +649,68 @@ fn test_delta_set_aggregator_bypasses_cleanup(strategy: LockStrategy) {
         total_bucket_count(&result),
         n as usize,
         "[{}] DeltaSetAggregator windows must never be evicted by cleanup",
+        label(strategy)
+    );
+}
+
+/// Bug #586 (#2): once epoch rotation has occurred, `query_precomputed_output`
+/// checks the current (newest, still-open) epoch first, then sealed epochs
+/// oldest-to-newest — so the concatenated result is
+/// `[newest][oldest sealed]..[newest sealed]`, not chronological.
+///
+/// Uses a plain `Sum` aggregation (not `DeltaSetAggregator`) because
+/// `DeltaSetAggregator` is unconditionally exempted from epoch rotation in
+/// `insert_for_store_key` (it must retain its full history, so it never
+/// seals) — meaning this ordering defect can't currently be reached through
+/// the public `Store` API for that type. It's still a live bug in the
+/// general `query_precomputed_output` contract for any type that *does*
+/// rotate, and it's exactly what will start silently corrupting results the
+/// moment an order-sensitive accumulator (`DeltaSetAggregator` included, if
+/// its rotation exemption is ever relaxed) hits this path.
+///
+/// capacity=2 with 7 inserts forces 3 epoch seals, leaving exactly 1 window
+/// in the current epoch (the newest) alongside 3 sealed epochs (the 6
+/// oldest) — the exact shape under which "current checked first" prepends a
+/// newer window ahead of older ones.
+///
+/// Deliberately does NOT use `timestamps_for_none_key` — that helper sorts
+/// before returning, which would mask exactly the bug this test exists to
+/// catch.
+fn test_buckets_returned_in_chronological_order_after_epoch_rotation(strategy: LockStrategy) {
+    let store = make_store(
+        strategy,
+        CleanupPolicy::CircularBuffer,
+        &[(1, AggregationType::Sum, Some(2), None)],
+    );
+    let n = 7u64;
+    for i in 0..n {
+        let (out, acc) = sum_entry(1, i * 60_000, (i + 1) * 60_000, i as f64);
+        store.insert_precomputed_output(out, acc).unwrap();
+    }
+
+    let result = store
+        .query_precomputed_output("cpu_usage", 1, 0, n * 60_000)
+        .unwrap();
+    let returned_order: Vec<(u64, u64)> = result
+        .get(&None)
+        .expect("windows must be present under the None key")
+        .iter()
+        .map(|(range, _)| *range)
+        .collect();
+    assert_eq!(
+        returned_order.len(),
+        n as usize,
+        "[{}] no windows should have been evicted yet (7 <= retention_limit 8)",
+        label(strategy)
+    );
+
+    let mut chronological = returned_order.clone();
+    chronological.sort_unstable();
+    assert_eq!(
+        returned_order,
+        chronological,
+        "[{}] buckets must be returned in chronological (ascending start) order \
+         even after epoch rotation has occurred",
         label(strategy)
     );
 }

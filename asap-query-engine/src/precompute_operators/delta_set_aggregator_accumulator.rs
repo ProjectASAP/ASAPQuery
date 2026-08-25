@@ -5,7 +5,6 @@ use crate::data_model::{
 use asap_sketchlib::{message_pack_format::MessagePackCodec, DeltaResult};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use tracing::warn;
 
 use promql_utilities::query_logics::enums::Statistic;
 
@@ -249,14 +248,16 @@ impl AggregateCore for DeltaSetAggregatorAccumulator {
     }
 
     fn get_keys(&self) -> Option<Vec<KeyByLabelValues>> {
-        if !self.removed.is_empty() {
-            warn!(
-                "DeltaSetAggregatorAccumulator::get_keys called with {} removed items; returning None",
-                self.removed.len()
-            );
-            return None;
-        }
-        Some(self.added.iter().cloned().collect())
+        // A well-formed accumulator (raw or merged) never has the same key in
+        // both sets — see merge_accumulators, which enforces this at every
+        // fold step. `difference` is a defensive no-op under that invariant;
+        // debug_assert catches it loudly if the invariant is ever violated.
+        debug_assert!(
+            self.added.is_disjoint(&self.removed),
+            "DeltaSetAggregatorAccumulator invariant violated: {} key(s) present in both added and removed",
+            self.added.intersection(&self.removed).count()
+        );
+        Some(self.added.difference(&self.removed).cloned().collect())
     }
 
     fn query_statistic(
@@ -399,6 +400,62 @@ mod tests {
         let acc = DeltaSetAggregatorAccumulator::new();
         let key = create_test_key("test");
         assert!(acc.query(Statistic::Sum, &key, None).is_err());
+    }
+
+    /// Bug #586 (get_keys #3): a key removed at any point in this
+    /// accumulator's history must not hide unrelated keys that are still
+    /// currently present. Ordinary label churn (some key was removed at
+    /// some point) is not corrupted state.
+    #[test]
+    fn test_get_keys_returns_present_keys_despite_unrelated_removal() {
+        let mut acc = DeltaSetAggregatorAccumulator::new();
+        let present_key = create_test_key("web");
+        let long_gone_key = create_test_key("retired-service");
+        acc.add_key(present_key.clone());
+        acc.remove_key(long_gone_key.clone());
+
+        let keys = acc
+            .get_keys()
+            .expect("get_keys must return Some even when removed is non-empty");
+        assert_eq!(keys, vec![present_key]);
+    }
+
+    /// Bug #586 (#1): `merge_accumulators` must fold buckets in chronological
+    /// order, not union all added/removed sets and strip same-key
+    /// "conflicts". A key toggled more than twice across the merged buckets
+    /// only nets out correctly if order is respected.
+    ///
+    /// Scenario: base window adds K, window A removes K, window B re-adds K,
+    /// window C removes K again -> chronologically K ends absent, and the
+    /// merge should retain that it was explicitly removed (not just silently
+    /// forgotten), so it can be told apart from a key nobody ever saw.
+    #[test]
+    fn test_merge_accumulators_folds_multi_toggle_chronologically() {
+        let key = create_test_key("flaky-host");
+
+        let mut base = DeltaSetAggregatorAccumulator::new();
+        base.add_key(key.clone());
+        let mut window_a = DeltaSetAggregatorAccumulator::new();
+        window_a.remove_key(key.clone());
+        let mut window_b = DeltaSetAggregatorAccumulator::new();
+        window_b.add_key(key.clone());
+        let mut window_c = DeltaSetAggregatorAccumulator::new();
+        window_c.remove_key(key.clone());
+
+        let merged = DeltaSetAggregatorAccumulator::merge_accumulators(vec![
+            base, window_a, window_b, window_c,
+        ])
+        .unwrap();
+
+        assert!(
+            !merged.added.contains(&key),
+            "key removed last chronologically must not remain in added"
+        );
+        assert!(
+            merged.removed.contains(&key),
+            "key removed last chronologically must be recorded as removed, \
+             not silently dropped from both sets"
+        );
     }
 
     #[test]
