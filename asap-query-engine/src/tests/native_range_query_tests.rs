@@ -254,6 +254,178 @@ mod tests {
         )
     }
 
+    /// Same dual-population shape as `create_range_engine_dual_input_with_windows`,
+    /// but the KEY aggregation is a Sliding window with
+    /// `key_slide_interval_ms < key_window_size_ms` (#600). Real Sliding
+    /// buckets are persisted on the slide_interval_ms grid, not the
+    /// window_size_ms grid (`precompute_engine/window_manager.rs`), so the
+    /// keys bucket span here is `key_slide_interval_ms`, not
+    /// `key_window_size_ms` -- unlike the value side, which stays Tumbling
+    /// (span == window) exactly as `create_range_engine_dual_input_with_windows`
+    /// already does.
+    #[allow(clippy::too_many_arguments)]
+    fn create_range_engine_dual_input_sliding_keys(
+        metric: &str,
+        value_agg_type: AggregationType,
+        key_agg_type: AggregationType,
+        grouping_labels: Vec<&str>,
+        aggregated_labels: Vec<&str>,
+        value_data: TimeSeriesData,
+        keys_data: TimeSeriesData,
+        promql_query: &str,
+        value_window_ms: u64,
+        key_window_size_ms: u64,
+        key_slide_interval_ms: u64,
+    ) -> SimpleEngine {
+        let grouping_label_strings: Vec<String> =
+            grouping_labels.iter().map(|s| s.to_string()).collect();
+        let aggregated_label_strings: Vec<String> =
+            aggregated_labels.iter().map(|s| s.to_string()).collect();
+        let all_labels: Vec<String> = grouping_label_strings
+            .iter()
+            .chain(aggregated_label_strings.iter())
+            .cloned()
+            .collect();
+
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: value_agg_type,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(grouping_label_strings.clone()),
+                aggregated_labels: KeyByLabelNames::empty(),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: value_window_ms,
+                slide_interval_ms: value_window_ms,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: metric.to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        aggregation_configs.insert(
+            2u64,
+            AggregationConfig {
+                aggregation_id: 2,
+                aggregation_type: key_agg_type,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(grouping_label_strings),
+                aggregated_labels: KeyByLabelNames::new(aggregated_label_strings),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: key_window_size_ms,
+                slide_interval_ms: key_slide_interval_ms,
+                window_type: WindowType::Sliding,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: metric.to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        for (agg_id, bucket_span_ms, data) in [
+            (1u64, value_window_ms, value_data),
+            (2u64, key_slide_interval_ms, keys_data),
+        ] {
+            for (timestamp, label_values_opt, acc) in data {
+                let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
+                let output =
+                    PrecomputedOutput::new(timestamp - bucket_span_ms, timestamp, key, agg_id);
+                store.insert_precomputed_output(output, acc).unwrap();
+            }
+        }
+
+        let promql_schema =
+            PromQLSchema::new().add_metric(metric.to_string(), KeyByLabelNames::new(all_labels));
+
+        let query_config = QueryConfig::new(promql_query.to_string())
+            .add_aggregation(AggregationReference::new(1, None))
+            .add_aggregation(AggregationReference::new(2, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            WINDOW_MS,
+            QueryLanguage::promql,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_sliding_keys_bucket_found_on_slide_interval_grid() {
+        // #600: the keys-side scan_window must step by the KEY aggregation's
+        // own slide_interval_ms, not its window_size_ms. Key aggregation:
+        // window_size_ms=2000, slide_interval_ms=1000 (Sliding) -- real
+        // buckets land on the 1000ms grid (start=1000), which isn't on the
+        // 2000ms window_size_ms grid ({0, 2000, 4000, ...}) at all. A scan
+        // that steps by window_size_ms never visits t=1000 and silently
+        // drops host-a's key.
+        let mut keys_add = SetAggregatorAccumulator::new();
+        keys_add.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input_sliding_keys(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![(
+                2000,
+                None,
+                Box::new(CountMinSketchAccumulator::new(2, 3)) as Box<dyn AggregateCore>,
+            )],
+            // Keys bucket spans [1000, 2000) -- on the slide_interval_ms=1000
+            // grid, but not the window_size_ms=2000 grid.
+            vec![(2000, None, Box::new(keys_add) as Box<dyn AggregateCore>)],
+            "count(event_frequency) by (host, event)",
+            1000, // value_window_ms (Tumbling, unaffected by #600)
+            2000, // key_window_size_ms
+            1000, // key_slide_interval_ms
+        );
+
+        let query = "count(event_frequency) by (host, event)";
+        let result = engine.handle_range_query_promql(query.to_string(), 2.0, 2.5, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+
+        assert!(
+            key_has_sample_at(&elements, "host-a", 2000),
+            "BUG #600: host-a's keys delta bucket (start=1000, on the \
+             slide_interval_ms=1000 grid but not the window_size_ms=2000 \
+             grid) was not found -- the keys-side scan_window is stepping \
+             by window_size_ms instead of slide_interval_ms"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn range_query_dual_population_returns_key_expansion() {
         // Same dual-population shape as native_binary_instant_tests::binary_expr_vector_vector_dual_population,
@@ -521,6 +693,52 @@ mod tests {
         assert!(
             (elements[0].samples[0].value - 42.0).abs() < 1e-10,
             "expected the single sliding-window bucket's value unchanged, got {}",
+            elements[0].samples[0].value
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_sliding_window_slide_lt_size_merges_bucket_off_window_size_grid() {
+        // #600: value-side counterpart of
+        // range_query_sliding_keys_bucket_found_on_slide_interval_grid.
+        // window_size_ms=2000, but create_engine_multi_timestamp_with_window
+        // fixes the bucket span at slide_interval_ms=1000, so the two
+        // buckets below land at start=0 and start=1000 -- only one of which
+        // is on the window_size_ms=2000 grid ({0, 2000, ...}). A scan_window
+        // that steps by window_size_ms instead of slide_interval_ms never
+        // visits start=1000 and silently drops that bucket from the merge.
+        let data = vec![
+            (
+                1000,
+                Some(vec!["host-a".to_string()]),
+                Box::new(SumAccumulator::with_sum(10.0)) as Box<dyn AggregateCore>,
+            ),
+            (
+                2000,
+                Some(vec!["host-a".to_string()]),
+                Box::new(SumAccumulator::with_sum(5.0)) as Box<dyn AggregateCore>,
+            ),
+        ];
+        let query = "sum_over_time(http_requests[1s])";
+        let engine = create_engine_multi_timestamp_with_window(
+            "http_requests",
+            AggregationType::Sum,
+            vec!["host"],
+            data,
+            query,
+            2000, // window_size_ms
+            WindowType::Sliding,
+        );
+
+        let result = engine.handle_range_query_promql(query.to_string(), 2.0, 2.5, 2.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+        assert_eq!(elements.len(), 1, "expected one series for host-a");
+        assert!(
+            (elements[0].samples[0].value - 15.0).abs() < 1e-9,
+            "BUG #600: expected both buckets (10.0 + 5.0 = 15.0) merged, got {} \
+             -- tumbling_window_ms is stepping by window_size_ms=2000 instead \
+             of slide_interval_ms=1000, so the bucket at start=1000 is dropped",
             elements[0].samples[0].value
         );
     }
