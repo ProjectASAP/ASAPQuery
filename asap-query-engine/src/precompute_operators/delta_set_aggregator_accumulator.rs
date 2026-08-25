@@ -309,12 +309,32 @@ impl MergeableAccumulator<DeltaSetAggregatorAccumulator> for DeltaSetAggregatorA
             return Err("No accumulators to merge".into());
         }
 
+        // A well-formed bucket never has the same key in both its own
+        // added/removed -- a single window can't both gain and lose the
+        // same key. This is a hard error, not a self-heal: it means the
+        // input itself is corrupt, not just an artifact of folding order.
+        fn check_disjoint(
+            acc: &DeltaSetAggregatorAccumulator,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            if !acc.added.is_disjoint(&acc.removed) {
+                return Err(format!(
+                    "DeltaSetAggregatorAccumulator bucket has {} key(s) in both added and removed",
+                    acc.added.intersection(&acc.removed).count()
+                )
+                .into());
+            }
+            Ok(())
+        }
+
         let mut iter = accumulators.into_iter();
         let first = iter.next().unwrap();
+        check_disjoint(&first)?;
         let mut added = first.added;
         let mut removed = first.removed;
 
         for accumulator in iter {
+            check_disjoint(&accumulator)?;
+
             // A bucket can only remove a key the fold so far believes is
             // present -- a key can't disappear before it's ever appeared.
             // Holds because real callers always grow this fold forward from
@@ -532,6 +552,36 @@ mod tests {
             starting_state,
             removes_unseen_key,
         ]);
+    }
+
+    /// A bucket with the same key in both its own `added` and `removed` is
+    /// corrupt input, not a folding artifact -- merge_accumulators must
+    /// reject it with a hard `Err` (checked in all builds, unlike the
+    /// chronological-order debug_assert above), whether it's the seed
+    /// (first) element or a later one in the fold.
+    #[test]
+    fn test_merge_accumulators_errors_on_bucket_with_key_in_both_sets() {
+        let key = create_test_key("corrupt");
+
+        let mut malformed_seed = DeltaSetAggregatorAccumulator::new();
+        malformed_seed.add_key(key.clone());
+        malformed_seed.remove_key(key.clone());
+        let valid = {
+            let mut acc = DeltaSetAggregatorAccumulator::new();
+            acc.add_key(create_test_key("unrelated"));
+            acc
+        };
+
+        let err = DeltaSetAggregatorAccumulator::merge_accumulators(vec![
+            malformed_seed.clone(),
+            valid.clone(),
+        ])
+        .expect_err("malformed seed bucket must be rejected");
+        assert!(err.to_string().contains("both added and removed"));
+
+        let err = DeltaSetAggregatorAccumulator::merge_accumulators(vec![valid, malformed_seed])
+            .expect_err("malformed later bucket must be rejected");
+        assert!(err.to_string().contains("both added and removed"));
     }
 
     #[test]

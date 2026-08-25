@@ -7,6 +7,16 @@ pub type EpochID = u64;
 pub type TimestampRange = (u64, u64);
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
 
+/// Sorts one key's buckets into chronological (ascending start) order.
+///
+/// Range queries scan the current (newest, still-open) epoch first, then
+/// sealed epochs oldest-to-newest, so the concatenated result isn't
+/// chronological once rotation has occurred. Callers building the final
+/// per-key bucket list must run this before returning it.
+pub fn sort_buckets_chronologically(buckets: &mut [(TimestampRange, Arc<dyn AggregateCore>)]) {
+    buckets.sort_by_key(|(range, _)| *range);
+}
+
 /// Assigns a compact MetricID (u32) to each unique label combination.
 /// Label strings stored once; all internal maps use MetricID (O(1) key ops).
 pub struct InternTable {
