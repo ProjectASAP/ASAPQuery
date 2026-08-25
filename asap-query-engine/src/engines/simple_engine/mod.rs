@@ -1506,6 +1506,17 @@ impl SimpleEngine {
         window_end: u64,
         step_increment: u64,
     ) -> Vec<Box<dyn AggregateCore>> {
+        // A zero step never advances `t`, so the loop below would never
+        // terminate. This is the single caller-facing guard for that hazard
+        // -- callers upstream may also validate their own step sources, but
+        // this function has two callers (values, keys) and should not rely
+        // on either of them to have done so. Kept active in release builds
+        // (assert!, not debug_assert!): a hung query is a production
+        // incident, not just a debug-time nicety.
+        assert!(
+            step_increment > 0,
+            "scan_window: step_increment must be nonzero, or this loop never terminates"
+        );
         let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
         let mut t = window_start;
         while t < window_end {
@@ -1605,9 +1616,23 @@ impl SimpleEngine {
         //     top-k), evaluated AFTER merging the window's value buckets
         //     (a top-k heap's keys can depend on that window's data),
         //     falling back to the store-level group key otherwise.
+        // PerStep bundles everything a dual-population group's per-step
+        // resolution needs (bucket_map, lookback_ms, tumbling_window_ms) in
+        // one place, built once at group-construction time — rather than
+        // three separate Option fields at function scope that only
+        // happened to be Some together by convention, each re-unwrapped via
+        // .expect() on every iteration of the per-step loop. Making the
+        // invalid state (PerStep present but one companion value missing)
+        // unrepresentable is the same reasoning that motivated this enum
+        // over two raw Option fields in the first place — just applied all
+        // the way through instead of partway.
         enum KeysSource<'a> {
             Fixed(Vec<KeyByLabelValues>),
-            PerStep(&'a Vec<crate::stores::TimestampedBucket>),
+            PerStep {
+                bucket_map: HashMap<u64, Vec<&'a dyn AggregateCore>>,
+                lookback_ms: u64,
+                tumbling_window_ms: u64,
+            },
         }
 
         // Resolve, for every value group, which groups exist at all (a
@@ -1619,25 +1644,41 @@ impl SimpleEngine {
         // group). See #582 review for collect_results_separate_keys parity.
         let groups: Vec<(&Vec<crate::stores::TimestampedBucket>, KeysSource)> = match &keys_raw_data
         {
-            Some(keys_map) => keys_map
-                .iter()
-                .filter_map(
-                    |(group_key, raw_keys_buckets)| match all_data.get(group_key) {
-                        Some(timestamped_buckets) => {
-                            Some((timestamped_buckets, KeysSource::PerStep(raw_keys_buckets)))
-                        }
-                        None => {
-                            warn!(
-                                "Range query: group {:?} has keys data but no value data \
+            Some(keys_map) => {
+                // keys_raw_data is Some, so context.keys_lookback_ms /
+                // context.keys_tumbling_window_ms are guaranteed Some too
+                // (both derived from the same keys_query.is_some() check in
+                // finish_range_context) -- resolved once here instead of
+                // re-unwrapped per group per step.
+                let keys_lookback_ms =
+                    keys_lookback_ms.expect("keys_raw_data implies keys_lookback_ms is Some");
+                let keys_tumbling_window_ms = keys_tumbling_window_ms
+                    .expect("keys_raw_data implies keys_tumbling_window_ms is Some");
+                keys_map
+                    .iter()
+                    .filter_map(
+                        |(group_key, raw_keys_buckets)| match all_data.get(group_key) {
+                            Some(timestamped_buckets) => Some((
+                                timestamped_buckets,
+                                KeysSource::PerStep {
+                                    bucket_map: Self::build_bucket_map(raw_keys_buckets),
+                                    lookback_ms: keys_lookback_ms,
+                                    tumbling_window_ms: keys_tumbling_window_ms,
+                                },
+                            )),
+                            None => {
+                                warn!(
+                                    "Range query: group {:?} has keys data but no value data \
                              anywhere in the queried range — skipping this group instead \
                              of failing the whole query (#583)",
-                                group_key
-                            );
-                            None
-                        }
-                    },
-                )
-                .collect(),
+                                    group_key
+                                );
+                                None
+                            }
+                        },
+                    )
+                    .collect()
+            }
             // #584/#587: keep every group, including group_key=None — that's
             // exactly where a self-keyed single-population accumulator
             // (e.g. top-k) is typically stored. An empty fallback list here
@@ -1659,20 +1700,13 @@ impl SimpleEngine {
         for (timestamped_buckets, keys_source) in groups {
             let bucket_map = Self::build_bucket_map(timestamped_buckets);
 
-            // Same idea, for keys (#583) — only built for dual-population
-            // groups; Fixed groups have nothing to window.
-            let keys_bucket_map: Option<HashMap<u64, Vec<&dyn AggregateCore>>> = match &keys_source
-            {
-                KeysSource::PerStep(raw_keys_buckets) => {
-                    Some(Self::build_bucket_map(raw_keys_buckets))
-                }
-                KeysSource::Fixed(_) => None,
-            };
-
             debug!(
                 "Group with {} start-timestamps ({} keys start-timestamps)",
                 bucket_map.len(),
-                keys_bucket_map.as_ref().map(|m| m.len()).unwrap_or(0)
+                match &keys_source {
+                    KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
+                    KeysSource::Fixed(_) => 0,
+                }
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
@@ -1686,21 +1720,17 @@ impl SimpleEngine {
                 // value merge below. Fixed (single-population) groups defer
                 // key resolution until after the value merge (#584/#587).
                 let per_step_keys: Option<Vec<KeyByLabelValues>> = match &keys_source {
-                    KeysSource::PerStep(_) => {
-                        let keys_bucket_map = keys_bucket_map
-                            .as_ref()
-                            .expect("PerStep implies keys_bucket_map is Some");
-                        let keys_lookback_ms =
-                            keys_lookback_ms.expect("PerStep implies keys_lookback_ms is Some");
-                        let keys_tumbling_window_ms = keys_tumbling_window_ms
-                            .expect("PerStep implies keys_tumbling_window_ms is Some");
-
-                        let keys_window_start = current_time.saturating_sub(keys_lookback_ms);
+                    KeysSource::PerStep {
+                        bucket_map: keys_bucket_map,
+                        lookback_ms: keys_lookback_ms,
+                        tumbling_window_ms: keys_tumbling_window_ms,
+                    } => {
+                        let keys_window_start = current_time.saturating_sub(*keys_lookback_ms);
                         let keys_window_buckets = Self::scan_window(
                             keys_bucket_map,
                             keys_window_start,
                             current_time,
-                            keys_tumbling_window_ms,
+                            *keys_tumbling_window_ms,
                         );
 
                         let expansion_keys = if keys_window_buckets.is_empty() {
@@ -1771,7 +1801,7 @@ impl SimpleEngine {
                             // priority, falling back to the store-level
                             // group key otherwise.
                             let resolved_keys = match &keys_source {
-                                KeysSource::PerStep(_) => per_step_keys.expect(
+                                KeysSource::PerStep { .. } => per_step_keys.expect(
                                     "PerStep always sets per_step_keys above, or continues",
                                 ),
                                 KeysSource::Fixed(fallback_keys) => {
