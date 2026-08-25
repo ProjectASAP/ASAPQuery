@@ -1709,7 +1709,24 @@ impl SimpleEngine {
                             let mut key_merger = create_window_merger(key_accumulator_type);
                             key_merger.initialize(keys_window_buckets);
                             match key_merger.get_merged() {
-                                Ok(merged) => merged.get_keys().unwrap_or_default(),
+                                Ok(merged) => match merged.get_keys() {
+                                    Some(keys) => keys,
+                                    None => {
+                                        // e.g. a DeltaSetAggregator "remove" with no
+                                        // matching "add" resolved in this window --
+                                        // distinct from (and louder than) the routine,
+                                        // expected "no buckets in this window at all"
+                                        // case below, since it means a merge DID
+                                        // happen but couldn't resolve a key set.
+                                        warn!(
+                                            "Keys merge at t={} produced an unresolved key \
+                                             set (get_keys() returned None) -- skipping \
+                                             this step for this group",
+                                            current_time
+                                        );
+                                        Vec::new()
+                                    }
+                                },
                                 Err(e) => {
                                     debug!("Failed to merge keys at t={}: {}", current_time, e);
                                     Vec::new()

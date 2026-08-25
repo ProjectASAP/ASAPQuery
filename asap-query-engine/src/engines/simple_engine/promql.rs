@@ -621,6 +621,16 @@ impl SimpleEngine {
             ),
             None => None,
         };
+        // A zero window_size_ms would make execute_range_query_pipeline's
+        // per-step scan_window (`while t < window_end { ...; t += step_increment }`)
+        // loop forever, since t would never advance. The value side is
+        // accidentally protected from this by validate_range_query_params's
+        // `step.is_multiple_of(tumbling_window_ms)` check (only 0 is a
+        // multiple of 0); keys has no equivalent check, so guard explicitly.
+        if keys_tumbling_window_ms == Some(0) {
+            warn!("Range query validation failed: key aggregation window_size_ms is 0");
+            return None;
+        }
 
         Some(RangeQueryExecutionContext {
             base: QueryExecutionContext {
