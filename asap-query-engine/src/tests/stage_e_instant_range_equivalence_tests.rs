@@ -612,16 +612,9 @@ mod tests {
         );
     }
 
-    // RED test for PR #629 review finding 2 (see
-    // .design_docs/pr-629-review-findings-handoff.md): `apply_range_topk`'s
-    // `candidates.sort_by(|a, b| b.1.partial_cmp(&a.1)...)` (mod.rs) sorts by
-    // value only, with no tiebreak. `candidates`'s order comes from
-    // iterating `results: HashMap<...>`, whose iteration order is
-    // per-process randomized (SipHash) -- two groups tied at the k-th value
-    // boundary can keep different groups run to run. This asserts the
-    // *desired* deterministic tiebreak (ties broken by ascending label
-    // values, so "host-b" beats "host-c"), which the current unfixed sort
-    // has no mechanism to guarantee.
+    // Regression test for the deterministic tie-break in `apply_range_topk`.
+    // Candidates are ordered by value descending, then label values ascending,
+    // so a tie at the k-th boundary is stable despite HashMap iteration order.
     #[tokio::test(flavor = "multi_thread")]
     async fn topk_range_tie_break_is_deterministic_by_label_values() {
         let query = "topk(2, cpu_load)";
