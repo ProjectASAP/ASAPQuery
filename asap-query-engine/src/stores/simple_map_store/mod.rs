@@ -1,5 +1,6 @@
 mod common;
 pub mod global;
+#[cfg(feature = "legacy_stores")]
 pub mod legacy;
 pub mod per_key;
 
