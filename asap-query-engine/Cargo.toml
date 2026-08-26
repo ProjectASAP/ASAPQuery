@@ -87,6 +87,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "simple_store_bench"
 harness = false
+required-features = ["legacy_stores"]
 
 [features]
 #default = ["lock_profiling", "extra_debugging"]
@@ -97,3 +98,8 @@ jemalloc = ["dep:tikv-jemallocator"]
 lock_profiling = []
 # Enable extra debugging output
 extra_debugging = []
+# Legacy SimpleMapStore implementations, kept only for the simple_store_bench
+# comparison benchmark. Off by default so the Store trait's real implementors
+# are just SimpleMapStoreGlobal/PerKey — adding a Store trait method doesn't
+# require updating the legacy variants.
+legacy_stores = []
