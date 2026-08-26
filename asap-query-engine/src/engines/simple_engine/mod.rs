@@ -1502,10 +1502,15 @@ impl SimpleEngine {
     /// `enable_topk_limiting`/`enable_topk_formatting` mirror
     /// `execute_query_pipeline`'s flags of the same name (see that method's
     /// doc comment) -- both no-ops unless
-    /// `context.base.metadata.statistic_to_compute == Statistic::Topk`. The
-    /// actual ranking/truncation is delegated to `apply_range_topk` below;
-    /// see its doc comment for why range's version can't just reuse
-    /// instant's `format_final_results` truncate-once shape.
+    /// `context.base.metadata.statistic_to_compute == Statistic::Topk`.
+    /// Unlike instant's `format_final_results` (sort once, truncate once --
+    /// only possible because instant has exactly one value per group),
+    /// range ranks/truncates per-timestamp ("step-major"): the step-major
+    /// loop below already visits every group at every output timestamp, so
+    /// each timestamp's candidates are ranked/truncated inline, right there
+    /// (#581 stage E.3), before insertion into the final result map.
+    /// Formatting (metric-name label prefix) is a separate, smaller pass
+    /// afterward, once per group rather than once per timestep.
     fn execute_range_query_pipeline(
         &self,
         context: &RangeQueryExecutionContext,
@@ -1740,6 +1745,23 @@ impl SimpleEngine {
             })
             .collect();
 
+        // Top-k's k, parsed once rather than per timestamp. Some only when
+        // this is actually a topk query with limiting requested -- gates
+        // both the per-step sort/truncate below and nothing else, so a
+        // non-topk query pays zero cost for this.
+        let topk_k: Option<usize> = if enable_topk_limiting
+            && context.base.metadata.statistic_to_compute == Statistic::Topk
+        {
+            context
+                .base
+                .metadata
+                .query_kwargs
+                .get("k")
+                .and_then(|s| s.parse::<usize>().ok())
+        } else {
+            None
+        };
+
         // Step-major: for each output timestamp, visit every group, not the
         // other way around. Required for topk correctness -- ranking a
         // timestamp's candidates means seeing every group's value at that
@@ -1747,6 +1769,14 @@ impl SimpleEngine {
         // (#581). One loop shape for topk and non-topk alike, rather than
         // maintaining two.
         for &current_time in &context.output_timestamps {
+            // This timestamp's (key, value) pairs across every group,
+            // collected before insertion into `results` so a topk query can
+            // rank/truncate them as one step-local set (#581 stage E.3 --
+            // folds what used to be a separate apply_range_topk pass,
+            // re-deriving this same per-timestamp grouping from the
+            // finished `results` afterward, directly into this loop).
+            let mut step_results: Vec<(KeyByLabelValues, f64)> = Vec::new();
+
             for (bucket_map, keys_source) in &groups {
                 // #583: dual-population groups resolve their expansion keys
                 // from the keys aggregation, per step — not a single
@@ -1849,152 +1879,47 @@ impl SimpleEngine {
                     // KeyByLabelValues, not Option) -- matches today's
                     // behavior of producing no sample for this combination.
                     let Some(key) = key else { continue };
-                    results
-                        .entry(key.clone())
-                        .or_insert_with(|| RangeVectorElement::new(key))
-                        .add_sample(current_time, value);
+                    step_results.push((key, value));
                 }
+            }
+
+            // Rank this timestamp's candidates across every group and
+            // truncate to k -- tie-broken by label for determinism, since
+            // `step_results`' order ultimately traces back to a HashMap
+            // iteration (`groups`, built from `all_data`/`keys_raw_data`)
+            // and would otherwise keep a different group on every process
+            // run when two groups tie at the k-th value.
+            if let Some(k) = topk_k {
+                step_results.sort_by(|a, b| {
+                    b.1.partial_cmp(&a.1)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.0.labels.cmp(&b.0.labels))
+                });
+                step_results.truncate(k);
+            }
+
+            for (key, value) in step_results {
+                results
+                    .entry(key.clone())
+                    .or_insert_with(|| RangeVectorElement::new(key))
+                    .add_sample(current_time, value);
             }
         }
 
-        Ok(self.apply_range_topk(
-            results,
-            &context.base.metadata.statistic_to_compute,
-            &context.base.metadata.query_kwargs,
-            &context.base.metric,
-            enable_topk_formatting,
-            enable_topk_limiting,
-        ))
-    }
-
-    /// Applies PromQL top-k semantics to a range query's raw per-group
-    /// results. No-op unless `statistic == Statistic::Topk` (mirrors
-    /// `format_final_results`).
-    ///
-    /// This is deliberately NOT a straight port of `format_final_results`
-    /// (sort all groups once by value, then truncate to k): that shape only
-    /// works because instant queries have exactly one value per group. A
-    /// range query's `RangeVectorElement` carries many per-timestamp
-    /// samples, and real PromQL `topk(k, range_vector)` semantics rank
-    /// independently AT EACH timestamp -- the surviving key set can differ
-    /// from step to step. So this ranks/truncates per-timestamp
-    /// ("step-major"), across all groups, as its own pass over the
-    /// already-assembled results -- rather than restructuring the group-major
-    /// fetch/merge loop above into a step-major shape. Issue #581's own
-    /// scoping decided the fetch/merge loop itself becomes step-major only
-    /// as part of stage E, the full instant/range pipeline collapse (not
-    /// done here, deliberately -- this is stage-E prep). Doing the ranking
-    /// as a separate pass gets the same correctness (each timestamp's kept
-    /// set is decided across all groups, never one group at a time) without
-    /// front-running that larger, separately-staged restructure.
-    /// `enable_topk_limiting` and `enable_topk_formatting` are independent
-    /// flags, mirroring instant's `execute_query_pipeline` contract -- but
-    /// unlike instant, range has no `(false, true)`-observable case. Instant
-    /// always sorts Topk results when formatting regardless of limiting,
-    /// because it returns a flat `Vec` where sort order is part of the
-    /// output. Range returns a `HashMap` (this function's `results`) whose
-    /// iteration order was never meaningful, and each surviving group carries
-    /// many per-timestamp samples rather than one value to sort the outer
-    /// collection by -- so skipping the ranking block when
-    /// `enable_topk_limiting` is false has no observable effect here beyond
-    /// formatting, even though every current call site passes both flags
-    /// together and never actually exercises `(false, true)`.
-    fn apply_range_topk(
-        &self,
-        mut results: HashMap<KeyByLabelValues, crate::engines::query_result::RangeVectorElement>,
-        statistic: &Statistic,
-        query_kwargs: &HashMap<String, String>,
-        metric: &str,
-        enable_topk_formatting: bool,
-        enable_topk_limiting: bool,
-    ) -> Vec<crate::engines::query_result::RangeVectorElement> {
-        if *statistic != Statistic::Topk {
-            return results.into_values().collect();
-        }
-
-        // Limiting MUST run before formatting: it matches
-        // `kept_timestamps_by_key`'s keys (read from each element's
-        // `labels` field) against `results`' own HashMap keys via
-        // `retain`. Formatting rewrites `elem.labels` (the field) without
-        // touching the HashMap's outer key, so if formatting ran first the
-        // two would no longer agree and `retain` would drop every group.
-        if enable_topk_limiting {
-            if let Some(k) = query_kwargs.get("k").and_then(|s| s.parse::<usize>().ok()) {
-                use std::collections::HashSet;
-
-                // Index each group once (G clones total) instead of cloning
-                // its label vector per (group, timestamp) sample -- G*T
-                // clones otherwise, for G groups over T steps.
-                let index_keys: Vec<KeyByLabelValues> = results.keys().cloned().collect();
-                let key_to_idx: HashMap<KeyByLabelValues, usize> = index_keys
-                    .iter()
-                    .cloned()
-                    .enumerate()
-                    .map(|(i, key)| (key, i))
-                    .collect();
-
-                // Step-major ranking: group every group's samples by
-                // timestamp first, so each timestamp's top-k decision sees
-                // every group's value at that timestamp.
-                let mut by_timestamp: HashMap<u64, Vec<(usize, f64)>> = HashMap::new();
-                for elem in results.values() {
-                    let idx = key_to_idx[&elem.labels];
-                    for sample in &elem.samples {
-                        by_timestamp
-                            .entry(sample.timestamp)
-                            .or_default()
-                            .push((idx, sample.value));
-                    }
-                }
-
-                let mut kept_timestamps_by_idx: HashMap<usize, HashSet<u64>> = HashMap::new();
-                for (timestamp, mut candidates) in by_timestamp {
-                    // Tiebreak on label values: `candidates`'s order comes
-                    // from iterating `results`, a HashMap, whose iteration
-                    // order is randomized per-process -- without this,
-                    // groups tied at the k-th value boundary would keep
-                    // different survivors run to run.
-                    candidates.sort_by(|a, b| {
-                        b.1.partial_cmp(&a.1)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| index_keys[a.0].labels.cmp(&index_keys[b.0].labels))
-                    });
-                    candidates.truncate(k);
-                    for (idx, _) in candidates {
-                        kept_timestamps_by_idx
-                            .entry(idx)
-                            .or_default()
-                            .insert(timestamp);
-                    }
-                }
-
-                results.retain(|key, _| kept_timestamps_by_idx.contains_key(&key_to_idx[key]));
-                for elem in results.values_mut() {
-                    let idx = key_to_idx[&elem.labels];
-                    // `keep` is built only from timestamps that already
-                    // appear in this same element's `samples` (see the
-                    // `by_timestamp` loop above), and is non-empty for every
-                    // key that survives the `retain` just above -- so this
-                    // filter can never leave `elem.samples` empty.
-                    let keep = &kept_timestamps_by_idx[&idx];
-                    elem.samples.retain(|s| keep.contains(&s.timestamp));
-                }
-            }
-        }
-
-        if enable_topk_formatting {
-            // Prepend metric name to each key's label values (PromQL shape),
-            // same rewrite as format_final_results does for instant. Safe to
-            // mutate `elem.labels` now -- nothing below matches it back
-            // against the HashMap's outer key.
+        // Formatting (PromQL topk(...) output shape: prepend the metric
+        // name to each surviving group's labels) applies once per group,
+        // not once per timestep -- a separate pass over the final results,
+        // after every timestamp's ranking above has already decided which
+        // groups/samples survive.
+        if enable_topk_formatting && context.base.metadata.statistic_to_compute == Statistic::Topk {
             for elem in results.values_mut() {
-                let mut new_labels = vec![metric.to_string()];
+                let mut new_labels = vec![context.base.metric.clone()];
                 new_labels.extend(elem.labels.labels.clone());
                 elem.labels.labels = new_labels;
             }
         }
 
-        results.into_values().collect()
+        Ok(results.into_values().collect())
     }
 }
 
