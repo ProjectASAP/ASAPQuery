@@ -29,6 +29,7 @@ use promql_utilities::query_logics::enums::{
 use serde_json::Value;
 
 // Type alias for merged outputs (single aggregate per key after merging)
+#[allow(dead_code)]
 type MergedOutputsMap = HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>;
 
 /// Metadata extracted from a query, independent of query language
@@ -94,21 +95,18 @@ pub struct QueryExecutionContext {
     pub aggregated_labels: KeyByLabelNames,
 }
 
-/// Parameters for a range query
-#[derive(Debug, Clone)]
-pub struct RangeQueryParams {
-    pub start: u64, // start timestamp in ms
-    pub end: u64,   // end timestamp in ms
-    pub step: u64,  // step in ms
-}
-
 /// Extended execution context for range queries
 #[derive(Debug, Clone)]
 pub struct RangeQueryExecutionContext {
     /// Base context (metric, metadata, store_plan, etc.)
     pub base: QueryExecutionContext,
-    /// Range-specific parameters
-    pub range_params: RangeQueryParams,
+    /// Every timestamp the per-step loop below produces one output sample
+    /// for, computed upstream (start..=end stepped by step_ms). Stage E
+    /// (#581): this is the shape a future unified instant/range engine
+    /// takes directly -- instant becomes the one-element case of the same
+    /// list, rather than a start/end/step triple that only ever meant
+    /// something for range.
+    pub output_timestamps: Vec<u64>,
     /// Number of buckets per step (step / tumbling_window)
     pub buckets_per_step: usize,
     /// Number of buckets in lookback window
@@ -121,7 +119,7 @@ pub struct RangeQueryExecutionContext {
     /// `worker.rs::merge_panes_for_window`), so a step takes exactly the one
     /// bucket at `current_time - lookback_ms` (`lookback_ms` ==
     /// `window_size_ms` here); Tumbling buckets are genuinely disjoint, so a
-    /// step sums every bucket `scan_window` finds across the lookback span
+    /// step sums every bucket `sum_window` finds across the lookback span
     /// (#608).
     pub window_type: WindowType,
     /// The value aggregation's actual `window_size_ms`, independent of
@@ -516,6 +514,123 @@ impl SimpleEngine {
         }
     }
 
+    /// Widens `query`'s window to `[start_ms - lookback, end_ms]`, where
+    /// `lookback` is the width `query` already had (`end_timestamp -
+    /// start_timestamp`) before this call. Re-anchors whatever window an
+    /// aggregation's instant fetch already computed so it slides across the
+    /// whole range, without needing to know *why* that window is that width
+    /// — e.g. it's what lets the same call widen a Tumbling `values_query`,
+    /// a Sliding-window instant fetch, or (per #583) a `SetAggregator`'s
+    /// `[end-window_size, end]` keys window or a `DeltaSetAggregator`'s
+    /// `[0, end]` one, identically. Returns the lookback so callers can
+    /// derive bucket-count/step metadata from it.
+    ///
+    /// Generic (not PromQL-specific) despite `finish_range_context`
+    /// (promql.rs) being its original/main caller -- lives here so
+    /// `build_instant_range_context` below can call it too (#581 stage E.4).
+    fn widen_query_window(query: &mut StoreQueryParams, start_ms: u64, end_ms: u64) -> u64 {
+        let lookback_ms = query.end_timestamp - query.start_timestamp;
+        query.start_timestamp = start_ms.saturating_sub(lookback_ms);
+        query.end_timestamp = end_ms;
+        lookback_ms
+    }
+
+    /// Extends an instant `QueryExecutionContext` into a
+    /// `RangeQueryExecutionContext` with a single output timestamp -- #581
+    /// stage E.4's context-builder, so `execute_query_pipeline` can become a
+    /// thin wrapper around `execute_range_query_pipeline`. Mirrors
+    /// `finish_range_context` (promql.rs, the range-query equivalent) but
+    /// for exactly one point instead of a `[start, end]` step range.
+    ///
+    /// Deliberately does NOT call `validate_range_query_params`: its
+    /// start<end / step>0 / step%window==0 checks are range-query concerns
+    /// (a real step-through-time query) that don't apply to a single instant
+    /// point -- there's no "step" here at all, and start==end==query_time is
+    /// exactly the case that function would reject.
+    ///
+    /// `widen_query_window(query, query_time, query_time)` is a
+    /// mathematical no-op in this single-point case: it re-derives
+    /// `lookback_ms` from the width `query` already has (computed by
+    /// `create_store_query_plan`, called upstream to build `base_context`),
+    /// then resets `start_timestamp = query_time.saturating_sub(lookback_ms)`,
+    /// `end_timestamp = query_time` -- exactly reproducing the window
+    /// `create_store_query_plan` already narrowed to, for both Tumbling and
+    /// Sliding. Verified empirically via the old-vs-new comparison tests
+    /// (stage_e4_instant_wrapper_equivalence_tests.rs), not just asserted
+    /// here.
+    fn build_instant_range_context(
+        &self,
+        base_context: QueryExecutionContext,
+        query_time: u64,
+    ) -> Option<RangeQueryExecutionContext> {
+        let (tumbling_window_ms, window_type, window_size_ms) = {
+            let sc = self.streaming_config.read().unwrap();
+            let config =
+                sc.get_aggregation_config(base_context.agg_info.aggregation_id_for_value)?;
+            (
+                Self::bucket_step_ms(config),
+                config.window_type,
+                config.window_size_ms,
+            )
+        };
+
+        if tumbling_window_ms == 0 {
+            warn!("Instant-as-range context: value aggregation window_size_ms is 0");
+            return None;
+        }
+
+        let mut extended_store_plan = base_context.store_plan.clone();
+        let lookback_ms = Self::widen_query_window(
+            &mut extended_store_plan.values_query,
+            query_time,
+            query_time,
+        );
+        let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
+
+        let keys_lookback_ms = extended_store_plan
+            .keys_query
+            .as_mut()
+            .map(|keys_query| Self::widen_query_window(keys_query, query_time, query_time));
+        let (keys_tumbling_window_ms, keys_window_type, keys_window_size_ms) =
+            match keys_lookback_ms {
+                Some(_) => {
+                    let sc = self.streaming_config.read().unwrap();
+                    let config =
+                        sc.get_aggregation_config(base_context.agg_info.aggregation_id_for_key)?;
+                    (
+                        Some(Self::bucket_step_ms(config)),
+                        Some(config.window_type),
+                        Some(config.window_size_ms),
+                    )
+                }
+                None => (None, None, None),
+            };
+        if keys_tumbling_window_ms == Some(0) {
+            warn!("Instant-as-range context: key aggregation window_size_ms is 0");
+            return None;
+        }
+
+        Some(RangeQueryExecutionContext {
+            base: QueryExecutionContext {
+                store_plan: extended_store_plan,
+                ..base_context
+            },
+            output_timestamps: vec![query_time],
+            // Placeholder: no real "step" for a single instant point. Only
+            // feeds a debug-log string today -- not type-enforced, recheck
+            // before using it for anything functional.
+            buckets_per_step: 1,
+            lookback_bucket_count,
+            tumbling_window_ms,
+            window_type,
+            window_size_ms,
+            keys_window_type,
+            keys_window_size_ms,
+            keys_lookback_ms,
+            keys_tumbling_window_ms,
+        })
+    }
+
     /// Walks the aggregation's window grid (`bucket_step_ms` apart, each
     /// window `window_size_ms` wide, per `WindowManager::window_start_for`)
     /// and looks up every grid position in `[start_timestamp, end_timestamp)`
@@ -524,7 +639,7 @@ impl SimpleEngine {
     /// instant Sliding-window fetch gets "the one window ending now" this
     /// way, by being narrowed to one window's width before calling
     /// (`create_store_query_plan`), not via a separate exact/scan flag.
-    fn scan_windows_via_exact(
+    fn fetch_window_grid_via_exact_lookups(
         &self,
         params: &StoreQueryParams,
     ) -> Result<TimestampedBucketsMap, String> {
@@ -606,7 +721,7 @@ impl SimpleEngine {
         );
 
         let store_query_start_time = Instant::now();
-        let result = self.scan_windows_via_exact(params);
+        let result = self.fetch_window_grid_via_exact_lookups(params);
         if let Ok(ref outputs) = result {
             let store_query_duration = store_query_start_time.elapsed();
             debug!(
@@ -619,6 +734,7 @@ impl SimpleEngine {
     }
 
     /// Executes the full store query plan and returns merged results
+    #[allow(dead_code)]
     fn execute_and_merge_store_queries(
         &self,
         plan: &StoreQueryPlan,
@@ -704,6 +820,7 @@ impl SimpleEngine {
     /// `execute_store_query` and merges them per output step instead (#583),
     /// since a single merged snapshot can't answer "what did the key set
     /// look like at an earlier timestamp."
+    #[allow(dead_code)]
     fn fetch_and_merge_keys(
         &self,
         keys_query: &Option<StoreQueryParams>,
@@ -821,6 +938,7 @@ impl SimpleEngine {
             .collect()
     }
 
+    #[allow(dead_code)]
     fn collect_all_results(
         &self,
         merged_values: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
@@ -837,6 +955,73 @@ impl SimpleEngine {
         }
     }
 
+    /// Pre-#581-stage-E.4 instant pipeline, preserved verbatim under
+    /// `#[cfg(test)]` ONLY as a reference implementation for the old-vs-new
+    /// comparison tests (stage_e4_instant_wrapper_equivalence_tests.rs) --
+    /// not compiled into production, not called by anything else. Delete
+    /// this (and the comparison tests, and whichever of
+    /// execute_and_merge_store_queries/fetch_and_merge_keys/collect_all_results/
+    /// format_final_results become unreferenced once it's gone) once the
+    /// wrapper below is confirmed equivalent and the tests are green.
+    #[cfg(test)]
+    fn execute_query_pipeline_pre_e4(
+        &self,
+        context: &QueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
+    ) -> Result<Vec<InstantVectorElement>, String> {
+        let (merged_values, merged_keys) = self.execute_and_merge_store_queries(
+            &context.store_plan,
+            context.do_merge,
+            &context.agg_info,
+            context.value_window_type,
+        )?;
+
+        let unformatted_results = self.collect_all_results(
+            &merged_values,
+            merged_keys.as_ref(),
+            &context.metadata.statistic_to_compute,
+            &context.metadata.query_kwargs,
+        )?;
+
+        let mut results = self.format_final_results(
+            unformatted_results,
+            &context.metadata.statistic_to_compute,
+            &context.metric,
+            enable_topk_formatting,
+        );
+        if enable_topk_limiting {
+            if let Some(k) = context
+                .metadata
+                .query_kwargs
+                .get("k")
+                .and_then(|s| s.parse::<usize>().ok())
+            {
+                results.truncate(k);
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Topk ranking comparator shared by `execute_query_pipeline`'s
+    /// post-wrapper re-sort and `execute_range_query_pipeline`'s per-step
+    /// sort: descending by value, ties broken by ascending label for
+    /// determinism (both call sites' inputs ultimately trace back to a
+    /// HashMap iteration order, which is randomized per-process -- #581
+    /// stage E.3/E.4 review).
+    fn cmp_topk_value_desc(
+        a_value: f64,
+        a_labels: &[String],
+        b_value: f64,
+        b_labels: &[String],
+    ) -> std::cmp::Ordering {
+        b_value
+            .partial_cmp(&a_value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a_labels.cmp(b_labels))
+    }
+
     /// Executes the complete query pipeline: plan, execute, collect, and format.
     ///
     /// The two top-k flags are deliberately separate because the two engines
@@ -848,57 +1033,61 @@ impl SimpleEngine {
     ///     metric name to each key's labels. This is PromQL `topk(...)` output
     ///     shape only; SQL returns bare `(group-by columns, value)` rows and
     ///     applies its own ORDER BY / LIMIT, so SQL leaves this `false`.
+    ///
+    /// #581 stage E.4: a thin wrapper around `execute_range_query_pipeline`
+    /// -- builds a single-timestamp `RangeQueryExecutionContext`
+    /// (`build_instant_range_context`) and unwraps the one resulting
+    /// `RangeVectorElement` per group back into an `InstantVectorElement`.
+    /// Signature and return type unchanged, per #581's own D2 decision --
+    /// SQL/Elastic callers need no changes.
     pub fn execute_query_pipeline(
         &self,
         context: &QueryExecutionContext,
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<InstantVectorElement>, String> {
-        // Step 1: Execute the query plan (already created in context.store_plan)
-        let (merged_values, merged_keys) = self.execute_and_merge_store_queries(
-            &context.store_plan,
-            context.do_merge,
-            &context.agg_info,
-            context.value_window_type,
-        )?;
+        let query_time = context.query_time;
+        let range_context = self
+            .build_instant_range_context(context.clone(), query_time)
+            .ok_or_else(|| {
+                format!(
+                    "Failed to build instant-as-range context for metric: {}",
+                    context.metric
+                )
+            })?;
 
-        // Step 2: Collect results
-        let unformatted_results_start_time = Instant::now();
-        let unformatted_results = self.collect_all_results(
-            &merged_values,
-            merged_keys.as_ref(),
-            &context.metadata.statistic_to_compute,
-            &context.metadata.query_kwargs,
-        )?;
-        debug!(
-            "[LATENCY] Unformatted results collection: {:.2}ms",
-            unformatted_results_start_time.elapsed().as_secs_f64() * 1000.0
-        );
-
-        // Step 3: Format results
-        let results_start_time = Instant::now();
-        let mut results = self.format_final_results(
-            unformatted_results,
-            &context.metadata.statistic_to_compute,
-            &context.metric,
+        let range_results = self.execute_range_query_pipeline(
+            &range_context,
+            enable_topk_limiting,
             enable_topk_formatting,
-        );
-        // Truncate to k when limiting is active (heap may carry heap_size > k
-        // candidates; the query only asked for the top k).
-        if enable_topk_limiting {
-            if let Some(k) = context
-                .metadata
-                .query_kwargs
-                .get("k")
-                .and_then(|s| s.parse::<usize>().ok())
-            {
-                results.truncate(k);
-            }
+        )?;
+
+        let mut results: Vec<InstantVectorElement> = range_results
+            .into_iter()
+            .map(|elem| {
+                debug_assert_eq!(
+                    elem.samples.len(),
+                    1,
+                    "a single-output-timestamp range query must produce exactly one sample per group"
+                );
+                InstantVectorElement::new(elem.labels, elem.samples[0].value)
+            })
+            .collect();
+
+        // execute_range_query_pipeline's step-major loop ranks/truncates
+        // correctly, but its final `results.into_values().collect()`
+        // (mod.rs) comes from a HashMap, whose iteration order does NOT
+        // preserve that ranking. Instant's own contract (mirrored from the
+        // old format_final_results, unconditional whenever the statistic is
+        // Topk, independent of enable_topk_limiting/formatting) is that
+        // results come back sorted by value descending -- re-sort here to
+        // restore it. Tie-broken by label for determinism, matching the
+        // range engine's own topk sort (#581 stage E.3).
+        if context.metadata.statistic_to_compute == Statistic::Topk {
+            results.sort_by(|a, b| {
+                Self::cmp_topk_value_desc(a.value, &a.labels.labels, b.value, &b.labels.labels)
+            });
         }
-        debug!(
-            "[LATENCY] Results collection: {}ms",
-            results_start_time.elapsed().as_millis()
-        );
 
         Ok(results)
     }
@@ -911,6 +1100,7 @@ impl SimpleEngine {
     /// additionally prepends the metric name to each key's labels — this is the
     /// PromQL `topk(...)` output shape only; SQL leaves it `false` so rows stay
     /// as bare `(group-by columns, value)`.
+    #[allow(dead_code)]
     fn format_final_results(
         &self,
         unformatted_results: HashMap<Option<KeyByLabelValues>, f64>,
@@ -1090,6 +1280,7 @@ impl SimpleEngine {
     }
 
     /// Merge precomputed outputs (extracts buckets from timestamped data)
+    #[allow(dead_code)]
     fn merge_precomputed_outputs(
         &self,
         precomputed_outputs_map: &TimestampedBucketsMap,
@@ -1185,6 +1376,7 @@ impl SimpleEngine {
 
     /// Merge multiple accumulators using the merge_with method from AggregateCore trait
     /// This follows the Python merge_accumulators approach
+    #[allow(dead_code)]
     fn merge_accumulators(
         &self,
         accumulators: Vec<Box<dyn crate::data_model::AggregateCore>>,
@@ -1205,6 +1397,7 @@ impl SimpleEngine {
     }
 
     /// Collects results when key and value use different aggregations
+    #[allow(dead_code)]
     fn collect_results_separate_keys(
         &self,
         merged_values: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
@@ -1238,6 +1431,7 @@ impl SimpleEngine {
     /// `execute_query_pipeline`) so we must NOT pre-truncate here — the sketch
     /// heap can hold more than `k` candidates and is not value-sorted, so
     /// dropping keys now could discard a true top-k member.
+    #[allow(dead_code)]
     fn collect_results_same_aggregation(
         &self,
         merged_outputs: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
@@ -1435,7 +1629,16 @@ impl SimpleEngine {
     /// identically by `execute_range_query_pipeline` for both the value
     /// side and (#583) the keys side — the only difference between the two
     /// call sites is which map/lookback/bucket-width they pass in.
-    fn scan_window(
+    ///
+    /// Cost is proportional to `(window_end - window_start) / step_increment`
+    /// -- the nominal window width -- not to how many buckets actually exist
+    /// in `bucket_map`. Fine for Tumbling/Sliding, where that width is
+    /// bounded by the query itself. Catastrophic for
+    /// `AggregationType::DeltaSetAggregator`'s keys window, which is always
+    /// `[0, current_time)` ("replay from the beginning") -- callers on that
+    /// path MUST use `collect_bucket_map_entries_before` instead, never this
+    /// (#581 stage E.4 review; see that function's doc for why).
+    fn sum_window(
         bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
         window_start: u64,
         window_end: u64,
@@ -1450,7 +1653,7 @@ impl SimpleEngine {
         // incident, not just a debug-time nicety.
         assert!(
             step_increment > 0,
-            "scan_window: step_increment must be nonzero, or this loop never terminates"
+            "sum_window: step_increment must be nonzero, or this loop never terminates"
         );
         let mut window_buckets: Vec<Box<dyn AggregateCore>> = Vec::new();
         let mut t = window_start;
@@ -1464,7 +1667,7 @@ impl SimpleEngine {
     }
 
     /// Returns whatever bucket(s) `bucket_map` has at exactly
-    /// `window_start`, or empty if none. Unlike `scan_window`, does not walk
+    /// `window_start`, or empty if none. Unlike `sum_window`, does not walk
     /// or sum multiple grid positions: for a Sliding aggregation, the bucket
     /// at `window_start` is already the complete, correctly-merged answer
     /// for its window (`worker.rs::merge_panes_for_window` pre-merges before
@@ -1482,10 +1685,74 @@ impl SimpleEngine {
             .unwrap_or_default()
     }
 
+    /// Collects every bucket in `bucket_map` with a start timestamp strictly
+    /// before `before`, without walking grid positions -- cost proportional
+    /// to however many buckets actually exist in `bucket_map`, never to a
+    /// nominal range width. This is `AggregationType::DeltaSetAggregator`'s
+    /// keys-window composition: its window is always `[0, current_time)`
+    /// ("replay from the beginning," per `create_keys_query_params` /
+    /// `widen_query_window`), so `window_start` is always 0 there and
+    /// filtering `bucket_map`'s own entries by `< before` is exactly that
+    /// semantics -- while `sum_window`'s position-by-position walk from 0 to
+    /// `current_time` (which can be ~1e11ms for a real timestamp) is not
+    /// merely slower, it doesn't complete in any reasonable time. Same fast
+    /// path `fetch_window_grid_via_exact_lookups` already applies at the
+    /// fetch layer (tolerant scan instead of a grid walk) -- this is the
+    /// merge layer's equivalent, needed separately because this function
+    /// never talks to the store; it only walks whatever
+    /// `fetch_window_grid_via_exact_lookups` already fetched into
+    /// `bucket_map`, and that walk was the actual bottleneck (#581 stage E.4
+    /// review -- surfaced by instant queries newly routing through this
+    /// code path, but pre-existing for range queries too, just never
+    /// exercised by a test wide enough to notice).
+    ///
+    /// MUST return buckets in ascending-timestamp order, not `bucket_map`'s
+    /// own (arbitrary, per-process-randomized) HashMap iteration order:
+    /// `DeltaSetAggregatorAccumulator::merge_with` is order-sensitive (an
+    /// oscillating add/remove/add sequence only replays to the correct final
+    /// membership if applied chronologically, #586) -- `sum_window`'s
+    /// position-by-position walk gave this for free by construction; this
+    /// function has to sort for it explicitly instead. Still O(k log k) for
+    /// k = buckets actually present, not the nominal range width, so the
+    /// fix stays intact (caught by
+    /// `range_query_delta_set_aggregator_oscillating_add_remove_across_five_windows`
+    /// when this was first written without the sort).
+    ///
+    /// `sort_by_key` only orders by timestamp, so two buckets sharing an
+    /// exact timestamp keep whatever relative order they arrive in --
+    /// that's NOT `bucket_map`'s HashMap order, though: `build_bucket_map`
+    /// preserves each `Vec<TimestampedBucket>` group's original order when
+    /// grouping by start, and that Vec was already chronologically sorted
+    /// once by the store itself (`sort_buckets_chronologically`, called in
+    /// `query_precomputed_output`/`query_precomputed_output_exact_batch`
+    /// before this function ever sees the data) -- so same-timestamp order
+    /// here is deterministic, just not decided by this function; it's
+    /// inherited from the store's own sort, same as it always was for
+    /// `sum_window` (#581 stage E.4 review).
+    fn collect_bucket_map_entries_before(
+        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        before: u64,
+    ) -> Vec<Box<dyn AggregateCore>> {
+        let mut entries: Vec<(u64, &&dyn AggregateCore)> = bucket_map
+            .iter()
+            .filter(|(&t, _)| t < before)
+            .flat_map(|(&t, buckets)| buckets.iter().map(move |b| (t, b)))
+            .collect();
+        entries.sort_by_key(|(t, _)| *t);
+        entries
+            .into_iter()
+            .map(|(_, b)| b.clone_boxed_core())
+            .collect()
+    }
+
     /// Picks how a step's window is composed from `bucket_map`: Sliding ->
-    /// `single_window` (one lookup); Tumbling -> `scan_window`
+    /// `single_window` (one lookup); Tumbling -> `sum_window`
     /// (scan-and-sum). Used identically by `execute_range_query_pipeline`
     /// for both the value side and the keys side (#608).
+    ///
+    /// NOT used for `AggregationType::DeltaSetAggregator` keys -- callers on
+    /// that path must call `collect_bucket_map_entries_before` directly
+    /// instead (see its doc comment).
     fn window_buckets_for_step(
         bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
         window_start: u64,
@@ -1496,7 +1763,7 @@ impl SimpleEngine {
         if window_type == WindowType::Sliding {
             Self::single_window(bucket_map, window_start)
         } else {
-            Self::scan_window(bucket_map, window_start, window_end, step_increment)
+            Self::sum_window(bucket_map, window_start, window_end, step_increment)
         }
     }
 
@@ -1505,10 +1772,15 @@ impl SimpleEngine {
     /// `enable_topk_limiting`/`enable_topk_formatting` mirror
     /// `execute_query_pipeline`'s flags of the same name (see that method's
     /// doc comment) -- both no-ops unless
-    /// `context.base.metadata.statistic_to_compute == Statistic::Topk`. The
-    /// actual ranking/truncation is delegated to `apply_range_topk` below;
-    /// see its doc comment for why range's version can't just reuse
-    /// instant's `format_final_results` truncate-once shape.
+    /// `context.base.metadata.statistic_to_compute == Statistic::Topk`.
+    /// Unlike instant's `format_final_results` (sort once, truncate once --
+    /// only possible because instant has exactly one value per group),
+    /// range ranks/truncates per-timestamp ("step-major"): the step-major
+    /// loop below already visits every group at every output timestamp, so
+    /// each timestamp's candidates are ranked/truncated inline, right there
+    /// (#581 stage E.3), before insertion into the final result map.
+    /// Formatting (metric-name label prefix) is a separate, smaller pass
+    /// afterward, once per group rather than once per timestep.
     fn execute_range_query_pipeline(
         &self,
         context: &RangeQueryExecutionContext,
@@ -1552,9 +1824,6 @@ impl SimpleEngine {
         let key_accumulator_type = context.base.agg_info.aggregation_type_for_key;
 
         // Calculate step parameters
-        let step_ms = context.range_params.step;
-        let start_ms = context.range_params.start;
-        let end_ms = context.range_params.end;
         let buckets_per_step = context.buckets_per_step;
         let lookback_bucket_count = context.lookback_bucket_count;
         let tumbling_window_ms = context.tumbling_window_ms;
@@ -1588,11 +1857,11 @@ impl SimpleEngine {
             "hopping (slide > size)"
         };
         debug!(
-            "Range query params: start={}, end={}, step_ms={}, tumbling_window_ms={}, \
+            "Range query params: {} output timestamp(s) [{}..{}], tumbling_window_ms={}, \
              buckets_per_step (slide)={}, lookback_bucket_count (size)={}, mode={}",
-            start_ms,
-            end_ms,
-            step_ms,
+            context.output_timestamps.len(),
+            context.output_timestamps.first().copied().unwrap_or(0),
+            context.output_timestamps.last().copied().unwrap_or(0),
             tumbling_window_ms,
             buckets_per_step,
             lookback_bucket_count,
@@ -1628,10 +1897,17 @@ impl SimpleEngine {
         // unrepresentable is the same reasoning that motivated this enum
         // over two raw Option fields in the first place — just applied all
         // the way through instead of partway.
+        // Named alias purely to keep declarations under
+        // clippy::type_complexity -- used by both KeysSource::PerStep's own
+        // bucket_map field below and the step-major `groups` binding
+        // further down (#581 stage E.4 review: previously duplicated as the
+        // raw type at the PerStep site instead of using this alias).
+        type GroupBucketMap<'a> = HashMap<u64, Vec<&'a dyn AggregateCore>>;
+
         enum KeysSource<'a> {
             Fixed(Option<KeyByLabelValues>),
             PerStep {
-                bucket_map: HashMap<u64, Vec<&'a dyn AggregateCore>>,
+                bucket_map: GroupBucketMap<'a>,
                 lookback_ms: u64,
                 tumbling_window_ms: u64,
                 window_type: WindowType,
@@ -1708,22 +1984,72 @@ impl SimpleEngine {
                 .collect(),
         };
 
-        // Process each value group independently
-        for (timestamped_buckets, keys_source) in groups {
-            let bucket_map = Self::build_bucket_map(timestamped_buckets);
+        // Precompute per-group setup (bucket_map, keys_source) once, before
+        // the step-major loop below revisits every group at every output
+        // timestamp -- doing this per-step instead would repeat identical
+        // work once per timestamp instead of once per group.
+        //
+        // Memory tradeoff vs. the old group-major shape (#581 stage E.2
+        // review): every group's value bucket_map is now held simultaneously
+        // for the whole step-major loop's duration, instead of one group's
+        // bucket_map at a time (built, used, dropped, next group). Keys-side
+        // PerStep bucket maps were already built eagerly for every group
+        // beforehand (see `groups` above), so this brings the value side in
+        // line with that, not a new pattern -- but for a range query over a
+        // very high-cardinality label set this is a real (if likely modest)
+        // increase in peak memory. Inherent to step-major: ranking a
+        // timestamp's candidates needs every group's bucket_map available at
+        // that timestamp, so they can't be built lazily one group at a time
+        // anymore.
+        let groups: Vec<(GroupBucketMap, KeysSource)> = groups
+            .into_iter()
+            .map(|(timestamped_buckets, keys_source)| {
+                let bucket_map = Self::build_bucket_map(timestamped_buckets);
+                debug!(
+                    "Group with {} start-timestamps ({} keys start-timestamps)",
+                    bucket_map.len(),
+                    match &keys_source {
+                        KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
+                        KeysSource::Fixed(_) => 0,
+                    }
+                );
+                (bucket_map, keys_source)
+            })
+            .collect();
 
-            debug!(
-                "Group with {} start-timestamps ({} keys start-timestamps)",
-                bucket_map.len(),
-                match &keys_source {
-                    KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
-                    KeysSource::Fixed(_) => 0,
-                }
-            );
+        // Top-k's k, parsed once rather than per timestamp. Some only when
+        // this is actually a topk query with limiting requested -- gates
+        // both the per-step sort/truncate below and nothing else, so a
+        // non-topk query pays zero cost for this.
+        let topk_k: Option<usize> = if enable_topk_limiting
+            && context.base.metadata.statistic_to_compute == Statistic::Topk
+        {
+            context
+                .base
+                .metadata
+                .query_kwargs
+                .get("k")
+                .and_then(|s| s.parse::<usize>().ok())
+        } else {
+            None
+        };
 
-            // Iterate by OUTPUT timestamp, not by bucket index
-            let mut current_time = start_ms;
-            while current_time <= end_ms {
+        // Step-major: for each output timestamp, visit every group, not the
+        // other way around. Required for topk correctness -- ranking a
+        // timestamp's candidates means seeing every group's value at that
+        // timestamp before truncating, which a group-major loop can't do
+        // (#581). One loop shape for topk and non-topk alike, rather than
+        // maintaining two.
+        for &current_time in &context.output_timestamps {
+            // This timestamp's (key, value) pairs across every group,
+            // collected before insertion into `results` so a topk query can
+            // rank/truncate them as one step-local set (#581 stage E.3 --
+            // folds what used to be a separate apply_range_topk pass,
+            // re-deriving this same per-timestamp grouping from the
+            // finished `results` afterward, directly into this loop).
+            let mut step_results: Vec<(KeyByLabelValues, f64)> = Vec::new();
+
+            for (bucket_map, keys_source) in &groups {
                 // #583: dual-population groups resolve their expansion keys
                 // from the keys aggregation, per step — not a single
                 // snapshot reused for every step. If nothing resolves at
@@ -1731,28 +2057,61 @@ impl SimpleEngine {
                 // below (avoids wasted merge work on steps outside the
                 // key's lifetime). Fixed (single-population) groups have no
                 // separate keys accumulator to merge here at all.
-                let keys_precompute: Option<Box<dyn AggregateCore>> = match &keys_source {
+                let keys_precompute: Option<Box<dyn AggregateCore>> = match keys_source {
                     KeysSource::PerStep {
                         bucket_map: keys_bucket_map,
                         lookback_ms: keys_lookback_ms,
                         tumbling_window_ms: keys_tumbling_window_ms,
                         window_type: keys_window_type,
                     } => {
-                        let keys_window_start = current_time.saturating_sub(*keys_lookback_ms);
-                        let keys_window_buckets = Self::window_buckets_for_step(
-                            keys_bucket_map,
-                            keys_window_start,
-                            current_time,
-                            *keys_tumbling_window_ms,
-                            *keys_window_type,
-                        );
+                        // DeltaSetAggregator's keys window is always
+                        // [0, current_time) ("replay from the beginning"),
+                        // which saturating_sub's keys_window_start to 0 --
+                        // window_buckets_for_step's sum_window would then
+                        // walk every grid position from 0 to current_time
+                        // (up to ~1e8 positions for a real timestamp) purely
+                        // to see what's in keys_bucket_map, an in-memory map
+                        // already bounded by real data. Bypass that walk
+                        // entirely for this aggregation type (#581 stage
+                        // E.4 review).
+                        let keys_window_buckets = if key_accumulator_type
+                            == AggregationType::DeltaSetAggregator
+                        {
+                            // #588/#606 force DeltaSetAggregator's own
+                            // config to Tumbling at planning time -- but
+                            // that's a planner convention, not a runtime
+                            // invariant this code can trust blindly.
+                            // AggregationConfig can be (and in this crate's
+                            // own tests routinely is) constructed directly,
+                            // bypassing the planner. A Sliding DeltaSetAgg
+                            // has no coherent "replay from the beginning"
+                            // semantics to begin with, so this asserts
+                            // rather than silently reinterpreting it (#581
+                            // stage E.4 review).
+                            assert_eq!(
+                                *keys_window_type,
+                                WindowType::Tumbling,
+                                "DeltaSetAggregator keys config must be Tumbling (#588/#606) -- \
+                                 the replay-from-the-beginning fast path has no correct meaning \
+                                 for Sliding"
+                            );
+                            Self::collect_bucket_map_entries_before(keys_bucket_map, current_time)
+                        } else {
+                            let keys_window_start = current_time.saturating_sub(*keys_lookback_ms);
+                            Self::window_buckets_for_step(
+                                keys_bucket_map,
+                                keys_window_start,
+                                current_time,
+                                *keys_tumbling_window_ms,
+                                *keys_window_type,
+                            )
+                        };
 
                         if keys_window_buckets.is_empty() {
                             debug!(
                                 "No keys data in window at t={} — skipping this step for this group",
                                 current_time
                             );
-                            current_time += step_ms;
                             continue;
                         }
 
@@ -1762,7 +2121,6 @@ impl SimpleEngine {
                             Ok(merged_keys) => Some(merged_keys),
                             Err(e) => {
                                 warn!("Failed to merge keys at t={}: {}", current_time, e);
-                                current_time += step_ms;
                                 continue;
                             }
                         }
@@ -1775,7 +2133,7 @@ impl SimpleEngine {
                 let window_start = current_time.saturating_sub(lookback_ms);
 
                 let window_buckets = Self::window_buckets_for_step(
-                    &bucket_map,
+                    bucket_map,
                     window_start,
                     current_time,
                     tumbling_window_ms,
@@ -1788,7 +2146,6 @@ impl SimpleEngine {
                         "Skipping sample at {} - no data in window [{}, {})",
                         current_time, window_start, current_time
                     );
-                    current_time += step_ms;
                     continue;
                 }
 
@@ -1799,12 +2156,11 @@ impl SimpleEngine {
                     Ok(merged) => merged,
                     Err(e) => {
                         debug!("Failed to get merged result at t={}: {}", current_time, e);
-                        current_time += step_ms;
                         continue;
                     }
                 };
 
-                let fallback_key = match &keys_source {
+                let fallback_key = match keys_source {
                     KeysSource::Fixed(fallback_key) => fallback_key.clone(),
                     KeysSource::PerStep { .. } => None,
                 };
@@ -1829,154 +2185,44 @@ impl SimpleEngine {
                     // KeyByLabelValues, not Option) -- matches today's
                     // behavior of producing no sample for this combination.
                     let Some(key) = key else { continue };
-                    results
-                        .entry(key.clone())
-                        .or_insert_with(|| RangeVectorElement::new(key))
-                        .add_sample(current_time, value);
+                    step_results.push((key, value));
                 }
+            }
 
-                current_time += step_ms;
+            // Rank this timestamp's candidates across every group and
+            // truncate to k -- tie-broken by label for determinism, since
+            // `step_results`' order ultimately traces back to a HashMap
+            // iteration (`groups`, built from `all_data`/`keys_raw_data`)
+            // and would otherwise keep a different group on every process
+            // run when two groups tie at the k-th value.
+            if let Some(k) = topk_k {
+                step_results
+                    .sort_by(|a, b| Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels));
+                step_results.truncate(k);
+            }
+
+            for (key, value) in step_results {
+                results
+                    .entry(key.clone())
+                    .or_insert_with(|| RangeVectorElement::new(key))
+                    .add_sample(current_time, value);
             }
         }
 
-        Ok(self.apply_range_topk(
-            results,
-            &context.base.metadata.statistic_to_compute,
-            &context.base.metadata.query_kwargs,
-            &context.base.metric,
-            enable_topk_formatting,
-            enable_topk_limiting,
-        ))
-    }
-
-    /// Applies PromQL top-k semantics to a range query's raw per-group
-    /// results. No-op unless `statistic == Statistic::Topk` (mirrors
-    /// `format_final_results`).
-    ///
-    /// This is deliberately NOT a straight port of `format_final_results`
-    /// (sort all groups once by value, then truncate to k): that shape only
-    /// works because instant queries have exactly one value per group. A
-    /// range query's `RangeVectorElement` carries many per-timestamp
-    /// samples, and real PromQL `topk(k, range_vector)` semantics rank
-    /// independently AT EACH timestamp -- the surviving key set can differ
-    /// from step to step. So this ranks/truncates per-timestamp
-    /// ("step-major"), across all groups, as its own pass over the
-    /// already-assembled results -- rather than restructuring the group-major
-    /// fetch/merge loop above into a step-major shape. Issue #581's own
-    /// scoping decided the fetch/merge loop itself becomes step-major only
-    /// as part of stage E, the full instant/range pipeline collapse (not
-    /// done here, deliberately -- this is stage-E prep). Doing the ranking
-    /// as a separate pass gets the same correctness (each timestamp's kept
-    /// set is decided across all groups, never one group at a time) without
-    /// front-running that larger, separately-staged restructure.
-    /// `enable_topk_limiting` and `enable_topk_formatting` are independent
-    /// flags, mirroring instant's `execute_query_pipeline` contract -- but
-    /// unlike instant, range has no `(false, true)`-observable case. Instant
-    /// always sorts Topk results when formatting regardless of limiting,
-    /// because it returns a flat `Vec` where sort order is part of the
-    /// output. Range returns a `HashMap` (this function's `results`) whose
-    /// iteration order was never meaningful, and each surviving group carries
-    /// many per-timestamp samples rather than one value to sort the outer
-    /// collection by -- so skipping the ranking block when
-    /// `enable_topk_limiting` is false has no observable effect here beyond
-    /// formatting, even though every current call site passes both flags
-    /// together and never actually exercises `(false, true)`.
-    fn apply_range_topk(
-        &self,
-        mut results: HashMap<KeyByLabelValues, crate::engines::query_result::RangeVectorElement>,
-        statistic: &Statistic,
-        query_kwargs: &HashMap<String, String>,
-        metric: &str,
-        enable_topk_formatting: bool,
-        enable_topk_limiting: bool,
-    ) -> Vec<crate::engines::query_result::RangeVectorElement> {
-        if *statistic != Statistic::Topk {
-            return results.into_values().collect();
-        }
-
-        // Limiting MUST run before formatting: it matches
-        // `kept_timestamps_by_key`'s keys (read from each element's
-        // `labels` field) against `results`' own HashMap keys via
-        // `retain`. Formatting rewrites `elem.labels` (the field) without
-        // touching the HashMap's outer key, so if formatting ran first the
-        // two would no longer agree and `retain` would drop every group.
-        if enable_topk_limiting {
-            if let Some(k) = query_kwargs.get("k").and_then(|s| s.parse::<usize>().ok()) {
-                use std::collections::HashSet;
-
-                // Index each group once (G clones total) instead of cloning
-                // its label vector per (group, timestamp) sample -- G*T
-                // clones otherwise, for G groups over T steps.
-                let index_keys: Vec<KeyByLabelValues> = results.keys().cloned().collect();
-                let key_to_idx: HashMap<KeyByLabelValues, usize> = index_keys
-                    .iter()
-                    .cloned()
-                    .enumerate()
-                    .map(|(i, key)| (key, i))
-                    .collect();
-
-                // Step-major ranking: group every group's samples by
-                // timestamp first, so each timestamp's top-k decision sees
-                // every group's value at that timestamp.
-                let mut by_timestamp: HashMap<u64, Vec<(usize, f64)>> = HashMap::new();
-                for elem in results.values() {
-                    let idx = key_to_idx[&elem.labels];
-                    for sample in &elem.samples {
-                        by_timestamp
-                            .entry(sample.timestamp)
-                            .or_default()
-                            .push((idx, sample.value));
-                    }
-                }
-
-                let mut kept_timestamps_by_idx: HashMap<usize, HashSet<u64>> = HashMap::new();
-                for (timestamp, mut candidates) in by_timestamp {
-                    // Tiebreak on label values: `candidates`'s order comes
-                    // from iterating `results`, a HashMap, whose iteration
-                    // order is randomized per-process -- without this,
-                    // groups tied at the k-th value boundary would keep
-                    // different survivors run to run.
-                    candidates.sort_by(|a, b| {
-                        b.1.partial_cmp(&a.1)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                            .then_with(|| index_keys[a.0].labels.cmp(&index_keys[b.0].labels))
-                    });
-                    candidates.truncate(k);
-                    for (idx, _) in candidates {
-                        kept_timestamps_by_idx
-                            .entry(idx)
-                            .or_default()
-                            .insert(timestamp);
-                    }
-                }
-
-                results.retain(|key, _| kept_timestamps_by_idx.contains_key(&key_to_idx[key]));
-                for elem in results.values_mut() {
-                    let idx = key_to_idx[&elem.labels];
-                    // `keep` is built only from timestamps that already
-                    // appear in this same element's `samples` (see the
-                    // `by_timestamp` loop above), and is non-empty for every
-                    // key that survives the `retain` just above -- so this
-                    // filter can never leave `elem.samples` empty.
-                    let keep = &kept_timestamps_by_idx[&idx];
-                    elem.samples.retain(|s| keep.contains(&s.timestamp));
-                }
-            }
-        }
-
-        if enable_topk_formatting {
-            // Prepend metric name to each key's label values (PromQL shape),
-            // same rewrite as format_final_results does for instant. Safe to
-            // mutate `elem.labels` now -- nothing below matches it back
-            // against the HashMap's outer key.
+        // Formatting (PromQL topk(...) output shape: prepend the metric
+        // name to each surviving group's labels) applies once per group,
+        // not once per timestep -- a separate pass over the final results,
+        // after every timestamp's ranking above has already decided which
+        // groups/samples survive.
+        if enable_topk_formatting && context.base.metadata.statistic_to_compute == Statistic::Topk {
             for elem in results.values_mut() {
-                let mut new_labels = vec![metric.to_string()];
+                let mut new_labels = vec![context.base.metric.clone()];
                 new_labels.extend(elem.labels.labels.clone());
                 elem.labels.labels = new_labels;
             }
         }
 
-        results.into_values().collect()
+        Ok(results.into_values().collect())
     }
 }
 
@@ -3566,4 +3812,799 @@ mod sketch_query_tests {
     //         engine.handle_sketch_range_query_promql("rate(mymetric[100s])", 0.01, 0.1, 0.01);
     //     assert!(result.is_none());
     // }
+}
+
+/// Old-vs-new comparison for #581 stage E.4: `execute_query_pipeline_pre_e4`
+/// (the pre-E.4 instant implementation, preserved verbatim under
+/// `#[cfg(test)]`) vs `execute_query_pipeline` (the new thin wrapper around
+/// `execute_range_query_pipeline`). Both run against the exact same
+/// `QueryExecutionContext` and must produce identical results -- this is the
+/// real safety net for the wrapper swap itself, distinct from
+/// `stage_e_instant_range_equivalence_tests.rs` (which compares instant vs
+/// range as two *independent* implementations, and stops being a meaningful
+/// check for THIS specific change once `execute_query_pipeline` calls into
+/// `execute_range_query_pipeline` internally -- at that point both sides of
+/// that comparison are the same code).
+///
+/// Lives in mod.rs (not `src/tests/`) because it needs direct access to the
+/// private `execute_query_pipeline_pre_e4` and `execute_query_pipeline`,
+/// matching this file's existing `merge_accumulators_regression_tests_596`
+/// convention for the same reason.
+#[cfg(test)]
+mod stage_e4_instant_wrapper_equivalence_tests {
+    use crate::data_model::{
+        AggregationConfig, AggregationReference, AggregationType, CleanupPolicy, InferenceConfig,
+        KeyByLabelValues, PrecomputedOutput, PromQLSchema, QueryConfig, QueryLanguage,
+        SchemaConfig, StreamingConfig, WindowType,
+    };
+    use crate::engines::query_result::{InstantVectorElement, QueryResult};
+    use crate::engines::simple_engine::SimpleEngine;
+    use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::precompute_operators::{
+        CountMinSketchWithHeapAccumulator, DeltaSetAggregatorAccumulator, SetAggregatorAccumulator,
+    };
+    use crate::stores::simple_map_store::SimpleMapStore;
+    use crate::stores::Store;
+    use crate::AggregateCore;
+    use promql_utilities::data_model::KeyByLabelNames;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    enum KeysConfig {
+        None,
+        SetAgg,
+        DeltaSetAgg,
+    }
+
+    /// Builds an engine with one value aggregation (id=1, Sum, at the given
+    /// window shape) covering `value_buckets` for group "host-a", and
+    /// optionally a second keys aggregation (id=2, fixed Tumbling
+    /// window_size=slide=1000ms with one bucket at [2000,3000)).
+    #[allow(clippy::too_many_arguments)]
+    fn build_engine(
+        window_type: WindowType,
+        window_size_ms: u64,
+        slide_interval_ms: u64,
+        value_buckets: &[(u64, u64, f64)],
+        keys: KeysConfig,
+    ) -> SimpleEngine {
+        let grouping_labels = vec!["host".to_string()];
+        let host_a = Some(KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        });
+
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::Sum,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(grouping_labels.clone()),
+                aggregated_labels: KeyByLabelNames::empty(),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms,
+                slide_interval_ms,
+                window_type,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "cpu_load".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+
+        if !matches!(keys, KeysConfig::None) {
+            let key_agg_type = match keys {
+                KeysConfig::SetAgg => AggregationType::SetAggregator,
+                KeysConfig::DeltaSetAgg => AggregationType::DeltaSetAggregator,
+                KeysConfig::None => unreachable!(),
+            };
+            aggregation_configs.insert(
+                2u64,
+                AggregationConfig {
+                    aggregation_id: 2,
+                    aggregation_type: key_agg_type,
+                    aggregation_sub_type: String::new(),
+                    parameters: HashMap::new(),
+                    grouping_labels: KeyByLabelNames::new(grouping_labels.clone()),
+                    aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                    rollup_labels: KeyByLabelNames::empty(),
+                    original_yaml: String::new(),
+                    window_size_ms: 1000,
+                    slide_interval_ms: 1000,
+                    window_type: WindowType::Tumbling,
+                    spatial_filter: String::new(),
+                    spatial_filter_normalized: String::new(),
+                    metric: "cpu_load".to_string(),
+                    num_aggregates_to_retain: None,
+                    read_count_threshold: None,
+                    table_name: None,
+                    value_column: None,
+                },
+            );
+        }
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        for (start, end, value) in value_buckets {
+            let output = PrecomputedOutput::new(*start, *end, host_a.clone(), 1);
+            store
+                .insert_precomputed_output(output, Box::new(SumAccumulator::with_sum(*value)))
+                .unwrap();
+        }
+
+        if !matches!(keys, KeysConfig::None) {
+            let acc: Box<dyn AggregateCore> = match keys {
+                KeysConfig::SetAgg => {
+                    let mut a = SetAggregatorAccumulator::new();
+                    a.add_key(KeyByLabelValues {
+                        labels: vec!["host-a".to_string()],
+                    });
+                    Box::new(a)
+                }
+                KeysConfig::DeltaSetAgg => {
+                    let mut a = DeltaSetAggregatorAccumulator::new();
+                    a.add_key(KeyByLabelValues {
+                        labels: vec!["host-a".to_string()],
+                    });
+                    Box::new(a)
+                }
+                KeysConfig::None => unreachable!(),
+            };
+            let output = PrecomputedOutput::new(2000, 3000, host_a.clone(), 2);
+            store.insert_precomputed_output(output, acc).unwrap();
+        }
+
+        let promql_schema = PromQLSchema::new().add_metric(
+            "cpu_load".to_string(),
+            KeyByLabelNames::new(grouping_labels),
+        );
+        let mut query_config = QueryConfig::new("sum(cpu_load) by (host)".to_string())
+            .add_aggregation(AggregationReference::new(1, None));
+        if !matches!(keys, KeysConfig::None) {
+            query_config = query_config.add_aggregation(AggregationReference::new(2, None));
+        }
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1000,
+            QueryLanguage::promql,
+        )
+    }
+
+    fn instant_pairs(elements: Vec<InstantVectorElement>) -> Vec<(Vec<String>, f64)> {
+        let mut pairs: Vec<(Vec<String>, f64)> = elements
+            .into_iter()
+            .map(|e| (e.labels.labels, e.value))
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        pairs
+    }
+
+    /// Runs `query` at `query_time_s` through both the pre-E.4 and the new
+    /// wrapper-based `execute_query_pipeline`, against the SAME
+    /// `QueryExecutionContext`, and asserts they produce the exact same
+    /// (label, value) set.
+    fn assert_old_new_match(
+        engine: &SimpleEngine,
+        query: &str,
+        query_time_s: f64,
+        limiting: bool,
+        formatting: bool,
+        case_name: &str,
+    ) {
+        let context = engine
+            .build_query_execution_context_promql(query.to_string(), query_time_s)
+            .unwrap_or_else(|| panic!("{case_name}: failed to build query execution context"));
+
+        let old_result = engine.execute_query_pipeline_pre_e4(&context, limiting, formatting);
+        let new_result = engine.execute_query_pipeline(&context, limiting, formatting);
+
+        match (old_result, new_result) {
+            (Ok(old), Ok(new)) => {
+                assert_eq!(
+                    instant_pairs(old),
+                    instant_pairs(new),
+                    "{case_name}: old and new instant pipelines diverge"
+                );
+            }
+            (Err(old_err), Err(new_err)) => {
+                // Error TEXT is allowed to differ (old/new fetch different
+                // code paths internally and may phrase the failure
+                // differently) -- what matters is both sides agree the
+                // query fails, not fail identically-worded.
+                eprintln!(
+                    "{case_name}: both sides errored as expected (old: {old_err}, new: {new_err})"
+                );
+            }
+            (old, new) => panic!(
+                "{case_name}: old and new disagree on success/failure -- old={old:?}, new={new:?}"
+            ),
+        }
+    }
+
+    // ── Core grid: window type x population x statistic ────────────────
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_tumbling_multibucket_fallback_key_matches() {
+        // 3 buckets in range (do_merge=true): [0,1000)=1.0, [1000,2000)=10.0, [2000,3000)=100.0
+        let engine = build_engine(
+            WindowType::Tumbling,
+            1000,
+            1000,
+            &[(0, 1000, 1.0), (1000, 2000, 10.0), (2000, 3000, 100.0)],
+            KeysConfig::None,
+        );
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "tumbling_multibucket_fallback_key",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_tumbling_singlebucket_fallback_key_matches() {
+        // Exactly 1 bucket in range (do_merge=false): [2000,3000)=100.0
+        let engine = build_engine(
+            WindowType::Tumbling,
+            1000,
+            1000,
+            &[(2000, 3000, 100.0)],
+            KeysConfig::None,
+        );
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "tumbling_singlebucket_fallback_key",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_sliding_fallback_key_matches() {
+        // Sliding: one already-merged 2000ms-wide window at [1000,3000).
+        let engine = build_engine(
+            WindowType::Sliding,
+            2000,
+            1000,
+            &[(1000, 3000, 110.0)],
+            KeysConfig::None,
+        );
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "sliding_fallback_key",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_tumbling_dual_setagg_matches() {
+        let engine = build_engine(
+            WindowType::Tumbling,
+            1000,
+            1000,
+            &[(2000, 3000, 100.0)],
+            KeysConfig::SetAgg,
+        );
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "tumbling_dual_setagg",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_sliding_dual_setagg_matches() {
+        let engine = build_engine(
+            WindowType::Sliding,
+            2000,
+            1000,
+            &[(1000, 3000, 110.0)],
+            KeysConfig::SetAgg,
+        );
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "sliding_dual_setagg",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_tumbling_dual_deltasetagg_matches() {
+        let engine = build_engine(
+            WindowType::Tumbling,
+            1000,
+            1000,
+            &[(2000, 3000, 100.0)],
+            KeysConfig::DeltaSetAgg,
+        );
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "tumbling_dual_deltasetagg",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_sliding_dual_deltasetagg_matches() {
+        // DeltaSetAgg's own window stays Tumbling (#588/#606) independent of
+        // the value side's Sliding shape.
+        let engine = build_engine(
+            WindowType::Sliding,
+            2000,
+            1000,
+            &[(1000, 3000, 110.0)],
+            KeysConfig::DeltaSetAgg,
+        );
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "sliding_dual_deltasetagg",
+        );
+    }
+
+    /// Self-keyed topk: value accumulator's own `get_keys()` (a
+    /// `CountMinSketchWithHeap`) drives key resolution, not a separate keys
+    /// aggregation or a fallback group key.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_self_keyed_topk_matches() {
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::CountMinSketchWithHeap,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::empty(),
+                aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: 1000,
+                slide_interval_ms: 1000,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "cpu_load".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for (host, value) in [("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)] {
+            sketch.inner.update(host, value);
+        }
+        let output = PrecomputedOutput::new(2000, 3000, None, 1);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .unwrap();
+
+        let promql_schema = PromQLSchema::new().add_metric(
+            "cpu_load".to_string(),
+            KeyByLabelNames::new(vec!["host".to_string()]),
+        );
+        let query = "topk(2, cpu_load)";
+        let query_config =
+            QueryConfig::new(query.to_string()).add_aggregation(AggregationReference::new(1, None));
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1000,
+            QueryLanguage::promql,
+        );
+
+        assert_old_new_match(&engine, query, 3.0, true, true, "self_keyed_topk");
+    }
+
+    // ── Edge cases ───────────────────────────────────────────────────────
+    //
+    // No test here for "topk requested over a non-self-keyed accumulator":
+    // confirmed empirically (probed "topk(2, cpu_load)",
+    // "topk(2, sum(cpu_load) by (host))", and
+    // "topk(2, sum_over_time(cpu_load[3s]))" against a Sum-only schema) that
+    // PromQL capability/pattern matching rejects all three phrasings at
+    // context-building time, before execute_query_pipeline is ever reached.
+    // No real query shape reaches execute_query_pipeline with Topk requested
+    // over non-topk-capable data, so there's nothing for old vs new to
+    // diverge on -- not a coverage gap, a scenario that doesn't exist. The
+    // real topk case (self-keyed CountMinSketchWithHeap) is covered above by
+    // old_new_self_keyed_topk_matches.
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_no_data_returns_err_identically() {
+        // No precomputed outputs inserted at all.
+        let engine = build_engine(WindowType::Tumbling, 1000, 1000, &[], KeysConfig::None);
+        let context = engine
+            .build_query_execution_context_promql("sum(cpu_load) by (host)".to_string(), 3.0)
+            .expect("failed to build context");
+        let old = engine.execute_query_pipeline_pre_e4(&context, true, false);
+        let new = engine.execute_query_pipeline(&context, true, false);
+        assert!(old.is_err(), "old path should fail with no data");
+        assert!(new.is_err(), "new path should fail with no data");
+    }
+
+    /// host-a has both value and keys data; host-b has keys data but no
+    /// value data -- #597's warn-and-skip path, not a hard failure. Both
+    /// old and new must return host-a only.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_keys_data_no_value_data_skips_group() {
+        let grouping_labels = vec!["host".to_string()];
+        let host_a = Some(KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        });
+        let host_b = Some(KeyByLabelValues {
+            labels: vec!["host-b".to_string()],
+        });
+
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::Sum,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(grouping_labels.clone()),
+                aggregated_labels: KeyByLabelNames::empty(),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: 1000,
+                slide_interval_ms: 1000,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "cpu_load".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        aggregation_configs.insert(
+            2u64,
+            AggregationConfig {
+                aggregation_id: 2,
+                aggregation_type: AggregationType::SetAggregator,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(grouping_labels.clone()),
+                aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: 1000,
+                slide_interval_ms: 1000,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "cpu_load".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        // host-a: both value and keys.
+        store
+            .insert_precomputed_output(
+                PrecomputedOutput::new(2000, 3000, host_a.clone(), 1),
+                Box::new(SumAccumulator::with_sum(100.0)),
+            )
+            .unwrap();
+        let mut keys_a = SetAggregatorAccumulator::new();
+        keys_a.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        });
+        store
+            .insert_precomputed_output(
+                PrecomputedOutput::new(2000, 3000, host_a.clone(), 2),
+                Box::new(keys_a),
+            )
+            .unwrap();
+
+        // host-b: keys only, no value data.
+        let mut keys_b = SetAggregatorAccumulator::new();
+        keys_b.add_key(KeyByLabelValues {
+            labels: vec!["host-b".to_string()],
+        });
+        store
+            .insert_precomputed_output(
+                PrecomputedOutput::new(2000, 3000, host_b.clone(), 2),
+                Box::new(keys_b),
+            )
+            .unwrap();
+
+        let promql_schema = PromQLSchema::new().add_metric(
+            "cpu_load".to_string(),
+            KeyByLabelNames::new(grouping_labels),
+        );
+        let query_config = QueryConfig::new("sum(cpu_load) by (host)".to_string())
+            .add_aggregation(AggregationReference::new(1, None))
+            .add_aggregation(AggregationReference::new(2, None));
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1000,
+            QueryLanguage::promql,
+        );
+
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "keys_data_no_value_data_skips_group",
+        );
+    }
+
+    /// Several distinct groups in one query -- sanity-checks the step-major
+    /// loop (folded in at #581 stage E.2/E.3) holds up under real
+    /// cardinality when reached via the single-timestamp wrapper.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_multi_group_matches() {
+        let grouping_labels = vec!["host".to_string()];
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::Sum,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(grouping_labels.clone()),
+                aggregated_labels: KeyByLabelNames::empty(),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: 1000,
+                slide_interval_ms: 1000,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "cpu_load".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        for (host, value) in [
+            ("host-a", 100.0),
+            ("host-b", 50.0),
+            ("host-c", 10.0),
+            ("host-d", 5.0),
+        ] {
+            let key = Some(KeyByLabelValues {
+                labels: vec![host.to_string()],
+            });
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(2000, 3000, key, 1),
+                    Box::new(SumAccumulator::with_sum(value)),
+                )
+                .unwrap();
+        }
+        let promql_schema = PromQLSchema::new().add_metric(
+            "cpu_load".to_string(),
+            KeyByLabelNames::new(grouping_labels),
+        );
+        let query_config = QueryConfig::new("sum(cpu_load) by (host)".to_string())
+            .add_aggregation(AggregationReference::new(1, None));
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1000,
+            QueryLanguage::promql,
+        );
+
+        assert_old_new_match(
+            &engine,
+            "sum(cpu_load) by (host)",
+            3.0,
+            true,
+            false,
+            "multi_group",
+        );
+    }
+
+    // ── Binary-expr composition (expected-value, not old-vs-new) ────────
+    //
+    // handle_binary_expr_promql itself isn't touched by E.4 -- only what
+    // execute_query_pipeline does internally for each arm's leaf context
+    // changes, and that's already covered by the old-vs-new tests above (a
+    // binary-expr arm's leaf context has the same shape as a plain query's).
+    // So these are expected-value regression tests confirming composition
+    // still works end-to-end through the new wrapper, not a second
+    // old-vs-new comparison.
+
+    fn matrix_metric(qr: QueryResult) -> f64 {
+        match qr {
+            QueryResult::Vector(v) => {
+                assert_eq!(v.values.len(), 1, "expected exactly one series");
+                v.values[0].value
+            }
+            QueryResult::Matrix(_) => panic!("expected an instant Vector, got a Matrix"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_binary_expr_scalar_arm_matches() {
+        let engine = build_engine(
+            WindowType::Tumbling,
+            1000,
+            1000,
+            &[(2000, 3000, 100.0)],
+            KeysConfig::None,
+        );
+        let (_, qr) = engine
+            .handle_query_promql("sum(cpu_load) by (host) * 5".to_string(), 3.0)
+            .expect("scalar binary-expr query should resolve");
+        assert_eq!(matrix_metric(qr), 500.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn old_new_binary_expr_vector_vector_matches() {
+        let grouping_labels = vec!["host".to_string()];
+        let host_a = Some(KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        });
+        let mut aggregation_configs = HashMap::new();
+        for (id, metric) in [(1u64, "metric_a"), (2u64, "metric_b")] {
+            aggregation_configs.insert(
+                id,
+                AggregationConfig {
+                    aggregation_id: id,
+                    aggregation_type: AggregationType::Sum,
+                    aggregation_sub_type: String::new(),
+                    parameters: HashMap::new(),
+                    grouping_labels: KeyByLabelNames::new(grouping_labels.clone()),
+                    aggregated_labels: KeyByLabelNames::empty(),
+                    rollup_labels: KeyByLabelNames::empty(),
+                    original_yaml: String::new(),
+                    window_size_ms: 1000,
+                    slide_interval_ms: 1000,
+                    window_type: WindowType::Tumbling,
+                    spatial_filter: String::new(),
+                    spatial_filter_normalized: String::new(),
+                    metric: metric.to_string(),
+                    num_aggregates_to_retain: None,
+                    read_count_threshold: None,
+                    table_name: None,
+                    value_column: None,
+                },
+            );
+        }
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        store
+            .insert_precomputed_output(
+                PrecomputedOutput::new(2000, 3000, host_a.clone(), 1),
+                Box::new(SumAccumulator::with_sum(10.0)),
+            )
+            .unwrap();
+        store
+            .insert_precomputed_output(
+                PrecomputedOutput::new(2000, 3000, host_a.clone(), 2),
+                Box::new(SumAccumulator::with_sum(20.0)),
+            )
+            .unwrap();
+        let promql_schema = PromQLSchema::new()
+            .add_metric(
+                "metric_a".to_string(),
+                KeyByLabelNames::new(grouping_labels.clone()),
+            )
+            .add_metric(
+                "metric_b".to_string(),
+                KeyByLabelNames::new(grouping_labels),
+            );
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![
+                QueryConfig::new("sum(metric_a) by (host)".to_string())
+                    .add_aggregation(AggregationReference::new(1, None)),
+                QueryConfig::new("sum(metric_b) by (host)".to_string())
+                    .add_aggregation(AggregationReference::new(2, None)),
+            ],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1000,
+            QueryLanguage::promql,
+        );
+
+        let (_, qr) = engine
+            .handle_query_promql(
+                "sum(metric_a) by (host) + sum(metric_b) by (host)".to_string(),
+                3.0,
+            )
+            .expect("vector-vector binary-expr query should resolve");
+        assert_eq!(matrix_metric(qr), 30.0);
+    }
 }

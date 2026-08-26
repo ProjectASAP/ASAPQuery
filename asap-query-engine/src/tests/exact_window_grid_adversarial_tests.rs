@@ -509,7 +509,7 @@ mod tests {
     /// `create_engine_multi_timestamp_with_window`, mirroring
     /// `worker.rs::merge_panes_for_window`'s real output shape) -- each
     /// bucket is already a complete answer for its own window. The range
-    /// pipeline's per-step `scan_window` doesn't know that: it walks every
+    /// pipeline's per-step `sum_window` doesn't know that: it walks every
     /// grid position in `[current_time - window_size_ms, current_time)` and
     /// sums whatever it finds there, which is correct for genuinely disjoint
     /// Tumbling buckets but over-counts for Sliding, where every position in
@@ -632,7 +632,7 @@ mod tests {
     /// Step 4000: window [2000,4000) -> panes {2000,3000} -> 100+1000=1100
     ///
     /// Same root cause as the test above (#608): each grid position holds a
-    /// complete, already-merged window, and scan_window sums every position
+    /// complete, already-merged window, and sum_window sums every position
     /// in the lookback span instead of taking the single one at
     /// `current_time - window_size_ms`.
     #[tokio::test(flavor = "multi_thread")]
@@ -904,6 +904,67 @@ mod tests {
         assert!(
             elapsed < Duration::from_secs(5),
             "instant query with a DeltaSetAggregator keys span of [0, {base_ts}] (~1e11ms) \
+             took {elapsed:?} -- a per-grid-position enumeration substitute for the tolerant \
+             scan would be expected to blow well past this on a range this wide"
+        );
+    }
+
+    /// Range-query counterpart to
+    /// `instant_query_delta_set_keys_wide_range_from_zero_completes_quickly_and_correctly`.
+    /// `finish_range_context` widens the keys window using the same
+    /// `create_keys_query_params` `[0, end_timestamp]` span
+    /// `build_instant_range_context` does for instant, so this bug is
+    /// pre-existing in `execute_range_query_pipeline` -- not something #581
+    /// stage E.4 introduces, just never caught because no test exercised a
+    /// genuine range query against a DeltaSetAggregator keys span this wide
+    /// before. Confirmed empirically before writing this: an unfixed run
+    /// doesn't even complete within 30s (vs. the instant path's ~13.7s) --
+    /// bounded here at 5s, same bound as the instant counterpart.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_delta_set_keys_wide_range_from_zero_completes_quickly_and_correctly() {
+        let base_ts: u64 = 100_000_000_000; // 1e11 ms
+        let cms = CountMinSketchAccumulator::new(2, 3);
+        let mut keys = DeltaSetAggregatorAccumulator::new();
+        keys.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = make_dual_engine_at_timestamp(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
+            vec![],
+            vec!["host", "event"],
+            base_ts,
+            vec![(None, Box::new(cms) as Box<dyn AggregateCore>)],
+            vec![(None, Box::new(keys) as Box<dyn AggregateCore>)],
+            "count(event_frequency) by (host, event)",
+        );
+
+        let query = "count(event_frequency) by (host, event)";
+        let t = base_ts as f64 / 1000.0;
+
+        let call_start = Instant::now();
+        // Single-step range query (start == end - step, step = 1s) --
+        // exercises execute_range_query_pipeline's per-step keys merge
+        // exactly once, same shape as the instant case, through the range
+        // entry point instead.
+        let result = engine.handle_range_query_promql(query.to_string(), t, t + 1.0, 1.0);
+        let elapsed = call_start.elapsed();
+
+        let (_, qr) =
+            result.expect("range query failed to resolve real data near a huge timestamp");
+        let elements = matrix_values(qr);
+        assert!(
+            elements
+                .iter()
+                .any(|e| e.labels.labels.contains(&"host-a".to_string())),
+            "expected host-a's key to be resolved via the DeltaSetAggregator keys query \
+             spanning [0, {base_ts}], got {elements:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "range query with a DeltaSetAggregator keys span of [0, {base_ts}] (~1e11ms) \
              took {elapsed:?} -- a per-grid-position enumeration substitute for the tolerant \
              scan would be expected to blow well past this on a range this wide"
         );

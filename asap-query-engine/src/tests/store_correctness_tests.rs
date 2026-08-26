@@ -630,7 +630,7 @@ fn test_batch_exact_query_equivalent_to_sequential_calls(strategy: LockStrategy)
         .unwrap();
 
     // Windows include a miss (4_000, 5_000) between two hits, mirroring a real
-    // scan_windows_via_exact grid walk over a range with a gap.
+    // fetch_window_grid_via_exact_lookups grid walk over a range with a gap.
     let windows = [
         (1_000, 2_000),
         (2_000, 3_000),

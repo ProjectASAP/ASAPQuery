@@ -4,10 +4,7 @@
 //! dispatch, range-query handling, and query dispatch.
 
 use super::SimpleEngine;
-use super::{
-    QueryExecutionContext, QueryMetadata, QueryTimestamps, RangeQueryExecutionContext,
-    RangeQueryParams, StoreQueryParams,
-};
+use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps, RangeQueryExecutionContext};
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
 use asap_types::query_requirements::build_query_requirements_promql;
@@ -541,23 +538,6 @@ impl SimpleEngine {
         }
     }
 
-    /// Widens `query`'s window to `[start_ms - lookback, end_ms]`, where
-    /// `lookback` is the width `query` already had (`end_timestamp -
-    /// start_timestamp`) before this call. Re-anchors whatever window an
-    /// aggregation's instant fetch already computed so it slides across the
-    /// whole range, without needing to know *why* that window is that width
-    /// — e.g. it's what lets the same call widen a Tumbling `values_query`,
-    /// a Sliding-window instant fetch, or (per #583) a `SetAggregator`'s
-    /// `[end-window_size, end]` keys window or a `DeltaSetAggregator`'s
-    /// `[0, end]` one, identically. Returns the lookback so callers can
-    /// derive bucket-count/step metadata from it.
-    fn widen_query_window(query: &mut StoreQueryParams, start_ms: u64, end_ms: u64) -> u64 {
-        let lookback_ms = query.end_timestamp - query.start_timestamp;
-        query.start_timestamp = start_ms.saturating_sub(lookback_ms);
-        query.end_timestamp = end_ms;
-        lookback_ms
-    }
-
     /// Extends an instant `QueryExecutionContext` into a `RangeQueryExecutionContext`:
     /// computes the lookback window from the aggregation's tumbling window size,
     /// validates the range params, and widens the store plan to cover
@@ -634,7 +614,7 @@ impl SimpleEngine {
                 None => (None, None, None),
             };
         // A zero window_size_ms would make execute_range_query_pipeline's
-        // per-step scan_window (`while t < window_end { ...; t += step_increment }`)
+        // per-step sum_window (`while t < window_end { ...; t += step_increment }`)
         // loop forever, since t would never advance. The value side is
         // accidentally protected from this by validate_range_query_params's
         // `step.is_multiple_of(tumbling_window_ms)` check (only 0 is a
@@ -649,11 +629,11 @@ impl SimpleEngine {
                 store_plan: extended_store_plan,
                 ..base_context
             },
-            range_params: RangeQueryParams {
-                start: start_ms,
-                end: end_ms,
-                step: step_ms,
-            },
+            // validate_range_query_params (above) already guarantees
+            // step_ms > 0 and start_ms < end_ms, so this matches the old
+            // per-step loop's `current_time` sequence exactly: start_ms,
+            // start_ms+step_ms, ..., the last value <= end_ms.
+            output_timestamps: (start_ms..=end_ms).step_by(step_ms as usize).collect(),
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,
