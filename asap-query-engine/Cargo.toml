@@ -82,7 +82,6 @@ path = "src/bin/e2e_quickstart_resource_test.rs"
 
 [dev-dependencies]
 tempfile = "3.20.0"
-criterion = { version = "0.5", features = ["html_reports"] }
 
 [features]
 #default = ["lock_profiling", "extra_debugging"]
