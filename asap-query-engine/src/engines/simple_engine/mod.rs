@@ -1711,6 +1711,19 @@ impl SimpleEngine {
         // the step-major loop below revisits every group at every output
         // timestamp -- doing this per-step instead would repeat identical
         // work once per timestamp instead of once per group.
+        //
+        // Memory tradeoff vs. the old group-major shape (#581 stage E.2
+        // review): every group's value bucket_map is now held simultaneously
+        // for the whole step-major loop's duration, instead of one group's
+        // bucket_map at a time (built, used, dropped, next group). Keys-side
+        // PerStep bucket maps were already built eagerly for every group
+        // beforehand (see `groups` above), so this brings the value side in
+        // line with that, not a new pattern -- but for a range query over a
+        // very high-cardinality label set this is a real (if likely modest)
+        // increase in peak memory. Inherent to step-major: ranking a
+        // timestamp's candidates needs every group's bucket_map available at
+        // that timestamp, so they can't be built lazily one group at a time
+        // anymore.
         let groups: Vec<(GroupBucketMap, KeysSource)> = groups
             .into_iter()
             .map(|(timestamped_buckets, keys_source)| {
