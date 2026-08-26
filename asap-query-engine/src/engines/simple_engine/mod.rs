@@ -463,6 +463,105 @@ impl SimpleEngine {
         ))
     }
 
+    /// The bucket-map grid width for scanning an aggregation's stored
+    /// buckets: `slide_interval_ms`, not `window_size_ms`.
+    /// `precompute_engine/window_manager.rs` persists buckets on the
+    /// `slide_interval_ms` grid unconditionally (its `panes_for_window`
+    /// steps by `slide_interval_ms`, regardless of `WindowType`) — for
+    /// Tumbling aggregations the two are equal by construction, so this is
+    /// a no-op there, but for Sliding aggregations with
+    /// `slide_interval_ms < window_size_ms`, stepping by `window_size_ms`
+    /// walks straight past real buckets and silently drops them (#600).
+    /// Mirrors `WindowManager::new`'s `slide_interval_ms == 0` fallback so a
+    /// config that leaves the field unset is still treated as Tumbling.
+    fn bucket_step_ms(config: &asap_types::AggregationConfig) -> u64 {
+        if config.slide_interval_ms == 0 {
+            config.window_size_ms
+        } else {
+            config.slide_interval_ms
+        }
+    }
+
+    /// Non-exact store query: walks the aggregation's window grid
+    /// (`bucket_step_ms` apart, each window `window_size_ms` wide, per
+    /// `WindowManager::window_start_for`) and looks up every grid position
+    /// in `[start_timestamp, end_timestamp)` with an exact match, merging
+    /// the sparse per-window results. Used for range queries, key queries,
+    /// and instant queries over tumbling windows — everywhere
+    /// `is_exact_query` is false.
+    fn scan_windows_via_exact(
+        &self,
+        params: &StoreQueryParams,
+    ) -> Result<TimestampedBucketsMap, String> {
+        let sc = self.streaming_config.read().unwrap().clone();
+        let config = sc
+            .get_aggregation_config(params.aggregation_id)
+            .ok_or_else(|| {
+                format!(
+                    "Aggregation config not found for aggregation_id: {}",
+                    params.aggregation_id
+                )
+            })?;
+        // DeltaSetAggregator keys queries span [0, end_timestamp] --
+        // "all keys ever seen" (see create_keys_query_params) -- a nominal
+        // range the grid-walk below can't cover cheaply. The tolerant scan
+        // stays fast here regardless of nominal range width (it short-
+        // circuits per-epoch via time_bounds() and binary-searches within
+        // surviving epochs), so keep using it for this one case.
+        if config.aggregation_type == AggregationType::DeltaSetAggregator {
+            return self
+                .store
+                .query_precomputed_output(
+                    &params.metric,
+                    params.aggregation_id,
+                    params.start_timestamp,
+                    params.end_timestamp,
+                )
+                .map_err(|e| {
+                    format!(
+                        "Error querying store for metric {}, agg {}, range [{}, {}]: {}",
+                        params.metric,
+                        params.aggregation_id,
+                        params.start_timestamp,
+                        params.end_timestamp,
+                        e
+                    )
+                });
+        }
+
+        let window_size_ms = config.window_size_ms;
+        let step_ms = Self::bucket_step_ms(config);
+
+        let mut merged: TimestampedBucketsMap = HashMap::new();
+        if window_size_ms == 0 || step_ms == 0 || params.start_timestamp > params.end_timestamp {
+            return Ok(merged);
+        }
+
+        let mut window_start = params.start_timestamp.div_ceil(step_ms) * step_ms;
+        while window_start + window_size_ms <= params.end_timestamp {
+            let window_end = window_start + window_size_ms;
+            let partial = self
+                .store
+                .query_precomputed_output_exact(
+                    &params.metric,
+                    params.aggregation_id,
+                    window_start,
+                    window_end,
+                )
+                .map_err(|e| {
+                    format!(
+                        "Error querying store for metric {}, agg {}, window [{}, {}]: {}",
+                        params.metric, params.aggregation_id, window_start, window_end, e
+                    )
+                })?;
+            for (key, buckets) in partial {
+                merged.entry(key).or_default().extend(buckets);
+            }
+            window_start += step_ms;
+        }
+        Ok(merged)
+    }
+
     /// Executes a single store query based on parameters
     fn execute_store_query(
         &self,
@@ -484,12 +583,24 @@ impl SimpleEngine {
                 "Sliding window query: Looking for exact window [{}, {}]",
                 params.start_timestamp, params.end_timestamp
             );
-            let res = self.store.query_precomputed_output_exact(
-                &params.metric,
-                params.aggregation_id,
-                params.start_timestamp,
-                params.end_timestamp,
-            );
+            let res = self
+                .store
+                .query_precomputed_output_exact(
+                    &params.metric,
+                    params.aggregation_id,
+                    params.start_timestamp,
+                    params.end_timestamp,
+                )
+                .map_err(|e| {
+                    format!(
+                        "Error querying store for metric {}, agg {}, range [{}, {}]: {}",
+                        params.metric,
+                        params.aggregation_id,
+                        params.start_timestamp,
+                        params.end_timestamp,
+                        e
+                    )
+                });
             if let Ok(ref outputs) = res {
                 let store_query_duration = store_query_start_time.elapsed();
                 debug!(
@@ -501,35 +612,22 @@ impl SimpleEngine {
             res
         } else {
             debug!(
-                "Tumbling window query: range [{}, {}]",
+                "Window-grid query: range [{}, {}]",
                 params.start_timestamp, params.end_timestamp
             );
-            let res = self.store.query_precomputed_output(
-                &params.metric,
-                params.aggregation_id,
-                params.start_timestamp,
-                params.end_timestamp,
-            );
-            if res.is_ok() {
+            let res = self.scan_windows_via_exact(params);
+            if let Ok(ref outputs) = res {
                 let store_query_duration = store_query_start_time.elapsed();
                 debug!(
-                    "Tumbling window range query took: {:.2}ms",
-                    store_query_duration.as_secs_f64() * 1000.0
+                    "Window-grid query took: {:.2}ms, found {} unique keys",
+                    store_query_duration.as_secs_f64() * 1000.0,
+                    outputs.len()
                 );
             }
             res
         };
 
-        result.map_err(|e| {
-            format!(
-                "Error querying store for metric {}, agg {}, range [{}, {}]: {}",
-                params.metric,
-                params.aggregation_id,
-                params.start_timestamp,
-                params.end_timestamp,
-                e
-            )
-        })
+        result
     }
 
     /// Executes the full store query plan and returns merged results

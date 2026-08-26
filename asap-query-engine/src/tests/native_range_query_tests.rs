@@ -346,7 +346,11 @@ mod tests {
 
         for (agg_id, bucket_span_ms, data) in [
             (1u64, value_window_ms, value_data),
-            (2u64, key_slide_interval_ms, keys_data),
+            // Keys buckets are window_size_ms wide, same as values -- real
+            // Sliding data (any aggregation type) reaches the store already
+            // pre-merged by worker.rs::merge_panes_for_window, one entry per
+            // window_size_ms-wide window on the slide_interval_ms grid.
+            (2u64, key_window_size_ms, keys_data),
         ] {
             for (timestamp, label_values_opt, acc) in data {
                 let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
@@ -383,10 +387,34 @@ mod tests {
         // #600: the keys-side scan_window must step by the KEY aggregation's
         // own slide_interval_ms, not its window_size_ms. Key aggregation:
         // window_size_ms=2000, slide_interval_ms=1000 (Sliding) -- real
-        // buckets land on the 1000ms grid (start=1000), which isn't on the
+        // buckets land on the 1000ms grid (start=3000), which isn't on the
         // 2000ms window_size_ms grid ({0, 2000, 4000, ...}) at all. A scan
-        // that steps by window_size_ms never visits t=1000 and silently
+        // that steps by window_size_ms never visits t=3000 and silently
         // drops host-a's key.
+        //
+        // Where the numbers come from:
+        // - key_window_size_ms=2000, key_slide_interval_ms=1000 are the
+        //   scenario's fixed inputs (the Sliding shape #600 is about).
+        // - The bucket must be genuinely window_size_ms wide (2000) -- real
+        //   Sliding data reaches the store already pre-merged by
+        //   worker.rs::merge_panes_for_window, one window_size_ms-wide entry
+        //   per window, never a raw slide-width pane -- while its *start*
+        //   must be off the window_size_ms grid ({0,2000,4000,...}) but on
+        //   the slide_interval_ms grid ({0,1000,2000,...}). The smallest
+        //   such start is 1000, but 3000 is used instead because a bucket
+        //   starting at 1000 with width 2000 ends at 3000, which also works
+        //   -- 3000 was simply picked without checking whether 1000 (with a
+        //   smaller timestamp/query shift) would have worked equally well.
+        // - keys_data/value_data timestamp=5000 makes the factory (which
+        //   computes each bucket as [timestamp - width, timestamp)) place
+        //   the keys bucket at exactly [3000,5000).
+        // - The query (5.0s-5.5s, step=1.0s) produces one output step at
+        //   t=5000, whose keys lookback window is
+        //   [5000 - key_window_size_ms, 5000) = [3000,5000) -- lining up
+        //   exactly with the inserted bucket.
+        // - value_data is also placed at timestamp=5000 (Tumbling, 1000ms
+        //   wide -> bucket [4000,5000)) purely so the CountMinSketch value
+        //   side resolves at the same t=5000 step; it's unrelated to #600.
         let mut keys_add = SetAggregatorAccumulator::new();
         keys_add.add_key(KeyByLabelValues {
             labels: vec!["host-a".to_string(), "evt-1".to_string()],
@@ -399,13 +427,15 @@ mod tests {
             vec![],
             vec!["host", "event"],
             vec![(
-                2000,
+                5000,
                 None,
                 Box::new(CountMinSketchAccumulator::new(2, 3)) as Box<dyn AggregateCore>,
             )],
-            // Keys bucket spans [1000, 2000) -- on the slide_interval_ms=1000
-            // grid, but not the window_size_ms=2000 grid.
-            vec![(2000, None, Box::new(keys_add) as Box<dyn AggregateCore>)],
+            // Keys bucket spans [3000, 5000) -- window_size_ms=2000 wide (a
+            // real pre-merged window, matching worker.rs's output shape),
+            // starting at 3000: on the slide_interval_ms=1000 grid, but not
+            // on the window_size_ms=2000 grid ({0, 2000, 4000, ...}).
+            vec![(5000, None, Box::new(keys_add) as Box<dyn AggregateCore>)],
             "count(event_frequency) by (host, event)",
             1000, // value_window_ms (Tumbling, unaffected by #600)
             2000, // key_window_size_ms
@@ -413,13 +443,13 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 2.0, 2.5, 1.0);
+        let result = engine.handle_range_query_promql(query.to_string(), 5.0, 5.5, 1.0);
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
         assert!(
-            key_has_sample_at(&elements, "host-a", 2000),
-            "BUG #600: host-a's keys delta bucket (start=1000, on the \
+            key_has_sample_at(&elements, "host-a", 5000),
+            "BUG #600: host-a's keys delta bucket (start=3000, on the \
              slide_interval_ms=1000 grid but not the window_size_ms=2000 \
              grid) was not found -- the keys-side scan_window is stepping \
              by window_size_ms instead of slide_interval_ms"
@@ -602,6 +632,7 @@ mod tests {
             data,
             query,
             1_000, // window_size_ms, matches the fixed 1000ms bucket width
+            1_000, // slide_interval_ms
             WindowType::Sliding,
         );
 
@@ -647,6 +678,7 @@ mod tests {
             data,
             query,
             1_000,
+            1_000, // slide_interval_ms
             WindowType::Sliding,
         );
 
@@ -682,6 +714,7 @@ mod tests {
             data,
             query,
             1_000,
+            1_000, // slide_interval_ms
             WindowType::Sliding,
         );
 
@@ -727,6 +760,7 @@ mod tests {
             data,
             query,
             2000, // window_size_ms
+            1000, // slide_interval_ms
             WindowType::Sliding,
         );
 

@@ -21,6 +21,13 @@ use std::sync::Arc;
 /// Data to insert into a store: (label_values, accumulator)
 pub type AccumulatorData = Vec<(Option<Vec<String>>, Box<dyn AggregateCore>)>;
 
+/// Window size (ms) for the fixed-window (Tumbling-only) engine builders in
+/// this file. Not used by `create_engine_multi_timestamp_with_window`, which
+/// takes its own `window_size_ms`/`slide_interval_ms` -- Sliding needs those
+/// independently configurable, but every Tumbling-only builder here always
+/// wants slide == window_size == this one value.
+const TEST_TUMBLING_WINDOW_SIZE_MS: u64 = 1000;
+
 /// Creates a SimpleEngine with a single aggregation populated with given data.
 ///
 /// # Arguments
@@ -79,8 +86,8 @@ pub fn create_engine_single_pop_with_aggregated(
         aggregated_labels: KeyByLabelNames::new(aggregated_label_strings),
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
-        window_size_ms: 1000,
-        slide_interval_ms: 1000,
+        window_size_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
+        slide_interval_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
         window_type: WindowType::Tumbling,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -105,7 +112,8 @@ pub fn create_engine_single_pop_with_aggregated(
     let timestamp = 1_000_000_u64;
     for (label_values_opt, acc) in data {
         let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-        let output = PrecomputedOutput::new(timestamp, timestamp, key, 1);
+        let output =
+            PrecomputedOutput::new(timestamp - TEST_TUMBLING_WINDOW_SIZE_MS, timestamp, key, 1);
         store.insert_precomputed_output(output, acc).unwrap();
     }
 
@@ -127,7 +135,7 @@ pub fn create_engine_single_pop_with_aggregated(
         // None,
         inference_config,
         streaming_config,
-        1000,
+        TEST_TUMBLING_WINDOW_SIZE_MS,
         QueryLanguage::promql,
     )
 }
@@ -176,8 +184,8 @@ pub fn create_engine_dual_input(
         aggregated_labels: KeyByLabelNames::empty(),
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
-        window_size_ms: 1000,
-        slide_interval_ms: 1000,
+        window_size_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
+        slide_interval_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
         window_type: WindowType::Tumbling,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -199,8 +207,8 @@ pub fn create_engine_dual_input(
         aggregated_labels: KeyByLabelNames::new(aggregated_label_strings),
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
-        window_size_ms: 1000,
-        slide_interval_ms: 1000,
+        window_size_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
+        slide_interval_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
         window_type: WindowType::Tumbling,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -225,14 +233,16 @@ pub fn create_engine_dual_input(
     let timestamp = 1_000_000_u64;
     for (label_values_opt, acc) in value_data {
         let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-        let output = PrecomputedOutput::new(timestamp, timestamp, key, 1);
+        let output =
+            PrecomputedOutput::new(timestamp - TEST_TUMBLING_WINDOW_SIZE_MS, timestamp, key, 1);
         store.insert_precomputed_output(output, acc).unwrap();
     }
 
     // Insert keys data
     for (label_values_opt, acc) in keys_data {
         let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-        let output = PrecomputedOutput::new(timestamp, timestamp, key, 2);
+        let output =
+            PrecomputedOutput::new(timestamp - TEST_TUMBLING_WINDOW_SIZE_MS, timestamp, key, 2);
         store.insert_precomputed_output(output, acc).unwrap();
     }
 
@@ -255,7 +265,7 @@ pub fn create_engine_dual_input(
         // None,
         inference_config,
         streaming_config,
-        1000,
+        TEST_TUMBLING_WINDOW_SIZE_MS,
         QueryLanguage::promql,
     )
 }
@@ -292,8 +302,8 @@ pub fn create_engine_two_metrics(
         aggregated_labels: KeyByLabelNames::empty(),
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
-        window_size_ms: 1000,
-        slide_interval_ms: 1000,
+        window_size_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
+        slide_interval_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
         window_type: WindowType::Tumbling,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -314,8 +324,8 @@ pub fn create_engine_two_metrics(
         aggregated_labels: KeyByLabelNames::empty(),
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
-        window_size_ms: 1000,
-        slide_interval_ms: 1000,
+        window_size_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
+        slide_interval_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
         window_type: WindowType::Tumbling,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -339,12 +349,14 @@ pub fn create_engine_two_metrics(
     let timestamp = 1_000_000_u64;
     for (label_values_opt, acc) in data_a {
         let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-        let output = PrecomputedOutput::new(timestamp, timestamp, key, 1);
+        let output =
+            PrecomputedOutput::new(timestamp - TEST_TUMBLING_WINDOW_SIZE_MS, timestamp, key, 1);
         store.insert_precomputed_output(output, acc).unwrap();
     }
     for (label_values_opt, acc) in data_b {
         let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-        let output = PrecomputedOutput::new(timestamp, timestamp, key, 2);
+        let output =
+            PrecomputedOutput::new(timestamp - TEST_TUMBLING_WINDOW_SIZE_MS, timestamp, key, 2);
         store.insert_precomputed_output(output, acc).unwrap();
     }
 
@@ -368,7 +380,7 @@ pub fn create_engine_two_metrics(
         store,
         inference_config,
         streaming_config,
-        1000,
+        TEST_TUMBLING_WINDOW_SIZE_MS,
         QueryLanguage::promql,
     )
 }
@@ -417,8 +429,8 @@ pub fn create_engine_three_metrics(
                 aggregated_labels: KeyByLabelNames::empty(),
                 rollup_labels: KeyByLabelNames::empty(),
                 original_yaml: String::new(),
-                window_size_ms: 1000,
-                slide_interval_ms: 1000,
+                window_size_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
+                slide_interval_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
                 window_type: WindowType::Tumbling,
                 spatial_filter: String::new(),
                 spatial_filter_normalized: String::new(),
@@ -444,7 +456,12 @@ pub fn create_engine_three_metrics(
     for (agg_id, data) in [(1u64, data_a), (2u64, data_b), (3u64, data_c)] {
         for (label_values_opt, acc) in data {
             let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-            let output = PrecomputedOutput::new(timestamp, timestamp, key, agg_id);
+            let output = PrecomputedOutput::new(
+                timestamp - TEST_TUMBLING_WINDOW_SIZE_MS,
+                timestamp,
+                key,
+                agg_id,
+            );
             store.insert_precomputed_output(output, acc).unwrap();
         }
     }
@@ -471,7 +488,7 @@ pub fn create_engine_three_metrics(
         store,
         inference_config,
         streaming_config,
-        1000,
+        TEST_TUMBLING_WINDOW_SIZE_MS,
         QueryLanguage::promql,
     )
 }
@@ -498,8 +515,8 @@ pub fn create_engine_multi_timestamp(
         aggregated_labels: KeyByLabelNames::empty(),
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
-        window_size_ms: 1000,
-        slide_interval_ms: 1000,
+        window_size_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
+        slide_interval_ms: TEST_TUMBLING_WINDOW_SIZE_MS,
         window_type: WindowType::Tumbling,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -522,7 +539,8 @@ pub fn create_engine_multi_timestamp(
 
     for (timestamp, label_values_opt, acc) in data {
         let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-        let output = PrecomputedOutput::new(timestamp - 1000, timestamp, key, 1);
+        let output =
+            PrecomputedOutput::new(timestamp - TEST_TUMBLING_WINDOW_SIZE_MS, timestamp, key, 1);
         store.insert_precomputed_output(output, acc).unwrap();
     }
 
@@ -545,7 +563,7 @@ pub fn create_engine_multi_timestamp(
         // None,
         inference_config,
         streaming_config,
-        1000,
+        TEST_TUMBLING_WINDOW_SIZE_MS,
         QueryLanguage::promql,
     )
 }
@@ -563,6 +581,7 @@ pub fn create_engine_multi_timestamp_with_window(
     data: Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>,
     promql_query: &str,
     window_size_ms: u64,
+    slide_interval_ms: u64,
     window_type: WindowType,
 ) -> SimpleEngine {
     let grouping_label_strings: Vec<String> =
@@ -579,7 +598,7 @@ pub fn create_engine_multi_timestamp_with_window(
         rollup_labels: KeyByLabelNames::empty(),
         original_yaml: String::new(),
         window_size_ms,
-        slide_interval_ms: 1000,
+        slide_interval_ms,
         window_type,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
@@ -600,10 +619,62 @@ pub fn create_engine_multi_timestamp_with_window(
         CleanupPolicy::NoCleanup,
     ));
 
+    // `data` entries are panes (width = slide_interval_ms, keyed by their end
+    // timestamp), not pre-merged windows. For Tumbling (window_size == slide)
+    // each pane already IS a full window. For Sliding (window_size > slide) a
+    // window is `window_size_ms / slide_interval_ms` consecutive panes merged
+    // together -- mirroring `worker.rs::merge_panes_for_window`, which is how
+    // real Sliding-window data reaches the store (always pre-merged; the
+    // store never holds raw sub-window panes). Windows missing a pane are
+    // skipped (sparse), not padded.
+    let slide_ms = slide_interval_ms;
+    let num_panes = window_size_ms / slide_ms;
+
+    let mut per_key: HashMap<Option<Vec<String>>, Vec<(u64, Box<dyn AggregateCore>)>> =
+        HashMap::new();
     for (timestamp, label_values_opt, acc) in data {
+        per_key
+            .entry(label_values_opt)
+            .or_default()
+            .push((timestamp, acc));
+    }
+
+    for (label_values_opt, mut panes) in per_key {
         let key = label_values_opt.map(|labels| KeyByLabelValues { labels });
-        let output = PrecomputedOutput::new(timestamp - 1000, timestamp, key, 1);
-        store.insert_precomputed_output(output, acc).unwrap();
+        panes.sort_by_key(|(ts, _)| *ts);
+
+        if num_panes <= 1 {
+            for (ts, acc) in panes {
+                let output = PrecomputedOutput::new(ts - window_size_ms, ts, key.clone(), 1);
+                store.insert_precomputed_output(output, acc).unwrap();
+            }
+            continue;
+        }
+
+        let pane_map: HashMap<u64, &Box<dyn AggregateCore>> =
+            panes.iter().map(|(ts, acc)| (*ts, acc)).collect();
+        let (min_ts, max_ts) = (panes[0].0, panes[panes.len() - 1].0);
+
+        let mut window_start = min_ts.saturating_sub(window_size_ms);
+        while window_start + window_size_ms <= max_ts {
+            let pane_ends: Vec<u64> = (1..=num_panes)
+                .map(|i| window_start + i * slide_ms)
+                .collect();
+            if pane_ends.iter().all(|t| pane_map.contains_key(t)) {
+                let mut merged = pane_map[&pane_ends[0]].clone_boxed_core();
+                for t in &pane_ends[1..] {
+                    merged = merged.merge_with(pane_map[t].as_ref()).unwrap();
+                }
+                let output = PrecomputedOutput::new(
+                    window_start,
+                    window_start + window_size_ms,
+                    key.clone(),
+                    1,
+                );
+                store.insert_precomputed_output(output, merged).unwrap();
+            }
+            window_start += slide_ms;
+        }
     }
 
     let promql_schema = PromQLSchema::new().add_metric(
@@ -625,7 +696,7 @@ pub fn create_engine_multi_timestamp_with_window(
         // None,
         inference_config,
         streaming_config,
-        1000,
+        slide_interval_ms,
         QueryLanguage::promql,
     )
 }
