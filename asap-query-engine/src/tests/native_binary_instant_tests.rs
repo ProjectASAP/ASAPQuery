@@ -500,6 +500,7 @@ mod tests {
             data,
             leaf_query,
             1_000, // window_size_ms, matches the fixed 1000ms bucket width
+            1_000, // slide_interval_ms
             WindowType::Sliding,
         );
 

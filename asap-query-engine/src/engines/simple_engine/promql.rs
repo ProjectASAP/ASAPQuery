@@ -557,25 +557,6 @@ impl SimpleEngine {
         lookback_ms
     }
 
-    /// The bucket-map grid width for scanning an aggregation's stored
-    /// buckets in a range query: `slide_interval_ms`, not `window_size_ms`.
-    /// `precompute_engine/window_manager.rs` persists buckets on the
-    /// `slide_interval_ms` grid unconditionally (its `panes_for_window`
-    /// steps by `slide_interval_ms`, regardless of `WindowType`) — for
-    /// Tumbling aggregations the two are equal by construction, so this is
-    /// a no-op there, but for Sliding aggregations with
-    /// `slide_interval_ms < window_size_ms`, stepping by `window_size_ms`
-    /// walks straight past real buckets and silently drops them (#600).
-    /// Mirrors `WindowManager::new`'s `slide_interval_ms == 0` fallback so a
-    /// config that leaves the field unset is still treated as Tumbling.
-    fn bucket_step_ms(config: &asap_types::AggregationConfig) -> u64 {
-        if config.slide_interval_ms == 0 {
-            config.window_size_ms
-        } else {
-            config.slide_interval_ms
-        }
-    }
-
     /// Extends an instant `QueryExecutionContext` into a `RangeQueryExecutionContext`:
     /// computes the lookback window from the aggregation's tumbling window size,
     /// validates the range params, and widens the store plan to cover

@@ -3,6 +3,7 @@ pub mod clickhouse_forwarding_tests;
 pub mod datafusion;
 pub mod elastic_dsl_query_tests;
 pub mod elastic_forwarding_tests;
+pub mod exact_window_grid_adversarial_tests;
 pub mod native_binary_arithmetic_plan_tests;
 pub mod native_binary_instant_tests;
 pub mod native_pipeline_merge_tests;

@@ -51,7 +51,10 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            // window_size_ms=1_000 (< query's [5s] range) so do_merge reflects
+            // a realistic config: 5 native 1s buckets merged into one 5s result.
+            1_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -82,6 +85,7 @@ mod tests {
             data,
             query,
             5_000,
+            5_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -118,7 +122,10 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            // window_size_ms=1_000 (< query's [5s] range) so do_merge reflects
+            // a realistic config: 5 native 1s buckets merged into one 5s result.
+            1_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -155,7 +162,10 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            // window_size_ms=1_000 (< query's [5s] range) so do_merge reflects
+            // a realistic config: 5 native 1s buckets merged into one 5s result.
+            1_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -193,7 +203,10 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            // window_size_ms=1_000 (< query's [5s] range) so do_merge reflects
+            // a realistic config: 5 native 1s buckets merged into one 5s result.
+            1_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -227,6 +240,7 @@ mod tests {
             vec![],
             query,
             5_000,
+            5_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -255,6 +269,7 @@ mod tests {
             )],
             query,
             1_000,
+            1_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -279,6 +294,7 @@ mod tests {
             )],
             query,
             5_000,
+            5_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -327,7 +343,10 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            // window_size_ms=1_000 (< query's [5s] range) so do_merge reflects
+            // a realistic config: 5 native 1s buckets merged into one 5s result.
+            1_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -379,7 +398,10 @@ mod tests {
             vec!["host"],
             data,
             query,
-            5_000,
+            // window_size_ms=1_000 (< query's [5s] range) so do_merge reflects
+            // a realistic config: 5 native 1s buckets merged into one 5s result.
+            1_000,
+            1_000,
             WindowType::Tumbling,
         );
 
@@ -422,6 +444,7 @@ mod tests {
             )],
             query,
             1_000,
+            1_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -450,6 +473,7 @@ mod tests {
             )],
             query,
             5_000,
+            5_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -474,6 +498,7 @@ mod tests {
             vec![],
             query,
             5_000,
+            5_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -506,6 +531,7 @@ mod tests {
             vec![],
             query,
             5_000,
+            5_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -527,6 +553,7 @@ mod tests {
             vec![],
             query,
             5_000,
+            5_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -566,6 +593,7 @@ mod tests {
             data,
             query,
             1_000,
+            1_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 
@@ -596,6 +624,7 @@ mod tests {
             data,
             query,
             1_000,
+            1_000, // slide_interval_ms == window_size_ms for Tumbling
             WindowType::Tumbling,
         );
 

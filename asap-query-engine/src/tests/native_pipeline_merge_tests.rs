@@ -48,6 +48,7 @@ async fn sliding_single_bucket_returns_its_value() {
         data,
         query,
         SLIDING_WINDOW_MS,
+        SLIDING_WINDOW_MS,
         WindowType::Sliding,
     );
 
@@ -80,6 +81,7 @@ async fn sliding_two_buckets_for_same_key_are_merged_not_dropped() {
         vec!["host"],
         data,
         query,
+        SLIDING_WINDOW_MS,
         SLIDING_WINDOW_MS,
         WindowType::Sliding,
     );
@@ -123,6 +125,7 @@ async fn sliding_bucket_count_mismatch_still_returns_merged_result() {
         data,
         query,
         SLIDING_WINDOW_MS,
+        SLIDING_WINDOW_MS,
         WindowType::Sliding,
     );
 
@@ -161,6 +164,7 @@ async fn tumbling_multi_bucket_merge_unaffected_by_sliding_fix() {
         // window_size_ms < query range so do_merge=true. Equal (5s window,
         // 5s range) hits a separate, pre-existing panic — see #569, not this stage.
         1_000,
+        1_000, // slide_interval_ms == window_size_ms for Tumbling
         WindowType::Tumbling,
     );
 
