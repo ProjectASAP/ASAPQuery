@@ -1,0 +1,81 @@
+# Differential test config for ASAPQuery, run with:
+#
+#   go run ./cmd/promql-compliance-tester -config-file=config.yaml
+#
+# reference_target_config points at a real Prometheus instance and
+# test_target_config at ASAPQuery's PromQL query endpoint. Both are
+# placeholders below: no live instance is running yet. The sibling
+# remote-write seeder (promql-compliance/seeder/) is expected to push a fixed,
+# hand-authored dataset to both of these query_urls before this config is
+# actually run, so that reference/test results are directly comparable and
+# expected values are computable by hand for the regression cases below.
+reference_target_config:
+  # A real Prometheus, started with --web.enable-remote-write-receiver so the
+  # seeder can push the same fixed dataset here as to the test target.
+  query_url: 'http://localhost:9090'
+
+test_target_config:
+  # ASAPQuery's query endpoint (its own /api/v1/query and /api/v1/query_range
+  # implementation).
+  query_url: 'http://localhost:9091'
+
+query_time_parameters:
+  # Placeholder evaluation window. Once seeded data exists, this should be
+  # narrowed to cover exactly the timestamps the seeder wrote, so results are
+  # deterministic and independent of wall-clock time.
+  end_time: '2026-01-01T00:00:00Z'
+  range_in_seconds: 300
+  resolution_in_seconds: 15
+
+query_tweaks:
+  - note: >-
+      Sketch-backed aggregations (e.g. count-min sketch, HyperLogLog, quantile
+      sketches) are approximate by design, so results won't bit-for-bit match
+      real Prometheus. Allow a generous relative tolerance rather than exact
+      equality for all comparisons in this suite.
+    adjust_value_tolerance:
+      fraction: 0.02
+
+# Regression test cases seeded from the instant-vs-range divergence catalog in
+# issue #589 (and the two issues it was scoped out of, #583 and #584). Each of
+# these is a query *pattern* known to have previously produced different
+# results between ASAPQuery's instant-query and range-query pipelines, so they
+# are exactly the class of bug this harness's instant+range dual-comparison
+# (see comparer/comparer.go) exists to catch automatically instead of by hand.
+#
+# The concrete metric/label names below are placeholders to be replaced with
+# whatever names the remote-write seeder actually writes; the query *shapes*
+# are what matter and are preserved from the issues.
+test_cases:
+  # From #584 ("Range queries drop self-keyed accumulator expansion (top-k)
+  # for single-population metrics"): a topk() query grouped by nothing at the
+  # store level relies on the value accumulator's own get_keys() to expand
+  # into multiple output series. The instant path
+  # (collect_results_same_aggregation) does this; the range path's
+  # single-population branch historically did not, and returned empty instead
+  # of the top-k series over a range.
+  - query: 'topk(3, requests_total)'
+
+  # From #583 ("Range query key expansion uses one snapshot instead of
+  # per-step keys"): grouping by a label whose value set changes partway
+  # through the queried interval (e.g. an instance/job that starts or stops
+  # appearing). The range path historically fetched the key set once at the
+  # range's end and reused that single snapshot for every step, producing
+  # phantom or missing series relative to per-step ground truth.
+  - query: 'sum by (job) (up)'
+
+  # From #589 item 4 ("Sliding-window fetch strategy diverges between instant
+  # and range"): a sliding-window rate/counter query. Instant queries use the
+  # exact-match store call for Sliding aggregations; range queries force a
+  # wide fetch plus manual bucket/window reconstruction -- two independent
+  # implementations of "which buckets fall in this window" for the same
+  # aggregation type, which can silently disagree.
+  - query: 'rate(requests_total[5m])'
+
+  # From #589 item 4/5, compounded through an outer aggregation (closer to how
+  # these sliding-window bugs actually surfaced in practice, per #587): a
+  # windowed rate summed across series. This also exercises the
+  # WindowMerger.slide() vs. fresh initialize()+get_merged() divergence noted
+  # in #589 item 5, since the range path recomputes the merge from scratch at
+  # every step instead of sliding it incrementally.
+  - query: 'sum(rate(requests_total[5m]))'
