@@ -6,8 +6,10 @@
 pub mod comparison;
 pub mod config_builders;
 pub mod engine_factories;
+pub mod merge_fixtures;
 
 // Re-export commonly used items
 pub use comparison::*;
 pub use config_builders::*;
 pub use engine_factories::*;
+pub use merge_fixtures::*;
