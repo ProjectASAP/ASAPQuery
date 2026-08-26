@@ -576,12 +576,12 @@ impl SimpleEngine {
         let end_ms = Self::convert_query_time_to_data_time(end);
         let step_ms = (step * 1000.0) as u64;
 
-        let tumbling_window_ms = self
-            .streaming_config
-            .read()
-            .unwrap()
-            .get_aggregation_config(base_context.agg_info.aggregation_id_for_value)
-            .map(Self::bucket_step_ms)?;
+        let (tumbling_window_ms, window_type) = {
+            let sc = self.streaming_config.read().unwrap();
+            let config =
+                sc.get_aggregation_config(base_context.agg_info.aggregation_id_for_value)?;
+            (Self::bucket_step_ms(config), config.window_type)
+        };
 
         self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
             .map_err(|e| {
@@ -611,15 +611,14 @@ impl SimpleEngine {
             .keys_query
             .as_mut()
             .map(|keys_query| Self::widen_query_window(keys_query, start_ms, end_ms));
-        let keys_tumbling_window_ms = match keys_lookback_ms {
-            Some(_) => Some(
-                self.streaming_config
-                    .read()
-                    .unwrap()
-                    .get_aggregation_config(base_context.agg_info.aggregation_id_for_key)
-                    .map(Self::bucket_step_ms)?,
-            ),
-            None => None,
+        let (keys_tumbling_window_ms, keys_window_type) = match keys_lookback_ms {
+            Some(_) => {
+                let sc = self.streaming_config.read().unwrap();
+                let config =
+                    sc.get_aggregation_config(base_context.agg_info.aggregation_id_for_key)?;
+                (Some(Self::bucket_step_ms(config)), Some(config.window_type))
+            }
+            None => (None, None),
         };
         // A zero window_size_ms would make execute_range_query_pipeline's
         // per-step scan_window (`while t < window_end { ...; t += step_increment }`)
@@ -645,6 +644,8 @@ impl SimpleEngine {
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,
+            window_type,
+            keys_window_type,
             keys_lookback_ms,
             keys_tumbling_window_ms,
         })

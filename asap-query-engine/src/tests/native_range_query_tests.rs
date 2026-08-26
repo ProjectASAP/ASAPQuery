@@ -456,6 +456,98 @@ mod tests {
         );
     }
 
+    /// #608's keys-side counterpart: SetAggregator is a real Sliding-capable
+    /// keys aggregation (unlike DeltaSetAggregator, restricted to Tumbling
+    /// by #606), so the keys-side per-step composition has the same
+    /// double-count risk as the value side. Three keys buckets, each
+    /// window_size_ms(=2000)-wide and already fully merged (matching
+    /// worker.rs's real output shape), starting 1000ms (slide_interval_ms)
+    /// apart, each with a DISTINCT key so a leaked neighbor is directly
+    /// observable rather than masked by set-union idempotence:
+    ///   bucket [1000,3000) -> {host-a,evt-1}
+    ///   bucket [2000,4000) -> {host-a,evt-2}
+    ///   bucket [3000,5000) -> {host-a,evt-3}
+    /// Step 3000: lookback window [1000,3000) -> exactly bucket [1000,3000)
+    ///   -> only evt-1. A scan-and-sum over every grid position in
+    ///   [1000,3000) would also visit t=2000 and wrongly pull in evt-2 (a
+    ///   window that only starts becoming valid data at t=4000).
+    /// Step 4000: lookback window [2000,4000) -> exactly bucket [2000,4000)
+    ///   -> only evt-2 (evt-1 must have rolled off, evt-3 must not leak in).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_sliding_keys_no_double_count_across_steps() {
+        let mut keys_1 = SetAggregatorAccumulator::new();
+        keys_1.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let mut keys_2 = SetAggregatorAccumulator::new();
+        keys_2.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-2".to_string()],
+        });
+        let mut keys_3 = SetAggregatorAccumulator::new();
+        keys_3.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-3".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input_sliding_keys(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![
+                (
+                    3000,
+                    None,
+                    Box::new(CountMinSketchAccumulator::new(2, 3)) as Box<dyn AggregateCore>,
+                ),
+                (
+                    4000,
+                    None,
+                    Box::new(CountMinSketchAccumulator::new(2, 3)) as Box<dyn AggregateCore>,
+                ),
+            ],
+            vec![
+                (3000, None, Box::new(keys_1) as Box<dyn AggregateCore>),
+                (4000, None, Box::new(keys_2) as Box<dyn AggregateCore>),
+                (5000, None, Box::new(keys_3) as Box<dyn AggregateCore>),
+            ],
+            "count(event_frequency) by (host, event)",
+            1000, // value_window_ms (Tumbling, unaffected by #608)
+            2000, // key_window_size_ms
+            1000, // key_slide_interval_ms
+        );
+
+        let query = "count(event_frequency) by (host, event)";
+        let result = engine.handle_range_query_promql(query.to_string(), 3.0, 4.0, 1.0);
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+
+        assert!(
+            labels_have_sample_at(&elements, &["host-a", "evt-1"], 3000),
+            "step 3000 must include evt-1 (its own window)"
+        );
+        assert!(
+            !labels_have_sample_at(&elements, &["host-a", "evt-2"], 3000),
+            "#608: step 3000 must NOT include evt-2 -- that key only becomes valid \
+             at t=4000; a scan-and-sum over [1000,3000) wrongly visits evt-2's grid \
+             position too and leaks it in one step early"
+        );
+        assert!(
+            labels_have_sample_at(&elements, &["host-a", "evt-2"], 4000),
+            "step 4000 must include evt-2 (its own window)"
+        );
+        assert!(
+            !labels_have_sample_at(&elements, &["host-a", "evt-1"], 4000),
+            "step 4000 must NOT still include evt-1 -- it rolled off"
+        );
+        assert!(
+            !labels_have_sample_at(&elements, &["host-a", "evt-3"], 4000),
+            "#608: step 4000 must NOT include evt-3 -- that key only becomes valid \
+             at t=5000; a scan-and-sum over [2000,4000) wrongly visits evt-3's grid \
+             position too and leaks it in one step early"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn range_query_dual_population_returns_key_expansion() {
         // Same dual-population shape as native_binary_instant_tests::binary_expr_vector_vector_dual_population,
