@@ -130,6 +130,22 @@ impl Store for SimpleMapStore {
         }
     }
 
+    fn query_precomputed_output_exact_batch(
+        &self,
+        metric: &str,
+        aggregation_id: u64,
+        windows: &[crate::stores::TimestampRange],
+    ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+        match self {
+            SimpleMapStore::Global(store) => {
+                store.query_precomputed_output_exact_batch(metric, aggregation_id, windows)
+            }
+            SimpleMapStore::PerKey(store) => {
+                store.query_precomputed_output_exact_batch(metric, aggregation_id, windows)
+            }
+        }
+    }
+
     fn get_earliest_timestamp_per_aggregation_id(
         &self,
     ) -> Result<HashMap<u64, u64>, Box<dyn std::error::Error + Send + Sync>> {

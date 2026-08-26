@@ -43,6 +43,17 @@ impl Store for NoOpStore {
         );
     }
 
+    fn query_precomputed_output_exact_batch(
+        &self,
+        _metric: &str,
+        _aggregation_id: u64,
+        _windows: &[crate::stores::TimestampRange],
+    ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+        panic!(
+            "NoOpStore: query_precomputed_output_exact_batch should not be called in equivalence tests"
+        );
+    }
+
     fn insert_precomputed_output(
         &self,
         _output: crate::data_model::PrecomputedOutput,

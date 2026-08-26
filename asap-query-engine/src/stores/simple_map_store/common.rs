@@ -1,10 +1,12 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues};
-use std::collections::{HashMap, HashSet};
+pub use crate::stores::TimestampRange;
+use crate::stores::TimestampedBucketsMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
+use tracing::debug;
 
 pub type MetricID = u32;
 pub type EpochID = u64;
-pub type TimestampRange = (u64, u64);
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
 
 /// Sorts one key's buckets into chronological (ascending start) order.
@@ -417,4 +419,51 @@ impl SealedEpoch {
         windows.dedup();
         windows
     }
+}
+
+/// Resolves every window in `windows` against `current_epoch`/`sealed_epochs`, merging the
+/// results into one map. Shared by `SimpleMapStorePerKey` and `SimpleMapStoreGlobal`'s
+/// `query_precomputed_output_exact_batch` (#609) — the only difference between the two
+/// backends is how the outer per-aggregation lock is acquired and how `read_counts` is keyed,
+/// both handled by the caller. Returns `(results, matched_windows, total_entries)`;
+/// `matched_windows` is what the caller bumps read counts for.
+pub fn resolve_exact_windows(
+    current_epoch: &MutableEpoch,
+    sealed_epochs: &BTreeMap<EpochID, SealedEpoch>,
+    intern: &InternTable,
+    windows: &[TimestampRange],
+    metric: &str,
+    aggregation_id: u64,
+) -> (TimestampedBucketsMap, Vec<TimestampRange>, usize) {
+    let mut results: TimestampedBucketsMap = HashMap::new();
+    let mut matched_windows: Vec<TimestampRange> = Vec::new();
+    let mut total_entries = 0;
+
+    for &window in windows {
+        if window.0 > window.1 {
+            debug!(
+                "Invalid exact query range for metric {} agg_id {}: start {} > end {}",
+                metric, aggregation_id, window.0, window.1
+            );
+            continue;
+        }
+
+        let entries_opt = current_epoch.exact_query(window).or_else(|| {
+            sealed_epochs
+                .values()
+                .rev()
+                .find_map(|epoch| epoch.exact_query(window))
+        });
+
+        if let Some(entries) = entries_opt {
+            for (metric_id, agg) in entries {
+                let label = intern.resolve(metric_id).clone();
+                results.entry(label).or_default().push((window, agg));
+                total_entries += 1;
+            }
+            matched_windows.push(window);
+        }
+    }
+
+    (results, matched_windows, total_entries)
 }

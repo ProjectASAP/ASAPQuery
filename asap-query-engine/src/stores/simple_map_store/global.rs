@@ -2,8 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap, MutableEpoch, SealedEpoch,
-    TimestampRange,
+    resolve_exact_windows, sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap,
+    MutableEpoch, SealedEpoch, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -680,6 +680,96 @@ impl Store for SimpleMapStoreGlobal {
             "Exact timestamp query took: {:.2}ms (found: {})",
             query_duration.as_secs_f64() * 1000.0,
             !results.is_empty()
+        );
+
+        Ok(results)
+    }
+
+    /// Batched exact-window lookup (#609): acquires the process-wide lock once for the
+    /// whole `windows` slice instead of once per window. Otherwise identical semantics to
+    /// calling `query_precomputed_output_exact` once per window and merging the results
+    /// (a window with no exact match simply contributes nothing).
+    fn query_precomputed_output_exact_batch(
+        &self,
+        metric: &str,
+        aggregation_id: u64,
+        windows: &[TimestampRange],
+    ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+        if windows.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let query_start_time = Instant::now();
+        let store_key = aggregation_id;
+
+        // Measure lock acquisition time
+        #[cfg(feature = "lock_profiling")]
+        let lock_wait_start = Instant::now();
+
+        let mut data = self.lock.lock().unwrap();
+
+        #[cfg(feature = "lock_profiling")]
+        {
+            let lock_wait_duration = lock_wait_start.elapsed();
+            info!(
+                "🔒 Batched exact query lock wait time: {:.2}ms (metric: {}, agg_id: {}, windows: {})",
+                lock_wait_duration.as_secs_f64() * 1000.0,
+                metric,
+                aggregation_id,
+                windows.len()
+            );
+        }
+
+        #[cfg(feature = "lock_profiling")]
+        let lock_hold_start = Instant::now();
+
+        let per_key = match data.stores.get(&store_key) {
+            Some(pk) => pk,
+            None => {
+                debug!(
+                    "Metric {} not found in store for batched exact query",
+                    metric
+                );
+                return Ok(HashMap::new());
+            }
+        };
+
+        let (results, found_windows, total_entries) = resolve_exact_windows(
+            &per_key.current_epoch,
+            &per_key.sealed_epochs,
+            &per_key.intern,
+            windows,
+            metric,
+            aggregation_id,
+        );
+
+        // Update read counts (outer Mutex held — no inner Mutex needed)
+        if !found_windows.is_empty() {
+            let rc_map = data.read_counts.entry(store_key).or_default();
+            for window in &found_windows {
+                *rc_map.entry(*window).or_insert(0) += 1;
+            }
+        }
+
+        #[cfg(feature = "lock_profiling")]
+        {
+            let lock_hold_duration = lock_hold_start.elapsed();
+            info!(
+                "🔓 Batched exact query lock hold time: {:.2}ms (metric: {}, agg_id: {}, matched: {})",
+                lock_hold_duration.as_secs_f64() * 1000.0,
+                metric,
+                aggregation_id,
+                found_windows.len()
+            );
+        }
+
+        let query_duration = query_start_time.elapsed();
+        debug!(
+            "Batched exact timestamp query took: {:.2}ms ({} windows requested, {} matched, {} entries)",
+            query_duration.as_secs_f64() * 1000.0,
+            windows.len(),
+            found_windows.len(),
+            total_entries
         );
 
         Ok(results)
