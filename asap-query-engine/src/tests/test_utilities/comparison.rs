@@ -2,7 +2,7 @@
 //!
 //! Provides assertion helpers for deep equality checking of query execution contexts.
 
-use crate::data_model::{AggregationIdInfo, AggregationType};
+use crate::data_model::{AggregationIdInfo, AggregationType, WindowType};
 use crate::engines::simple_engine::{
     QueryExecutionContext, QueryMetadata, StoreQueryParams, StoreQueryPlan,
 };
@@ -27,6 +27,13 @@ pub fn assert_execution_context_equivalent(
     assert_eq!(
         context1.do_merge, context2.do_merge,
         "{}: do_merge mismatch",
+        test_name
+    );
+
+    // Compare value_window_type
+    assert_eq!(
+        context1.value_window_type, context2.value_window_type,
+        "{}: value_window_type mismatch",
         test_name
     );
 
@@ -120,12 +127,6 @@ pub fn assert_store_params_equivalent(
         "{}: End timestamp mismatch - PromQL={}, SQL={}",
         test_name, params1.end_timestamp, params2.end_timestamp
     );
-
-    assert_eq!(
-        params1.is_exact_query, params2.is_exact_query,
-        "{}: Query type mismatch - PromQL={}, SQL={}",
-        test_name, params1.is_exact_query, params2.is_exact_query
-    );
 }
 
 /// Assert that two KeyByLabelNames objects are equivalent
@@ -193,7 +194,6 @@ mod tests {
                     aggregation_id: 1,
                     start_timestamp: 1000,
                     end_timestamp: 2000,
-                    is_exact_query: false,
                 },
                 keys_query: None,
             },
@@ -203,6 +203,7 @@ mod tests {
                 aggregation_type_for_key: AggregationType::Sum,
                 aggregation_type_for_value: AggregationType::Sum,
             },
+            value_window_type: WindowType::Tumbling,
             do_merge: true, // OnlyTemporal queries merge
             spatial_filter: String::new(),
             query_time: 2_000_000, // query timestamp in milliseconds

@@ -15,6 +15,7 @@ pub mod sql_pattern_matching_tests;
 pub mod store_correctness_tests;
 pub mod structural_matching_tests;
 pub mod trait_design_tests;
+pub mod window_semantics_consistency_tests;
 
 #[cfg(test)]
 pub mod test_utilities;
