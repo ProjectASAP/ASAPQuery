@@ -1921,12 +1921,14 @@ impl SimpleEngine {
 
                 results.retain(|key, _| kept_timestamps_by_key.contains_key(key));
                 for elem in results.values_mut() {
+                    // `keep` is built only from timestamps that already
+                    // appear in this same element's `samples` (see the
+                    // `by_timestamp` loop above), and is non-empty for every
+                    // key that survives the `retain` just above -- so this
+                    // filter can never leave `elem.samples` empty.
                     let keep = &kept_timestamps_by_key[&elem.labels];
                     elem.samples.retain(|s| keep.contains(&s.timestamp));
                 }
-                // A group that made no timestamp's top-k has no samples left
-                // -- drop it entirely rather than emitting an empty series.
-                results.retain(|_, elem| !elem.samples.is_empty());
             }
         }
 
