@@ -383,7 +383,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn range_query_sliding_keys_bucket_found_on_slide_interval_grid() {
-        // #600: the keys-side scan_window must step by the KEY aggregation's
+        // #600: the keys-side sum_window must step by the KEY aggregation's
         // own slide_interval_ms, not its window_size_ms. Key aggregation:
         // window_size_ms=2000, slide_interval_ms=1000 (Sliding) -- real
         // buckets land on the 1000ms grid (start=3000), which isn't on the
@@ -450,7 +450,7 @@ mod tests {
             key_has_sample_at(&elements, "host-a", 5000),
             "BUG #600: host-a's keys delta bucket (start=3000, on the \
              slide_interval_ms=1000 grid but not the window_size_ms=2000 \
-             grid) was not found -- the keys-side scan_window is stepping \
+             grid) was not found -- the keys-side sum_window is stepping \
              by window_size_ms instead of slide_interval_ms"
         );
     }
@@ -828,7 +828,7 @@ mod tests {
         // window_size_ms=2000, but create_engine_multi_timestamp_with_window
         // fixes the bucket span at slide_interval_ms=1000, so the two
         // buckets below land at start=0 and start=1000 -- only one of which
-        // is on the window_size_ms=2000 grid ({0, 2000, ...}). A scan_window
+        // is on the window_size_ms=2000 grid ({0, 2000, ...}). A sum_window
         // that steps by window_size_ms instead of slide_interval_ms never
         // visits start=1000 and silently drops that bucket from the merge.
         let data = vec![
