@@ -19,6 +19,7 @@ mod tests {
     use crate::engines::query_result::{QueryResult, RangeVectorElement};
     use crate::engines::simple_engine::SimpleEngine;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::precompute_operators::CountMinSketchWithHeapAccumulator;
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
     use crate::AggregateCore;
@@ -285,5 +286,297 @@ mod tests {
             "BUG: arms grouped by different label sets must not join, even when their \
              values coincide, got {result:?}"
         );
+    }
+
+    /// Builds a SimpleEngine with one self-keyed topk-capable metric
+    /// (`metric_a`, `CountMinSketchWithHeap`, one ungrouped sketch per
+    /// bucket) and one plain grouped-sum metric (`metric_b`, `SumAccumulator`
+    /// per host), so a mixed `topk(k, metric_a) OP sum(metric_b) by (host)`
+    /// range query is constructible. Mirrors `build_range_topk_engine` in
+    /// `stage_e_instant_range_equivalence_tests.rs` for the topk side, and
+    /// `create_range_engine_two_metrics`'s per-host Sum buckets for the
+    /// plain side.
+    fn build_range_topk_plus_plain_engine(
+        topk_query: &str,
+        plain_query: &str,
+        topk_candidates: &[(&str, f64)],
+        plain_values: &[(&str, f64)],
+    ) -> SimpleEngine {
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::CountMinSketchWithHeap,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::empty(),
+                aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: WINDOW_MS,
+                slide_interval_ms: WINDOW_MS,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "metric_a".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        aggregation_configs.insert(
+            2u64,
+            AggregationConfig {
+                aggregation_id: 2,
+                aggregation_type: AggregationType::Sum,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                aggregated_labels: KeyByLabelNames::empty(),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: WINDOW_MS,
+                slide_interval_ms: WINDOW_MS,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "metric_b".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for (host, value) in topk_candidates {
+            sketch.inner.update(host, *value);
+        }
+        let topk_output = PrecomputedOutput::new(0, WINDOW_MS, None, 1);
+        store
+            .insert_precomputed_output(topk_output, Box::new(sketch))
+            .unwrap();
+
+        for (host, value) in plain_values {
+            let key = KeyByLabelValues {
+                labels: vec![host.to_string()],
+            };
+            let plain_output = PrecomputedOutput::new(0, WINDOW_MS, Some(key), 2);
+            store
+                .insert_precomputed_output(
+                    plain_output,
+                    Box::new(SumAccumulator::with_sum(*value)) as Box<dyn AggregateCore>,
+                )
+                .unwrap();
+        }
+
+        let promql_schema = PromQLSchema::new()
+            .add_metric(
+                "metric_a".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )
+            .add_metric(
+                "metric_b".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            );
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![
+                QueryConfig::new(topk_query.to_string())
+                    .add_aggregation(AggregationReference::new(1, None)),
+                QueryConfig::new(plain_query.to_string())
+                    .add_aggregation(AggregationReference::new(2, None)),
+            ],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            WINDOW_MS,
+            QueryLanguage::promql,
+        )
+    }
+
+    // Documents a PRE-EXISTING bug, unrelated to PR #629, NOT one of the 4
+    // review findings being addressed here (see
+    // .design_docs/pr-629-review-findings-handoff.md, Finding 1). Confirmed
+    // via `git log -L` that `build_promql_execution_context_tail` has
+    // unconditionally prepended `"__name__"` to a Topk arm's *label names*
+    // (promql.rs, the `if statistic_to_compute == Statistic::Topk` block)
+    // since commit 9ac794c ("simple engine split by language #284"), long
+    // before #629. Because a plain (non-topk) arm never gets that prepend,
+    // `handle_binary_expr_range_promql`'s `lhs_labels != rhs_labels` guard
+    // (label *names*, checked before any join) rejects EVERY
+    // `topk(...) OP plain_metric` binary expression outright, on both the
+    // range and instant paths identically -- the query never reaches the
+    // join code at all, let alone the `apply_range_topk` formatting-mutates
+    // `elem.labels` *values* bug Finding 1 actually describes. This is
+    // asserted here only so the (surprising) current behavior is pinned;
+    // fixing it is out of scope for PR #629's review comments -- tracked as
+    // its own issue, #631, alongside the topk+topk repro below.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_vector_vector_topk_lhs_plus_plain_rhs_returns_none() {
+        let query = "topk(2, metric_a) + sum(metric_b) by (host)";
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 1000.0), ("host-b", 2000.0), ("host-c", 3000.0)],
+        );
+
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        assert!(
+            result.is_none(),
+            "pre-existing __name__ label-name mismatch (predates #629) should reject this \
+             query outright, got {result:?}"
+        );
+    }
+
+    /// Builds a SimpleEngine with two independent self-keyed topk-capable
+    /// metrics (`metric_a`, `metric_b`, both `CountMinSketchWithHeap`, one
+    /// ungrouped sketch per bucket each), so a
+    /// `topk(k1, metric_a) OP topk(k2, metric_b)` range query is
+    /// constructible. Unlike the topk+plain mix
+    /// (`build_range_topk_plus_plain_engine`), both arms get `"__name__"`
+    /// prepended to their label *names* identically, so this shape actually
+    /// reaches `handle_binary_expr_range_promql`'s vector-vector join --
+    /// this is the shape PR #629 review Finding 1's `apply_range_topk`
+    /// formatting-before-join bug is reachable through.
+    fn build_range_two_topk_engine(
+        query_a: &str,
+        query_b: &str,
+        candidates_a: &[(&str, f64)],
+        candidates_b: &[(&str, f64)],
+    ) -> SimpleEngine {
+        let mut aggregation_configs = HashMap::new();
+        for (id, metric) in [(1u64, "metric_a"), (2u64, "metric_b")] {
+            aggregation_configs.insert(
+                id,
+                AggregationConfig {
+                    aggregation_id: id,
+                    aggregation_type: AggregationType::CountMinSketchWithHeap,
+                    aggregation_sub_type: String::new(),
+                    parameters: HashMap::new(),
+                    grouping_labels: KeyByLabelNames::empty(),
+                    aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                    rollup_labels: KeyByLabelNames::empty(),
+                    original_yaml: String::new(),
+                    window_size_ms: WINDOW_MS,
+                    slide_interval_ms: WINDOW_MS,
+                    window_type: WindowType::Tumbling,
+                    spatial_filter: String::new(),
+                    spatial_filter_normalized: String::new(),
+                    metric: metric.to_string(),
+                    num_aggregates_to_retain: None,
+                    read_count_threshold: None,
+                    table_name: None,
+                    value_column: None,
+                },
+            );
+        }
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        for (agg_id, candidates) in [(1u64, candidates_a), (2u64, candidates_b)] {
+            let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+            for (host, value) in candidates {
+                sketch.inner.update(host, *value);
+            }
+            let output = PrecomputedOutput::new(0, WINDOW_MS, None, agg_id);
+            store
+                .insert_precomputed_output(output, Box::new(sketch))
+                .unwrap();
+        }
+
+        let promql_schema = PromQLSchema::new()
+            .add_metric(
+                "metric_a".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )
+            .add_metric(
+                "metric_b".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            );
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![
+                QueryConfig::new(query_a.to_string())
+                    .add_aggregation(AggregationReference::new(1, None)),
+                QueryConfig::new(query_b.to_string())
+                    .add_aggregation(AggregationReference::new(2, None)),
+            ],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            WINDOW_MS,
+            QueryLanguage::promql,
+        )
+    }
+
+    // RED test for PR #629 review finding 1 (see
+    // .design_docs/pr-629-review-findings-handoff.md): `apply_range_topk`'s
+    // formatting step (`enable_topk_formatting=true`) prepends EACH arm's
+    // own metric name to `elem.labels` before the vector-vector join. Two
+    // *different* topk metrics joined by a shared grouping label ("host")
+    // pass the earlier label-*names* guard (both get `"__name__"`
+    // prepended identically), so this reaches the join -- but the join
+    // then compares `["metric_a", host]`-shaped values against
+    // `["metric_b", host]`-shaped values, which never match regardless of
+    // whether the host itself is common to both topk's surviving sets.
+    // Real PromQL vector matching ignores `__name__`/joins by the shared
+    // label ("host") alone, so this should succeed wherever both topks kept
+    // that host -- the premature per-arm metric-name prepend breaks that.
+    //
+    // Tracked in #631, not fixed as part of PR #629 -- ignored so this RED
+    // repro doesn't fail this PR's test suite. Real Prometheus semantics for
+    // this query shape haven't been confirmed yet either.
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore = "tracked in #631, not part of PR #629's scope"]
+    async fn test_range_vector_vector_topk_lhs_topk_rhs() {
+        // topk(2, metric_a): host-a=100, host-b=50 survive; host-c=10 dropped.
+        // topk(2, metric_b): host-b=200, host-c=300 survive; host-a=5 dropped.
+        // Only host-b survives both topks -> expected combined: host-b = 250.
+        let query = "topk(2, metric_a) + topk(2, metric_b)";
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+        );
+
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let (_, qr) = result.expect("Expected result for topk/topk range query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(
+            elements.len(),
+            1,
+            "Expected only host-b (present in both topks' surviving sets), got {elements:?}"
+        );
+        assert!(elements[0].labels.labels.contains(&"host-b".to_string()));
+        assert_eq!(elements[0].samples.len(), 1);
+        assert!((elements[0].samples[0].value - 250.0).abs() < 1e-10);
     }
 }
