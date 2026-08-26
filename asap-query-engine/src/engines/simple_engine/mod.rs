@@ -616,9 +616,9 @@ impl SimpleEngine {
                 ..base_context
             },
             output_timestamps: vec![query_time],
-            // No real "step" for a single instant point -- 1 is a
-            // placeholder. Only used for step_overlap_mode's debug-log
-            // string in execute_range_query_pipeline, never functionally.
+            // Placeholder: no real "step" for a single instant point. Only
+            // feeds a debug-log string today -- not type-enforced, recheck
+            // before using it for anything functional.
             buckets_per_step: 1,
             lookback_bucket_count,
             tumbling_window_ms,
@@ -1004,6 +1004,24 @@ impl SimpleEngine {
         Ok(results)
     }
 
+    /// Topk ranking comparator shared by `execute_query_pipeline`'s
+    /// post-wrapper re-sort and `execute_range_query_pipeline`'s per-step
+    /// sort: descending by value, ties broken by ascending label for
+    /// determinism (both call sites' inputs ultimately trace back to a
+    /// HashMap iteration order, which is randomized per-process -- #581
+    /// stage E.3/E.4 review).
+    fn cmp_topk_value_desc(
+        a_value: f64,
+        a_labels: &[String],
+        b_value: f64,
+        b_labels: &[String],
+    ) -> std::cmp::Ordering {
+        b_value
+            .partial_cmp(&a_value)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a_labels.cmp(b_labels))
+    }
+
     /// Executes the complete query pipeline: plan, execute, collect, and format.
     ///
     /// The two top-k flags are deliberately separate because the two engines
@@ -1067,10 +1085,7 @@ impl SimpleEngine {
         // range engine's own topk sort (#581 stage E.3).
         if context.metadata.statistic_to_compute == Statistic::Topk {
             results.sort_by(|a, b| {
-                b.value
-                    .partial_cmp(&a.value)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| a.labels.labels.cmp(&b.labels.labels))
+                Self::cmp_topk_value_desc(a.value, &a.labels.labels, b.value, &b.labels.labels)
             });
         }
 
@@ -1702,6 +1717,18 @@ impl SimpleEngine {
     /// fix stays intact (caught by
     /// `range_query_delta_set_aggregator_oscillating_add_remove_across_five_windows`
     /// when this was first written without the sort).
+    ///
+    /// `sort_by_key` only orders by timestamp, so two buckets sharing an
+    /// exact timestamp keep whatever relative order they arrive in --
+    /// that's NOT `bucket_map`'s HashMap order, though: `build_bucket_map`
+    /// preserves each `Vec<TimestampedBucket>` group's original order when
+    /// grouping by start, and that Vec was already chronologically sorted
+    /// once by the store itself (`sort_buckets_chronologically`, called in
+    /// `query_precomputed_output`/`query_precomputed_output_exact_batch`
+    /// before this function ever sees the data) -- so same-timestamp order
+    /// here is deterministic, just not decided by this function; it's
+    /// inherited from the store's own sort, same as it always was for
+    /// `sum_window` (#581 stage E.4 review).
     fn collect_bucket_map_entries_before(
         bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
         before: u64,
@@ -1870,20 +1897,22 @@ impl SimpleEngine {
         // unrepresentable is the same reasoning that motivated this enum
         // over two raw Option fields in the first place — just applied all
         // the way through instead of partway.
+        // Named alias purely to keep declarations under
+        // clippy::type_complexity -- used by both KeysSource::PerStep's own
+        // bucket_map field below and the step-major `groups` binding
+        // further down (#581 stage E.4 review: previously duplicated as the
+        // raw type at the PerStep site instead of using this alias).
+        type GroupBucketMap<'a> = HashMap<u64, Vec<&'a dyn AggregateCore>>;
+
         enum KeysSource<'a> {
             Fixed(Option<KeyByLabelValues>),
             PerStep {
-                bucket_map: HashMap<u64, Vec<&'a dyn AggregateCore>>,
+                bucket_map: GroupBucketMap<'a>,
                 lookback_ms: u64,
                 tumbling_window_ms: u64,
                 window_type: WindowType,
             },
         }
-
-        // Named alias purely to keep the step-major `groups` binding below
-        // under clippy::type_complexity -- same shape as KeysSource::PerStep's
-        // own bucket_map field above.
-        type GroupBucketMap<'a> = HashMap<u64, Vec<&'a dyn AggregateCore>>;
 
         // Resolve, for every value group, which groups exist at all (a
         // one-time operation — see design doc) and where their expansion
@@ -2048,6 +2077,24 @@ impl SimpleEngine {
                         let keys_window_buckets = if key_accumulator_type
                             == AggregationType::DeltaSetAggregator
                         {
+                            // #588/#606 force DeltaSetAggregator's own
+                            // config to Tumbling at planning time -- but
+                            // that's a planner convention, not a runtime
+                            // invariant this code can trust blindly.
+                            // AggregationConfig can be (and in this crate's
+                            // own tests routinely is) constructed directly,
+                            // bypassing the planner. A Sliding DeltaSetAgg
+                            // has no coherent "replay from the beginning"
+                            // semantics to begin with, so this asserts
+                            // rather than silently reinterpreting it (#581
+                            // stage E.4 review).
+                            assert_eq!(
+                                *keys_window_type,
+                                WindowType::Tumbling,
+                                "DeltaSetAggregator keys config must be Tumbling (#588/#606) -- \
+                                 the replay-from-the-beginning fast path has no correct meaning \
+                                 for Sliding"
+                            );
                             Self::collect_bucket_map_entries_before(keys_bucket_map, current_time)
                         } else {
                             let keys_window_start = current_time.saturating_sub(*keys_lookback_ms);
@@ -2149,11 +2196,8 @@ impl SimpleEngine {
             // and would otherwise keep a different group on every process
             // run when two groups tie at the k-th value.
             if let Some(k) = topk_k {
-                step_results.sort_by(|a, b| {
-                    b.1.partial_cmp(&a.1)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                        .then_with(|| a.0.labels.cmp(&b.0.labels))
-                });
+                step_results
+                    .sort_by(|a, b| Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels));
                 step_results.truncate(k);
             }
 
