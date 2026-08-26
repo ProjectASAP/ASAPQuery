@@ -576,11 +576,15 @@ impl SimpleEngine {
         let end_ms = Self::convert_query_time_to_data_time(end);
         let step_ms = (step * 1000.0) as u64;
 
-        let (tumbling_window_ms, window_type) = {
+        let (tumbling_window_ms, window_type, window_size_ms) = {
             let sc = self.streaming_config.read().unwrap();
             let config =
                 sc.get_aggregation_config(base_context.agg_info.aggregation_id_for_value)?;
-            (Self::bucket_step_ms(config), config.window_type)
+            (
+                Self::bucket_step_ms(config),
+                config.window_type,
+                config.window_size_ms,
+            )
         };
 
         self.validate_range_query_params(start_ms, end_ms, step_ms, tumbling_window_ms)
@@ -611,15 +615,20 @@ impl SimpleEngine {
             .keys_query
             .as_mut()
             .map(|keys_query| Self::widen_query_window(keys_query, start_ms, end_ms));
-        let (keys_tumbling_window_ms, keys_window_type) = match keys_lookback_ms {
-            Some(_) => {
-                let sc = self.streaming_config.read().unwrap();
-                let config =
-                    sc.get_aggregation_config(base_context.agg_info.aggregation_id_for_key)?;
-                (Some(Self::bucket_step_ms(config)), Some(config.window_type))
-            }
-            None => (None, None),
-        };
+        let (keys_tumbling_window_ms, keys_window_type, keys_window_size_ms) =
+            match keys_lookback_ms {
+                Some(_) => {
+                    let sc = self.streaming_config.read().unwrap();
+                    let config =
+                        sc.get_aggregation_config(base_context.agg_info.aggregation_id_for_key)?;
+                    (
+                        Some(Self::bucket_step_ms(config)),
+                        Some(config.window_type),
+                        Some(config.window_size_ms),
+                    )
+                }
+                None => (None, None, None),
+            };
         // A zero window_size_ms would make execute_range_query_pipeline's
         // per-step scan_window (`while t < window_end { ...; t += step_increment }`)
         // loop forever, since t would never advance. The value side is
@@ -645,7 +654,9 @@ impl SimpleEngine {
             lookback_bucket_count,
             tumbling_window_ms,
             window_type,
+            window_size_ms,
             keys_window_type,
+            keys_window_size_ms,
             keys_lookback_ms,
             keys_tumbling_window_ms,
         })
