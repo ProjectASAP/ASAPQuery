@@ -6,7 +6,7 @@
 use super::SimpleEngine;
 use super::{
     QueryExecutionContext, QueryMetadata, QueryTimestamps, RangeQueryExecutionContext,
-    RangeQueryParams, StoreQueryParams,
+    StoreQueryParams,
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
@@ -649,11 +649,11 @@ impl SimpleEngine {
                 store_plan: extended_store_plan,
                 ..base_context
             },
-            range_params: RangeQueryParams {
-                start: start_ms,
-                end: end_ms,
-                step: step_ms,
-            },
+            // validate_range_query_params (above) already guarantees
+            // step_ms > 0 and start_ms < end_ms, so this matches the old
+            // per-step loop's `current_time` sequence exactly: start_ms,
+            // start_ms+step_ms, ..., the last value <= end_ms.
+            output_timestamps: (start_ms..=end_ms).step_by(step_ms as usize).collect(),
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,

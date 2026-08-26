@@ -94,21 +94,18 @@ pub struct QueryExecutionContext {
     pub aggregated_labels: KeyByLabelNames,
 }
 
-/// Parameters for a range query
-#[derive(Debug, Clone)]
-pub struct RangeQueryParams {
-    pub start: u64, // start timestamp in ms
-    pub end: u64,   // end timestamp in ms
-    pub step: u64,  // step in ms
-}
-
 /// Extended execution context for range queries
 #[derive(Debug, Clone)]
 pub struct RangeQueryExecutionContext {
     /// Base context (metric, metadata, store_plan, etc.)
     pub base: QueryExecutionContext,
-    /// Range-specific parameters
-    pub range_params: RangeQueryParams,
+    /// Every timestamp the per-step loop below produces one output sample
+    /// for, computed upstream (start..=end stepped by step_ms). Stage E
+    /// (#581): this is the shape a future unified instant/range engine
+    /// takes directly -- instant becomes the one-element case of the same
+    /// list, rather than a start/end/step triple that only ever meant
+    /// something for range.
+    pub output_timestamps: Vec<u64>,
     /// Number of buckets per step (step / tumbling_window)
     pub buckets_per_step: usize,
     /// Number of buckets in lookback window
@@ -1552,9 +1549,6 @@ impl SimpleEngine {
         let key_accumulator_type = context.base.agg_info.aggregation_type_for_key;
 
         // Calculate step parameters
-        let step_ms = context.range_params.step;
-        let start_ms = context.range_params.start;
-        let end_ms = context.range_params.end;
         let buckets_per_step = context.buckets_per_step;
         let lookback_bucket_count = context.lookback_bucket_count;
         let tumbling_window_ms = context.tumbling_window_ms;
@@ -1588,11 +1582,11 @@ impl SimpleEngine {
             "hopping (slide > size)"
         };
         debug!(
-            "Range query params: start={}, end={}, step_ms={}, tumbling_window_ms={}, \
+            "Range query params: {} output timestamp(s) [{}..{}], tumbling_window_ms={}, \
              buckets_per_step (slide)={}, lookback_bucket_count (size)={}, mode={}",
-            start_ms,
-            end_ms,
-            step_ms,
+            context.output_timestamps.len(),
+            context.output_timestamps.first().copied().unwrap_or(0),
+            context.output_timestamps.last().copied().unwrap_or(0),
             tumbling_window_ms,
             buckets_per_step,
             lookback_bucket_count,
@@ -1722,8 +1716,7 @@ impl SimpleEngine {
             );
 
             // Iterate by OUTPUT timestamp, not by bucket index
-            let mut current_time = start_ms;
-            while current_time <= end_ms {
+            for &current_time in &context.output_timestamps {
                 // #583: dual-population groups resolve their expansion keys
                 // from the keys aggregation, per step — not a single
                 // snapshot reused for every step. If nothing resolves at
@@ -1752,7 +1745,6 @@ impl SimpleEngine {
                                 "No keys data in window at t={} — skipping this step for this group",
                                 current_time
                             );
-                            current_time += step_ms;
                             continue;
                         }
 
@@ -1762,7 +1754,6 @@ impl SimpleEngine {
                             Ok(merged_keys) => Some(merged_keys),
                             Err(e) => {
                                 warn!("Failed to merge keys at t={}: {}", current_time, e);
-                                current_time += step_ms;
                                 continue;
                             }
                         }
@@ -1788,7 +1779,6 @@ impl SimpleEngine {
                         "Skipping sample at {} - no data in window [{}, {})",
                         current_time, window_start, current_time
                     );
-                    current_time += step_ms;
                     continue;
                 }
 
@@ -1799,7 +1789,6 @@ impl SimpleEngine {
                     Ok(merged) => merged,
                     Err(e) => {
                         debug!("Failed to get merged result at t={}: {}", current_time, e);
-                        current_time += step_ms;
                         continue;
                     }
                 };
@@ -1834,8 +1823,6 @@ impl SimpleEngine {
                         .or_insert_with(|| RangeVectorElement::new(key))
                         .add_sample(current_time, value);
                 }
-
-                current_time += step_ms;
             }
         }
 
