@@ -3421,3 +3421,158 @@ mod sketch_query_tests {
     //     assert!(result.is_none());
     // }
 }
+
+/// Direct unit tests for `validate_range_query_params`'s three error
+/// branches plus its happy path (issue #590, "Boundary/validation tests").
+///
+/// This function is private and has no public wrapper, so it can only be
+/// called directly from a test module that is a descendant of this one in
+/// the module tree (Rust privacy is module-tree scoped) -- hence this module
+/// lives here rather than in `crate::tests`, alongside `range_query_tests`
+/// and `merge_accumulators_regression_tests_596` above, which do the same
+/// for their own private targets.
+///
+/// `crate::tests::range_query_validation_tests` covers the complementary
+/// end-to-end angle: proving through the public `handle_range_query_promql`
+/// entry point that each of these rejections is actually enforced in
+/// practice (that file can't assert the exact error *string*, since
+/// `finish_range_context` in `promql.rs` discards it -- `Result<(), String>`
+/// is folded into `Option` via `.ok()?` -- so the string-level assertions
+/// belong here instead).
+#[cfg(test)]
+mod validate_range_query_params_tests {
+    use crate::data_model::{CleanupPolicy, InferenceConfig, QueryLanguage, StreamingConfig};
+    use crate::engines::simple_engine::SimpleEngine;
+    use crate::stores::{Store, TimestampedBucketsMap};
+    use crate::AggregateCore;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    /// `validate_range_query_params` doesn't touch `self` or the store at
+    /// all -- it's a pure function of its four arguments -- so this store is
+    /// never actually called; it only exists because the method is `&self`.
+    struct NoOpStore;
+
+    impl Store for NoOpStore {
+        fn insert_precomputed_output(
+            &self,
+            _: crate::data_model::PrecomputedOutput,
+            _: Box<dyn AggregateCore>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            panic!("NoOpStore should not be called by validate_range_query_params tests");
+        }
+        fn insert_precomputed_output_batch(
+            &self,
+            _: Vec<(crate::data_model::PrecomputedOutput, Box<dyn AggregateCore>)>,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            panic!("NoOpStore should not be called by validate_range_query_params tests");
+        }
+        fn query_precomputed_output(
+            &self,
+            _: &str,
+            _: u64,
+            _: u64,
+            _: u64,
+        ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+            panic!("NoOpStore should not be called by validate_range_query_params tests");
+        }
+        fn query_precomputed_output_exact(
+            &self,
+            _: &str,
+            _: u64,
+            _: u64,
+            _: u64,
+        ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+            panic!("NoOpStore should not be called by validate_range_query_params tests");
+        }
+        fn query_precomputed_output_exact_batch(
+            &self,
+            _: &str,
+            _: u64,
+            _: &[crate::stores::TimestampRange],
+        ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+            panic!("NoOpStore should not be called by validate_range_query_params tests");
+        }
+        fn get_earliest_timestamp_per_aggregation_id(
+            &self,
+        ) -> Result<HashMap<u64, u64>, Box<dyn std::error::Error + Send + Sync>> {
+            Ok(HashMap::new())
+        }
+        fn close(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            Ok(())
+        }
+    }
+
+    fn test_engine() -> SimpleEngine {
+        let inference_config =
+            InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup);
+        let streaming_config = Arc::new(StreamingConfig::default());
+        SimpleEngine::new(
+            Arc::new(NoOpStore),
+            inference_config,
+            streaming_config,
+            15,
+            QueryLanguage::promql,
+        )
+    }
+
+    #[test]
+    fn accepts_valid_params() {
+        let engine = test_engine();
+        assert_eq!(
+            engine.validate_range_query_params(0, 1000, 1000, 1000),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn rejects_start_after_end() {
+        let engine = test_engine();
+        assert_eq!(
+            engine.validate_range_query_params(1000, 0, 1000, 1000),
+            Err("start must be before end".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_start_equal_to_end() {
+        // The boundary case specifically called out by #590: `start >= end`
+        // must reject `start == end` too, not just `start > end`.
+        let engine = test_engine();
+        assert_eq!(
+            engine.validate_range_query_params(1000, 1000, 1000, 1000),
+            Err("start must be before end".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_zero_step() {
+        let engine = test_engine();
+        assert_eq!(
+            engine.validate_range_query_params(0, 1000, 0, 1000),
+            Err("step must be positive".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_step_not_a_multiple_of_tumbling_window() {
+        let engine = test_engine();
+        assert_eq!(
+            engine.validate_range_query_params(0, 1000, 1500, 1000),
+            Err("step (1500 ms) must be a multiple of tumbling window size (1000 ms)".to_string())
+        );
+    }
+
+    #[test]
+    fn start_after_end_is_checked_before_step_checks() {
+        // Documents the actual branch order (start>=end first, then
+        // step==0, then step-multiple) so a future reordering that changes
+        // which error wins on a doubly-invalid call is a deliberate,
+        // reviewed choice rather than an accident.
+        let engine = test_engine();
+        assert_eq!(
+            engine.validate_range_query_params(1000, 0, 0, 1000),
+            Err("start must be before end".to_string())
+        );
+    }
+}
