@@ -990,15 +990,8 @@ impl SimpleEngine {
             &context.metric,
             enable_topk_formatting,
         );
-        if enable_topk_limiting {
-            if let Some(k) = context
-                .metadata
-                .query_kwargs
-                .get("k")
-                .and_then(|s| s.parse::<usize>().ok())
-            {
-                results.truncate(k);
-            }
+        if enable_topk_limiting && context.metadata.statistic_to_compute == Statistic::Topk {
+            results.truncate(Self::parse_topk_limit(&context.metadata.query_kwargs)?);
         }
 
         Ok(results)
@@ -1020,6 +1013,24 @@ impl SimpleEngine {
             .partial_cmp(&a_value)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| a_labels.cmp(b_labels))
+    }
+
+    /// Returns the required `k` parameter for a Topk query.
+    ///
+    /// PromQL context construction validates this before execution, but the
+    /// pipeline is also used directly in tests and by non-PromQL callers. Do
+    /// not silently turn malformed Topk metadata into an unbounded result.
+    fn parse_topk_limit(query_kwargs: &HashMap<String, String>) -> Result<usize, String> {
+        query_kwargs
+            .get("k")
+            .ok_or_else(|| "Topk query is missing required `k` parameter".to_string())?
+            .parse::<usize>()
+            .map_err(|_| "Topk query has an invalid `k` parameter".to_string())
+    }
+
+    /// Adds Prometheus's metric-name label value to a Topk output key.
+    fn prepend_metric_name(metric: &str, key: &mut KeyByLabelValues) {
+        key.labels.insert(0, metric.to_string());
     }
 
     /// Executes the complete query pipeline: plan, execute, collect, and format.
@@ -1120,9 +1131,7 @@ impl SimpleEngine {
                     .into_iter()
                     .map(|(key_opt, value)| {
                         let updated_key = key_opt.map(|mut key| {
-                            let mut new_labels = vec![metric.to_string()];
-                            new_labels.extend(key.labels);
-                            key.labels = new_labels;
+                            Self::prepend_metric_name(metric, &mut key);
                             key
                         });
                         (updated_key, value)
@@ -2024,12 +2033,7 @@ impl SimpleEngine {
         let topk_k: Option<usize> = if enable_topk_limiting
             && context.base.metadata.statistic_to_compute == Statistic::Topk
         {
-            context
-                .base
-                .metadata
-                .query_kwargs
-                .get("k")
-                .and_then(|s| s.parse::<usize>().ok())
+            Some(Self::parse_topk_limit(&context.base.metadata.query_kwargs)?)
         } else {
             None
         };
@@ -2216,13 +2220,33 @@ impl SimpleEngine {
         // groups/samples survive.
         if enable_topk_formatting && context.base.metadata.statistic_to_compute == Statistic::Topk {
             for elem in results.values_mut() {
-                let mut new_labels = vec![context.base.metric.clone()];
-                new_labels.extend(elem.labels.labels.clone());
-                elem.labels.labels = new_labels;
+                Self::prepend_metric_name(&context.base.metric, &mut elem.labels);
             }
         }
 
         Ok(results.into_values().collect())
+    }
+}
+
+#[cfg(test)]
+mod topk_metadata_tests {
+    use super::SimpleEngine;
+    use std::collections::HashMap;
+
+    #[test]
+    fn topk_limit_requires_a_parseable_k() {
+        assert_eq!(
+            SimpleEngine::parse_topk_limit(&HashMap::new()),
+            Err("Topk query is missing required `k` parameter".to_string())
+        );
+        assert_eq!(
+            SimpleEngine::parse_topk_limit(&HashMap::from([("k".to_string(), "nope".to_string())])),
+            Err("Topk query has an invalid `k` parameter".to_string())
+        );
+        assert_eq!(
+            SimpleEngine::parse_topk_limit(&HashMap::from([("k".to_string(), "3".to_string())])),
+            Ok(3)
+        );
     }
 }
 
