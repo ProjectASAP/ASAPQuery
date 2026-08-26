@@ -1632,6 +1632,11 @@ impl SimpleEngine {
             },
         }
 
+        // Named alias purely to keep the step-major `groups` binding below
+        // under clippy::type_complexity -- same shape as KeysSource::PerStep's
+        // own bucket_map field above.
+        type GroupBucketMap<'a> = HashMap<u64, Vec<&'a dyn AggregateCore>>;
+
         // Resolve, for every value group, which groups exist at all (a
         // one-time operation — see design doc) and where their expansion
         // keys come from. A group with keys data but no value data
@@ -1702,21 +1707,34 @@ impl SimpleEngine {
                 .collect(),
         };
 
-        // Process each value group independently
-        for (timestamped_buckets, keys_source) in groups {
-            let bucket_map = Self::build_bucket_map(timestamped_buckets);
+        // Precompute per-group setup (bucket_map, keys_source) once, before
+        // the step-major loop below revisits every group at every output
+        // timestamp -- doing this per-step instead would repeat identical
+        // work once per timestamp instead of once per group.
+        let groups: Vec<(GroupBucketMap, KeysSource)> = groups
+            .into_iter()
+            .map(|(timestamped_buckets, keys_source)| {
+                let bucket_map = Self::build_bucket_map(timestamped_buckets);
+                debug!(
+                    "Group with {} start-timestamps ({} keys start-timestamps)",
+                    bucket_map.len(),
+                    match &keys_source {
+                        KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
+                        KeysSource::Fixed(_) => 0,
+                    }
+                );
+                (bucket_map, keys_source)
+            })
+            .collect();
 
-            debug!(
-                "Group with {} start-timestamps ({} keys start-timestamps)",
-                bucket_map.len(),
-                match &keys_source {
-                    KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
-                    KeysSource::Fixed(_) => 0,
-                }
-            );
-
-            // Iterate by OUTPUT timestamp, not by bucket index
-            for &current_time in &context.output_timestamps {
+        // Step-major: for each output timestamp, visit every group, not the
+        // other way around. Required for topk correctness -- ranking a
+        // timestamp's candidates means seeing every group's value at that
+        // timestamp before truncating, which a group-major loop can't do
+        // (#581). One loop shape for topk and non-topk alike, rather than
+        // maintaining two.
+        for &current_time in &context.output_timestamps {
+            for (bucket_map, keys_source) in &groups {
                 // #583: dual-population groups resolve their expansion keys
                 // from the keys aggregation, per step — not a single
                 // snapshot reused for every step. If nothing resolves at
@@ -1724,7 +1742,7 @@ impl SimpleEngine {
                 // below (avoids wasted merge work on steps outside the
                 // key's lifetime). Fixed (single-population) groups have no
                 // separate keys accumulator to merge here at all.
-                let keys_precompute: Option<Box<dyn AggregateCore>> = match &keys_source {
+                let keys_precompute: Option<Box<dyn AggregateCore>> = match keys_source {
                     KeysSource::PerStep {
                         bucket_map: keys_bucket_map,
                         lookback_ms: keys_lookback_ms,
@@ -1766,7 +1784,7 @@ impl SimpleEngine {
                 let window_start = current_time.saturating_sub(lookback_ms);
 
                 let window_buckets = Self::window_buckets_for_step(
-                    &bucket_map,
+                    bucket_map,
                     window_start,
                     current_time,
                     tumbling_window_ms,
@@ -1793,7 +1811,7 @@ impl SimpleEngine {
                     }
                 };
 
-                let fallback_key = match &keys_source {
+                let fallback_key = match keys_source {
                     KeysSource::Fixed(fallback_key) => fallback_key.clone(),
                     KeysSource::PerStep { .. } => None,
                 };
