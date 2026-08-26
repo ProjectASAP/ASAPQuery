@@ -194,6 +194,13 @@ pub fn run_contract_suite(strategy: LockStrategy) {
     test_exact_query_correct_across_interleaved_inserts_and_queries(strategy);
     test_exact_query_correct_after_epoch_rotation(strategy);
 
+    // Batched exact-query correctness (#609)
+    test_batch_exact_query_empty_windows_returns_empty(strategy);
+    test_batch_exact_query_unknown_metric_returns_empty(strategy);
+    test_batch_exact_query_invalid_window_is_skipped_not_erroring(strategy);
+    test_batch_exact_query_equivalent_to_sequential_calls(strategy);
+    test_batch_exact_query_updates_read_counts_for_cleanup(strategy);
+
     test_batch_insert_full_range_query_returns_all(strategy);
     test_batch_insert_results_are_chronologically_ordered(strategy);
     test_range_query_returns_only_windows_within_range(strategy);
@@ -546,6 +553,169 @@ fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
             label(strategy)
         );
     }
+}
+
+// ── batched exact-query correctness (#609) ───────────────────────────────────
+//
+// `query_precomputed_output_exact_batch` must be observationally identical to
+// calling `query_precomputed_output_exact` once per window and merging the
+// results — the only difference is that it takes the shard lock once for the
+// whole slice instead of once per window.
+
+fn test_batch_exact_query_empty_windows_returns_empty(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+    let (out, acc) = sum_entry(1, 1_000, 2_000, 1.0);
+    store.insert_precomputed_output(out, acc).unwrap();
+
+    let result = store
+        .query_precomputed_output_exact_batch("cpu_usage", 1, &[])
+        .unwrap();
+    assert!(
+        result.is_empty(),
+        "[{}] an empty windows slice must return an empty map, even with data present",
+        label(strategy)
+    );
+}
+
+fn test_batch_exact_query_unknown_metric_returns_empty(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+    let result = store
+        .query_precomputed_output_exact_batch("cpu_usage", 1, &[(1_000, 2_000), (3_000, 4_000)])
+        .unwrap();
+    assert!(
+        result.is_empty(),
+        "[{}] batched exact query against an aggregation_id with no data must return empty",
+        label(strategy)
+    );
+}
+
+fn test_batch_exact_query_invalid_window_is_skipped_not_erroring(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+    let (out, acc) = sum_entry(1, 1_000, 2_000, 1.0);
+    store.insert_precomputed_output(out, acc).unwrap();
+
+    // First window is invalid (start > end); must be skipped, not fail the whole batch.
+    let result = store
+        .query_precomputed_output_exact_batch("cpu_usage", 1, &[(2_000, 1_000), (1_000, 2_000)])
+        .unwrap();
+    assert_eq!(
+        total_bucket_count(&result),
+        1,
+        "[{}] an invalid window in the batch must be skipped, not fail or drop valid windows",
+        label(strategy)
+    );
+}
+
+fn test_batch_exact_query_equivalent_to_sequential_calls(strategy: LockStrategy) {
+    let store = make_store_simple(strategy);
+    let a = key(&["a"]);
+    let b = key(&["b"]);
+    store
+        .insert_precomputed_output(
+            PrecomputedOutput::new(1_000, 2_000, Some(a.clone()), 1),
+            Box::new(SumAccumulator::with_sum(10.0)),
+        )
+        .unwrap();
+    store
+        .insert_precomputed_output(
+            PrecomputedOutput::new(2_000, 3_000, Some(b.clone()), 1),
+            Box::new(SumAccumulator::with_sum(20.0)),
+        )
+        .unwrap();
+    store
+        .insert_precomputed_output(
+            PrecomputedOutput::new(3_000, 4_000, Some(a.clone()), 1),
+            Box::new(SumAccumulator::with_sum(30.0)),
+        )
+        .unwrap();
+
+    // Windows include a miss (4_000, 5_000) between two hits, mirroring a real
+    // scan_windows_via_exact grid walk over a range with a gap.
+    let windows = [
+        (1_000, 2_000),
+        (2_000, 3_000),
+        (4_000, 5_000),
+        (3_000, 4_000),
+    ];
+
+    let batched = store
+        .query_precomputed_output_exact_batch("cpu_usage", 1, &windows)
+        .unwrap();
+
+    let mut sequential: TimestampedBucketsMap = HashMap::new();
+    for &(start, end) in &windows {
+        let partial = store
+            .query_precomputed_output_exact("cpu_usage", 1, start, end)
+            .unwrap();
+        for (k, buckets) in partial {
+            sequential.entry(k).or_default().extend(buckets);
+        }
+    }
+
+    assert_eq!(
+        timestamps_for_key(&batched, &a),
+        timestamps_for_key(&sequential, &a),
+        "[{}] batched result for key 'a' must match sequential per-window calls merged together",
+        label(strategy)
+    );
+    assert_eq!(
+        timestamps_for_key(&batched, &b),
+        timestamps_for_key(&sequential, &b),
+        "[{}] batched result for key 'b' must match sequential per-window calls merged together",
+        label(strategy)
+    );
+    assert_eq!(
+        total_bucket_count(&batched),
+        3,
+        "[{}] batched call must find exactly the 3 hits among the 4 requested windows",
+        label(strategy)
+    );
+}
+
+fn test_batch_exact_query_updates_read_counts_for_cleanup(strategy: LockStrategy) {
+    // read_count_threshold = 2: mirrors test_cleanup_read_based_evicts_after_threshold_reads,
+    // but drives the reads through the batch call instead of one-at-a-time, to pin that
+    // batching still updates read_counts per matched window (not e.g. once per batch call).
+    let store = make_store(
+        strategy,
+        CleanupPolicy::ReadBased,
+        &[(1, AggregationType::Sum, None, Some(2))],
+    );
+    let (out, acc) = sum_entry(1, 1_000, 2_000, 1.0);
+    store.insert_precomputed_output(out, acc).unwrap();
+
+    // Read 1 via the batch call — count becomes 1.
+    store
+        .query_precomputed_output_exact_batch("cpu_usage", 1, &[(1_000, 2_000)])
+        .unwrap();
+    let (o2, a2) = sum_entry(1, 3_000, 4_000, 2.0);
+    store.insert_precomputed_output(o2, a2).unwrap();
+
+    let still_there = store
+        .query_precomputed_output_exact("cpu_usage", 1, 1_000, 2_000)
+        .unwrap();
+    assert_eq!(
+        total_bucket_count(&still_there),
+        1,
+        "[{}] window must survive until read count reaches threshold",
+        label(strategy)
+    );
+
+    // Read 2 via the batch call — count becomes 2, evicted on the next insert.
+    store
+        .query_precomputed_output_exact_batch("cpu_usage", 1, &[(1_000, 2_000)])
+        .unwrap();
+    let (o3, a3) = sum_entry(1, 5_000, 6_000, 3.0);
+    store.insert_precomputed_output(o3, a3).unwrap();
+
+    let evicted = store
+        .query_precomputed_output_exact("cpu_usage", 1, 1_000, 2_000)
+        .unwrap();
+    assert!(
+        evicted.is_empty(),
+        "[{}] window must be evicted once batched reads bring its count to threshold",
+        label(strategy)
+    );
 }
 
 // ── batch insert correctness ──────────────────────────────────────────────────

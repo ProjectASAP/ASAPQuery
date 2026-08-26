@@ -707,7 +707,10 @@ impl Store for SimpleMapStoreGlobal {
         let per_key = match data.stores.get(&store_key) {
             Some(pk) => pk,
             None => {
-                debug!("Metric {} not found in store for batched exact query", metric);
+                debug!(
+                    "Metric {} not found in store for batched exact query",
+                    metric
+                );
                 return Ok(HashMap::new());
             }
         };

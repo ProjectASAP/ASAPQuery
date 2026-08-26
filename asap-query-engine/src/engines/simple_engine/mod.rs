@@ -554,34 +554,32 @@ impl SimpleEngine {
         let window_size_ms = config.window_size_ms;
         let step_ms = Self::bucket_step_ms(config);
 
-        let mut merged: TimestampedBucketsMap = HashMap::new();
         if window_size_ms == 0 || step_ms == 0 || params.start_timestamp > params.end_timestamp {
-            return Ok(merged);
+            return Ok(HashMap::new());
         }
 
+        let mut windows: Vec<crate::stores::TimestampRange> = Vec::new();
         let mut window_start = params.start_timestamp.div_ceil(step_ms) * step_ms;
         while window_start + window_size_ms <= params.end_timestamp {
-            let window_end = window_start + window_size_ms;
-            let partial = self
-                .store
-                .query_precomputed_output_exact(
-                    &params.metric,
-                    params.aggregation_id,
-                    window_start,
-                    window_end,
-                )
-                .map_err(|e| {
-                    format!(
-                        "Error querying store for metric {}, agg {}, window [{}, {}]: {}",
-                        params.metric, params.aggregation_id, window_start, window_end, e
-                    )
-                })?;
-            for (key, buckets) in partial {
-                merged.entry(key).or_default().extend(buckets);
-            }
+            windows.push((window_start, window_start + window_size_ms));
             window_start += step_ms;
         }
-        Ok(merged)
+
+        // #609: one batched store call for the whole grid instead of one
+        // query_precomputed_output_exact call per window.
+        self.store
+            .query_precomputed_output_exact_batch(&params.metric, params.aggregation_id, &windows)
+            .map_err(|e| {
+                format!(
+                    "Error querying store for metric {}, agg {}, {} windows in [{}, {}]: {}",
+                    params.metric,
+                    params.aggregation_id,
+                    windows.len(),
+                    params.start_timestamp,
+                    params.end_timestamp,
+                    e
+                )
+            })
     }
 
     /// Executes a single store query based on parameters
@@ -2707,6 +2705,14 @@ mod merge_accumulators_regression_tests_596 {
             _: u64,
             _: u64,
             _: u64,
+        ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+            panic!("NoOpStore should not be called by merge_accumulators tests");
+        }
+        fn query_precomputed_output_exact_batch(
+            &self,
+            _: &str,
+            _: u64,
+            _: &[crate::stores::TimestampRange],
         ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
             panic!("NoOpStore should not be called by merge_accumulators tests");
         }

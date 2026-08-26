@@ -777,7 +777,10 @@ impl Store for SimpleMapStorePerKey {
         let store_data_lock = match self.store.get(&store_key) {
             Some(lock) => lock,
             None => {
-                debug!("Metric {} not found in store for batched exact query", metric);
+                debug!(
+                    "Metric {} not found in store for batched exact query",
+                    metric
+                );
                 return Ok(HashMap::new());
             }
         };
