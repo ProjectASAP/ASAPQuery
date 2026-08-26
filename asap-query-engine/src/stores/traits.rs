@@ -2,8 +2,11 @@ use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// A (start_timestamp, end_timestamp) pair identifying one stored window.
+pub type TimestampRange = (u64, u64);
+
 /// A bucket with its timestamp range: ((start_timestamp, end_timestamp), aggregate)
-pub type TimestampedBucket = ((u64, u64), Arc<dyn AggregateCore>);
+pub type TimestampedBucket = (TimestampRange, Arc<dyn AggregateCore>);
 
 /// Map from key to timestamped buckets (sparse - only contains buckets that exist)
 pub type TimestampedBucketsMap = HashMap<Option<KeyByLabelValues>, Vec<TimestampedBucket>>;
@@ -48,6 +51,20 @@ pub trait Store: Send + Sync {
         aggregation_id: u64,
         exact_start: u64,
         exact_end: u64,
+    ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Batched variant of `query_precomputed_output_exact` (issue #609): resolves every
+    /// window in `windows` against the same (metric, aggregation_id) shard in one lock
+    /// acquisition instead of one per window. Results across all windows are merged into
+    /// a single map exactly as `query_precomputed_output_exact` would merge them one at a
+    /// time — each `TimestampedBucket` still carries its own window, so no information is
+    /// lost relative to per-window calls. Windows with no exact match simply contribute
+    /// nothing (same semantics as the single-window method returning an empty map).
+    fn query_precomputed_output_exact_batch(
+        &self,
+        metric: &str,
+        aggregation_id: u64,
+        windows: &[TimestampRange],
     ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>>;
 
     /// Get earliest timestamp for each aggregation ID (for monitoring)

@@ -1,10 +1,10 @@
 use crate::data_model::{AggregateCore, KeyByLabelValues};
+pub use crate::stores::TimestampRange;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
 pub type MetricID = u32;
 pub type EpochID = u64;
-pub type TimestampRange = (u64, u64);
 pub type MetricBucketMap = HashMap<MetricID, Vec<(TimestampRange, Arc<dyn AggregateCore>)>>;
 
 /// Sorts one key's buckets into chronological (ascending start) order.

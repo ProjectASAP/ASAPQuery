@@ -685,6 +685,86 @@ impl Store for SimpleMapStoreGlobal {
         Ok(results)
     }
 
+    /// Batched exact-window lookup (#609): acquires the process-wide lock once for the
+    /// whole `windows` slice instead of once per window. Otherwise identical semantics to
+    /// calling `query_precomputed_output_exact` once per window and merging the results
+    /// (a window with no exact match simply contributes nothing).
+    fn query_precomputed_output_exact_batch(
+        &self,
+        metric: &str,
+        aggregation_id: u64,
+        windows: &[TimestampRange],
+    ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
+        if windows.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let query_start_time = Instant::now();
+        let store_key = aggregation_id;
+
+        let mut data = self.lock.lock().unwrap();
+
+        let per_key = match data.stores.get(&store_key) {
+            Some(pk) => pk,
+            None => {
+                debug!("Metric {} not found in store for batched exact query", metric);
+                return Ok(HashMap::new());
+            }
+        };
+
+        let mut results: TimestampedBucketsMap = HashMap::new();
+        let mut found_windows: Vec<TimestampRange> = Vec::new();
+        let mut total_entries = 0;
+
+        for &window in windows {
+            if window.0 > window.1 {
+                debug!(
+                    "Invalid exact query range for metric {} agg_id {}: start {} > end {}",
+                    metric, aggregation_id, window.0, window.1
+                );
+                continue;
+            }
+
+            // Check current epoch first (newest), then sealed epochs newest-to-oldest.
+            let entries_opt: Option<Vec<_>> =
+                per_key.current_epoch.exact_query(window).or_else(|| {
+                    per_key
+                        .sealed_epochs
+                        .values()
+                        .rev()
+                        .find_map(|epoch| epoch.exact_query(window))
+                });
+
+            if let Some(entries) = entries_opt {
+                for (metric_id, agg) in entries {
+                    let label = per_key.intern.resolve(metric_id).clone();
+                    results.entry(label).or_default().push((window, agg));
+                    total_entries += 1;
+                }
+                found_windows.push(window);
+            }
+        }
+
+        // Update read counts (outer Mutex held — no inner Mutex needed)
+        if !found_windows.is_empty() {
+            let rc_map = data.read_counts.entry(store_key).or_default();
+            for window in &found_windows {
+                *rc_map.entry(*window).or_insert(0) += 1;
+            }
+        }
+
+        let query_duration = query_start_time.elapsed();
+        debug!(
+            "Batched exact timestamp query took: {:.2}ms ({} windows requested, {} matched, {} entries)",
+            query_duration.as_secs_f64() * 1000.0,
+            windows.len(),
+            found_windows.len(),
+            total_entries
+        );
+
+        Ok(results)
+    }
+
     fn get_earliest_timestamp_per_aggregation_id(
         &self,
     ) -> Result<HashMap<u64, u64>, Box<dyn std::error::Error + Send + Sync>> {
