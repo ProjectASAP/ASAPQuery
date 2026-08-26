@@ -10,6 +10,7 @@ pub mod native_pipeline_merge_tests;
 pub mod native_range_query_tests;
 pub mod prometheus_forwarding_tests;
 pub mod query_equivalence_tests;
+pub mod range_multistep_instant_equivalence_tests;
 pub mod range_query_arithmetic_tests;
 pub mod sql_pattern_matching_tests;
 pub mod store_correctness_tests;
