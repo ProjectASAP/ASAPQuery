@@ -503,12 +503,18 @@ mod tests {
     /// Step 4000: window [1000,4000) -> panes {1000,2000,3000} -> 10+100+1000=1110
     /// Step 5000: window [2000,5000) -> panes {2000,3000,4000} -> 100+1000+10000=11100
     ///
-    /// Currently fails: pins the pre-existing bug tracked in
-    /// https://github.com/ProjectASAP/ASAPQuery/issues/608 (range queries
-    /// over Sliding-window aggregations use the overlap-scan fetch, not
-    /// exact-window fetch, then get merged downstream as if Tumbling).
-    /// Un-ignore once #608 lands.
-    #[ignore = "known bug, see #608"]
+    /// Pins the bug tracked in
+    /// https://github.com/ProjectASAP/ASAPQuery/issues/608: the store holds
+    /// one pre-merged, `window_size_ms`-wide bucket per grid position (see
+    /// `create_engine_multi_timestamp_with_window`, mirroring
+    /// `worker.rs::merge_panes_for_window`'s real output shape) -- each
+    /// bucket is already a complete answer for its own window. The range
+    /// pipeline's per-step `scan_window` doesn't know that: it walks every
+    /// grid position in `[current_time - window_size_ms, current_time)` and
+    /// sums whatever it finds there, which is correct for genuinely disjoint
+    /// Tumbling buckets but over-counts for Sliding, where every position in
+    /// that span holds a distinct, overlapping full-window bucket. Here that
+    /// over-count is `111 + 1110 + 11100 = 12321` instead of `111`.
     #[tokio::test(flavor = "multi_thread")]
     async fn range_query_sliding_multi_step_off_grid_windows_no_double_count_or_drop() {
         let data = vec![
@@ -625,10 +631,10 @@ mod tests {
     /// Step 3000: window [1000,3000) -> panes {1000,2000} -> 10+100=110
     /// Step 4000: window [2000,4000) -> panes {2000,3000} -> 100+1000=1100
     ///
-    /// Currently fails: same pre-existing bug as the test above, tracked in
-    /// https://github.com/ProjectASAP/ASAPQuery/issues/608. Un-ignore once
-    /// #608 lands.
-    #[ignore = "known bug, see #608"]
+    /// Same root cause as the test above (#608): each grid position holds a
+    /// complete, already-merged window, and scan_window sums every position
+    /// in the lookback span instead of taking the single one at
+    /// `current_time - window_size_ms`.
     #[tokio::test(flavor = "multi_thread")]
     async fn range_query_sliding_overlap_shifts_correctly_across_steps() {
         let data = vec![

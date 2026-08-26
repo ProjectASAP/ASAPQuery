@@ -114,6 +114,28 @@ pub struct RangeQueryExecutionContext {
     pub lookback_bucket_count: usize,
     /// Tumbling window size in ms
     pub tumbling_window_ms: u64,
+    /// The value aggregation's `WindowType`. Picks how the per-step loop
+    /// composes a step's window from `bucket_map`: Sliding buckets are each
+    /// already a complete `window_size_ms`-wide merged window (see
+    /// `worker.rs::merge_panes_for_window`), so a step takes exactly the one
+    /// bucket at `current_time - lookback_ms` (`lookback_ms` ==
+    /// `window_size_ms` here); Tumbling buckets are genuinely disjoint, so a
+    /// step sums every bucket `scan_window` finds across the lookback span
+    /// (#608).
+    pub window_type: WindowType,
+    /// The value aggregation's actual `window_size_ms`, independent of
+    /// `tumbling_window_ms` (which is `bucket_step_ms`, not the window
+    /// size). Used only to assert `lookback_ms == window_size_ms` for
+    /// Sliding before `single_window` relies on that equality (#608 review).
+    pub window_size_ms: u64,
+    /// Same as `window_type`, for the keys aggregation -- `None` when
+    /// there's no separate `keys_query`. Can legitimately differ from
+    /// `window_type` (e.g. a Sliding SetAggregator keys aggregation paired
+    /// with a Tumbling value aggregation, or vice versa).
+    pub keys_window_type: Option<WindowType>,
+    /// Same as `window_size_ms`, for the keys aggregation. `None` under the
+    /// same condition as `keys_window_type`.
+    pub keys_window_size_ms: Option<u64>,
     /// Per-step lookback for the keys aggregation (#583): `keys_query.end -
     /// keys_query.start` from the instant window `create_keys_query_params`
     /// computed before widening. `None` when there's no separate
@@ -1478,6 +1500,43 @@ impl SimpleEngine {
         window_buckets
     }
 
+    /// Returns whatever bucket(s) `bucket_map` has at exactly
+    /// `window_start`, or empty if none. Unlike `scan_window`, does not walk
+    /// or sum multiple grid positions: for a Sliding aggregation, the bucket
+    /// at `window_start` is already the complete, correctly-merged answer
+    /// for its window (`worker.rs::merge_panes_for_window` pre-merges before
+    /// storing), so summing it with neighboring positions would double-count
+    /// overlapping data (#608). Used identically by
+    /// `execute_range_query_pipeline` for both the value side and the keys
+    /// side.
+    fn single_window(
+        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        window_start: u64,
+    ) -> Vec<Box<dyn AggregateCore>> {
+        bucket_map
+            .get(&window_start)
+            .map(|buckets| buckets.iter().map(|b| b.clone_boxed_core()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Picks how a step's window is composed from `bucket_map`: Sliding ->
+    /// `single_window` (one lookup); Tumbling -> `scan_window`
+    /// (scan-and-sum). Used identically by `execute_range_query_pipeline`
+    /// for both the value side and the keys side (#608).
+    fn window_buckets_for_step(
+        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        window_start: u64,
+        window_end: u64,
+        step_increment: u64,
+        window_type: WindowType,
+    ) -> Vec<Box<dyn AggregateCore>> {
+        if window_type == WindowType::Sliding {
+            Self::single_window(bucket_map, window_start)
+        } else {
+            Self::scan_window(bucket_map, window_start, window_end, step_increment)
+        }
+    }
+
     /// Execute the range query pipeline
     fn execute_range_query_pipeline(
         &self,
@@ -1527,13 +1586,29 @@ impl SimpleEngine {
         let lookback_bucket_count = context.lookback_bucket_count;
         let tumbling_window_ms = context.tumbling_window_ms;
         let lookback_ms = (lookback_bucket_count as u64) * tumbling_window_ms;
+        let window_type = context.window_type;
+        // single_window's correctness for Sliding depends on this equality
+        // holding -- it looks up exactly one bucket at
+        // `current_time - lookback_ms` and trusts that position to be the
+        // step's whole window. Active assert (not debug_assert!): a broken
+        // equality here means silently wrong data, the same failure mode
+        // #608 fixed, not just a debug-time nicety (#608 review).
+        assert!(
+            window_type != WindowType::Sliding || lookback_ms == context.window_size_ms,
+            "Sliding range query: lookback_ms ({lookback_ms}) must equal window_size_ms \
+             ({}) -- single_window's per-step lookup is only correct under this invariant",
+            context.window_size_ms
+        );
         let keys_lookback_ms = context.keys_lookback_ms;
         let keys_tumbling_window_ms = context.keys_tumbling_window_ms;
+        let keys_window_type = context.keys_window_type;
+        let keys_window_size_ms = context.keys_window_size_ms;
 
-        // Named distinctly from `WindowType` (Sliding/Tumbling, picks the store
-        // fetch call) -- this describes step-to-step overlap in the OUTPUT
-        // iteration, an unrelated concept that happens to reuse the words
-        // "sliding"/"hopping". See #581.
+        // Named distinctly from `WindowType` (Sliding/Tumbling, picks how a
+        // step's window is composed from `bucket_map` below -- one lookup vs.
+        // a scan-and-sum, see #608) -- this describes step-to-step overlap in
+        // the OUTPUT iteration, an unrelated concept that happens to reuse
+        // the words "sliding"/"hopping". See #581.
         let step_overlap_mode = if buckets_per_step <= lookback_bucket_count {
             "sliding (slide <= size)"
         } else {
@@ -1586,6 +1661,7 @@ impl SimpleEngine {
                 bucket_map: HashMap<u64, Vec<&'a dyn AggregateCore>>,
                 lookback_ms: u64,
                 tumbling_window_ms: u64,
+                window_type: WindowType,
             },
         }
 
@@ -1608,6 +1684,19 @@ impl SimpleEngine {
                     keys_lookback_ms.expect("keys_raw_data implies keys_lookback_ms is Some");
                 let keys_tumbling_window_ms = keys_tumbling_window_ms
                     .expect("keys_raw_data implies keys_tumbling_window_ms is Some");
+                let keys_window_type =
+                    keys_window_type.expect("keys_raw_data implies keys_window_type is Some");
+                let keys_window_size_ms =
+                    keys_window_size_ms.expect("keys_raw_data implies keys_window_size_ms is Some");
+                // Same invariant as the value side's assert above, for the
+                // keys aggregation (#608 review).
+                assert!(
+                    keys_window_type != WindowType::Sliding
+                        || keys_lookback_ms == keys_window_size_ms,
+                    "Sliding range query: keys_lookback_ms ({keys_lookback_ms}) must equal \
+                     keys_window_size_ms ({keys_window_size_ms}) -- single_window's per-step \
+                     keys lookup is only correct under this invariant"
+                );
                 keys_map
                     .iter()
                     .filter_map(
@@ -1618,6 +1707,7 @@ impl SimpleEngine {
                                     bucket_map: Self::build_bucket_map(raw_keys_buckets),
                                     lookback_ms: keys_lookback_ms,
                                     tumbling_window_ms: keys_tumbling_window_ms,
+                                    window_type: keys_window_type,
                                 },
                             )),
                             None => {
@@ -1673,13 +1763,15 @@ impl SimpleEngine {
                         bucket_map: keys_bucket_map,
                         lookback_ms: keys_lookback_ms,
                         tumbling_window_ms: keys_tumbling_window_ms,
+                        window_type: keys_window_type,
                     } => {
                         let keys_window_start = current_time.saturating_sub(*keys_lookback_ms);
-                        let keys_window_buckets = Self::scan_window(
+                        let keys_window_buckets = Self::window_buckets_for_step(
                             keys_bucket_map,
                             keys_window_start,
                             current_time,
                             *keys_tumbling_window_ms,
+                            *keys_window_type,
                         );
 
                         if keys_window_buckets.is_empty() {
@@ -1709,9 +1801,13 @@ impl SimpleEngine {
                 // This means we look at buckets that START within this range
                 let window_start = current_time.saturating_sub(lookback_ms);
 
-                // Collect all AVAILABLE buckets in this window (skip missing ones)
-                let window_buckets =
-                    Self::scan_window(&bucket_map, window_start, current_time, tumbling_window_ms);
+                let window_buckets = Self::window_buckets_for_step(
+                    &bucket_map,
+                    window_start,
+                    current_time,
+                    tumbling_window_ms,
+                    window_type,
+                );
 
                 if window_buckets.is_empty() {
                     // No data at all for this window - skip sample
