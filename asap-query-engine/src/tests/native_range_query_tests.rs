@@ -8,10 +8,9 @@
 //!    value/key aggregations, values keyed `None`, grouping coming entirely
 //!    from the keys aggregation's `get_keys()`) silently return an empty
 //!    result over a range instead of the expanded key set.
-//! 2. `finish_range_context` (`promql.rs`) unconditionally forces
-//!    `is_exact_query = false`, ignoring the aggregation's real `WindowType`,
-//!    so Sliding-window range queries don't fetch/merge the way the instant
-//!    path does.
+//! 2. The range per-step merge logic didn't distinguish Sliding from
+//!    Tumbling, so Sliding-window range queries didn't fetch/merge the way
+//!    the instant path does (fixed by #608/#621).
 //!
 //! These tests are RED against current code: they mirror instant-query
 //! precedents that already pass (`native_binary_instant_tests.rs`'s
@@ -790,8 +789,8 @@ mod tests {
     async fn range_query_sliding_window_single_bucket_regression() {
         // No-collision counterpart to the merge tests above: a single
         // Sliding bucket per output step must still return its value
-        // unchanged once is_exact_query correctly honors WindowType::Sliding
-        // for range queries. Mirrors
+        // unchanged now that the per-step merge logic correctly honors
+        // WindowType::Sliding for range queries. Mirrors
         // native_pipeline_merge_tests::sliding_single_bucket_returns_its_value.
         let data = vec![(
             1_000_000,

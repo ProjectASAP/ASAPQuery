@@ -382,7 +382,7 @@ impl SimpleEngine {
         spatial_filter: String,
         query_time: u64,
     ) -> Option<QueryExecutionContext> {
-        let (query_plan, do_merge) = self
+        let (query_plan, do_merge, value_window_type) = self
             .create_store_query_plan(metric, timestamps, &agg_info)
             .map_err(|e| {
                 warn!("Failed to create store query plan: {}", e);
@@ -406,6 +406,7 @@ impl SimpleEngine {
             metadata,
             store_plan: query_plan,
             agg_info,
+            value_window_type,
             do_merge,
             spatial_filter,
             query_time,

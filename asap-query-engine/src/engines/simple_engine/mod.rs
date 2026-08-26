@@ -51,8 +51,6 @@ pub struct StoreQueryParams {
     pub start_timestamp: u64,
     /// Milliseconds since epoch.
     pub end_timestamp: u64,
-    /// true for sliding windows (exact match), false for tumbling (range)
-    pub is_exact_query: bool,
 }
 
 /// Complete plan for querying store (values + optional separate keys)
@@ -79,6 +77,9 @@ pub struct QueryExecutionContext {
     pub metadata: QueryMetadata,
     pub store_plan: StoreQueryPlan,
     pub agg_info: AggregationIdInfo,
+    /// The value aggregation's WindowType -- Sliding fetches/merges a single
+    /// already-complete window; Tumbling sums the disjoint buckets in range.
+    pub value_window_type: WindowType,
     /// Whether to merge multiple precomputes (true for temporal queries)
     pub do_merge: bool,
     #[allow(dead_code)]
@@ -416,24 +417,33 @@ impl SimpleEngine {
             }
         };
 
+        // Keys always fetch via the window-grid walk (execute_store_query),
+        // never a single exact-window lookup -- this is an explicit,
+        // permanent choice, not a WindowType derivation: a keys query
+        // conceptually always needs to see the key's own bucket(s), not "the
+        // one window ending now."
         Ok(StoreQueryParams {
             metric: metric.to_string(),
             aggregation_id: agg_info.aggregation_id_for_key,
             start_timestamp,
             end_timestamp,
-            is_exact_query: false, // Keys always use range queries
         })
     }
 
     /// Creates a plan for querying the store based on aggregation configuration.
     /// Also derives `do_merge`: true when the requested time range spans more
     /// than one stored window, i.e. `range_ms > window_size_ms`.
+    ///
+    /// Returns the value aggregation's `WindowType` alongside the plan --
+    /// callers need it again later (e.g. to pick merge semantics) and it's
+    /// cheaper to hand back what was already looked up here than to
+    /// re-fetch the aggregation config.
     fn create_store_query_plan(
         &self,
         metric: &str,
         timestamps: &QueryTimestamps,
         agg_info: &AggregationIdInfo,
-    ) -> Result<(StoreQueryPlan, bool), String> {
+    ) -> Result<(StoreQueryPlan, bool, WindowType), String> {
         let sc = self.streaming_config.read().unwrap().clone();
         // Get aggregation config for value to determine window type
         let aggregation_config_for_value = sc
@@ -446,13 +456,15 @@ impl SimpleEngine {
             })?;
 
         let window_type = aggregation_config_for_value.window_type;
-        let is_exact_query = window_type == WindowType::Sliding;
         let range_ms = timestamps.end_timestamp - timestamps.start_timestamp;
         let do_merge = range_ms > aggregation_config_for_value.window_size_ms;
 
-        // Determine start/end for values query based on window type
-        let (values_start, values_end) = if is_exact_query {
-            // Sliding window: exact window match
+        // Determine start/end for values query based on window type. For
+        // Sliding, narrow to exactly the one window ending "now" --
+        // execute_store_query's window-grid walk degenerates to a single
+        // exact lookup when given a range exactly one window wide, so this
+        // narrowing (not a separate flag) is what makes it an "exact" fetch.
+        let (values_start, values_end) = if window_type == WindowType::Sliding {
             let exact_start =
                 timestamps.end_timestamp - aggregation_config_for_value.window_size_ms;
             (exact_start, timestamps.end_timestamp)
@@ -466,7 +478,6 @@ impl SimpleEngine {
             aggregation_id: agg_info.aggregation_id_for_value,
             start_timestamp: values_start,
             end_timestamp: values_end,
-            is_exact_query,
         };
 
         // Determine if we need a separate keys query
@@ -482,6 +493,7 @@ impl SimpleEngine {
                 keys_query,
             },
             do_merge,
+            window_type,
         ))
     }
 
@@ -504,13 +516,14 @@ impl SimpleEngine {
         }
     }
 
-    /// Non-exact store query: walks the aggregation's window grid
-    /// (`bucket_step_ms` apart, each window `window_size_ms` wide, per
-    /// `WindowManager::window_start_for`) and looks up every grid position
-    /// in `[start_timestamp, end_timestamp)` with an exact match, merging
-    /// the sparse per-window results. Used for range queries, key queries,
-    /// and instant queries over tumbling windows — everywhere
-    /// `is_exact_query` is false.
+    /// Walks the aggregation's window grid (`bucket_step_ms` apart, each
+    /// window `window_size_ms` wide, per `WindowManager::window_start_for`)
+    /// and looks up every grid position in `[start_timestamp, end_timestamp)`
+    /// with an exact match, merging the sparse per-window results. A range
+    /// exactly one window wide degenerates to a single exact lookup -- an
+    /// instant Sliding-window fetch gets "the one window ending now" this
+    /// way, by being narrowed to one window's width before calling
+    /// (`create_store_query_plan`), not via a separate exact/scan flag.
     fn scan_windows_via_exact(
         &self,
         params: &StoreQueryParams,
@@ -590,65 +603,20 @@ impl SimpleEngine {
         params: &StoreQueryParams,
     ) -> Result<TimestampedBucketsMap, String> {
         debug!(
-            "Querying store: metric={}, agg_id={}, range=[{}, {}], exact={}",
-            params.metric,
-            params.aggregation_id,
-            params.start_timestamp,
-            params.end_timestamp,
-            params.is_exact_query
+            "Querying store: metric={}, agg_id={}, range=[{}, {}]",
+            params.metric, params.aggregation_id, params.start_timestamp, params.end_timestamp,
         );
 
         let store_query_start_time = Instant::now();
-
-        let result = if params.is_exact_query {
+        let result = self.scan_windows_via_exact(params);
+        if let Ok(ref outputs) = result {
+            let store_query_duration = store_query_start_time.elapsed();
             debug!(
-                "Sliding window query: Looking for exact window [{}, {}]",
-                params.start_timestamp, params.end_timestamp
+                "Window-grid query took: {:.2}ms, found {} unique keys",
+                store_query_duration.as_secs_f64() * 1000.0,
+                outputs.len()
             );
-            let res = self
-                .store
-                .query_precomputed_output_exact(
-                    &params.metric,
-                    params.aggregation_id,
-                    params.start_timestamp,
-                    params.end_timestamp,
-                )
-                .map_err(|e| {
-                    format!(
-                        "Error querying store for metric {}, agg {}, range [{}, {}]: {}",
-                        params.metric,
-                        params.aggregation_id,
-                        params.start_timestamp,
-                        params.end_timestamp,
-                        e
-                    )
-                });
-            if let Ok(ref outputs) = res {
-                let store_query_duration = store_query_start_time.elapsed();
-                debug!(
-                    "Sliding window exact query took: {:.2}ms, found {} unique keys",
-                    store_query_duration.as_secs_f64() * 1000.0,
-                    outputs.len()
-                );
-            }
-            res
-        } else {
-            debug!(
-                "Window-grid query: range [{}, {}]",
-                params.start_timestamp, params.end_timestamp
-            );
-            let res = self.scan_windows_via_exact(params);
-            if let Ok(ref outputs) = res {
-                let store_query_duration = store_query_start_time.elapsed();
-                debug!(
-                    "Window-grid query took: {:.2}ms, found {} unique keys",
-                    store_query_duration.as_secs_f64() * 1000.0,
-                    outputs.len()
-                );
-            }
-            res
-        };
-
+        }
         result
     }
 
@@ -658,6 +626,7 @@ impl SimpleEngine {
         plan: &StoreQueryPlan,
         do_merge: bool,
         agg_info: &AggregationIdInfo,
+        value_window_type: WindowType,
     ) -> Result<(MergedOutputsMap, Option<MergedOutputsMap>), String> {
         // Query and merge values
         let values_map = self.execute_store_query(&plan.values_query).map_err(|e| {
@@ -675,13 +644,8 @@ impl SimpleEngine {
         debug!("Store query returned {} unique keys", values_map.len());
 
         let merge_start_time = Instant::now();
-        let window_type = if plan.values_query.is_exact_query {
-            WindowType::Sliding
-        } else {
-            WindowType::Tumbling
-        };
 
-        let merged_values = if plan.values_query.is_exact_query {
+        let merged_values = if value_window_type == WindowType::Sliding {
             // Sliding window: expected exactly 1 precompute per key today
             // (ponytail: hardcoded, #554 will make >1 legitimate — don't
             // block on it). The store can legitimately return more than
@@ -716,7 +680,7 @@ impl SimpleEngine {
         };
 
         let merge_duration = merge_start_time.elapsed();
-        let did_merge = window_type == WindowType::Sliding
+        let did_merge = value_window_type == WindowType::Sliding
             || do_merge
             || agg_info.aggregation_type_for_value == AggregationType::DeltaSetAggregator;
         debug!(
@@ -897,6 +861,7 @@ impl SimpleEngine {
             &context.store_plan,
             context.do_merge,
             &context.agg_info,
+            context.value_window_type,
         )?;
 
         // Step 2: Collect results

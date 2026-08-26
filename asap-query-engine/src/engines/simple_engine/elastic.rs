@@ -58,7 +58,7 @@ impl SimpleEngine {
         // Parse time range information from first query predicate if available, otherwise default to entire history up to query_time.
         let timestamps = self.resolve_query_time_range_elastic(query_time, query_info);
 
-        let (query_plan, do_merge) = self
+        let (query_plan, do_merge, value_window_type) = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
             .map_err(|e| {
                 warn!("Failed to create store query plan: {}", e);
@@ -82,6 +82,7 @@ impl SimpleEngine {
             metadata: query_metadata,
             store_plan: query_plan.clone(),
             agg_info: agg_info.clone(),
+            value_window_type,
             do_merge,
             spatial_filter,
             query_time,
