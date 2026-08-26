@@ -611,4 +611,54 @@ mod tests {
             "self-keyed expansion (#595) must still resolve host-b"
         );
     }
+
+    // RED test for PR #629 review finding 2 (see
+    // .design_docs/pr-629-review-findings-handoff.md): `apply_range_topk`'s
+    // `candidates.sort_by(|a, b| b.1.partial_cmp(&a.1)...)` (mod.rs) sorts by
+    // value only, with no tiebreak. `candidates`'s order comes from
+    // iterating `results: HashMap<...>`, whose iteration order is
+    // per-process randomized (SipHash) -- two groups tied at the k-th value
+    // boundary can keep different groups run to run. This asserts the
+    // *desired* deterministic tiebreak (ties broken by ascending label
+    // values, so "host-b" beats "host-c"), which the current unfixed sort
+    // has no mechanism to guarantee.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn topk_range_tie_break_is_deterministic_by_label_values() {
+        let query = "topk(2, cpu_load)";
+        // host-a is the clear #1. host-b and host-c are tied at 50.0 for the
+        // single remaining top-2 slot -- "host-b" < "host-c" lexicographically,
+        // so host-b should always win the tie once the sort is deterministic.
+        let engine = build_range_topk_engine(
+            query,
+            &[(
+                0,
+                1000,
+                &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 50.0)],
+            )],
+        );
+
+        let (_, result) = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("range topk query failed");
+        let elements = match result {
+            QueryResult::Matrix(m) => m.values,
+            QueryResult::Vector(_) => panic!("expected a Matrix"),
+        };
+
+        assert_eq!(
+            topk_samples_for(&elements, "host-a"),
+            vec![(1000, 100.0)],
+            "host-a is the clear #1, always kept"
+        );
+        assert_eq!(
+            topk_samples_for(&elements, "host-b"),
+            vec![(1000, 50.0)],
+            "host-b should deterministically win the tie against host-c (\"host-b\" < \"host-c\")"
+        );
+        assert_eq!(
+            topk_samples_for(&elements, "host-c"),
+            vec![],
+            "host-c should deterministically lose the tie against host-b"
+        );
+    }
 }
