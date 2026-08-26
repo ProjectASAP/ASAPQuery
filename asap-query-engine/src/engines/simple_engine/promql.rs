@@ -360,7 +360,7 @@ impl SimpleEngine {
             query_kwargs,
         };
 
-        let (query_plan, do_merge) = self
+        let (query_plan, do_merge, value_window_type) = self
             .create_store_query_plan(&metric, &timestamps, &agg_info)
             .map_err(|e| {
                 warn!("Failed to create store query plan: {}", e);
@@ -384,6 +384,7 @@ impl SimpleEngine {
             metadata,
             store_plan: query_plan,
             agg_info,
+            value_window_type,
             do_merge,
             spatial_filter,
             query_time,
@@ -594,10 +595,13 @@ impl SimpleEngine {
             })
             .ok()?;
 
+        // Widening the fetch range to cover the whole step span (rather than
+        // one window's width) is what makes this a window-grid walk instead
+        // of a single exact lookup -- there's no separate flag to set for
+        // that; it falls out of execute_store_query's range-driven behavior.
         let mut extended_store_plan = base_context.store_plan.clone();
         let lookback_ms =
             Self::widen_query_window(&mut extended_store_plan.values_query, start_ms, end_ms);
-        extended_store_plan.values_query.is_exact_query = false;
 
         let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
         let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
