@@ -8,3 +8,5 @@ preprocessed_configs/
 status
 uuid
 store/
+# roborev snapshots
+/.roborev/
