@@ -2,8 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap, MutableEpoch, SealedEpoch,
-    TimestampRange,
+    resolve_exact_windows, sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap,
+    MutableEpoch, SealedEpoch, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -702,7 +702,26 @@ impl Store for SimpleMapStoreGlobal {
         let query_start_time = Instant::now();
         let store_key = aggregation_id;
 
+        // Measure lock acquisition time
+        #[cfg(feature = "lock_profiling")]
+        let lock_wait_start = Instant::now();
+
         let mut data = self.lock.lock().unwrap();
+
+        #[cfg(feature = "lock_profiling")]
+        {
+            let lock_wait_duration = lock_wait_start.elapsed();
+            info!(
+                "🔒 Batched exact query lock wait time: {:.2}ms (metric: {}, agg_id: {}, windows: {})",
+                lock_wait_duration.as_secs_f64() * 1000.0,
+                metric,
+                aggregation_id,
+                windows.len()
+            );
+        }
+
+        #[cfg(feature = "lock_profiling")]
+        let lock_hold_start = Instant::now();
 
         let per_key = match data.stores.get(&store_key) {
             Some(pk) => pk,
@@ -715,38 +734,14 @@ impl Store for SimpleMapStoreGlobal {
             }
         };
 
-        let mut results: TimestampedBucketsMap = HashMap::new();
-        let mut found_windows: Vec<TimestampRange> = Vec::new();
-        let mut total_entries = 0;
-
-        for &window in windows {
-            if window.0 > window.1 {
-                debug!(
-                    "Invalid exact query range for metric {} agg_id {}: start {} > end {}",
-                    metric, aggregation_id, window.0, window.1
-                );
-                continue;
-            }
-
-            // Check current epoch first (newest), then sealed epochs newest-to-oldest.
-            let entries_opt: Option<Vec<_>> =
-                per_key.current_epoch.exact_query(window).or_else(|| {
-                    per_key
-                        .sealed_epochs
-                        .values()
-                        .rev()
-                        .find_map(|epoch| epoch.exact_query(window))
-                });
-
-            if let Some(entries) = entries_opt {
-                for (metric_id, agg) in entries {
-                    let label = per_key.intern.resolve(metric_id).clone();
-                    results.entry(label).or_default().push((window, agg));
-                    total_entries += 1;
-                }
-                found_windows.push(window);
-            }
-        }
+        let (results, found_windows, total_entries) = resolve_exact_windows(
+            &per_key.current_epoch,
+            &per_key.sealed_epochs,
+            &per_key.intern,
+            windows,
+            metric,
+            aggregation_id,
+        );
 
         // Update read counts (outer Mutex held — no inner Mutex needed)
         if !found_windows.is_empty() {
@@ -754,6 +749,18 @@ impl Store for SimpleMapStoreGlobal {
             for window in &found_windows {
                 *rc_map.entry(*window).or_insert(0) += 1;
             }
+        }
+
+        #[cfg(feature = "lock_profiling")]
+        {
+            let lock_hold_duration = lock_hold_start.elapsed();
+            info!(
+                "🔓 Batched exact query lock hold time: {:.2}ms (metric: {}, agg_id: {}, matched: {})",
+                lock_hold_duration.as_secs_f64() * 1000.0,
+                metric,
+                aggregation_id,
+                found_windows.len()
+            );
         }
 
         let query_duration = query_start_time.elapsed();

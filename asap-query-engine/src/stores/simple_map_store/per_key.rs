@@ -2,8 +2,8 @@ use crate::data_model::{
     AggregateCore, AggregationType, CleanupPolicy, PrecomputedOutput, StreamingConfig,
 };
 use crate::stores::simple_map_store::common::{
-    sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap, MetricID, MutableEpoch,
-    SealedEpoch, TimestampRange,
+    resolve_exact_windows, sort_buckets_chronologically, EpochID, InternTable, MetricBucketMap,
+    MetricID, MutableEpoch, SealedEpoch, TimestampRange,
 };
 use crate::stores::{Store, StoreResult, TimestampedBucketsMap};
 use dashmap::DashMap;
@@ -774,6 +774,9 @@ impl Store for SimpleMapStorePerKey {
         let query_start_time = Instant::now();
         let store_key = aggregation_id;
 
+        #[cfg(feature = "lock_profiling")]
+        let lock_wait_start = Instant::now();
+
         let store_data_lock = match self.store.get(&store_key) {
             Some(lock) => lock,
             None => {
@@ -785,6 +788,21 @@ impl Store for SimpleMapStorePerKey {
             }
         };
 
+        #[cfg(feature = "lock_profiling")]
+        {
+            let lock_wait_duration = lock_wait_start.elapsed();
+            info!(
+                "🔒 Batched exact query DashMap get time: {:.2}ms (metric: {}, agg_id: {}, windows: {})",
+                lock_wait_duration.as_secs_f64() * 1000.0,
+                metric,
+                aggregation_id,
+                windows.len()
+            );
+        }
+
+        #[cfg(feature = "lock_profiling")]
+        let rwlock_wait_start = Instant::now();
+
         // Same rationale as query_precomputed_output_exact: exact_query takes &self, so a
         // read lock covers the whole batch (issue #607).
         let data = store_data_lock.read().map_err(|e| {
@@ -794,36 +812,29 @@ impl Store for SimpleMapStorePerKey {
             )
         })?;
 
-        let mut results: TimestampedBucketsMap = HashMap::new();
-        let mut found_windows: Vec<TimestampRange> = Vec::new();
-        let mut total_entries = 0;
-
-        for &window in windows {
-            if window.0 > window.1 {
-                debug!(
-                    "Invalid exact query range for metric {} agg_id {}: start {} > end {}",
-                    metric, aggregation_id, window.0, window.1
-                );
-                continue;
-            }
-
-            let entries_opt: Option<Vec<(MetricID, Arc<dyn AggregateCore>)>> =
-                data.current_epoch.exact_query(window).or_else(|| {
-                    data.sealed_epochs
-                        .values()
-                        .rev()
-                        .find_map(|epoch| epoch.exact_query(window))
-                });
-
-            if let Some(entries) = entries_opt {
-                for (metric_id, agg) in entries {
-                    let label = data.intern.resolve(metric_id).clone();
-                    results.entry(label).or_default().push((window, agg));
-                    total_entries += 1;
-                }
-                found_windows.push(window);
-            }
+        #[cfg(feature = "lock_profiling")]
+        {
+            let rwlock_wait_duration = rwlock_wait_start.elapsed();
+            info!(
+                "🔒 Batched exact query RwLock wait time: {:.2}ms (metric: {}, agg_id: {}, windows: {})",
+                rwlock_wait_duration.as_secs_f64() * 1000.0,
+                metric,
+                aggregation_id,
+                windows.len()
+            );
         }
+
+        #[cfg(feature = "lock_profiling")]
+        let lock_hold_start = Instant::now();
+
+        let (results, found_windows, total_entries) = resolve_exact_windows(
+            &data.current_epoch,
+            &data.sealed_epochs,
+            &data.intern,
+            windows,
+            metric,
+            aggregation_id,
+        );
 
         // Batch the read-count update too: one inner-Mutex acquisition for every window
         // that hit, instead of one per window.
@@ -832,6 +843,18 @@ impl Store for SimpleMapStorePerKey {
             for window in &found_windows {
                 *read_counts.entry(*window).or_insert(0) += 1;
             }
+        }
+
+        #[cfg(feature = "lock_profiling")]
+        {
+            let lock_hold_duration = lock_hold_start.elapsed();
+            info!(
+                "🔓 Batched exact query lock hold time: {:.2}ms (metric: {}, agg_id: {}, matched: {})",
+                lock_hold_duration.as_secs_f64() * 1000.0,
+                metric,
+                aggregation_id,
+                found_windows.len()
+            );
         }
 
         let query_duration = query_start_time.elapsed();
