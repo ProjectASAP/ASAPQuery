@@ -13,6 +13,7 @@ pub mod query_equivalence_tests;
 pub mod range_multistep_instant_equivalence_tests;
 pub mod range_query_arithmetic_tests;
 pub mod range_query_validation_tests;
+pub mod sliding_window_keyed_oracle_tests;
 pub mod sql_pattern_matching_tests;
 pub mod store_correctness_tests;
 pub mod structural_matching_tests;

@@ -1834,6 +1834,95 @@ impl SimpleEngine {
     }
 }
 
+/// #590: keyed sliding-window oracle used as the reference model by the
+/// property-style test in `crate::tests::sliding_window_keyed_oracle_tests`.
+/// Pure function -- no engine/store involved.
+///
+/// A sibling to `range_query_tests::simulate_sliding_window` /
+/// `simulate_sliding_window_with_alignment` (same file, below) rather than an
+/// extension of either: those two operate on a single flat `Vec<Box<dyn
+/// AggregateCore>>` and are exercised by ~8 existing call sites via
+/// bucket-index slicing (`buckets[bucket_index..]`) that has no notion of a
+/// key at all. Bolting a key dimension onto that signature would mean either
+/// changing it (breaking every existing call site) or threading an
+/// `Option<KeyByLabelValues>` through index-based slicing that was designed
+/// for one series. A new function keeps those call sites untouched and lets
+/// the keyed model use the simpler representation its own callers actually
+/// have: raw per-key pane values, not `AggregateCore` trait objects (the
+/// property test only exercises `SumAccumulator`, so plain `f64` sums are
+/// sufficient and keep the oracle trivially auditable by hand).
+///
+/// Mirrors the real lookup path exactly: `execute_range_query_pipeline`'s
+/// `single_window` (used for `WindowType::Sliding`, see `mod.rs` above) does
+/// one lookup at `bucket_map[current_time - window_size_ms]`, trusting that
+/// position to already be the fully pre-merged window --
+/// `create_engine_multi_timestamp_with_window` (the test factory used to
+/// drive the real engine) only inserts that pre-merged window into the store
+/// when *every one* of its `window_size_ms / slide_interval_ms` panes is
+/// present; a window missing even one pane is never inserted at all. This
+/// oracle reproduces that same all-or-nothing rule directly over raw panes,
+/// independently of the factory's insertion code, so the property test is
+/// actually checking the engine against a second, independently-written
+/// model rather than against the factory's own logic reflected back at it.
+///
+/// `panes_by_key`: for each key, the list of `(pane_end_timestamp_ms,
+/// sum_value)` pairs that exist for that key. Every pane is
+/// `slide_interval_ms` wide (the real store's Sliding-window layout has no
+/// narrower unit); a key with no entry at a given pane timestamp is treated
+/// as absent there, not zero -- this is how "key disappears mid-range" and
+/// "key appears mid-range" are expressed.
+///
+/// Returns, per key, the `(output_timestamp_ms, merged_value)` pairs a real
+/// `sum_over_time` Sliding-window range query should produce for that key.
+/// A key with zero qualifying output steps is omitted from the map entirely
+/// (never present with an empty `Vec`), matching how a real range query
+/// never emits a zero-sample series for a key.
+#[cfg(test)]
+pub(crate) fn simulate_sliding_window_keyed(
+    panes_by_key: &HashMap<Option<Vec<String>>, Vec<(u64, f64)>>,
+    window_size_ms: u64,
+    slide_interval_ms: u64,
+    start_ms: u64,
+    end_ms: u64,
+    step_ms: u64,
+) -> HashMap<Option<Vec<String>>, Vec<(u64, f64)>> {
+    assert!(slide_interval_ms > 0, "slide_interval_ms must be nonzero");
+    assert!(
+        step_ms > 0,
+        "step_ms must be nonzero, or the output loop never terminates"
+    );
+    assert!(
+        window_size_ms.is_multiple_of(slide_interval_ms),
+        "window_size_ms ({window_size_ms}) must be a whole number of \
+         slide_interval_ms ({slide_interval_ms}) panes"
+    );
+    let num_panes = window_size_ms / slide_interval_ms;
+
+    let mut result = HashMap::new();
+    for (key, panes) in panes_by_key {
+        let pane_map: HashMap<u64, f64> = panes.iter().cloned().collect();
+        let mut samples = Vec::new();
+        let mut current_time = start_ms;
+        while current_time <= end_ms {
+            if current_time >= window_size_ms {
+                let window_start = current_time - window_size_ms;
+                let pane_ends: Vec<u64> = (1..=num_panes)
+                    .map(|i| window_start + i * slide_interval_ms)
+                    .collect();
+                if pane_ends.iter().all(|t| pane_map.contains_key(t)) {
+                    let merged: f64 = pane_ends.iter().map(|t| pane_map[t]).sum();
+                    samples.push((current_time, merged));
+                }
+            }
+            current_time += step_ms;
+        }
+        if !samples.is_empty() {
+            result.insert(key.clone(), samples);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod range_query_tests {
     use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, SerializableToSink};
