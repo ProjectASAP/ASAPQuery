@@ -3403,7 +3403,6 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "arc-swap",
- "arrow",
  "asap_planner",
  "asap_sketchlib",
  "asap_types",
@@ -3416,8 +3415,6 @@ dependencies = [
  "criterion",
  "csv",
  "dashmap 5.5.3",
- "datafusion",
- "datafusion_summary_library",
  "elastic_dsl_utilities",
  "figment",
  "flate2",

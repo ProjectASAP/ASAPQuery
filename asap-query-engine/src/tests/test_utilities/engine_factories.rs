@@ -10,7 +10,6 @@ use crate::data_model::{
     KeyByLabelValues, PrecomputedOutput, PromQLSchema, QueryConfig, QueryLanguage, SchemaConfig,
     StreamingConfig, WindowType,
 };
-use crate::engines::query_result::InstantVectorElement;
 use crate::engines::simple_engine::SimpleEngine;
 use crate::stores::simple_map_store::SimpleMapStore;
 use crate::stores::Store;
@@ -700,75 +699,4 @@ pub fn create_engine_multi_timestamp_with_window(
         slide_interval_ms,
         QueryLanguage::promql,
     )
-}
-
-/// Execute both old pipeline and new plan-based path, compare results with epsilon tolerance.
-pub async fn assert_old_new_match(engine: &SimpleEngine, query: &str, query_time_sec: f64) {
-    let context = engine
-        .build_query_execution_context_promql(query.to_string(), query_time_sec)
-        .expect("Failed to build context");
-
-    let old_results = engine
-        .execute_query_pipeline(&context, false, false)
-        .expect("Old pipeline failed");
-
-    let new_results = engine
-        .execute_plan(&context)
-        .await
-        .expect("New plan path failed");
-
-    assert_eq!(
-        old_results.len(),
-        new_results.len(),
-        "Result count mismatch: old={}, new={}",
-        old_results.len(),
-        new_results.len()
-    );
-
-    let old_map: HashMap<Vec<String>, f64> = old_results
-        .iter()
-        .map(|r| (r.labels.labels.clone(), r.value))
-        .collect();
-
-    let new_map: HashMap<Vec<String>, f64> = new_results
-        .iter()
-        .map(|r| (r.labels.labels.clone(), r.value))
-        .collect();
-
-    for (key, old_value) in &old_map {
-        let new_value = new_map
-            .get(key)
-            .unwrap_or_else(|| panic!("Key {:?} missing from new results", key));
-        assert!(
-            (old_value - new_value).abs() < 1e-10,
-            "Value mismatch for key {:?}: old={}, new={}",
-            key,
-            old_value,
-            new_value
-        );
-    }
-
-    for key in new_map.keys() {
-        assert!(
-            old_map.contains_key(key),
-            "Extra key {:?} in new results",
-            key
-        );
-    }
-}
-
-/// Convenience wrapper to execute via the new plan path.
-pub async fn execute_new_plan(
-    engine: &SimpleEngine,
-    query: &str,
-    query_time_sec: f64,
-) -> Vec<InstantVectorElement> {
-    let context = engine
-        .build_query_execution_context_promql(query.to_string(), query_time_sec)
-        .expect("Failed to build context");
-
-    engine
-        .execute_plan(&context)
-        .await
-        .expect("execute_plan failed")
 }

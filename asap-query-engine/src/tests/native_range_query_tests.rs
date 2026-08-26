@@ -108,7 +108,7 @@ mod tests {
     type TimeSeriesData = Vec<(u64, Option<Vec<String>>, Box<dyn AggregateCore>)>;
 
     /// Dual-population counterpart to
-    /// datafusion::range_query_arithmetic_tests::create_range_engine_two_metrics:
+    /// range_query_arithmetic_tests::create_range_engine_two_metrics:
     /// one metric, separate value/key aggregations, data spread across
     /// multiple 1s tumbling-window buckets so a range query has more than
     /// one output step to expand keys for.
