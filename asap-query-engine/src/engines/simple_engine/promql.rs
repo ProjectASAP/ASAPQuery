@@ -717,7 +717,10 @@ impl SimpleEngine {
 
         if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
             let (ctx, labels) = self.build_arm_range_context(vector_arm, start, end, step)?;
-            let results = self.execute_range_query_pipeline(&ctx).ok()?;
+            // (true, true): self-gated, same as instant's binary-arm call
+            // (evaluate_binary_arm) -- both flags are no-ops unless the arm's
+            // statistic is Topk.
+            let results = self.execute_range_query_pipeline(&ctx, true, true).ok()?;
             let combined: Vec<RangeVectorElement> = results
                 .into_iter()
                 .map(|mut elem| {
@@ -745,8 +748,13 @@ impl SimpleEngine {
         if lhs_labels != rhs_labels {
             return None;
         }
-        let lhs_results = self.execute_range_query_pipeline(&lhs_ctx).ok()?;
-        let rhs_results = self.execute_range_query_pipeline(&rhs_ctx).ok()?;
+        // (true, true): self-gated, same rationale as the scalar-arm call above.
+        let lhs_results = self
+            .execute_range_query_pipeline(&lhs_ctx, true, true)
+            .ok()?;
+        let rhs_results = self
+            .execute_range_query_pipeline(&rhs_ctx, true, true)
+            .ok()?;
 
         // Build lookup: label_key -> {timestamp -> value} for rhs
         let mut rhs_map: HashMap<KeyByLabelValues, HashMap<u64, f64>> = HashMap::new();
@@ -1307,9 +1315,11 @@ impl SimpleEngine {
         let context =
             self.build_range_query_execution_context_from_parsed(&ast, &query, start, end, step)?;
 
-        // Execute range query pipeline
+        // Execute range query pipeline. (true, true): self-gated, same as
+        // instant's handle_query_promql -- both flags are no-ops unless this
+        // query's statistic is Topk.
         let results: Vec<RangeVectorElement> = self
-            .execute_range_query_pipeline(&context)
+            .execute_range_query_pipeline(&context, true, true)
             .map_err(|e| {
                 warn!("Range query execution failed: {}", e);
                 e

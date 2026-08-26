@@ -1500,10 +1500,20 @@ impl SimpleEngine {
         }
     }
 
-    /// Execute the range query pipeline
+    /// Execute the range query pipeline.
+    ///
+    /// `enable_topk_limiting`/`enable_topk_formatting` mirror
+    /// `execute_query_pipeline`'s flags of the same name (see that method's
+    /// doc comment) -- both no-ops unless
+    /// `context.base.metadata.statistic_to_compute == Statistic::Topk`. The
+    /// actual ranking/truncation is delegated to `apply_range_topk` below;
+    /// see its doc comment for why range's version can't just reuse
+    /// instant's `format_final_results` truncate-once shape.
     fn execute_range_query_pipeline(
         &self,
         context: &RangeQueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
         use crate::engines::query_result::RangeVectorElement;
         use crate::engines::window_merger::create_window_merger;
@@ -1829,8 +1839,110 @@ impl SimpleEngine {
             }
         }
 
-        // Convert to Vec
-        Ok(results.into_values().collect())
+        Ok(self.apply_range_topk(
+            results,
+            &context.base.metadata.statistic_to_compute,
+            &context.base.metadata.query_kwargs,
+            &context.base.metric,
+            enable_topk_formatting,
+            enable_topk_limiting,
+        ))
+    }
+
+    /// Applies PromQL top-k semantics to a range query's raw per-group
+    /// results. No-op unless `statistic == Statistic::Topk` (mirrors
+    /// `format_final_results`).
+    ///
+    /// This is deliberately NOT a straight port of `format_final_results`
+    /// (sort all groups once by value, then truncate to k): that shape only
+    /// works because instant queries have exactly one value per group. A
+    /// range query's `RangeVectorElement` carries many per-timestamp
+    /// samples, and real PromQL `topk(k, range_vector)` semantics rank
+    /// independently AT EACH timestamp -- the surviving key set can differ
+    /// from step to step. So this ranks/truncates per-timestamp
+    /// ("step-major"), across all groups, as its own pass over the
+    /// already-assembled results -- rather than restructuring the group-major
+    /// fetch/merge loop above into a step-major shape. Issue #581's own
+    /// scoping decided the fetch/merge loop itself becomes step-major only
+    /// as part of stage E, the full instant/range pipeline collapse (not
+    /// done here, deliberately -- this is stage-E prep). Doing the ranking
+    /// as a separate pass gets the same correctness (each timestamp's kept
+    /// set is decided across all groups, never one group at a time) without
+    /// front-running that larger, separately-staged restructure.
+    fn apply_range_topk(
+        &self,
+        mut results: HashMap<KeyByLabelValues, crate::engines::query_result::RangeVectorElement>,
+        statistic: &Statistic,
+        query_kwargs: &HashMap<String, String>,
+        metric: &str,
+        enable_topk_formatting: bool,
+        enable_topk_limiting: bool,
+    ) -> Vec<crate::engines::query_result::RangeVectorElement> {
+        if *statistic != Statistic::Topk {
+            return results.into_values().collect();
+        }
+
+        // Limiting MUST run before formatting: it matches
+        // `kept_timestamps_by_key`'s keys (read from each element's
+        // `labels` field) against `results`' own HashMap keys via
+        // `retain`. Formatting rewrites `elem.labels` (the field) without
+        // touching the HashMap's outer key, so if formatting ran first the
+        // two would no longer agree and `retain` would drop every group.
+        if enable_topk_limiting {
+            if let Some(k) = query_kwargs.get("k").and_then(|s| s.parse::<usize>().ok()) {
+                use std::collections::HashSet;
+
+                // Step-major ranking: group every group's samples by
+                // timestamp first, so each timestamp's top-k decision sees
+                // every group's value at that timestamp.
+                let mut by_timestamp: HashMap<u64, Vec<(KeyByLabelValues, f64)>> = HashMap::new();
+                for elem in results.values() {
+                    for sample in &elem.samples {
+                        by_timestamp
+                            .entry(sample.timestamp)
+                            .or_default()
+                            .push((elem.labels.clone(), sample.value));
+                    }
+                }
+
+                let mut kept_timestamps_by_key: HashMap<KeyByLabelValues, HashSet<u64>> =
+                    HashMap::new();
+                for (timestamp, mut candidates) in by_timestamp {
+                    candidates
+                        .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    candidates.truncate(k);
+                    for (key, _) in candidates {
+                        kept_timestamps_by_key
+                            .entry(key)
+                            .or_default()
+                            .insert(timestamp);
+                    }
+                }
+
+                results.retain(|key, _| kept_timestamps_by_key.contains_key(key));
+                for elem in results.values_mut() {
+                    let keep = &kept_timestamps_by_key[&elem.labels];
+                    elem.samples.retain(|s| keep.contains(&s.timestamp));
+                }
+                // A group that made no timestamp's top-k has no samples left
+                // -- drop it entirely rather than emitting an empty series.
+                results.retain(|_, elem| !elem.samples.is_empty());
+            }
+        }
+
+        if enable_topk_formatting {
+            // Prepend metric name to each key's label values (PromQL shape),
+            // same rewrite as format_final_results does for instant. Safe to
+            // mutate `elem.labels` now -- nothing below matches it back
+            // against the HashMap's outer key.
+            for elem in results.values_mut() {
+                let mut new_labels = vec![metric.to_string()];
+                new_labels.extend(elem.labels.labels.clone());
+                elem.labels.labels = new_labels;
+            }
+        }
+
+        results.into_values().collect()
     }
 }
 
