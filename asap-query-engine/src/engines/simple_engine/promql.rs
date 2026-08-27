@@ -17,6 +17,8 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, warn};
 
+const METRIC_NAME_LABEL: &str = "__name__";
+
 /// Detects whether either side of a PromQL binary expression is a scalar
 /// (numeric literal), returning the scalar value, the other (vector) arm,
 /// and whether the scalar was on the left. Shared by instant and range
@@ -97,7 +99,7 @@ fn combine_scalar(
 fn binary_matching_label_names(label_names: Vec<String>) -> Vec<String> {
     label_names
         .into_iter()
-        .filter(|label| label != "__name__")
+        .filter(|label| label != METRIC_NAME_LABEL)
         .collect()
 }
 
@@ -350,7 +352,7 @@ impl SimpleEngine {
         let statistic_to_compute = requirements.statistics[0];
 
         if statistic_to_compute == Statistic::Topk {
-            let mut new_labels = vec!["__name__".to_string()];
+            let mut new_labels = vec![METRIC_NAME_LABEL.to_string()];
             new_labels.extend(query_output_labels.labels);
             query_output_labels = KeyByLabelNames::new(new_labels);
         }
@@ -422,7 +424,8 @@ impl SimpleEngine {
             other => {
                 let config = self.find_query_config_promql_structural(other)?;
                 let ctx = self.build_query_execution_context_from_ast(other, &config, time)?;
-                let label_names = ctx.metadata.query_output_labels.labels.clone();
+                let label_names =
+                    binary_matching_label_names(ctx.metadata.query_output_labels.labels.clone());
                 Some((ctx, label_names))
             }
         }
@@ -489,7 +492,7 @@ impl SimpleEngine {
                         e
                     })
                     .ok()?;
-                Some((results, binary_matching_label_names(label_names)))
+                Some((results, label_names))
             }
         }
     }
@@ -687,7 +690,7 @@ impl SimpleEngine {
         let (base_context, label_names) = self.resolve_arm_leaf_context(arm_ast, end)?;
         let range_context = self.finish_range_context(base_context, start, end, step)?;
 
-        Some((range_context, binary_matching_label_names(label_names)))
+        Some((range_context, label_names))
     }
 
     /// Handles a binary arithmetic PromQL expression for range queries.
@@ -1602,9 +1605,9 @@ mod topk_pipeline_tests {
     /// A topk leaf wrapped in an arithmetic binary expr (`topk(10, ...) + 0`)
     /// must still truncate to the top 10, while arithmetic output drops the
     /// metric name. Binary-arm evaluation must not apply standalone Topk
-    /// presentation formatting before the join.
+    /// presentation formatting before the arithmetic operation.
     #[test]
-    fn topk_wrapped_in_binary_expr_still_truncates_and_formats() {
+    fn topk_wrapped_in_binary_expr_truncates_without_metric_name() {
         let (engine, store) = build_topk_engine();
 
         let context = engine

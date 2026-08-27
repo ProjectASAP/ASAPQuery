@@ -616,18 +616,49 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread")]
     async fn range_topk_binary_join_preserves_matching_for_all_arithmetic_ops() {
-        for (op, expected) in [
-            ("+", 250.0),
-            ("-", -150.0),
-            ("*", 10_000.0),
-            ("/", 0.25),
-            ("%", 50.0),
+        for (op, expected, candidates_a, candidates_b) in [
+            (
+                "+",
+                250.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "-",
+                -150.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "*",
+                10_000.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "/",
+                0.25,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "%",
+                50.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "^",
+                8.0,
+                vec![("host-a", 1.0), ("host-b", 2.0), ("host-c", 0.0)],
+                vec![("host-a", 1.0), ("host-b", 3.0), ("host-c", 2.0)],
+            ),
         ] {
             let engine = build_range_two_topk_engine(
                 "topk(2, metric_a)",
                 "topk(2, metric_b)",
-                &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
-                &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+                &candidates_a,
+                &candidates_b,
             );
             let query = format!("topk(2, metric_a) {op} topk(2, metric_b)");
             let (_, qr) = engine
