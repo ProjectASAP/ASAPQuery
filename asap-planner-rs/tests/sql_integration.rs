@@ -106,6 +106,42 @@ aggregate_cleanup:
 }
 
 #[test]
+fn explicit_tumbling_window_rejects_sql_non_multiple_lookback() {
+    let query = "SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -90, NOW()) AND NOW() GROUP BY hostname";
+    let config = format!(
+        r#"
+windowing:
+  type: tumbling
+  window_size_ms: 60000
+tables:
+  - name: metrics_table
+    time_column: time
+    value_columns: [cpu_usage]
+    metadata_columns: [hostname]
+query_groups:
+  - id: 1
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 100.0
+    queries:
+      - "{query}"
+aggregate_cleanup:
+  policy: read_based
+"#
+    );
+
+    let error = match SQLController::from_yaml(&config, sql_opts())
+        .unwrap()
+        .generate()
+    {
+        Ok(_) => panic!("tumbling lookback must be an exact window multiple"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("data_range_ms (90000)"));
+}
+
+#[test]
 fn discovery_validates_windowing_before_contacting_clickhouse() {
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(

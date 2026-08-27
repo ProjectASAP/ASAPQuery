@@ -94,6 +94,7 @@ pub fn set_window_parameters(
 pub fn apply_windowing_override(
     config: &mut IntermediateWindowConfig,
     data_range_ms: u64,
+    step_ms: u64,
     windowing: Option<&WindowingConfig>,
 ) -> Result<(), WindowingError> {
     let Some(windowing) = windowing else {
@@ -102,6 +103,13 @@ pub fn apply_windowing_override(
     windowing
         .validate()
         .map_err(WindowingError::InvalidConfig)?;
+
+    if !data_range_ms.is_multiple_of(windowing.window_size_ms) {
+        return Err(WindowingError::DataRangeNotDivisible {
+            data_range_ms,
+            window_size_ms: windowing.window_size_ms,
+        });
+    }
 
     match windowing.window_type {
         WindowingType::Tumbling => {
@@ -125,15 +133,20 @@ pub fn apply_windowing_override(
                     slide_interval_ms,
                 });
             }
-            if !data_range_ms.is_multiple_of(config.window_size_ms) {
-                return Err(WindowingError::DataRangeNotDivisible {
-                    data_range_ms,
-                    window_size_ms: config.window_size_ms,
-                });
-            }
             config.window_type = WindowType::Sliding;
             config.slide_interval_ms = slide_interval_ms;
         }
+    }
+
+    let grid_interval_ms = match config.window_type {
+        WindowType::Tumbling => config.window_size_ms,
+        WindowType::Sliding => config.slide_interval_ms,
+    };
+    if step_ms > 0 && !step_ms.is_multiple_of(grid_interval_ms) {
+        return Err(WindowingError::StepNotDivisible {
+            step_ms,
+            grid_interval_ms,
+        });
     }
     Ok(())
 }
@@ -148,6 +161,10 @@ pub enum WindowingError {
     DataRangeNotDivisible {
         data_range_ms: u64,
         window_size_ms: u64,
+    },
+    StepNotDivisible {
+        step_ms: u64,
+        grid_interval_ms: u64,
     },
 }
 
@@ -168,6 +185,13 @@ impl fmt::Display for WindowingError {
             } => write!(
                 f,
                 "data_range_ms ({data_range_ms}) must be evenly divisible by window_size_ms ({window_size_ms})"
+            ),
+            Self::StepNotDivisible {
+                step_ms,
+                grid_interval_ms,
+            } => write!(
+                f,
+                "step_ms ({step_ms}) must be evenly divisible by final window grid interval ({grid_interval_ms})"
             ),
         }
     }
@@ -276,7 +300,7 @@ mod tests {
             slide_interval_ms: Some(15_000),
         };
 
-        let error = apply_windowing_override(&mut config, 90_000, Some(&windowing)).unwrap_err();
+        let error = apply_windowing_override(&mut config, 90_000, 0, Some(&windowing)).unwrap_err();
 
         assert_eq!(
             error,

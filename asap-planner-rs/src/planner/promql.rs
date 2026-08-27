@@ -261,6 +261,7 @@ impl SingleQueryProcessor {
         crate::planner::window::apply_windowing_override(
             &mut window_cfg,
             requirements.data_range_ms,
+            self.step_ms,
             self.windowing.as_ref(),
         )?;
 

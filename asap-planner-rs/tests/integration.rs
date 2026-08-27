@@ -211,7 +211,7 @@ windowing:
 query_groups:
   - id: 1
     queries:
-      - "rate(http_requests_total[1m])"
+      - "rate(http_requests_total[2m])"
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
@@ -228,11 +228,70 @@ query_groups:
     let aggregation = &streaming["aggregations"][0];
 
     assert_eq!(aggregation["windowType"].as_str(), Some("tumbling"));
+    assert_eq!(aggregation["windowSizeMs"].as_u64(), Some(60_000));
     assert_eq!(
         aggregation["slideIntervalMs"].as_u64(),
         aggregation["windowSizeMs"].as_u64()
     );
     assert_ne!(aggregation["windowType"].as_str(), Some("sliding"));
+}
+
+#[test]
+fn explicit_sliding_window_revalidates_final_step_grid() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 30000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[2m])"
+    repetition_delay_ms: 40000
+    step_ms: 80000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("step misaligned with the explicit sliding grid should fail"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("final window grid interval (30000)"));
+}
+
+#[test]
+fn explicit_tumbling_window_rejects_non_multiple_lookback() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "tumbling"
+  window_size_ms: 60000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[90s])"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("tumbling lookback must be an exact window multiple"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("data_range_ms (90000)"));
 }
 
 /// Schema for binary arithmetic tests: errors_total and requests_total.
@@ -820,6 +879,37 @@ query_groups:
     assert!(error.contains("rate(errors_total[55s])"));
     assert!(error.contains("rate(requests_total[55s])"));
     assert_eq!(error.matches("(leaf '").count(), 4);
+}
+
+#[test]
+fn binary_arithmetic_scans_past_unsupported_arms_for_windowing_errors() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+query_groups:
+  - id: 1
+    queries:
+      - "abs(errors_total) / rate(requests_total[65s])"
+      - "rate(requests_total[65s]) / abs(errors_total)"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        binary_arithmetic_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("invalid binary sliding windows should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("abs(errors_total) / rate(requests_total[65s])"));
+    assert!(error.contains("rate(requests_total[65s]) / abs(errors_total)"));
 }
 
 #[test]

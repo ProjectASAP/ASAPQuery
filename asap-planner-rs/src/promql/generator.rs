@@ -174,6 +174,7 @@ fn collect_binary_leaf_entries(
 
     let mut all_entries: LeafEntries = Vec::new();
     let mut found_windowing_error = false;
+    let mut found_unsupported_arm = false;
 
     for arm in [arms.0, arms.1] {
         match arm {
@@ -223,7 +224,8 @@ fn collect_binary_leaf_entries(
                             }
                             // Arm is neither a supported leaf nor a binary expression.
                             // This entire query cannot be accelerated.
-                            return Ok(None);
+                            found_unsupported_arm = true;
+                            continue;
                         }
                     }
                 }
@@ -231,7 +233,7 @@ fn collect_binary_leaf_entries(
         }
     }
 
-    if found_windowing_error {
+    if found_windowing_error || found_unsupported_arm {
         Ok(None)
     } else {
         Ok(Some(all_entries))

@@ -113,6 +113,7 @@ impl SQLSingleQueryProcessor {
         crate::planner::window::apply_windowing_override(
             &mut window_cfg,
             data_range_ms,
+            0,
             self.windowing.as_ref(),
         )?;
 
