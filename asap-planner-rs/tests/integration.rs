@@ -818,6 +818,7 @@ query_groups:
     assert!(error.contains("rate(requests_total[65s])"));
     assert!(error.contains("rate(errors_total[55s])"));
     assert!(error.contains("rate(requests_total[55s])"));
+    assert_eq!(error.matches("(leaf '").count(), 4);
 }
 
 #[test]

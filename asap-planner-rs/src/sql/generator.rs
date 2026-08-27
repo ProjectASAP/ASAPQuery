@@ -13,6 +13,7 @@ use crate::generator::{
 };
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::sql::SQLSingleQueryProcessor;
+use crate::planner::window::WindowingError;
 use crate::StreamingEngine;
 
 pub struct SQLRuntimeOptions {
@@ -25,6 +26,12 @@ pub fn generate_sql_plan(
     config: &SQLControllerConfig,
     opts: &SQLRuntimeOptions,
 ) -> Result<GeneratorOutput, ControllerError> {
+    if let Some(windowing) = &config.windowing {
+        windowing
+            .validate()
+            .map_err(|error| ControllerError::Windowing(WindowingError::InvalidConfig(error)))?;
+    }
+
     let eval_time: f64 = opts.query_evaluation_time.unwrap_or_else(|| {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

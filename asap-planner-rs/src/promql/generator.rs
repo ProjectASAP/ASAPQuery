@@ -13,6 +13,7 @@ use crate::generator::{
 };
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::promql::{BinaryArm, SingleQueryProcessor};
+use crate::planner::window::WindowingError;
 use crate::RuntimeOptions;
 
 /// `(query_string, Vec<(identifying_key, cleanup_param)>)` pairs produced by binary leaf decomposition.
@@ -30,6 +31,12 @@ pub fn generate_plan(
     opts: &RuntimeOptions,
 ) -> Result<GeneratorOutput, ControllerError> {
     let metric_schema = schema.clone();
+
+    if let Some(windowing) = &controller_config.windowing {
+        windowing
+            .validate()
+            .map_err(|error| ControllerError::Windowing(WindowingError::InvalidConfig(error)))?;
+    }
 
     // Determine cleanup policy
     let cleanup_policy = controller_config
@@ -166,6 +173,7 @@ fn collect_binary_leaf_entries(
     };
 
     let mut all_entries: LeafEntries = Vec::new();
+    let mut found_windowing_error = false;
 
     for arm in [arms.0, arms.1] {
         match arm {
@@ -184,7 +192,8 @@ fn collect_binary_leaf_entries(
                                 windowing_errors.push(format!(
                                     "query '{query_context}' (leaf '{arm_query}'): {error}"
                                 ));
-                                return Ok(None);
+                                found_windowing_error = true;
+                                continue;
                             }
                             Err(error) => return Err(error),
                         };
@@ -197,6 +206,7 @@ fn collect_binary_leaf_entries(
                     all_entries.push((arm_query, keys_for_arm));
                 } else {
                     // The arm might itself be a binary expression — recurse.
+                    let error_count = windowing_errors.len();
                     match collect_binary_leaf_entries(
                         &arm_processor,
                         dedup_map,
@@ -207,6 +217,10 @@ fn collect_binary_leaf_entries(
                             all_entries.extend(sub_entries);
                         }
                         None => {
+                            if windowing_errors.len() > error_count {
+                                found_windowing_error = true;
+                                continue;
+                            }
                             // Arm is neither a supported leaf nor a binary expression.
                             // This entire query cannot be accelerated.
                             return Ok(None);
@@ -217,7 +231,11 @@ fn collect_binary_leaf_entries(
         }
     }
 
-    Ok(Some(all_entries))
+    if found_windowing_error {
+        Ok(None)
+    } else {
+        Ok(Some(all_entries))
+    }
 }
 
 fn build_streaming_yaml(
