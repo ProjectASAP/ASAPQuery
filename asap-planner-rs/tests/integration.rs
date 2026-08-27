@@ -68,6 +68,27 @@ fn config_file_sliding_window_override_generates_per_query_candidates() {
         .all(|(_, _, window_type)| window_type != "tumbling"));
 }
 
+#[test]
+fn sliding_window_config_requires_a_slide_divisor() {
+    let result = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+query_groups: []
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    );
+    let error = match result {
+        Ok(_) => panic!("sliding config without a divisor should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("windowing.slide_divisor is required for sliding windows"));
+}
+
 /// Schema for binary arithmetic tests: errors_total and requests_total.
 fn binary_arithmetic_schema() -> PromQLSchema {
     PromQLSchema::new()
