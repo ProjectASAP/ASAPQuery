@@ -521,13 +521,8 @@ mod tests {
         )
     }
 
-    /// Two engines, identical value data and identical logical key ("host-a"
-    /// valid over the window ending at t=5000), differing only in whether
-    /// the KEY aggregation is Tumbling (window=slide=1000) or Sliding
-    /// (window=2000, slide=1000). Both must resolve the SAME key set through
-    /// the instant query path -- keys queries conceptually always need to
-    /// see the key's own bucket correctly, independent of the value-side
-    /// double-counting concern that only applies to Sliding VALUE data.
+    /// A pre-bound SetAggregator on a different window grid is rejected,
+    /// while a matching Tumbling key grid remains valid.
     #[tokio::test(flavor = "multi_thread")]
     async fn prebound_set_aggregator_on_a_different_grid_is_rejected() {
         let tumbling_engine =

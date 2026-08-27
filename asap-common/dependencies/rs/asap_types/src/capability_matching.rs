@@ -74,6 +74,13 @@ pub fn key_agg_window_valid(agg_type: AggregationType, window_type: WindowType) 
     !(agg_type == AggregationType::DeltaSetAggregator && window_type == WindowType::Sliding)
 }
 
+fn effective_grid_step(config: &AggregationConfig) -> u64 {
+    match config.window_type {
+        WindowType::Tumbling => config.window_size_ms,
+        WindowType::Sliding => config.slide_interval_ms,
+    }
+}
+
 /// Whether a separate key aggregation can resolve the populations of a
 /// value aggregation on the same epoch-zero window grid.
 pub fn key_agg_compatible_with_value(value: &AggregationConfig, key: &AggregationConfig) -> bool {
@@ -85,7 +92,7 @@ pub fn key_agg_compatible_with_value(value: &AggregationConfig, key: &Aggregatio
         AggregationType::SetAggregator => {
             key.window_type == value.window_type
                 && key.window_size_ms == value.window_size_ms
-                && key.slide_interval_ms == value.slide_interval_ms
+                && effective_grid_step(key) == effective_grid_step(value)
         }
         AggregationType::DeltaSetAggregator if value.window_type == WindowType::Sliding => {
             let value_slide_ms = value.slide_interval_ms;
@@ -116,7 +123,12 @@ pub fn window_compatible(config: &AggregationConfig, data_range_ms: u64) -> bool
         return false;
     }
     match config.window_type {
-        WindowType::Sliding | WindowType::Tumbling => data_range_ms.is_multiple_of(window_ms),
+        WindowType::Sliding => {
+            config.slide_interval_ms > 0
+                && window_ms.is_multiple_of(config.slide_interval_ms)
+                && data_range_ms.is_multiple_of(window_ms)
+        }
+        WindowType::Tumbling => data_range_ms.is_multiple_of(window_ms),
     }
 }
 
@@ -925,6 +937,13 @@ mod tests {
     fn window_compatible_still_accepts_sliding_set_aggregator() {
         let config = make_config(1, "req", "SetAggregator", "", 300_000, "sliding", &[], "");
         assert!(window_compatible(&config, 300_000));
+    }
+
+    #[test]
+    fn window_compatible_rejects_sliding_window_not_aligned_to_slide() {
+        let mut config = make_config(1, "req", "SetAggregator", "", 300_000, "sliding", &[], "");
+        config.slide_interval_ms = 40_000;
+        assert!(!window_compatible(&config, 600_000));
     }
 
     #[test]
