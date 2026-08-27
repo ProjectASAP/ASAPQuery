@@ -683,4 +683,25 @@ mod tests {
         let (_, qr) = result.expect("valid no-match join should return an empty matrix");
         assert!(matrix_values(qr).is_empty());
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_scalar_arithmetic_drops_metric_name() {
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[],
+        );
+
+        let (_, qr) = engine
+            .handle_range_query_promql("topk(2, metric_a) + 0".to_string(), 1.0, 2.0, 1.0)
+            .expect("Expected result for range topk/scalar query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(elements.len(), 2);
+        for element in elements {
+            assert_eq!(element.labels.labels.len(), 1);
+            assert_eq!(element.samples.len(), 1);
+        }
+    }
 }
