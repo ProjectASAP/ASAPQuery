@@ -1,0 +1,31 @@
+windowing:
+  type: "sliding"
+  slide_divisor: 4
+tables:
+  - name: metrics_table
+    time_column: time
+    value_columns: [cpu_usage]
+    metadata_columns: [hostname, datacenter, region]
+query_groups:
+  - id: 1
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 100.0
+    queries:
+      - >-
+        SELECT MIN(cpu_usage) FROM metrics_table
+        WHERE time BETWEEN DATEADD(s, -60, NOW()) AND NOW()
+        GROUP BY datacenter
+  - id: 2
+    repetition_delay_ms: 120000
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 100.0
+    queries:
+      - >-
+        SELECT MIN(cpu_usage) FROM metrics_table
+        WHERE time BETWEEN DATEADD(s, -120, NOW()) AND NOW()
+        GROUP BY datacenter
+aggregate_cleanup:
+  policy: "read_based"

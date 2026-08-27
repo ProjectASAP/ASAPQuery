@@ -11,6 +11,46 @@ fn sql_opts() -> SQLRuntimeOptions {
     }
 }
 
+#[test]
+fn config_file_sliding_window_override_generates_per_query_candidates() {
+    let controller = SQLController::from_file(
+        std::path::Path::new("tests/test_data/windowing/sql_sliding.yaml"),
+        sql_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let streaming: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_streaming_yaml_string().unwrap()).unwrap();
+    let aggregations = streaming["aggregations"].as_sequence().unwrap();
+
+    assert_eq!(output.inference_query_count(), 2);
+    assert_eq!(aggregations.len(), 2);
+
+    let mut candidates: Vec<(u64, u64, String)> = aggregations
+        .iter()
+        .map(|aggregation| {
+            (
+                aggregation["windowSizeMs"].as_u64().unwrap(),
+                aggregation["slideIntervalMs"].as_u64().unwrap(),
+                aggregation["windowType"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    candidates.sort();
+
+    assert_eq!(
+        candidates,
+        vec![
+            (60_000, 15_000, "sliding".to_string()),
+            (120_000, 30_000, "sliding".to_string()),
+        ]
+    );
+    assert!(candidates
+        .iter()
+        .all(|(_, _, window_type)| window_type != "tumbling"));
+}
+
 /// Single-query config with a 3-column metadata schema.
 ///
 /// Schema: metrics_table
