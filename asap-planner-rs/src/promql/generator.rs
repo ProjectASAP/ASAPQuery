@@ -54,6 +54,7 @@ pub fn generate_plan(
     let mut query_keys_map: IndexMap<String, Vec<(String, Option<u64>)>> = IndexMap::new();
 
     let mut punted_queries: Vec<PuntedQuery> = Vec::new();
+    let mut windowing_errors: Vec<String> = Vec::new();
 
     for qg in &controller_config.query_groups {
         for query_string in &qg.queries {
@@ -98,6 +99,11 @@ pub fn generate_plan(
                             "skipping query referencing unknown metric"
                         );
                     }
+                    Err(ControllerError::PlannerError(message))
+                        if message.starts_with("window_size_ms (") =>
+                    {
+                        windowing_errors.push(format!("query '{query_string}': {message}"));
+                    }
                     Err(e) => return Err(e),
                 }
             } else if let Some(arm_entries) =
@@ -110,6 +116,13 @@ pub fn generate_plan(
                 }
             }
         }
+    }
+
+    if !windowing_errors.is_empty() {
+        return Err(ControllerError::PlannerError(format!(
+            "sliding window validation failed:\n{}",
+            windowing_errors.join("\n")
+        )));
     }
 
     // Assign sequential IDs (1-indexed, insertion order)
