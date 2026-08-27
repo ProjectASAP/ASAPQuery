@@ -645,4 +645,42 @@ mod tests {
             );
         }
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_join_with_no_matches_returns_empty_vector() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-c", 300.0), ("host-d", 200.0)],
+        );
+
+        let result =
+            engine.handle_query_promql("topk(2, metric_a) + topk(2, metric_b)".to_string(), 1.0);
+        let (_, qr) = result.expect("valid no-match join should return an empty vector");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+        assert!(elements.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_with_no_matches_returns_empty_matrix() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-c", 300.0), ("host-d", 200.0)],
+        );
+
+        let result = engine.handle_range_query_promql(
+            "topk(2, metric_a) + topk(2, metric_b)".to_string(),
+            1.0,
+            2.0,
+            1.0,
+        );
+        let (_, qr) = result.expect("valid no-match join should return an empty matrix");
+        assert!(matrix_values(qr).is_empty());
+    }
 }
