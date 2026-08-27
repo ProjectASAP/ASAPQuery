@@ -818,4 +818,40 @@ mod tests {
             )
             .is_none());
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql(
+                "topk(2, metric_a) + on(__name__) topk(2, metric_b)".to_string(),
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) + on(__name__) topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .is_none());
+    }
 }

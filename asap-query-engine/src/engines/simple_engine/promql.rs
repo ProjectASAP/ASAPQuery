@@ -452,6 +452,9 @@ impl SimpleEngine {
             Expr::NumberLiteral(_) => None, // caller handles scalars
             Expr::Paren(paren) => self.evaluate_binary_arm(&paren.expr, time),
             Expr::Binary(binary) => {
+                if binary.modifier.is_some() {
+                    return None;
+                }
                 if !is_supported_binary_arithmetic_op(&binary.op) {
                     return None;
                 }
@@ -516,6 +519,9 @@ impl SimpleEngine {
         };
 
         if !is_supported_binary_arithmetic_op(&binary.op) {
+            return None;
+        }
+        if binary.modifier.is_some() {
             return None;
         }
 
@@ -713,6 +719,9 @@ impl SimpleEngine {
         };
 
         if !is_supported_binary_arithmetic_op(&binary.op) {
+            return None;
+        }
+        if binary.modifier.is_some() {
             return None;
         }
 
