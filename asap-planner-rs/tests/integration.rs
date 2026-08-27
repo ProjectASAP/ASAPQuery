@@ -89,6 +89,45 @@ query_groups: []
         .contains("windowing.slide_divisor is required for sliding windows"));
 }
 
+#[test]
+fn sliding_window_validation_reports_all_invalid_queries() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  slide_divisor: 3
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[65s])"
+    repetition_delay_ms: 65000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+  - id: 2
+    queries:
+      - "rate(http_requests_total[55s])"
+    repetition_delay_ms: 55000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let result = controller.generate();
+    let error = match result {
+        Ok(_) => panic!("invalid sliding windows should abort plan generation"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+
+    assert!(message.contains("rate(http_requests_total[65s])"));
+    assert!(message.contains("rate(http_requests_total[55s])"));
+}
+
 /// Schema for binary arithmetic tests: errors_total and requests_total.
 fn binary_arithmetic_schema() -> PromQLSchema {
     PromQLSchema::new()
