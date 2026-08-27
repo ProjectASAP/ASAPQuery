@@ -74,6 +74,7 @@ pub fn generate_sql_plan(
     let mut dedup_map: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
     // query_string -> Vec<(key, cleanup_param)>
     let mut query_keys_map: IndexMap<String, Vec<(String, Option<u64>)>> = IndexMap::new();
+    let mut windowing_errors: Vec<String> = Vec::new();
 
     for qg in &config.query_groups {
         for query_string in &qg.queries {
@@ -89,7 +90,16 @@ pub fn generate_sql_plan(
             );
 
             let (configs, cleanup_param) =
-                processor.get_streaming_aggregation_configs(eval_time)?;
+                match processor.get_streaming_aggregation_configs(eval_time) {
+                    Ok(result) => result,
+                    Err(ControllerError::PlannerError(message))
+                        if message.starts_with("window_size_ms (") =>
+                    {
+                        windowing_errors.push(format!("query '{query_string}': {message}"));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
 
             let mut keys_for_query = Vec::new();
             for config_item in configs {
@@ -99,6 +109,13 @@ pub fn generate_sql_plan(
             }
             query_keys_map.insert(query_string.clone(), keys_for_query);
         }
+    }
+
+    if !windowing_errors.is_empty() {
+        return Err(ControllerError::PlannerError(format!(
+            "sliding window validation failed:\n{}",
+            windowing_errors.join("\n")
+        )));
     }
 
     // Assign sequential IDs

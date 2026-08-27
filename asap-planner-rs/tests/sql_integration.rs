@@ -66,8 +66,8 @@ fn sliding_window_validation_reports_all_invalid_sql_queries() {
     };
     let message = error.to_string();
 
-    assert!(message.contains("DATEADD(s, -65, NOW())"));
-    assert!(message.contains("DATEADD(s, -55, NOW())"));
+    assert!(message.contains("DATEADD(s, -75, NOW())"));
+    assert!(message.contains("DATEADD(s, -90, NOW())"));
 }
 
 /// Single-query config with a 3-column metadata schema.
