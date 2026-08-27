@@ -150,6 +150,28 @@ query_groups: []
         .contains("windowing.slide_divisor must be at least 2, got 1"));
 }
 
+#[test]
+fn tumbling_window_config_rejects_a_slide_divisor() {
+    let result = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "tumbling"
+  slide_divisor: 4
+query_groups: []
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    );
+    let error = match result {
+        Ok(_) => panic!("tumbling config with a divisor should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("windowing.slide_divisor is only valid for sliding windows"));
+}
+
 /// Schema for binary arithmetic tests: errors_total and requests_total.
 fn binary_arithmetic_schema() -> PromQLSchema {
     PromQLSchema::new()
