@@ -37,7 +37,9 @@ mod tests {
     use crate::engines::query_result::{QueryResult, RangeVectorElement};
     use crate::engines::simple_engine::SimpleEngine;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
-    use crate::precompute_operators::{CountMinSketchAccumulator, SetAggregatorAccumulator};
+    use crate::precompute_operators::{
+        CountMinSketchAccumulator, DeltaSetAggregatorAccumulator, SetAggregatorAccumulator,
+    };
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
     use crate::tests::test_utilities::engine_factories::create_engine_multi_timestamp_with_window;
@@ -201,6 +203,124 @@ mod tests {
                 ),
             );
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wider_sliding_instant_query_merges_only_a_non_overlapping_exact_cover() {
+        let data = [1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    (index as u64 + 1) * 1_000,
+                    Some(vec!["host-a".to_string()]),
+                    Box::new(SumAccumulator::with_sum(value)) as Box<dyn AggregateCore>,
+                )
+            })
+            .collect();
+        let query = "sum_over_time(cpu_load[6s])";
+        let engine = create_engine_multi_timestamp_with_window(
+            "cpu_load",
+            AggregationType::Sum,
+            vec!["host"],
+            data,
+            query,
+            3_000,
+            1_000,
+            WindowType::Sliding,
+        );
+
+        let result = engine
+            .handle_query_promql(query.to_string(), 6.0)
+            .expect("the wider Sliding query should be accelerated");
+
+        assert_close(
+            single_host_a_value(result.1),
+            111_111.0,
+            "[0, 6s) must be composed from [0, 3s) and [3s, 6s)",
+        );
+
+        let misaligned_result = engine
+            .handle_query_promql(query.to_string(), 6.5)
+            .expect("the endpoint should align down to the latest complete slide boundary");
+        assert_close(
+            single_host_a_value(misaligned_result.1),
+            111_111.0,
+            "a 6.5s evaluation must read the complete cover ending at 6s",
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wider_sliding_query_with_a_missing_constituent_falls_back_as_a_whole() {
+        // Omitting the pane ending at 2s prevents [0, 3s) from being emitted,
+        // while all panes for [3s, 6s) remain present.
+        let data = [
+            (1, 1.0),
+            (3, 100.0),
+            (4, 1_000.0),
+            (5, 10_000.0),
+            (6, 100_000.0),
+        ]
+        .into_iter()
+        .map(|(second, value)| {
+            (
+                second * 1_000,
+                Some(vec!["host-a".to_string()]),
+                Box::new(SumAccumulator::with_sum(value)) as Box<dyn AggregateCore>,
+            )
+        })
+        .collect();
+        let query = "sum_over_time(cpu_load[6s])";
+        let engine = create_engine_multi_timestamp_with_window(
+            "cpu_load",
+            AggregationType::Sum,
+            vec!["host"],
+            data,
+            query,
+            3_000,
+            1_000,
+            WindowType::Sliding,
+        );
+
+        assert!(
+            engine.handle_query_promql(query.to_string(), 6.0).is_none(),
+            "a partial exact cover must fall back instead of returning partial data"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wider_sliding_range_query_composes_each_output_step_without_overlap() {
+        let data = [1.0, 10.0, 100.0, 1_000.0, 10_000.0, 100_000.0, 1_000_000.0]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| {
+                (
+                    (index as u64 + 1) * 1_000,
+                    Some(vec!["host-a".to_string()]),
+                    Box::new(SumAccumulator::with_sum(value)) as Box<dyn AggregateCore>,
+                )
+            })
+            .collect();
+        let query = "sum_over_time(cpu_load[6s])";
+        let engine = create_engine_multi_timestamp_with_window(
+            "cpu_load",
+            AggregationType::Sum,
+            vec!["host"],
+            data,
+            query,
+            3_000,
+            1_000,
+            WindowType::Sliding,
+        );
+
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 6.0, 7.0, 1.0)
+            .expect("the wider Sliding range query should be accelerated");
+
+        assert_eq!(
+            host_a_samples(&matrix_values(result.1)),
+            vec![(6_000, 111_111.0), (7_000, 1_111_110.0)]
+        );
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -401,15 +521,10 @@ mod tests {
         )
     }
 
-    /// Two engines, identical value data and identical logical key ("host-a"
-    /// valid over the window ending at t=5000), differing only in whether
-    /// the KEY aggregation is Tumbling (window=slide=1000) or Sliding
-    /// (window=2000, slide=1000). Both must resolve the SAME key set through
-    /// the instant query path -- keys queries conceptually always need to
-    /// see the key's own bucket correctly, independent of the value-side
-    /// double-counting concern that only applies to Sliding VALUE data.
+    /// A pre-bound SetAggregator on a different window grid is rejected,
+    /// while a matching Tumbling key grid remains valid.
     #[tokio::test(flavor = "multi_thread")]
-    async fn instant_keys_query_correct_for_both_tumbling_and_sliding_key_aggregation() {
+    async fn prebound_set_aggregator_on_a_different_grid_is_rejected() {
         let tumbling_engine =
             build_dual_engine_with_key_window(5_000, WindowType::Tumbling, 1_000, 1_000);
         let sliding_engine =
@@ -422,11 +537,6 @@ mod tests {
             .expect("tumbling-keys instant query failed");
         let tumbling_values = vector_values(tumbling_qr);
 
-        let (_, sliding_qr) = sliding_engine
-            .handle_query_promql(query.to_string(), 5.0)
-            .expect("sliding-keys instant query failed");
-        let sliding_values = vector_values(sliding_qr);
-
         assert!(
             tumbling_values
                 .iter()
@@ -434,17 +544,228 @@ mod tests {
             "Tumbling key aggregation must resolve host-a, got {tumbling_values:?}"
         );
         assert!(
-            sliding_values
-                .iter()
-                .any(|(labels, _)| labels.contains(&"host-a".to_string())),
-            "Sliding key aggregation must resolve host-a exactly the same way \
-             a Tumbling one does, got {sliding_values:?}"
+            sliding_engine
+                .handle_query_promql(query.to_string(), 5.0)
+                .is_none(),
+            "a pre-bound SetAggregator must share the value aggregation's window grid"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wider_sliding_set_aggregator_unions_keys_from_the_same_exact_cover() {
+        let query = "sum by (host) (count_over_time(event_frequency[6s]))";
+        let common = |aggregation_id, aggregation_type| AggregationConfig {
+            aggregation_id,
+            aggregation_type,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 3_000,
+            slide_interval_ms: 1_000,
+            window_type: WindowType::Sliding,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: "event_frequency".to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: HashMap::from([
+                (1, common(1, AggregationType::CountMinSketch)),
+                (2, common(2, AggregationType::SetAggregator)),
+            ]),
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let host_a = KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        };
+        let host_b = KeyByLabelValues {
+            labels: vec!["host-b".to_string()],
+        };
+        for (start, end, a_count, b_count) in [(0, 3_000, 1.0, 2.0), (3_000, 6_000, 10.0, 20.0)] {
+            let mut cms = CountMinSketchAccumulator::new(4, 128);
+            cms.inner.update(&host_a.to_semicolon_str(), a_count);
+            cms.inner.update(&host_b.to_semicolon_str(), b_count);
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, end, None, 1),
+                    Box::new(cms),
+                )
+                .unwrap();
+
+            let mut keys = SetAggregatorAccumulator::new();
+            keys.add_key(if start == 0 {
+                host_a.clone()
+            } else {
+                host_b.clone()
+            });
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, end, None, 2),
+                    Box::new(keys),
+                )
+                .unwrap();
+        }
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                "event_frequency".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )),
+            query_configs: vec![QueryConfig::new(query.to_string())
+                .add_aggregation(AggregationReference::new(1, None))
+                .add_aggregation(AggregationReference::new(2, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::promql,
+        );
+
+        let (_, result) = engine
+            .handle_query_promql(query.to_string(), 6.0)
+            .expect("the wider dual-population Sliding query should be accelerated");
+        let mut values = vector_values(result);
+        values.sort_by(|left, right| left.0.cmp(&right.0));
+
         assert_eq!(
-            tumbling_values.len(),
-            sliding_values.len(),
-            "same logical key set must be returned regardless of the key \
-             aggregation's WindowType"
+            values,
+            vec![
+                (vec!["host-a".to_string()], 11.0),
+                (vec!["host-b".to_string()], 22.0),
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wider_sliding_values_use_compatible_tumbling_delta_set_keys() {
+        let query = "sum by (host) (count_over_time(event_frequency[4s]))";
+        let value_config = AggregationConfig {
+            aggregation_id: 1,
+            aggregation_type: AggregationType::CountMinSketch,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 2_000,
+            slide_interval_ms: 1_000,
+            window_type: WindowType::Sliding,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: "event_frequency".to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+        let delta_config = AggregationConfig {
+            aggregation_id: 2,
+            aggregation_type: AggregationType::DeltaSetAggregator,
+            window_size_ms: 1_000,
+            slide_interval_ms: 1_000,
+            window_type: WindowType::Tumbling,
+            ..value_config.clone()
+        };
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: HashMap::from([(1, value_config), (2, delta_config)]),
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let host_a = KeyByLabelValues {
+            labels: vec!["host-a".to_string()],
+        };
+        let host_b = KeyByLabelValues {
+            labels: vec!["host-b".to_string()],
+        };
+        let host_c = KeyByLabelValues {
+            labels: vec!["host-c".to_string()],
+        };
+        for (start, end, a_count, b_count) in [(0, 2_000, 1.0, 2.0), (2_000, 4_000, 10.0, 20.0)] {
+            let mut cms = CountMinSketchAccumulator::new(4, 128);
+            cms.inner.update(&host_a.to_semicolon_str(), a_count);
+            cms.inner.update(&host_b.to_semicolon_str(), b_count);
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, end, None, 1),
+                    Box::new(cms),
+                )
+                .unwrap();
+        }
+        for (start, key) in [
+            (0, host_a.clone()),
+            (2_000, host_b.clone()),
+            // This delta belongs to the next value-grid interval. A query
+            // evaluated at 4.5s aligns values down to 4s and must not see it.
+            (4_000, host_c),
+        ] {
+            let mut delta = DeltaSetAggregatorAccumulator::new();
+            delta.add_key(key);
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, start + 1_000, None, 2),
+                    Box::new(delta),
+                )
+                .unwrap();
+        }
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                "event_frequency".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )),
+            query_configs: vec![QueryConfig::new(query.to_string())
+                .add_aggregation(AggregationReference::new(1, None))
+                .add_aggregation(AggregationReference::new(2, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+        let engine = SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::promql,
+        );
+
+        let (_, result) = engine
+            .handle_query_promql(query.to_string(), 4.0)
+            .expect("compatible Tumbling DeltaSet keys should resolve Sliding values");
+        let mut values = vector_values(result);
+        values.sort_by(|left, right| left.0.cmp(&right.0));
+
+        assert_eq!(
+            values,
+            vec![
+                (vec!["host-a".to_string()], 11.0),
+                (vec!["host-b".to_string()], 22.0),
+            ]
+        );
+
+        let (_, misaligned_result) = engine
+            .handle_query_promql(query.to_string(), 4.5)
+            .expect("misaligned evaluation should use the latest complete value grid point");
+        let mut misaligned_values = vector_values(misaligned_result);
+        misaligned_values.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            misaligned_values,
+            vec![
+                (vec!["host-a".to_string()], 11.0),
+                (vec!["host-b".to_string()], 22.0),
+            ],
+            "DeltaSet replay must stop at the same aligned endpoint as Sliding values"
         );
     }
 

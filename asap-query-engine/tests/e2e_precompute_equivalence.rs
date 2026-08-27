@@ -9,7 +9,7 @@
 
 use asap_sketchlib::KllSketch;
 use asap_types::aggregation_config::AggregationConfig;
-use asap_types::enums::{AggregationType, WindowType};
+use asap_types::enums::{AggregationType, CleanupPolicy, QueryLanguage, WindowType};
 use flate2::{write::GzEncoder, Compression};
 use prost::Message;
 use serde_json::json;
@@ -17,7 +17,10 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Arc;
 
-use query_engine_rust::data_model::{PrecomputedOutput, StreamingConfig};
+use query_engine_rust::data_model::{
+    AggregationReference, InferenceConfig, PrecomputedOutput, PromQLSchema, QueryConfig,
+    SchemaConfig, StreamingConfig,
+};
 use query_engine_rust::drivers::ingest::prometheus_remote_write::{
     Label, Sample, TimeSeries, WriteRequest,
 };
@@ -28,6 +31,7 @@ use query_engine_rust::precompute_engine::{
 };
 use query_engine_rust::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
 use query_engine_rust::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
+use query_engine_rust::{QueryResult, SimpleEngine, SimpleMapStore, Store};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -384,4 +388,93 @@ async fn e2e_multiple_sum_output_matches_arroyo() {
         handcrafted_acc.sums, arroyo_acc.sums,
         "MultipleSum sums map mismatch"
     );
+}
+
+#[tokio::test]
+async fn e2e_sliding_precompute_outputs_compose_a_wider_query() {
+    let port = 19402u16;
+    let agg_id = 3u64;
+    let window_size_ms = 5_000u64;
+    let slide_interval_ms = 1_000u64;
+    let metric = "requests";
+    let query = "sum_over_time(requests[10s])";
+
+    let config = make_agg_config(
+        agg_id,
+        metric,
+        AggregationType::Sum,
+        "",
+        window_size_ms,
+        slide_interval_ms,
+        vec![],
+    );
+    let streaming_config = Arc::new(StreamingConfig::new(HashMap::from([(agg_id, config)])));
+    let sink = Arc::new(CapturingOutputSink::new());
+    let engine = PrecomputeEngine::new(
+        engine_config(),
+        streaming_config.clone(),
+        sink.clone(),
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))],
+    );
+    tokio::spawn(async move {
+        let _ = engine.run().await;
+    });
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    let client = reqwest::Client::new();
+    for second in 1..10i64 {
+        send_remote_write(
+            &client,
+            port,
+            vec![make_timeseries(
+                metric,
+                vec![],
+                second * 1_000,
+                second as f64,
+            )],
+        )
+        .await;
+    }
+    send_remote_write(
+        &client,
+        port,
+        vec![make_timeseries(metric, vec![], 15_000, 0.0)],
+    )
+    .await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+    for (output, accumulator) in sink.drain() {
+        store
+            .insert_precomputed_output(output, accumulator)
+            .unwrap();
+    }
+    let inference_config = InferenceConfig {
+        schema: SchemaConfig::PromQL(
+            PromQLSchema::new().add_metric(metric.to_string(), Default::default()),
+        ),
+        query_configs: vec![QueryConfig::new(query.to_string())
+            .add_aggregation(AggregationReference::new(agg_id, None))],
+        cleanup_policy: CleanupPolicy::NoCleanup,
+    };
+    let query_engine = SimpleEngine::new(
+        store,
+        inference_config,
+        streaming_config,
+        slide_interval_ms,
+        QueryLanguage::promql,
+    );
+
+    let (_, result) = query_engine
+        .handle_query_promql(query.to_string(), 10.0)
+        .expect("worker-emitted Sliding windows should answer the wider query");
+    let QueryResult::Vector(vector) = result else {
+        panic!("expected instant vector result");
+    };
+
+    assert_eq!(vector.values.len(), 1);
+    assert_eq!(vector.values[0].value, 45.0);
 }

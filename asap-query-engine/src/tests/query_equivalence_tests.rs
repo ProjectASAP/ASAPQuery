@@ -90,6 +90,136 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sql_executes_wider_sliding_window_exact_cover() {
+        use crate::data_model::{CleanupPolicy, KeyByLabelValues, PrecomputedOutput};
+        use crate::engines::query_result::QueryResult;
+        use crate::precompute_operators::sum_accumulator::SumAccumulator;
+        use crate::stores::simple_map_store::SimpleMapStore;
+
+        let promql_query = "sum_over_time(cpu_usage[10s])";
+        let sql_query = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
+        let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
+            .with_scrape_interval_ms(1_000)
+            .add_temporal_query(promql_query, sql_query, 1, 5_000, WindowType::Sliding)
+            .build_both();
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let group = Some(KeyByLabelValues {
+            labels: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+        });
+        for (start, end, value) in [(0, 5_000, 7.0), (5_000, 10_000, 11.0)] {
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, end, group.clone(), 1),
+                    Box::new(SumAccumulator::with_sum(value)),
+                )
+                .unwrap();
+        }
+        let engine = SimpleEngine::new(
+            store,
+            sql_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::sql,
+        );
+
+        let (_, result) = engine
+            .handle_query_sql(sql_query.to_string(), 10.0)
+            .expect("SQL should execute the wider Sliding exact cover");
+        let QueryResult::Vector(vector) = result else {
+            panic!("expected an instant SQL vector");
+        };
+
+        assert_eq!(vector.values.len(), 1);
+        assert_eq!(vector.values[0].value, 18.0);
+    }
+
+    #[test]
+    fn sql_executes_wider_sliding_dual_population_query() {
+        use crate::data_model::{
+            AggregationConfig, AggregationType, CleanupPolicy, KeyByLabelValues, PrecomputedOutput,
+        };
+        use crate::engines::query_result::QueryResult;
+        use crate::precompute_operators::{CountMinSketchAccumulator, SetAggregatorAccumulator};
+        use crate::stores::simple_map_store::SimpleMapStore;
+
+        let sql_query = "SELECT COUNT(value) FROM events WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY host";
+        let (_, mut sql_config, mut streaming_config) = TestConfigBuilder::new("events")
+            .with_grouping_labels(vec!["host"])
+            .add_temporal_query(
+                "count_over_time(events[10s])",
+                sql_query,
+                1,
+                5_000,
+                WindowType::Sliding,
+            )
+            .build_both();
+
+        let value_config = streaming_config
+            .get_aggregation_config(1)
+            .expect("value config")
+            .clone();
+        let mut value_config = AggregationConfig {
+            aggregation_type: AggregationType::CountMinSketch,
+            ..value_config
+        };
+        value_config.slide_interval_ms = 1_000;
+        let mut key_config = value_config.clone();
+        key_config.aggregation_id = 2;
+        key_config.aggregation_type = AggregationType::SetAggregator;
+        streaming_config = Arc::new(crate::data_model::StreamingConfig {
+            aggregation_configs: HashMap::from([(1, value_config), (2, key_config)]),
+        });
+        sql_config.query_configs[1] = sql_config.query_configs[1]
+            .clone()
+            .add_aggregation(crate::data_model::AggregationReference::new(2, None));
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        for (start, end, count) in [(0, 5_000, 2.0), (5_000, 10_000, 3.0)] {
+            let mut value = CountMinSketchAccumulator::new(4, 64);
+            value.inner.update("host-a", count);
+            let mut keys = SetAggregatorAccumulator::new();
+            keys.add_key(KeyByLabelValues {
+                labels: vec!["host-a".to_string()],
+            });
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, end, None, 1),
+                    Box::new(value),
+                )
+                .unwrap();
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, end, None, 2),
+                    Box::new(keys),
+                )
+                .unwrap();
+        }
+
+        let engine = SimpleEngine::new(
+            store,
+            sql_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::sql,
+        );
+        let (_, result) = engine
+            .handle_query_sql(sql_query.to_string(), 10.0)
+            .expect("SQL dual-population query should execute");
+        let QueryResult::Vector(vector) = result else {
+            panic!("expected an instant SQL vector");
+        };
+        assert_eq!(vector.values.len(), 1);
+        assert_eq!(vector.values[0].value, 5.0);
+    }
+
+    #[test]
     fn test_temporal_sum_equivalence() {
         let scrape_interval_ms = 1000;
         let promql_query = "sum_over_time(cpu_usage[10s])";

@@ -257,11 +257,8 @@ mod tests {
     /// but the KEY aggregation is a Sliding window with
     /// `key_slide_interval_ms < key_window_size_ms` (#600). Real Sliding
     /// buckets are persisted on the slide_interval_ms grid, not the
-    /// window_size_ms grid (`precompute_engine/window_manager.rs`), so the
-    /// keys bucket span here is `key_slide_interval_ms`, not
-    /// `key_window_size_ms` -- unlike the value side, which stays Tumbling
-    /// (span == window) exactly as `create_range_engine_dual_input_with_windows`
-    /// already does.
+    /// window_size_ms grid (`precompute_engine/window_manager.rs`), and the
+    /// value side uses the same Sliding grid for these tests.
     #[allow(clippy::too_many_arguments)]
     fn create_range_engine_dual_input_sliding_keys(
         metric: &str,
@@ -299,8 +296,8 @@ mod tests {
                 rollup_labels: KeyByLabelNames::empty(),
                 original_yaml: String::new(),
                 window_size_ms: value_window_ms,
-                slide_interval_ms: value_window_ms,
-                window_type: WindowType::Tumbling,
+                slide_interval_ms: key_slide_interval_ms,
+                window_type: WindowType::Sliding,
                 spatial_filter: String::new(),
                 spatial_filter_normalized: String::new(),
                 metric: metric.to_string(),
@@ -411,8 +408,8 @@ mod tests {
         //   t=5000, whose keys lookback window is
         //   [5000 - key_window_size_ms, 5000) = [3000,5000) -- lining up
         //   exactly with the inserted bucket.
-        // - value_data is also placed at timestamp=5000 (Tumbling, 1000ms
-        //   wide -> bucket [4000,5000)) purely so the CountMinSketch value
+        // - value_data is also placed at timestamp=5000 (Sliding, 2000ms
+        //   wide -> bucket [3000,5000)) purely so the CountMinSketch value
         //   side resolves at the same t=5000 step; it's unrelated to #600.
         let mut keys_add = SetAggregatorAccumulator::new();
         keys_add.add_key(KeyByLabelValues {
@@ -435,13 +432,13 @@ mod tests {
             // starting at 3000: on the slide_interval_ms=1000 grid, but not
             // on the window_size_ms=2000 grid ({0, 2000, 4000, ...}).
             vec![(5000, None, Box::new(keys_add) as Box<dyn AggregateCore>)],
-            "count(event_frequency) by (host, event)",
-            1000, // value_window_ms (Tumbling, unaffected by #600)
+            "sum by (host, event) (count_over_time(event_frequency[2s]))",
+            2000, // value_window_ms, same Sliding grid as SetAggregator
             2000, // key_window_size_ms
             1000, // key_slide_interval_ms
         );
 
-        let query = "count(event_frequency) by (host, event)";
+        let query = "sum by (host, event) (count_over_time(event_frequency[2s]))";
         let result = engine.handle_range_query_promql(query.to_string(), 5.0, 5.5, 1.0);
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
@@ -453,6 +450,107 @@ mod tests {
              grid) was not found -- the keys-side sum_window is stepping \
              by window_size_ms instead of slide_interval_ms"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_tumbling_dual_population_returns_key_expansion() {
+        let mut value = CountMinSketchAccumulator::new(2, 3);
+        value.inner.update("host-a;evt-1", 1.0);
+        let mut keys = SetAggregatorAccumulator::new();
+        keys.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input_with_windows(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![(1_000, None, Box::new(value) as Box<dyn AggregateCore>)],
+            vec![(1_000, None, Box::new(keys) as Box<dyn AggregateCore>)],
+            "count(event_frequency) by (host, event)",
+            1_000,
+            1_000,
+        );
+
+        let result = engine.handle_range_query_promql(
+            "count(event_frequency) by (host, event)".to_string(),
+            1.0,
+            1.5,
+            1.0,
+        );
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+        assert!(labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-1"],
+            1_000
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_tumbling_dual_population_keeps_key_steps_isolated() {
+        let mut value_1 = CountMinSketchAccumulator::new(2, 3);
+        value_1.inner.update("host-a;evt-1", 1.0);
+        let mut value_2 = CountMinSketchAccumulator::new(2, 3);
+        value_2.inner.update("host-a;evt-2", 1.0);
+        let mut keys_1 = SetAggregatorAccumulator::new();
+        keys_1.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let mut keys_2 = SetAggregatorAccumulator::new();
+        keys_2.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-2".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input_with_windows(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![
+                (1_000, None, Box::new(value_1) as Box<dyn AggregateCore>),
+                (2_000, None, Box::new(value_2) as Box<dyn AggregateCore>),
+            ],
+            vec![
+                (1_000, None, Box::new(keys_1) as Box<dyn AggregateCore>),
+                (2_000, None, Box::new(keys_2) as Box<dyn AggregateCore>),
+            ],
+            "count(event_frequency) by (host, event)",
+            1_000,
+            1_000,
+        );
+
+        let result = engine.handle_range_query_promql(
+            "count(event_frequency) by (host, event)".to_string(),
+            1.0,
+            2.0,
+            1.0,
+        );
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+        assert!(labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-1"],
+            1_000
+        ));
+        assert!(labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-2"],
+            2_000
+        ));
+        assert!(!labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-2"],
+            1_000
+        ));
+        assert!(!labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-1"],
+            2_000
+        ));
     }
 
     /// #608's keys-side counterpart: SetAggregator is a real Sliding-capable
@@ -510,13 +608,13 @@ mod tests {
                 (4000, None, Box::new(keys_2) as Box<dyn AggregateCore>),
                 (5000, None, Box::new(keys_3) as Box<dyn AggregateCore>),
             ],
-            "count(event_frequency) by (host, event)",
-            1000, // value_window_ms (Tumbling, unaffected by #608)
+            "sum by (host, event) (count_over_time(event_frequency[2s]))",
+            2000, // value_window_ms, same Sliding grid as SetAggregator
             2000, // key_window_size_ms
             1000, // key_slide_interval_ms
         );
 
-        let query = "count(event_frequency) by (host, event)";
+        let query = "sum by (host, event) (count_over_time(event_frequency[2s]))";
         let result = engine.handle_range_query_promql(query.to_string(), 3.0, 4.0, 1.0);
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
@@ -843,7 +941,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(5.0)) as Box<dyn AggregateCore>,
             ),
         ];
-        let query = "sum_over_time(http_requests[1s])";
+        let query = "sum_over_time(http_requests[2s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
             AggregationType::Sum,

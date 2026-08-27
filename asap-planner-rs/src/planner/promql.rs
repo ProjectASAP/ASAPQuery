@@ -289,6 +289,8 @@ impl SingleQueryProcessor {
                     requirements.data_range_ms,
                     self.t_repeat_ms,
                     window_cfg.window_type,
+                    window_cfg.window_size_ms,
+                    window_cfg.slide_interval_ms,
                     self.range_duration_ms,
                     self.step_ms,
                 )

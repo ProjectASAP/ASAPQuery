@@ -74,11 +74,47 @@ pub fn key_agg_window_valid(agg_type: AggregationType, window_type: WindowType) 
     !(agg_type == AggregationType::DeltaSetAggregator && window_type == WindowType::Sliding)
 }
 
+fn effective_grid_step(config: &AggregationConfig) -> u64 {
+    if config.slide_interval_ms == 0 {
+        config.window_size_ms
+    } else {
+        config.slide_interval_ms
+    }
+}
+
+/// Whether a separate key aggregation can resolve the populations of a
+/// value aggregation on the same epoch-zero window grid.
+pub fn key_agg_compatible_with_value(value: &AggregationConfig, key: &AggregationConfig) -> bool {
+    if !key_agg_window_valid(key.aggregation_type, key.window_type) {
+        return false;
+    }
+
+    match key.aggregation_type {
+        AggregationType::SetAggregator => {
+            key.window_type == value.window_type
+                && key.window_size_ms == value.window_size_ms
+                && effective_grid_step(key) == effective_grid_step(value)
+        }
+        AggregationType::DeltaSetAggregator if value.window_type == WindowType::Sliding => {
+            let value_slide_ms = value.slide_interval_ms;
+            let delta_window_ms = key.window_size_ms;
+            key.window_type == WindowType::Tumbling
+                && value_slide_ms > 0
+                && delta_window_ms > 0
+                && value_slide_ms.is_multiple_of(delta_window_ms)
+                && value.window_size_ms.is_multiple_of(delta_window_ms)
+        }
+        AggregationType::DeltaSetAggregator => key.window_type == WindowType::Tumbling,
+        _ => false,
+    }
+}
+
 /// Window compatibility: can `config` serve a query needing `data_range_ms`?
 ///
-/// - Tumbling: `data_range_ms` must be a positive integer multiple of `window_size_ms`.
-/// - Sliding: `data_range_ms` must equal `window_size_ms` exactly (a sliding window
-///   precomputes one fixed range per timestamp; overlapping windows cannot be merged).
+/// Both Tumbling and Sliding require `data_range_ms` to be a positive integer
+/// multiple of `window_size_ms`. Sliding execution selects a non-overlapping,
+/// `window_size_ms`-spaced subset from the denser slide grid (#554); it must
+/// never merge every overlapping window on that grid.
 pub fn window_compatible(config: &AggregationConfig, data_range_ms: u64) -> bool {
     if !key_agg_window_valid(config.aggregation_type, config.window_type) {
         return false;
@@ -88,7 +124,11 @@ pub fn window_compatible(config: &AggregationConfig, data_range_ms: u64) -> bool
         return false;
     }
     match config.window_type {
-        WindowType::Sliding => data_range_ms == window_ms,
+        WindowType::Sliding => {
+            config.slide_interval_ms > 0
+                && window_ms.is_multiple_of(config.slide_interval_ms)
+                && data_range_ms.is_multiple_of(window_ms)
+        }
         WindowType::Tumbling => data_range_ms.is_multiple_of(window_ms),
     }
 }
@@ -279,7 +319,7 @@ pub fn find_compatible_aggregation(
             if c.metric != requirements.metric || !is_key_agg_type(c.aggregation_type) {
                 return false;
             }
-            if key_agg_window_valid(c.aggregation_type, c.window_type) {
+            if key_agg_compatible_with_value(value_agg, c) {
                 true
             } else {
                 invalid_window.get_or_insert(c);
@@ -385,6 +425,18 @@ mod tests {
             grouping_labels: KeyByLabelNames::new(grouping.iter().map(|s| s.to_string()).collect()),
             spatial_filter_normalized: normalize_spatial_filter(spatial_filter),
             topk_count_events: None,
+        }
+    }
+
+    fn assert_key_compatibility_cases(
+        cases: &[(&str, &AggregationConfig, &AggregationConfig, bool)],
+    ) {
+        for (name, value, key, expected) in cases {
+            assert_eq!(
+                key_agg_compatible_with_value(value, key),
+                *expected,
+                "{name}"
+            );
         }
     }
 
@@ -565,8 +617,8 @@ mod tests {
     }
 
     #[test]
-    fn window_sliding_too_large() {
-        // Query range 600_000 ms but sliding window only covers 300_000 ms
+    fn window_sliding_wider_exact_multiple_is_compatible() {
+        // Two non-overlapping stored 300_000ms windows exactly cover the query.
         let configs = single_config(make_config(
             1,
             "cpu",
@@ -579,7 +631,7 @@ mod tests {
         ));
         let result =
             find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 600_000, &[], ""));
-        assert!(result.is_none());
+        assert!(result.is_some());
     }
 
     #[test]
@@ -901,6 +953,39 @@ mod tests {
     }
 
     #[test]
+    fn window_compatible_rejects_sliding_window_not_aligned_to_slide() {
+        let mut config = make_config(1, "req", "SetAggregator", "", 300_000, "sliding", &[], "");
+        config.slide_interval_ms = 40_000;
+        assert!(!window_compatible(&config, 600_000));
+    }
+
+    #[test]
+    fn sliding_window_compatibility_boundary_matrix() {
+        let mut config = make_config(1, "req", "Sum", "", 5_000, "sliding", &[], "");
+        config.slide_interval_ms = 1_000;
+        assert!(window_compatible(&config, 5_000));
+        assert!(window_compatible(&config, 10_000));
+        assert!(!window_compatible(&config, 6_000));
+
+        config.slide_interval_ms = 2_000;
+        assert!(!window_compatible(&config, 10_000));
+
+        config.window_size_ms = 1_000;
+        config.slide_interval_ms = 5_000;
+        assert!(!window_compatible(&config, 1_000));
+    }
+
+    #[test]
+    fn sliding_window_compatibility_rejects_zero_fields() {
+        let mut config = make_config(1, "req", "Sum", "", 5_000, "sliding", &[], "");
+        config.slide_interval_ms = 0;
+        assert!(!window_compatible(&config, 5_000));
+        config.slide_interval_ms = 1_000;
+        config.window_size_ms = 0;
+        assert!(!window_compatible(&config, 5_000));
+    }
+
+    #[test]
     fn window_compatible_still_accepts_tumbling_delta_set_aggregator() {
         let config = make_config(
             1,
@@ -971,7 +1056,7 @@ mod tests {
                 "CountMinSketchWithHeap",
                 "",
                 300_000,
-                "tumbling",
+                "sliding",
                 &[],
                 "",
             ),
@@ -984,8 +1069,175 @@ mod tests {
             &configs,
             &req("req", &[Statistic::Topk], 300_000, &[], ""),
         );
-        let info = result.expect("Sliding SetAggregator must still be accepted as a key agg");
+        let info =
+            result.expect("Sliding SetAggregator on the value aggregation's grid must be accepted");
         assert_eq!(info.aggregation_id_for_key, 11);
+    }
+
+    #[test]
+    fn multi_pop_rejects_tumbling_delta_set_that_cannot_partition_sliding_value_window() {
+        let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        value.slide_interval_ms = 1_000;
+        let delta_keys = make_config(
+            11,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            2_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        let configs = HashMap::from([(10, value), (11, delta_keys)]);
+
+        assert!(
+            find_compatible_aggregation(
+                &configs,
+                &req("req", &[Statistic::Count], 12_000, &[], ""),
+            )
+            .is_none(),
+            "D=2s would include future events at an S=1s boundary"
+        );
+    }
+
+    #[test]
+    fn multi_pop_accepts_tumbling_delta_set_that_partitions_sliding_value_grid() {
+        let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        value.slide_interval_ms = 1_000;
+        let delta_keys = make_config(
+            11,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            1_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        let configs = HashMap::from([(10, value), (11, delta_keys)]);
+
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("req", &[Statistic::Count], 12_000, &[], ""),
+        )
+        .expect("D=1s lies on S=1s and exactly partitions W=6s");
+
+        assert_eq!(result.aggregation_id_for_key, 11);
+    }
+
+    #[test]
+    fn multi_pop_rejects_tumbling_set_key_on_mismatched_nonzero_grid_step() {
+        let value = make_config(10, "req", "CountMinSketch", "", 5_000, "tumbling", &[], "");
+        let mut keys = make_config(11, "req", "SetAggregator", "", 5_000, "tumbling", &[], "");
+        keys.slide_interval_ms = 1_000;
+        let configs = HashMap::from([(10, value), (11, keys)]);
+
+        assert!(find_compatible_aggregation(
+            &configs,
+            &req("req", &[Statistic::Count], 5_000, &[], "")
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn tumbling_set_pairing_normalizes_zero_slide_to_window_size() {
+        let mut value = make_config(10, "req", "CountMinSketch", "", 5_000, "tumbling", &[], "");
+        let mut key = make_config(11, "req", "SetAggregator", "", 5_000, "tumbling", &[], "");
+        value.slide_interval_ms = 0;
+        key.slide_interval_ms = 0;
+        assert!(key_agg_compatible_with_value(&value, &key));
+        key.slide_interval_ms = 5_000;
+        assert!(key_agg_compatible_with_value(&value, &key));
+    }
+
+    #[test]
+    fn set_pairing_rejects_each_grid_mismatch_dimension() {
+        let value = make_config(10, "req", "CountMinSketch", "", 5_000, "sliding", &[], "");
+        let mut key = make_config(11, "req", "SetAggregator", "", 5_000, "sliding", &[], "");
+        key.slide_interval_ms = 1_000;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+        key.slide_interval_ms = 5_000;
+        key.window_size_ms = 10_000;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+        key.window_size_ms = 5_000;
+        key.window_type = WindowType::Tumbling;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+    }
+
+    #[test]
+    fn delta_set_pairing_truth_table_checks_both_divisors() {
+        let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        value.slide_interval_ms = 2_000;
+        let key_valid = make_config(
+            11,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            2_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        let key_bad_window = AggregationConfig {
+            window_size_ms: 3_000,
+            ..key_valid.clone()
+        };
+        let key_bad_both = AggregationConfig {
+            window_size_ms: 4_000,
+            ..key_valid.clone()
+        };
+        let mut value_bad_step = value.clone();
+        value_bad_step.slide_interval_ms = 3_000;
+        let mut value_bad_window = value.clone();
+        value_bad_window.slide_interval_ms = 4_000;
+        value_bad_window.window_size_ms = 6_000;
+        let key_divides_step_not_window = AggregationConfig {
+            window_size_ms: 4_000,
+            ..key_valid.clone()
+        };
+
+        assert_key_compatibility_cases(&[
+            ("D divides S and W", &value, &key_valid, true),
+            ("D does not divide W", &value, &key_bad_window, false),
+            ("D divides neither S nor W", &value, &key_bad_both, false),
+            ("D does not divide S", &value_bad_step, &key_valid, false),
+            (
+                "D divides S but not W",
+                &value_bad_window,
+                &key_divides_step_not_window,
+                false,
+            ),
+        ]);
+    }
+
+    #[test]
+    fn delta_set_pairing_for_tumbling_values_does_not_apply_sliding_rules() {
+        let value = make_config(10, "req", "CountMinSketch", "", 6_000, "tumbling", &[], "");
+        let key = make_config(
+            11,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            1_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        assert!(key_agg_compatible_with_value(&value, &key));
+    }
+
+    #[test]
+    fn matching_skips_incompatible_key_candidate_and_selects_compatible_one() {
+        let value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        let mut incompatible =
+            make_config(11, "req", "SetAggregator", "", 6_000, "sliding", &[], "");
+        incompatible.slide_interval_ms = 2_000;
+        let compatible = make_config(12, "req", "SetAggregator", "", 6_000, "sliding", &[], "");
+        let configs = HashMap::from([(10, value), (11, incompatible), (12, compatible)]);
+        let result =
+            find_compatible_aggregation(&configs, &req("req", &[Statistic::Count], 6_000, &[], ""))
+                .expect("the compatible key candidate should be selected");
+        assert_eq!(result.aggregation_id_for_key, 12);
     }
 
     // --- avg (Vec<Statistic>) ---
