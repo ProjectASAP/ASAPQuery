@@ -428,6 +428,18 @@ mod tests {
         }
     }
 
+    fn assert_key_compatibility_cases(
+        cases: &[(&str, &AggregationConfig, &AggregationConfig, bool)],
+    ) {
+        for (name, value, key, expected) in cases {
+            assert_eq!(
+                key_agg_compatible_with_value(value, key),
+                *expected,
+                "{name}"
+            );
+        }
+    }
+
     fn single_config(config: AggregationConfig) -> HashMap<u64, AggregationConfig> {
         let mut m = HashMap::new();
         m.insert(config.aggregation_id, config);
@@ -1156,7 +1168,7 @@ mod tests {
     fn delta_set_pairing_truth_table_checks_both_divisors() {
         let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
         value.slide_interval_ms = 2_000;
-        let mut key = make_config(
+        let key_valid = make_config(
             11,
             "req",
             "DeltaSetAggregator",
@@ -1166,14 +1178,23 @@ mod tests {
             &[],
             "",
         );
-        assert!(key_agg_compatible_with_value(&value, &key));
-        key.window_size_ms = 3_000;
-        assert!(!key_agg_compatible_with_value(&value, &key));
-        key.window_size_ms = 4_000;
-        assert!(!key_agg_compatible_with_value(&value, &key));
-        value.slide_interval_ms = 3_000;
-        key.window_size_ms = 2_000;
-        assert!(!key_agg_compatible_with_value(&value, &key));
+        let key_bad_window = AggregationConfig {
+            window_size_ms: 3_000,
+            ..key_valid.clone()
+        };
+        let key_bad_both = AggregationConfig {
+            window_size_ms: 4_000,
+            ..key_valid.clone()
+        };
+        let mut value_bad_step = value.clone();
+        value_bad_step.slide_interval_ms = 3_000;
+
+        assert_key_compatibility_cases(&[
+            ("D divides S and W", &value, &key_valid, true),
+            ("D does not divide W", &value, &key_bad_window, false),
+            ("D divides neither S nor W", &value, &key_bad_both, false),
+            ("D does not divide S", &value_bad_step, &key_valid, false),
+        ]);
     }
 
     #[test]

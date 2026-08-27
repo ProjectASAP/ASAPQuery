@@ -452,6 +452,102 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_tumbling_dual_population_returns_key_expansion() {
+        let mut value = CountMinSketchAccumulator::new(2, 3);
+        value.inner.update("host-a;evt-1", 1.0);
+        let mut keys = SetAggregatorAccumulator::new();
+        keys.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input_with_windows(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![(1_000, None, Box::new(value) as Box<dyn AggregateCore>)],
+            vec![(1_000, None, Box::new(keys) as Box<dyn AggregateCore>)],
+            "count(event_frequency) by (host, event)",
+            1_000,
+            1_000,
+        );
+
+        let result = engine.handle_range_query_promql(
+            "count(event_frequency) by (host, event)".to_string(),
+            1.0,
+            1.5,
+            1.0,
+        );
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+        assert!(labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-1"],
+            1_000
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_tumbling_dual_population_keeps_key_steps_isolated() {
+        let mut value_1 = CountMinSketchAccumulator::new(2, 3);
+        value_1.inner.update("host-a;evt-1", 1.0);
+        let mut value_2 = CountMinSketchAccumulator::new(2, 3);
+        value_2.inner.update("host-a;evt-2", 1.0);
+        let mut keys_1 = SetAggregatorAccumulator::new();
+        keys_1.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let mut keys_2 = SetAggregatorAccumulator::new();
+        keys_2.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-2".to_string()],
+        });
+
+        let engine = create_range_engine_dual_input_with_windows(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![
+                (1_000, None, Box::new(value_1) as Box<dyn AggregateCore>),
+                (2_000, None, Box::new(value_2) as Box<dyn AggregateCore>),
+            ],
+            vec![
+                (1_000, None, Box::new(keys_1) as Box<dyn AggregateCore>),
+                (2_000, None, Box::new(keys_2) as Box<dyn AggregateCore>),
+            ],
+            "count(event_frequency) by (host, event)",
+            1_000,
+            1_000,
+        );
+
+        let result = engine.handle_range_query_promql(
+            "count(event_frequency) by (host, event)".to_string(),
+            1.0,
+            2.0,
+            1.0,
+        );
+        let (_, qr) = result.expect("range query failed");
+        let elements = matrix_values(qr);
+        assert!(labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-1"],
+            1_000
+        ));
+        assert!(labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-2"],
+            2_000
+        ));
+        assert!(!labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-2"],
+            1_000
+        ));
+    }
+
     /// #608's keys-side counterpart: SetAggregator is a real Sliding-capable
     /// keys aggregation (unlike DeltaSetAggregator, restricted to Tumbling
     /// by #606), so the keys-side per-step composition has the same
