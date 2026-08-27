@@ -75,9 +75,10 @@ pub fn key_agg_window_valid(agg_type: AggregationType, window_type: WindowType) 
 }
 
 fn effective_grid_step(config: &AggregationConfig) -> u64 {
-    match config.window_type {
-        WindowType::Tumbling => config.window_size_ms,
-        WindowType::Sliding => config.slide_interval_ms,
+    if config.slide_interval_ms == 0 {
+        config.window_size_ms
+    } else {
+        config.slide_interval_ms
     }
 }
 
@@ -1084,6 +1085,20 @@ mod tests {
         .expect("D=1s lies on S=1s and exactly partitions W=6s");
 
         assert_eq!(result.aggregation_id_for_key, 11);
+    }
+
+    #[test]
+    fn multi_pop_rejects_tumbling_set_key_on_mismatched_nonzero_grid_step() {
+        let value = make_config(10, "req", "CountMinSketch", "", 5_000, "tumbling", &[], "");
+        let mut keys = make_config(11, "req", "SetAggregator", "", 5_000, "tumbling", &[], "");
+        keys.slide_interval_ms = 1_000;
+        let configs = HashMap::from([(10, value), (11, keys)]);
+
+        assert!(find_compatible_aggregation(
+            &configs,
+            &req("req", &[Statistic::Count], 5_000, &[], "")
+        )
+        .is_none());
     }
 
     // --- avg (Vec<Statistic>) ---
