@@ -515,6 +515,20 @@ impl SimpleEngine {
         }
     }
 
+    fn align_down_with_warning(timestamp_ms: u64, step_ms: u64, context: &str) -> u64 {
+        let aligned = timestamp_ms - (timestamp_ms % step_ms);
+        if aligned != timestamp_ms {
+            warn!(
+                timestamp_ms,
+                aligned_timestamp_ms = aligned,
+                step_ms,
+                context,
+                "Timestamp was aligned down; the requested timestamp will not be used as-is"
+            );
+        }
+        aligned
+    }
+
     /// Widens `query`'s window to `[start_ms - lookback, end_ms]`, where
     /// `lookback` is the width `query` already had (`end_timestamp -
     /// start_timestamp`) before this call. Re-anchors whatever window an
@@ -698,6 +712,14 @@ impl SimpleEngine {
 
         let mut windows: Vec<crate::stores::TimestampRange> = Vec::new();
         let mut window_start = params.start_timestamp.div_ceil(step_ms) * step_ms;
+        if window_start != params.start_timestamp {
+            warn!(
+                requested_start_timestamp = params.start_timestamp,
+                aligned_start_timestamp = window_start,
+                step_ms,
+                "Window-grid query start was aligned up; the requested timestamp will not be used as-is"
+            );
+        }
         while window_start + window_size_ms <= params.end_timestamp {
             windows.push((window_start, window_start + window_size_ms));
             window_start += step_ms;
@@ -2154,14 +2176,22 @@ impl SimpleEngine {
                                  for Sliding"
                             );
                                 let replay_end = if window_type == WindowType::Sliding {
-                                    current_time - (current_time % tumbling_window_ms)
+                                    Self::align_down_with_warning(
+                                        current_time,
+                                        tumbling_window_ms,
+                                        "DeltaSetAggregator replay end",
+                                    )
                                 } else {
                                     current_time
                                 };
                                 Self::collect_bucket_map_entries_before(keys_bucket_map, replay_end)
                             } else {
                                 let keys_window_end = if *keys_window_type == WindowType::Sliding {
-                                    current_time - (current_time % *keys_tumbling_window_ms)
+                                    Self::align_down_with_warning(
+                                        current_time,
+                                        *keys_tumbling_window_ms,
+                                        "Sliding key window end",
+                                    )
                                 } else {
                                     current_time
                                 };
@@ -2213,7 +2243,11 @@ impl SimpleEngine {
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
                 let window_end = if window_type == WindowType::Sliding {
-                    current_time - (current_time % tumbling_window_ms)
+                    Self::align_down_with_warning(
+                        current_time,
+                        tumbling_window_ms,
+                        "Sliding value window end",
+                    )
                 } else {
                     current_time
                 };

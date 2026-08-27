@@ -1,4 +1,5 @@
 use crate::stores::TimestampRange;
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SlidingWindowSpec {
@@ -62,6 +63,14 @@ pub(crate) fn plan_exact_cover(
     }
 
     let aligned_end_ms = query_end_ms - (query_end_ms % spec.slide_interval_ms);
+    if aligned_end_ms != query_end_ms {
+        warn!(
+            query_end_ms,
+            aligned_end_ms,
+            slide_interval_ms = spec.slide_interval_ms,
+            "Sliding query end was aligned down; the requested timestamp will not be used as-is"
+        );
+    }
     let start_ms =
         aligned_end_ms
             .checked_sub(lookback_ms)
