@@ -67,6 +67,7 @@ pub fn generate_plan(
                 qg.range_duration_ms.unwrap_or(opts.range_duration_ms),
                 qg.step_ms.unwrap_or(opts.step_ms),
                 cleanup_policy,
+                controller_config.windowing.clone(),
             );
 
             let mut should_process = processor.is_supported();

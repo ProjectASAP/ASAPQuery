@@ -7,7 +7,7 @@ use promql_utilities::query_logics::enums::{
 };
 use promql_utilities::query_logics::parsing::get_metric_and_spatial_filter;
 
-use crate::config::input::SketchParameterOverrides;
+use crate::config::input::{SketchParameterOverrides, WindowingConfig};
 use crate::error::ControllerError;
 use crate::planner::agg_config::{build_agg_configs_for_statistics, IntermediateAggConfig};
 use crate::planner::cleanup::get_cleanup_param;
@@ -77,6 +77,7 @@ pub struct SingleQueryProcessor {
     range_duration_ms: u64,
     step_ms: u64,
     cleanup_policy: CleanupPolicy,
+    windowing: Option<WindowingConfig>,
 }
 
 impl SingleQueryProcessor {
@@ -91,6 +92,7 @@ impl SingleQueryProcessor {
         range_duration_ms: u64,
         step_ms: u64,
         cleanup_policy: CleanupPolicy,
+        windowing: Option<WindowingConfig>,
     ) -> Self {
         Self {
             query,
@@ -102,6 +104,7 @@ impl SingleQueryProcessor {
             range_duration_ms,
             step_ms,
             cleanup_policy,
+            windowing,
         }
     }
 
@@ -154,6 +157,7 @@ impl SingleQueryProcessor {
             self.range_duration_ms,
             self.step_ms,
             self.cleanup_policy,
+            self.windowing.clone(),
         )
     }
 
@@ -254,6 +258,8 @@ impl SingleQueryProcessor {
             &mut window_cfg,
         )
         .map_err(ControllerError::PlannerError)?;
+        crate::planner::window::apply_windowing_override(&mut window_cfg, self.windowing.as_ref())
+            .map_err(ControllerError::PlannerError)?;
 
         let subpopulation_labels = requirements.grouping_labels;
         let rollup = all_labels.difference(&subpopulation_labels);

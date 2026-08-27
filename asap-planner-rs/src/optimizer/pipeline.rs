@@ -123,6 +123,7 @@ mod tests {
 
         ControllerConfig {
             query_groups,
+            windowing: None,
             sketch_parameters: None,
             aggregate_cleanup: None,
             metrics: None,

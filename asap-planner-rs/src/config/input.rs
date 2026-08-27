@@ -10,6 +10,7 @@ use tracing::warn;
 #[serde(deny_unknown_fields)]
 pub struct ControllerConfig {
     pub query_groups: Vec<QueryGroup>,
+    pub windowing: Option<WindowingConfig>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
     pub aggregate_cleanup: Option<AggregateCleanupConfig>,
     /// Optional hint: per-metric label sets used as a fallback when Prometheus
@@ -93,6 +94,21 @@ pub struct AggregateCleanupConfig {
     pub policy: Option<CleanupPolicy>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowingConfig {
+    #[serde(rename = "type")]
+    pub window_type: WindowingType,
+    pub slide_divisor: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowingType {
+    Tumbling,
+    Sliding,
+}
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct SketchParameterOverrides {
     #[serde(rename = "CountMinSketch")]
@@ -142,6 +158,7 @@ pub struct HllParams {
 pub struct SQLControllerConfig {
     pub query_groups: Vec<SQLQueryGroup>,
     pub tables: Vec<TableDefinition>,
+    pub windowing: Option<WindowingConfig>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
     pub aggregate_cleanup: Option<AggregateCleanupConfig>,
 }

@@ -1,5 +1,7 @@
 use asap_types::enums::WindowType;
 
+use crate::config::input::{WindowingConfig, WindowingType};
+
 pub fn get_effective_repeat(t_repeat_ms: u64, step_ms: u64) -> u64 {
     if step_ms > 0 {
         t_repeat_ms.min(step_ms)
@@ -85,6 +87,41 @@ pub fn set_window_parameters(
     config.window_size_ms = window_size_ms;
     config.slide_interval_ms = window_size_ms;
     config.window_type = WindowType::Tumbling;
+    Ok(())
+}
+
+pub fn apply_windowing_override(
+    config: &mut IntermediateWindowConfig,
+    windowing: Option<&WindowingConfig>,
+) -> Result<(), String> {
+    let Some(windowing) = windowing else {
+        return Ok(());
+    };
+
+    match windowing.window_type {
+        WindowingType::Tumbling => {
+            config.window_type = WindowType::Tumbling;
+            config.slide_interval_ms = config.window_size_ms;
+        }
+        WindowingType::Sliding => {
+            let divisor = windowing.slide_divisor.ok_or_else(|| {
+                "windowing.slide_divisor is required for sliding windows".to_string()
+            })?;
+            if divisor < 2 {
+                return Err(format!(
+                    "windowing.slide_divisor must be at least 2, got {divisor}"
+                ));
+            }
+            if !config.window_size_ms.is_multiple_of(divisor) {
+                return Err(format!(
+                    "window_size_ms ({}) must be evenly divisible by slide_divisor ({divisor})",
+                    config.window_size_ms
+                ));
+            }
+            config.window_type = WindowType::Sliding;
+            config.slide_interval_ms = config.window_size_ms / divisor;
+        }
+    }
     Ok(())
 }
 
