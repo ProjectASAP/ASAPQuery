@@ -948,6 +948,32 @@ mod tests {
     }
 
     #[test]
+    fn sliding_window_compatibility_boundary_matrix() {
+        let mut config = make_config(1, "req", "Sum", "", 5_000, "sliding", &[], "");
+        config.slide_interval_ms = 1_000;
+        assert!(window_compatible(&config, 5_000));
+        assert!(window_compatible(&config, 10_000));
+        assert!(!window_compatible(&config, 6_000));
+
+        config.slide_interval_ms = 2_000;
+        assert!(!window_compatible(&config, 10_000));
+
+        config.window_size_ms = 1_000;
+        config.slide_interval_ms = 5_000;
+        assert!(!window_compatible(&config, 1_000));
+    }
+
+    #[test]
+    fn sliding_window_compatibility_rejects_zero_fields() {
+        let mut config = make_config(1, "req", "Sum", "", 5_000, "sliding", &[], "");
+        config.slide_interval_ms = 0;
+        assert!(!window_compatible(&config, 5_000));
+        config.slide_interval_ms = 1_000;
+        config.window_size_ms = 0;
+        assert!(!window_compatible(&config, 5_000));
+    }
+
+    #[test]
     fn window_compatible_still_accepts_tumbling_delta_set_aggregator() {
         let config = make_config(
             1,
@@ -1099,6 +1125,85 @@ mod tests {
             &req("req", &[Statistic::Count], 5_000, &[], "")
         )
         .is_none());
+    }
+
+    #[test]
+    fn tumbling_set_pairing_normalizes_zero_slide_to_window_size() {
+        let mut value = make_config(10, "req", "CountMinSketch", "", 5_000, "tumbling", &[], "");
+        let mut key = make_config(11, "req", "SetAggregator", "", 5_000, "tumbling", &[], "");
+        value.slide_interval_ms = 0;
+        key.slide_interval_ms = 0;
+        assert!(key_agg_compatible_with_value(&value, &key));
+        key.slide_interval_ms = 5_000;
+        assert!(key_agg_compatible_with_value(&value, &key));
+    }
+
+    #[test]
+    fn set_pairing_rejects_each_grid_mismatch_dimension() {
+        let value = make_config(10, "req", "CountMinSketch", "", 5_000, "sliding", &[], "");
+        let mut key = make_config(11, "req", "SetAggregator", "", 5_000, "sliding", &[], "");
+        key.slide_interval_ms = 1_000;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+        key.slide_interval_ms = 5_000;
+        key.window_size_ms = 10_000;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+        key.window_size_ms = 5_000;
+        key.window_type = WindowType::Tumbling;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+    }
+
+    #[test]
+    fn delta_set_pairing_truth_table_checks_both_divisors() {
+        let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        value.slide_interval_ms = 2_000;
+        let mut key = make_config(
+            11,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            2_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        assert!(key_agg_compatible_with_value(&value, &key));
+        key.window_size_ms = 3_000;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+        key.window_size_ms = 4_000;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+        value.slide_interval_ms = 3_000;
+        key.window_size_ms = 2_000;
+        assert!(!key_agg_compatible_with_value(&value, &key));
+    }
+
+    #[test]
+    fn delta_set_pairing_for_tumbling_values_does_not_apply_sliding_rules() {
+        let value = make_config(10, "req", "CountMinSketch", "", 6_000, "tumbling", &[], "");
+        let key = make_config(
+            11,
+            "req",
+            "DeltaSetAggregator",
+            "",
+            1_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        assert!(key_agg_compatible_with_value(&value, &key));
+    }
+
+    #[test]
+    fn matching_skips_incompatible_key_candidate_and_selects_compatible_one() {
+        let value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        let mut incompatible =
+            make_config(11, "req", "SetAggregator", "", 6_000, "sliding", &[], "");
+        incompatible.slide_interval_ms = 2_000;
+        let compatible = make_config(12, "req", "SetAggregator", "", 6_000, "sliding", &[], "");
+        let configs = HashMap::from([(10, value), (11, incompatible), (12, compatible)]);
+        let result =
+            find_compatible_aggregation(&configs, &req("req", &[Statistic::Count], 6_000, &[], ""))
+                .expect("the compatible key candidate should be selected");
+        assert_eq!(result.aggregation_id_for_key, 12);
     }
 
     // --- avg (Vec<Statistic>) ---
