@@ -108,8 +108,13 @@ impl SQLSingleQueryProcessor {
             self.data_ingestion_interval_ms,
             self.t_repeat_ms,
         )?;
-        crate::planner::window::apply_windowing_override(&mut window_cfg, self.windowing.as_ref())
-            .map_err(ControllerError::PlannerError)?;
+        let data_range_ms =
+            (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64;
+        crate::planner::window::apply_windowing_override(
+            &mut window_cfg,
+            data_range_ms,
+            self.windowing.as_ref(),
+        )?;
 
         // Get all metadata columns for the table
         let all_metadata = get_all_metadata_columns(&self.table_definitions, table_name)?;

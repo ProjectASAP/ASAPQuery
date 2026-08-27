@@ -38,6 +38,11 @@ impl SQLController {
     ) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
         let mut config: SQLControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        if let Some(windowing) = &config.windowing {
+            windowing
+                .validate()
+                .map_err(ControllerError::PlannerError)?;
+        }
         for table in &mut config.tables {
             if table.metadata_columns.is_empty() {
                 debug!(

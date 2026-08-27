@@ -1,4 +1,5 @@
 use asap_types::enums::WindowType;
+use std::fmt;
 
 use crate::config::input::{WindowingConfig, WindowingType};
 
@@ -92,12 +93,15 @@ pub fn set_window_parameters(
 
 pub fn apply_windowing_override(
     config: &mut IntermediateWindowConfig,
+    data_range_ms: u64,
     windowing: Option<&WindowingConfig>,
-) -> Result<(), String> {
+) -> Result<(), WindowingError> {
     let Some(windowing) = windowing else {
         return Ok(());
     };
-    windowing.validate()?;
+    windowing
+        .validate()
+        .map_err(WindowingError::InvalidConfig)?;
 
     match windowing.window_type {
         WindowingType::Tumbling => {
@@ -108,16 +112,22 @@ pub fn apply_windowing_override(
             let divisor = match windowing.slide_divisor {
                 Some(divisor) => divisor,
                 None => {
-                    return Err(
-                        "windowing.slide_divisor is required for sliding windows".to_string()
-                    )
+                    return Err(WindowingError::InvalidConfig(
+                        "windowing.slide_divisor is required for sliding windows".to_string(),
+                    ));
                 }
             };
             if !config.window_size_ms.is_multiple_of(divisor) {
-                return Err(format!(
-                    "window_size_ms ({}) must be evenly divisible by slide_divisor ({divisor})",
-                    config.window_size_ms
-                ));
+                return Err(WindowingError::WindowSizeNotDivisible {
+                    window_size_ms: config.window_size_ms,
+                    divisor,
+                });
+            }
+            if !data_range_ms.is_multiple_of(config.window_size_ms) {
+                return Err(WindowingError::DataRangeNotDivisible {
+                    data_range_ms,
+                    window_size_ms: config.window_size_ms,
+                });
             }
             config.window_type = WindowType::Sliding;
             config.slide_interval_ms = config.window_size_ms / divisor;
@@ -125,6 +135,43 @@ pub fn apply_windowing_override(
     }
     Ok(())
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowingError {
+    InvalidConfig(String),
+    WindowSizeNotDivisible {
+        window_size_ms: u64,
+        divisor: u64,
+    },
+    DataRangeNotDivisible {
+        data_range_ms: u64,
+        window_size_ms: u64,
+    },
+}
+
+impl fmt::Display for WindowingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfig(message) => f.write_str(message),
+            Self::WindowSizeNotDivisible {
+                window_size_ms,
+                divisor,
+            } => write!(
+                f,
+                "window_size_ms ({window_size_ms}) must be evenly divisible by slide_divisor ({divisor})"
+            ),
+            Self::DataRangeNotDivisible {
+                data_range_ms,
+                window_size_ms,
+            } => write!(
+                f,
+                "data_range_ms ({data_range_ms}) must be evenly divisible by window_size_ms ({window_size_ms})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WindowingError {}
 
 /// A mutable window config holder used during planning
 #[derive(Debug, Clone, Default)]
@@ -212,5 +259,28 @@ mod tests {
         let result = set_window_parameters(300_000, 40_000, 10_000, 100_000, &mut config);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be a multiple of"));
+    }
+
+    #[test]
+    fn sliding_override_rejects_data_range_not_multiple_of_window_size() {
+        let mut config = IntermediateWindowConfig {
+            window_size_ms: 60_000,
+            slide_interval_ms: 60_000,
+            window_type: WindowType::Tumbling,
+        };
+        let windowing = WindowingConfig {
+            window_type: WindowingType::Sliding,
+            slide_divisor: Some(4),
+        };
+
+        let error = apply_windowing_override(&mut config, 90_000, Some(&windowing)).unwrap_err();
+
+        assert_eq!(
+            error,
+            WindowingError::DataRangeNotDivisible {
+                data_range_ms: 90_000,
+                window_size_ms: 60_000,
+            }
+        );
     }
 }

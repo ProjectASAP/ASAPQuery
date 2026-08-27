@@ -31,12 +31,6 @@ pub fn generate_plan(
 ) -> Result<GeneratorOutput, ControllerError> {
     let metric_schema = schema.clone();
 
-    if let Some(windowing) = &controller_config.windowing {
-        windowing
-            .validate()
-            .map_err(ControllerError::PlannerError)?;
-    }
-
     // Determine cleanup policy
     let cleanup_policy = controller_config
         .aggregate_cleanup
@@ -105,16 +99,17 @@ pub fn generate_plan(
                             "skipping query referencing unknown metric"
                         );
                     }
-                    Err(ControllerError::PlannerError(message))
-                        if message.starts_with("window_size_ms (") =>
-                    {
-                        windowing_errors.push(format!("query '{query_string}': {message}"));
+                    Err(ControllerError::Windowing(error)) => {
+                        windowing_errors.push(format!("query '{query_string}': {error}"));
                     }
                     Err(e) => return Err(e),
                 }
-            } else if let Some(arm_entries) =
-                collect_binary_leaf_entries(&processor, &mut dedup_map)?
-            {
+            } else if let Some(arm_entries) = collect_binary_leaf_entries(
+                &processor,
+                &mut dedup_map,
+                &mut windowing_errors,
+                query_string,
+            )? {
                 // Binary arithmetic: register each leaf arm in dedup_map and query_keys_map
                 for (arm_query, keys_for_arm) in arm_entries {
                     // Use `entry` so a standalone query that duplicates an arm wins
@@ -162,6 +157,8 @@ pub fn generate_plan(
 fn collect_binary_leaf_entries(
     processor: &SingleQueryProcessor,
     dedup_map: &mut IndexMap<String, IntermediateAggConfig>,
+    windowing_errors: &mut Vec<String>,
+    query_context: &str,
 ) -> Result<Option<LeafEntries>, ControllerError> {
     let arms = match processor.get_binary_arm_queries() {
         Some(arms) => arms,
@@ -181,7 +178,16 @@ fn collect_binary_leaf_entries(
                 if arm_processor.is_supported() {
                     // Leaf arm: gather its streaming aggregation configs.
                     let (configs, cleanup_param) =
-                        arm_processor.get_streaming_aggregation_configs()?;
+                        match arm_processor.get_streaming_aggregation_configs() {
+                            Ok(result) => result,
+                            Err(ControllerError::Windowing(error)) => {
+                                windowing_errors.push(format!(
+                                    "query '{query_context}' (leaf '{arm_query}'): {error}"
+                                ));
+                                return Ok(None);
+                            }
+                            Err(error) => return Err(error),
+                        };
                     let mut keys_for_arm = Vec::new();
                     for config in configs {
                         let key = config.identifying_key();
@@ -191,7 +197,12 @@ fn collect_binary_leaf_entries(
                     all_entries.push((arm_query, keys_for_arm));
                 } else {
                     // The arm might itself be a binary expression — recurse.
-                    match collect_binary_leaf_entries(&arm_processor, dedup_map)? {
+                    match collect_binary_leaf_entries(
+                        &arm_processor,
+                        dedup_map,
+                        windowing_errors,
+                        query_context,
+                    )? {
                         Some(sub_entries) => {
                             all_entries.extend(sub_entries);
                         }

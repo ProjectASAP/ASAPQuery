@@ -1,5 +1,7 @@
 use thiserror::Error;
 
+use crate::planner::window::WindowingError;
+
 #[derive(Debug, Error)]
 pub enum ControllerError {
     #[error("IO error: {0}")]
@@ -12,6 +14,8 @@ pub enum ControllerError {
     DuplicateQuery(String),
     #[error("Planner error: {0}")]
     PlannerError(String),
+    #[error("Windowing error: {0}")]
+    Windowing(#[from] WindowingError),
     #[error("Unknown metric: {0}")]
     UnknownMetric(String),
     #[error("SQL parse error: {0}")]

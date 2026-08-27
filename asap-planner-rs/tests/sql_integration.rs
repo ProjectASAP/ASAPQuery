@@ -1,4 +1,6 @@
 use asap_planner::{ControllerError, SQLController, SQLRuntimeOptions, StreamingEngine};
+use std::io::Write;
+use tempfile::NamedTempFile;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -68,6 +70,74 @@ fn sliding_window_validation_reports_all_invalid_sql_queries() {
 
     assert!(message.contains("DATEADD(s, -75, NOW())"));
     assert!(message.contains("DATEADD(s, -90, NOW())"));
+}
+
+#[test]
+fn sliding_window_validation_rejects_sql_data_range_not_multiple_of_window() {
+    let query = "SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -90, NOW()) AND NOW() GROUP BY hostname";
+    let config = format!(
+        r#"
+windowing:
+  type: sliding
+  slide_divisor: 4
+tables:
+  - name: metrics_table
+    time_column: time
+    value_columns: [cpu_usage]
+    metadata_columns: [hostname]
+query_groups:
+  - id: 1
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 100.0
+    queries:
+      - "{query}"
+aggregate_cleanup:
+  policy: no_cleanup
+"#
+    );
+
+    let error = match SQLController::from_yaml(&config, sql_opts())
+        .unwrap()
+        .generate()
+    {
+        Ok(_) => panic!("invalid sliding window should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("data_range_ms (90000)"));
+    assert!(error.contains("window_size_ms (60000)"));
+}
+
+#[test]
+fn discovery_validates_windowing_before_contacting_clickhouse() {
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(
+        br#"
+windowing:
+  type: sliding
+tables:
+  - name: metrics_table
+    time_column: time
+    value_columns: [cpu_usage]
+    metadata_columns: []
+query_groups: []
+"#,
+    )
+    .unwrap();
+
+    let error = match SQLController::from_file_with_discovery(
+        file.path(),
+        "http://127.0.0.1:1",
+        "default",
+        sql_opts(),
+    ) {
+        Ok(_) => panic!("invalid windowing config should be rejected"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("windowing.slide_divisor is required for sliding windows"));
 }
 
 /// Single-query config with a 3-column metadata schema.

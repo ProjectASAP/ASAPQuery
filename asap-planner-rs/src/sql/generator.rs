@@ -25,12 +25,6 @@ pub fn generate_sql_plan(
     config: &SQLControllerConfig,
     opts: &SQLRuntimeOptions,
 ) -> Result<GeneratorOutput, ControllerError> {
-    if let Some(windowing) = &config.windowing {
-        windowing
-            .validate()
-            .map_err(ControllerError::PlannerError)?;
-    }
-
     let eval_time: f64 = opts.query_evaluation_time.unwrap_or_else(|| {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -98,10 +92,8 @@ pub fn generate_sql_plan(
             let (configs, cleanup_param) =
                 match processor.get_streaming_aggregation_configs(eval_time) {
                     Ok(result) => result,
-                    Err(ControllerError::PlannerError(message))
-                        if message.starts_with("window_size_ms (") =>
-                    {
-                        windowing_errors.push(format!("query '{query_string}': {message}"));
+                    Err(ControllerError::Windowing(error)) => {
+                        windowing_errors.push(format!("query '{query_string}': {error}"));
                         continue;
                     }
                     Err(error) => return Err(error),

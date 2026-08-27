@@ -129,6 +129,36 @@ query_groups:
 }
 
 #[test]
+fn sliding_window_validation_rejects_data_range_not_multiple_of_window() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  slide_divisor: 4
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[90s])"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("invalid sliding window should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("data_range_ms (90000)"));
+    assert!(error.contains("window_size_ms (60000)"));
+}
+
+#[test]
 fn sliding_window_config_rejects_redundant_divisors() {
     let result = Controller::from_yaml_with_schema(
         r#"
@@ -749,6 +779,45 @@ fn binary_arithmetic_with_non_acceleratable_arm_produces_no_configs() {
     let out = c.generate().unwrap();
     assert_eq!(out.streaming_aggregation_count(), 0);
     assert_eq!(out.inference_query_count(), 0);
+}
+
+#[test]
+fn binary_arithmetic_aggregates_windowing_errors_from_all_leaves() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  slide_divisor: 3
+query_groups:
+  - id: 1
+    queries:
+      - "rate(errors_total[65s]) / rate(requests_total[65s])"
+    repetition_delay_ms: 65000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+  - id: 2
+    queries:
+      - "rate(errors_total[55s]) / rate(requests_total[55s])"
+    repetition_delay_ms: 55000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        binary_arithmetic_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("invalid binary sliding windows should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("rate(errors_total[65s])"));
+    assert!(error.contains("rate(requests_total[65s])"));
+    assert!(error.contains("rate(errors_total[55s])"));
+    assert!(error.contains("rate(requests_total[55s])"));
 }
 
 #[test]

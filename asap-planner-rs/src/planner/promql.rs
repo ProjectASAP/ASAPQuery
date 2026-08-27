@@ -258,8 +258,11 @@ impl SingleQueryProcessor {
             &mut window_cfg,
         )
         .map_err(ControllerError::PlannerError)?;
-        crate::planner::window::apply_windowing_override(&mut window_cfg, self.windowing.as_ref())
-            .map_err(ControllerError::PlannerError)?;
+        crate::planner::window::apply_windowing_override(
+            &mut window_cfg,
+            requirements.data_range_ms,
+            self.windowing.as_ref(),
+        )?;
 
         let subpopulation_labels = requirements.grouping_labels;
         let rollup = all_labels.difference(&subpopulation_labels);
