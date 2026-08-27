@@ -299,8 +299,8 @@ mod tests {
                 rollup_labels: KeyByLabelNames::empty(),
                 original_yaml: String::new(),
                 window_size_ms: value_window_ms,
-                slide_interval_ms: value_window_ms,
-                window_type: WindowType::Tumbling,
+                slide_interval_ms: key_slide_interval_ms,
+                window_type: WindowType::Sliding,
                 spatial_filter: String::new(),
                 spatial_filter_normalized: String::new(),
                 metric: metric.to_string(),
@@ -435,13 +435,13 @@ mod tests {
             // starting at 3000: on the slide_interval_ms=1000 grid, but not
             // on the window_size_ms=2000 grid ({0, 2000, 4000, ...}).
             vec![(5000, None, Box::new(keys_add) as Box<dyn AggregateCore>)],
-            "count(event_frequency) by (host, event)",
-            1000, // value_window_ms (Tumbling, unaffected by #600)
+            "sum by (host, event) (count_over_time(event_frequency[2s]))",
+            2000, // value_window_ms, same Sliding grid as SetAggregator
             2000, // key_window_size_ms
             1000, // key_slide_interval_ms
         );
 
-        let query = "count(event_frequency) by (host, event)";
+        let query = "sum by (host, event) (count_over_time(event_frequency[2s]))";
         let result = engine.handle_range_query_promql(query.to_string(), 5.0, 5.5, 1.0);
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
@@ -510,13 +510,13 @@ mod tests {
                 (4000, None, Box::new(keys_2) as Box<dyn AggregateCore>),
                 (5000, None, Box::new(keys_3) as Box<dyn AggregateCore>),
             ],
-            "count(event_frequency) by (host, event)",
-            1000, // value_window_ms (Tumbling, unaffected by #608)
+            "sum by (host, event) (count_over_time(event_frequency[2s]))",
+            2000, // value_window_ms, same Sliding grid as SetAggregator
             2000, // key_window_size_ms
             1000, // key_slide_interval_ms
         );
 
-        let query = "count(event_frequency) by (host, event)";
+        let query = "sum by (host, event) (count_over_time(event_frequency[2s]))";
         let result = engine.handle_range_query_promql(query.to_string(), 3.0, 4.0, 1.0);
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
@@ -843,7 +843,7 @@ mod tests {
                 Box::new(SumAccumulator::with_sum(5.0)) as Box<dyn AggregateCore>,
             ),
         ];
-        let query = "sum_over_time(http_requests[1s])";
+        let query = "sum_over_time(http_requests[2s])";
         let engine = create_engine_multi_timestamp_with_window(
             "http_requests",
             AggregationType::Sum,

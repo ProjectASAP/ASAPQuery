@@ -13,15 +13,11 @@
 //! these (both from reading `execute_range_query_pipeline` and its callers,
 //! not from any doc):
 //!
-//! 1. A Sliding-window aggregation's query lookback is REQUIRED to equal its
-//!    `window_size_ms` -- an active `assert!` in `execute_range_query_pipeline`
-//!    (mod.rs, #608 review), not just a convention. So "Sliding,
-//!    window_size == lookback/2, /3, ..." isn't a constructible scenario --
-//!    it would panic, not merge incorrectly. The window-shape axis below
-//!    instead varies Tumbling's lookback-to-bucket-width ratio (1/2/3, via
-//!    `sum_over_time(metric[Ns])` selector width) and adds one genuinely
-//!    overlapping Sliding case (`window_size_ms > slide_interval_ms`,
-//!    lookback == window_size_ms as required).
+//! 1. Sliding lookbacks may now be positive integer multiples of
+//!    `window_size_ms` (#554), composed from non-overlapping W-spaced stored
+//!    windows. This older matrix retains an exact-width overlapping Sliding
+//!    case; wider instant/range cases live in
+//!    `window_semantics_consistency_tests`.
 //!
 //! 2. `SetAggregator`/`DeltaSetAggregator` are keys-side (dual-population)
 //!    aggregation types in this codebase -- never a general value-aggregation
@@ -159,6 +155,15 @@ mod tests {
                 KeysConfig::DeltaSetAgg => AggregationType::DeltaSetAggregator,
                 KeysConfig::None => unreachable!(),
             };
+            let (key_window_size_ms, key_slide_interval_ms, key_window_type) = match keys {
+                KeysConfig::SetAgg => (
+                    shape.window_size_ms,
+                    shape.slide_interval_ms,
+                    shape.window_type,
+                ),
+                KeysConfig::DeltaSetAgg => (1000, 1000, WindowType::Tumbling),
+                KeysConfig::None => unreachable!(),
+            };
             aggregation_configs.insert(
                 2u64,
                 AggregationConfig {
@@ -170,9 +175,9 @@ mod tests {
                     aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
                     rollup_labels: KeyByLabelNames::empty(),
                     original_yaml: String::new(),
-                    window_size_ms: 1000,
-                    slide_interval_ms: 1000,
-                    window_type: WindowType::Tumbling,
+                    window_size_ms: key_window_size_ms,
+                    slide_interval_ms: key_slide_interval_ms,
+                    window_type: key_window_type,
                     spatial_filter: String::new(),
                     spatial_filter_normalized: String::new(),
                     metric: "cpu_load".to_string(),
@@ -232,7 +237,12 @@ mod tests {
                 }
                 KeysConfig::None => unreachable!(),
             };
-            let output = PrecomputedOutput::new(2000, 3000, host_a.clone(), 2);
+            let key_window_size_ms = match keys {
+                KeysConfig::SetAgg => shape.window_size_ms,
+                KeysConfig::DeltaSetAgg => 1000,
+                KeysConfig::None => unreachable!(),
+            };
+            let output = PrecomputedOutput::new(3000 - key_window_size_ms, 3000, host_a.clone(), 2);
             store.insert_precomputed_output(output, acc).unwrap();
         }
 

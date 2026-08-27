@@ -7,11 +7,12 @@ use crate::data_model::{
     StreamingConfig,
 };
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
+use crate::engines::sliding_window_composition::{plan_exact_cover, SlidingWindowSpec};
 // use crate::stores::promsketch_store::{
 //     self, is_usampling_function, metrics as ps_metrics, PromSketchStore,
 // };
 use crate::stores::{Store, TimestampedBucketsMap};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -19,6 +20,7 @@ use tracing::{debug, warn};
 use crate::precompute_operators::AccumulatorError;
 use crate::AggregateCore;
 
+use asap_types::capability_matching::key_agg_compatible_with_value;
 use asap_types::enums::WindowType;
 use promql_utilities::ast_matching::{PromQLPattern, PromQLPatternBuilder};
 use promql_utilities::data_model::KeyByLabelNames;
@@ -114,23 +116,20 @@ pub struct RangeQueryExecutionContext {
     /// Tumbling window size in ms
     pub tumbling_window_ms: u64,
     /// The value aggregation's `WindowType`. Picks how the per-step loop
-    /// composes a step's window from `bucket_map`: Sliding buckets are each
-    /// already a complete `window_size_ms`-wide merged window (see
-    /// `worker.rs::merge_panes_for_window`), so a step takes exactly the one
-    /// bucket at `current_time - lookback_ms` (`lookback_ms` ==
-    /// `window_size_ms` here); Tumbling buckets are genuinely disjoint, so a
-    /// step sums every bucket `sum_window` finds across the lookback span
-    /// (#608).
+    /// composes a step's window from `bucket_map`: Sliding selects a
+    /// non-overlapping `window_size_ms`-spaced exact cover from the denser
+    /// slide grid (#554); Tumbling sums every disjoint bucket in the
+    /// lookback span.
     pub window_type: WindowType,
     /// The value aggregation's actual `window_size_ms`, independent of
     /// `tumbling_window_ms` (which is `bucket_step_ms`, not the window
-    /// size). Used only to assert `lookback_ms == window_size_ms` for
-    /// Sliding before `single_window` relies on that equality (#608 review).
+    /// size). For Sliding, this is the stride between constituent windows in
+    /// an exact cover; `tumbling_window_ms` remains the stored grid stride.
     pub window_size_ms: u64,
     /// Same as `window_type`, for the keys aggregation -- `None` when
     /// there's no separate `keys_query`. Can legitimately differ from
-    /// `window_type` (e.g. a Sliding SetAggregator keys aggregation paired
-    /// with a Tumbling value aggregation, or vice versa).
+    /// `window_type` for the Tumbling DeltaSetAggregator exception; a
+    /// SetAggregator must share the value aggregation's complete grid.
     pub keys_window_type: Option<WindowType>,
     /// Same as `window_size_ms`, for the keys aggregation. `None` under the
     /// same condition as `keys_window_type`.
@@ -386,6 +385,7 @@ impl SimpleEngine {
     fn create_keys_query_params(
         &self,
         metric: &str,
+        query_start_timestamp: u64,
         end_timestamp: u64,
         agg_info: &AggregationIdInfo,
     ) -> Result<StoreQueryParams, String> {
@@ -395,31 +395,19 @@ impl SimpleEngine {
                 (0, end_timestamp)
             }
             AggregationType::SetAggregator => {
-                // Latest window only
-                let window_size = self
-                    .streaming_config
-                    .read()
-                    .unwrap()
-                    .get_aggregation_config(agg_info.aggregation_id_for_key)
-                    .map(|config| config.window_size_ms)
-                    .ok_or_else(|| {
-                        format!(
-                            "Failed to get window size for aggregation {}",
-                            agg_info.aggregation_id_for_key
-                        )
-                    })?;
-                (end_timestamp - window_size, end_timestamp)
+                // Resolve keys over the query's full requested lookback. A
+                // Sliding SetAggregator uses the same exact-cover planner as
+                // the value side; a Tumbling one uses the normal grid walk.
+                (query_start_timestamp, end_timestamp)
             }
             other => {
                 return Err(format!("Unsupported key aggregation type: {other:?}"));
             }
         };
 
-        // Keys always fetch via the window-grid walk (execute_store_query),
-        // never a single exact-window lookup -- this is an explicit,
-        // permanent choice, not a WindowType derivation: a keys query
-        // conceptually always needs to see the key's own bucket(s), not "the
-        // one window ending now."
+        // Fetch strategy is selected later from the key config: Sliding
+        // SetAggregator uses the exact-cover path; Tumbling SetAggregator
+        // and DeltaSetAggregator use the ordinary grid/range path.
         Ok(StoreQueryParams {
             metric: metric.to_string(),
             aggregation_id: agg_info.aggregation_id_for_key,
@@ -457,30 +445,43 @@ impl SimpleEngine {
         let range_ms = timestamps.end_timestamp - timestamps.start_timestamp;
         let do_merge = range_ms > aggregation_config_for_value.window_size_ms;
 
-        // Determine start/end for values query based on window type. For
-        // Sliding, narrow to exactly the one window ending "now" --
-        // execute_store_query's window-grid walk degenerates to a single
-        // exact lookup when given a range exactly one window wide, so this
-        // narrowing (not a separate flag) is what makes it an "exact" fetch.
-        let (values_start, values_end) = if window_type == WindowType::Sliding {
-            let exact_start =
-                timestamps.end_timestamp - aggregation_config_for_value.window_size_ms;
-            (exact_start, timestamps.end_timestamp)
-        } else {
-            // Tumbling window: range query
-            (timestamps.start_timestamp, timestamps.end_timestamp)
-        };
-
         let values_query = StoreQueryParams {
             metric: metric.to_string(),
             aggregation_id: agg_info.aggregation_id_for_value,
-            start_timestamp: values_start,
-            end_timestamp: values_end,
+            start_timestamp: timestamps.start_timestamp,
+            end_timestamp: timestamps.end_timestamp,
         };
 
         // Determine if we need a separate keys query
         let keys_query = if agg_info.aggregation_id_for_key != agg_info.aggregation_id_for_value {
-            Some(self.create_keys_query_params(metric, timestamps.end_timestamp, agg_info)?)
+            let key_config = sc
+                .get_aggregation_config(agg_info.aggregation_id_for_key)
+                .ok_or_else(|| {
+                    format!(
+                        "Aggregation config not found for key aggregation_id: {}",
+                        agg_info.aggregation_id_for_key
+                    )
+                })?;
+            if !key_agg_compatible_with_value(aggregation_config_for_value, key_config) {
+                return Err(format!(
+                    "Key aggregation {} ({:?}, W={}ms, S={}ms) is not grid-compatible with \
+                     value aggregation {} ({:?}, W={}ms, S={}ms)",
+                    key_config.aggregation_id,
+                    key_config.window_type,
+                    key_config.window_size_ms,
+                    Self::bucket_step_ms(key_config),
+                    aggregation_config_for_value.aggregation_id,
+                    aggregation_config_for_value.window_type,
+                    aggregation_config_for_value.window_size_ms,
+                    Self::bucket_step_ms(aggregation_config_for_value),
+                ));
+            }
+            Some(self.create_keys_query_params(
+                metric,
+                timestamps.start_timestamp,
+                timestamps.end_timestamp,
+                agg_info,
+            )?)
         } else {
             None
         };
@@ -587,10 +588,20 @@ impl SimpleEngine {
         );
         let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
 
-        let keys_lookback_ms = extended_store_plan
-            .keys_query
-            .as_mut()
-            .map(|keys_query| Self::widen_query_window(keys_query, query_time, query_time));
+        let keys_lookback_ms = extended_store_plan.keys_query.as_mut().map(|keys_query| {
+            if base_context.agg_info.aggregation_type_for_key == AggregationType::DeltaSetAggregator
+            {
+                // DeltaSetAggregator replays from epoch zero. Re-anchoring
+                // its [0, aligned_end) span at a misaligned evaluation time
+                // would move the start forward and silently discard early
+                // deltas.
+                keys_query.start_timestamp = 0;
+                keys_query.end_timestamp = query_time;
+                query_time
+            } else {
+                Self::widen_query_window(keys_query, query_time, query_time)
+            }
+        });
         let (keys_tumbling_window_ms, keys_window_type, keys_window_size_ms) =
             match keys_lookback_ms {
                 Some(_) => {
@@ -634,11 +645,10 @@ impl SimpleEngine {
     /// Walks the aggregation's window grid (`bucket_step_ms` apart, each
     /// window `window_size_ms` wide, per `WindowManager::window_start_for`)
     /// and looks up every grid position in `[start_timestamp, end_timestamp)`
-    /// with an exact match, merging the sparse per-window results. A range
-    /// exactly one window wide degenerates to a single exact lookup -- an
-    /// instant Sliding-window fetch gets "the one window ending now" this
-    /// way, by being narrowed to one window's width before calling
-    /// (`create_store_query_plan`), not via a separate exact/scan flag.
+    /// with an exact match, merging the sparse per-window results. Sliding
+    /// execution uses `execute_sliding_cover_query` instead so it requests
+    /// only the non-overlapping W-spaced subset rather than this entire
+    /// dense S-grid.
     fn fetch_window_grid_via_exact_lookups(
         &self,
         params: &StoreQueryParams,
@@ -733,6 +743,70 @@ impl SimpleEngine {
         result
     }
 
+    fn execute_sliding_cover_query(
+        &self,
+        params: &StoreQueryParams,
+        output_timestamps: &[u64],
+        lookback_ms: u64,
+        window_size_ms: u64,
+        slide_interval_ms: u64,
+    ) -> Result<TimestampedBucketsMap, String> {
+        let spec = SlidingWindowSpec {
+            window_size_ms,
+            slide_interval_ms,
+        };
+        let mut windows = BTreeSet::new();
+        for &output_timestamp in output_timestamps {
+            let cover = plan_exact_cover(output_timestamp, lookback_ms, spec).map_err(|error| {
+                format!(
+                    "Cannot compose Sliding aggregation {} for lookback {}ms (W={}ms, S={}ms): {:?}",
+                    params.aggregation_id, lookback_ms, window_size_ms, slide_interval_ms, error
+                )
+            })?;
+            windows.extend(cover.windows);
+        }
+        let windows: Vec<_> = windows.into_iter().collect();
+        debug!(
+            aggregation_id = params.aggregation_id,
+            lookback_ms,
+            window_size_ms,
+            slide_interval_ms,
+            window_count = windows.len(),
+            "Querying exact non-overlapping Sliding-window cover"
+        );
+        let outputs = self
+            .store
+            .query_precomputed_output_exact_batch(&params.metric, params.aggregation_id, &windows)
+            .map_err(|error| {
+                format!(
+                    "Error querying store for metric {}, agg {}, {} exact Sliding windows: {}",
+                    params.metric,
+                    params.aggregation_id,
+                    windows.len(),
+                    error
+                )
+            })?;
+
+        let required: BTreeSet<_> = windows.iter().copied().collect();
+        for (group_key, buckets) in &outputs {
+            let found: BTreeSet<_> = buckets.iter().map(|(range, _)| *range).collect();
+            if found != required {
+                let missing: Vec<_> = required.difference(&found).copied().collect();
+                return Err(format!(
+                    "Incomplete Sliding-window cover for metric {}, agg {}, group {:?}: \
+                     requested {} exact windows, missing {:?}",
+                    params.metric,
+                    params.aggregation_id,
+                    group_key,
+                    windows.len(),
+                    missing
+                ));
+            }
+        }
+
+        Ok(outputs)
+    }
+
     /// Executes the full store query plan and returns merged results
     #[allow(dead_code)]
     fn execute_and_merge_store_queries(
@@ -760,28 +834,12 @@ impl SimpleEngine {
         let merge_start_time = Instant::now();
 
         let merged_values = if value_window_type == WindowType::Sliding {
-            // Sliding window: expected exactly 1 precompute per key today
-            // (ponytail: hardcoded, #554 will make >1 legitimate — don't
-            // block on it). The store can legitimately return more than
-            // expected for one exact window; merge whatever came back
-            // instead of arbitrarily keeping the first and dropping the
-            // rest (see #567).
-            const EXPECTED_BUCKETS_PER_KEY: usize = 1;
+            // Legacy instant helper: merge every Sliding bucket supplied by
+            // its caller. The live instant path now shares the range
+            // pipeline and plans the exact non-overlapping cover upstream.
             debug!("Sliding window mode: merging {} keys", values_map.len());
-            for timestamped_buckets in values_map.values() {
-                if timestamped_buckets.is_empty() {
-                    continue;
-                }
-                if timestamped_buckets.len() != EXPECTED_BUCKETS_PER_KEY {
-                    warn!(
-                        "Sliding window expected {} precompute(s) per key, found {}. Merging all.",
-                        EXPECTED_BUCKETS_PER_KEY,
-                        timestamped_buckets.len()
-                    );
-                }
-            }
-            // Sliding windows always merge (all buckets belong to one
-            // logical window) — reuse the same merge path as Tumbling.
+            // Reuse the common accumulator merge path for the caller's
+            // already-selected Sliding cover.
             self.merge_precomputed_outputs(&values_map, true, agg_info.aggregation_type_for_value)
         } else {
             // Tumbling window: merge needed
@@ -1675,25 +1733,6 @@ impl SimpleEngine {
         window_buckets
     }
 
-    /// Returns whatever bucket(s) `bucket_map` has at exactly
-    /// `window_start`, or empty if none. Unlike `sum_window`, does not walk
-    /// or sum multiple grid positions: for a Sliding aggregation, the bucket
-    /// at `window_start` is already the complete, correctly-merged answer
-    /// for its window (`worker.rs::merge_panes_for_window` pre-merges before
-    /// storing), so summing it with neighboring positions would double-count
-    /// overlapping data (#608). Used identically by
-    /// `execute_range_query_pipeline` for both the value side and the keys
-    /// side.
-    fn single_window(
-        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
-        window_start: u64,
-    ) -> Vec<Box<dyn AggregateCore>> {
-        bucket_map
-            .get(&window_start)
-            .map(|buckets| buckets.iter().map(|b| b.clone_boxed_core()).collect())
-            .unwrap_or_default()
-    }
-
     /// Collects every bucket in `bucket_map` with a start timestamp strictly
     /// before `before`, without walking grid positions -- cost proportional
     /// to however many buckets actually exist in `bucket_map`, never to a
@@ -1754,10 +1793,11 @@ impl SimpleEngine {
             .collect()
     }
 
-    /// Picks how a step's window is composed from `bucket_map`: Sliding ->
-    /// `single_window` (one lookup); Tumbling -> `sum_window`
-    /// (scan-and-sum). Used identically by `execute_range_query_pipeline`
-    /// for both the value side and the keys side (#608).
+    /// Picks how a step's window is composed from `bucket_map`: Sliding walks
+    /// the non-overlapping stored-window stride `W`; Tumbling walks the
+    /// bucket grid stride. Used identically for values and SetAggregator
+    /// keys. Walking Sliding by its slide `S` would double-count overlapping
+    /// full-window aggregates (#608/#621).
     ///
     /// NOT used for `AggregationType::DeltaSetAggregator` keys -- callers on
     /// that path must call `collect_bucket_map_entries_before` directly
@@ -1768,9 +1808,10 @@ impl SimpleEngine {
         window_end: u64,
         step_increment: u64,
         window_type: WindowType,
+        stored_window_size_ms: u64,
     ) -> Vec<Box<dyn AggregateCore>> {
         if window_type == WindowType::Sliding {
-            Self::single_window(bucket_map, window_start)
+            Self::sum_window(bucket_map, window_start, window_end, stored_window_size_ms)
         } else {
             Self::sum_window(bucket_map, window_start, window_end, step_increment)
         }
@@ -1799,8 +1840,22 @@ impl SimpleEngine {
         use crate::engines::query_result::RangeVectorElement;
         use crate::engines::window_merger::create_window_merger;
 
-        // Step 1: Fetch all data needed for the entire range
-        let all_data = self.execute_store_query(&context.base.store_plan.values_query)?;
+        let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
+
+        // Step 1: Fetch all data needed for the entire range. Sliding
+        // aggregates are already full, overlapping windows in the store, so
+        // request only the W-spaced exact cover for each output timestamp.
+        let all_data = if context.window_type == WindowType::Sliding {
+            self.execute_sliding_cover_query(
+                &context.base.store_plan.values_query,
+                &context.output_timestamps,
+                lookback_ms,
+                context.window_size_ms,
+                context.tumbling_window_ms,
+            )?
+        } else {
+            self.execute_store_query(&context.base.store_plan.values_query)?
+        };
 
         if all_data.is_empty() {
             return Err(format!("No data found for metric: {}", context.base.metric));
@@ -1822,6 +1877,21 @@ impl SimpleEngine {
         // mirroring the values loop, is the fix.
         let keys_raw_data: Option<TimestampedBucketsMap> = match &context.base.store_plan.keys_query
         {
+            Some(keys_query) if context.keys_window_type == Some(WindowType::Sliding) => Some(
+                self.execute_sliding_cover_query(
+                    keys_query,
+                    &context.output_timestamps,
+                    context
+                        .keys_lookback_ms
+                        .ok_or("Sliding keys query is missing its lookback")?,
+                    context
+                        .keys_window_size_ms
+                        .ok_or("Sliding keys query is missing its window size")?,
+                    context
+                        .keys_tumbling_window_ms
+                        .ok_or("Sliding keys query is missing its slide interval")?,
+                )?,
+            ),
             Some(keys_query) => Some(self.execute_store_query(keys_query)?),
             None => None,
         };
@@ -1836,28 +1906,14 @@ impl SimpleEngine {
         let buckets_per_step = context.buckets_per_step;
         let lookback_bucket_count = context.lookback_bucket_count;
         let tumbling_window_ms = context.tumbling_window_ms;
-        let lookback_ms = (lookback_bucket_count as u64) * tumbling_window_ms;
         let window_type = context.window_type;
-        // single_window's correctness for Sliding depends on this equality
-        // holding -- it looks up exactly one bucket at
-        // `current_time - lookback_ms` and trusts that position to be the
-        // step's whole window. Active assert (not debug_assert!): a broken
-        // equality here means silently wrong data, the same failure mode
-        // #608 fixed, not just a debug-time nicety (#608 review).
-        assert!(
-            window_type != WindowType::Sliding || lookback_ms == context.window_size_ms,
-            "Sliding range query: lookback_ms ({lookback_ms}) must equal window_size_ms \
-             ({}) -- single_window's per-step lookup is only correct under this invariant",
-            context.window_size_ms
-        );
         let keys_lookback_ms = context.keys_lookback_ms;
         let keys_tumbling_window_ms = context.keys_tumbling_window_ms;
         let keys_window_type = context.keys_window_type;
         let keys_window_size_ms = context.keys_window_size_ms;
 
         // Named distinctly from `WindowType` (Sliding/Tumbling, picks how a
-        // step's window is composed from `bucket_map` below -- one lookup vs.
-        // a scan-and-sum, see #608) -- this describes step-to-step overlap in
+        // step's window is composed from `bucket_map` below) -- this describes step-to-step overlap in
         // the OUTPUT iteration, an unrelated concept that happens to reuse
         // the words "sliding"/"hopping". See #581.
         let step_overlap_mode = if buckets_per_step <= lookback_bucket_count {
@@ -1919,6 +1975,7 @@ impl SimpleEngine {
                 bucket_map: GroupBucketMap<'a>,
                 lookback_ms: u64,
                 tumbling_window_ms: u64,
+                stored_window_size_ms: u64,
                 window_type: WindowType,
             },
         }
@@ -1946,15 +2003,6 @@ impl SimpleEngine {
                     keys_window_type.expect("keys_raw_data implies keys_window_type is Some");
                 let keys_window_size_ms =
                     keys_window_size_ms.expect("keys_raw_data implies keys_window_size_ms is Some");
-                // Same invariant as the value side's assert above, for the
-                // keys aggregation (#608 review).
-                assert!(
-                    keys_window_type != WindowType::Sliding
-                        || keys_lookback_ms == keys_window_size_ms,
-                    "Sliding range query: keys_lookback_ms ({keys_lookback_ms}) must equal \
-                     keys_window_size_ms ({keys_window_size_ms}) -- single_window's per-step \
-                     keys lookup is only correct under this invariant"
-                );
                 keys_map
                     .iter()
                     .filter_map(
@@ -1965,6 +2013,7 @@ impl SimpleEngine {
                                     bucket_map: Self::build_bucket_map(raw_keys_buckets),
                                     lookback_ms: keys_lookback_ms,
                                     tumbling_window_ms: keys_tumbling_window_ms,
+                                    stored_window_size_ms: keys_window_size_ms,
                                     window_type: keys_window_type,
                                 },
                             )),
@@ -2066,6 +2115,7 @@ impl SimpleEngine {
                         bucket_map: keys_bucket_map,
                         lookback_ms: keys_lookback_ms,
                         tumbling_window_ms: keys_tumbling_window_ms,
+                        stored_window_size_ms: keys_stored_window_size_ms,
                         window_type: keys_window_type,
                     } => {
                         // DeltaSetAggregator's keys window is always
@@ -2078,38 +2128,49 @@ impl SimpleEngine {
                         // already bounded by real data. Bypass that walk
                         // entirely for this aggregation type (#581 stage
                         // E.4 review).
-                        let keys_window_buckets = if key_accumulator_type
-                            == AggregationType::DeltaSetAggregator
-                        {
-                            // #588/#606 force DeltaSetAggregator's own
-                            // config to Tumbling at planning time -- but
-                            // that's a planner convention, not a runtime
-                            // invariant this code can trust blindly.
-                            // AggregationConfig can be (and in this crate's
-                            // own tests routinely is) constructed directly,
-                            // bypassing the planner. A Sliding DeltaSetAgg
-                            // has no coherent "replay from the beginning"
-                            // semantics to begin with, so this asserts
-                            // rather than silently reinterpreting it (#581
-                            // stage E.4 review).
-                            assert_eq!(
+                        let keys_window_buckets =
+                            if key_accumulator_type == AggregationType::DeltaSetAggregator {
+                                // #588/#606 force DeltaSetAggregator's own
+                                // config to Tumbling at planning time -- but
+                                // that's a planner convention, not a runtime
+                                // invariant this code can trust blindly.
+                                // AggregationConfig can be (and in this crate's
+                                // own tests routinely is) constructed directly,
+                                // bypassing the planner. A Sliding DeltaSetAgg
+                                // has no coherent "replay from the beginning"
+                                // semantics to begin with, so this asserts
+                                // rather than silently reinterpreting it (#581
+                                // stage E.4 review).
+                                assert_eq!(
                                 *keys_window_type,
                                 WindowType::Tumbling,
                                 "DeltaSetAggregator keys config must be Tumbling (#588/#606) -- \
                                  the replay-from-the-beginning fast path has no correct meaning \
                                  for Sliding"
                             );
-                            Self::collect_bucket_map_entries_before(keys_bucket_map, current_time)
-                        } else {
-                            let keys_window_start = current_time.saturating_sub(*keys_lookback_ms);
-                            Self::window_buckets_for_step(
-                                keys_bucket_map,
-                                keys_window_start,
-                                current_time,
-                                *keys_tumbling_window_ms,
-                                *keys_window_type,
-                            )
-                        };
+                                let replay_end = if window_type == WindowType::Sliding {
+                                    current_time - (current_time % tumbling_window_ms)
+                                } else {
+                                    current_time
+                                };
+                                Self::collect_bucket_map_entries_before(keys_bucket_map, replay_end)
+                            } else {
+                                let keys_window_end = if *keys_window_type == WindowType::Sliding {
+                                    current_time - (current_time % *keys_tumbling_window_ms)
+                                } else {
+                                    current_time
+                                };
+                                let keys_window_start =
+                                    keys_window_end.saturating_sub(*keys_lookback_ms);
+                                Self::window_buckets_for_step(
+                                    keys_bucket_map,
+                                    keys_window_start,
+                                    keys_window_end,
+                                    *keys_tumbling_window_ms,
+                                    *keys_window_type,
+                                    *keys_stored_window_size_ms,
+                                )
+                            };
 
                         if keys_window_buckets.is_empty() {
                             debug!(
@@ -2134,14 +2195,20 @@ impl SimpleEngine {
 
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
-                let window_start = current_time.saturating_sub(lookback_ms);
+                let window_end = if window_type == WindowType::Sliding {
+                    current_time - (current_time % tumbling_window_ms)
+                } else {
+                    current_time
+                };
+                let window_start = window_end.saturating_sub(lookback_ms);
 
                 let window_buckets = Self::window_buckets_for_step(
                     bucket_map,
                     window_start,
-                    current_time,
+                    window_end,
                     tumbling_window_ms,
                     window_type,
+                    context.window_size_ms,
                 );
 
                 if window_buckets.is_empty() {
@@ -3928,6 +3995,11 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                 KeysConfig::DeltaSetAgg => AggregationType::DeltaSetAggregator,
                 KeysConfig::None => unreachable!(),
             };
+            let (key_window_size_ms, key_slide_interval_ms, key_window_type) = match keys {
+                KeysConfig::SetAgg => (window_size_ms, slide_interval_ms, window_type),
+                KeysConfig::DeltaSetAgg => (1000, 1000, WindowType::Tumbling),
+                KeysConfig::None => unreachable!(),
+            };
             aggregation_configs.insert(
                 2u64,
                 AggregationConfig {
@@ -3939,9 +4011,9 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                     aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
                     rollup_labels: KeyByLabelNames::empty(),
                     original_yaml: String::new(),
-                    window_size_ms: 1000,
-                    slide_interval_ms: 1000,
-                    window_type: WindowType::Tumbling,
+                    window_size_ms: key_window_size_ms,
+                    slide_interval_ms: key_slide_interval_ms,
+                    window_type: key_window_type,
                     spatial_filter: String::new(),
                     spatial_filter_normalized: String::new(),
                     metric: "cpu_load".to_string(),
@@ -3986,7 +4058,12 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                 }
                 KeysConfig::None => unreachable!(),
             };
-            let output = PrecomputedOutput::new(2000, 3000, host_a.clone(), 2);
+            let key_window_size_ms = match keys {
+                KeysConfig::SetAgg => window_size_ms,
+                KeysConfig::DeltaSetAgg => 1000,
+                KeysConfig::None => unreachable!(),
+            };
+            let output = PrecomputedOutput::new(3000 - key_window_size_ms, 3000, host_a.clone(), 2);
             store.insert_precomputed_output(output, acc).unwrap();
         }
 
