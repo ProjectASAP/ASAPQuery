@@ -535,6 +535,60 @@ mod tests {
         )
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_vector_vector_topk_lhs_topk_rhs_joins_by_original_labels() {
+        let query = "topk(2, metric_a) + topk(2, metric_b)";
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), 1.0)
+            .expect("Expected result for instant topk/topk query");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].labels.labels, vec!["host-b".to_string()]);
+        assert!((elements[0].value - 250.0).abs() < 1e-10);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_vector_vector_topk_lhs_plus_plain_rhs_joins_by_original_labels() {
+        let query = "topk(2, metric_a) + sum(metric_b) by (host)";
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 1000.0), ("host-b", 2000.0), ("host-c", 3000.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), 1.0)
+            .expect("Expected result for instant topk/plain query");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+
+        assert_eq!(elements.len(), 2);
+        let mut values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                (element.labels.labels[0].clone(), element.value)
+            })
+            .collect();
+        assert_eq!(values.remove("host-a"), Some(1100.0));
+        assert_eq!(values.remove("host-b"), Some(2050.0));
+        assert!(values.is_empty());
+    }
+
     // RED test for PR #629 review finding 1 (see
     // .design_docs/pr-629-review-findings-handoff.md): `apply_range_topk`'s
     // formatting step (`enable_topk_formatting=true`) prepends EACH arm's

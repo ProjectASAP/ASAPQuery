@@ -94,6 +94,13 @@ fn combine_scalar(
         .collect()
 }
 
+fn binary_matching_label_names(label_names: Vec<String>) -> Vec<String> {
+    label_names
+        .into_iter()
+        .filter(|label| label != "__name__")
+        .collect()
+}
+
 impl SimpleEngine {
     /// Aligns `end_timestamp` down to the nearest data-ingestion-interval
     /// boundary, unconditionally — mirroring SQL's `align_end_timestamp_sql`.
@@ -460,11 +467,10 @@ impl SimpleEngine {
                 // for just this arm. Accepted behavior change (#567); warn loudly
                 // so it's visible rather than silent.
                 let results = self
-                    // (true, true): safe unconditionally — both flags are
-                    // self-gated on statistic == Topk / a "k" kwarg being
-                    // present, same as the main instant-query path (see
-                    // execute_query_pipeline's doc comment).
-                    .execute_query_pipeline(&ctx, true, true)
+                    // Binary arms need Topk limiting, but must remain in the
+                    // unformatted intermediate label representation until
+                    // after the binary join.
+                    .execute_query_pipeline(&ctx, true, false)
                     .map_err(|e| {
                         warn!(
                             "Binary-expr arm for metric '{}' failed ({}) — \
@@ -475,7 +481,7 @@ impl SimpleEngine {
                         e
                     })
                     .ok()?;
-                Some((results, label_names))
+                Some((results, binary_matching_label_names(label_names)))
             }
         }
     }
@@ -1577,12 +1583,10 @@ mod topk_pipeline_tests {
         }
     }
 
-    /// A topk leaf wrapped in a binary expr (`topk(10, ...) + 0`) must still
-    /// get the same top-10 truncation and metric-name-prefixed formatting as
-    /// the bare `topk(10, ...)` query — evaluate_arm_native's leaf branch
-    /// used to hardcode (false, false) for enable_topk_limiting/formatting,
-    /// which would have returned all 15 unformatted (single-label) rows here
-    /// instead of the top 10 with the metric-name prefix.
+    /// A topk leaf wrapped in an arithmetic binary expr (`topk(10, ...) + 0`)
+    /// must still truncate to the top 10, while arithmetic output drops the
+    /// metric name. Binary-arm evaluation must not apply standalone Topk
+    /// presentation formatting before the join.
     #[test]
     fn topk_wrapped_in_binary_expr_still_truncates_and_formats() {
         let (engine, store) = build_topk_engine();
@@ -1624,16 +1628,10 @@ mod topk_pipeline_tests {
                 "results must stay sorted by count descending"
             );
         }
-        assert_eq!(
-            results[0].labels.labels,
-            vec![METRIC.to_string(), "10.0.0.15".to_string()],
-        );
+        assert_eq!(results[0].labels.labels, vec!["10.0.0.15".to_string()],);
         assert_eq!(results[0].value, 150.0);
         for element in &results {
-            assert_eq!(
-                element.labels.labels[0], METRIC,
-                "binary-expr path must still prepend the metric name (PromQL top-k formatting)",
-            );
+            assert_eq!(element.labels.labels.len(), 1);
         }
     }
 }
