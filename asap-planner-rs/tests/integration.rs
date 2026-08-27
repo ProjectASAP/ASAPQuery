@@ -128,6 +128,28 @@ query_groups:
     assert!(message.contains("rate(http_requests_total[55s])"));
 }
 
+#[test]
+fn sliding_window_config_rejects_redundant_divisors() {
+    let result = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  slide_divisor: 1
+query_groups: []
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    );
+    let error = match result {
+        Ok(_) => panic!("sliding config with divisor 1 should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("windowing.slide_divisor must be at least 2, got 1"));
+}
+
 /// Schema for binary arithmetic tests: errors_total and requests_total.
 fn binary_arithmetic_schema() -> PromQLSchema {
     PromQLSchema::new()
