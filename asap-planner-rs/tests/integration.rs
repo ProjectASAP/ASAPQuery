@@ -172,6 +172,39 @@ query_groups: []
         .contains("windowing.slide_divisor is only valid for sliding windows"));
 }
 
+#[test]
+fn explicit_tumbling_window_override_keeps_tumbling_candidates() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "tumbling"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[1m])"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let streaming: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_streaming_yaml_string().unwrap()).unwrap();
+    let aggregation = &streaming["aggregations"][0];
+
+    assert_eq!(aggregation["windowType"].as_str(), Some("tumbling"));
+    assert_eq!(
+        aggregation["slideIntervalMs"].as_u64(),
+        aggregation["windowSizeMs"].as_u64()
+    );
+    assert_ne!(aggregation["windowType"].as_str(), Some("sliding"));
+}
+
 /// Schema for binary arithmetic tests: errors_total and requests_total.
 fn binary_arithmetic_schema() -> PromQLSchema {
     PromQLSchema::new()

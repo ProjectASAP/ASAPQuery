@@ -105,7 +105,14 @@ pub fn apply_windowing_override(
             config.slide_interval_ms = config.window_size_ms;
         }
         WindowingType::Sliding => {
-            let divisor = windowing.slide_divisor.expect("validated sliding divisor");
+            let divisor = match windowing.slide_divisor {
+                Some(divisor) => divisor,
+                None => {
+                    return Err(
+                        "windowing.slide_divisor is required for sliding windows".to_string()
+                    )
+                }
+            };
             if !config.window_size_ms.is_multiple_of(divisor) {
                 return Err(format!(
                     "window_size_ms ({}) must be evenly divisible by slide_divisor ({divisor})",

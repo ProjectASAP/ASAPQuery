@@ -377,7 +377,10 @@ def main(cfg: DictConfig) -> None:
 
             # Generate and rsync the planner input config to the node
             planner_input_yaml = config.generate_sql_planner_input(
-                ep.query_groups, dataset_cfg, cfg.get("sketch_parameters", None)
+                ep.query_groups,
+                dataset_cfg,
+                cfg.get("sketch_parameters", None),
+                cfg.get("windowing", None),
             )
             local_planner_input = os.path.join(
                 local_controller_dir, "planner_input.yaml"

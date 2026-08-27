@@ -31,6 +31,12 @@ pub fn generate_plan(
 ) -> Result<GeneratorOutput, ControllerError> {
     let metric_schema = schema.clone();
 
+    if let Some(windowing) = &controller_config.windowing {
+        windowing
+            .validate()
+            .map_err(ControllerError::PlannerError)?;
+    }
+
     // Determine cleanup policy
     let cleanup_policy = controller_config
         .aggregate_cleanup
