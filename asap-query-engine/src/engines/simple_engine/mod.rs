@@ -777,6 +777,9 @@ impl SimpleEngine {
             window_size_ms,
             slide_interval_ms,
         };
+        // Range-step covers overlap heavily. Keep one sorted set so each
+        // exact stored window is fetched once, in deterministic order, even
+        // when multiple output timestamps require it.
         let mut windows = BTreeSet::new();
         for &output_timestamp in output_timestamps {
             let cover = plan_exact_cover(output_timestamp, lookback_ms, spec).map_err(|error| {

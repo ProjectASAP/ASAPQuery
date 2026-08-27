@@ -257,11 +257,8 @@ mod tests {
     /// but the KEY aggregation is a Sliding window with
     /// `key_slide_interval_ms < key_window_size_ms` (#600). Real Sliding
     /// buckets are persisted on the slide_interval_ms grid, not the
-    /// window_size_ms grid (`precompute_engine/window_manager.rs`), so the
-    /// keys bucket span here is `key_slide_interval_ms`, not
-    /// `key_window_size_ms` -- unlike the value side, which stays Tumbling
-    /// (span == window) exactly as `create_range_engine_dual_input_with_windows`
-    /// already does.
+    /// window_size_ms grid (`precompute_engine/window_manager.rs`), and the
+    /// value side uses the same Sliding grid for these tests.
     #[allow(clippy::too_many_arguments)]
     fn create_range_engine_dual_input_sliding_keys(
         metric: &str,
@@ -411,8 +408,8 @@ mod tests {
         //   t=5000, whose keys lookback window is
         //   [5000 - key_window_size_ms, 5000) = [3000,5000) -- lining up
         //   exactly with the inserted bucket.
-        // - value_data is also placed at timestamp=5000 (Tumbling, 1000ms
-        //   wide -> bucket [4000,5000)) purely so the CountMinSketch value
+        // - value_data is also placed at timestamp=5000 (Sliding, 2000ms
+        //   wide -> bucket [3000,5000)) purely so the CountMinSketch value
         //   side resolves at the same t=5000 step; it's unrelated to #600.
         let mut keys_add = SetAggregatorAccumulator::new();
         keys_add.add_key(KeyByLabelValues {
