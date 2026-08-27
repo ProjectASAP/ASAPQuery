@@ -102,6 +102,24 @@ pub struct WindowingConfig {
     pub slide_divisor: Option<u64>,
 }
 
+impl WindowingConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        match self.window_type {
+            WindowingType::Tumbling if self.slide_divisor.is_some() => {
+                Err("windowing.slide_divisor is only valid for sliding windows".to_string())
+            }
+            WindowingType::Sliding => match self.slide_divisor {
+                None => Err("windowing.slide_divisor is required for sliding windows".to_string()),
+                Some(divisor) if divisor < 2 => Err(format!(
+                    "windowing.slide_divisor must be at least 2, got {divisor}"
+                )),
+                Some(_) => Ok(()),
+            },
+            WindowingType::Tumbling => Ok(()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WindowingType {

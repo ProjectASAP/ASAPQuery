@@ -97,6 +97,7 @@ pub fn apply_windowing_override(
     let Some(windowing) = windowing else {
         return Ok(());
     };
+    windowing.validate()?;
 
     match windowing.window_type {
         WindowingType::Tumbling => {
@@ -104,14 +105,7 @@ pub fn apply_windowing_override(
             config.slide_interval_ms = config.window_size_ms;
         }
         WindowingType::Sliding => {
-            let divisor = windowing.slide_divisor.ok_or_else(|| {
-                "windowing.slide_divisor is required for sliding windows".to_string()
-            })?;
-            if divisor < 2 {
-                return Err(format!(
-                    "windowing.slide_divisor must be at least 2, got {divisor}"
-                ));
-            }
+            let divisor = windowing.slide_divisor.expect("validated sliding divisor");
             if !config.window_size_ms.is_multiple_of(divisor) {
                 return Err(format!(
                     "window_size_ms ({}) must be evenly divisible by slide_divisor ({divisor})",

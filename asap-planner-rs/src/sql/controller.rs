@@ -67,6 +67,11 @@ impl SQLController {
 
     pub fn from_yaml(yaml: &str, opts: SQLRuntimeOptions) -> Result<Self, ControllerError> {
         let config: SQLControllerConfig = serde_yaml::from_str(yaml)?;
+        if let Some(windowing) = &config.windowing {
+            windowing
+                .validate()
+                .map_err(ControllerError::PlannerError)?;
+        }
         Ok(Self {
             config,
             options: opts,
