@@ -51,6 +51,25 @@ fn config_file_sliding_window_override_generates_per_query_candidates() {
         .all(|(_, _, window_type)| window_type != "tumbling"));
 }
 
+#[test]
+fn sliding_window_validation_reports_all_invalid_sql_queries() {
+    let controller = SQLController::from_file(
+        std::path::Path::new("tests/test_data/windowing/sql_sliding_invalid.yaml"),
+        sql_opts(),
+    )
+    .unwrap();
+
+    let result = controller.generate();
+    let error = match result {
+        Ok(_) => panic!("invalid sliding windows should abort plan generation"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+
+    assert!(message.contains("DATEADD(s, -65, NOW())"));
+    assert!(message.contains("DATEADD(s, -55, NOW())"));
+}
+
 /// Single-query config with a 3-column metadata schema.
 ///
 /// Schema: metrics_table
