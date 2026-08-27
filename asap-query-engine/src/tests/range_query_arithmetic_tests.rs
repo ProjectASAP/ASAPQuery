@@ -409,25 +409,10 @@ mod tests {
         )
     }
 
-    // Documents a PRE-EXISTING bug, unrelated to PR #629, NOT one of the 4
-    // review findings being addressed here (see
-    // .design_docs/pr-629-review-findings-handoff.md, Finding 1). Confirmed
-    // via `git log -L` that `build_promql_execution_context_tail` has
-    // unconditionally prepended `"__name__"` to a Topk arm's *label names*
-    // (promql.rs, the `if statistic_to_compute == Statistic::Topk` block)
-    // since commit 9ac794c ("simple engine split by language #284"), long
-    // before #629. Because a plain (non-topk) arm never gets that prepend,
-    // `handle_binary_expr_range_promql`'s `lhs_labels != rhs_labels` guard
-    // (label *names*, checked before any join) rejects EVERY
-    // `topk(...) OP plain_metric` binary expression outright, on both the
-    // range and instant paths identically -- the query never reaches the
-    // join code at all, let alone the `apply_range_topk` formatting-mutates
-    // `elem.labels` *values* bug Finding 1 actually describes. This is
-    // asserted here only so the (surprising) current behavior is pinned;
-    // fixing it is out of scope for PR #629's review comments -- tracked as
-    // its own issue, #631, alongside the topk+topk repro below.
+    // Regression test for issue #631: Topk preserves the original grouping
+    // labels for binary matching, while arithmetic drops the metric name.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_range_vector_vector_topk_lhs_plus_plain_rhs_returns_none() {
+    async fn test_range_vector_vector_topk_lhs_plus_plain_rhs_joins_by_original_labels() {
         let query = "topk(2, metric_a) + sum(metric_b) by (host)";
         let engine = build_range_topk_plus_plain_engine(
             "topk(2, metric_a)",
@@ -436,12 +421,23 @@ mod tests {
             &[("host-a", 1000.0), ("host-b", 2000.0), ("host-c", 3000.0)],
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
-        assert!(
-            result.is_none(),
-            "pre-existing __name__ label-name mismatch (predates #629) should reject this \
-             query outright, got {result:?}"
-        );
+        let (_, qr) = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("Expected result for range topk/plain query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(elements.len(), 2);
+        let mut values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                assert_eq!(element.samples.len(), 1);
+                (element.labels.labels[0].clone(), element.samples[0].value)
+            })
+            .collect();
+        assert_eq!(values.remove("host-a"), Some(1100.0));
+        assert_eq!(values.remove("host-b"), Some(2050.0));
+        assert!(values.is_empty());
     }
 
     /// Builds a SimpleEngine with two independent self-keyed topk-capable
@@ -535,25 +531,63 @@ mod tests {
         )
     }
 
-    // RED test for PR #629 review finding 1 (see
-    // .design_docs/pr-629-review-findings-handoff.md): `apply_range_topk`'s
-    // formatting step (`enable_topk_formatting=true`) prepends EACH arm's
-    // own metric name to `elem.labels` before the vector-vector join. Two
-    // *different* topk metrics joined by a shared grouping label ("host")
-    // pass the earlier label-*names* guard (both get `"__name__"`
-    // prepended identically), so this reaches the join -- but the join
-    // then compares `["metric_a", host]`-shaped values against
-    // `["metric_b", host]`-shaped values, which never match regardless of
-    // whether the host itself is common to both topk's surviving sets.
-    // Real PromQL vector matching ignores `__name__`/joins by the shared
-    // label ("host") alone, so this should succeed wherever both topks kept
-    // that host -- the premature per-arm metric-name prepend breaks that.
-    //
-    // Tracked in #631, not fixed as part of PR #629 -- ignored so this RED
-    // repro doesn't fail this PR's test suite. Real Prometheus semantics for
-    // this query shape haven't been confirmed yet either.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "tracked in #631, not part of PR #629's scope"]
+    async fn instant_vector_vector_topk_lhs_topk_rhs_joins_by_original_labels() {
+        let query = "topk(2, metric_a) + topk(2, metric_b)";
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), 1.0)
+            .expect("Expected result for instant topk/topk query");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].labels.labels, vec!["host-b".to_string()]);
+        assert!((elements[0].value - 250.0).abs() < 1e-10);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_vector_vector_topk_lhs_plus_plain_rhs_joins_by_original_labels() {
+        let query = "topk(2, metric_a) + sum(metric_b) by (host)";
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 1000.0), ("host-b", 2000.0), ("host-c", 3000.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), 1.0)
+            .expect("Expected result for instant topk/plain query");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+
+        assert_eq!(elements.len(), 2);
+        let mut values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                (element.labels.labels[0].clone(), element.value)
+            })
+            .collect();
+        assert_eq!(values.remove("host-a"), Some(1100.0));
+        assert_eq!(values.remove("host-b"), Some(2050.0));
+        assert!(values.is_empty());
+    }
+
+    // Regression test for issue #631: different Topk metric names must not
+    // become part of the intermediate vector-matching identity.
+    #[tokio::test(flavor = "multi_thread")]
     async fn test_range_vector_vector_topk_lhs_topk_rhs() {
         // topk(2, metric_a): host-a=100, host-b=50 survive; host-c=10 dropped.
         // topk(2, metric_b): host-b=200, host-c=300 survive; host-a=5 dropped.
@@ -578,5 +612,264 @@ mod tests {
         assert!(elements[0].labels.labels.contains(&"host-b".to_string()));
         assert_eq!(elements[0].samples.len(), 1);
         assert!((elements[0].samples[0].value - 250.0).abs() < 1e-10);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_preserves_matching_for_all_arithmetic_ops() {
+        for (op, expected, candidates_a, candidates_b) in [
+            (
+                "+",
+                250.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "-",
+                -150.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "*",
+                10_000.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "/",
+                0.25,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "%",
+                50.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "^",
+                8.0,
+                vec![("host-a", 1.0), ("host-b", 2.0), ("host-c", 0.0)],
+                vec![("host-a", 1.0), ("host-b", 3.0), ("host-c", 2.0)],
+            ),
+        ] {
+            let engine = build_range_two_topk_engine(
+                "topk(2, metric_a)",
+                "topk(2, metric_b)",
+                &candidates_a,
+                &candidates_b,
+            );
+            let query = format!("topk(2, metric_a) {op} topk(2, metric_b)");
+            let (_, qr) = engine
+                .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+                .unwrap_or_else(|| panic!("Expected result for operator {op}"));
+            let elements = matrix_values(qr);
+
+            assert_eq!(elements.len(), 1, "operator {op}");
+            assert_eq!(elements[0].labels.labels, vec!["host-b".to_string()]);
+            assert_eq!(elements[0].samples.len(), 1, "operator {op}");
+            assert!(
+                (elements[0].samples[0].value - expected).abs() < 1e-10,
+                "operator {op}: expected {expected}, got {}",
+                elements[0].samples[0].value
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_preserves_matching_for_power() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 2.0), ("host-b", 1.0)],
+            &[("host-a", 3.0), ("host-b", 1.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) ^ topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .expect("Expected result for power operator");
+        let elements = matrix_values(qr);
+        let values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| (element.labels.labels[0].clone(), element.samples[0].value))
+            .collect();
+
+        assert_eq!(values.get("host-a"), Some(&8.0));
+        assert_eq!(values.get("host-b"), Some(&1.0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_join_with_no_matches_returns_empty_vector() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-c", 300.0), ("host-d", 200.0)],
+        );
+
+        let result =
+            engine.handle_query_promql("topk(2, metric_a) + topk(2, metric_b)".to_string(), 1.0);
+        let (_, qr) = result.expect("valid no-match join should return an empty vector");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+        assert!(elements.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_with_no_matches_returns_empty_matrix() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-c", 300.0), ("host-d", 200.0)],
+        );
+
+        let result = engine.handle_range_query_promql(
+            "topk(2, metric_a) + topk(2, metric_b)".to_string(),
+            1.0,
+            2.0,
+            1.0,
+        );
+        let (_, qr) = result.expect("valid no-match join should return an empty matrix");
+        assert!(matrix_values(qr).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_scalar_arithmetic_drops_metric_name() {
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[],
+        );
+
+        let (_, qr) = engine
+            .handle_range_query_promql("topk(2, metric_a) + 2".to_string(), 1.0, 2.0, 1.0)
+            .expect("Expected result for range topk/scalar query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(elements.len(), 2);
+        let values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                assert_eq!(element.samples.len(), 1);
+                (element.labels.labels[0].clone(), element.samples[0].value)
+            })
+            .collect();
+        assert_eq!(values.get("host-a"), Some(&102.0));
+        assert_eq!(values.get("host-b"), Some(&52.0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_comparison_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql("topk(2, metric_a) == topk(2, metric_b)".to_string(), 1.0,)
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_comparison_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) == topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nested_topk_binary_comparison_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql(
+                "(topk(2, metric_a) == topk(2, metric_b)) + topk(2, metric_a)".to_string(),
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql(
+                "topk(2, metric_a) + on(__name__) topk(2, metric_b)".to_string(),
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) + on(__name__) topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nested_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql(
+                "(topk(2, metric_a) + on(__name__) topk(2, metric_b)) + topk(2, metric_a)"
+                    .to_string(),
+                1.0,
+            )
+            .is_none());
     }
 }
