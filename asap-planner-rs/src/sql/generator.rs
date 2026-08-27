@@ -85,6 +85,7 @@ pub fn generate_sql_plan(
                 opts.streaming_engine,
                 config.sketch_parameters.clone(),
                 cleanup_policy,
+                config.windowing.clone(),
             );
 
             let (configs, cleanup_param) =
