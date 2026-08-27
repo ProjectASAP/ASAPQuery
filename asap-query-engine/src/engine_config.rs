@@ -1,5 +1,8 @@
 use asap_types::enums::QueryLanguage;
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
+use query_engine_rust::precompute_engine::computed_labels::ComputedLabelConfig;
+use query_engine_rust::precompute_engine::stateful_transition::StatefulTransitionConfig;
+use std::collections::HashMap;
 
 pub fn check_config(config: &EngineConfig) -> Result<(), String> {
     match (&config.ingest, &config.streaming_engine) {
@@ -235,9 +238,14 @@ pub enum IngestConfig {
     Csv {
         path: String,
         metric_name: String,
-        value_col: String,
+        #[serde(default)]
+        value_col: Option<String>,
         #[serde(default)]
         label_cols: Vec<String>,
+        #[serde(default)]
+        computed_label_cols: HashMap<String, ComputedLabelConfig>,
+        #[serde(default)]
+        stateful_transitions: Vec<StatefulTransitionConfig>,
         timestamp_col: Option<String>,
         #[serde(default)]
         start_ts_ms: i64,

@@ -1,8 +1,10 @@
+pub mod pattern_rewrites;
 pub mod sqlhelper;
 pub mod sqlparser_test;
 pub mod sqlpattern_matcher;
 pub mod sqlpattern_parser;
 
+pub use pattern_rewrites::*;
 pub use sqlhelper::{detect_sql_topk, SQLSchema, SqlTopk, Table, TopkWeighting};
 pub use sqlpattern_matcher::*;
 pub use sqlpattern_parser::*;

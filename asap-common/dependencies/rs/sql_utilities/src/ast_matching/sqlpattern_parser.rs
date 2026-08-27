@@ -1,5 +1,8 @@
 use crate::sqlhelper::SQLSchema;
-use crate::sqlhelper::{AggregationInfo, OrderByItem, SQLQueryData, TimeInfo};
+use crate::sqlhelper::{
+    AggregationInfo, OrderByItem, SQLBucketedCountIfOutput, SQLBucketedCountIfQueryData,
+    SQLQueryData, TimeInfo,
+};
 use sqlparser::ast::*;
 use std::collections::HashSet;
 
@@ -39,6 +42,289 @@ impl SQLPatternParser {
         Self {
             schema: schema.clone(),
             query_evaluation_time,
+        }
+    }
+
+    /// Flatten an AND expression into a list of conjuncts.
+    /// Example:
+    ///   time BETWEEN ... AND ... AND collector = 'rrc00'
+    /// becomes:
+    ///   [time BETWEEN ... AND ..., collector = 'rrc00']
+    fn flatten_and_conjuncts<'a>(expr: &'a Expr, out: &mut Vec<&'a Expr>) {
+        match expr {
+            Expr::BinaryOp {
+                left,
+                op: BinaryOperator::And,
+                right,
+            } => {
+                Self::flatten_and_conjuncts(left, out);
+                Self::flatten_and_conjuncts(right, out);
+            }
+            _ => out.push(expr),
+        }
+    }
+
+    /// Try to parse one expression as a time predicate.
+    fn get_time_info_from_expr(&self, expr: &Expr) -> Option<TimeInfo> {
+        match expr {
+            Expr::Between {
+                expr,
+                negated,
+                low,
+                high,
+            } => {
+                if *negated {
+                    return None;
+                }
+
+                let col_name = match expr.as_ref() {
+                    Expr::Identifier(ident) => ident.value.clone(),
+                    _ => return None,
+                };
+
+                let start = self.get_timestamp_from_between_highlow(low)?;
+                let end = self.get_timestamp_from_between_highlow(high)?;
+                let duration = end - start;
+
+                Some(TimeInfo::new(col_name, start, duration))
+            }
+
+            Expr::BinaryOp {
+                left,
+                op: BinaryOperator::And,
+                right,
+            } => self.get_time_info_from_half_open(left, right),
+
+            _ => None,
+        }
+    }
+
+    pub fn parse_bucketed_countif_query(
+        &self,
+        statements: &[Statement],
+    ) -> Option<SQLBucketedCountIfQueryData> {
+        if statements.len() != 1 {
+            return None;
+        }
+
+        let query = match &statements[0] {
+            Statement::Query(query) => query,
+            _ => return None,
+        };
+
+        let order_by_items = self.parse_order_by_items(query)?;
+        if query.limit_clause.is_some() {
+            return None;
+        }
+
+        let query = self.cte_to_subquery(query);
+
+        let select = match query.body.as_ref() {
+            SetExpr::Select(select) => select,
+            _ => return None,
+        };
+
+        self.parse_bucketed_countif_select(select, order_by_items)
+    }
+
+    fn parse_bucketed_countif_select(
+        &self,
+        select: &Select,
+        order_by_items: Vec<OrderByItem>,
+    ) -> Option<SQLBucketedCountIfQueryData> {
+        let (metric, has_subquery) = self.get_metric(select)?;
+        if has_subquery {
+            return None;
+        }
+
+        if select.projection.len() < 2 {
+            return None;
+        }
+
+        if select.distinct.is_some()
+            || select.top.is_some()
+            || select.into.is_some()
+            || !select.lateral_views.is_empty()
+            || select.prewhere.is_some()
+            || !select.cluster_by.is_empty()
+            || !select.distribute_by.is_empty()
+            || !select.sort_by.is_empty()
+            || select.having.is_some()
+            || !select.named_window.is_empty()
+            || select.window_before_qualify
+        {
+            return None;
+        }
+
+        let time_info = self.get_time_info(select, &metric)?;
+        let base_spatial_filter = self.get_spatial_filter(select);
+
+        let (bucket_time_col, bucket_ms, bucket_alias) =
+            self.parse_time_bucket_projection(&select.projection[0])?;
+
+        if bucket_time_col != time_info.get_time_col_name() {
+            return None;
+        }
+
+        let group_bys = self.get_groupbys(select)?;
+        if group_bys.len() != 1 || !group_bys.contains(&bucket_alias) {
+            return None;
+        }
+
+        for item in &order_by_items {
+            if item.column != bucket_alias {
+                return None;
+            }
+        }
+
+        let mut outputs = Vec::new();
+        for item in select.projection.iter().skip(1) {
+            outputs.push(self.parse_countif_projection(item)?);
+        }
+
+        if outputs.is_empty() {
+            return None;
+        }
+
+        Some(SQLBucketedCountIfQueryData {
+            metric,
+            time_info,
+            bucket_alias,
+            bucket_ms,
+            base_spatial_filter,
+            outputs,
+            order_by: order_by_items,
+        })
+    }
+
+    fn parse_time_bucket_projection(&self, item: &SelectItem) -> Option<(String, u64, String)> {
+        let (expr, alias) = match item {
+            SelectItem::ExprWithAlias { expr, alias } => (expr, alias.value.clone()),
+            _ => return None,
+        };
+
+        let func = match expr {
+            Expr::Function(func) => func,
+            _ => return None,
+        };
+
+        if !func
+            .name
+            .to_string()
+            .eq_ignore_ascii_case("toStartOfInterval")
+        {
+            return None;
+        }
+
+        let args = match &func.args {
+            FunctionArguments::List(args) => &args.args,
+            _ => return None,
+        };
+
+        if args.len() != 2 {
+            return None;
+        }
+
+        let time_col = match &args[0] {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                ident.value.clone()
+            }
+            _ => return None,
+        };
+
+        let interval_func = match &args[1] {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Function(f))) => f,
+            _ => return None,
+        };
+
+        if !interval_func
+            .name
+            .to_string()
+            .eq_ignore_ascii_case("toIntervalMinute")
+        {
+            return None;
+        }
+
+        let interval_args = match &interval_func.args {
+            FunctionArguments::List(args) => &args.args,
+            _ => return None,
+        };
+
+        if interval_args.len() != 1 {
+            return None;
+        }
+
+        let minutes = match &interval_args[0] {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(ValueWithSpan {
+                value: Value::Number(n, _),
+                ..
+            }))) => n.parse::<u64>().ok()?,
+            _ => return None,
+        };
+
+        Some((time_col, minutes * 60_000, alias))
+    }
+
+    fn parse_countif_projection(&self, item: &SelectItem) -> Option<SQLBucketedCountIfOutput> {
+        let (expr, alias) = match item {
+            SelectItem::ExprWithAlias { expr, alias } => (expr, alias.value.clone()),
+            _ => return None,
+        };
+
+        let func = match expr {
+            Expr::Function(func) => func,
+            _ => return None,
+        };
+
+        if !func.name.to_string().eq_ignore_ascii_case("countIf") {
+            return None;
+        }
+
+        let args = match &func.args {
+            FunctionArguments::List(args) => &args.args,
+            _ => return None,
+        };
+
+        if args.len() != 1 {
+            return None;
+        }
+
+        let cond = match &args[0] {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr,
+            _ => return None,
+        };
+
+        let filter = self.parse_simple_equality_filter(cond)?;
+
+        Some(SQLBucketedCountIfOutput { alias, filter })
+    }
+
+    fn parse_simple_equality_filter(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::BinaryOp {
+                left,
+                op: BinaryOperator::Eq,
+                right,
+            } => {
+                let col = match left.as_ref() {
+                    Expr::Identifier(ident) => ident.value.clone(),
+                    _ => return None,
+                };
+
+                let lit = match right.as_ref() {
+                    Expr::Value(ValueWithSpan {
+                        value: Value::SingleQuotedString(s),
+                        ..
+                    }) => s.clone(),
+                    _ => return None,
+                };
+
+                // sqlparser already unescapes SingleQuotedString content, so any
+                // embedded `'` must be re-escaped before we re-wrap it in quotes,
+                // or the resulting filter string is malformed.
+                Some(format!("{} = '{}'", col, lit.replace('\'', "''")))
+            }
+            _ => None,
         }
     }
 
@@ -193,6 +479,75 @@ impl SQLPatternParser {
         query
     }
 
+    /// Find the single time predicate inside a flattened AND list.
+    ///
+    /// Supports both:
+    ///   ts BETWEEN DATEADD(...) AND NOW()
+    /// and:
+    ///   ts >= start AND ts < end
+    ///
+    /// The second form becomes two separate conjuncts after flattening, so we
+    /// must try pairs of conjuncts as a half-open time range.
+    fn find_time_info_in_conjuncts(&self, conjuncts: &[&Expr]) -> Option<TimeInfo> {
+        let mut matches = Vec::new();
+
+        // Single-expression time predicates, e.g. BETWEEN.
+        for expr in conjuncts {
+            if let Some(time_info) = self.get_time_info_from_expr(expr) {
+                matches.push(time_info);
+            }
+        }
+
+        // Pair-expression half-open predicates:
+        //   ts >= start AND ts < end
+        for i in 0..conjuncts.len() {
+            for j in (i + 1)..conjuncts.len() {
+                if let Some(time_info) =
+                    self.get_time_info_from_half_open(conjuncts[i], conjuncts[j])
+                {
+                    matches.push(time_info);
+                }
+            }
+        }
+
+        if matches.len() == 1 {
+            matches.into_iter().next()
+        } else {
+            None
+        }
+    }
+
+    /// Return true if an expression is one side of a half-open time range.
+    fn is_time_comparison_side(&self, expr: &Expr) -> bool {
+        self.parse_time_comparison(expr).is_some()
+    }
+
+    /// Return true if an expression can be parsed as the query's time predicate.
+    fn is_time_predicate(&self, expr: &Expr) -> bool {
+        self.get_time_info_from_expr(expr).is_some()
+    }
+
+    /// Extract metadata predicates from WHERE by removing the time predicate.
+    /// The remaining predicates are returned as a SQL string for spatialFilter.
+    fn get_spatial_filter(&self, select: &Select) -> Option<String> {
+        let selection = select.selection.as_ref()?;
+
+        let mut conjuncts = Vec::new();
+        Self::flatten_and_conjuncts(selection, &mut conjuncts);
+
+        let filters: Vec<String> = conjuncts
+            .into_iter()
+            .filter(|expr| !self.is_time_predicate(expr) && !self.is_time_comparison_side(expr))
+            .map(|expr| expr.to_string())
+            .collect();
+
+        if filters.is_empty() {
+            None
+        } else {
+            Some(filters.join(" AND "))
+        }
+    }
+
     fn parse_select(&self, select: &Select) -> Option<SQLQueryData> {
         let (metric, has_subquery) = self.get_metric(select)?;
 
@@ -206,6 +561,7 @@ impl SQLPatternParser {
 
         if !has_subquery {
             let time_info = self.get_time_info(select, &metric)?;
+            let spatial_filter = self.get_spatial_filter(select);
 
             // Check for unexpected fields
             if select.distinct.is_some()
@@ -226,6 +582,7 @@ impl SQLPatternParser {
 
             Some(SQLQueryData {
                 aggregation_info: aggregation,
+                spatial_filter,
                 aggregation_alias,
                 metric,
                 labels: group_bys,
@@ -247,8 +604,11 @@ impl SQLPatternParser {
                         }
                         let time_info = self.get_time_info(inner_select, &metric)?;
 
+                        let spatial_filter = self.get_spatial_filter(inner_select);
+
                         Some(Box::new(SQLQueryData {
                             aggregation_info: inner_aggregation,
+                            spatial_filter,
                             aggregation_alias: inner_alias,
                             metric: metric.clone(),
                             labels: inner_group_bys,
@@ -265,6 +625,7 @@ impl SQLPatternParser {
 
             Some(SQLQueryData {
                 aggregation_info: aggregation,
+                spatial_filter: None,
                 aggregation_alias,
                 metric,
                 labels: group_bys,
@@ -411,11 +772,40 @@ impl SQLPatternParser {
             }
         }
 
+        // ClickHouse's own distinct-count function family - same cardinality
+        // semantics as COUNT(DISTINCT col), just a different spelling. Without
+        // this, uniqExact(col) falls through to the generic "other aggregations"
+        // branch below, gets treated as a plain aggregation named "UNIQEXACT",
+        // and is rejected downstream as an illegal aggregation function - even
+        // though the CARDINALITY path it needs already exists and works.
+        let is_uniq_family = matches!(name.as_str(), "UNIQEXACT" | "UNIQ" | "UNIQCOMBINED");
+        if is_uniq_family {
+            if let FunctionArguments::List(list) = &func.args {
+                if list.args.len() != 1 {
+                    // Compound-key distinct (e.g. uniqExact(a, b)) isn't
+                    // representable by the single-value-column model either -
+                    // same limitation as COUNT(DISTINCT a, b) above.
+                    return None;
+                }
+            }
+        }
+
         let args = self.get_quantile_args(func);
 
-        // Get the column being aggregated
+        // Get the column being aggregated.
+        //
+        // ASAP's SQL planner originally required every aggregate to name a value
+        // column, e.g. COUNT(v) or SUM(v). BGP Q1 uses COUNT() as an event count.
+        // Treat COUNT() as a synthetic per-row count. The planner will map this
+        // to a count sketch where each matching row contributes weight 1.
         let col = match &func.args {
-            FunctionArguments::None => return None,
+            FunctionArguments::None => {
+                if name == "COUNT" {
+                    "__event_count__".to_string()
+                } else {
+                    return None;
+                }
+            }
             FunctionArguments::Subquery(_) => return None,
             FunctionArguments::List(func_args) => {
                 if name == "QUANTILE" {
@@ -456,15 +846,25 @@ impl SQLPatternParser {
                         _ => return None,
                     }
                 } else {
-                    // For other aggregations - column is first argument
+                    // For other aggregations - column is first argument.
+                    // Special case: COUNT() is parsed as an empty argument list.
+                    // Treat COUNT() as an event count over a synthetic per-row value.
                     if func_args.args.is_empty() {
-                        return None;
-                    }
-                    match &func_args.args[0] {
-                        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
-                            ident.value.clone()
+                        if name == "COUNT" {
+                            "__event_count__".to_string()
+                        } else {
+                            return None;
                         }
-                        _ => return None,
+                    } else {
+                        match &func_args.args[0] {
+                            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(
+                                ident,
+                            ))) => ident.value.clone(),
+                            FunctionArg::Unnamed(FunctionArgExpr::Wildcard) if name == "COUNT" => {
+                                "__event_count__".to_string()
+                            }
+                            _ => return None,
+                        }
                     }
                 }
             }
@@ -473,9 +873,10 @@ impl SQLPatternParser {
         // Normalisation:
         //   - PERCENTILE → QUANTILE (legacy alias).
         //   - COUNT(DISTINCT col) → CARDINALITY (validated above to be single-arg).
+        //   - uniqExact/uniq/uniqCombined(col) → CARDINALITY (same, ClickHouse spelling).
         let normalized_name = if name == "PERCENTILE" {
             "QUANTILE".to_string()
-        } else if has_distinct {
+        } else if has_distinct || is_uniq_family {
             "CARDINALITY".to_string()
         } else {
             name
@@ -514,12 +915,18 @@ impl SQLPatternParser {
     }
 
     fn get_timestamp_from_datetime_str(datetime_str: &str) -> Option<f64> {
-        // parse_datetime treats timezone-naive strings (e.g. "2025-10-01 00:00:00",
-        // "2025-10-01T00:00:00") as local server time, matching ClickHouse's behavior —
-        // but only when both run in the same timezone. Z-suffix strings (e.g.
-        // "2025-10-01T00:00:00Z") are interpreted as UTC here but rejected by ClickHouse.
-        // Use space-format datetime strings ("YYYY-MM-DD HH:MM:SS") for portability.
-        let parsed_datetime = parse_datetime(datetime_str).ok()?;
+        // Treat SQL timestamp literals as UTC. Internally append a Z suffix before
+        // parse_datetime so timezone-naive SQL literals match UTC-exported BGP data.
+        let trimmed = datetime_str.trim();
+        let utc_datetime = if trimmed.ends_with('Z') {
+            trimmed.to_string()
+        } else if trimmed.contains('T') {
+            format!("{}Z", trimmed)
+        } else {
+            format!("{}Z", trimmed.replace(' ', "T"))
+        };
+
+        let parsed_datetime = parse_datetime(&utc_datetime).ok()?;
         Some(parsed_datetime.timestamp().as_second() as f64)
     }
 
@@ -555,48 +962,10 @@ impl SQLPatternParser {
     fn get_time_info(&self, select: &Select, _table_name: &str) -> Option<TimeInfo> {
         let selection = select.selection.as_ref()?;
 
-        match selection {
-            Expr::Between {
-                expr,
-                negated,
-                low,
-                high,
-            } => {
-                if *negated {
-                    return None;
-                }
+        let mut conjuncts = Vec::new();
+        Self::flatten_and_conjuncts(selection, &mut conjuncts);
 
-                // Extract time column name
-                let col_name = match expr.as_ref() {
-                    Expr::Identifier(ident) => ident.value.clone(),
-                    _ => return None,
-                };
-
-                let start = self.get_timestamp_from_between_highlow(low)?;
-                let end = self.get_timestamp_from_between_highlow(high)?;
-
-                let duration = end - start;
-
-                Some(TimeInfo::new(col_name, start, duration))
-            }
-
-            // Half-open range: `time >= <start> AND time < <end>`.
-            //
-            // ClickHouse executes `>=`/`<` as a true half-open `[start, end)`
-            // scan, which is exactly how ASAP selects precompute windows — so a
-            // query written this way answers the same question on both backends
-            // (unlike inclusive `BETWEEN`). We accept STRICTLY `>=` for the lower
-            // bound and `<` for the upper bound; any other operator combination
-            // (`>`, `<=`) returns None and is treated as unmatched, to avoid a
-            // silent off-by-one against the ClickHouse baseline.
-            Expr::BinaryOp {
-                left,
-                op: BinaryOperator::And,
-                right,
-            } => self.get_time_info_from_half_open(left, right),
-
-            _ => None,
-        }
+        self.find_time_info_in_conjuncts(&conjuncts)
     }
 
     /// Parse a `time >= A AND time < B` conjunction into `TimeInfo`.
@@ -720,14 +1089,14 @@ impl SQLPatternParser {
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(ValueWithSpan {
                 value: SingleQuotedString(datetime_str),
                 span: _,
-            }))) => parse_datetime(datetime_str).ok()?.timestamp().as_second() as f64,
+            }))) => Self::get_timestamp_from_datetime_str(datetime_str)?,
 
             FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Cast { expr, .. })) => {
                 match expr.as_ref() {
                     Expr::Value(ValueWithSpan {
                         value: SingleQuotedString(datetime_str),
                         ..
-                    }) => parse_datetime(datetime_str).ok()?.timestamp().as_second() as f64,
+                    }) => Self::get_timestamp_from_datetime_str(datetime_str)?,
                     _ => {
                         println!("Unsupported CAST expression in DATEADD");
                         return None;
@@ -809,7 +1178,7 @@ impl SQLPatternParser {
     //             value: SingleQuotedString(datetime_str),
     //             span: _,
     //         }))) if start
-    //             == (parse_datetime(datetime_str).ok()?.timestamp().as_second() as f64) => {}
+    //             == (Self::get_timestamp_from_datetime_str(datetime_str)?) => {}
 
     //         _ => {
     //             println!("time upper bound not calculating from present");

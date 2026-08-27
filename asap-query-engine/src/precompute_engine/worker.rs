@@ -8,6 +8,7 @@ use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
+use asap_types::enums::AggregationType;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -958,16 +959,34 @@ fn resolve_sample_value(
 
     match raw.parse::<f64>() {
         Ok(v) => v,
-        // Non-numeric distinct targets (e.g. COUNT(DISTINCT proto)) are not yet
-        // supported: silently falling back to the wire value would produce an
-        // INCORRECT aggregate, so fail loudly instead. This panic is a temporary
-        // measure — the longer-term fix is to make this path return a `Result`
-        // and propagate the error up to the caller.
+        Err(_) if config.aggregation_type == AggregationType::HLL => {
+            stable_string_hash_as_exact_f64(raw)
+        }
         Err(_) => panic!(
-            "value_column '{col}' label value {raw:?} is not numeric; non-numeric distinct \
-             targets (e.g. COUNT(DISTINCT proto)) are not yet supported"
+            "value_column '{col}' label value {raw:?} is not numeric for aggregation type {:?}",
+            config.aggregation_type
         ),
     }
+}
+
+/// Convert a string distinct target into a deterministic numeric surrogate.
+///
+/// The precompute path currently passes one f64 scalar into accumulators. For
+/// HLL/cardinality, the scalar only needs to distinguish distinct values before
+/// the HLL hashes it. We use a stable FNV-1a hash and keep only 53 bits so the
+/// integer is represented exactly as f64.
+fn stable_string_hash_as_exact_f64(raw: &str) -> f64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    const F64_EXACT_INT_MASK: u64 = (1_u64 << 53) - 1;
+
+    let mut hash = FNV_OFFSET;
+    for b in raw.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    (hash & F64_EXACT_INT_MASK) as f64
 }
 
 /// Extract aggregated label values from a series key string.
@@ -1135,10 +1154,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "is not numeric")]
-    fn resolve_sample_value_non_numeric_label_panics() {
-        // Non-numeric distinct targets are a follow-up; for now we fail loudly
-        // rather than silently producing an incorrect aggregate.
+    fn resolve_sample_value_hashes_non_numeric_hll_label() {
         let mut config = make_agg_config(
             4,
             "netflow_table",
@@ -1149,9 +1165,23 @@ mod tests {
             vec!["srcip"],
         );
         config.value_column = Some("proto".to_string());
-        let series = "netflow_table{srcip=\"10\",proto=\"TCP\"}";
-        let labels = parse_labels_from_series_key(series);
-        let _ = resolve_sample_value(&labels, 1400.0, &config);
+
+        let labels_a = parse_labels_from_series_key("netflow_table{srcip=\"10\",proto=\"TCP\"}");
+        let labels_b = parse_labels_from_series_key("netflow_table{srcip=\"10\",proto=\"UDP\"}");
+        let labels_a2 = parse_labels_from_series_key("netflow_table{srcip=\"10\",proto=\"TCP\"}");
+
+        let tcp = resolve_sample_value(&labels_a, 1400.0, &config);
+        let udp = resolve_sample_value(&labels_b, 1400.0, &config);
+        let tcp_again = resolve_sample_value(&labels_a2, 7.0, &config);
+
+        assert_eq!(
+            tcp, tcp_again,
+            "same string should hash to same f64 surrogate"
+        );
+        assert_ne!(
+            tcp, udp,
+            "different strings should usually hash differently"
+        );
     }
 
     #[test]

@@ -8,19 +8,59 @@ use std::ops::Index;
 
 use crate::aggregation_config::{AggregationConfig, AggregationIdInfo};
 use crate::capability_matching::find_compatible_aggregation as common_find_compatible;
+use crate::computed_label::ComputedLabelConfig;
 use crate::enums::QueryLanguage;
 use crate::inference_config::{InferenceConfig, SchemaConfig};
 use crate::query_requirements::QueryRequirements;
+use crate::stateful_transition::StatefulTransitionConfig;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamingConfig {
     pub aggregation_configs: HashMap<u64, AggregationConfig>,
+    /// Stateful-transition operators (e.g. lagInFrame-derived path-change
+    /// streams) the planner detected while building this config. The
+    /// precompute engine's CSV/HTTP ingest reads these to know what derived
+    /// event streams it needs to maintain before any aggregation in
+    /// `aggregation_configs` can be satisfied against them.
+    #[serde(default)]
+    pub stateful_transitions: Vec<StatefulTransitionConfig>,
+    /// Computed labels (e.g. origin-ASN extraction from as_path) the planner
+    /// detected while building this config. Keyed by the label name the rest
+    /// of the plan (grouping labels, spatial filters) refers to as if it were
+    /// an ordinary column.
+    #[serde(default)]
+    pub computed_label_cols: HashMap<String, ComputedLabelConfig>,
 }
 
 impl StreamingConfig {
     pub fn new(aggregation_configs: HashMap<u64, AggregationConfig>) -> Self {
         Self {
             aggregation_configs,
+            stateful_transitions: Vec::new(),
+            computed_label_cols: HashMap::new(),
+        }
+    }
+
+    pub fn with_stateful_transitions(
+        aggregation_configs: HashMap<u64, AggregationConfig>,
+        stateful_transitions: Vec<StatefulTransitionConfig>,
+    ) -> Self {
+        Self {
+            aggregation_configs,
+            stateful_transitions,
+            computed_label_cols: HashMap::new(),
+        }
+    }
+
+    pub fn with_extras(
+        aggregation_configs: HashMap<u64, AggregationConfig>,
+        stateful_transitions: Vec<StatefulTransitionConfig>,
+        computed_label_cols: HashMap<String, ComputedLabelConfig>,
+    ) -> Self {
+        Self {
+            aggregation_configs,
+            stateful_transitions,
+            computed_label_cols,
         }
     }
 
@@ -101,7 +141,23 @@ impl StreamingConfig {
             }
         }
 
-        Ok(Self::new(aggregation_configs))
+        let stateful_transitions: Vec<StatefulTransitionConfig> = data
+            .get("stateful_transitions")
+            .map(|v| serde_yaml::from_value(v.clone()))
+            .transpose()?
+            .unwrap_or_default();
+
+        let computed_label_cols: HashMap<String, ComputedLabelConfig> = data
+            .get("computed_label_cols")
+            .map(|v| serde_yaml::from_value(v.clone()))
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self::with_extras(
+            aggregation_configs,
+            stateful_transitions,
+            computed_label_cols,
+        ))
     }
 }
 

@@ -56,6 +56,7 @@ impl SQLQuery {
 
         let query_data = SQLQueryData {
             aggregation_info: aggregation,
+            spatial_filter: None,
             aggregation_alias: None,
             metric,
             labels,
@@ -193,6 +194,13 @@ impl SQLPatternMatcher {
                             .schema
                             .get_metadata_columns(&query.metric)
                             .is_some_and(|cols| cols.contains(value_column_name))
+                } else if query.aggregation_info.get_name() == "COUNT"
+                    && value_column_name == "__event_count__"
+                {
+                    // COUNT() is an event-count aggregate. The parser represents it
+                    // using a synthetic value column, but this column is not a real
+                    // table column and should not be required in value_columns.
+                    true
                 } else {
                     self.schema
                         .is_valid_value_column(&query.metric, value_column_name)
