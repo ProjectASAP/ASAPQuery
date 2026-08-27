@@ -42,7 +42,7 @@ fn config_file_sliding_window_override_generates_per_query_candidates() {
     let aggregations = streaming["aggregations"].as_sequence().unwrap();
 
     assert_eq!(output.inference_query_count(), 2);
-    assert_eq!(aggregations.len(), 2);
+    assert_eq!(aggregations.len(), 1);
 
     let mut candidates: Vec<(u64, u64, String)> = aggregations
         .iter()
@@ -56,24 +56,19 @@ fn config_file_sliding_window_override_generates_per_query_candidates() {
         .collect();
     candidates.sort();
 
-    assert_eq!(
-        candidates,
-        vec![
-            (60_000, 15_000, "sliding".to_string()),
-            (120_000, 30_000, "sliding".to_string()),
-        ]
-    );
+    assert_eq!(candidates, vec![(60_000, 15_000, "sliding".to_string())]);
     assert!(candidates
         .iter()
         .all(|(_, _, window_type)| window_type != "tumbling"));
 }
 
 #[test]
-fn sliding_window_config_requires_a_slide_divisor() {
+fn sliding_window_config_requires_a_slide_interval() {
     let result = Controller::from_yaml_with_schema(
         r#"
 windowing:
   type: "sliding"
+  window_size_ms: 60000
 query_groups: []
 "#,
         http_requests_schema(),
@@ -86,7 +81,7 @@ query_groups: []
 
     assert!(error
         .to_string()
-        .contains("windowing.slide_divisor is required for sliding windows"));
+        .contains("windowing.slide_interval_ms is required for sliding windows"));
 }
 
 #[test]
@@ -95,7 +90,8 @@ fn sliding_window_validation_reports_all_invalid_queries() {
         r#"
 windowing:
   type: "sliding"
-  slide_divisor: 3
+  window_size_ms: 60000
+  slide_interval_ms: 15000
 query_groups:
   - id: 1
     queries:
@@ -134,7 +130,8 @@ fn sliding_window_validation_rejects_data_range_not_multiple_of_window() {
         r#"
 windowing:
   type: "sliding"
-  slide_divisor: 4
+  window_size_ms: 60000
+  slide_interval_ms: 15000
 query_groups:
   - id: 1
     queries:
@@ -159,12 +156,13 @@ query_groups:
 }
 
 #[test]
-fn sliding_window_config_rejects_redundant_divisors() {
+fn sliding_window_config_rejects_zero_slide_interval() {
     let result = Controller::from_yaml_with_schema(
         r#"
 windowing:
   type: "sliding"
-  slide_divisor: 1
+  window_size_ms: 60000
+  slide_interval_ms: 0
 query_groups: []
 "#,
         http_requests_schema(),
@@ -177,16 +175,17 @@ query_groups: []
 
     assert!(error
         .to_string()
-        .contains("windowing.slide_divisor must be at least 2, got 1"));
+        .contains("windowing.slide_interval_ms must be greater than 0"));
 }
 
 #[test]
-fn tumbling_window_config_rejects_a_slide_divisor() {
+fn tumbling_window_config_rejects_a_slide_interval() {
     let result = Controller::from_yaml_with_schema(
         r#"
 windowing:
   type: "tumbling"
-  slide_divisor: 4
+  window_size_ms: 60000
+  slide_interval_ms: 15000
 query_groups: []
 "#,
         http_requests_schema(),
@@ -199,7 +198,7 @@ query_groups: []
 
     assert!(error
         .to_string()
-        .contains("windowing.slide_divisor is only valid for sliding windows"));
+        .contains("windowing.slide_interval_ms is only valid for sliding windows"));
 }
 
 #[test]
@@ -208,6 +207,7 @@ fn explicit_tumbling_window_override_keeps_tumbling_candidates() {
         r#"
 windowing:
   type: "tumbling"
+  window_size_ms: 60000
 query_groups:
   - id: 1
     queries:
@@ -787,7 +787,8 @@ fn binary_arithmetic_aggregates_windowing_errors_from_all_leaves() {
         r#"
 windowing:
   type: "sliding"
-  slide_divisor: 3
+  window_size_ms: 60000
+  slide_interval_ms: 15000
 query_groups:
   - id: 1
     queries:

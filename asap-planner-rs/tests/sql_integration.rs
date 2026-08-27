@@ -27,7 +27,7 @@ fn config_file_sliding_window_override_generates_per_query_candidates() {
     let aggregations = streaming["aggregations"].as_sequence().unwrap();
 
     assert_eq!(output.inference_query_count(), 2);
-    assert_eq!(aggregations.len(), 2);
+    assert_eq!(aggregations.len(), 1);
 
     let mut candidates: Vec<(u64, u64, String)> = aggregations
         .iter()
@@ -41,13 +41,7 @@ fn config_file_sliding_window_override_generates_per_query_candidates() {
         .collect();
     candidates.sort();
 
-    assert_eq!(
-        candidates,
-        vec![
-            (60_000, 15_000, "sliding".to_string()),
-            (120_000, 30_000, "sliding".to_string()),
-        ]
-    );
+    assert_eq!(candidates, vec![(60_000, 15_000, "sliding".to_string())]);
     assert!(candidates
         .iter()
         .all(|(_, _, window_type)| window_type != "tumbling"));
@@ -79,7 +73,8 @@ fn sliding_window_validation_rejects_sql_data_range_not_multiple_of_window() {
         r#"
 windowing:
   type: sliding
-  slide_divisor: 4
+  window_size_ms: 60000
+  slide_interval_ms: 15000
 tables:
   - name: metrics_table
     time_column: time
@@ -117,6 +112,7 @@ fn discovery_validates_windowing_before_contacting_clickhouse() {
         br#"
 windowing:
   type: sliding
+  window_size_ms: 60000
 tables:
   - name: metrics_table
     time_column: time
@@ -137,7 +133,7 @@ query_groups: []
         Err(error) => error.to_string(),
     };
 
-    assert!(error.contains("windowing.slide_divisor is required for sliding windows"));
+    assert!(error.contains("windowing.slide_interval_ms is required for sliding windows"));
 }
 
 /// Single-query config with a 3-column metadata schema.

@@ -99,19 +99,30 @@ pub struct AggregateCleanupConfig {
 pub struct WindowingConfig {
     #[serde(rename = "type")]
     pub window_type: WindowingType,
-    pub slide_divisor: Option<u64>,
+    pub window_size_ms: u64,
+    pub slide_interval_ms: Option<u64>,
 }
 
 impl WindowingConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if self.window_size_ms == 0 {
+            return Err("windowing.window_size_ms must be greater than 0".to_string());
+        }
         match self.window_type {
-            WindowingType::Tumbling if self.slide_divisor.is_some() => {
-                Err("windowing.slide_divisor is only valid for sliding windows".to_string())
+            WindowingType::Tumbling if self.slide_interval_ms.is_some() => {
+                Err("windowing.slide_interval_ms is only valid for sliding windows".to_string())
             }
-            WindowingType::Sliding => match self.slide_divisor {
-                None => Err("windowing.slide_divisor is required for sliding windows".to_string()),
-                Some(divisor) if divisor < 2 => Err(format!(
-                    "windowing.slide_divisor must be at least 2, got {divisor}"
+            WindowingType::Sliding => match self.slide_interval_ms {
+                None => Err("windowing.slide_interval_ms is required for sliding windows".to_string()),
+                Some(0) => {
+                    Err("windowing.slide_interval_ms must be greater than 0".to_string())
+                }
+                Some(slide) if slide > self.window_size_ms => Err(
+                    "windowing.slide_interval_ms must be <= windowing.window_size_ms".to_string(),
+                ),
+                Some(slide) if !self.window_size_ms.is_multiple_of(slide) => Err(format!(
+                    "windowing.window_size_ms ({}) must be evenly divisible by windowing.slide_interval_ms ({slide})",
+                    self.window_size_ms
                 )),
                 Some(_) => Ok(()),
             },

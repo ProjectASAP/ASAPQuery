@@ -1,6 +1,7 @@
 windowing:
   type: "sliding"
-  slide_divisor: 4
+  window_size_ms: 60000
+  slide_interval_ms: 15000
 tables:
   - name: metrics_table
     time_column: time

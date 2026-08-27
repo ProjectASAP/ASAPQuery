@@ -106,21 +106,23 @@ pub fn apply_windowing_override(
     match windowing.window_type {
         WindowingType::Tumbling => {
             config.window_type = WindowType::Tumbling;
+            config.window_size_ms = windowing.window_size_ms;
             config.slide_interval_ms = config.window_size_ms;
         }
         WindowingType::Sliding => {
-            let divisor = match windowing.slide_divisor {
-                Some(divisor) => divisor,
+            let slide_interval_ms = match windowing.slide_interval_ms {
+                Some(slide_interval_ms) => slide_interval_ms,
                 None => {
                     return Err(WindowingError::InvalidConfig(
-                        "windowing.slide_divisor is required for sliding windows".to_string(),
+                        "windowing.slide_interval_ms is required for sliding windows".to_string(),
                     ));
                 }
             };
-            if !config.window_size_ms.is_multiple_of(divisor) {
+            config.window_size_ms = windowing.window_size_ms;
+            if !config.window_size_ms.is_multiple_of(slide_interval_ms) {
                 return Err(WindowingError::WindowSizeNotDivisible {
                     window_size_ms: config.window_size_ms,
-                    divisor,
+                    slide_interval_ms,
                 });
             }
             if !data_range_ms.is_multiple_of(config.window_size_ms) {
@@ -130,7 +132,7 @@ pub fn apply_windowing_override(
                 });
             }
             config.window_type = WindowType::Sliding;
-            config.slide_interval_ms = config.window_size_ms / divisor;
+            config.slide_interval_ms = slide_interval_ms;
         }
     }
     Ok(())
@@ -141,7 +143,7 @@ pub enum WindowingError {
     InvalidConfig(String),
     WindowSizeNotDivisible {
         window_size_ms: u64,
-        divisor: u64,
+        slide_interval_ms: u64,
     },
     DataRangeNotDivisible {
         data_range_ms: u64,
@@ -155,10 +157,10 @@ impl fmt::Display for WindowingError {
             Self::InvalidConfig(message) => f.write_str(message),
             Self::WindowSizeNotDivisible {
                 window_size_ms,
-                divisor,
+                slide_interval_ms,
             } => write!(
                 f,
-                "window_size_ms ({window_size_ms}) must be evenly divisible by slide_divisor ({divisor})"
+                "windowing.window_size_ms ({window_size_ms}) must be evenly divisible by windowing.slide_interval_ms ({slide_interval_ms})"
             ),
             Self::DataRangeNotDivisible {
                 data_range_ms,
@@ -270,7 +272,8 @@ mod tests {
         };
         let windowing = WindowingConfig {
             window_type: WindowingType::Sliding,
-            slide_divisor: Some(4),
+            window_size_ms: 60_000,
+            slide_interval_ms: Some(15_000),
         };
 
         let error = apply_windowing_override(&mut config, 90_000, Some(&windowing)).unwrap_err();

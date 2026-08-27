@@ -100,11 +100,12 @@ controller:
   punting: true  # Enable query punting based on performance heuristics (should_be_performant check)
 
 # Optional manual planner windowing override. Omit this block to preserve the
-# default tumbling-window behavior. For sliding windows, the divisor must be
-# at least 2 and must evenly divide every query's computed window size.
+# default tumbling-window behavior. For tumbling windows, omit
+# slide_interval_ms. For sliding windows, both sizes are explicit.
 # windowing:
 #   type: "sliding"
-#   slide_divisor: 4
+#   window_size_ms: 60000
+#   slide_interval_ms: 15000
 
 # Aggregate cleanup configuration
 # Policy options:

@@ -216,12 +216,16 @@ These parameters must be provided for all experiment scripts:
 - **Description**: Selects the planner window type
 - **Choices**: `tumbling`, `sliding`
 
-#### `windowing.slide_divisor` (int, required for sliding)
-- **Description**: Computes each query's slide interval as
-  `window_size_ms / slide_divisor`
-- **Validation**: Must be at least 2 and must evenly divide every supported
-  query's computed window size; invalid workloads fail plan generation
-- **Constraint**: Do not provide this field for `tumbling`
+#### `windowing.window_size_ms` (int, required)
+- **Description**: Explicit precompute window size in milliseconds
+- **Validation**: Must be greater than zero; every supported query's lookback
+  must be an exact multiple
+
+#### `windowing.slide_interval_ms` (int, required for sliding)
+- **Description**: Explicit sliding interval in milliseconds
+- **Validation**: Must be positive, no greater than `window_size_ms`, and evenly
+  divide it
+- **Constraint**: Omit this field for `tumbling`
 
 ---
 
