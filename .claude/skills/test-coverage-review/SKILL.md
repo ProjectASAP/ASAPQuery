@@ -7,7 +7,4 @@ description: >
   when asked to review tests.
 ---
 
-# ASAPQuery test coverage checklist
-
-Canonical content lives in `.agents/skills/test-coverage-review.md` (shared
-across agents, not just Claude Code) — read that file and apply it.
+Read and apply `.agents/skills/test-coverage-review.md`.

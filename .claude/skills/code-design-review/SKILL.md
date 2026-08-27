@@ -9,7 +9,4 @@ description: >
   bugs, and consult it again before finishing any PR-sized change here.
 ---
 
-# ASAPQuery code design checklist
-
-Canonical content lives in `.agents/skills/code-design-review.md` (shared
-across agents, not just Claude Code) — read that file and apply it.
+Read and apply `.agents/skills/code-design-review.md`.
