@@ -9,11 +9,14 @@ use super::window::get_effective_repeat;
 /// (`data_range_ms >= t_repeat_ms >= data_ingestion_interval_ms`), this is
 /// exactly equivalent to the old pattern-type-gated `t_repeat_ms`-vs-range-duration
 /// split, with no shape check needed (see #508).
+#[allow(clippy::too_many_arguments)]
 pub fn get_cleanup_param(
     cleanup_policy: CleanupPolicy,
     data_range_ms: u64,
     t_repeat_ms: u64,
     window_type: WindowType,
+    window_size_ms: u64,
+    slide_interval_ms: u64,
     range_duration_ms: u64,
     step_ms: u64,
 ) -> Result<u64, String> {
@@ -29,12 +32,32 @@ pub fn get_cleanup_param(
     let t_lookback: u64 = data_range_ms;
 
     if window_type == WindowType::Sliding {
-        let result = if is_range_query {
+        if cleanup_policy == CleanupPolicy::NoCleanup {
+            return Err("NoCleanup policy should not call get_cleanup_param".to_string());
+        }
+        if window_size_ms == 0 || slide_interval_ms == 0 {
+            return Err("Sliding cleanup requires positive window and slide sizes".to_string());
+        }
+        if !data_range_ms.is_multiple_of(window_size_ms) {
+            return Err(format!(
+                "Sliding query lookback ({data_range_ms}ms) must be a multiple of window_size_ms ({window_size_ms}ms)"
+            ));
+        }
+        let num_steps = if is_range_query {
             range_duration_ms / step_ms + 1
         } else {
             1
         };
-        return Ok(result);
+        return match cleanup_policy {
+            CleanupPolicy::ReadBased => (data_range_ms / window_size_ms)
+                .checked_mul(num_steps)
+                .ok_or_else(|| "Sliding read-count cleanup threshold overflowed".to_string()),
+            CleanupPolicy::CircularBuffer => data_range_ms
+                .checked_add(range_duration_ms)
+                .map(|span_ms| span_ms.div_ceil(slide_interval_ms))
+                .ok_or_else(|| "Sliding circular-buffer retention span overflowed".to_string()),
+            CleanupPolicy::NoCleanup => unreachable!(),
+        };
     }
 
     // Tumbling
@@ -101,6 +124,8 @@ mod tests {
             300_000,
             300_000,
             WindowType::Tumbling,
+            300_000,
+            300_000,
             0,
             0,
         )
@@ -117,6 +142,8 @@ mod tests {
             300_000,
             300_000,
             WindowType::Tumbling,
+            30_000,
+            30_000,
             3_600_000,
             30_000,
         )
@@ -132,6 +159,8 @@ mod tests {
             300_000,
             300_000,
             WindowType::Tumbling,
+            300_000,
+            300_000,
             0,
             0,
         )
@@ -148,6 +177,8 @@ mod tests {
             300_000,
             300_000,
             WindowType::Tumbling,
+            30_000,
+            30_000,
             3_600_000,
             30_000,
         )
@@ -164,6 +195,8 @@ mod tests {
             300_000,
             60_000,
             WindowType::Tumbling,
+            60_000,
+            60_000,
             0,
             0,
         )
@@ -178,6 +211,8 @@ mod tests {
             300_000,
             300_000,
             WindowType::Tumbling,
+            300_000,
+            300_000,
             0,
             0,
         );
@@ -192,9 +227,28 @@ mod tests {
             300_000,
             300_000,
             WindowType::Tumbling,
+            300_000,
+            300_000,
             3_600_000,
             0,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn cleanup_param_read_based_sliding_counts_each_constituent_window() {
+        let result = get_cleanup_param(
+            CleanupPolicy::ReadBased,
+            10_000,
+            5_000,
+            WindowType::Sliding,
+            5_000,
+            1_000,
+            0,
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(result, 2);
     }
 }

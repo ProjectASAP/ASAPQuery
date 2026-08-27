@@ -90,6 +90,54 @@ mod tests {
     use super::*;
 
     #[test]
+    fn sql_executes_wider_sliding_window_exact_cover() {
+        use crate::data_model::{CleanupPolicy, KeyByLabelValues, PrecomputedOutput};
+        use crate::engines::query_result::QueryResult;
+        use crate::precompute_operators::sum_accumulator::SumAccumulator;
+        use crate::stores::simple_map_store::SimpleMapStore;
+
+        let promql_query = "sum_over_time(cpu_usage[10s])";
+        let sql_query = "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3, L4";
+        let (_, sql_config, streaming_config) = TestConfigBuilder::new("cpu_usage")
+            .with_grouping_labels(vec!["L1", "L2", "L3", "L4"])
+            .with_scrape_interval_ms(1_000)
+            .add_temporal_query(promql_query, sql_query, 1, 5_000, WindowType::Sliding)
+            .build_both();
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let group = Some(KeyByLabelValues {
+            labels: vec!["a".into(), "b".into(), "c".into(), "d".into()],
+        });
+        for (start, end, value) in [(0, 5_000, 7.0), (5_000, 10_000, 11.0)] {
+            store
+                .insert_precomputed_output(
+                    PrecomputedOutput::new(start, end, group.clone(), 1),
+                    Box::new(SumAccumulator::with_sum(value)),
+                )
+                .unwrap();
+        }
+        let engine = SimpleEngine::new(
+            store,
+            sql_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::sql,
+        );
+
+        let (_, result) = engine
+            .handle_query_sql(sql_query.to_string(), 10.0)
+            .expect("SQL should execute the wider Sliding exact cover");
+        let QueryResult::Vector(vector) = result else {
+            panic!("expected an instant SQL vector");
+        };
+
+        assert_eq!(vector.values.len(), 1);
+        assert_eq!(vector.values[0].value, 18.0);
+    }
+
+    #[test]
     fn test_temporal_sum_equivalence() {
         let scrape_interval_ms = 1000;
         let promql_query = "sum_over_time(cpu_usage[10s])";
