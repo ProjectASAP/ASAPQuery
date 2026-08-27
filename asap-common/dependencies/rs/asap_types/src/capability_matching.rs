@@ -1188,12 +1188,25 @@ mod tests {
         };
         let mut value_bad_step = value.clone();
         value_bad_step.slide_interval_ms = 3_000;
+        let mut value_bad_window = value.clone();
+        value_bad_window.slide_interval_ms = 4_000;
+        value_bad_window.window_size_ms = 6_000;
+        let key_divides_step_not_window = AggregationConfig {
+            window_size_ms: 4_000,
+            ..key_valid.clone()
+        };
 
         assert_key_compatibility_cases(&[
             ("D divides S and W", &value, &key_valid, true),
             ("D does not divide W", &value, &key_bad_window, false),
             ("D divides neither S nor W", &value, &key_bad_both, false),
             ("D does not divide S", &value_bad_step, &key_valid, false),
+            (
+                "D divides S but not W",
+                &value_bad_window,
+                &key_divides_step_not_window,
+                false,
+            ),
         ]);
     }
 

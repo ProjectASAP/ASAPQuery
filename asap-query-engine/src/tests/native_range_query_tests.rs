@@ -546,6 +546,11 @@ mod tests {
             &["host-a", "evt-2"],
             1_000
         ));
+        assert!(!labels_have_sample_at(
+            &elements,
+            &["host-a", "evt-1"],
+            2_000
+        ));
     }
 
     /// #608's keys-side counterpart: SetAggregator is a real Sliding-capable
