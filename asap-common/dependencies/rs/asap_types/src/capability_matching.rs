@@ -93,7 +93,7 @@ pub fn key_agg_compatible_with_value(value: &AggregationConfig, key: &Aggregatio
             key.window_type == WindowType::Tumbling
                 && value_slide_ms > 0
                 && delta_window_ms > 0
-                && delta_window_ms.is_multiple_of(value_slide_ms)
+                && value_slide_ms.is_multiple_of(delta_window_ms)
                 && value.window_size_ms.is_multiple_of(delta_window_ms)
         }
         AggregationType::DeltaSetAggregator => key.window_type == WindowType::Tumbling,
@@ -1025,7 +1025,7 @@ mod tests {
             "req",
             "DeltaSetAggregator",
             "",
-            4_000,
+            2_000,
             "tumbling",
             &[],
             "",
@@ -1038,7 +1038,7 @@ mod tests {
                 &req("req", &[Statistic::Count], 12_000, &[], ""),
             )
             .is_none(),
-            "D=4s cannot exactly partition W=6s"
+            "D=2s would include future events at an S=1s boundary"
         );
     }
 
@@ -1051,7 +1051,7 @@ mod tests {
             "req",
             "DeltaSetAggregator",
             "",
-            2_000,
+            1_000,
             "tumbling",
             &[],
             "",
@@ -1062,7 +1062,7 @@ mod tests {
             &configs,
             &req("req", &[Statistic::Count], 12_000, &[], ""),
         )
-        .expect("D=2s lies on S=1s and exactly partitions W=6s");
+        .expect("D=1s lies on S=1s and exactly partitions W=6s");
 
         assert_eq!(result.aggregation_id_for_key, 11);
     }

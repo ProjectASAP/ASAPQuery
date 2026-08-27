@@ -251,4 +251,56 @@ mod tests {
 
         assert_eq!(result, 2);
     }
+
+    #[test]
+    fn cleanup_param_circular_sliding_retains_cover_span() {
+        let result = get_cleanup_param(
+            CleanupPolicy::CircularBuffer,
+            10_000,
+            5_000,
+            WindowType::Sliding,
+            5_000,
+            1_000,
+            5_000,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(result, 15);
+    }
+
+    #[test]
+    fn cleanup_param_sliding_rejects_invalid_shape_and_sizes() {
+        for (window_size_ms, slide_interval_ms, lookback_ms) in [
+            (0, 1_000, 10_000),
+            (5_000, 0, 10_000),
+            (6_000, 1_000, 10_000),
+        ] {
+            assert!(get_cleanup_param(
+                CleanupPolicy::ReadBased,
+                lookback_ms,
+                5_000,
+                WindowType::Sliding,
+                window_size_ms,
+                slide_interval_ms,
+                0,
+                0,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn cleanup_param_no_cleanup_sliding_is_rejected() {
+        assert!(get_cleanup_param(
+            CleanupPolicy::NoCleanup,
+            10_000,
+            5_000,
+            WindowType::Sliding,
+            5_000,
+            1_000,
+            0,
+            0,
+        )
+        .is_err());
+    }
 }

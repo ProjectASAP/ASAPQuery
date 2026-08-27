@@ -787,20 +787,25 @@ impl SimpleEngine {
                 )
             })?;
 
-        let required: BTreeSet<_> = windows.iter().copied().collect();
-        for (group_key, buckets) in &outputs {
-            let found: BTreeSet<_> = buckets.iter().map(|(range, _)| *range).collect();
-            if found != required {
-                let missing: Vec<_> = required.difference(&found).copied().collect();
-                return Err(format!(
-                    "Incomplete Sliding-window cover for metric {}, agg {}, group {:?}: \
-                     requested {} exact windows, missing {:?}",
-                    params.metric,
-                    params.aggregation_id,
-                    group_key,
-                    windows.len(),
-                    missing
-                ));
+        // An instant query has one all-or-nothing cover. Range queries defer
+        // completeness to each output step below, so a series that appears
+        // partway through the range does not invalidate unrelated steps.
+        if output_timestamps.len() == 1 {
+            let required: BTreeSet<_> = windows.iter().copied().collect();
+            for (group_key, buckets) in &outputs {
+                let found: BTreeSet<_> = buckets.iter().map(|(range, _)| *range).collect();
+                if found != required {
+                    let missing: Vec<_> = required.difference(&found).copied().collect();
+                    return Err(format!(
+                        "Incomplete Sliding-window cover for metric {}, agg {}, group {:?}: \
+                         requested {} exact windows, missing {:?}",
+                        params.metric,
+                        params.aggregation_id,
+                        group_key,
+                        windows.len(),
+                        missing
+                    ));
+                }
             }
         }
 
@@ -2172,6 +2177,18 @@ impl SimpleEngine {
                                 )
                             };
 
+                        if *keys_window_type == WindowType::Sliding {
+                            let expected =
+                                (*keys_lookback_ms / *keys_stored_window_size_ms) as usize;
+                            if keys_window_buckets.len() < expected {
+                                debug!(
+                                    "Skipping incomplete Sliding key cover at t={}",
+                                    current_time
+                                );
+                                continue;
+                            }
+                        }
+
                         if keys_window_buckets.is_empty() {
                             debug!(
                                 "No keys data in window at t={} — skipping this step for this group",
@@ -2210,6 +2227,17 @@ impl SimpleEngine {
                     window_type,
                     context.window_size_ms,
                 );
+
+                if window_type == WindowType::Sliding {
+                    let expected = (lookback_ms / context.window_size_ms) as usize;
+                    if window_buckets.len() < expected {
+                        debug!(
+                            "Skipping incomplete Sliding value cover at t={}",
+                            current_time
+                        );
+                        continue;
+                    }
+                }
 
                 if window_buckets.is_empty() {
                     // No data at all for this window - skip sample
