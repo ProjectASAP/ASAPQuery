@@ -613,4 +613,36 @@ mod tests {
         assert_eq!(elements[0].samples.len(), 1);
         assert!((elements[0].samples[0].value - 250.0).abs() < 1e-10);
     }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_preserves_matching_for_all_arithmetic_ops() {
+        for (op, expected) in [
+            ("+", 250.0),
+            ("-", -150.0),
+            ("*", 10_000.0),
+            ("/", 0.25),
+            ("%", 50.0),
+        ] {
+            let engine = build_range_two_topk_engine(
+                "topk(2, metric_a)",
+                "topk(2, metric_b)",
+                &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            );
+            let query = format!("topk(2, metric_a) {op} topk(2, metric_b)");
+            let (_, qr) = engine
+                .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+                .unwrap_or_else(|| panic!("Expected result for operator {op}"));
+            let elements = matrix_values(qr);
+
+            assert_eq!(elements.len(), 1, "operator {op}");
+            assert_eq!(elements[0].labels.labels, vec!["host-b".to_string()]);
+            assert_eq!(elements[0].samples.len(), 1, "operator {op}");
+            assert!(
+                (elements[0].samples[0].value - expected).abs() < 1e-10,
+                "operator {op}: expected {expected}, got {}",
+                elements[0].samples[0].value
+            );
+        }
+    }
 }
