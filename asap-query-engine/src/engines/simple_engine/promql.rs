@@ -101,6 +101,11 @@ fn binary_matching_label_names(label_names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
+fn is_supported_binary_arithmetic_op(op: &promql_parser::parser::token::TokenType) -> bool {
+    use promql_parser::parser::token::{T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
+    matches!(op.id(), T_ADD | T_SUB | T_MUL | T_DIV | T_MOD | T_POW)
+}
+
 impl SimpleEngine {
     /// Aligns `end_timestamp` down to the nearest data-ingestion-interval
     /// boundary, unconditionally — mirroring SQL's `align_end_timestamp_sql`.
@@ -444,6 +449,9 @@ impl SimpleEngine {
             Expr::NumberLiteral(_) => None, // caller handles scalars
             Expr::Paren(paren) => self.evaluate_binary_arm(&paren.expr, time),
             Expr::Binary(binary) => {
+                if !is_supported_binary_arithmetic_op(&binary.op) {
+                    return None;
+                }
                 // Nested binary expression — recurse on both sides
                 let (lhs_results, lhs_labels) = self.evaluate_binary_arm(&binary.lhs, time)?;
                 let (rhs_results, rhs_labels) = self.evaluate_binary_arm(&binary.rhs, time)?;
@@ -503,6 +511,10 @@ impl SimpleEngine {
             Expr::Binary(b) => b,
             _ => return None,
         };
+
+        if !is_supported_binary_arithmetic_op(&binary.op) {
+            return None;
+        }
 
         let lhs = binary.lhs.as_ref();
         let rhs = binary.rhs.as_ref();
@@ -696,6 +708,10 @@ impl SimpleEngine {
             Expr::Binary(b) => b,
             _ => return None,
         };
+
+        if !is_supported_binary_arithmetic_op(&binary.op) {
+            return None;
+        }
 
         let lhs = binary.lhs.as_ref();
         let rhs = binary.rhs.as_ref();
