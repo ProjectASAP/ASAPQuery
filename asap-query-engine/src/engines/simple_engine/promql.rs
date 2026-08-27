@@ -675,7 +675,7 @@ impl SimpleEngine {
         let (base_context, label_names) = self.resolve_arm_leaf_context(arm_ast, end)?;
         let range_context = self.finish_range_context(base_context, start, end, step)?;
 
-        Some((range_context, label_names))
+        Some((range_context, binary_matching_label_names(label_names)))
     }
 
     /// Handles a binary arithmetic PromQL expression for range queries.
@@ -703,10 +703,10 @@ impl SimpleEngine {
 
         if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
             let (ctx, labels) = self.build_arm_range_context(vector_arm, start, end, step)?;
-            // (true, true): self-gated, same as instant's binary-arm call
-            // (evaluate_binary_arm) -- both flags are no-ops unless the arm's
-            // statistic is Topk.
-            let results = self.execute_range_query_pipeline(&ctx, true, true).ok()?;
+            // Binary arms need Topk limiting, but must remain in the
+            // unformatted intermediate label representation until after the
+            // arithmetic operation.
+            let results = self.execute_range_query_pipeline(&ctx, true, false).ok()?;
             let combined: Vec<RangeVectorElement> = results
                 .into_iter()
                 .map(|mut elem| {
@@ -734,12 +734,12 @@ impl SimpleEngine {
         if lhs_labels != rhs_labels {
             return None;
         }
-        // (true, true): self-gated, same rationale as the scalar-arm call above.
+        // Binary arms need Topk limiting, but not final presentation formatting.
         let lhs_results = self
-            .execute_range_query_pipeline(&lhs_ctx, true, true)
+            .execute_range_query_pipeline(&lhs_ctx, true, false)
             .ok()?;
         let rhs_results = self
-            .execute_range_query_pipeline(&rhs_ctx, true, true)
+            .execute_range_query_pipeline(&rhs_ctx, true, false)
             .ok()?;
 
         // Build lookup: label_key -> {timestamp -> value} for rhs

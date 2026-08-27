@@ -409,25 +409,10 @@ mod tests {
         )
     }
 
-    // Documents a PRE-EXISTING bug, unrelated to PR #629, NOT one of the 4
-    // review findings being addressed here (see
-    // .design_docs/pr-629-review-findings-handoff.md, Finding 1). Confirmed
-    // via `git log -L` that `build_promql_execution_context_tail` has
-    // unconditionally prepended `"__name__"` to a Topk arm's *label names*
-    // (promql.rs, the `if statistic_to_compute == Statistic::Topk` block)
-    // since commit 9ac794c ("simple engine split by language #284"), long
-    // before #629. Because a plain (non-topk) arm never gets that prepend,
-    // `handle_binary_expr_range_promql`'s `lhs_labels != rhs_labels` guard
-    // (label *names*, checked before any join) rejects EVERY
-    // `topk(...) OP plain_metric` binary expression outright, on both the
-    // range and instant paths identically -- the query never reaches the
-    // join code at all, let alone the `apply_range_topk` formatting-mutates
-    // `elem.labels` *values* bug Finding 1 actually describes. This is
-    // asserted here only so the (surprising) current behavior is pinned;
-    // fixing it is out of scope for PR #629's review comments -- tracked as
-    // its own issue, #631, alongside the topk+topk repro below.
+    // Regression test for issue #631: Topk preserves the original grouping
+    // labels for binary matching, while arithmetic drops the metric name.
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_range_vector_vector_topk_lhs_plus_plain_rhs_returns_none() {
+    async fn test_range_vector_vector_topk_lhs_plus_plain_rhs_joins_by_original_labels() {
         let query = "topk(2, metric_a) + sum(metric_b) by (host)";
         let engine = build_range_topk_plus_plain_engine(
             "topk(2, metric_a)",
@@ -436,12 +421,23 @@ mod tests {
             &[("host-a", 1000.0), ("host-b", 2000.0), ("host-c", 3000.0)],
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
-        assert!(
-            result.is_none(),
-            "pre-existing __name__ label-name mismatch (predates #629) should reject this \
-             query outright, got {result:?}"
-        );
+        let (_, qr) = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("Expected result for range topk/plain query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(elements.len(), 2);
+        let mut values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                assert_eq!(element.samples.len(), 1);
+                (element.labels.labels[0].clone(), element.samples[0].value)
+            })
+            .collect();
+        assert_eq!(values.remove("host-a"), Some(1100.0));
+        assert_eq!(values.remove("host-b"), Some(2050.0));
+        assert!(values.is_empty());
     }
 
     /// Builds a SimpleEngine with two independent self-keyed topk-capable
@@ -589,25 +585,9 @@ mod tests {
         assert!(values.is_empty());
     }
 
-    // RED test for PR #629 review finding 1 (see
-    // .design_docs/pr-629-review-findings-handoff.md): `apply_range_topk`'s
-    // formatting step (`enable_topk_formatting=true`) prepends EACH arm's
-    // own metric name to `elem.labels` before the vector-vector join. Two
-    // *different* topk metrics joined by a shared grouping label ("host")
-    // pass the earlier label-*names* guard (both get `"__name__"`
-    // prepended identically), so this reaches the join -- but the join
-    // then compares `["metric_a", host]`-shaped values against
-    // `["metric_b", host]`-shaped values, which never match regardless of
-    // whether the host itself is common to both topk's surviving sets.
-    // Real PromQL vector matching ignores `__name__`/joins by the shared
-    // label ("host") alone, so this should succeed wherever both topks kept
-    // that host -- the premature per-arm metric-name prepend breaks that.
-    //
-    // Tracked in #631, not fixed as part of PR #629 -- ignored so this RED
-    // repro doesn't fail this PR's test suite. Real Prometheus semantics for
-    // this query shape haven't been confirmed yet either.
+    // Regression test for issue #631: different Topk metric names must not
+    // become part of the intermediate vector-matching identity.
     #[tokio::test(flavor = "multi_thread")]
-    #[ignore = "tracked in #631, not part of PR #629's scope"]
     async fn test_range_vector_vector_topk_lhs_topk_rhs() {
         // topk(2, metric_a): host-a=100, host-b=50 survive; host-c=10 dropped.
         // topk(2, metric_b): host-b=200, host-c=300 survive; host-a=5 dropped.
