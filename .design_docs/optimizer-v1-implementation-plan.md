@@ -269,14 +269,27 @@ Allow a config with labels ⊇ query labels to serve that AQE. This is what enab
 
 - ✅ Plug real `AtomicCosts` values into cost model — done for CMS/HLL/KLL, see 2f above and
   "Running with real sketch-bench costs" below.
-- ❌ Add `CountMinSketchWithHeap` wrapper in sketch-bench, so it stops always costing at the flat
-  stub. Its memory is meant to be an analytic bound (`heap_size · avg_key_size`), not a
-  sketch-bench lookup at all, per #524 — that formula still needs implementing in
-  `atomic_costs.rs`/`cost_model.rs`.
+- ✅ `CountMinSketchWithHeap` wrapper in sketch-bench (`cms-heap` family — sketch-bench PR #104,
+  closed sketch-bench#95) — but not wired to ASAPQuery's cost lookup yet, see status below.
 - ~~Add cardinality to sweep grids in `sketch-bench`~~ — decided unnecessary: CPU/mem costs for
   CMS/HLL/KLL are functions of structural params (depth×width, lg_k, K), not cardinality: only
-  `CountMinSketchWithHeap` is cardinality-dependent, and that's the analytic-bound case above, not
+  `CountMinSketchWithHeap` is cardinality-dependent, and that's the analytic-bound case below, not
   a sketch-bench sweep axis.
+
+**Status as of 2026-08-28:**
+1. `export_atomic_costs.sh` doesn't sweep `cms-heap` yet.
+2. Mapping gap: sketch-bench's `CmsHeapParams` is `{rows, cols}` only — `top_k` is a compile-time
+   constant, Frequency-vs-TopK is two registry variants, not a param. ASAPQuery's grid sweeps
+   `{depth, width, heapsize, count_events}` — `heapsize` has no home in sketch-bench's data at
+   all, confirming it must stay analytic. Unresolved: which of the 4 sketch-bench variants
+   (FastPath/RegularPath × Frequency/TopK) matches what ASAPQuery's `CountMinSketchWithHeap`
+   accumulator actually deploys, and what `count_events` maps to.
+3. Once (2) is resolved: extend `sketch_bench_key()` in `atomic_costs.rs` to translate
+   `CountMinSketchWithHeap` → the right variant + `{rows,cols}`, for CPU costs only.
+4. Analytic memory bound (`heap_size · avg_key_size`) still not implemented — needed regardless
+   of (1)–(3), memory was always meant to be analytic here, never a lookup.
+5. sketch-bench#14 (HLL register-width memory bug) — still open, still un-fixed.
+6. asap_sketchlib#69 (`subtract` unimplemented) — still open, `subtract_cpu_secs` absent by design.
 
 #### 3d — Accuracy constraint
 
