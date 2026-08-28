@@ -113,6 +113,7 @@ mod tests {
                 step_ms: None,
                 range_duration_ms: None,
             }],
+            windowing: None,
             metrics: Some(vec![MetricDefinition {
                 metric: "http_requests_total".to_string(),
                 labels: vec!["method".to_string(), "status".to_string()],

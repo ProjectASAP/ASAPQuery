@@ -99,6 +99,14 @@ query_engine:
 controller:
   punting: true  # Enable query punting based on performance heuristics (should_be_performant check)
 
+# Optional manual planner windowing override. Omit this block to preserve the
+# default tumbling-window behavior. For tumbling windows, omit
+# slide_interval_ms. For sliding windows, both sizes are explicit.
+# windowing:
+#   type: "sliding"
+#   window_size_ms: 60000
+#   slide_interval_ms: 15000
+
 # Aggregate cleanup configuration
 # Policy options:
 #   - "circular_buffer": Keep N most recent aggregates (fixed-count cleanup)

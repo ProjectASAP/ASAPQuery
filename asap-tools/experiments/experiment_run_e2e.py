@@ -200,6 +200,7 @@ def main(cfg: DictConfig):
             local_experiment_root_dir,
             cfg.aggregate_cleanup,
             cfg.get("sketch_parameters", None),
+            cfg.get("windowing", None),
         )
     )
     sync.rsync_controller_client_configs(

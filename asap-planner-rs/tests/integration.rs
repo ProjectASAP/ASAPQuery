@@ -27,6 +27,273 @@ fn http_requests_schema() -> PromQLSchema {
     )
 }
 
+#[test]
+fn config_file_sliding_window_override_generates_per_query_candidates() {
+    let controller = Controller::from_file_with_schema(
+        Path::new("tests/test_data/windowing/promql_sliding.yaml"),
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let streaming: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_streaming_yaml_string().unwrap()).unwrap();
+    let aggregations = streaming["aggregations"].as_sequence().unwrap();
+
+    assert_eq!(output.inference_query_count(), 2);
+    assert_eq!(aggregations.len(), 1);
+
+    let mut candidates: Vec<(u64, u64, String)> = aggregations
+        .iter()
+        .map(|aggregation| {
+            (
+                aggregation["windowSizeMs"].as_u64().unwrap(),
+                aggregation["slideIntervalMs"].as_u64().unwrap(),
+                aggregation["windowType"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    candidates.sort();
+
+    assert_eq!(candidates, vec![(60_000, 15_000, "sliding".to_string())]);
+    assert!(candidates
+        .iter()
+        .all(|(_, _, window_type)| window_type != "tumbling"));
+}
+
+#[test]
+fn sliding_window_config_requires_a_slide_interval() {
+    let result = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+query_groups: []
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    );
+    let error = match result {
+        Ok(_) => panic!("sliding config without a divisor should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("windowing.slide_interval_ms is required for sliding windows"));
+}
+
+#[test]
+fn sliding_window_validation_reports_all_invalid_queries() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[65s])"
+    repetition_delay_ms: 65000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+  - id: 2
+    queries:
+      - "rate(http_requests_total[55s])"
+    repetition_delay_ms: 55000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let result = controller.generate();
+    let error = match result {
+        Ok(_) => panic!("invalid sliding windows should abort plan generation"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+
+    assert!(message.contains("rate(http_requests_total[65s])"));
+    assert!(message.contains("rate(http_requests_total[55s])"));
+}
+
+#[test]
+fn sliding_window_validation_rejects_data_range_not_multiple_of_window() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[90s])"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("invalid sliding window should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("data_range_ms (90000)"));
+    assert!(error.contains("window_size_ms (60000)"));
+}
+
+#[test]
+fn sliding_window_config_rejects_zero_slide_interval() {
+    let result = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 0
+query_groups: []
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    );
+    let error = match result {
+        Ok(_) => panic!("sliding config with divisor 1 should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("windowing.slide_interval_ms must be greater than 0"));
+}
+
+#[test]
+fn tumbling_window_config_rejects_a_slide_interval() {
+    let result = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "tumbling"
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+query_groups: []
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    );
+    let error = match result {
+        Ok(_) => panic!("tumbling config with a divisor should be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error
+        .to_string()
+        .contains("windowing.slide_interval_ms is only valid for sliding windows"));
+}
+
+#[test]
+fn explicit_tumbling_window_override_keeps_tumbling_candidates() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "tumbling"
+  window_size_ms: 60000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[2m])"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let streaming: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_streaming_yaml_string().unwrap()).unwrap();
+    let aggregation = &streaming["aggregations"][0];
+
+    assert_eq!(aggregation["windowType"].as_str(), Some("tumbling"));
+    assert_eq!(aggregation["windowSizeMs"].as_u64(), Some(60_000));
+    assert_eq!(
+        aggregation["slideIntervalMs"].as_u64(),
+        aggregation["windowSizeMs"].as_u64()
+    );
+    assert_ne!(aggregation["windowType"].as_str(), Some("sliding"));
+}
+
+#[test]
+fn explicit_sliding_window_revalidates_final_step_grid() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 30000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[2m])"
+    repetition_delay_ms: 40000
+    step_ms: 80000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("step misaligned with the explicit sliding grid should fail"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("final window grid interval (30000)"));
+}
+
+#[test]
+fn explicit_tumbling_window_rejects_non_multiple_lookback() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "tumbling"
+  window_size_ms: 60000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[90s])"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("tumbling lookback must be an exact window multiple"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("data_range_ms (90000)"));
+}
+
 /// Schema for binary arithmetic tests: errors_total and requests_total.
 fn binary_arithmetic_schema() -> PromQLSchema {
     PromQLSchema::new()
@@ -571,6 +838,78 @@ fn binary_arithmetic_with_non_acceleratable_arm_produces_no_configs() {
     let out = c.generate().unwrap();
     assert_eq!(out.streaming_aggregation_count(), 0);
     assert_eq!(out.inference_query_count(), 0);
+}
+
+#[test]
+fn binary_arithmetic_aggregates_windowing_errors_from_all_leaves() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(errors_total[65s]) / rate(requests_total[65s])"
+    repetition_delay_ms: 65000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+  - id: 2
+    queries:
+      - "rate(errors_total[55s]) / rate(requests_total[55s])"
+    repetition_delay_ms: 55000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        binary_arithmetic_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("invalid binary sliding windows should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("rate(errors_total[65s])"));
+    assert!(error.contains("rate(requests_total[65s])"));
+    assert!(error.contains("rate(errors_total[55s])"));
+    assert!(error.contains("rate(requests_total[55s])"));
+    assert_eq!(error.matches("(leaf '").count(), 4);
+}
+
+#[test]
+fn binary_arithmetic_scans_past_unsupported_arms_for_windowing_errors() {
+    let controller = Controller::from_yaml_with_schema(
+        r#"
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+query_groups:
+  - id: 1
+    queries:
+      - "abs(errors_total) / rate(requests_total[65s])"
+      - "rate(requests_total[65s]) / abs(errors_total)"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        binary_arithmetic_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+
+    let error = match controller.generate() {
+        Ok(_) => panic!("invalid binary sliding windows should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("abs(errors_total) / rate(requests_total[65s])"));
+    assert!(error.contains("rate(requests_total[65s]) / abs(errors_total)"));
 }
 
 #[test]

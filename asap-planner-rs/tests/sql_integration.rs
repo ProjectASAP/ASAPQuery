@@ -1,4 +1,6 @@
 use asap_planner::{ControllerError, SQLController, SQLRuntimeOptions, StreamingEngine};
+use std::io::Write;
+use tempfile::NamedTempFile;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -9,6 +11,165 @@ fn sql_opts() -> SQLRuntimeOptions {
         query_evaluation_time: Some(1_000_000.0),
         data_ingestion_interval_ms: 15_000,
     }
+}
+
+#[test]
+fn config_file_sliding_window_override_generates_per_query_candidates() {
+    let controller = SQLController::from_file(
+        std::path::Path::new("tests/test_data/windowing/sql_sliding.yaml"),
+        sql_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let streaming: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_streaming_yaml_string().unwrap()).unwrap();
+    let aggregations = streaming["aggregations"].as_sequence().unwrap();
+
+    assert_eq!(output.inference_query_count(), 2);
+    assert_eq!(aggregations.len(), 1);
+
+    let mut candidates: Vec<(u64, u64, String)> = aggregations
+        .iter()
+        .map(|aggregation| {
+            (
+                aggregation["windowSizeMs"].as_u64().unwrap(),
+                aggregation["slideIntervalMs"].as_u64().unwrap(),
+                aggregation["windowType"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    candidates.sort();
+
+    assert_eq!(candidates, vec![(60_000, 15_000, "sliding".to_string())]);
+    assert!(candidates
+        .iter()
+        .all(|(_, _, window_type)| window_type != "tumbling"));
+}
+
+#[test]
+fn sliding_window_validation_reports_all_invalid_sql_queries() {
+    let controller = SQLController::from_file(
+        std::path::Path::new("tests/test_data/windowing/sql_sliding_invalid.yaml"),
+        sql_opts(),
+    )
+    .unwrap();
+
+    let result = controller.generate();
+    let error = match result {
+        Ok(_) => panic!("invalid sliding windows should abort plan generation"),
+        Err(error) => error,
+    };
+    let message = error.to_string();
+
+    assert!(message.contains("DATEADD(s, -75, NOW())"));
+    assert!(message.contains("DATEADD(s, -90, NOW())"));
+}
+
+#[test]
+fn sliding_window_validation_rejects_sql_data_range_not_multiple_of_window() {
+    let query = "SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -90, NOW()) AND NOW() GROUP BY hostname";
+    let config = format!(
+        r#"
+windowing:
+  type: sliding
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+tables:
+  - name: metrics_table
+    time_column: time
+    value_columns: [cpu_usage]
+    metadata_columns: [hostname]
+query_groups:
+  - id: 1
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 100.0
+    queries:
+      - "{query}"
+aggregate_cleanup:
+  policy: no_cleanup
+"#
+    );
+
+    let error = match SQLController::from_yaml(&config, sql_opts())
+        .unwrap()
+        .generate()
+    {
+        Ok(_) => panic!("invalid sliding window should abort plan generation"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("data_range_ms (90000)"));
+    assert!(error.contains("window_size_ms (60000)"));
+}
+
+#[test]
+fn explicit_tumbling_window_rejects_sql_non_multiple_lookback() {
+    let query = "SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -90, NOW()) AND NOW() GROUP BY hostname";
+    let config = format!(
+        r#"
+windowing:
+  type: tumbling
+  window_size_ms: 60000
+tables:
+  - name: metrics_table
+    time_column: time
+    value_columns: [cpu_usage]
+    metadata_columns: [hostname]
+query_groups:
+  - id: 1
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.95
+      latency_sla: 100.0
+    queries:
+      - "{query}"
+aggregate_cleanup:
+  policy: read_based
+"#
+    );
+
+    let error = match SQLController::from_yaml(&config, sql_opts())
+        .unwrap()
+        .generate()
+    {
+        Ok(_) => panic!("tumbling lookback must be an exact window multiple"),
+        Err(error) => error.to_string(),
+    };
+    assert!(error.contains("data_range_ms (90000)"));
+}
+
+#[test]
+fn discovery_validates_windowing_before_contacting_clickhouse() {
+    let mut file = NamedTempFile::new().unwrap();
+    file.write_all(
+        br#"
+windowing:
+  type: sliding
+  window_size_ms: 60000
+tables:
+  - name: metrics_table
+    time_column: time
+    value_columns: [cpu_usage]
+    metadata_columns: []
+query_groups: []
+"#,
+    )
+    .unwrap();
+
+    let error = match SQLController::from_file_with_discovery(
+        file.path(),
+        "http://127.0.0.1:1",
+        "default",
+        sql_opts(),
+    ) {
+        Ok(_) => panic!("invalid windowing config should be rejected"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(error.contains("windowing.slide_interval_ms is required for sliding windows"));
 }
 
 /// Single-query config with a 3-column metadata schema.

@@ -1,0 +1,21 @@
+windowing:
+  type: "sliding"
+  window_size_ms: 60000
+  slide_interval_ms: 15000
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[1m])"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+  - id: 2
+    queries:
+      - "rate(http_requests_total[2m])"
+    repetition_delay_ms: 120000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+aggregate_cleanup:
+  policy: "read_based"

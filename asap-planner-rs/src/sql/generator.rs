@@ -13,6 +13,7 @@ use crate::generator::{
 };
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::sql::SQLSingleQueryProcessor;
+use crate::planner::window::WindowingError;
 use crate::StreamingEngine;
 
 pub struct SQLRuntimeOptions {
@@ -25,6 +26,12 @@ pub fn generate_sql_plan(
     config: &SQLControllerConfig,
     opts: &SQLRuntimeOptions,
 ) -> Result<GeneratorOutput, ControllerError> {
+    if let Some(windowing) = &config.windowing {
+        windowing
+            .validate()
+            .map_err(|error| ControllerError::Windowing(WindowingError::InvalidConfig(error)))?;
+    }
+
     let eval_time: f64 = opts.query_evaluation_time.unwrap_or_else(|| {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -74,6 +81,7 @@ pub fn generate_sql_plan(
     let mut dedup_map: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
     // query_string -> Vec<(key, cleanup_param)>
     let mut query_keys_map: IndexMap<String, Vec<(String, Option<u64>)>> = IndexMap::new();
+    let mut windowing_errors: Vec<String> = Vec::new();
 
     for qg in &config.query_groups {
         for query_string in &qg.queries {
@@ -85,10 +93,18 @@ pub fn generate_sql_plan(
                 opts.streaming_engine,
                 config.sketch_parameters.clone(),
                 cleanup_policy,
+                config.windowing.clone(),
             );
 
             let (configs, cleanup_param) =
-                processor.get_streaming_aggregation_configs(eval_time)?;
+                match processor.get_streaming_aggregation_configs(eval_time) {
+                    Ok(result) => result,
+                    Err(ControllerError::Windowing(error)) => {
+                        windowing_errors.push(format!("query '{query_string}': {error}"));
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                };
 
             let mut keys_for_query = Vec::new();
             for config_item in configs {
@@ -98,6 +114,13 @@ pub fn generate_sql_plan(
             }
             query_keys_map.insert(query_string.clone(), keys_for_query);
         }
+    }
+
+    if !windowing_errors.is_empty() {
+        return Err(ControllerError::PlannerError(format!(
+            "sliding window validation failed:\n{}",
+            windowing_errors.join("\n")
+        )));
     }
 
     // Assign sequential IDs

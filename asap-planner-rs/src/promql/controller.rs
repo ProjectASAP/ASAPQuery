@@ -37,6 +37,11 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
         let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        if let Some(windowing) = &config.windowing {
+            windowing
+                .validate()
+                .map_err(ControllerError::PlannerError)?;
+        }
         config.warn_default_slas();
         let all_queries: Vec<String> = config
             .query_groups
@@ -79,6 +84,11 @@ impl Controller {
     ) -> Result<Self, ControllerError> {
         let yaml_str = std::fs::read_to_string(path)?;
         let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
+        if let Some(windowing) = &config.windowing {
+            windowing
+                .validate()
+                .map_err(ControllerError::PlannerError)?;
+        }
         config.warn_default_slas();
         Ok(Self {
             config,
@@ -94,6 +104,11 @@ impl Controller {
         opts: RuntimeOptions,
     ) -> Result<Self, ControllerError> {
         let config: ControllerConfig = serde_yaml::from_str(yaml)?;
+        if let Some(windowing) = &config.windowing {
+            windowing
+                .validate()
+                .map_err(ControllerError::PlannerError)?;
+        }
         config.warn_default_slas();
         Ok(Self {
             config,

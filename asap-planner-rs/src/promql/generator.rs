@@ -13,6 +13,7 @@ use crate::generator::{
 };
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::promql::{BinaryArm, SingleQueryProcessor};
+use crate::planner::window::WindowingError;
 use crate::RuntimeOptions;
 
 /// `(query_string, Vec<(identifying_key, cleanup_param)>)` pairs produced by binary leaf decomposition.
@@ -30,6 +31,12 @@ pub fn generate_plan(
     opts: &RuntimeOptions,
 ) -> Result<GeneratorOutput, ControllerError> {
     let metric_schema = schema.clone();
+
+    if let Some(windowing) = &controller_config.windowing {
+        windowing
+            .validate()
+            .map_err(|error| ControllerError::Windowing(WindowingError::InvalidConfig(error)))?;
+    }
 
     // Determine cleanup policy
     let cleanup_policy = controller_config
@@ -54,6 +61,7 @@ pub fn generate_plan(
     let mut query_keys_map: IndexMap<String, Vec<(String, Option<u64>)>> = IndexMap::new();
 
     let mut punted_queries: Vec<PuntedQuery> = Vec::new();
+    let mut windowing_errors: Vec<String> = Vec::new();
 
     for qg in &controller_config.query_groups {
         for query_string in &qg.queries {
@@ -67,6 +75,7 @@ pub fn generate_plan(
                 qg.range_duration_ms.unwrap_or(opts.range_duration_ms),
                 qg.step_ms.unwrap_or(opts.step_ms),
                 cleanup_policy,
+                controller_config.windowing.clone(),
             );
 
             let mut should_process = processor.is_supported();
@@ -97,18 +106,36 @@ pub fn generate_plan(
                             "skipping query referencing unknown metric"
                         );
                     }
+                    Err(ControllerError::Windowing(error)) => {
+                        windowing_errors.push(format!("query '{query_string}': {error}"));
+                    }
                     Err(e) => return Err(e),
                 }
-            } else if let Some(arm_entries) =
-                collect_binary_leaf_entries(&processor, &mut dedup_map)?
-            {
-                // Binary arithmetic: register each leaf arm in dedup_map and query_keys_map
-                for (arm_query, keys_for_arm) in arm_entries {
-                    // Use `entry` so a standalone query that duplicates an arm wins
-                    query_keys_map.entry(arm_query).or_insert(keys_for_arm);
+            } else {
+                let mut pending_dedup_map = IndexMap::new();
+                if let Some(arm_entries) = collect_binary_leaf_entries(
+                    &processor,
+                    &dedup_map,
+                    &mut pending_dedup_map,
+                    &mut windowing_errors,
+                    query_string,
+                )? {
+                    dedup_map.extend(pending_dedup_map);
+                    // Binary arithmetic: register each leaf arm in dedup_map and query_keys_map
+                    for (arm_query, keys_for_arm) in arm_entries {
+                        // Use `entry` so a standalone query that duplicates an arm wins
+                        query_keys_map.entry(arm_query).or_insert(keys_for_arm);
+                    }
                 }
             }
         }
+    }
+
+    if !windowing_errors.is_empty() {
+        return Err(ControllerError::PlannerError(format!(
+            "sliding window validation failed:\n{}",
+            windowing_errors.join("\n")
+        )));
     }
 
     // Assign sequential IDs (1-indexed, insertion order)
@@ -141,7 +168,10 @@ pub fn generate_plan(
 /// Returns `Err` only on internal planner errors.
 fn collect_binary_leaf_entries(
     processor: &SingleQueryProcessor,
-    dedup_map: &mut IndexMap<String, IntermediateAggConfig>,
+    dedup_map: &IndexMap<String, IntermediateAggConfig>,
+    pending_dedup_map: &mut IndexMap<String, IntermediateAggConfig>,
+    windowing_errors: &mut Vec<String>,
+    query_context: &str,
 ) -> Result<Option<LeafEntries>, ControllerError> {
     let arms = match processor.get_binary_arm_queries() {
         Some(arms) => arms,
@@ -149,6 +179,8 @@ fn collect_binary_leaf_entries(
     };
 
     let mut all_entries: LeafEntries = Vec::new();
+    let mut found_windowing_error = false;
+    let mut found_unsupported_arm = false;
 
     for arm in [arms.0, arms.1] {
         match arm {
@@ -161,24 +193,48 @@ fn collect_binary_leaf_entries(
                 if arm_processor.is_supported() {
                     // Leaf arm: gather its streaming aggregation configs.
                     let (configs, cleanup_param) =
-                        arm_processor.get_streaming_aggregation_configs()?;
+                        match arm_processor.get_streaming_aggregation_configs() {
+                            Ok(result) => result,
+                            Err(ControllerError::Windowing(error)) => {
+                                windowing_errors.push(format!(
+                                    "query '{query_context}' (leaf '{arm_query}'): {error}"
+                                ));
+                                found_windowing_error = true;
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
                     let mut keys_for_arm = Vec::new();
                     for config in configs {
                         let key = config.identifying_key();
                         keys_for_arm.push((key.clone(), cleanup_param));
-                        dedup_map.entry(key).or_insert(config);
+                        if !dedup_map.contains_key(&key) {
+                            pending_dedup_map.entry(key).or_insert(config);
+                        }
                     }
                     all_entries.push((arm_query, keys_for_arm));
                 } else {
                     // The arm might itself be a binary expression — recurse.
-                    match collect_binary_leaf_entries(&arm_processor, dedup_map)? {
+                    let error_count = windowing_errors.len();
+                    match collect_binary_leaf_entries(
+                        &arm_processor,
+                        dedup_map,
+                        pending_dedup_map,
+                        windowing_errors,
+                        query_context,
+                    )? {
                         Some(sub_entries) => {
                             all_entries.extend(sub_entries);
                         }
                         None => {
+                            if windowing_errors.len() > error_count {
+                                found_windowing_error = true;
+                                continue;
+                            }
                             // Arm is neither a supported leaf nor a binary expression.
                             // This entire query cannot be accelerated.
-                            return Ok(None);
+                            found_unsupported_arm = true;
+                            continue;
                         }
                     }
                 }
@@ -186,7 +242,11 @@ fn collect_binary_leaf_entries(
         }
     }
 
-    Ok(Some(all_entries))
+    if found_windowing_error || found_unsupported_arm {
+        Ok(None)
+    } else {
+        Ok(Some(all_entries))
+    }
 }
 
 fn build_streaming_yaml(

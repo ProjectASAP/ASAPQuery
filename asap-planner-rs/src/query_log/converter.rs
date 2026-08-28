@@ -37,6 +37,7 @@ pub fn to_controller_config(
 
     ControllerConfig {
         query_groups,
+        windowing: None,
         sketch_parameters: None,
         aggregate_cleanup: Some(AggregateCleanupConfig {
             policy: Some(CleanupPolicy::ReadBased),

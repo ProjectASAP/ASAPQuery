@@ -342,6 +342,7 @@ def generate_controller_client_configs(
     local_experiment_dir: str,
     aggregate_cleanup: DictConfig = None,
     sketch_parameters: DictConfig = None,
+    windowing: DictConfig = None,
 ) -> Tuple[List[str], List[str]]:
     """Generate controller client configurations from experiment parameters."""
     # experiment_params is already loaded by Hydra
@@ -357,6 +358,10 @@ def generate_controller_client_configs(
     if sketch_parameters is not None:
         sketch_params_config = OmegaConf.to_container(sketch_parameters, resolve=True)
         experiment_config["sketch_parameters"] = sketch_params_config
+
+    # Add the optional planner windowing override if provided.
+    if windowing is not None:
+        experiment_config["windowing"] = OmegaConf.to_container(windowing, resolve=True)
 
     output_dir = os.path.join(local_experiment_dir, "controller_client_configs")
     os.makedirs(output_dir, exist_ok=True)
@@ -376,6 +381,7 @@ def generate_controller_client_configs(
         "query_groups",
         "sketch_parameters",
         "aggregate_cleanup",
+        "windowing",
         "metrics",
         "existing_streaming_config",
     }
@@ -828,7 +834,10 @@ def generate_clickhouse_client_configs(
 
 
 def generate_sql_planner_input(
-    query_groups: Any, dataset_cfg: Any, sketch_parameters: Any = None
+    query_groups: Any,
+    dataset_cfg: Any,
+    sketch_parameters: Any = None,
+    windowing: Any = None,
 ) -> str:
     """Generate the YAML input file for asap-planner in SQL mode.
 
@@ -836,6 +845,7 @@ def generate_sql_planner_input(
     ``SQLControllerConfig`` YAML that contains:
       - ``tables``: schema of the tables being queried
       - ``query_groups``: SQL queries with controller options
+      - ``windowing``: optional global tumbling/sliding window override
       - ``sketch_parameters``: optional per-sketch-type overrides (e.g.
         ``DatasketchesKLL.K``), matching ``ControllerConfig``'s PromQL-mode
         field of the same name (``SketchParameterOverrides`` in
@@ -854,6 +864,9 @@ def generate_sql_planner_input(
             top-level ``sketch_parameters`` section (``CountMinSketch``,
             ``DatasketchesKLL``, etc.). When ``None``, the planner falls back
             to its own defaults.
+        windowing: Optional DictConfig/dict mirroring ``config.yaml``'s
+            top-level ``windowing`` section. When ``None``, the planner uses
+            its default tumbling-window behavior.
 
     Returns:
         YAML string ready to write to disk and pass to asap-planner.
@@ -913,6 +926,10 @@ def generate_sql_planner_input(
         if isinstance(sketch_parameters, (DictConfig, ListConfig)):
             sketch_parameters = OmegaConf.to_container(sketch_parameters, resolve=True)
         planner_input["sketch_parameters"] = sketch_parameters
+    if windowing is not None:
+        if isinstance(windowing, (DictConfig, ListConfig)):
+            windowing = OmegaConf.to_container(windowing, resolve=True)
+        planner_input["windowing"] = windowing
     return yaml.dump(planner_input, default_flow_style=False, allow_unicode=True)
 
 
