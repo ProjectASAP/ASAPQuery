@@ -47,6 +47,7 @@ pub fn set_window_parameters(
     data_ingestion_interval_ms: u64,
     step_ms: u64,
     config: &mut IntermediateWindowConfig,
+    validate_step_alignment: bool,
 ) -> Result<(), String> {
     if t_repeat_ms < data_ingestion_interval_ms {
         return Err(format!(
@@ -79,7 +80,7 @@ pub fn set_window_parameters(
     // Catch a window size incompatible with its own planning-time step_ms
     // here, at planning time, instead of provisioning a window that would
     // reject every range query using exactly the step_ms it was planned for.
-    if step_ms > 0 && !step_ms.is_multiple_of(window_size_ms) {
+    if validate_step_alignment && step_ms > 0 && !step_ms.is_multiple_of(window_size_ms) {
         return Err(format!(
             "step_ms ({step_ms}ms) must be a multiple of the computed window size ({window_size_ms}ms)"
         ));
@@ -229,7 +230,7 @@ mod tests {
     #[test]
     fn set_window_parameters_temporal_shape() {
         let mut config = IntermediateWindowConfig::default();
-        set_window_parameters(300_000, 60_000, 15_000, 0, &mut config).unwrap();
+        set_window_parameters(300_000, 60_000, 15_000, 0, &mut config, true).unwrap();
         assert_eq!(config.window_size_ms, 60_000);
         assert_eq!(config.slide_interval_ms, 60_000);
         assert_eq!(config.window_type, WindowType::Tumbling);
@@ -240,7 +241,7 @@ mod tests {
         // data_range_ms == data_ingestion_interval_ms (spatial-only query),
         // t_repeat_ms also equal to the interval: unaffected by the relaxation.
         let mut config = IntermediateWindowConfig::default();
-        set_window_parameters(15_000, 15_000, 15_000, 0, &mut config).unwrap();
+        set_window_parameters(15_000, 15_000, 15_000, 0, &mut config, true).unwrap();
         assert_eq!(config.window_size_ms, 15_000);
     }
 
@@ -252,26 +253,26 @@ mod tests {
         // any cadence gives the latest available answer. window_size stays
         // exactly one interval regardless of t_repeat_ms.
         let mut config = IntermediateWindowConfig::default();
-        set_window_parameters(15_000, 60_000, 15_000, 0, &mut config).unwrap();
+        set_window_parameters(15_000, 60_000, 15_000, 0, &mut config, true).unwrap();
         assert_eq!(config.window_size_ms, 15_000);
     }
 
     #[test]
     fn set_window_parameters_rejects_t_repeat_below_interval() {
         let mut config = IntermediateWindowConfig::default();
-        assert!(set_window_parameters(300_000, 10_000, 15_000, 0, &mut config).is_err());
+        assert!(set_window_parameters(300_000, 10_000, 15_000, 0, &mut config, true).is_err());
     }
 
     #[test]
     fn set_window_parameters_rejects_data_range_below_t_repeat() {
         let mut config = IntermediateWindowConfig::default();
-        assert!(set_window_parameters(30_000, 60_000, 15_000, 0, &mut config).is_err());
+        assert!(set_window_parameters(30_000, 60_000, 15_000, 0, &mut config, true).is_err());
     }
 
     #[test]
     fn set_window_parameters_rejects_step_below_interval() {
         let mut config = IntermediateWindowConfig::default();
-        assert!(set_window_parameters(300_000, 60_000, 15_000, 10_000, &mut config).is_err());
+        assert!(set_window_parameters(300_000, 60_000, 15_000, 10_000, &mut config, true).is_err());
     }
 
     #[test]
@@ -282,7 +283,7 @@ mod tests {
         // otherwise provision a window that query-engine's
         // validate_range_query_params rejects for exactly this step_ms.
         let mut config = IntermediateWindowConfig::default();
-        let result = set_window_parameters(300_000, 40_000, 10_000, 100_000, &mut config);
+        let result = set_window_parameters(300_000, 40_000, 10_000, 100_000, &mut config, true);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be a multiple of"));
     }

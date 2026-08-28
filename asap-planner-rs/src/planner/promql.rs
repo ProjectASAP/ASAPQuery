@@ -256,6 +256,7 @@ impl SingleQueryProcessor {
             self.data_ingestion_interval_ms,
             self.step_ms,
             &mut window_cfg,
+            self.windowing.is_none(),
         )
         .map_err(ControllerError::PlannerError)?;
         crate::planner::window::apply_windowing_override(

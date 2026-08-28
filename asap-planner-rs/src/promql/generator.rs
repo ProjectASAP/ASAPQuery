@@ -111,16 +111,21 @@ pub fn generate_plan(
                     }
                     Err(e) => return Err(e),
                 }
-            } else if let Some(arm_entries) = collect_binary_leaf_entries(
-                &processor,
-                &mut dedup_map,
-                &mut windowing_errors,
-                query_string,
-            )? {
-                // Binary arithmetic: register each leaf arm in dedup_map and query_keys_map
-                for (arm_query, keys_for_arm) in arm_entries {
-                    // Use `entry` so a standalone query that duplicates an arm wins
-                    query_keys_map.entry(arm_query).or_insert(keys_for_arm);
+            } else {
+                let mut pending_dedup_map = IndexMap::new();
+                if let Some(arm_entries) = collect_binary_leaf_entries(
+                    &processor,
+                    &dedup_map,
+                    &mut pending_dedup_map,
+                    &mut windowing_errors,
+                    query_string,
+                )? {
+                    dedup_map.extend(pending_dedup_map);
+                    // Binary arithmetic: register each leaf arm in dedup_map and query_keys_map
+                    for (arm_query, keys_for_arm) in arm_entries {
+                        // Use `entry` so a standalone query that duplicates an arm wins
+                        query_keys_map.entry(arm_query).or_insert(keys_for_arm);
+                    }
                 }
             }
         }
@@ -163,7 +168,8 @@ pub fn generate_plan(
 /// Returns `Err` only on internal planner errors.
 fn collect_binary_leaf_entries(
     processor: &SingleQueryProcessor,
-    dedup_map: &mut IndexMap<String, IntermediateAggConfig>,
+    dedup_map: &IndexMap<String, IntermediateAggConfig>,
+    pending_dedup_map: &mut IndexMap<String, IntermediateAggConfig>,
     windowing_errors: &mut Vec<String>,
     query_context: &str,
 ) -> Result<Option<LeafEntries>, ControllerError> {
@@ -202,7 +208,9 @@ fn collect_binary_leaf_entries(
                     for config in configs {
                         let key = config.identifying_key();
                         keys_for_arm.push((key.clone(), cleanup_param));
-                        dedup_map.entry(key).or_insert(config);
+                        if !dedup_map.contains_key(&key) {
+                            pending_dedup_map.entry(key).or_insert(config);
+                        }
                     }
                     all_entries.push((arm_query, keys_for_arm));
                 } else {
@@ -211,6 +219,7 @@ fn collect_binary_leaf_entries(
                     match collect_binary_leaf_entries(
                         &arm_processor,
                         dedup_map,
+                        pending_dedup_map,
                         windowing_errors,
                         query_context,
                     )? {
