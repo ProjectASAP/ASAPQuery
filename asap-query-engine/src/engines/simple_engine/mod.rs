@@ -15,7 +15,7 @@ use crate::stores::{Store, TimestampedBucketsMap};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use crate::precompute_operators::AccumulatorError;
 use crate::AggregateCore;
@@ -445,6 +445,20 @@ impl SimpleEngine {
         let range_ms = timestamps.end_timestamp - timestamps.start_timestamp;
         let do_merge = range_ms > aggregation_config_for_value.window_size_ms;
 
+        debug!(
+            metric,
+            value_aggregation_id = agg_info.aggregation_id_for_value,
+            key_aggregation_id = agg_info.aggregation_id_for_key,
+            query_start_timestamp = timestamps.start_timestamp,
+            query_end_timestamp = timestamps.end_timestamp,
+            range_ms,
+            window_type = ?window_type,
+            window_size_ms = aggregation_config_for_value.window_size_ms,
+            slide_interval_ms = Self::bucket_step_ms(aggregation_config_for_value),
+            do_merge,
+            "Built store query plan"
+        );
+
         let values_query = StoreQueryParams {
             metric: metric.to_string(),
             aggregation_id: agg_info.aggregation_id_for_value,
@@ -798,6 +812,12 @@ impl SimpleEngine {
             slide_interval_ms,
             window_count = windows.len(),
             "Querying exact non-overlapping Sliding-window cover"
+        );
+        trace!(
+            aggregation_id = params.aggregation_id,
+            output_timestamps = ?output_timestamps,
+            windows = ?windows,
+            "Planned exact Sliding-window cover ranges"
         );
         let outputs = self
             .store
@@ -2263,6 +2283,17 @@ impl SimpleEngine {
                     tumbling_window_ms,
                     window_type,
                     context.window_size_ms,
+                );
+
+                trace!(
+                    current_time,
+                    window_type = ?window_type,
+                    window_start,
+                    window_end,
+                    grid_step_ms = tumbling_window_ms,
+                    stored_window_size_ms = context.window_size_ms,
+                    selected_bucket_count = window_buckets.len(),
+                    "Composed query output window from stored buckets"
                 );
 
                 if window_type == WindowType::Sliding {

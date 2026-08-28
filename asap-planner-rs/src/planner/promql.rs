@@ -6,6 +6,7 @@ use promql_utilities::query_logics::enums::{
     AggregationType, PromQLFunction, QueryTreatmentType, Statistic,
 };
 use promql_utilities::query_logics::parsing::get_metric_and_spatial_filter;
+use tracing::debug;
 
 use crate::config::input::{SketchParameterOverrides, WindowingConfig};
 use crate::error::ControllerError;
@@ -265,6 +266,17 @@ impl SingleQueryProcessor {
             self.step_ms,
             self.windowing.as_ref(),
         )?;
+
+        debug!(
+            query = %self.query,
+            metric = %metric,
+            data_range_ms = requirements.data_range_ms,
+            step_ms = self.step_ms,
+            window_type = ?window_cfg.window_type,
+            window_size_ms = window_cfg.window_size_ms,
+            slide_interval_ms = window_cfg.slide_interval_ms,
+            "Selected streaming window configuration"
+        );
 
         let subpopulation_labels = requirements.grouping_labels;
         let rollup = all_labels.difference(&subpopulation_labels);
