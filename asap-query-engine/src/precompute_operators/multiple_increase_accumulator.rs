@@ -2,7 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
 };
-use crate::precompute_operators::IncreaseAccumulator;
+use crate::precompute_operators::{IncreaseAccumulator, INCREASE_BINARY_FORMAT_MAGIC};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -23,6 +23,8 @@ struct MeasurementData {
     starting_timestamp: i64,
     last_seen_measurement: f64,
     last_seen_timestamp: i64,
+    #[serde(default)]
+    counter_reset_adjustment: f64,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -90,25 +92,38 @@ impl MultipleIncreaseAccumulator {
             if offset >= buffer.len() {
                 return Err("Buffer too short for increase accumulator data".into());
             }
+            let has_reset_adjustment = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC);
+            let data_offset = if has_reset_adjustment {
+                offset + INCREASE_BINARY_FORMAT_MAGIC.len()
+            } else {
+                offset
+            };
             let increase_data = IncreaseAccumulator::deserialize_from_bytes(&buffer[offset..])?;
 
             // Calculate consumed bytes for IncreaseAccumulator
-            // Structure: starting_measurement_len(4) + starting_measurement + starting_timestamp(8) +
-            //           last_seen_measurement_len(4) + last_seen_measurement + last_seen_timestamp(8)
+            // Structure: [magic(4)] + starting_measurement_len(4) + starting_measurement + starting_timestamp(8) +
+            //           last_seen_measurement_len(4) + last_seen_measurement +
+            //           last_seen_timestamp(8) + [counter_reset_adjustment(8)]
             let starting_measurement_len = u32::from_le_bytes([
-                buffer[offset],
-                buffer[offset + 1],
-                buffer[offset + 2],
-                buffer[offset + 3],
+                buffer[data_offset],
+                buffer[data_offset + 1],
+                buffer[data_offset + 2],
+                buffer[data_offset + 3],
             ]) as usize;
             let last_seen_measurement_len = u32::from_le_bytes([
-                buffer[offset + 4 + starting_measurement_len + 8],
-                buffer[offset + 4 + starting_measurement_len + 8 + 1],
-                buffer[offset + 4 + starting_measurement_len + 8 + 2],
-                buffer[offset + 4 + starting_measurement_len + 8 + 3],
+                buffer[data_offset + 4 + starting_measurement_len + 8],
+                buffer[data_offset + 4 + starting_measurement_len + 8 + 1],
+                buffer[data_offset + 4 + starting_measurement_len + 8 + 2],
+                buffer[data_offset + 4 + starting_measurement_len + 8 + 3],
             ]) as usize;
-            let consumed_bytes =
-                4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8;
+            let consumed_bytes = (data_offset - offset)
+                + 4
+                + starting_measurement_len
+                + 8
+                + 4
+                + last_seen_measurement_len
+                + 8
+                + if has_reset_adjustment { 8 } else { 0 };
             offset += consumed_bytes;
 
             accumulator.increases.insert(key, increase_data);
@@ -140,12 +155,13 @@ impl MultipleIncreaseAccumulator {
             let last_seen_measurement = Measurement::new(values.last_seen_measurement);
             let last_seen_timestamp = values.last_seen_timestamp;
 
-            let increase_accumulator = IncreaseAccumulator::new(
+            let mut increase_accumulator = IncreaseAccumulator::new(
                 starting_measurement,
                 starting_timestamp,
                 last_seen_measurement,
                 last_seen_timestamp,
             );
+            increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
 
             accumulator.increases.insert(key_obj, increase_accumulator);
         }
@@ -169,6 +185,7 @@ impl MultipleIncreaseAccumulator {
                     starting_timestamp: increase_acc.starting_timestamp,
                     last_seen_measurement: increase_acc.last_seen_measurement.value,
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
+                    counter_reset_adjustment: increase_acc.counter_reset_adjustment,
                 },
             );
         }
@@ -333,16 +350,8 @@ impl MergeableAccumulator<MultipleIncreaseAccumulator> for MultipleIncreaseAccum
         for accumulator in accumulators {
             for (key, data) in accumulator.increases {
                 if let Some(existing_data) = result.increases.get_mut(&key) {
-                    // Merge in-place without cloning existing_data
-                    // Take the earliest start time and latest end time
-                    if data.starting_timestamp < existing_data.starting_timestamp {
-                        existing_data.starting_measurement = data.starting_measurement;
-                        existing_data.starting_timestamp = data.starting_timestamp;
-                    }
-                    if data.last_seen_timestamp > existing_data.last_seen_timestamp {
-                        existing_data.last_seen_measurement = data.last_seen_measurement;
-                        existing_data.last_seen_timestamp = data.last_seen_timestamp;
-                    }
+                    *existing_data =
+                        IncreaseAccumulator::merge_accumulators(vec![existing_data.clone(), data])?;
                 } else {
                     result.increases.insert(key, data);
                 }
@@ -429,6 +438,22 @@ mod tests {
     }
 
     #[test]
+    fn test_multiple_increase_accumulator_corrects_counter_reset() {
+        let mut acc = MultipleIncreaseAccumulator::new();
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut increase_acc = create_test_increase_accumulator_with_time(100.0, 0, 100.0, 0);
+
+        increase_acc.update(Measurement::new(150.0), 1_000);
+        increase_acc.update(Measurement::new(10.0), 2_000);
+        increase_acc.update(Measurement::new(60.0), 3_000);
+        acc.update(key.clone(), increase_acc);
+
+        assert_eq!(acc.query(Statistic::Increase, &key, None).unwrap(), 110.0);
+        let rate = acc.query(Statistic::Rate, &key, None).unwrap();
+        assert!((rate - (110.0 / 3.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn test_multiple_increase_accumulator_merge() {
         let mut acc1 = MultipleIncreaseAccumulator::new();
         let mut acc2 = MultipleIncreaseAccumulator::new();
@@ -485,6 +510,36 @@ mod tests {
         let deserialized_acc_bytes = deserialized_bytes.increases.get(&key).unwrap();
         assert_eq!(deserialized_acc_bytes.starting_measurement.value, 10.0);
         assert_eq!(deserialized_acc_bytes.last_seen_measurement.value, 25.0);
+    }
+
+    #[test]
+    fn test_multiple_increase_counter_reset_correction_survives_serialization() {
+        let mut acc = MultipleIncreaseAccumulator::new();
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut increase_acc = create_test_increase_accumulator_with_time(100.0, 0, 100.0, 0);
+
+        increase_acc.update(Measurement::new(150.0), 1_000);
+        increase_acc.update(Measurement::new(10.0), 2_000);
+        increase_acc.update(Measurement::new(60.0), 3_000);
+        acc.update(key.clone(), increase_acc);
+
+        let json_round_trip =
+            MultipleIncreaseAccumulator::deserialize_from_json(&acc.serialize_to_json()).unwrap();
+        assert_eq!(
+            json_round_trip
+                .query(Statistic::Increase, &key, None)
+                .unwrap(),
+            110.0
+        );
+
+        let bytes_round_trip =
+            MultipleIncreaseAccumulator::deserialize_from_bytes(&acc.serialize_to_bytes()).unwrap();
+        assert_eq!(
+            bytes_round_trip
+                .query(Statistic::Increase, &key, None)
+                .unwrap(),
+            110.0
+        );
     }
 
     #[test]
