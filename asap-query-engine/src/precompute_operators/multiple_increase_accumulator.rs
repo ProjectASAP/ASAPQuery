@@ -2,7 +2,10 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
 };
-use crate::precompute_operators::{IncreaseAccumulator, INCREASE_BINARY_FORMAT_MAGIC};
+use crate::precompute_operators::{
+    CounterResetEvent, IncreaseAccumulator, INCREASE_BINARY_FORMAT_MAGIC_V2,
+    INCREASE_BINARY_FORMAT_MAGIC_V3,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -25,6 +28,8 @@ struct MeasurementData {
     last_seen_timestamp: i64,
     #[serde(default)]
     counter_reset_adjustment: f64,
+    #[serde(default)]
+    counter_reset_events: Vec<CounterResetEvent>,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -92,9 +97,11 @@ impl MultipleIncreaseAccumulator {
             if offset >= buffer.len() {
                 return Err("Buffer too short for increase accumulator data".into());
             }
-            let has_reset_adjustment = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC);
+            let has_v2_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
+            let has_v3_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V3);
+            let has_reset_adjustment = has_v2_format || has_v3_format;
             let data_offset = if has_reset_adjustment {
-                offset + INCREASE_BINARY_FORMAT_MAGIC.len()
+                offset + INCREASE_BINARY_FORMAT_MAGIC_V2.len()
             } else {
                 offset
             };
@@ -116,6 +123,25 @@ impl MultipleIncreaseAccumulator {
                 buffer[data_offset + 4 + starting_measurement_len + 8 + 2],
                 buffer[data_offset + 4 + starting_measurement_len + 8 + 3],
             ]) as usize;
+            let counter_reset_event_count = if has_v3_format {
+                let base_data_len =
+                    4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8 + 8;
+                let count_offset = data_offset + base_data_len;
+                if buffer.len() < count_offset + 4 {
+                    return Err("Buffer too short for counter reset event count".into());
+                }
+                u32::from_le_bytes([
+                    buffer[count_offset],
+                    buffer[count_offset + 1],
+                    buffer[count_offset + 2],
+                    buffer[count_offset + 3],
+                ]) as usize
+            } else {
+                0
+            };
+            let event_bytes = counter_reset_event_count
+                .checked_mul(16)
+                .ok_or("Counter reset event data length overflow")?;
             let consumed_bytes = (data_offset - offset)
                 + 4
                 + starting_measurement_len
@@ -123,7 +149,8 @@ impl MultipleIncreaseAccumulator {
                 + 4
                 + last_seen_measurement_len
                 + 8
-                + if has_reset_adjustment { 8 } else { 0 };
+                + if has_reset_adjustment { 8 } else { 0 }
+                + if has_v3_format { 4 + event_bytes } else { 0 };
             offset += consumed_bytes;
 
             accumulator.increases.insert(key, increase_data);
@@ -162,6 +189,7 @@ impl MultipleIncreaseAccumulator {
                 last_seen_timestamp,
             );
             increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
+            increase_accumulator.counter_reset_events = values.counter_reset_events;
 
             accumulator.increases.insert(key_obj, increase_accumulator);
         }
@@ -186,6 +214,7 @@ impl MultipleIncreaseAccumulator {
                     last_seen_measurement: increase_acc.last_seen_measurement.value,
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
                     counter_reset_adjustment: increase_acc.counter_reset_adjustment,
+                    counter_reset_events: increase_acc.counter_reset_events.clone(),
                 },
             );
         }
@@ -533,6 +562,58 @@ mod tests {
             bytes_round_trip
                 .query(Statistic::Increase, &key, None)
                 .unwrap(),
+            110.0
+        );
+    }
+
+    #[test]
+    fn test_arroyo_deserialization_supports_legacy_and_reset_aware_payloads() {
+        #[derive(Serialize)]
+        struct LegacyMeasurementData {
+            starting_measurement: f64,
+            starting_timestamp: i64,
+            last_seen_measurement: f64,
+            last_seen_timestamp: i64,
+        }
+
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut legacy_payload = HashMap::new();
+        legacy_payload.insert(
+            "web".to_string(),
+            LegacyMeasurementData {
+                starting_measurement: 10.0,
+                starting_timestamp: 0,
+                last_seen_measurement: 25.0,
+                last_seen_timestamp: 1_000,
+            },
+        );
+        let legacy = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+            &rmp_serde::to_vec(&legacy_payload).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(legacy.query(Statistic::Increase, &key, None).unwrap(), 15.0);
+
+        let mut reset_aware_payload = HashMap::new();
+        reset_aware_payload.insert(
+            "web".to_string(),
+            MeasurementData {
+                starting_measurement: 100.0,
+                starting_timestamp: 0,
+                last_seen_measurement: 60.0,
+                last_seen_timestamp: 3_000,
+                counter_reset_adjustment: 150.0,
+                counter_reset_events: vec![CounterResetEvent {
+                    timestamp: 2_000,
+                    adjustment: 150.0,
+                }],
+            },
+        );
+        let reset_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+            &rmp_serde::to_vec(&reset_aware_payload).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            reset_aware.query(Statistic::Increase, &key, None).unwrap(),
             110.0
         );
     }

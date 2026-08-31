@@ -8,7 +8,14 @@ use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-pub(crate) const INCREASE_BINARY_FORMAT_MAGIC: [u8; 4] = *b"INC2";
+pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V2: [u8; 4] = *b"INC2";
+pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V3: [u8; 4] = *b"INC3";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CounterResetEvent {
+    pub timestamp: i64,
+    pub adjustment: f64,
+}
 
 /// Accumulator for tracking increases in counter metrics
 /// Stores the starting and last seen measurements with timestamps, plus
@@ -21,6 +28,8 @@ pub struct IncreaseAccumulator {
     pub last_seen_timestamp: i64,
     #[serde(default)]
     pub counter_reset_adjustment: f64,
+    #[serde(default)]
+    pub counter_reset_events: Vec<CounterResetEvent>,
 }
 
 impl IncreaseAccumulator {
@@ -36,12 +45,18 @@ impl IncreaseAccumulator {
             last_seen_measurement,
             last_seen_timestamp,
             counter_reset_adjustment: 0.0,
+            counter_reset_events: Vec::new(),
         }
     }
 
     pub fn update(&mut self, measurement: Measurement, timestamp: i64) {
         if measurement.value < self.last_seen_measurement.value {
-            self.counter_reset_adjustment += self.last_seen_measurement.value;
+            let adjustment = self.last_seen_measurement.value;
+            self.counter_reset_adjustment += adjustment;
+            self.counter_reset_events.push(CounterResetEvent {
+                timestamp,
+                adjustment,
+            });
         }
         self.last_seen_measurement = measurement;
         self.last_seen_timestamp = timestamp;
@@ -50,6 +65,18 @@ impl IncreaseAccumulator {
     fn corrected_increase(&self) -> f64 {
         self.last_seen_measurement.value - self.starting_measurement.value
             + self.counter_reset_adjustment
+    }
+
+    fn add_reset_event(&mut self, event: CounterResetEvent) {
+        if self
+            .counter_reset_events
+            .iter()
+            .any(|existing| existing.timestamp == event.timestamp)
+        {
+            return;
+        }
+        self.counter_reset_adjustment += event.adjustment;
+        self.counter_reset_events.push(event);
     }
 
     pub fn deserialize_from_json(data: &Value) -> Result<Self, Box<dyn std::error::Error>> {
@@ -69,6 +96,11 @@ impl IncreaseAccumulator {
                 .as_f64()
                 .ok_or("Missing or invalid 'counter_reset_adjustment' field")?,
         };
+        let counter_reset_events = match data.get("counter_reset_events") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|e| format!("Invalid 'counter_reset_events' field: {e}"))?,
+        };
 
         let mut accumulator = Self::new(
             starting_measurement,
@@ -77,13 +109,16 @@ impl IncreaseAccumulator {
             last_seen_timestamp,
         );
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
+        accumulator.counter_reset_events = counter_reset_events;
         Ok(accumulator)
     }
 
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        let has_reset_adjustment = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC);
+        let has_v2_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
+        let has_v3_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V3);
+        let has_reset_adjustment = has_v2_format || has_v3_format;
         let mut offset = if has_reset_adjustment {
-            INCREASE_BINARY_FORMAT_MAGIC.len()
+            INCREASE_BINARY_FORMAT_MAGIC_V2.len()
         } else {
             0
         };
@@ -178,6 +213,60 @@ impl IncreaseAccumulator {
             0.0
         };
 
+        if has_reset_adjustment {
+            offset += 8;
+        }
+
+        let counter_reset_events = if has_v3_format {
+            if buffer.len() < offset + 4 {
+                return Err("Buffer too short for counter reset event count".into());
+            }
+            let event_count = u32::from_le_bytes([
+                buffer[offset],
+                buffer[offset + 1],
+                buffer[offset + 2],
+                buffer[offset + 3],
+            ]) as usize;
+            offset += 4;
+            let event_bytes = event_count
+                .checked_mul(16)
+                .ok_or("Counter reset event data length overflow")?;
+            if buffer.len() < offset + event_bytes {
+                return Err("Buffer too short for counter reset events".into());
+            }
+            (0..event_count)
+                .map(|_| {
+                    let timestamp = i64::from_le_bytes([
+                        buffer[offset],
+                        buffer[offset + 1],
+                        buffer[offset + 2],
+                        buffer[offset + 3],
+                        buffer[offset + 4],
+                        buffer[offset + 5],
+                        buffer[offset + 6],
+                        buffer[offset + 7],
+                    ]);
+                    let adjustment = f64::from_le_bytes([
+                        buffer[offset + 8],
+                        buffer[offset + 9],
+                        buffer[offset + 10],
+                        buffer[offset + 11],
+                        buffer[offset + 12],
+                        buffer[offset + 13],
+                        buffer[offset + 14],
+                        buffer[offset + 15],
+                    ]);
+                    offset += 16;
+                    CounterResetEvent {
+                        timestamp,
+                        adjustment,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let mut accumulator = Self::new(
             starting_measurement,
             starting_timestamp,
@@ -185,6 +274,7 @@ impl IncreaseAccumulator {
             last_seen_timestamp,
         );
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
+        accumulator.counter_reset_events = counter_reset_events;
         Ok(accumulator)
     }
 }
@@ -197,6 +287,7 @@ impl SerializableToSink for IncreaseAccumulator {
             "last_seen_measurement": self.last_seen_measurement.serialize_to_json(),
             "last_seen_timestamp": self.last_seen_timestamp,
             "counter_reset_adjustment": self.counter_reset_adjustment,
+            "counter_reset_events": self.counter_reset_events,
         })
     }
 
@@ -205,7 +296,7 @@ impl SerializableToSink for IncreaseAccumulator {
         let last_seen_measurement_bytes = self.last_seen_measurement.serialize_to_bytes();
 
         let mut buffer = Vec::new();
-        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC);
+        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V3);
 
         // Starting measurement length and data
         buffer.extend_from_slice(&(starting_measurement_bytes.len() as u32).to_le_bytes());
@@ -221,6 +312,11 @@ impl SerializableToSink for IncreaseAccumulator {
         // Last seen timestamp
         buffer.extend_from_slice(&self.last_seen_timestamp.to_le_bytes());
         buffer.extend_from_slice(&self.counter_reset_adjustment.to_le_bytes());
+        buffer.extend_from_slice(&(self.counter_reset_events.len() as u32).to_le_bytes());
+        for event in &self.counter_reset_events {
+            buffer.extend_from_slice(&event.timestamp.to_le_bytes());
+            buffer.extend_from_slice(&event.adjustment.to_le_bytes());
+        }
 
         buffer
     }
@@ -241,15 +337,21 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
         for acc in accumulators {
             // Adjacent accumulators represent consecutive portions of the same
             // counter. A decrease at their boundary is also a reset.
-            if acc.starting_timestamp >= result.last_seen_timestamp {
-                if acc.starting_measurement.value < result.last_seen_measurement.value {
-                    result.counter_reset_adjustment += result.last_seen_measurement.value;
+            if acc.starting_timestamp >= result.last_seen_timestamp
+                && acc.starting_measurement.value < result.last_seen_measurement.value
+            {
+                result.add_reset_event(CounterResetEvent {
+                    timestamp: acc.starting_timestamp,
+                    adjustment: result.last_seen_measurement.value,
+                });
+            }
+
+            if acc.counter_reset_events.is_empty() {
+                result.counter_reset_adjustment += acc.counter_reset_adjustment;
+            } else {
+                for event in acc.counter_reset_events {
+                    result.add_reset_event(event);
                 }
-                result.counter_reset_adjustment += acc.counter_reset_adjustment;
-            } else if acc.last_seen_timestamp > result.last_seen_timestamp {
-                // Preserve corrections from the earlier range's unique prefix
-                // while adding corrections observed by the extending range.
-                result.counter_reset_adjustment += acc.counter_reset_adjustment;
             }
 
             // Use the later last seen point.
@@ -537,12 +639,14 @@ mod tests {
         first.update(Measurement::new(10.0), 1_100);
         first.update(Measurement::new(20.0), 1_200);
 
-        let second = IncreaseAccumulator::new(
+        let mut second = IncreaseAccumulator::new(
             Measurement::new(150.0),
             1_000,
-            Measurement::new(30.0),
-            2_000,
+            Measurement::new(150.0),
+            1_000,
         );
+        second.update(Measurement::new(10.0), 1_100);
+        second.update(Measurement::new(30.0), 2_000);
         let merged =
             <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
                 vec![first, second],

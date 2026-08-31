@@ -10,12 +10,19 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 #[derive(Serialize)]
+struct CounterResetEvent {
+    timestamp: i64,
+    adjustment: f64,
+}
+
+#[derive(Serialize)]
 struct MeasurementData {
     starting_measurement: f64,
     starting_timestamp: i64,
     last_seen_measurement: f64,
     last_seen_timestamp: i64,
     counter_reset_adjustment: f64,
+    counter_reset_events: Vec<CounterResetEvent>,
 }
 
 #[udf]
@@ -35,10 +42,16 @@ fn multipleincrease_(keys: Vec<&str>, values: Vec<f64>, timestamps: Vec<i64>) ->
                 last_seen_measurement: value,
                 last_seen_timestamp: timestamp,
                 counter_reset_adjustment: 0.0,
+                counter_reset_events: Vec::new(),
             });
 
             if value < entry.last_seen_measurement {
-                entry.counter_reset_adjustment += entry.last_seen_measurement;
+                let adjustment = entry.last_seen_measurement;
+                entry.counter_reset_adjustment += adjustment;
+                entry.counter_reset_events.push(CounterResetEvent {
+                    timestamp,
+                    adjustment,
+                });
             }
 
             // Update last seen measurement and timestamp
