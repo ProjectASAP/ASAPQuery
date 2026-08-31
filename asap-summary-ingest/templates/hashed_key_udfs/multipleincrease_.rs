@@ -15,6 +15,7 @@ struct MeasurementData {
     starting_timestamp: i64,
     last_seen_measurement: f64,
     last_seen_timestamp: i64,
+    counter_reset_adjustment: f64,
 }
 
 #[udf]
@@ -33,7 +34,12 @@ fn multipleincrease_(keys: Vec<u32>, values: Vec<f64>, timestamps: Vec<i64>) -> 
                 starting_timestamp: timestamp,
                 last_seen_measurement: value,
                 last_seen_timestamp: timestamp,
+                counter_reset_adjustment: 0.0,
             });
+
+            if value < entry.last_seen_measurement {
+                entry.counter_reset_adjustment += entry.last_seen_measurement;
+            }
 
             // Update last seen measurement and timestamp
             entry.last_seen_measurement = value;

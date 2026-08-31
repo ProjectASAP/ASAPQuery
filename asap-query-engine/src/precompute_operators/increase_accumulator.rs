@@ -247,9 +247,9 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
                 }
                 result.counter_reset_adjustment += acc.counter_reset_adjustment;
             } else if acc.last_seen_timestamp > result.last_seen_timestamp {
-                // For overlapping ranges, only retain corrections from the
-                // accumulator that extends the merged range.
-                result.counter_reset_adjustment = acc.counter_reset_adjustment;
+                // Preserve corrections from the earlier range's unique prefix
+                // while adding corrections observed by the extending range.
+                result.counter_reset_adjustment += acc.counter_reset_adjustment;
             }
 
             // Use the later last seen point.
@@ -527,6 +527,29 @@ mod tests {
             .unwrap();
 
         assert_eq!(merged.query(Statistic::Increase, None).unwrap(), 110.0);
+    }
+
+    #[test]
+    fn test_increase_accumulator_merge_keeps_reset_from_overlapping_prefix() {
+        let mut first =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(100.0), 0);
+        first.update(Measurement::new(150.0), 1_000);
+        first.update(Measurement::new(10.0), 1_100);
+        first.update(Measurement::new(20.0), 1_200);
+
+        let second = IncreaseAccumulator::new(
+            Measurement::new(150.0),
+            1_000,
+            Measurement::new(30.0),
+            2_000,
+        );
+        let merged =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![first, second],
+            )
+            .unwrap();
+
+        assert_eq!(merged.query(Statistic::Increase, None).unwrap(), 80.0);
     }
 
     #[test]

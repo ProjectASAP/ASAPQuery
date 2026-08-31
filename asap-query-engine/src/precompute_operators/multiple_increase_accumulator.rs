@@ -274,19 +274,14 @@ impl AggregateCore for MultipleIncreaseAccumulator {
             .downcast_ref::<MultipleIncreaseAccumulator>()
             .ok_or("Failed to downcast to MultipleIncreaseAccumulator")?;
 
-        // Clone self once, then merge other's data in-place
+        // Clone self once, then merge other's data in-place.
         let mut merged = self.clone();
         for (key, data) in &other_multiple_increase.increases {
             if let Some(existing_data) = merged.increases.get_mut(key) {
-                // Merge in-place: take earliest start, latest end
-                if data.starting_timestamp < existing_data.starting_timestamp {
-                    existing_data.starting_measurement = data.starting_measurement.clone();
-                    existing_data.starting_timestamp = data.starting_timestamp;
-                }
-                if data.last_seen_timestamp > existing_data.last_seen_timestamp {
-                    existing_data.last_seen_measurement = data.last_seen_measurement.clone();
-                    existing_data.last_seen_timestamp = data.last_seen_timestamp;
-                }
+                *existing_data = IncreaseAccumulator::merge_accumulators(vec![
+                    existing_data.clone(),
+                    data.clone(),
+                ])?;
             } else {
                 merged.increases.insert(key.clone(), data.clone());
             }
@@ -572,6 +567,31 @@ mod tests {
 
         let keys = trait_obj.get_keys().unwrap();
         assert_eq!(keys.len(), 1);
+    }
+
+    #[test]
+    fn test_trait_object_merge_corrects_counter_reset() {
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut first = MultipleIncreaseAccumulator::new();
+        let mut first_data = create_test_increase_accumulator_with_time(100.0, 0, 100.0, 0);
+        first_data.update(Measurement::new(150.0), 1_000);
+        first.update(key.clone(), first_data);
+
+        let mut second = MultipleIncreaseAccumulator::new();
+        second.update(
+            key.clone(),
+            create_test_increase_accumulator_with_time(10.0, 2_000, 60.0, 3_000),
+        );
+
+        let merged = first.merge_with(&second).unwrap();
+        let merged = merged
+            .as_any()
+            .downcast_ref::<MultipleIncreaseAccumulator>()
+            .unwrap();
+        assert_eq!(
+            merged.query(Statistic::Increase, &key, None).unwrap(),
+            110.0
+        );
     }
 
     // #[test]
