@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V6: [u8; 4] = *b"INC6";
+pub(crate) const INCREASE_BINARY_FORMAT_MAGIC: [u8; 4] = *b"INC6";
 pub(crate) const RESET_RECORD_BYTES: usize =
     std::mem::size_of::<i64>() + std::mem::size_of::<f64>();
 
@@ -23,12 +23,12 @@ pub struct CounterResetEvent {
 /// correction for counter resets observed between them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncreaseAccumulator {
-    pub starting_measurement: Measurement,
-    pub starting_timestamp: i64,
-    pub last_seen_measurement: Measurement,
-    pub last_seen_timestamp: i64,
-    pub counter_reset_adjustment: f64,
-    pub counter_reset_events: Vec<CounterResetEvent>,
+    starting_measurement: Measurement,
+    starting_timestamp: i64,
+    last_seen_measurement: Measurement,
+    last_seen_timestamp: i64,
+    counter_reset_adjustment: f64,
+    counter_reset_events: Vec<CounterResetEvent>,
 }
 
 impl IncreaseAccumulator {
@@ -48,6 +48,48 @@ impl IncreaseAccumulator {
         }
     }
 
+    pub(crate) fn from_parts(
+        starting_measurement: Measurement,
+        starting_timestamp: i64,
+        last_seen_measurement: Measurement,
+        last_seen_timestamp: i64,
+        counter_reset_adjustment: f64,
+        counter_reset_events: Vec<CounterResetEvent>,
+    ) -> Self {
+        Self {
+            starting_measurement,
+            starting_timestamp,
+            last_seen_measurement,
+            last_seen_timestamp,
+            counter_reset_adjustment,
+            counter_reset_events,
+        }
+    }
+
+    pub(crate) fn starting_measurement(&self) -> &Measurement {
+        &self.starting_measurement
+    }
+
+    pub(crate) fn starting_timestamp(&self) -> i64 {
+        self.starting_timestamp
+    }
+
+    pub(crate) fn last_seen_measurement(&self) -> &Measurement {
+        &self.last_seen_measurement
+    }
+
+    pub(crate) fn last_seen_timestamp(&self) -> i64 {
+        self.last_seen_timestamp
+    }
+
+    pub(crate) fn counter_reset_adjustment(&self) -> f64 {
+        self.counter_reset_adjustment
+    }
+
+    pub(crate) fn counter_reset_events(&self) -> &[CounterResetEvent] {
+        &self.counter_reset_events
+    }
+
     pub fn update(&mut self, measurement: Measurement, timestamp: i64) {
         if measurement.value < self.last_seen_measurement.value {
             let adjustment = self.last_seen_measurement.value;
@@ -61,7 +103,7 @@ impl IncreaseAccumulator {
         self.last_seen_timestamp = timestamp;
     }
 
-    fn corrected_increase(&self) -> f64 {
+    fn increase(&self) -> f64 {
         self.last_seen_measurement.value - self.starting_measurement.value
             + self.counter_reset_adjustment
     }
@@ -118,10 +160,10 @@ impl IncreaseAccumulator {
     pub(crate) fn deserialize_from_bytes_with_consumed(
         buffer: &[u8],
     ) -> Result<(Self, usize), Box<dyn std::error::Error>> {
-        if !buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V6) {
+        if !buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC) {
             return Err("Unsupported IncreaseAccumulator binary format".into());
         }
-        let mut offset = INCREASE_BINARY_FORMAT_MAGIC_V6.len();
+        let mut offset = INCREASE_BINARY_FORMAT_MAGIC.len();
 
         // Read starting measurement length and data
         if buffer.len() < offset + 4 {
@@ -285,7 +327,7 @@ impl SerializableToSink for IncreaseAccumulator {
         let last_seen_measurement_bytes = self.last_seen_measurement.serialize_to_bytes();
 
         let mut buffer = Vec::new();
-        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V6);
+        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC);
 
         // Starting measurement length and data
         buffer.extend_from_slice(&(starting_measurement_bytes.len() as u32).to_le_bytes());
@@ -419,14 +461,14 @@ impl SingleSubpopulationAggregate for IncreaseAccumulator {
         }
 
         match statistic {
-            Statistic::Increase => Ok(self.corrected_increase()),
+            Statistic::Increase => Ok(self.increase()),
             Statistic::Rate => {
                 // Convert to per second; timestamps are in milliseconds
                 let time_diff = (self.last_seen_timestamp - self.starting_timestamp) as f64;
                 if time_diff <= 0.0 {
                     return Err("Invalid time difference for rate calculation".into());
                 }
-                Ok(self.corrected_increase() / time_diff * 1000.0)
+                Ok(self.increase() / time_diff * 1000.0)
             }
             _ => Err(format!("Unsupported statistic in IncreaseAccumulator: {statistic:?}").into()),
         }
@@ -532,6 +574,7 @@ mod tests {
             crate::SingleSubpopulationAggregate::query(&acc, Statistic::Increase, None).unwrap(),
             15.0
         );
+        assert_eq!(acc.increase(), 15.0);
 
         // Test rate calculation (per second)
         assert_eq!(
