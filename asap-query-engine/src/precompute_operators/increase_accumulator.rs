@@ -79,6 +79,15 @@ impl IncreaseAccumulator {
         self.counter_reset_events.push(event);
     }
 
+    fn has_opaque_reset_adjustment(&self) -> bool {
+        let event_adjustment: f64 = self
+            .counter_reset_events
+            .iter()
+            .map(|event| event.adjustment)
+            .sum();
+        self.counter_reset_adjustment != event_adjustment
+    }
+
     pub fn deserialize_from_json(data: &Value) -> Result<Self, Box<dyn std::error::Error>> {
         let starting_measurement =
             Measurement::deserialize_from_json(&data["starting_measurement"])?;
@@ -335,6 +344,15 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
         let mut result = accumulators.remove(0);
 
         for acc in accumulators {
+            if acc.starting_timestamp < result.last_seen_timestamp
+                && (result.has_opaque_reset_adjustment() || acc.has_opaque_reset_adjustment())
+            {
+                return Err(
+                    "Cannot merge overlapping accumulators with opaque counter reset adjustments"
+                        .into(),
+                );
+            }
+
             // Adjacent accumulators represent consecutive portions of the same
             // counter. A decrease at their boundary is also a reset.
             if acc.starting_timestamp >= result.last_seen_timestamp
@@ -654,6 +672,28 @@ mod tests {
             .unwrap();
 
         assert_eq!(merged.query(Statistic::Increase, None).unwrap(), 80.0);
+    }
+
+    #[test]
+    fn test_increase_accumulator_rejects_opaque_legacy_reset_overlap() {
+        let mut legacy =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(20.0), 1_200);
+        legacy.counter_reset_adjustment = 150.0;
+
+        let mut event_aware = IncreaseAccumulator::new(
+            Measurement::new(150.0),
+            1_000,
+            Measurement::new(150.0),
+            1_000,
+        );
+        event_aware.update(Measurement::new(10.0), 1_100);
+        event_aware.update(Measurement::new(30.0), 2_000);
+
+        let result =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![legacy, event_aware],
+            );
+        assert!(result.is_err());
     }
 
     #[test]
