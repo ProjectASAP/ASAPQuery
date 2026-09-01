@@ -3,7 +3,7 @@ mod promql;
 mod sql;
 
 use crate::data_model::{
-    AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryConfig, QueryLanguage,
+    AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
     StreamingConfig,
 };
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
@@ -109,6 +109,8 @@ pub struct RangeQueryExecutionContext {
     /// list, rather than a start/end/step triple that only ever meant
     /// something for range.
     pub output_timestamps: Vec<u64>,
+    /// Exact range-vector duration used for extrapolation, in milliseconds.
+    pub query_range_ms: u64,
     /// Number of buckets per step (step / tumbling_window)
     pub buckets_per_step: usize,
     /// Number of buckets in lookback window
@@ -641,6 +643,7 @@ impl SimpleEngine {
                 ..base_context
             },
             output_timestamps: vec![query_time],
+            query_range_ms: lookback_ms,
             // Placeholder: no real "step" for a single instant point. Only
             // feeds a debug-log string today -- not type-enforced, recheck
             // before using it for anything functional.
@@ -975,6 +978,7 @@ impl SimpleEngine {
         fallback_key: &Option<KeyByLabelValues>,
         statistic: &Statistic,
         query_kwargs: &HashMap<String, String>,
+        query_bounds: Option<&QueryBounds>,
     ) -> Vec<(Option<KeyByLabelValues>, f64)> {
         let Some(value_precompute) = value_precompute else {
             warn!(
@@ -1011,6 +1015,7 @@ impl SimpleEngine {
                     statistic,
                     &key,
                     query_kwargs,
+                    query_bounds,
                 ) {
                     Ok(value) => Some((key, value)),
                     Err(e) => {
@@ -1512,6 +1517,7 @@ impl SimpleEngine {
                 group_key,
                 statistic,
                 query_kwargs,
+                None,
             ) {
                 unformatted_results.insert(key, value);
             }
@@ -1544,6 +1550,7 @@ impl SimpleEngine {
                 group_key,
                 statistic,
                 query_kwargs,
+                None,
             ) {
                 unformatted_results.insert(key, value);
             }
@@ -1558,8 +1565,14 @@ impl SimpleEngine {
         statistic: &Statistic,
         key: &Option<KeyByLabelValues>,
         query_kwargs: &HashMap<String, String>,
+        query_bounds: Option<&QueryBounds>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-        precompute.query_statistic(*statistic, key, query_kwargs)
+        match query_bounds {
+            Some(bounds) => {
+                precompute.query_statistic_with_bounds(*statistic, key, query_kwargs, bounds)
+            }
+            None => precompute.query_statistic(*statistic, key, query_kwargs),
+        }
     }
 
     // ============================================================
@@ -2124,6 +2137,16 @@ impl SimpleEngine {
         // (#581). One loop shape for topk and non-topk alike, rather than
         // maintaining two.
         for &current_time in &context.output_timestamps {
+            let current_time_i64 = i64::try_from(current_time)
+                .map_err(|_| "Output timestamp exceeds signed timestamp range".to_string())?;
+            let query_range_ms = i64::try_from(context.query_range_ms)
+                .map_err(|_| "Query range exceeds signed timestamp range".to_string())?;
+            let query_bounds = QueryBounds::new(
+                current_time_i64
+                    .checked_sub(query_range_ms)
+                    .ok_or("Query range underflows timestamp range".to_string())?,
+                current_time_i64,
+            );
             // This timestamp's (key, value) pairs across every group,
             // collected before insertion into `results` so a topk query can
             // rank/truncate them as one step-local set (#581 stage E.3 --
@@ -2314,6 +2337,7 @@ impl SimpleEngine {
                     &fallback_key,
                     &context.base.metadata.statistic_to_compute,
                     &context.base.metadata.query_kwargs,
+                    Some(&query_bounds),
                 ) {
                     // A fully unlabeled result (fallback_key was None and
                     // the value accumulator has no self-keys) has no

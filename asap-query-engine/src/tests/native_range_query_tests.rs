@@ -28,6 +28,7 @@ mod tests {
     use crate::engines::query_result::{QueryResult, RangeVectorElement};
     use crate::engines::simple_engine::SimpleEngine;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::precompute_operators::IncreaseAccumulator;
     use crate::precompute_operators::{
         CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator,
         DeltaSetAggregatorAccumulator, SetAggregatorAccumulator,
@@ -76,6 +77,76 @@ mod tests {
                     .all(|lv| e.labels.labels.contains(&lv.to_string()))
             })
             .is_some_and(|e| e.samples.iter().any(|s| s.timestamp == ts))
+    }
+
+    #[test]
+    fn range_rate_uses_exact_boundaries_for_each_output_step() {
+        let host = Some(vec!["host-a".to_string()]);
+        let data = vec![
+            (
+                1_000_000,
+                host.clone(),
+                Box::new(IncreaseAccumulator::new_with_sample_count(
+                    crate::data_model::Measurement::new(100.0),
+                    999_500,
+                    crate::data_model::Measurement::new(110.0),
+                    1_000_000,
+                    2,
+                )) as Box<dyn AggregateCore>,
+            ),
+            (
+                1_001_000,
+                host.clone(),
+                Box::new(IncreaseAccumulator::new_with_sample_count(
+                    crate::data_model::Measurement::new(110.0),
+                    1_000_000,
+                    crate::data_model::Measurement::new(120.0),
+                    1_001_000,
+                    2,
+                )) as Box<dyn AggregateCore>,
+            ),
+            (
+                1_002_000,
+                host,
+                Box::new(IncreaseAccumulator::new_with_sample_count(
+                    crate::data_model::Measurement::new(120.0),
+                    1_001_000,
+                    crate::data_model::Measurement::new(130.0),
+                    1_002_000,
+                    2,
+                )) as Box<dyn AggregateCore>,
+            ),
+        ];
+        let engine = create_engine_multi_timestamp_with_window(
+            "http_requests_total",
+            AggregationType::Increase,
+            vec!["host"],
+            data,
+            "rate(http_requests_total[2s])",
+            1_000,
+            1_000,
+            WindowType::Tumbling,
+        );
+
+        let (_, result) = engine
+            .handle_range_query_promql(
+                "rate(http_requests_total[2s])".to_string(),
+                1_000.0,
+                1_002.0,
+                1.0,
+            )
+            .expect("range rate query failed");
+        let elements = matrix_values(result);
+        let samples = &elements
+            .iter()
+            .find(|element| element.labels.labels.contains(&"host-a".to_string()))
+            .expect("host-a result missing")
+            .samples;
+
+        assert_eq!(samples.len(), 3);
+        assert!((samples[0].value - 7.5).abs() < f64::EPSILON);
+        assert!((samples[1].value - (40.0 / 3.0)).abs() < 1e-12);
+        assert!((samples[2].value - 10.0).abs() < f64::EPSILON);
     }
 
     /// Checks every `(label_values, ts, expected_present, reason)` case

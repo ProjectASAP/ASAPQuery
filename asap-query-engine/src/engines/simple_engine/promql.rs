@@ -661,6 +661,7 @@ impl SimpleEngine {
             // per-step loop's `current_time` sequence exactly: start_ms,
             // start_ms+step_ms, ..., the last value <= end_ms.
             output_timestamps: (start_ms..=end_ms).step_by(step_ms as usize).collect(),
+            query_range_ms: lookback_ms,
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,

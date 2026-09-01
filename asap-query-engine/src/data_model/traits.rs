@@ -6,6 +6,25 @@ use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 
 pub use asap_types::traits::SerializableToSink;
 
+/// Exact time boundaries of the range vector being evaluated.
+///
+/// Timestamps are milliseconds since the Unix epoch, matching the query
+/// engine's data timestamps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryBounds {
+    pub start_timestamp: i64,
+    pub end_timestamp: i64,
+}
+
+impl QueryBounds {
+    pub const fn new(start_timestamp: i64, end_timestamp: i64) -> Self {
+        Self {
+            start_timestamp,
+            end_timestamp,
+        }
+    }
+}
+
 /// Core trait for all aggregates containing shared functionality
 /// This trait provides common operations like serialization, cloning, and type identification
 pub trait AggregateCore: SerializableToSink + Send + Sync {
@@ -44,6 +63,20 @@ pub trait AggregateCore: SerializableToSink + Send + Sync {
         key: &Option<KeyByLabelValues>,
         query_kwargs: &HashMap<String, String>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Dispatch a statistic query with exact range-vector boundaries.
+    ///
+    /// Accumulators that need Prometheus range semantics override this
+    /// method. Other accumulators retain their existing query behavior.
+    fn query_statistic_with_bounds(
+        &self,
+        statistic: Statistic,
+        key: &Option<KeyByLabelValues>,
+        query_kwargs: &HashMap<String, String>,
+        _bounds: &QueryBounds,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        self.query_statistic(statistic, key, query_kwargs)
+    }
 }
 
 /// Trait for accumulators that support a single subpopulation
