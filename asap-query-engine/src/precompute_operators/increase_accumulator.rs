@@ -475,6 +475,7 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
         for (index, acc) in accumulators.into_iter().enumerate() {
             let original_index = index + 1;
             let acc_opaque_ranges = acc.opaque_reset_ranges();
+            let acc_has_opaque_ranges = !acc_opaque_ranges.is_empty();
             let overlaps_ambiguous_range = original_ranges.iter().any(
                 |(other_index, other_start, other_end, other_opaque_ranges)| {
                     if *other_index == original_index {
@@ -528,7 +529,9 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
             for event in acc.counter_reset_events {
                 result.add_reset_event(event);
             }
-            result.counter_reset_adjustment += acc.counter_reset_adjustment - event_adjustment;
+            if acc_has_opaque_ranges {
+                result.counter_reset_adjustment += acc.counter_reset_adjustment - event_adjustment;
+            }
 
             // Use the later last seen point.
             if acc.last_seen_timestamp > result.last_seen_timestamp {
@@ -1050,6 +1053,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(merged.query(Statistic::Increase, None).unwrap(), 230.0);
+    }
+
+    #[test]
+    fn test_increase_accumulator_keeps_infinite_event_adjustment() {
+        let earlier =
+            IncreaseAccumulator::new(Measurement::new(0.0), -1_000, Measurement::new(0.0), 0);
+        let mut event_aware =
+            IncreaseAccumulator::new(Measurement::new(0.0), 0, Measurement::new(0.0), 0);
+        event_aware.update(Measurement::new(f64::INFINITY), 1_000);
+        event_aware.update(Measurement::new(0.0), 2_000);
+
+        let merged =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![earlier, event_aware],
+            )
+            .unwrap();
+
+        assert_eq!(
+            merged.query(Statistic::Increase, None).unwrap(),
+            f64::INFINITY
+        );
     }
 
     #[test]
