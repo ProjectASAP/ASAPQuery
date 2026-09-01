@@ -342,15 +342,25 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
         let mut accumulators = accumulators;
         accumulators.sort_by_key(|acc| acc.starting_timestamp);
         let mut result = accumulators.remove(0);
+        let mut opaque_ranges = if result.has_opaque_reset_adjustment() {
+            vec![(result.starting_timestamp, result.last_seen_timestamp)]
+        } else {
+            Vec::new()
+        };
 
         for acc in accumulators {
-            if acc.starting_timestamp < result.last_seen_timestamp
-                && (result.has_opaque_reset_adjustment() || acc.has_opaque_reset_adjustment())
-            {
+            let overlaps_opaque_range = opaque_ranges.iter().any(|(opaque_start, opaque_end)| {
+                acc.starting_timestamp < *opaque_end && *opaque_start < acc.last_seen_timestamp
+            });
+            if overlaps_opaque_range {
                 return Err(
                     "Cannot merge overlapping accumulators with opaque counter reset adjustments"
                         .into(),
                 );
+            }
+
+            if acc.has_opaque_reset_adjustment() {
+                opaque_ranges.push((acc.starting_timestamp, acc.last_seen_timestamp));
             }
 
             // Adjacent accumulators represent consecutive portions of the same
@@ -694,6 +704,31 @@ mod tests {
                 vec![legacy, event_aware],
             );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_increase_accumulator_allows_event_overlap_outside_opaque_range() {
+        let mut legacy =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(150.0), 1_000);
+        legacy.counter_reset_adjustment = 100.0;
+
+        let mut event_aware = IncreaseAccumulator::new(
+            Measurement::new(150.0),
+            1_000,
+            Measurement::new(150.0),
+            1_000,
+        );
+        event_aware.update(Measurement::new(10.0), 1_500);
+        event_aware.update(Measurement::new(30.0), 2_000);
+
+        let later_overlap =
+            IncreaseAccumulator::new(Measurement::new(20.0), 1_500, Measurement::new(50.0), 2_500);
+
+        let result =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![legacy, event_aware, later_overlap],
+            );
+        assert!(result.is_ok());
     }
 
     #[test]
