@@ -187,6 +187,8 @@ def main():
     parser.add_argument("--top", type=int, default=3)
     args = parser.parse_args()
     root = args.queries_dir or find_default_queries_dir()
+    if not root.is_dir():
+        raise SystemExit(f"benchmark directory not found: {root}")
 
     repo = Path(__file__).resolve().parents[1]
     binary_dir = repo / "target/release"
