@@ -5,6 +5,7 @@ use crate::data_model::{
 use crate::precompute_operators::{
     CounterResetEvent, IncreaseAccumulator, OpaqueResetRange, INCREASE_BINARY_FORMAT_MAGIC_V2,
     INCREASE_BINARY_FORMAT_MAGIC_V3, INCREASE_BINARY_FORMAT_MAGIC_V4,
+    INCREASE_BINARY_FORMAT_MAGIC_V5,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +31,8 @@ struct MeasurementData {
     counter_reset_adjustment: f64,
     #[serde(default)]
     counter_reset_events: Vec<CounterResetEvent>,
+    #[serde(default)]
+    opaque_reset_adjustment: f64,
     #[serde(default)]
     opaque_reset_ranges: Vec<OpaqueResetRange>,
 }
@@ -102,8 +105,11 @@ impl MultipleIncreaseAccumulator {
             let has_v2_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
             let has_v3_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V3);
             let has_v4_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V4);
-            let has_reset_adjustment = has_v2_format || has_v3_format || has_v4_format;
-            let has_event_format = has_v3_format || has_v4_format;
+            let has_v5_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V5);
+            let has_range_format = has_v4_format || has_v5_format;
+            let has_reset_adjustment =
+                has_v2_format || has_v3_format || has_v4_format || has_v5_format;
+            let has_event_format = has_v3_format || has_range_format;
             let data_offset = if has_reset_adjustment {
                 offset + INCREASE_BINARY_FORMAT_MAGIC_V2.len()
             } else {
@@ -127,8 +133,14 @@ impl MultipleIncreaseAccumulator {
                 buffer[data_offset + 4 + starting_measurement_len + 8 + 2],
                 buffer[data_offset + 4 + starting_measurement_len + 8 + 3],
             ]) as usize;
-            let base_data_len =
-                4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8 + 8;
+            let base_data_len = 4
+                + starting_measurement_len
+                + 8
+                + 4
+                + last_seen_measurement_len
+                + 8
+                + 8
+                + if has_v5_format { 8 } else { 0 };
             let count_offset = data_offset + base_data_len;
             let counter_reset_event_count = if has_event_format {
                 if buffer.len() < count_offset + 4 {
@@ -146,7 +158,7 @@ impl MultipleIncreaseAccumulator {
             let event_bytes = counter_reset_event_count
                 .checked_mul(16)
                 .ok_or("Counter reset event data length overflow")?;
-            let opaque_reset_range_bytes = if has_v4_format {
+            let opaque_reset_range_bytes = if has_range_format {
                 let range_count_offset = count_offset + 4 + event_bytes;
                 if buffer.len() < range_count_offset + 4 {
                     return Err("Buffer too short for opaque reset range count".into());
@@ -175,6 +187,7 @@ impl MultipleIncreaseAccumulator {
                 + last_seen_measurement_len
                 + 8
                 + if has_reset_adjustment { 8 } else { 0 }
+                + if has_v5_format { 8 } else { 0 }
                 + if has_event_format { 4 + event_bytes } else { 0 }
                 + opaque_reset_range_bytes;
             offset += consumed_bytes;
@@ -216,6 +229,7 @@ impl MultipleIncreaseAccumulator {
             );
             increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
             increase_accumulator.counter_reset_events = values.counter_reset_events;
+            increase_accumulator.opaque_reset_adjustment = values.opaque_reset_adjustment;
             increase_accumulator.opaque_reset_ranges = values.opaque_reset_ranges;
             let event_adjustment: f64 = increase_accumulator
                 .counter_reset_events
@@ -225,6 +239,10 @@ impl MultipleIncreaseAccumulator {
             if increase_accumulator.opaque_reset_ranges.is_empty()
                 && increase_accumulator.counter_reset_adjustment != event_adjustment
             {
+                if increase_accumulator.opaque_reset_adjustment == 0.0 {
+                    increase_accumulator.opaque_reset_adjustment =
+                        increase_accumulator.counter_reset_adjustment - event_adjustment;
+                }
                 increase_accumulator
                     .opaque_reset_ranges
                     .push(OpaqueResetRange {
@@ -257,6 +275,7 @@ impl MultipleIncreaseAccumulator {
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
                     counter_reset_adjustment: increase_acc.counter_reset_adjustment,
                     counter_reset_events: increase_acc.counter_reset_events.clone(),
+                    opaque_reset_adjustment: increase_acc.opaque_reset_adjustment,
                     opaque_reset_ranges: increase_acc.opaque_reset_ranges.clone(),
                 },
             );
@@ -649,6 +668,7 @@ mod tests {
                     timestamp: 2_000,
                     adjustment: 150.0,
                 }],
+                opaque_reset_adjustment: 0.0,
                 opaque_reset_ranges: Vec::new(),
             },
         );

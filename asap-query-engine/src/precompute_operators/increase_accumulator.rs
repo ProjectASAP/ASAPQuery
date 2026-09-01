@@ -11,6 +11,7 @@ use promql_utilities::query_logics::enums::Statistic;
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V2: [u8; 4] = *b"INC2";
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V3: [u8; 4] = *b"INC3";
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V4: [u8; 4] = *b"INC4";
+pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V5: [u8; 4] = *b"INC5";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CounterResetEvent {
@@ -38,6 +39,8 @@ pub struct IncreaseAccumulator {
     #[serde(default)]
     pub counter_reset_events: Vec<CounterResetEvent>,
     #[serde(default)]
+    pub opaque_reset_adjustment: f64,
+    #[serde(default)]
     pub opaque_reset_ranges: Vec<OpaqueResetRange>,
 }
 
@@ -55,6 +58,7 @@ impl IncreaseAccumulator {
             last_seen_timestamp,
             counter_reset_adjustment: 0.0,
             counter_reset_events: Vec::new(),
+            opaque_reset_adjustment: 0.0,
             opaque_reset_ranges: Vec::new(),
         }
     }
@@ -90,12 +94,27 @@ impl IncreaseAccumulator {
     }
 
     fn has_opaque_reset_adjustment(&self) -> bool {
-        let event_adjustment: f64 = self
-            .counter_reset_events
+        let event_adjustment = self.event_reset_adjustment();
+        !self.opaque_reset_ranges.is_empty()
+            || self.opaque_reset_adjustment != 0.0
+            || self.counter_reset_adjustment != event_adjustment
+    }
+
+    fn event_reset_adjustment(&self) -> f64 {
+        self.counter_reset_events
             .iter()
             .map(|event| event.adjustment)
-            .sum();
-        !self.opaque_reset_ranges.is_empty() || self.counter_reset_adjustment != event_adjustment
+            .sum()
+    }
+
+    fn opaque_reset_residual(&self) -> f64 {
+        if !self.opaque_reset_ranges.is_empty() || self.opaque_reset_adjustment != 0.0 {
+            self.opaque_reset_adjustment
+        } else if self.has_opaque_reset_adjustment() {
+            self.counter_reset_adjustment - self.event_reset_adjustment()
+        } else {
+            0.0
+        }
     }
 
     fn opaque_reset_ranges(&self) -> Vec<OpaqueResetRange> {
@@ -144,6 +163,12 @@ impl IncreaseAccumulator {
             Some(value) => serde_json::from_value(value.clone())
                 .map_err(|e| format!("Invalid 'counter_reset_events' field: {e}"))?,
         };
+        let opaque_reset_adjustment = match data.get("opaque_reset_adjustment") {
+            None | Some(Value::Null) => 0.0,
+            Some(value) => value
+                .as_f64()
+                .ok_or("Missing or invalid 'opaque_reset_adjustment' field")?,
+        };
         let opaque_reset_ranges = match data.get("opaque_reset_ranges") {
             None | Some(Value::Null) => Vec::new(),
             Some(value) => serde_json::from_value(value.clone())
@@ -158,8 +183,13 @@ impl IncreaseAccumulator {
         );
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
         accumulator.counter_reset_events = counter_reset_events;
+        accumulator.opaque_reset_adjustment = opaque_reset_adjustment;
         accumulator.opaque_reset_ranges = opaque_reset_ranges;
         if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
+            if accumulator.opaque_reset_adjustment == 0.0 {
+                accumulator.opaque_reset_adjustment =
+                    accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+            }
             accumulator.add_opaque_reset_range(OpaqueResetRange {
                 starting_timestamp,
                 last_seen_timestamp,
@@ -172,7 +202,9 @@ impl IncreaseAccumulator {
         let has_v2_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
         let has_v3_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V3);
         let has_v4_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V4);
-        let has_reset_adjustment = has_v2_format || has_v3_format || has_v4_format;
+        let has_v5_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V5);
+        let has_range_format = has_v4_format || has_v5_format;
+        let has_reset_adjustment = has_v2_format || has_v3_format || has_v4_format || has_v5_format;
         let mut offset = if has_reset_adjustment {
             INCREASE_BINARY_FORMAT_MAGIC_V2.len()
         } else {
@@ -273,7 +305,27 @@ impl IncreaseAccumulator {
             offset += 8;
         }
 
-        let counter_reset_events = if has_v3_format || has_v4_format {
+        let opaque_reset_adjustment = if has_v5_format {
+            if buffer.len() < offset + 8 {
+                return Err("Buffer too short for opaque reset adjustment".into());
+            }
+            let value = f64::from_le_bytes([
+                buffer[offset],
+                buffer[offset + 1],
+                buffer[offset + 2],
+                buffer[offset + 3],
+                buffer[offset + 4],
+                buffer[offset + 5],
+                buffer[offset + 6],
+                buffer[offset + 7],
+            ]);
+            offset += 8;
+            value
+        } else {
+            0.0
+        };
+
+        let counter_reset_events = if has_v3_format || has_range_format {
             if buffer.len() < offset + 4 {
                 return Err("Buffer too short for counter reset event count".into());
             }
@@ -323,7 +375,7 @@ impl IncreaseAccumulator {
             Vec::new()
         };
 
-        let opaque_reset_ranges = if has_v4_format {
+        let opaque_reset_ranges = if has_range_format {
             if buffer.len() < offset + 4 {
                 return Err("Buffer too short for opaque reset range count".into());
             }
@@ -381,8 +433,13 @@ impl IncreaseAccumulator {
         );
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
         accumulator.counter_reset_events = counter_reset_events;
+        accumulator.opaque_reset_adjustment = opaque_reset_adjustment;
         accumulator.opaque_reset_ranges = opaque_reset_ranges;
         if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
+            if accumulator.opaque_reset_adjustment == 0.0 {
+                accumulator.opaque_reset_adjustment =
+                    accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+            }
             accumulator.add_opaque_reset_range(OpaqueResetRange {
                 starting_timestamp,
                 last_seen_timestamp,
@@ -401,6 +458,7 @@ impl SerializableToSink for IncreaseAccumulator {
             "last_seen_timestamp": self.last_seen_timestamp,
             "counter_reset_adjustment": self.counter_reset_adjustment,
             "counter_reset_events": self.counter_reset_events,
+            "opaque_reset_adjustment": self.opaque_reset_adjustment,
             "opaque_reset_ranges": self.opaque_reset_ranges,
         })
     }
@@ -410,7 +468,7 @@ impl SerializableToSink for IncreaseAccumulator {
         let last_seen_measurement_bytes = self.last_seen_measurement.serialize_to_bytes();
 
         let mut buffer = Vec::new();
-        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V4);
+        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V5);
 
         // Starting measurement length and data
         buffer.extend_from_slice(&(starting_measurement_bytes.len() as u32).to_le_bytes());
@@ -426,6 +484,7 @@ impl SerializableToSink for IncreaseAccumulator {
         // Last seen timestamp
         buffer.extend_from_slice(&self.last_seen_timestamp.to_le_bytes());
         buffer.extend_from_slice(&self.counter_reset_adjustment.to_le_bytes());
+        buffer.extend_from_slice(&self.opaque_reset_adjustment.to_le_bytes());
         buffer.extend_from_slice(&(self.counter_reset_events.len() as u32).to_le_bytes());
         for event in &self.counter_reset_events {
             buffer.extend_from_slice(&event.timestamp.to_le_bytes());
@@ -468,6 +527,8 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
             })
             .collect();
         let mut result = accumulators.remove(0);
+        let result_opaque_reset_residual = result.opaque_reset_residual();
+        result.opaque_reset_adjustment = result_opaque_reset_residual;
         for range in result.opaque_reset_ranges() {
             result.add_opaque_reset_range(range);
         }
@@ -476,6 +537,7 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
             let original_index = index + 1;
             let acc_opaque_ranges = acc.opaque_reset_ranges();
             let acc_has_opaque_ranges = !acc_opaque_ranges.is_empty();
+            let acc_opaque_reset_residual = acc.opaque_reset_residual();
             let overlaps_ambiguous_range = original_ranges.iter().any(
                 |(other_index, other_start, other_end, other_opaque_ranges)| {
                     if *other_index == original_index {
@@ -521,16 +583,12 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
                 });
             }
 
-            let event_adjustment: f64 = acc
-                .counter_reset_events
-                .iter()
-                .map(|event| event.adjustment)
-                .sum();
             for event in acc.counter_reset_events {
                 result.add_reset_event(event);
             }
             if acc_has_opaque_ranges {
-                result.counter_reset_adjustment += acc.counter_reset_adjustment - event_adjustment;
+                result.counter_reset_adjustment += acc_opaque_reset_residual;
+                result.opaque_reset_adjustment += acc_opaque_reset_residual;
             }
 
             // Use the later last seen point.
@@ -1067,6 +1125,41 @@ mod tests {
         let merged =
             <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
                 vec![earlier, event_aware],
+            )
+            .unwrap();
+
+        assert_eq!(
+            merged.query(Statistic::Increase, None).unwrap(),
+            f64::INFINITY
+        );
+    }
+
+    #[test]
+    fn test_increase_accumulator_keeps_mixed_infinite_reset_adjustment() {
+        let mut legacy =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(150.0), 1_000);
+        legacy.counter_reset_adjustment = 100.0;
+
+        let mut event_aware = IncreaseAccumulator::new(
+            Measurement::new(150.0),
+            1_000,
+            Measurement::new(150.0),
+            1_000,
+        );
+        event_aware.update(Measurement::new(f64::INFINITY), 1_500);
+        event_aware.update(Measurement::new(0.0), 2_000);
+
+        let later_result =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![legacy, event_aware],
+            )
+            .unwrap();
+        let earlier =
+            IncreaseAccumulator::new(Measurement::new(50.0), -1_000, Measurement::new(100.0), 0);
+
+        let merged =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![later_result, earlier],
             )
             .unwrap();
 
