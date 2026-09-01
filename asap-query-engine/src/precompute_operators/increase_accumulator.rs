@@ -1113,6 +1113,14 @@ mod tests {
             IncreaseAccumulator::deserialize_from_json(&legacy_json).unwrap();
         assert!(legacy_json_round_trip.merge_with(&later_overlap).is_ok());
 
+        let mut null_json = merged.serialize_to_json();
+        null_json
+            .as_object_mut()
+            .unwrap()
+            .insert("opaque_reset_adjustment".to_string(), Value::Null);
+        let null_json_round_trip = IncreaseAccumulator::deserialize_from_json(&null_json).unwrap();
+        assert!(null_json_round_trip.merge_with(&later_overlap).is_ok());
+
         let bytes_round_trip =
             IncreaseAccumulator::deserialize_from_bytes(&merged.serialize_to_bytes()).unwrap();
         assert!(bytes_round_trip.merge_with(&later_overlap).is_ok());

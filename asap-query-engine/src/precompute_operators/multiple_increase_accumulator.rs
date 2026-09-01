@@ -651,6 +651,17 @@ mod tests {
             counter_reset_events: Vec<CounterResetEvent>,
         }
 
+        #[derive(Serialize)]
+        struct PreviousRangeAwareMeasurementData {
+            starting_measurement: f64,
+            starting_timestamp: i64,
+            last_seen_measurement: f64,
+            last_seen_timestamp: i64,
+            counter_reset_adjustment: f64,
+            counter_reset_events: Vec<CounterResetEvent>,
+            opaque_reset_ranges: Vec<OpaqueResetRange>,
+        }
+
         let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
         let mut legacy_payload = HashMap::new();
         legacy_payload.insert(
@@ -719,6 +730,39 @@ mod tests {
                 .unwrap(),
             110.0
         );
+
+        let mut previous_range_aware_payload = HashMap::new();
+        previous_range_aware_payload.insert(
+            "web".to_string(),
+            PreviousRangeAwareMeasurementData {
+                starting_measurement: 100.0,
+                starting_timestamp: 0,
+                last_seen_measurement: 60.0,
+                last_seen_timestamp: 3_000,
+                counter_reset_adjustment: 250.0,
+                counter_reset_events: vec![CounterResetEvent {
+                    timestamp: 2_000,
+                    adjustment: 150.0,
+                }],
+                opaque_reset_ranges: vec![OpaqueResetRange {
+                    starting_timestamp: 0,
+                    last_seen_timestamp: 1_000,
+                }],
+            },
+        );
+        let previous_range_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+            &rmp_serde::to_vec(&previous_range_aware_payload).unwrap(),
+        )
+        .unwrap();
+        let previous_range_aware = previous_range_aware.increases.get(&key).unwrap();
+        let earlier =
+            IncreaseAccumulator::new(Measurement::new(50.0), -1_000, Measurement::new(100.0), 0);
+        let merged = earlier.merge_with(previous_range_aware).unwrap();
+        let merged = merged
+            .as_any()
+            .downcast_ref::<IncreaseAccumulator>()
+            .unwrap();
+        assert_eq!(merged.query(Statistic::Increase, None).unwrap(), 260.0);
     }
 
     #[test]
