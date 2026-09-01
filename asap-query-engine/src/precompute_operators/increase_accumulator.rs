@@ -163,6 +163,7 @@ impl IncreaseAccumulator {
             Some(value) => serde_json::from_value(value.clone())
                 .map_err(|e| format!("Invalid 'counter_reset_events' field: {e}"))?,
         };
+        let has_opaque_reset_adjustment = data.get("opaque_reset_adjustment").is_some();
         let opaque_reset_adjustment = match data.get("opaque_reset_adjustment") {
             None | Some(Value::Null) => 0.0,
             Some(value) => value
@@ -185,6 +186,10 @@ impl IncreaseAccumulator {
         accumulator.counter_reset_events = counter_reset_events;
         accumulator.opaque_reset_adjustment = opaque_reset_adjustment;
         accumulator.opaque_reset_ranges = opaque_reset_ranges;
+        if !has_opaque_reset_adjustment {
+            accumulator.opaque_reset_adjustment =
+                accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+        }
         if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
             if accumulator.opaque_reset_adjustment == 0.0 {
                 accumulator.opaque_reset_adjustment =
@@ -435,6 +440,10 @@ impl IncreaseAccumulator {
         accumulator.counter_reset_events = counter_reset_events;
         accumulator.opaque_reset_adjustment = opaque_reset_adjustment;
         accumulator.opaque_reset_ranges = opaque_reset_ranges;
+        if !has_v5_format {
+            accumulator.opaque_reset_adjustment =
+                accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+        }
         if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
             if accumulator.opaque_reset_adjustment == 0.0 {
                 accumulator.opaque_reset_adjustment =
@@ -1076,9 +1085,35 @@ mod tests {
             IncreaseAccumulator::deserialize_from_json(&merged.serialize_to_json()).unwrap();
         assert!(json_round_trip.merge_with(&later_overlap).is_ok());
 
+        let mut legacy_json = merged.serialize_to_json();
+        legacy_json
+            .as_object_mut()
+            .unwrap()
+            .remove("opaque_reset_adjustment");
+        let legacy_json_round_trip =
+            IncreaseAccumulator::deserialize_from_json(&legacy_json).unwrap();
+        assert!(legacy_json_round_trip.merge_with(&later_overlap).is_ok());
+
         let bytes_round_trip =
             IncreaseAccumulator::deserialize_from_bytes(&merged.serialize_to_bytes()).unwrap();
         assert!(bytes_round_trip.merge_with(&later_overlap).is_ok());
+
+        let starting_measurement_len = merged.starting_measurement.serialize_to_bytes().len();
+        let last_seen_measurement_len = merged.last_seen_measurement.serialize_to_bytes().len();
+        let opaque_residual_offset = INCREASE_BINARY_FORMAT_MAGIC_V5.len()
+            + 4
+            + starting_measurement_len
+            + 8
+            + 4
+            + last_seen_measurement_len
+            + 8
+            + 8;
+        let mut v4_bytes = merged.serialize_to_bytes();
+        v4_bytes[..INCREASE_BINARY_FORMAT_MAGIC_V4.len()]
+            .copy_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V4);
+        v4_bytes.drain(opaque_residual_offset..opaque_residual_offset + 8);
+        let v4_round_trip = IncreaseAccumulator::deserialize_from_bytes(&v4_bytes).unwrap();
+        assert!(v4_round_trip.merge_with(&later_overlap).is_ok());
     }
 
     #[test]

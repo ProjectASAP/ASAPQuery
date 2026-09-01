@@ -32,9 +32,9 @@ struct MeasurementData {
     #[serde(default)]
     counter_reset_events: Vec<CounterResetEvent>,
     #[serde(default)]
-    opaque_reset_adjustment: f64,
-    #[serde(default)]
     opaque_reset_ranges: Vec<OpaqueResetRange>,
+    #[serde(default)]
+    opaque_reset_adjustment: f64,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -638,6 +638,16 @@ mod tests {
             last_seen_timestamp: i64,
         }
 
+        #[derive(Serialize)]
+        struct PreviousResetAwareMeasurementData {
+            starting_measurement: f64,
+            starting_timestamp: i64,
+            last_seen_measurement: f64,
+            last_seen_timestamp: i64,
+            counter_reset_adjustment: f64,
+            counter_reset_events: Vec<CounterResetEvent>,
+        }
+
         let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
         let mut legacy_payload = HashMap::new();
         legacy_payload.insert(
@@ -678,6 +688,32 @@ mod tests {
         .unwrap();
         assert_eq!(
             reset_aware.query(Statistic::Increase, &key, None).unwrap(),
+            110.0
+        );
+
+        let mut previous_reset_aware_payload = HashMap::new();
+        previous_reset_aware_payload.insert(
+            "web".to_string(),
+            PreviousResetAwareMeasurementData {
+                starting_measurement: 100.0,
+                starting_timestamp: 0,
+                last_seen_measurement: 60.0,
+                last_seen_timestamp: 3_000,
+                counter_reset_adjustment: 150.0,
+                counter_reset_events: vec![CounterResetEvent {
+                    timestamp: 2_000,
+                    adjustment: 150.0,
+                }],
+            },
+        );
+        let previous_reset_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+            &rmp_serde::to_vec(&previous_reset_aware_payload).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            previous_reset_aware
+                .query(Statistic::Increase, &key, None)
+                .unwrap(),
             110.0
         );
     }
