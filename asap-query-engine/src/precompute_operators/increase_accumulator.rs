@@ -10,11 +10,18 @@ use promql_utilities::query_logics::enums::Statistic;
 
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V2: [u8; 4] = *b"INC2";
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V3: [u8; 4] = *b"INC3";
+pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V4: [u8; 4] = *b"INC4";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CounterResetEvent {
     pub timestamp: i64,
     pub adjustment: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OpaqueResetRange {
+    pub starting_timestamp: i64,
+    pub last_seen_timestamp: i64,
 }
 
 /// Accumulator for tracking increases in counter metrics
@@ -30,6 +37,8 @@ pub struct IncreaseAccumulator {
     pub counter_reset_adjustment: f64,
     #[serde(default)]
     pub counter_reset_events: Vec<CounterResetEvent>,
+    #[serde(default)]
+    pub opaque_reset_ranges: Vec<OpaqueResetRange>,
 }
 
 impl IncreaseAccumulator {
@@ -46,6 +55,7 @@ impl IncreaseAccumulator {
             last_seen_timestamp,
             counter_reset_adjustment: 0.0,
             counter_reset_events: Vec::new(),
+            opaque_reset_ranges: Vec::new(),
         }
     }
 
@@ -85,7 +95,31 @@ impl IncreaseAccumulator {
             .iter()
             .map(|event| event.adjustment)
             .sum();
-        self.counter_reset_adjustment != event_adjustment
+        !self.opaque_reset_ranges.is_empty() || self.counter_reset_adjustment != event_adjustment
+    }
+
+    fn opaque_reset_ranges(&self) -> Vec<OpaqueResetRange> {
+        if !self.opaque_reset_ranges.is_empty() {
+            return self.opaque_reset_ranges.clone();
+        }
+
+        if self.has_opaque_reset_adjustment() {
+            vec![OpaqueResetRange {
+                starting_timestamp: self.starting_timestamp,
+                last_seen_timestamp: self.last_seen_timestamp,
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+
+    fn add_opaque_reset_range(&mut self, range: OpaqueResetRange) {
+        if !self.opaque_reset_ranges.iter().any(|existing| {
+            existing.starting_timestamp == range.starting_timestamp
+                && existing.last_seen_timestamp == range.last_seen_timestamp
+        }) {
+            self.opaque_reset_ranges.push(range);
+        }
     }
 
     pub fn deserialize_from_json(data: &Value) -> Result<Self, Box<dyn std::error::Error>> {
@@ -110,6 +144,11 @@ impl IncreaseAccumulator {
             Some(value) => serde_json::from_value(value.clone())
                 .map_err(|e| format!("Invalid 'counter_reset_events' field: {e}"))?,
         };
+        let opaque_reset_ranges = match data.get("opaque_reset_ranges") {
+            None | Some(Value::Null) => Vec::new(),
+            Some(value) => serde_json::from_value(value.clone())
+                .map_err(|e| format!("Invalid 'opaque_reset_ranges' field: {e}"))?,
+        };
 
         let mut accumulator = Self::new(
             starting_measurement,
@@ -119,13 +158,21 @@ impl IncreaseAccumulator {
         );
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
         accumulator.counter_reset_events = counter_reset_events;
+        accumulator.opaque_reset_ranges = opaque_reset_ranges;
+        if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
+            accumulator.add_opaque_reset_range(OpaqueResetRange {
+                starting_timestamp,
+                last_seen_timestamp,
+            });
+        }
         Ok(accumulator)
     }
 
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         let has_v2_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
         let has_v3_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V3);
-        let has_reset_adjustment = has_v2_format || has_v3_format;
+        let has_v4_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V4);
+        let has_reset_adjustment = has_v2_format || has_v3_format || has_v4_format;
         let mut offset = if has_reset_adjustment {
             INCREASE_BINARY_FORMAT_MAGIC_V2.len()
         } else {
@@ -226,7 +273,7 @@ impl IncreaseAccumulator {
             offset += 8;
         }
 
-        let counter_reset_events = if has_v3_format {
+        let counter_reset_events = if has_v3_format || has_v4_format {
             if buffer.len() < offset + 4 {
                 return Err("Buffer too short for counter reset event count".into());
             }
@@ -276,6 +323,56 @@ impl IncreaseAccumulator {
             Vec::new()
         };
 
+        let opaque_reset_ranges = if has_v4_format {
+            if buffer.len() < offset + 4 {
+                return Err("Buffer too short for opaque reset range count".into());
+            }
+            let range_count = u32::from_le_bytes([
+                buffer[offset],
+                buffer[offset + 1],
+                buffer[offset + 2],
+                buffer[offset + 3],
+            ]) as usize;
+            offset += 4;
+            let range_bytes = range_count
+                .checked_mul(16)
+                .ok_or("Opaque reset range data length overflow")?;
+            if buffer.len() < offset + range_bytes {
+                return Err("Buffer too short for opaque reset ranges".into());
+            }
+            (0..range_count)
+                .map(|_| {
+                    let starting_timestamp = i64::from_le_bytes([
+                        buffer[offset],
+                        buffer[offset + 1],
+                        buffer[offset + 2],
+                        buffer[offset + 3],
+                        buffer[offset + 4],
+                        buffer[offset + 5],
+                        buffer[offset + 6],
+                        buffer[offset + 7],
+                    ]);
+                    let last_seen_timestamp = i64::from_le_bytes([
+                        buffer[offset + 8],
+                        buffer[offset + 9],
+                        buffer[offset + 10],
+                        buffer[offset + 11],
+                        buffer[offset + 12],
+                        buffer[offset + 13],
+                        buffer[offset + 14],
+                        buffer[offset + 15],
+                    ]);
+                    offset += 16;
+                    OpaqueResetRange {
+                        starting_timestamp,
+                        last_seen_timestamp,
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         let mut accumulator = Self::new(
             starting_measurement,
             starting_timestamp,
@@ -284,6 +381,13 @@ impl IncreaseAccumulator {
         );
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
         accumulator.counter_reset_events = counter_reset_events;
+        accumulator.opaque_reset_ranges = opaque_reset_ranges;
+        if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
+            accumulator.add_opaque_reset_range(OpaqueResetRange {
+                starting_timestamp,
+                last_seen_timestamp,
+            });
+        }
         Ok(accumulator)
     }
 }
@@ -297,6 +401,7 @@ impl SerializableToSink for IncreaseAccumulator {
             "last_seen_timestamp": self.last_seen_timestamp,
             "counter_reset_adjustment": self.counter_reset_adjustment,
             "counter_reset_events": self.counter_reset_events,
+            "opaque_reset_ranges": self.opaque_reset_ranges,
         })
     }
 
@@ -305,7 +410,7 @@ impl SerializableToSink for IncreaseAccumulator {
         let last_seen_measurement_bytes = self.last_seen_measurement.serialize_to_bytes();
 
         let mut buffer = Vec::new();
-        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V3);
+        buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V4);
 
         // Starting measurement length and data
         buffer.extend_from_slice(&(starting_measurement_bytes.len() as u32).to_le_bytes());
@@ -326,9 +431,18 @@ impl SerializableToSink for IncreaseAccumulator {
             buffer.extend_from_slice(&event.timestamp.to_le_bytes());
             buffer.extend_from_slice(&event.adjustment.to_le_bytes());
         }
+        buffer.extend_from_slice(&(self.opaque_reset_ranges.len() as u32).to_le_bytes());
+        for range in &self.opaque_reset_ranges {
+            buffer.extend_from_slice(&range.starting_timestamp.to_le_bytes());
+            buffer.extend_from_slice(&range.last_seen_timestamp.to_le_bytes());
+        }
 
         buffer
     }
+}
+
+fn ranges_overlap(first_start: i64, first_end: i64, second_start: i64, second_end: i64) -> bool {
+    first_start < second_end && second_start < first_end
 }
 
 impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
@@ -349,21 +463,39 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
                     index,
                     acc.starting_timestamp,
                     acc.last_seen_timestamp,
-                    acc.has_opaque_reset_adjustment(),
+                    acc.opaque_reset_ranges(),
                 )
             })
             .collect();
         let mut result = accumulators.remove(0);
+        for range in result.opaque_reset_ranges() {
+            result.add_opaque_reset_range(range);
+        }
 
         for (index, acc) in accumulators.into_iter().enumerate() {
             let original_index = index + 1;
-            let acc_has_opaque_adjustment = acc.has_opaque_reset_adjustment();
+            let acc_opaque_ranges = acc.opaque_reset_ranges();
             let overlaps_ambiguous_range = original_ranges.iter().any(
-                |(other_index, other_start, other_end, other_is_opaque)| {
-                    *other_index != original_index
-                        && (acc_has_opaque_adjustment || *other_is_opaque)
-                        && acc.starting_timestamp < *other_end
-                        && *other_start < acc.last_seen_timestamp
+                |(other_index, other_start, other_end, other_opaque_ranges)| {
+                    if *other_index == original_index {
+                        return false;
+                    }
+
+                    acc_opaque_ranges.iter().any(|range| {
+                        ranges_overlap(
+                            range.starting_timestamp,
+                            range.last_seen_timestamp,
+                            *other_start,
+                            *other_end,
+                        )
+                    }) || other_opaque_ranges.iter().any(|range| {
+                        ranges_overlap(
+                            range.starting_timestamp,
+                            range.last_seen_timestamp,
+                            acc.starting_timestamp,
+                            acc.last_seen_timestamp,
+                        )
+                    })
                 },
             );
             if overlaps_ambiguous_range {
@@ -371,6 +503,10 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
                     "Cannot merge overlapping accumulators with opaque counter reset adjustments"
                         .into(),
                 );
+            }
+
+            for range in acc_opaque_ranges {
+                result.add_opaque_reset_range(range);
             }
 
             // Adjacent accumulators represent consecutive portions of the same
@@ -760,6 +896,34 @@ mod tests {
     }
 
     #[test]
+    fn test_increase_accumulator_preserves_opaque_range_across_sequential_merges() {
+        let mut legacy =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(150.0), 1_000);
+        legacy.counter_reset_adjustment = 100.0;
+
+        let mut event_aware = IncreaseAccumulator::new(
+            Measurement::new(150.0),
+            1_000,
+            Measurement::new(150.0),
+            1_000,
+        );
+        event_aware.update(Measurement::new(10.0), 1_500);
+        event_aware.update(Measurement::new(30.0), 2_000);
+
+        let later_overlap =
+            IncreaseAccumulator::new(Measurement::new(20.0), 1_500, Measurement::new(50.0), 2_500);
+
+        let first_merge = legacy.merge_with(&event_aware).unwrap();
+        let first_merge = first_merge
+            .as_any()
+            .downcast_ref::<IncreaseAccumulator>()
+            .unwrap();
+        let result = first_merge.merge_with(&later_overlap);
+
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_increase_accumulator_serialization() {
         let acc =
             IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(25.0), 2000);
@@ -820,6 +984,38 @@ mod tests {
             bytes_round_trip.query(Statistic::Increase, None).unwrap(),
             110.0
         );
+    }
+
+    #[test]
+    fn test_opaque_reset_range_survives_serialization() {
+        let mut legacy =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(150.0), 1_000);
+        legacy.counter_reset_adjustment = 100.0;
+        let event_aware = IncreaseAccumulator::new(
+            Measurement::new(150.0),
+            1_000,
+            Measurement::new(200.0),
+            2_000,
+        );
+        let merged = legacy.merge_with(&event_aware).unwrap();
+        let merged = merged
+            .as_any()
+            .downcast_ref::<IncreaseAccumulator>()
+            .unwrap();
+
+        let later_overlap = IncreaseAccumulator::new(
+            Measurement::new(200.0),
+            1_500,
+            Measurement::new(250.0),
+            2_500,
+        );
+        let json_round_trip =
+            IncreaseAccumulator::deserialize_from_json(&merged.serialize_to_json()).unwrap();
+        assert!(json_round_trip.merge_with(&later_overlap).is_ok());
+
+        let bytes_round_trip =
+            IncreaseAccumulator::deserialize_from_bytes(&merged.serialize_to_bytes()).unwrap();
+        assert!(bytes_round_trip.merge_with(&later_overlap).is_ok());
     }
 
     #[test]

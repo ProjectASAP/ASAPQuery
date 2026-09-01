@@ -3,8 +3,8 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
 };
 use crate::precompute_operators::{
-    CounterResetEvent, IncreaseAccumulator, INCREASE_BINARY_FORMAT_MAGIC_V2,
-    INCREASE_BINARY_FORMAT_MAGIC_V3,
+    CounterResetEvent, IncreaseAccumulator, OpaqueResetRange, INCREASE_BINARY_FORMAT_MAGIC_V2,
+    INCREASE_BINARY_FORMAT_MAGIC_V3, INCREASE_BINARY_FORMAT_MAGIC_V4,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -30,6 +30,8 @@ struct MeasurementData {
     counter_reset_adjustment: f64,
     #[serde(default)]
     counter_reset_events: Vec<CounterResetEvent>,
+    #[serde(default)]
+    opaque_reset_ranges: Vec<OpaqueResetRange>,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -99,7 +101,9 @@ impl MultipleIncreaseAccumulator {
             }
             let has_v2_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
             let has_v3_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V3);
-            let has_reset_adjustment = has_v2_format || has_v3_format;
+            let has_v4_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V4);
+            let has_reset_adjustment = has_v2_format || has_v3_format || has_v4_format;
+            let has_event_format = has_v3_format || has_v4_format;
             let data_offset = if has_reset_adjustment {
                 offset + INCREASE_BINARY_FORMAT_MAGIC_V2.len()
             } else {
@@ -123,10 +127,10 @@ impl MultipleIncreaseAccumulator {
                 buffer[data_offset + 4 + starting_measurement_len + 8 + 2],
                 buffer[data_offset + 4 + starting_measurement_len + 8 + 3],
             ]) as usize;
-            let counter_reset_event_count = if has_v3_format {
-                let base_data_len =
-                    4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8 + 8;
-                let count_offset = data_offset + base_data_len;
+            let base_data_len =
+                4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8 + 8;
+            let count_offset = data_offset + base_data_len;
+            let counter_reset_event_count = if has_event_format {
                 if buffer.len() < count_offset + 4 {
                     return Err("Buffer too short for counter reset event count".into());
                 }
@@ -142,6 +146,27 @@ impl MultipleIncreaseAccumulator {
             let event_bytes = counter_reset_event_count
                 .checked_mul(16)
                 .ok_or("Counter reset event data length overflow")?;
+            let opaque_reset_range_bytes = if has_v4_format {
+                let range_count_offset = count_offset + 4 + event_bytes;
+                if buffer.len() < range_count_offset + 4 {
+                    return Err("Buffer too short for opaque reset range count".into());
+                }
+                let range_count = u32::from_le_bytes([
+                    buffer[range_count_offset],
+                    buffer[range_count_offset + 1],
+                    buffer[range_count_offset + 2],
+                    buffer[range_count_offset + 3],
+                ]) as usize;
+                let range_bytes = range_count
+                    .checked_mul(16)
+                    .ok_or("Opaque reset range data length overflow")?;
+                if buffer.len() < range_count_offset + 4 + range_bytes {
+                    return Err("Buffer too short for opaque reset ranges".into());
+                }
+                4 + range_bytes
+            } else {
+                0
+            };
             let consumed_bytes = (data_offset - offset)
                 + 4
                 + starting_measurement_len
@@ -150,7 +175,8 @@ impl MultipleIncreaseAccumulator {
                 + last_seen_measurement_len
                 + 8
                 + if has_reset_adjustment { 8 } else { 0 }
-                + if has_v3_format { 4 + event_bytes } else { 0 };
+                + if has_event_format { 4 + event_bytes } else { 0 }
+                + opaque_reset_range_bytes;
             offset += consumed_bytes;
 
             accumulator.increases.insert(key, increase_data);
@@ -190,6 +216,22 @@ impl MultipleIncreaseAccumulator {
             );
             increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
             increase_accumulator.counter_reset_events = values.counter_reset_events;
+            increase_accumulator.opaque_reset_ranges = values.opaque_reset_ranges;
+            let event_adjustment: f64 = increase_accumulator
+                .counter_reset_events
+                .iter()
+                .map(|event| event.adjustment)
+                .sum();
+            if increase_accumulator.opaque_reset_ranges.is_empty()
+                && increase_accumulator.counter_reset_adjustment != event_adjustment
+            {
+                increase_accumulator
+                    .opaque_reset_ranges
+                    .push(OpaqueResetRange {
+                        starting_timestamp,
+                        last_seen_timestamp,
+                    });
+            }
 
             accumulator.increases.insert(key_obj, increase_accumulator);
         }
@@ -215,6 +257,7 @@ impl MultipleIncreaseAccumulator {
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
                     counter_reset_adjustment: increase_acc.counter_reset_adjustment,
                     counter_reset_events: increase_acc.counter_reset_events.clone(),
+                    opaque_reset_ranges: increase_acc.opaque_reset_ranges.clone(),
                 },
             );
         }
@@ -606,6 +649,7 @@ mod tests {
                     timestamp: 2_000,
                     adjustment: 150.0,
                 }],
+                opaque_reset_ranges: Vec::new(),
             },
         );
         let reset_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
