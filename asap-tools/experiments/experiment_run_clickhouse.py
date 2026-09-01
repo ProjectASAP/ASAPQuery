@@ -427,7 +427,7 @@ def main(cfg: DictConfig) -> None:
                 flink_output_format="json",
                 data_ingestion_interval_ms=data_ingestion_interval_ms,
                 log_level="INFO",
-                profile_query_engine=False,
+                profile_query_engine=profile_query_engine,
                 manual=False,
                 streaming_engine="precompute",
                 controller_remote_output_dir=remote_controller_dir,

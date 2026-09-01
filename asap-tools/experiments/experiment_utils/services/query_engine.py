@@ -306,6 +306,27 @@ class QueryEngineRustService(BaseQueryEngineService):
         """Start Rust QueryEngine using bare metal deployment."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
         local_output_dir = os.path.join(local_experiment_dir, "query_engine_output")
+        cmd_dir = os.path.join(
+            self.provider.get_home_dir(), "code", "asap-query-engine"
+        )
+        binary_name = (
+            constants.QUERY_ENGINE_RS_FP_BINARY_NAME
+            if profile_query_engine
+            else constants.QUERY_ENGINE_RS_BINARY_NAME
+        )
+        binary_path = f"../target/release/{binary_name}"
+
+        if profile_query_engine and not manual:
+            # Check on the target node before writing config or starting the
+            # service, so a profiling run cannot silently use a non-FP binary.
+            self.provider.execute_command(
+                node_idx=self.node_offset,
+                cmd=f"test -x {binary_path}",
+                cmd_dir=cmd_dir,
+                nohup=False,
+                popen=False,
+                ignore_errors=False,
+            )
 
         config = self._build_engine_config(
             output_dir=output_dir,
@@ -330,9 +351,6 @@ class QueryEngineRustService(BaseQueryEngineService):
             remote_path=os.path.join(output_dir, "engine_config.yaml"),
         )
 
-        cmd_dir = os.path.join(
-            self.provider.get_home_dir(), "code", "asap-query-engine"
-        )
         # Force UTC so naive datetime-string time literals in incoming SQL
         # queries parse the same way here as in ClickHouse (UTC by default)
         # and in asap-planner (see misc.py's ControllerService for the same
@@ -343,7 +361,9 @@ class QueryEngineRustService(BaseQueryEngineService):
             # which execs argv[0] directly rather than re-parsing through a
             # shell -- a bare `VAR=val` prefix would make nohup try (and
             # fail) to exec "TZ=UTC" itself as the program name.
-            f"env TZ=UTC ../target/release/query_engine_rust"
+            f"test -x {binary_path} || "
+            f"{{ echo 'Missing query engine binary: {binary_path}'; exit 1; }}; "
+            f"env TZ=UTC {binary_path}"
             f" --config-file {output_dir}/engine_config.yaml"
             f" > {output_dir}/query_engine_rust.out 2>&1 &"
         )

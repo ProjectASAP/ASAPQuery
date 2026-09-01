@@ -167,8 +167,9 @@ All profiling options are in the `profiling` section and are **monitoring** feat
 **Type:** `bool`
 **Default:** `false`
 **Category:** Monitoring
-**Description:** Enable CPU and memory profiling of the query engine process using `py-spy`.
-**Captures:** Function call stacks, CPU time per function, heap allocations
+**Description:** Enable CPU profiling of the bare-metal Rust query engine using
+`perf` with frame-pointer call chains.
+**Captures:** Function call stacks and sampled CPU time per function
 **Note:** (TODO) I believe this only works for the older Python based QueryEngine, not QueryEngineRust
 
 **Example:**
@@ -176,7 +177,10 @@ All profiling options are in the `profiling` section and are **monitoring** feat
 profiling.query_engine=true
 ```
 
-**Output:** Profiling data saved to experiment output directory.
+**Output:** Raw `perf.data` recordings and `perf archive` symbol archives are
+saved to the experiment output directory. Run
+`experiments/postprocess_query_engine_profiles.sh` locally after the experiment
+to generate scripts, folded stacks, and flamegraphs.
 
 ### profiling.prometheus_time
 
