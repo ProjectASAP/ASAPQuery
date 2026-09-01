@@ -9,8 +9,6 @@ use std::collections::HashMap;
 use promql_utilities::query_logics::enums::Statistic;
 
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V2: [u8; 4] = *b"INC2";
-pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V3: [u8; 4] = *b"INC3";
-pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V4: [u8; 4] = *b"INC4";
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V5: [u8; 4] = *b"INC5";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -111,7 +109,10 @@ impl IncreaseAccumulator {
         if !self.opaque_reset_ranges.is_empty() || self.opaque_reset_adjustment != 0.0 {
             self.opaque_reset_adjustment
         } else if self.has_opaque_reset_adjustment() {
-            self.counter_reset_adjustment - self.event_reset_adjustment()
+            derive_opaque_reset_residual(
+                self.counter_reset_adjustment,
+                self.event_reset_adjustment(),
+            )
         } else {
             0.0
         }
@@ -163,7 +164,9 @@ impl IncreaseAccumulator {
             Some(value) => serde_json::from_value(value.clone())
                 .map_err(|e| format!("Invalid 'counter_reset_events' field: {e}"))?,
         };
-        let has_opaque_reset_adjustment = data.get("opaque_reset_adjustment").is_some();
+        let has_opaque_reset_adjustment = data
+            .get("opaque_reset_adjustment")
+            .is_some_and(|value| !value.is_null());
         let opaque_reset_adjustment = match data.get("opaque_reset_adjustment") {
             None | Some(Value::Null) => 0.0,
             Some(value) => value
@@ -187,13 +190,17 @@ impl IncreaseAccumulator {
         accumulator.opaque_reset_adjustment = opaque_reset_adjustment;
         accumulator.opaque_reset_ranges = opaque_reset_ranges;
         if !has_opaque_reset_adjustment {
-            accumulator.opaque_reset_adjustment =
-                accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+            accumulator.opaque_reset_adjustment = derive_opaque_reset_residual(
+                accumulator.counter_reset_adjustment,
+                accumulator.event_reset_adjustment(),
+            );
         }
         if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
             if accumulator.opaque_reset_adjustment == 0.0 {
-                accumulator.opaque_reset_adjustment =
-                    accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+                accumulator.opaque_reset_adjustment = derive_opaque_reset_residual(
+                    accumulator.counter_reset_adjustment,
+                    accumulator.event_reset_adjustment(),
+                );
             }
             accumulator.add_opaque_reset_range(OpaqueResetRange {
                 starting_timestamp,
@@ -205,11 +212,8 @@ impl IncreaseAccumulator {
 
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         let has_v2_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
-        let has_v3_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V3);
-        let has_v4_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V4);
         let has_v5_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V5);
-        let has_range_format = has_v4_format || has_v5_format;
-        let has_reset_adjustment = has_v2_format || has_v3_format || has_v4_format || has_v5_format;
+        let has_reset_adjustment = has_v2_format || has_v5_format;
         let mut offset = if has_reset_adjustment {
             INCREASE_BINARY_FORMAT_MAGIC_V2.len()
         } else {
@@ -330,7 +334,7 @@ impl IncreaseAccumulator {
             0.0
         };
 
-        let counter_reset_events = if has_v3_format || has_range_format {
+        let counter_reset_events = if has_v5_format {
             if buffer.len() < offset + 4 {
                 return Err("Buffer too short for counter reset event count".into());
             }
@@ -380,7 +384,7 @@ impl IncreaseAccumulator {
             Vec::new()
         };
 
-        let opaque_reset_ranges = if has_range_format {
+        let opaque_reset_ranges = if has_v5_format {
             if buffer.len() < offset + 4 {
                 return Err("Buffer too short for opaque reset range count".into());
             }
@@ -441,13 +445,17 @@ impl IncreaseAccumulator {
         accumulator.opaque_reset_adjustment = opaque_reset_adjustment;
         accumulator.opaque_reset_ranges = opaque_reset_ranges;
         if !has_v5_format {
-            accumulator.opaque_reset_adjustment =
-                accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+            accumulator.opaque_reset_adjustment = derive_opaque_reset_residual(
+                accumulator.counter_reset_adjustment,
+                accumulator.event_reset_adjustment(),
+            );
         }
         if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
             if accumulator.opaque_reset_adjustment == 0.0 {
-                accumulator.opaque_reset_adjustment =
-                    accumulator.counter_reset_adjustment - accumulator.event_reset_adjustment();
+                accumulator.opaque_reset_adjustment = derive_opaque_reset_residual(
+                    accumulator.counter_reset_adjustment,
+                    accumulator.event_reset_adjustment(),
+                );
             }
             accumulator.add_opaque_reset_range(OpaqueResetRange {
                 starting_timestamp,
@@ -511,6 +519,17 @@ impl SerializableToSink for IncreaseAccumulator {
 
 fn ranges_overlap(first_start: i64, first_end: i64, second_start: i64, second_end: i64) -> bool {
     first_start < second_end && second_start < first_end
+}
+
+pub(crate) fn derive_opaque_reset_residual(total_adjustment: f64, event_adjustment: f64) -> f64 {
+    if total_adjustment.is_infinite()
+        && event_adjustment.is_infinite()
+        && total_adjustment == event_adjustment
+    {
+        0.0
+    } else {
+        total_adjustment - event_adjustment
+    }
 }
 
 impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
@@ -1097,23 +1116,6 @@ mod tests {
         let bytes_round_trip =
             IncreaseAccumulator::deserialize_from_bytes(&merged.serialize_to_bytes()).unwrap();
         assert!(bytes_round_trip.merge_with(&later_overlap).is_ok());
-
-        let starting_measurement_len = merged.starting_measurement.serialize_to_bytes().len();
-        let last_seen_measurement_len = merged.last_seen_measurement.serialize_to_bytes().len();
-        let opaque_residual_offset = INCREASE_BINARY_FORMAT_MAGIC_V5.len()
-            + 4
-            + starting_measurement_len
-            + 8
-            + 4
-            + last_seen_measurement_len
-            + 8
-            + 8;
-        let mut v4_bytes = merged.serialize_to_bytes();
-        v4_bytes[..INCREASE_BINARY_FORMAT_MAGIC_V4.len()]
-            .copy_from_slice(&INCREASE_BINARY_FORMAT_MAGIC_V4);
-        v4_bytes.drain(opaque_residual_offset..opaque_residual_offset + 8);
-        let v4_round_trip = IncreaseAccumulator::deserialize_from_bytes(&v4_bytes).unwrap();
-        assert!(v4_round_trip.merge_with(&later_overlap).is_ok());
     }
 
     #[test]
