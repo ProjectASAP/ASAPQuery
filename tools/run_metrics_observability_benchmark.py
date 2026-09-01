@@ -186,13 +186,7 @@ def main():
     parser.add_argument("--repetition-interval-ms", type=int, default=1000)
     parser.add_argument("--top", type=int, default=3)
     args = parser.parse_args()
-    root = (
-        args.queries_dir
-        or Path(__file__).resolve().parents[4]
-        / "benchmarks/metrics_observability/queries"
-    )
-    if not root.is_dir():
-        raise SystemExit(f"benchmark directory not found: {root}")
+    root = args.queries_dir or find_default_queries_dir()
 
     repo = Path(__file__).resolve().parents[1]
     binary_dir = repo / "target/release"
@@ -336,6 +330,14 @@ def make_report(all_queries, eligible_queries, parsed, planned, missing, top):
             f"| {index} | {len(group)} | {len(group) / max(len(missing), 1):.1%} | `{functions}` | `{aggregators}` | `{example}` |"
         )
     return "\n".join(lines) + "\n"
+
+
+def find_default_queries_dir():
+    for ancestor in Path(__file__).resolve().parents:
+        candidate = ancestor / "benchmarks/metrics_observability/queries"
+        if candidate.is_dir():
+            return candidate
+    raise SystemExit("benchmark directory not found; pass --queries-dir explicitly")
 
 
 if __name__ == "__main__":
