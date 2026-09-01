@@ -23,12 +23,12 @@ pub struct CounterResetEvent {
 /// correction for counter resets observed between them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IncreaseAccumulator {
-    starting_measurement: Measurement,
-    starting_timestamp: i64,
-    last_seen_measurement: Measurement,
-    last_seen_timestamp: i64,
-    counter_reset_adjustment: f64,
-    counter_reset_events: Vec<CounterResetEvent>,
+    pub starting_measurement: Measurement,
+    pub starting_timestamp: i64,
+    pub last_seen_measurement: Measurement,
+    pub last_seen_timestamp: i64,
+    pub counter_reset_adjustment: f64,
+    pub counter_reset_events: Vec<CounterResetEvent>,
 }
 
 impl IncreaseAccumulator {
@@ -46,48 +46,6 @@ impl IncreaseAccumulator {
             counter_reset_adjustment: 0.0,
             counter_reset_events: Vec::new(),
         }
-    }
-
-    pub(crate) fn from_parts(
-        starting_measurement: Measurement,
-        starting_timestamp: i64,
-        last_seen_measurement: Measurement,
-        last_seen_timestamp: i64,
-        counter_reset_adjustment: f64,
-        counter_reset_events: Vec<CounterResetEvent>,
-    ) -> Self {
-        Self {
-            starting_measurement,
-            starting_timestamp,
-            last_seen_measurement,
-            last_seen_timestamp,
-            counter_reset_adjustment,
-            counter_reset_events,
-        }
-    }
-
-    pub(crate) fn starting_measurement(&self) -> &Measurement {
-        &self.starting_measurement
-    }
-
-    pub(crate) fn starting_timestamp(&self) -> i64 {
-        self.starting_timestamp
-    }
-
-    pub(crate) fn last_seen_measurement(&self) -> &Measurement {
-        &self.last_seen_measurement
-    }
-
-    pub(crate) fn last_seen_timestamp(&self) -> i64 {
-        self.last_seen_timestamp
-    }
-
-    pub(crate) fn counter_reset_adjustment(&self) -> f64 {
-        self.counter_reset_adjustment
-    }
-
-    pub(crate) fn counter_reset_events(&self) -> &[CounterResetEvent] {
-        &self.counter_reset_events
     }
 
     pub fn update(&mut self, measurement: Measurement, timestamp: i64) {

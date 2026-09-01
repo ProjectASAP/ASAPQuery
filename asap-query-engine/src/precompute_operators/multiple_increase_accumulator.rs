@@ -123,14 +123,14 @@ impl MultipleIncreaseAccumulator {
             let last_seen_measurement = Measurement::new(values.last_seen_measurement);
             let last_seen_timestamp = values.last_seen_timestamp;
 
-            let increase_accumulator = IncreaseAccumulator::from_parts(
+            let mut increase_accumulator = IncreaseAccumulator::new(
                 starting_measurement,
                 starting_timestamp,
                 last_seen_measurement,
                 last_seen_timestamp,
-                values.counter_reset_adjustment,
-                values.counter_reset_events,
             );
+            increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
+            increase_accumulator.counter_reset_events = values.counter_reset_events;
 
             accumulator.increases.insert(key_obj, increase_accumulator);
         }
@@ -169,12 +169,12 @@ impl MultipleIncreaseAccumulator {
             per_key_storage.insert(
                 key_str,
                 MeasurementData {
-                    starting_measurement: increase_acc.starting_measurement().value,
-                    starting_timestamp: increase_acc.starting_timestamp(),
-                    last_seen_measurement: increase_acc.last_seen_measurement().value,
-                    last_seen_timestamp: increase_acc.last_seen_timestamp(),
-                    counter_reset_adjustment: increase_acc.counter_reset_adjustment(),
-                    counter_reset_events: increase_acc.counter_reset_events().to_vec(),
+                    starting_measurement: increase_acc.starting_measurement.value,
+                    starting_timestamp: increase_acc.starting_timestamp,
+                    last_seen_measurement: increase_acc.last_seen_measurement.value,
+                    last_seen_timestamp: increase_acc.last_seen_timestamp,
+                    counter_reset_adjustment: increase_acc.counter_reset_adjustment,
+                    counter_reset_events: increase_acc.counter_reset_events.clone(),
                 },
             );
         }
@@ -452,8 +452,8 @@ mod tests {
 
         // The merged key1 should have the full range (earliest start to latest end)
         let merged_key1 = merged.increases.get(&key1).unwrap();
-        assert_eq!(merged_key1.starting_measurement().value, 10.0); // Earlier start
-        assert_eq!(merged_key1.last_seen_measurement().value, 30.0); // Later end
+        assert_eq!(merged_key1.starting_measurement.value, 10.0); // Earlier start
+        assert_eq!(merged_key1.last_seen_measurement.value, 30.0); // Later end
     }
 
     #[test]
@@ -470,8 +470,8 @@ mod tests {
 
         assert_eq!(deserialized.increases.len(), 1);
         let deserialized_acc = deserialized.increases.get(&key).unwrap();
-        assert_eq!(deserialized_acc.starting_measurement().value, 10.0);
-        assert_eq!(deserialized_acc.last_seen_measurement().value, 25.0);
+        assert_eq!(deserialized_acc.starting_measurement.value, 10.0);
+        assert_eq!(deserialized_acc.last_seen_measurement.value, 25.0);
 
         // Test binary serialization
         let bytes = acc.serialize_to_bytes();
@@ -480,8 +480,8 @@ mod tests {
 
         assert_eq!(deserialized_bytes.increases.len(), 1);
         let deserialized_acc_bytes = deserialized_bytes.increases.get(&key).unwrap();
-        assert_eq!(deserialized_acc_bytes.starting_measurement().value, 10.0);
-        assert_eq!(deserialized_acc_bytes.last_seen_measurement().value, 25.0);
+        assert_eq!(deserialized_acc_bytes.starting_measurement.value, 10.0);
+        assert_eq!(deserialized_acc_bytes.last_seen_measurement.value, 25.0);
     }
 
     #[test]
