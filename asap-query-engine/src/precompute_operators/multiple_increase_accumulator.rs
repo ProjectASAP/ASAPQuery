@@ -2,9 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
 };
-use crate::precompute_operators::{
-    derive_opaque_reset_residual, CounterResetEvent, IncreaseAccumulator, OpaqueResetRange,
-};
+use crate::precompute_operators::{CounterResetEvent, IncreaseAccumulator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -20,19 +18,14 @@ pub struct MultipleIncreaseAccumulator {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MeasurementData {
     starting_measurement: f64,
     starting_timestamp: i64,
     last_seen_measurement: f64,
     last_seen_timestamp: i64,
-    #[serde(default)]
     counter_reset_adjustment: f64,
-    #[serde(default)]
     counter_reset_events: Vec<CounterResetEvent>,
-    #[serde(default)]
-    opaque_reset_ranges: Vec<OpaqueResetRange>,
-    #[serde(default)]
-    opaque_reset_adjustment: Option<f64>,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -138,35 +131,6 @@ impl MultipleIncreaseAccumulator {
             );
             increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
             increase_accumulator.counter_reset_events = values.counter_reset_events;
-            let event_adjustment: f64 = increase_accumulator
-                .counter_reset_events
-                .iter()
-                .map(|event| event.adjustment)
-                .sum();
-            increase_accumulator.opaque_reset_adjustment =
-                values.opaque_reset_adjustment.unwrap_or_else(|| {
-                    derive_opaque_reset_residual(
-                        increase_accumulator.counter_reset_adjustment,
-                        event_adjustment,
-                    )
-                });
-            increase_accumulator.opaque_reset_ranges = values.opaque_reset_ranges;
-            if increase_accumulator.opaque_reset_ranges.is_empty()
-                && increase_accumulator.counter_reset_adjustment != event_adjustment
-            {
-                if increase_accumulator.opaque_reset_adjustment == 0.0 {
-                    increase_accumulator.opaque_reset_adjustment = derive_opaque_reset_residual(
-                        increase_accumulator.counter_reset_adjustment,
-                        event_adjustment,
-                    );
-                }
-                increase_accumulator
-                    .opaque_reset_ranges
-                    .push(OpaqueResetRange {
-                        starting_timestamp,
-                        last_seen_timestamp,
-                    });
-            }
 
             accumulator.increases.insert(key_obj, increase_accumulator);
         }
@@ -211,8 +175,6 @@ impl MultipleIncreaseAccumulator {
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
                     counter_reset_adjustment: increase_acc.counter_reset_adjustment,
                     counter_reset_events: increase_acc.counter_reset_events.clone(),
-                    opaque_reset_adjustment: Some(increase_acc.opaque_reset_adjustment),
-                    opaque_reset_ranges: increase_acc.opaque_reset_ranges.clone(),
                 },
             );
         }
@@ -553,55 +515,10 @@ mod tests {
     }
 
     #[test]
-    fn test_arroyo_deserialization_supports_legacy_and_reset_aware_payloads() {
-        #[derive(Serialize)]
-        struct LegacyMeasurementData {
-            starting_measurement: f64,
-            starting_timestamp: i64,
-            last_seen_measurement: f64,
-            last_seen_timestamp: i64,
-        }
-
-        #[derive(Serialize)]
-        struct PreviousResetAwareMeasurementData {
-            starting_measurement: f64,
-            starting_timestamp: i64,
-            last_seen_measurement: f64,
-            last_seen_timestamp: i64,
-            counter_reset_adjustment: f64,
-            counter_reset_events: Vec<CounterResetEvent>,
-        }
-
-        #[derive(Serialize)]
-        struct PreviousRangeAwareMeasurementData {
-            starting_measurement: f64,
-            starting_timestamp: i64,
-            last_seen_measurement: f64,
-            last_seen_timestamp: i64,
-            counter_reset_adjustment: f64,
-            counter_reset_events: Vec<CounterResetEvent>,
-            opaque_reset_ranges: Vec<OpaqueResetRange>,
-        }
-
+    fn test_arroyo_deserialization_supports_reset_aware_payloads() {
         let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
-        let mut legacy_payload = HashMap::new();
-        legacy_payload.insert(
-            "web".to_string(),
-            LegacyMeasurementData {
-                starting_measurement: 10.0,
-                starting_timestamp: 0,
-                last_seen_measurement: 25.0,
-                last_seen_timestamp: 1_000,
-            },
-        );
-        let legacy = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
-            &rmp_serde::to_vec(&legacy_payload).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(legacy.query(Statistic::Increase, &key, None).unwrap(), 15.0);
-
-        let mut reset_aware_payload = HashMap::new();
-        reset_aware_payload.insert(
+        let mut payload = HashMap::new();
+        payload.insert(
             "web".to_string(),
             MeasurementData {
                 starting_measurement: 100.0,
@@ -613,77 +530,16 @@ mod tests {
                     timestamp: 2_000,
                     adjustment: 150.0,
                 }],
-                opaque_reset_adjustment: Some(0.0),
-                opaque_reset_ranges: Vec::new(),
             },
         );
         let reset_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
-            &rmp_serde::to_vec(&reset_aware_payload).unwrap(),
+            &rmp_serde::to_vec(&payload).unwrap(),
         )
         .unwrap();
         assert_eq!(
             reset_aware.query(Statistic::Increase, &key, None).unwrap(),
             110.0
         );
-
-        let mut previous_reset_aware_payload = HashMap::new();
-        previous_reset_aware_payload.insert(
-            "web".to_string(),
-            PreviousResetAwareMeasurementData {
-                starting_measurement: 100.0,
-                starting_timestamp: 0,
-                last_seen_measurement: 60.0,
-                last_seen_timestamp: 3_000,
-                counter_reset_adjustment: 150.0,
-                counter_reset_events: vec![CounterResetEvent {
-                    timestamp: 2_000,
-                    adjustment: 150.0,
-                }],
-            },
-        );
-        let previous_reset_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
-            &rmp_serde::to_vec(&previous_reset_aware_payload).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            previous_reset_aware
-                .query(Statistic::Increase, &key, None)
-                .unwrap(),
-            110.0
-        );
-
-        let mut previous_range_aware_payload = HashMap::new();
-        previous_range_aware_payload.insert(
-            "web".to_string(),
-            PreviousRangeAwareMeasurementData {
-                starting_measurement: 100.0,
-                starting_timestamp: 0,
-                last_seen_measurement: 60.0,
-                last_seen_timestamp: 3_000,
-                counter_reset_adjustment: 250.0,
-                counter_reset_events: vec![CounterResetEvent {
-                    timestamp: 2_000,
-                    adjustment: 150.0,
-                }],
-                opaque_reset_ranges: vec![OpaqueResetRange {
-                    starting_timestamp: 0,
-                    last_seen_timestamp: 1_000,
-                }],
-            },
-        );
-        let previous_range_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
-            &rmp_serde::to_vec(&previous_range_aware_payload).unwrap(),
-        )
-        .unwrap();
-        let previous_range_aware = previous_range_aware.increases.get(&key).unwrap();
-        let earlier =
-            IncreaseAccumulator::new(Measurement::new(50.0), -1_000, Measurement::new(100.0), 0);
-        let merged = earlier.merge_with(previous_range_aware).unwrap();
-        let merged = merged
-            .as_any()
-            .downcast_ref::<IncreaseAccumulator>()
-            .unwrap();
-        assert_eq!(merged.query(Statistic::Increase, None).unwrap(), 260.0);
     }
 
     #[test]
