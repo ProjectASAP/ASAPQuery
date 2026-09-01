@@ -2,11 +2,7 @@ target/
 experiment_outputs/
 asap-quickstart/bin/
 
-# Runtime and generated files
-metadata/
-preprocessed_configs/
-status
-uuid
-store/
 # roborev snapshots
 /.roborev/
+
+/.agent/
