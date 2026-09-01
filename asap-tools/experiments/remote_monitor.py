@@ -174,7 +174,11 @@ def start_profiling_query_engine_pids(qe_pids, experiment_output_dir):
             "record",
             "-g",
             "--call-graph",
-            "dwarf",
+            # The QE binary must be built with frame pointers enabled, e.g.
+            # RUSTFLAGS="-C force-frame-pointers=yes" cargo build --release.
+            # FP unwinding avoids the expensive DWARF stack post-unwinding
+            # while retaining call-chain data for perf report/script.
+            "fp",
             "-F",
             "99",
             "-o",
@@ -222,16 +226,13 @@ def convert_query_engine_perf_data(experiment_output_dir):
     for data_file in data_files:
         script_file = data_file.replace(".data", ".script")
         logger.debug(f"Converting {data_file} to {script_file}")
-        try:
-            with open(script_file, "w") as f:
-                subprocess.run(
-                    ["perf", "script", "-i", data_file],
-                    stdout=f,
-                    check=True,
-                )
-            logger.debug(f"Finished converting {data_file}")
-        except subprocess.CalledProcessError as e:
-            logger.warning(f"perf script failed for {data_file}: {e}")
+        with open(script_file, "w") as script_output:
+            subprocess.run(
+                ["perf", "script", "--header", "-i", data_file],
+                stdout=script_output,
+                check=True,
+            )
+        logger.debug(f"Finished converting {data_file}")
 
 
 # TODO Provide some way of specifying which hooks will be used

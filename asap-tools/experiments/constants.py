@@ -15,6 +15,8 @@ FLINK_OUTPUT_TOPIC = "flink_output"
 KAFKA_BROKER = "localhost:9092"
 
 QUERY_ENGINE_RS_PROCESS_KEYWORD = "query_engine_rust"
+QUERY_ENGINE_RS_BINARY_NAME = "query_engine_rust"
+QUERY_ENGINE_RS_FP_BINARY_NAME = "query_engine_rust_fp"
 QUERY_ENGINE_RS_CONTAINER_NAME = "sketchdb-queryengine-rust"
 
 ARROYO_IMAGE = "ghcr.io/projectasap/asap-arroyo:v0.1.0"

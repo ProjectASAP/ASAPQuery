@@ -9,7 +9,14 @@ source "$HOME/.cargo/env"
 
 echo "Building QueryEngine Rust binary..."
 cd "$PARENT_DIR"
-cargo build --release
+cargo build --release -p query_engine_rust
+
+echo "Building frame-pointer QueryEngine Rust binary..."
+fp_rustflags="${RUSTFLAGS:-}"
+fp_rustflags="${fp_rustflags:+$fp_rustflags }-C force-frame-pointers=yes"
+RUSTFLAGS="$fp_rustflags" cargo build --release -p query_engine_rust --bin query_engine_rust_fp
+
+echo "Built normal and frame-pointer QueryEngine Rust binaries."
 
 echo "Building QueryEngine Rust Docker image..."
 cd "$(dirname "$PARENT_DIR")"

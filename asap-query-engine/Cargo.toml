@@ -65,6 +65,14 @@ asap_sketchlib.workspace = true
 tikv-jemallocator = { version = "0.6", optional = true }
 
 [[bin]]
+name = "query_engine_rust"
+path = "src/main.rs"
+
+[[bin]]
+name = "query_engine_rust_fp"
+path = "src/main.rs"
+
+[[bin]]
 name = "precompute_engine"
 path = "src/bin/precompute_engine.rs"
 
