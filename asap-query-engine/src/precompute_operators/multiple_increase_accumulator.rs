@@ -4,7 +4,6 @@ use crate::data_model::{
 };
 use crate::precompute_operators::{
     derive_opaque_reset_residual, CounterResetEvent, IncreaseAccumulator, OpaqueResetRange,
-    INCREASE_BINARY_FORMAT_MAGIC_V2, INCREASE_BINARY_FORMAT_MAGIC_V5,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -97,94 +96,9 @@ impl MultipleIncreaseAccumulator {
                 KeyByLabelValues::deserialize_from_bytes(&buffer[offset..offset + key_length])?;
             offset += key_length;
 
-            // Read IncreaseAccumulator data
-            if offset >= buffer.len() {
-                return Err("Buffer too short for increase accumulator data".into());
-            }
-            let has_v2_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
-            let has_v5_format = buffer[offset..].starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V5);
-            let has_reset_adjustment = has_v2_format || has_v5_format;
-            let has_event_format = has_v5_format;
-            let data_offset = if has_reset_adjustment {
-                offset + INCREASE_BINARY_FORMAT_MAGIC_V2.len()
-            } else {
-                offset
-            };
-            let increase_data = IncreaseAccumulator::deserialize_from_bytes(&buffer[offset..])?;
-
-            // Calculate consumed bytes for IncreaseAccumulator
-            // Structure: [magic(4)] + starting_measurement_len(4) + starting_measurement + starting_timestamp(8) +
-            //           last_seen_measurement_len(4) + last_seen_measurement +
-            //           last_seen_timestamp(8) + [counter_reset_adjustment(8)]
-            let starting_measurement_len = u32::from_le_bytes([
-                buffer[data_offset],
-                buffer[data_offset + 1],
-                buffer[data_offset + 2],
-                buffer[data_offset + 3],
-            ]) as usize;
-            let last_seen_measurement_len = u32::from_le_bytes([
-                buffer[data_offset + 4 + starting_measurement_len + 8],
-                buffer[data_offset + 4 + starting_measurement_len + 8 + 1],
-                buffer[data_offset + 4 + starting_measurement_len + 8 + 2],
-                buffer[data_offset + 4 + starting_measurement_len + 8 + 3],
-            ]) as usize;
-            let base_data_len = 4
-                + starting_measurement_len
-                + 8
-                + 4
-                + last_seen_measurement_len
-                + 8
-                + 8
-                + if has_v5_format { 8 } else { 0 };
-            let count_offset = data_offset + base_data_len;
-            let counter_reset_event_count = if has_event_format {
-                if buffer.len() < count_offset + 4 {
-                    return Err("Buffer too short for counter reset event count".into());
-                }
-                u32::from_le_bytes([
-                    buffer[count_offset],
-                    buffer[count_offset + 1],
-                    buffer[count_offset + 2],
-                    buffer[count_offset + 3],
-                ]) as usize
-            } else {
-                0
-            };
-            let event_bytes = counter_reset_event_count
-                .checked_mul(16)
-                .ok_or("Counter reset event data length overflow")?;
-            let opaque_reset_range_bytes = if has_v5_format {
-                let range_count_offset = count_offset + 4 + event_bytes;
-                if buffer.len() < range_count_offset + 4 {
-                    return Err("Buffer too short for opaque reset range count".into());
-                }
-                let range_count = u32::from_le_bytes([
-                    buffer[range_count_offset],
-                    buffer[range_count_offset + 1],
-                    buffer[range_count_offset + 2],
-                    buffer[range_count_offset + 3],
-                ]) as usize;
-                let range_bytes = range_count
-                    .checked_mul(16)
-                    .ok_or("Opaque reset range data length overflow")?;
-                if buffer.len() < range_count_offset + 4 + range_bytes {
-                    return Err("Buffer too short for opaque reset ranges".into());
-                }
-                4 + range_bytes
-            } else {
-                0
-            };
-            let consumed_bytes = (data_offset - offset)
-                + 4
-                + starting_measurement_len
-                + 8
-                + 4
-                + last_seen_measurement_len
-                + 8
-                + if has_reset_adjustment { 8 } else { 0 }
-                + if has_v5_format { 8 } else { 0 }
-                + if has_event_format { 4 + event_bytes } else { 0 }
-                + opaque_reset_range_bytes;
+            // IncreaseAccumulator owns its binary framing and reports its length.
+            let (increase_data, consumed_bytes) =
+                IncreaseAccumulator::deserialize_from_bytes_with_consumed(&buffer[offset..])?;
             offset += consumed_bytes;
 
             accumulator.increases.insert(key, increase_data);
@@ -258,6 +172,25 @@ impl MultipleIncreaseAccumulator {
         }
 
         Ok(accumulator)
+    }
+
+    fn merge_increase(
+        increases: &mut HashMap<KeyByLabelValues, IncreaseAccumulator>,
+        key: KeyByLabelValues,
+        data: IncreaseAccumulator,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(existing_data) = increases.remove(&key) else {
+            increases.insert(key, data);
+            return Ok(());
+        };
+
+        match IncreaseAccumulator::merge_accumulators(vec![existing_data, data]) {
+            Ok(merged_data) => {
+                increases.insert(key, merged_data);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Serialize to Arroyo-compatible format (MessagePack HashMap<String, MeasurementData>)
@@ -371,14 +304,7 @@ impl AggregateCore for MultipleIncreaseAccumulator {
         // Clone self once, then merge other's data in-place.
         let mut merged = self.clone();
         for (key, data) in &other_multiple_increase.increases {
-            if let Some(existing_data) = merged.increases.get_mut(key) {
-                *existing_data = IncreaseAccumulator::merge_accumulators(vec![
-                    existing_data.clone(),
-                    data.clone(),
-                ])?;
-            } else {
-                merged.increases.insert(key.clone(), data.clone());
-            }
+            Self::merge_increase(&mut merged.increases, key.clone(), data.clone())?;
         }
 
         Ok(Box::new(merged))
@@ -438,12 +364,7 @@ impl MergeableAccumulator<MultipleIncreaseAccumulator> for MultipleIncreaseAccum
 
         for accumulator in accumulators {
             for (key, data) in accumulator.increases {
-                if let Some(existing_data) = result.increases.get_mut(&key) {
-                    *existing_data =
-                        IncreaseAccumulator::merge_accumulators(vec![existing_data.clone(), data])?;
-                } else {
-                    result.increases.insert(key, data);
-                }
+                Self::merge_increase(&mut result.increases, key, data)?;
             }
         }
 

@@ -10,6 +10,8 @@ use promql_utilities::query_logics::enums::Statistic;
 
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V2: [u8; 4] = *b"INC2";
 pub(crate) const INCREASE_BINARY_FORMAT_MAGIC_V5: [u8; 4] = *b"INC5";
+pub(crate) const RESET_RECORD_BYTES: usize =
+    std::mem::size_of::<i64>() + std::mem::size_of::<f64>();
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CounterResetEvent {
@@ -142,6 +144,21 @@ impl IncreaseAccumulator {
         }
     }
 
+    fn restore_opaque_reset_range_metadata(&mut self) {
+        if self.opaque_reset_ranges.is_empty() && self.has_opaque_reset_adjustment() {
+            if self.opaque_reset_adjustment == 0.0 {
+                self.opaque_reset_adjustment = derive_opaque_reset_residual(
+                    self.counter_reset_adjustment,
+                    self.event_reset_adjustment(),
+                );
+            }
+            self.add_opaque_reset_range(OpaqueResetRange {
+                starting_timestamp: self.starting_timestamp,
+                last_seen_timestamp: self.last_seen_timestamp,
+            });
+        }
+    }
+
     pub fn deserialize_from_json(data: &Value) -> Result<Self, Box<dyn std::error::Error>> {
         let starting_measurement =
             Measurement::deserialize_from_json(&data["starting_measurement"])?;
@@ -195,22 +212,17 @@ impl IncreaseAccumulator {
                 accumulator.event_reset_adjustment(),
             );
         }
-        if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
-            if accumulator.opaque_reset_adjustment == 0.0 {
-                accumulator.opaque_reset_adjustment = derive_opaque_reset_residual(
-                    accumulator.counter_reset_adjustment,
-                    accumulator.event_reset_adjustment(),
-                );
-            }
-            accumulator.add_opaque_reset_range(OpaqueResetRange {
-                starting_timestamp,
-                last_seen_timestamp,
-            });
-        }
+        accumulator.restore_opaque_reset_range_metadata();
         Ok(accumulator)
     }
 
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::deserialize_from_bytes_with_consumed(buffer).map(|(accumulator, _)| accumulator)
+    }
+
+    pub(crate) fn deserialize_from_bytes_with_consumed(
+        buffer: &[u8],
+    ) -> Result<(Self, usize), Box<dyn std::error::Error>> {
         let has_v2_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V2);
         let has_v5_format = buffer.starts_with(&INCREASE_BINARY_FORMAT_MAGIC_V5);
         let has_reset_adjustment = has_v2_format || has_v5_format;
@@ -346,7 +358,7 @@ impl IncreaseAccumulator {
             ]) as usize;
             offset += 4;
             let event_bytes = event_count
-                .checked_mul(16)
+                .checked_mul(RESET_RECORD_BYTES)
                 .ok_or("Counter reset event data length overflow")?;
             if buffer.len() < offset + event_bytes {
                 return Err("Buffer too short for counter reset events".into());
@@ -373,7 +385,7 @@ impl IncreaseAccumulator {
                         buffer[offset + 14],
                         buffer[offset + 15],
                     ]);
-                    offset += 16;
+                    offset += RESET_RECORD_BYTES;
                     CounterResetEvent {
                         timestamp,
                         adjustment,
@@ -396,7 +408,7 @@ impl IncreaseAccumulator {
             ]) as usize;
             offset += 4;
             let range_bytes = range_count
-                .checked_mul(16)
+                .checked_mul(RESET_RECORD_BYTES)
                 .ok_or("Opaque reset range data length overflow")?;
             if buffer.len() < offset + range_bytes {
                 return Err("Buffer too short for opaque reset ranges".into());
@@ -423,7 +435,7 @@ impl IncreaseAccumulator {
                         buffer[offset + 14],
                         buffer[offset + 15],
                     ]);
-                    offset += 16;
+                    offset += RESET_RECORD_BYTES;
                     OpaqueResetRange {
                         starting_timestamp,
                         last_seen_timestamp,
@@ -450,19 +462,8 @@ impl IncreaseAccumulator {
                 accumulator.event_reset_adjustment(),
             );
         }
-        if accumulator.opaque_reset_ranges.is_empty() && accumulator.has_opaque_reset_adjustment() {
-            if accumulator.opaque_reset_adjustment == 0.0 {
-                accumulator.opaque_reset_adjustment = derive_opaque_reset_residual(
-                    accumulator.counter_reset_adjustment,
-                    accumulator.event_reset_adjustment(),
-                );
-            }
-            accumulator.add_opaque_reset_range(OpaqueResetRange {
-                starting_timestamp,
-                last_seen_timestamp,
-            });
-        }
-        Ok(accumulator)
+        accumulator.restore_opaque_reset_range_metadata();
+        Ok((accumulator, offset))
     }
 }
 
@@ -1051,6 +1052,31 @@ mod tests {
         assert_eq!(
             acc.last_seen_timestamp,
             deserialized_bytes.last_seen_timestamp
+        );
+    }
+
+    #[test]
+    fn test_deserialize_from_bytes_reports_consumed_bytes() {
+        let first =
+            IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(25.0), 2000);
+        let second =
+            IncreaseAccumulator::new(Measurement::new(30.0), 3000, Measurement::new(45.0), 4000);
+        let first_bytes = first.serialize_to_bytes();
+        let second_bytes = second.serialize_to_bytes();
+        let mut combined = first_bytes.clone();
+        combined.extend_from_slice(&second_bytes);
+
+        let (deserialized, consumed) =
+            IncreaseAccumulator::deserialize_from_bytes_with_consumed(&combined).unwrap();
+
+        assert_eq!(deserialized.starting_timestamp, first.starting_timestamp);
+        assert_eq!(deserialized.last_seen_timestamp, first.last_seen_timestamp);
+        assert_eq!(consumed, first_bytes.len());
+        assert_eq!(
+            IncreaseAccumulator::deserialize_from_bytes(&combined[consumed..])
+                .unwrap()
+                .starting_timestamp,
+            second.starting_timestamp
         );
     }
 
