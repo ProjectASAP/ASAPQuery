@@ -520,13 +520,15 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
                 });
             }
 
-            if acc.counter_reset_events.is_empty() {
-                result.counter_reset_adjustment += acc.counter_reset_adjustment;
-            } else {
-                for event in acc.counter_reset_events {
-                    result.add_reset_event(event);
-                }
+            let event_adjustment: f64 = acc
+                .counter_reset_events
+                .iter()
+                .map(|event| event.adjustment)
+                .sum();
+            for event in acc.counter_reset_events {
+                result.add_reset_event(event);
             }
+            result.counter_reset_adjustment += acc.counter_reset_adjustment - event_adjustment;
 
             // Use the later last seen point.
             if acc.last_seen_timestamp > result.last_seen_timestamp {
@@ -1016,6 +1018,38 @@ mod tests {
         let bytes_round_trip =
             IncreaseAccumulator::deserialize_from_bytes(&merged.serialize_to_bytes()).unwrap();
         assert!(bytes_round_trip.merge_with(&later_overlap).is_ok());
+    }
+
+    #[test]
+    fn test_increase_accumulator_keeps_opaque_residual_when_merged_as_later_range() {
+        let mut legacy =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(150.0), 1_000);
+        legacy.counter_reset_adjustment = 100.0;
+
+        let mut event_aware = IncreaseAccumulator::new(
+            Measurement::new(150.0),
+            1_000,
+            Measurement::new(150.0),
+            1_000,
+        );
+        event_aware.update(Measurement::new(10.0), 1_500);
+        event_aware.update(Measurement::new(30.0), 2_000);
+
+        let later_result =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![legacy, event_aware],
+            )
+            .unwrap();
+        let earlier =
+            IncreaseAccumulator::new(Measurement::new(50.0), -1_000, Measurement::new(100.0), 0);
+
+        let merged =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![later_result, earlier],
+            )
+            .unwrap();
+
+        assert_eq!(merged.query(Statistic::Increase, None).unwrap(), 230.0);
     }
 
     #[test]
