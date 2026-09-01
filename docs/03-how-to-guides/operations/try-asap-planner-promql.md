@@ -63,7 +63,7 @@ the planner's decision logic — any numeric values are fine (e.g. the placehold
 asap-planner \
   --input_config promql_workload.yaml \
   --output_dir ./out \
-  --prometheus_scrape_interval_ms 15000 \
+  --data-ingestion-interval-ms 15000 \
   --streaming_engine precompute \
   -v
 ```
