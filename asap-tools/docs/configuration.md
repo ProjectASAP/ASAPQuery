@@ -177,8 +177,8 @@ All profiling options are in the `profiling` section and are **monitoring** feat
 profiling.query_engine=true
 ```
 
-**Output:** Raw `perf.data` recordings and `perf archive` symbol archives are
-saved to the experiment output directory. Run
+**Output:** Raw `perf.data` recordings and remote `perf script --header` output
+are saved to the experiment output directory. Run
 `experiments/postprocess_query_engine_profiles.sh` locally after the experiment
 to generate scripts, folded stacks, and flamegraphs.
 

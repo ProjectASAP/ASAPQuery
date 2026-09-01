@@ -35,14 +35,7 @@ for data_file in "${data_files[@]}"; do
     script_file="$stem.script"
     folded_file="$stem.folded"
     svg_file="$stem.svg"
-    archive_file="$data_file.tar.bz2"
-    symfs_directory="${stem}.symbols"
-
-    if [[ -f "$archive_file" ]]; then
-        mkdir -p "$symfs_directory"
-        tar --overwrite -xjf "$archive_file" -C "$symfs_directory"
-        perf script --header -i "$data_file" --symfs "$symfs_directory" > "$script_file"
-    else
+    if [[ ! -f "$script_file" ]]; then
         perf script --header -i "$data_file" > "$script_file"
     fi
 

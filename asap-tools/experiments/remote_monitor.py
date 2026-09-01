@@ -5,7 +5,6 @@ import argparse
 import subprocess
 import yaml
 import signal
-import tempfile
 from loguru import logger
 
 from typing import List
@@ -217,7 +216,7 @@ def stop_profiling_query_engine_pids(qe_perf_procs, store: bool):
     logger.debug("Stopped profiling for query engine pids")
 
 
-def archive_query_engine_perf_data(experiment_output_dir):
+def convert_query_engine_perf_data(experiment_output_dir):
     qe_profiles_dir = os.path.join(experiment_output_dir, "query_engine_profiles")
     data_files = [
         os.path.join(qe_profiles_dir, f)
@@ -225,21 +224,15 @@ def archive_query_engine_perf_data(experiment_output_dir):
         if f.startswith("perf_") and f.endswith(".data")
     ]
     for data_file in data_files:
-        archive_file = f"{data_file}.tar.bz2"
-        logger.debug(f"Archiving {data_file} to {archive_file}")
-        with tempfile.TemporaryDirectory(dir=qe_profiles_dir) as archive_dir:
+        script_file = data_file.replace(".data", ".script")
+        logger.debug(f"Converting {data_file} to {script_file}")
+        with open(script_file, "w") as script_output:
             subprocess.run(
-                ["perf", "archive", data_file],
-                cwd=archive_dir,
+                ["perf", "script", "--header", "-i", data_file],
+                stdout=script_output,
                 check=True,
             )
-            generated_archive = os.path.join(archive_dir, "perf.data.tar.bz2")
-            if not os.path.isfile(generated_archive):
-                raise RuntimeError(
-                    f"perf archive did not produce expected file: {generated_archive}"
-                )
-            os.replace(generated_archive, archive_file)
-        logger.debug(f"Finished archiving {data_file}")
+        logger.debug(f"Finished converting {data_file}")
 
 
 # TODO Provide some way of specifying which hooks will be used
@@ -442,7 +435,7 @@ def main(args):
     if qe_flamegraph_procs:
         logger.debug("Stopping profiling for query engine pids")
         stop_profiling_query_engine_pids(qe_flamegraph_procs, store=True)
-        archive_query_engine_perf_data(args.experiment_output_dir)
+        convert_query_engine_perf_data(args.experiment_output_dir)
 
     logger.debug("Stopping process monitors")
     monitor_info = process_monitor.stop_monitor(monitor, control_pipe, monitor_pipe)

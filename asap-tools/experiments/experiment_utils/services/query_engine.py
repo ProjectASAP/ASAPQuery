@@ -361,8 +361,6 @@ class QueryEngineRustService(BaseQueryEngineService):
             # which execs argv[0] directly rather than re-parsing through a
             # shell -- a bare `VAR=val` prefix would make nohup try (and
             # fail) to exec "TZ=UTC" itself as the program name.
-            f"test -x {binary_path} || "
-            f"{{ echo 'Missing query engine binary: {binary_path}'; exit 1; }}; "
             f"env TZ=UTC {binary_path}"
             f" --config-file {output_dir}/engine_config.yaml"
             f" > {output_dir}/query_engine_rust.out 2>&1 &"
