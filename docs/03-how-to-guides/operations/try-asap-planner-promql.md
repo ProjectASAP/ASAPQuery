@@ -46,16 +46,16 @@ auto-infer label sets per metric.
 `accuracy_sla` and `latency_sla` are required by the config schema but not currently used by
 the planner's decision logic — any numeric values are fine (e.g. the placeholders above).
 
-### Choosing `repetition_delay_ms` and `--prometheus_scrape_interval_ms`
+### Choosing `repetition_delay_ms` and `--data-ingestion-interval-ms`
 
-- `--prometheus_scrape_interval_ms` is your actual Prometheus scrape interval — a fact about your
+- `--data-ingestion-interval-ms` is your actual Prometheus scrape interval — a fact about your
   existing setup, not something to tune.
 - `repetition_delay_ms` is how often this specific query actually re-runs — e.g. `300000` for a
   dashboard panel refreshing every 5 minutes, or an alert rule's `evaluation_interval`.
 - Unlike SQL mode, there's no hard error if `repetition_delay_ms` isn't a multiple of the scrape
   interval, but `rate`/`increase`/`quantile_over_time` queries need at least 60 scraped data
   points per repeat window to be considered worth accelerating when `--enable-punting` is set —
-  i.e. `repetition_delay_ms >= 60 * prometheus_scrape_interval_ms`.
+  i.e. `repetition_delay_ms >= 60 * data_ingestion_interval_ms`.
 
 ## 3. Run the planner
 
@@ -63,7 +63,7 @@ the planner's decision logic — any numeric values are fine (e.g. the placehold
 asap-planner \
   --input_config promql_workload.yaml \
   --output_dir ./out \
-  --prometheus_scrape_interval_ms 15000 \
+  --data-ingestion-interval-ms 15000 \
   --streaming_engine precompute \
   -v
 ```
