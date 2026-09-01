@@ -341,26 +341,36 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
 
         let mut accumulators = accumulators;
         accumulators.sort_by_key(|acc| acc.starting_timestamp);
+        let original_ranges: Vec<_> = accumulators
+            .iter()
+            .enumerate()
+            .map(|(index, acc)| {
+                (
+                    index,
+                    acc.starting_timestamp,
+                    acc.last_seen_timestamp,
+                    acc.has_opaque_reset_adjustment(),
+                )
+            })
+            .collect();
         let mut result = accumulators.remove(0);
-        let mut opaque_ranges = if result.has_opaque_reset_adjustment() {
-            vec![(result.starting_timestamp, result.last_seen_timestamp)]
-        } else {
-            Vec::new()
-        };
 
-        for acc in accumulators {
-            let overlaps_opaque_range = opaque_ranges.iter().any(|(opaque_start, opaque_end)| {
-                acc.starting_timestamp < *opaque_end && *opaque_start < acc.last_seen_timestamp
-            });
-            if overlaps_opaque_range {
+        for (index, acc) in accumulators.into_iter().enumerate() {
+            let original_index = index + 1;
+            let acc_has_opaque_adjustment = acc.has_opaque_reset_adjustment();
+            let overlaps_ambiguous_range = original_ranges.iter().any(
+                |(other_index, other_start, other_end, other_is_opaque)| {
+                    *other_index != original_index
+                        && (acc_has_opaque_adjustment || *other_is_opaque)
+                        && acc.starting_timestamp < *other_end
+                        && *other_start < acc.last_seen_timestamp
+                },
+            );
+            if overlaps_ambiguous_range {
                 return Err(
                     "Cannot merge overlapping accumulators with opaque counter reset adjustments"
                         .into(),
                 );
-            }
-
-            if acc.has_opaque_reset_adjustment() {
-                opaque_ranges.push((acc.starting_timestamp, acc.last_seen_timestamp));
             }
 
             // Adjacent accumulators represent consecutive portions of the same
@@ -729,6 +739,24 @@ mod tests {
                 vec![legacy, event_aware, later_overlap],
             );
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_increase_accumulator_rejects_event_then_opaque_overlap() {
+        let mut event_aware =
+            IncreaseAccumulator::new(Measurement::new(100.0), 0, Measurement::new(100.0), 0);
+        event_aware.update(Measurement::new(10.0), 500);
+        event_aware.update(Measurement::new(30.0), 1_000);
+
+        let mut legacy =
+            IncreaseAccumulator::new(Measurement::new(10.0), 500, Measurement::new(50.0), 1_500);
+        legacy.counter_reset_adjustment = 100.0;
+
+        let result =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![event_aware, legacy],
+            );
+        assert!(result.is_err());
     }
 
     #[test]
