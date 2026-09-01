@@ -1119,7 +1119,17 @@ mod tests {
             .unwrap()
             .insert("opaque_reset_adjustment".to_string(), Value::Null);
         let null_json_round_trip = IncreaseAccumulator::deserialize_from_json(&null_json).unwrap();
-        assert!(null_json_round_trip.merge_with(&later_overlap).is_ok());
+        let earlier =
+            IncreaseAccumulator::new(Measurement::new(50.0), -1_000, Measurement::new(100.0), 0);
+        let null_json_merged =
+            <IncreaseAccumulator as MergeableAccumulator<IncreaseAccumulator>>::merge_accumulators(
+                vec![null_json_round_trip, earlier],
+            )
+            .unwrap();
+        assert_eq!(
+            null_json_merged.query(Statistic::Increase, None).unwrap(),
+            250.0
+        );
 
         let bytes_round_trip =
             IncreaseAccumulator::deserialize_from_bytes(&merged.serialize_to_bytes()).unwrap();
