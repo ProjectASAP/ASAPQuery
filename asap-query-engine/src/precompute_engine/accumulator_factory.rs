@@ -1,9 +1,9 @@
 use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
     CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
-    HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator, MinMaxAccumulator,
-    MultipleIncreaseAccumulator, MultipleMinMaxAccumulator, MultipleSumAccumulator, SumAccumulator,
-    DEFAULT_HLL_PRECISION,
+    DeltaSetAggregatorAccumulator, HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator,
+    MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
+    MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
 };
 use asap_types::aggregation_config::AggregationConfig;
 
@@ -43,7 +43,7 @@ pub trait AccumulatorUpdater: Send {
     /// Feed a single (value, timestamp_ms) pair — for SingleSubpopulation types.
     fn update_single(&mut self, value: f64, timestamp_ms: i64);
 
-    /// Feed a keyed (key, value, timestamp_ms) triple — for MultipleSubpopulation types.
+    /// Feed a keyed (key, value, timestamp_ms) triple — for keyed aggregation types.
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, timestamp_ms: i64);
 
     /// Extract the final accumulator as a boxed `AggregateCore`.
@@ -66,7 +66,7 @@ pub trait AccumulatorUpdater: Send {
     /// Reset internal state for reuse (avoids re-allocation).
     fn reset(&mut self);
 
-    /// Whether this updater is keyed (MultipleSubpopulation).
+    /// Whether this updater is keyed (multi-population or key-tracking).
     fn is_keyed(&self) -> bool;
 
     /// Estimated memory usage in bytes.
@@ -344,6 +344,114 @@ impl AccumulatorUpdater for HllAccumulatorUpdater {
         // overhead for the HllSketch wrapper (variant, precision, HIP fields).
         let registers = 1usize << self.precision;
         std::mem::size_of::<HllAccumulator>() + registers
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SetAggregatorUpdater
+// ---------------------------------------------------------------------------
+
+/// Updater for `AggregationType::SetAggregator`, which records the distinct
+/// aggregation keys present in the current window.
+pub struct SetAggregatorUpdater {
+    acc: SetAggregatorAccumulator,
+}
+
+impl SetAggregatorUpdater {
+    pub fn new() -> Self {
+        Self {
+            acc: SetAggregatorAccumulator::new(),
+        }
+    }
+}
+
+impl Default for SetAggregatorUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AccumulatorUpdater for SetAggregatorUpdater {
+    fn update_single(&mut self, _value: f64, _timestamp_ms: i64) {
+        debug_assert!(
+            false,
+            "update_single called on keyed updater; use update_keyed"
+        );
+    }
+
+    fn update_keyed(&mut self, key: &KeyByLabelValues, _value: f64, _timestamp_ms: i64) {
+        self.acc.add_key(key.clone());
+    }
+
+    impl_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc = SetAggregatorAccumulator::new();
+    }
+
+    fn is_keyed(&self) -> bool {
+        true
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        std::mem::size_of::<SetAggregatorAccumulator>()
+            + self.acc.added.len() * std::mem::size_of::<KeyByLabelValues>()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DeltaSetAggregatorUpdater
+// ---------------------------------------------------------------------------
+
+/// Updater for `AggregationType::DeltaSetAggregator`, which records keys observed
+/// during the current window. The worker's window-finalization step compares that
+/// population with the previous window to produce added and removed keys; the
+/// accumulator merge path only preserves the correct state when delta buckets are
+/// combined.
+pub struct DeltaSetAggregatorUpdater {
+    acc: DeltaSetAggregatorAccumulator,
+}
+
+impl DeltaSetAggregatorUpdater {
+    pub fn new() -> Self {
+        Self {
+            acc: DeltaSetAggregatorAccumulator::new(),
+        }
+    }
+}
+
+impl Default for DeltaSetAggregatorUpdater {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl AccumulatorUpdater for DeltaSetAggregatorUpdater {
+    fn update_single(&mut self, _value: f64, _timestamp_ms: i64) {
+        debug_assert!(
+            false,
+            "update_single called on keyed updater; use update_keyed"
+        );
+    }
+
+    fn update_keyed(&mut self, key: &KeyByLabelValues, _value: f64, _timestamp_ms: i64) {
+        self.acc.add_key(key.clone());
+    }
+
+    impl_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc = DeltaSetAggregatorAccumulator::new();
+    }
+
+    fn is_keyed(&self) -> bool {
+        true
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        std::mem::size_of::<DeltaSetAggregatorAccumulator>()
+            + (self.acc.added.len() + self.acc.removed.len())
+                * std::mem::size_of::<KeyByLabelValues>()
     }
 }
 
@@ -679,7 +787,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 // Config helpers
 // ---------------------------------------------------------------------------
 
-/// Return `true` if `config` produces a keyed (MultipleSubpopulation) updater,
+/// Return `true` if `config` produces a keyed (multi-population or key-tracking) updater,
 /// without allocating an updater object.
 ///
 /// **Contract:** this must agree with every concrete `AccumulatorUpdater::is_keyed()`
@@ -695,6 +803,8 @@ pub fn config_is_keyed(config: &AggregationConfig) -> bool {
             | AggregationType::CountMinSketch
             | AggregationType::CountMinSketchWithHeap
             | AggregationType::HydraKLL
+            | AggregationType::SetAggregator
+            | AggregationType::DeltaSetAggregator
     )
 }
 
@@ -819,13 +929,7 @@ pub fn create_accumulator_updater(
             "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
                 Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
             }
-            other => {
-                tracing::warn!(
-                    "Unknown SingleSubpopulation sub_type '{}', defaulting to Sum",
-                    other
-                );
-                Ok(Box::new(SumAccumulatorUpdater::new()))
-            }
+            other => Err(format!("Unknown SingleSubpopulation sub_type '{other}'")),
         },
         AggregationType::MultipleSubpopulation => match sub_type {
             "Sum" | "sum" => Ok(Box::new(MultipleSumAccumulatorUpdater::new())),
@@ -842,13 +946,7 @@ pub fn create_accumulator_updater(
                     row_num, col_num, k,
                 )))
             }
-            other => {
-                tracing::warn!(
-                    "Unknown MultipleSubpopulation sub_type '{}', defaulting to Sum",
-                    other
-                );
-                Ok(Box::new(MultipleSumAccumulatorUpdater::new()))
-            }
+            other => Err(format!("Unknown MultipleSubpopulation sub_type '{other}'")),
         },
         AggregationType::DatasketchesKLL => {
             Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
@@ -887,13 +985,8 @@ pub fn create_accumulator_updater(
         AggregationType::HLL => Ok(Box::new(HllAccumulatorUpdater::new(hll_precision_param(
             config,
         )))),
-        other => {
-            tracing::warn!(
-                "Unknown aggregation_type '{:?}', defaulting to SingleSubpopulation Sum",
-                other
-            );
-            Ok(Box::new(SumAccumulatorUpdater::new()))
-        }
+        AggregationType::SetAggregator => Ok(Box::new(SetAggregatorUpdater::new())),
+        AggregationType::DeltaSetAggregator => Ok(Box::new(DeltaSetAggregatorUpdater::new())),
     }
 }
 
@@ -1431,6 +1524,28 @@ mod tests {
         )
     }
 
+    fn key_aggregation_config(aggregation_type: AggregationType) -> AggregationConfig {
+        AggregationConfig::new(
+            477,
+            aggregation_type,
+            String::new(),
+            std::collections::HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60_000,
+            0,
+            WindowType::Tumbling,
+            "metric".to_string(),
+            "metric".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
     #[test]
     fn test_cms_with_heap_factory_routes_to_heap_accumulator_and_is_keyed() {
         // CountMinSketchWithHeap must build a CmsWithHeapAccumulatorUpdater whose
@@ -1522,5 +1637,83 @@ mod tests {
             .unwrap();
         assert_eq!(cms.query_key(&key), 0.0, "reset must clear the sketch");
         assert!(cms.get_topk_keys().is_empty(), "reset must clear the heap");
+    }
+
+    #[test]
+    fn test_issue_477_key_aggregator_factory_routes_and_tracks_keys() {
+        // Regression for #477: planner-generated key aggregations must not fall
+        // through the factory's scalar Sum updater, or keyed approximate queries
+        // lose the subpopulation keys needed for enumeration.
+        let key_a = KeyByLabelValues::new_with_labels(vec!["a".to_string()]);
+        let key_b = KeyByLabelValues::new_with_labels(vec!["b".to_string()]);
+
+        for (aggregation_type, expected_type_name) in [
+            (AggregationType::SetAggregator, "SetAggregatorAccumulator"),
+            (
+                AggregationType::DeltaSetAggregator,
+                "DeltaSetAggregatorAccumulator",
+            ),
+        ] {
+            let config = key_aggregation_config(aggregation_type);
+            assert!(config_is_keyed(&config));
+            assert!(aggregation_type.is_keyed());
+
+            let mut updater = create_accumulator_updater(&config).unwrap();
+            assert!(updater.is_keyed());
+            updater.update_keyed(&key_a, 10.0, 1_000);
+            updater.update_keyed(&key_b, 20.0, 2_000);
+            updater.update_keyed(&key_a, 30.0, 3_000);
+
+            let accumulator = updater.take_accumulator();
+            assert_eq!(accumulator.type_name(), expected_type_name);
+            assert_eq!(accumulator.get_accumulator_type(), aggregation_type);
+            let keys = accumulator
+                .get_keys()
+                .expect("key aggregators must enumerate tracked keys");
+            assert_eq!(keys.len(), 2);
+            assert!(keys.contains(&key_a));
+            assert!(keys.contains(&key_b));
+        }
+    }
+
+    #[test]
+    fn test_key_aggregator_updater_reset_clears_keys() {
+        let key = KeyByLabelValues::new_with_labels(vec!["reset-me".to_string()]);
+
+        for aggregation_type in [
+            AggregationType::SetAggregator,
+            AggregationType::DeltaSetAggregator,
+        ] {
+            let config = key_aggregation_config(aggregation_type);
+            let mut updater = create_accumulator_updater(&config).unwrap();
+            updater.update_keyed(&key, 1.0, 0);
+            updater.reset();
+
+            assert!(
+                updater
+                    .snapshot_accumulator()
+                    .get_keys()
+                    .expect("key aggregators must enumerate tracked keys")
+                    .is_empty(),
+                "reset must clear {aggregation_type:?} keys"
+            );
+        }
+    }
+
+    #[test]
+    fn test_factory_rejects_unknown_subpopulation_sub_type() {
+        let mut config = key_aggregation_config(AggregationType::SingleSubpopulation);
+        config.aggregation_sub_type = "not-an-aggregation".to_string();
+        let err = create_accumulator_updater(&config)
+            .err()
+            .expect("unknown subpopulation subtype must not default to Sum");
+        assert!(err.contains("Unknown SingleSubpopulation sub_type"));
+
+        let mut config = key_aggregation_config(AggregationType::MultipleSubpopulation);
+        config.aggregation_sub_type = "not-an-aggregation".to_string();
+        let err = create_accumulator_updater(&config)
+            .err()
+            .expect("unknown subpopulation subtype must not default to MultipleSum");
+        assert!(err.contains("Unknown MultipleSubpopulation sub_type"));
     }
 }

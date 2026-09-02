@@ -6,6 +6,8 @@ pub enum LateDataPolicy {
     /// Drop late samples that arrive after their window has closed.
     Drop,
     /// Forward late samples to the store to be merged with existing window data.
+    /// Unsupported for `DeltaSetAggregator`, whose stateful key deltas cannot
+    /// be repaired by appending an independent mini-accumulator.
     ForwardToStore,
 }
 
