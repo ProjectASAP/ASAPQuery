@@ -9,6 +9,24 @@ from typing import Tuple, List, Dict, Any
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
+DEFAULT_FAKE_EXPORTER_SEED = 0
+
+
+def get_fake_exporter_seed(
+    config: Dict[str, Any], worker_ordinal: int, port_ordinal: int
+) -> int:
+    """Derive a unique, reproducible seed for one exporter instance."""
+    base_seed = config.get("seed", DEFAULT_FAKE_EXPORTER_SEED)
+    num_ports_per_server = config["num_ports_per_server"]
+    exporter_ordinal = worker_ordinal * num_ports_per_server + port_ordinal
+    return base_seed + exporter_ordinal
+
+
+def get_fake_exporter_target_nodes(args) -> List[int]:
+    """Return exporter nodes, preserving the single-node local fallback."""
+    worker_nodes = args.get_node_range(include_coordinator=False)
+    return worker_nodes or [args.get_coordinator_node()]
+
 
 class BaseExporterService(BaseService):
     """Base class for exporter services."""
@@ -363,16 +381,20 @@ class RustExporterService(BaseExporterService):
         dataset = config["dataset"]
 
         cmds = []
-        for port in range(num_ports):
-            cmd = "./target/release/fake_exporter --port {} --valuescale {} --dataset {} --num-labels {} --num-values-per-label {} --metric-type {}".format(
-                port + config["start_port"],
-                config["synthetic_data_value_scale"],
-                dataset,
-                config["num_labels"],
-                config["num_values_per_label"],
-                config["metric_type"],
-            )
-            cmds.append(cmd)
+        target_nodes = get_fake_exporter_target_nodes(self.args)
+        for worker_ordinal, node_idx in enumerate(target_nodes):
+            for port_ordinal in range(num_ports):
+                seed = get_fake_exporter_seed(config, worker_ordinal, port_ordinal)
+                cmd = "./target/release/fake_exporter --port {} --valuescale {} --dataset {} --num-labels {} --num-values-per-label {} --metric-type {} --seed {}".format(
+                    port_ordinal + config["start_port"],
+                    config["synthetic_data_value_scale"],
+                    dataset,
+                    config["num_labels"],
+                    config["num_values_per_label"],
+                    config["metric_type"],
+                    seed,
+                )
+                cmds.append((node_idx, cmd))
 
         cmd_dir = f"{self.provider.get_home_dir()}/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter"
 
@@ -383,12 +405,12 @@ class RustExporterService(BaseExporterService):
         with open(
             os.path.join(local_experiment_dir, "fake_exporter_config", "cmds.sh"), "w"
         ) as f:
-            f.write("\n".join(cmds))
+            f.write("\n".join(cmd for _, cmd in cmds))
 
         # Run commands in parallel across nodes
-        for cmd in cmds:
+        for node_idx, cmd in cmds:
             self.provider.execute_command_parallel(
-                node_idxs=self.args.get_node_range(include_coordinator=False),
+                node_idxs=[node_idx],
                 cmd=cmd,
                 cmd_dir=cmd_dir,
                 nohup=False,
@@ -410,30 +432,34 @@ class RustExporterService(BaseExporterService):
         dataset = config["dataset"]
 
         # Build docker run commands for each port
-        docker_run_cmds: List[str] = []
+        docker_run_cmds: List[Tuple[int, str]] = []
         container_names: List[str] = []
+        target_nodes = get_fake_exporter_target_nodes(self.args)
 
-        for port in range(num_ports):
-            actual_port = port + config["start_port"]
-            container_name = f"{BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME}-{actual_port}-rust"
+        for worker_ordinal, node_idx in enumerate(target_nodes):
+            for port_ordinal in range(num_ports):
+                actual_port = port_ordinal + config["start_port"]
+                seed = get_fake_exporter_seed(config, worker_ordinal, port_ordinal)
+                container_name = f"{BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME}-{actual_port}-rust"
 
-            # Build docker run command
-            docker_cmd = (
-                f"docker run -d "
-                f"--name {container_name} "
-                f"-p {actual_port}:{actual_port} "
-                f"--restart unless-stopped "
-                f"sketchdb-fake-exporter-rust:latest "
-                f"--port {actual_port} "
-                f"--valuescale {config['synthetic_data_value_scale']} "
-                f"--dataset {dataset} "
-                f"--num-labels {config['num_labels']} "
-                f"--num-values-per-label {config['num_values_per_label']} "
-                f"--metric-type {config['metric_type']}"
-            )
+                # Build docker run command
+                docker_cmd = (
+                    f"docker run -d "
+                    f"--name {container_name} "
+                    f"-p {actual_port}:{actual_port} "
+                    f"--restart unless-stopped "
+                    f"sketchdb-fake-exporter-rust:latest "
+                    f"--port {actual_port} "
+                    f"--valuescale {config['synthetic_data_value_scale']} "
+                    f"--dataset {dataset} "
+                    f"--num-labels {config['num_labels']} "
+                    f"--num-values-per-label {config['num_values_per_label']} "
+                    f"--metric-type {config['metric_type']} "
+                    f"--seed {seed}"
+                )
 
-            container_names.append(container_name)
-            docker_run_cmds.append(docker_cmd)
+                container_names.append(container_name)
+                docker_run_cmds.append((node_idx, docker_cmd))
 
         self.container_names = container_names
 
@@ -447,24 +473,30 @@ class RustExporterService(BaseExporterService):
             ),
             "w",
         ) as f:
-            f.write("\n".join(docker_run_cmds))
+            f.write("\n".join(cmd for _, cmd in docker_run_cmds))
 
         # Start containers in batches to avoid overwhelming Docker daemon
         BATCH_SIZE = 5
-        for i in range(0, len(docker_run_cmds), BATCH_SIZE):
-            batch = docker_run_cmds[i : i + BATCH_SIZE]
-            # Combine docker run commands in batch into single SSH command
-            batch_cmd = "; ".join(batch)
+        for node_idx in target_nodes:
+            node_commands = [
+                cmd
+                for command_node_idx, cmd in docker_run_cmds
+                if command_node_idx == node_idx
+            ]
+            for i in range(0, len(node_commands), BATCH_SIZE):
+                batch = node_commands[i : i + BATCH_SIZE]
+                # Combine docker run commands in batch for one node.
+                batch_cmd = "; ".join(batch)
 
-            self.provider.execute_command_parallel(
-                node_idxs=self.args.get_node_range(include_coordinator=False),
-                cmd=batch_cmd,
-                cmd_dir="",
-                nohup=False,
-                popen=True,
-                redirect=True,
-                wait=True,  # Wait for batch to complete
-            )
+                self.provider.execute_command_parallel(
+                    node_idxs=[node_idx],
+                    cmd=batch_cmd,
+                    cmd_dir="",
+                    nohup=False,
+                    popen=True,
+                    redirect=True,
+                    wait=True,  # Wait for batch to complete
+                )
 
         return
 

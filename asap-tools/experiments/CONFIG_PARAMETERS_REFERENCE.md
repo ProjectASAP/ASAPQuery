@@ -482,6 +482,11 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Example**: `5`
 - **SCHEMA ISSUE**: Values vary widely (1-10) across configs without clear pattern
 
+#### `experiment_params.exporters.exporter_list.fake_exporter.seed` (int, optional)
+- **Description**: Base seed for Rust fake exporter data generation. Each exporter receives a distinct seed derived from this base seed, worker ordinal, and port ordinal.
+- **Default**: `0`
+- **Example**: `42`
+
 #### `experiment_params.exporters.exporter_list.fake_exporter.start_port` (int, optional)
 - **Description**: Starting port number for fake exporters
 - **Default**: `50000`
@@ -727,6 +732,7 @@ python experiment_run_e2e.py \
 python experiment_run_e2e.py \
   experiment_type=cloud_demo \
   experiment_params.exporters.exporter_list.fake_exporter.num_ports_per_server=5 \
+  experiment_params.exporters.exporter_list.fake_exporter.seed=42 \
   experiment_params.exporters.exporter_list.fake_exporter.metric_type=gauge \
   [required params...]
 
