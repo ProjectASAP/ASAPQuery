@@ -379,6 +379,36 @@ class RemoteMonitorService(BaseService):
         assert isinstance(result, subprocess.CompletedProcess)
         return bool(result.stdout.strip())
 
+    def _wait_for_remote_monitor_state(
+        self,
+        expected_running: bool,
+        polling_interval: float,
+        timeout: Optional[float] = None,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+        waiting_message: Optional[str] = None,
+    ) -> None:
+        """Wait for a matching remote monitor to be running or stopped."""
+        start = time.monotonic()
+        while True:
+            is_running = self.is_remote_monitor_running(
+                execution_mode=execution_mode,
+                experiment_output_dir=experiment_output_dir,
+            )
+            if is_running == expected_running:
+                return
+            if timeout is not None and time.monotonic() - start >= timeout:
+                mode_desc = execution_mode or "any"
+                state_desc = "start" if expected_running else "exit"
+                raise RuntimeError(
+                    f"remote_monitor.py ({mode_desc}) did not {state_desc} "
+                    f"within {timeout}s. Check remote_monitor.out under the "
+                    "experiment output dir."
+                )
+            if waiting_message:
+                print(waiting_message)
+            time.sleep(polling_interval)
+
     def wait_for_remote_monitor_start(
         self,
         timeout: int,
@@ -387,18 +417,12 @@ class RemoteMonitorService(BaseService):
         experiment_output_dir: Optional[str] = None,
     ) -> None:
         """Poll until a matching ``remote_monitor.py`` is running on the node."""
-        start = time.time()
-        while time.time() - start < timeout:
-            if self.is_remote_monitor_running(
-                execution_mode=execution_mode,
-                experiment_output_dir=experiment_output_dir,
-            ):
-                return
-            time.sleep(polling_interval)
-        mode_desc = execution_mode or "any"
-        raise RuntimeError(
-            f"remote_monitor.py ({mode_desc}) did not start within "
-            f"{timeout}s. Check remote_monitor.out under the experiment output dir."
+        self._wait_for_remote_monitor_state(
+            expected_running=True,
+            polling_interval=polling_interval,
+            timeout=timeout,
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
         )
 
     def wait_for_remote_monitor_process_exit(
@@ -408,15 +432,16 @@ class RemoteMonitorService(BaseService):
         experiment_output_dir: Optional[str] = None,
     ) -> None:
         """Poll until matching ``remote_monitor.py`` processes have exited."""
-        while self.is_remote_monitor_running(
+        self._wait_for_remote_monitor_state(
+            expected_running=False,
+            polling_interval=polling_interval,
             execution_mode=execution_mode,
             experiment_output_dir=experiment_output_dir,
-        ):
-            print(
+            waiting_message=(
                 "Waiting for remote monitor to exit "
                 f"(checking again in {polling_interval}s)..."
-            )
-            time.sleep(polling_interval)
+            ),
+        )
 
     def signal_ingest_monitor_stop(self, experiment_output_dir: str) -> None:
         """Ask an ingest-mode ``remote_monitor.py`` to shut down gracefully."""
@@ -429,7 +454,6 @@ class RemoteMonitorService(BaseService):
             cmd_dir="",
             nohup=False,
             popen=False,
-            ignore_errors=True,
         )
 
     def cleanup_ingest_monitor_stop_file(self, experiment_output_dir: str) -> None:
@@ -508,16 +532,17 @@ class RemoteMonitorService(BaseService):
         time.sleep(minimum_experiment_running_time)
         print("Done waiting for remote monitor to finish. Will start polling")
 
-        while self.is_remote_monitor_running(
+        self._wait_for_remote_monitor_state(
+            expected_running=False,
+            polling_interval=polling_interval,
             execution_mode=execution_mode,
             experiment_output_dir=experiment_output_dir,
-        ):
-            print(
+            waiting_message=(
                 "Remote monitor is still running. Will check again in {} seconds".format(
                     polling_interval
                 )
-            )
-            time.sleep(polling_interval)
+            ),
+        )
 
     def is_healthy(self) -> bool:
         """

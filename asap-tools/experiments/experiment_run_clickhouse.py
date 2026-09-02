@@ -273,7 +273,7 @@ def _run_clickhouse_ingest_with_monitor(
             execution_mode="ingest",
             experiment_output_dir=baseline_output_dir,
         )
-        time.sleep(1)
+        time.sleep(constants.REMOTE_MONITOR_STARTUP_SETTLE_SECONDS)
 
     try:
         print("Loading data into ClickHouse...")
