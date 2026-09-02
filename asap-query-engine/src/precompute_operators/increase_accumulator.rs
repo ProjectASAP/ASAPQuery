@@ -442,6 +442,10 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
         let mut result = accumulators.remove(0);
 
         for acc in accumulators {
+            // Query-time merges receive disjoint pane/window observations.
+            // Reset events are deduplicated for defensive overlap handling,
+            // but arbitrary duplicate samples are not identifiable from this
+            // summary shape, so sample counts remain additive by contract.
             result.sample_count = result
                 .sample_count
                 .checked_add(acc.sample_count)

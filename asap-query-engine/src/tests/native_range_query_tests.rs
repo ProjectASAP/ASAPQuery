@@ -149,6 +149,63 @@ mod tests {
         assert!((samples[2].value - 10.0).abs() < f64::EPSILON);
     }
 
+    #[test]
+    fn sliding_counter_range_rejects_off_grid_output_timestamps() {
+        let host = Some(vec!["host-a".to_string()]);
+        let data = vec![
+            (
+                1_000,
+                host.clone(),
+                Box::new(IncreaseAccumulator::new_with_sample_count(
+                    crate::data_model::Measurement::new(100.0),
+                    0,
+                    crate::data_model::Measurement::new(110.0),
+                    1_000,
+                    2,
+                )) as Box<dyn AggregateCore>,
+            ),
+            (
+                2_000,
+                host.clone(),
+                Box::new(IncreaseAccumulator::new_with_sample_count(
+                    crate::data_model::Measurement::new(110.0),
+                    1_000,
+                    crate::data_model::Measurement::new(120.0),
+                    2_000,
+                    2,
+                )) as Box<dyn AggregateCore>,
+            ),
+            (
+                3_000,
+                host,
+                Box::new(IncreaseAccumulator::new_with_sample_count(
+                    crate::data_model::Measurement::new(120.0),
+                    2_000,
+                    crate::data_model::Measurement::new(130.0),
+                    3_000,
+                    2,
+                )) as Box<dyn AggregateCore>,
+            ),
+        ];
+        let engine = create_engine_multi_timestamp_with_window(
+            "http_requests_total",
+            AggregationType::Increase,
+            vec!["host"],
+            data,
+            "rate(http_requests_total[2s])",
+            2_000,
+            1_000,
+            WindowType::Sliding,
+        );
+
+        // The stored Sliding windows are aligned to the 1s grid, so native
+        // execution cannot represent the exact [t-2s, t] range at t=1.5s.
+        // Returning None lets the caller use an exact Prometheus fallback.
+        assert!(engine
+            .handle_range_query_promql("rate(http_requests_total[2s])".to_string(), 1.5, 2.5, 1.0,)
+            .is_none());
+    }
+
     /// Checks every `(label_values, ts, expected_present, reason)` case
     /// against `elements` and reports ALL mismatches in one panic, instead of
     /// stopping at the first failing `assert!` -- each of these tests makes

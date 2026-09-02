@@ -2137,6 +2137,20 @@ impl SimpleEngine {
         // (#581). One loop shape for topk and non-topk alike, rather than
         // maintaining two.
         for &current_time in &context.output_timestamps {
+            if context.window_type == WindowType::Sliding
+                && context.tumbling_window_ms > 0
+                && matches!(
+                    context.base.metadata.statistic_to_compute,
+                    Statistic::Increase | Statistic::Rate
+                )
+                && !current_time.is_multiple_of(context.tumbling_window_ms)
+            {
+                return Err(format!(
+                    "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
+                     timestamp {} (grid interval {}ms)",
+                    current_time, context.tumbling_window_ms
+                ));
+            }
             let current_time_i64 = i64::try_from(current_time)
                 .map_err(|_| "Output timestamp exceeds signed timestamp range".to_string())?;
             let query_range_ms = i64::try_from(context.query_range_ms)
