@@ -309,6 +309,11 @@ class ClickHouseDataLoaderService(BaseService):
             # init SQL owns DROP/CREATE for the raw table and any MVs / agg
             # tables (e.g. netflow_init.sql). Skipping the standalone DROP
             # avoids failing on dependents that still reference ``table``.
+            # Truncate the raw table first so idempotent CREATE TABLE IF NOT
+            # EXISTS scripts (e.g. quantile_demo/init.sql) cannot retain rows
+            # from a previous run. The init SQL remains responsible for
+            # resetting dependent materialized-view tables.
+            self._exec_sql(f"TRUNCATE TABLE IF EXISTS {table}", url)
             print(f"Running init SQL from {init_sql_file!r}...")
             self._exec_sql_file(init_sql_file, url)
         elif dataset_name in self.BUILTIN_DDL_FILES:
@@ -333,11 +338,11 @@ class ClickHouseDataLoaderService(BaseService):
             )
 
         if dataset_name == "clickbench":
-            self._load_clickbench(remote_data_file, url, table, max_rows)
+            self._load_clickbench(remote_data_file, table, max_rows)
         elif dataset_name == "h2o":
             self._load_h2o(remote_data_file, url, batch_size, max_rows)
         elif dataset_name == "custom":
-            self._load_custom(remote_data_file, table, url, max_rows)
+            self._load_custom(remote_data_file, table, max_rows)
         else:
             raise ValueError(
                 f"Unsupported dataset_name={dataset_name!r}; "
@@ -426,10 +431,10 @@ class ClickHouseDataLoaderService(BaseService):
         for stmt in (s.strip() for s in result.stdout.split(";") if s.strip()):
             self._exec_sql(stmt, url)
 
-    def _ensure_clickhouse_http_ready(self, max_retries: int = 30) -> None:
+    def _ensure_clickhouse_http_ready(self, timeout: int = 150) -> None:
         """Wait until ClickHouse HTTP /ping returns Ok. before bulk load."""
         try:
-            self.wait_until_ready(timeout=max_retries * 2)
+            self.wait_until_ready(timeout=timeout)
         except RuntimeError as exc:
             logs = self.provider.execute_command(
                 node_idx=self.node_offset,
@@ -450,7 +455,6 @@ class ClickHouseDataLoaderService(BaseService):
     def _load_json_batched(
         self,
         remote_data_file: str,
-        url: str,
         table: str,
         max_rows: int,
         dataset_label: str,
@@ -478,6 +482,7 @@ class ClickHouseDataLoaderService(BaseService):
                 cmd_dir=None,
                 nohup=False,
                 popen=False,
+                ignore_errors=True,
             )
             if (
                 isinstance(result, subprocess.CompletedProcess)
@@ -510,11 +515,11 @@ class ClickHouseDataLoaderService(BaseService):
         return 0
 
     def _load_clickbench(
-        self, remote_data_file: str, url: str, table: str, max_rows: int
+        self, remote_data_file: str, table: str, max_rows: int
     ) -> None:
         """Stream a JSON-lines file (optionally gzipped) into ClickHouse."""
         print(f"Loading ClickBench data from {remote_data_file!r}...")
-        self._load_json_batched(remote_data_file, url, table, max_rows, "ClickBench")
+        self._load_json_batched(remote_data_file, table, max_rows, "ClickBench")
 
     def _load_h2o(
         self, remote_data_file: str, url: str, batch_size: int, max_rows: int
@@ -549,9 +554,7 @@ class ClickHouseDataLoaderService(BaseService):
         finally:
             self._remote_rm(remote_script)
 
-    def _load_custom(
-        self, remote_data_file: str, table: str, url: str, max_rows: int
-    ) -> None:
+    def _load_custom(self, remote_data_file: str, table: str, max_rows: int) -> None:
         """Stream a custom JSON-lines file (plain or gzipped) into ClickHouse."""
         print(f"Loading custom data from {remote_data_file!r} into {table!r}...")
         file_lower = remote_data_file.lower()
@@ -566,4 +569,4 @@ class ClickHouseDataLoaderService(BaseService):
                 f"Unsupported file format for {remote_data_file!r}. "
                 "Use dataset_name='h2o' for CSV files."
             )
-        self._load_json_batched(remote_data_file, url, table, max_rows, "Custom")
+        self._load_json_batched(remote_data_file, table, max_rows, "Custom")
