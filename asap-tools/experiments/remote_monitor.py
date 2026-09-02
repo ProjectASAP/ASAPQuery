@@ -465,15 +465,21 @@ def main(args):
 
         signal.signal(signal.SIGTERM, _request_shutdown)
         signal.signal(signal.SIGINT, _request_shutdown)
-        while not shutdown.is_set():
-            if os.path.exists(stop_file):
-                logger.debug("Ingest monitor stop file detected, shutting down")
-                os.remove(stop_file)
-                shutdown.set()
-                break
-            shutdown.wait(
-                timeout=constants.INGEST_MONITOR_SHUTDOWN_POLL_INTERVAL_SECONDS
-            )
+        try:
+            while not shutdown.is_set():
+                if os.path.exists(stop_file):
+                    logger.debug("Ingest monitor stop file detected, shutting down")
+                    os.remove(stop_file)
+                    shutdown.set()
+                    break
+                shutdown.wait(
+                    timeout=constants.INGEST_MONITOR_SHUTDOWN_POLL_INTERVAL_SECONDS
+                )
+        finally:
+            # These handlers are process-global. Restore the defaults before
+            # teardown so a later signal cannot be swallowed by this loop.
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.signal(signal.SIGINT, signal.SIG_DFL)
     elif args.execution_mode == "timed":
         logger.debug(f"Running for {args.time_to_run} seconds")
         time.sleep(args.time_to_run)

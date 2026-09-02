@@ -445,14 +445,24 @@ class RemoteMonitorService(BaseService):
             ignore_errors=True,
         )
 
-    def stop(self, **kwargs) -> None:
+    def stop(
+        self,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+        **kwargs,
+    ) -> None:
         """
         Stop remote monitor processes.
 
         Args:
+            execution_mode: If set, only stop monitors in this execution mode.
+            experiment_output_dir: If set, only stop monitors for this output dir.
             **kwargs: Additional configuration (currently unused)
         """
-        self.kill_remote_monitor()
+        self.kill_remote_monitor(
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+        )
 
     def kill_remote_monitor(
         self,
