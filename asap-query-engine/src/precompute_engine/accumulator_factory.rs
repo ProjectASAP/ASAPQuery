@@ -753,6 +753,17 @@ fn cms_count_events_for_sub_type(sub_type: &str) -> Result<bool, String> {
     }
 }
 
+/// Validate the aggregation subtype for a heap-backed Count-Min Sketch.
+fn validate_cms_with_heap_sub_type(sub_type: &str) -> Result<(), String> {
+    if sub_type.eq_ignore_ascii_case("topk") {
+        Ok(())
+    } else {
+        Err(format!(
+            "CountMinSketchWithHeap requires aggregation_sub_type 'topk', got '{sub_type}'"
+        ))
+    }
+}
+
 /// Extract `(row_num, col_num, k)` for HydraKLL configs.
 fn hydra_kll_params(config: &AggregationConfig) -> Result<(usize, usize, u16), String> {
     let (row_num, col_num) = cms_params(config)?;
@@ -787,12 +798,15 @@ fn cms_heap_params(config: &AggregationConfig) -> Result<(usize, usize, usize), 
 /// Whether a CountMinSketchWithHeap config should count events (weight 1 per
 /// observation, COUNT semantics) rather than summing the sample value.
 /// Defaults to `true` so `COUNT(...)` top-k works out of the box.
-fn cms_count_events(config: &AggregationConfig) -> bool {
-    config
-        .parameters
-        .get("count_events")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true)
+fn cms_count_events(config: &AggregationConfig) -> Result<bool, String> {
+    match config.parameters.get("count_events") {
+        None => Ok(true),
+        Some(value) => value.as_bool().ok_or_else(|| {
+            format!(
+                "CountMinSketchWithHeap parameter 'count_events' must be a boolean, got {value}"
+            )
+        }),
+    }
 }
 
 /// Extract the HLL `precision` parameter from a config. Falls back to
@@ -898,12 +912,13 @@ pub fn create_accumulator_updater(
             )))
         }
         AggregationType::CountMinSketchWithHeap => {
+            validate_cms_with_heap_sub_type(sub_type)?;
             let (row_num, col_num, heap_size) = cms_heap_params(config)?;
             Ok(Box::new(CmsWithHeapAccumulatorUpdater::new(
                 row_num,
                 col_num,
                 heap_size,
-                cms_count_events(config),
+                cms_count_events(config)?,
             )))
         }
         AggregationType::HydraKLL => {
@@ -1560,6 +1575,43 @@ mod tests {
     }
 
     #[test]
+    fn test_cms_with_heap_rejects_empty_subtype() {
+        let mut config = cms_heap_config(cms_heap_params_required());
+        config.aggregation_sub_type.clear();
+
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("empty CountMinSketchWithHeap subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("topk"));
+    }
+
+    #[test]
+    fn test_cms_with_heap_rejects_unknown_subtype() {
+        let mut config = cms_heap_config(cms_heap_params_required());
+        config.aggregation_sub_type = "count".to_string();
+
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("unknown CountMinSketchWithHeap subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("count"));
+    }
+
+    #[test]
+    fn test_cms_with_heap_rejects_non_boolean_count_events() {
+        let mut parameters = cms_heap_params_required();
+        parameters.insert("count_events".to_string(), serde_json::json!("true"));
+        let config = cms_heap_config(parameters);
+
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("non-boolean count_events must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("count_events") && err.contains("boolean"));
+    }
+
+    #[test]
     fn test_cms_with_heap_factory_routes_to_heap_accumulator_and_is_keyed() {
         // CountMinSketchWithHeap must build a CmsWithHeapAccumulatorUpdater whose
         // accumulator exposes the heap (get_keys), NOT a plain CMS (no heap).
@@ -1631,7 +1683,10 @@ mod tests {
         params.insert("heapsize".to_string(), serde_json::json!(40));
         let config = cms_heap_config(params);
         assert_eq!(cms_heap_params(&config).unwrap(), (4, 2048, 40));
-        assert!(cms_count_events(&config), "count_events defaults to true");
+        assert!(
+            cms_count_events(&config).unwrap(),
+            "count_events defaults to true"
+        );
     }
 
     #[test]
