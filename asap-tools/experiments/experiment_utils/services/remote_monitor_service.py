@@ -3,6 +3,8 @@ Remote monitor service management for experiments.
 """
 
 import os
+import re
+import shlex
 import time
 import subprocess
 from typing import List, Optional
@@ -48,6 +50,8 @@ class RemoteMonitorService(BaseService):
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
         backend_protocol: str,
+        pre_query_wait_seconds: int,
+        monitor_interval_seconds: float,
         backend_tool: Optional[str] = None,
         timed_duration: Optional[int] = None,
     ) -> None:
@@ -59,6 +63,11 @@ class RemoteMonitorService(BaseService):
             timed_duration: If provided, use timed mode instead of prometheus_client mode
             backend_tool: TSDB running on the node ("prometheus" or "victoriametrics").
                 Not used when backend_protocol="clickhouse".
+            pre_query_wait_seconds: In prometheus_client mode, seconds to wait
+                (with the process monitor already running) before launching the
+                query client. Used to capture the precompute/ingest phase in the
+                same continuous monitor session as the query phase.
+            monitor_interval_seconds: Seconds between CPU/memory samples.
         """
         # Determine execution mode
         use_timed_mode = timed_duration is not None
@@ -123,6 +132,7 @@ class RemoteMonitorService(BaseService):
                 "--time_to_run {} "
                 "--node_offset {} "
                 "--streaming_engine {} "
+                "--monitor_interval_seconds {} "
             ).format(
                 experiment_mode,
                 ",".join(keywords),
@@ -136,6 +146,7 @@ class RemoteMonitorService(BaseService):
                 timed_duration,
                 self.node_offset,
                 streaming_engine,
+                monitor_interval_seconds,
             )
             cmd += " --backend_protocol {}".format(backend_protocol)
 
@@ -177,6 +188,7 @@ class RemoteMonitorService(BaseService):
             "--prometheus_client_output_file {} "
             "--node_offset {} "
             "--streaming_engine {} "
+            "--monitor_interval_seconds {} "
         ).format(
             experiment_mode,
             ",".join(keywords),
@@ -190,7 +202,11 @@ class RemoteMonitorService(BaseService):
             "prometheus_client_output.txt",
             self.node_offset,
             streaming_engine,
+            monitor_interval_seconds,
         )
+
+        if pre_query_wait_seconds > 0:
+            cmd += " --pre_query_wait_seconds {}".format(pre_query_wait_seconds)
 
         # Add container flag if enabled
         if use_container_prometheus_client:
@@ -253,18 +269,237 @@ class RemoteMonitorService(BaseService):
                     popen=False,
                 )
 
-    def stop(self, **kwargs) -> None:
+    def start_clickhouse_ingest_monitor(
+        self,
+        controller_client_config: str,
+        experiment_output_dir: str,
+        monitor_interval_seconds: float = 1.0,
+        monitor_output_file: str = "monitor_output.json",
+        manual_mode: bool = False,
+    ) -> None:
+        """Monitor ClickHouse CPU/memory during bulk JSONEachRow load.
+
+        Runs ``remote_monitor.py`` in ``ingest`` mode until the stop file
+        (``constants.INGEST_MONITOR_STOP_FILE``) is created, or SIGTERM/SIGINT,
+        then writes ``monitor_output_file`` under ``remote_monitor_output/``.
+        """
+        keywords = ["clickhouse"]
+        cmd = (
+            "python3 -u remote_monitor.py "
+            "--execution_mode ingest "
+            "--experiment_mode {} "
+            r"--keywords \"{}\" "
+            "--config_file {} "
+            "--experiment_output_dir {} "
+            "--monitor_output_file {} "
+            "--node_offset {} "
+            "--streaming_engine {} "
+            "--monitor_interval_seconds {} "
+            "--backend_protocol clickhouse "
+        ).format(
+            constants.BASELINE_EXPERIMENT_NAME,
+            ",".join(keywords),
+            controller_client_config,
+            experiment_output_dir,
+            monitor_output_file,
+            self.node_offset,
+            "precompute",
+            monitor_interval_seconds,
+        )
+
+        cmd_dir = os.path.join(
+            self.provider.get_home_dir(), "code", "asap-tools", "experiments"
+        )
+        stop_file = os.path.join(
+            experiment_output_dir, constants.INGEST_MONITOR_STOP_FILE
+        )
+        self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd=f"rm -f {shlex.quote(stop_file)}",
+            cmd_dir="",
+            nohup=False,
+            popen=False,
+            ignore_errors=True,
+        )
+        cmd += " > {}/remote_monitor.out 2>&1".format(experiment_output_dir)
+
+        if manual_mode:
+            input(
+                "In manual mode. ClickHouse ingest monitor will not start. Press Enter"
+            )
+            print(cmd_dir)
+            print(cmd)
+            return
+
+        cmd += " < /dev/null &"
+        self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd=cmd,
+            cmd_dir=cmd_dir,
+            nohup=True,
+            popen=False,
+        )
+
+    @staticmethod
+    def _remote_monitor_pgrep_pattern(
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+    ) -> str:
+        """Build a ``pgrep -f`` regex that prefers mode/dir over a bare script name.
+
+        Matching only ``remote_monitor.py`` can hit leftover processes from a
+        prior crashed run. Prefer ``--execution_mode`` and the experiment output
+        directory when known.
+        """
+        parts = ["remote_monitor\\.py"]
+        if execution_mode:
+            parts.append(f"--execution_mode {execution_mode}")
+        if experiment_output_dir:
+            # Escape regex metacharacters in the path (e.g. dots in hostnames).
+            parts.append(re.escape(experiment_output_dir))
+        return ".*".join(parts)
+
+    def is_remote_monitor_running(
+        self,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+    ) -> bool:
+        pattern = self._remote_monitor_pgrep_pattern(
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+        )
+        cmd = f"pgrep -f {shlex.quote(pattern)}"
+        result = self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd=cmd,
+            cmd_dir=None,
+            nohup=False,
+            popen=False,
+            ignore_errors=True,
+        )
+        assert isinstance(result, subprocess.CompletedProcess)
+        return bool(result.stdout.strip())
+
+    def _wait_for_remote_monitor_state(
+        self,
+        expected_running: bool,
+        polling_interval: float,
+        timeout: Optional[float] = None,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+        waiting_message: Optional[str] = None,
+    ) -> None:
+        """Wait for a matching remote monitor to be running or stopped."""
+        start = time.monotonic()
+        while True:
+            is_running = self.is_remote_monitor_running(
+                execution_mode=execution_mode,
+                experiment_output_dir=experiment_output_dir,
+            )
+            if is_running == expected_running:
+                return
+            if timeout is not None and time.monotonic() - start >= timeout:
+                mode_desc = execution_mode or "any"
+                state_desc = "start" if expected_running else "exit"
+                raise RuntimeError(
+                    f"remote_monitor.py ({mode_desc}) did not {state_desc} "
+                    f"within {timeout}s. Check remote_monitor.out under the "
+                    "experiment output dir."
+                )
+            if waiting_message:
+                print(waiting_message)
+            time.sleep(polling_interval)
+
+    def wait_for_remote_monitor_start(
+        self,
+        timeout: int,
+        polling_interval: int,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+    ) -> None:
+        """Poll until a matching ``remote_monitor.py`` is running on the node."""
+        self._wait_for_remote_monitor_state(
+            expected_running=True,
+            polling_interval=polling_interval,
+            timeout=timeout,
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+        )
+
+    def wait_for_remote_monitor_process_exit(
+        self,
+        polling_interval: int,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+    ) -> None:
+        """Poll until matching ``remote_monitor.py`` processes have exited."""
+        self._wait_for_remote_monitor_state(
+            expected_running=False,
+            polling_interval=polling_interval,
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+            waiting_message=(
+                "Waiting for remote monitor to exit "
+                f"(checking again in {polling_interval}s)..."
+            ),
+        )
+
+    def signal_ingest_monitor_stop(self, experiment_output_dir: str) -> None:
+        """Ask an ingest-mode ``remote_monitor.py`` to shut down gracefully."""
+        stop_file = os.path.join(
+            experiment_output_dir, constants.INGEST_MONITOR_STOP_FILE
+        )
+        self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd=f"touch {shlex.quote(stop_file)}",
+            cmd_dir="",
+            nohup=False,
+            popen=False,
+        )
+
+    def cleanup_ingest_monitor_stop_file(self, experiment_output_dir: str) -> None:
+        stop_file = os.path.join(
+            experiment_output_dir, constants.INGEST_MONITOR_STOP_FILE
+        )
+        self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd=f"rm -f {shlex.quote(stop_file)}",
+            cmd_dir="",
+            nohup=False,
+            popen=False,
+            ignore_errors=True,
+        )
+
+    def stop(
+        self,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+        **kwargs,
+    ) -> None:
         """
         Stop remote monitor processes.
 
         Args:
+            execution_mode: If set, only stop monitors in this execution mode.
+            experiment_output_dir: If set, only stop monitors for this output dir.
             **kwargs: Additional configuration (currently unused)
         """
-        self.kill_remote_monitor()
+        self.kill_remote_monitor(
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+        )
 
-    def kill_remote_monitor(self) -> None:
-        """Kill remote monitor processes."""
-        cmd = "pkill -f remote_monitor.py"
+    def kill_remote_monitor(
+        self,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
+    ) -> None:
+        """Kill matching remote monitor processes."""
+        pattern = self._remote_monitor_pgrep_pattern(
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+        )
+        cmd = f"pkill -f {shlex.quote(pattern)}"
         self.provider.execute_command(
             node_idx=self.node_offset,
             cmd=cmd,
@@ -277,7 +512,9 @@ class RemoteMonitorService(BaseService):
     def wait_for_remote_monitor_to_finish(
         self,
         minimum_experiment_running_time: int,
-        polling_interval: int = 10,
+        polling_interval: int,
+        execution_mode: Optional[str] = None,
+        experiment_output_dir: Optional[str] = None,
     ) -> None:
         """
         Wait for remote monitor process to finish.
@@ -285,6 +522,8 @@ class RemoteMonitorService(BaseService):
         Args:
             minimum_experiment_running_time: Minimum time to wait before polling
             polling_interval: Interval between polling checks
+            execution_mode: If set, only match this ``--execution_mode``
+            experiment_output_dir: Optional path to further disambiguate the process
         """
         print(
             "Waiting for {} seconds for remote monitor to finish".format(
@@ -294,25 +533,17 @@ class RemoteMonitorService(BaseService):
         time.sleep(minimum_experiment_running_time)
         print("Done waiting for remote monitor to finish. Will start polling")
 
-        while True:
-            cmd = "pgrep -f remote_monitor.py"
-            result = self.provider.execute_command(
-                node_idx=self.node_offset,
-                cmd=cmd,
-                cmd_dir=None,
-                nohup=False,
-                popen=False,
-                ignore_errors=True,
-            )
-            assert isinstance(result, subprocess.CompletedProcess)
-            if result.stdout == "":
-                break
-            print(
+        self._wait_for_remote_monitor_state(
+            expected_running=False,
+            polling_interval=polling_interval,
+            execution_mode=execution_mode,
+            experiment_output_dir=experiment_output_dir,
+            waiting_message=(
                 "Remote monitor is still running. Will check again in {} seconds".format(
                     polling_interval
                 )
-            )
-            time.sleep(polling_interval)
+            ),
+        )
 
     def is_healthy(self) -> bool:
         """
