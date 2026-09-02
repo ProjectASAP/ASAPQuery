@@ -73,7 +73,7 @@ const CONST_1M: u64 = 1_000_000;
 const CONST_2M: u64 = 2_000_000;
 const CONST_3M: u64 = 3_000_000;
 
-const RNG_SEED: u64 = 0; // seed for rng used by all distributions
+const DEFAULT_RNG_SEED: u64 = 0; // default seed for rng used by all distributions
 
 const ZIPF_ALPHA: f64 = 1.01; // zipf parameter
 
@@ -217,6 +217,7 @@ impl FakeCollector {
         label_names: Option<String>,
         label_value_prefixes: Option<String>,
         add_pattern_label: bool,
+        seed: u64,
     ) -> Self {
         let num_values_per_label = get_num_vals_per_label(num_values_per_label, num_labels);
         let prefixes: Option<Vec<String>> = label_value_prefixes
@@ -308,7 +309,7 @@ impl FakeCollector {
             metric_name,
             label_names,
             add_pattern_label,
-            rng: Mutex::new(SmallRng::seed_from_u64(RNG_SEED)),
+            rng: Mutex::new(SmallRng::seed_from_u64(seed)),
             zipf_dist,
             normal_dist,
             uniform_dist,
@@ -626,6 +627,9 @@ struct Args {
 
     #[arg(long, default_value = "false", help = "Add 'pattern' label to metrics with dataset name")]
     add_pattern_label: bool,
+
+    #[arg(long, default_value_t = DEFAULT_RNG_SEED, help = "Seed for random value generation")]
+    seed: u64,
 }
 
 #[tokio::main]
@@ -642,6 +646,7 @@ async fn main() -> Result<(), BoxedErr> {
         args.label_names,
         args.label_value_prefixes,
         args.add_pattern_label,
+        args.seed,
     ));
 
     // Register collector and start serving
