@@ -1,0 +1,54 @@
+name: PromQL Differential Tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+    paths:
+      - 'promql-compliance/**'
+      - 'asap-query-engine/**'
+      - 'asap-planner-rs/**'
+      - 'asap-common/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/promql-differential.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  differential:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Run seeder tests
+        working-directory: promql-compliance/seeder
+        run: go test ./...
+
+      - name: Run runner tests
+        working-directory: promql-compliance/runner
+        run: go test ./...
+
+      - name: Run live PromQL differential suite
+        working-directory: promql-compliance/runner
+        run: make run
+
+      - name: Upload differential report and service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: promql-differential-results
+          path: |
+            promql-compliance/runner/differential-report.json
+            /tmp/asapquery-differential-*
+          if-no-files-found: warn

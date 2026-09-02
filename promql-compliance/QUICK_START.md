@@ -1,5 +1,26 @@
 # PromQL differential testing quick start
 
+The primary workflow is now the fixture-driven runner:
+
+```bash
+cd promql-compliance/runner
+make run
+```
+
+That command generates the ASAPQuery planner configuration from the selected
+dataset and suite, starts an isolated Prometheus/ASAPQuery Compose project,
+sends the same remote-write body to both targets, waits for the data to be
+queryable, runs all configured instant and range evaluations, checks
+range-at-t against instant-at-t, writes `differential-report.json`, and tears
+the project down.
+
+Add another dataset under `datasets/` or query suite under `suites/`; the
+runner does not require source-code changes for either.
+
+The copied upstream compliance harness below remains available for running
+the large generic PromQL suite, but it is not the recommended path for the
+deterministic differential regression workflow.
+
 This directory contains a manual, deterministic differential test setup:
 
 1. Prometheus is the reference implementation.

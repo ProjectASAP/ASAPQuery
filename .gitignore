@@ -10,3 +10,6 @@ uuid
 store/
 # roborev snapshots
 /.roborev/
+
+# Differential test output
+promql-compliance/runner/differential-report.json

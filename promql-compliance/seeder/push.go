@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/snappy"
@@ -106,8 +107,15 @@ func Push(ctx context.Context, url string, wr *prompb.WriteRequest) error {
 	if err != nil {
 		return err
 	}
+	return PushEncoded(ctx, url, body)
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/api/v1/write", bytes.NewReader(body))
+// PushEncoded sends an already-encoded remote-write body. The caller can
+// encode once and send the exact same bytes to every target.
+func PushEncoded(ctx context.Context, url string, body []byte) error {
+	endpoint := strings.TrimRight(url, "/") + "/api/v1/write"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("build request for %s: %w", url, err)
 	}
@@ -132,9 +140,28 @@ func Push(ctx context.Context, url string, wr *prompb.WriteRequest) error {
 // base time and pushes it to every URL in urls, stopping at the first
 // error.
 func PushDataset(ctx context.Context, baseTimeMs int64, urls ...string) error {
-	wr := BuildWriteRequest(baseTimeMs, Dataset())
+	return PushSeries(ctx, baseTimeMs, Dataset(), urls...)
+}
+
+// PushFixture sends a YAML fixture to every target using one encoded body.
+func PushFixture(ctx context.Context, baseTimeMs int64, fixture Fixture, urls ...string) error {
+	wr := BuildWriteRequestFromFixture(baseTimeMs, fixture)
+	return PushEncodedRequest(ctx, wr, urls...)
+}
+
+// PushSeries sends one canonical encoded request to every target.
+func PushSeries(ctx context.Context, baseTimeMs int64, series []SeriesDef, urls ...string) error {
+	wr := BuildWriteRequest(baseTimeMs, series)
+	return PushEncodedRequest(ctx, wr, urls...)
+}
+
+func PushEncodedRequest(ctx context.Context, wr *prompb.WriteRequest, urls ...string) error {
+	body, err := EncodeSnappy(wr)
+	if err != nil {
+		return err
+	}
 	for _, u := range urls {
-		if err := Push(ctx, u, wr); err != nil {
+		if err := PushEncoded(ctx, u, body); err != nil {
 			return err
 		}
 	}

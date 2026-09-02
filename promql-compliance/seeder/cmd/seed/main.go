@@ -1,4 +1,4 @@
-// Command seed pushes the fixed dataset defined in package seeder to two
+// Command seed pushes a dataset defined in package seeder or a fixture to two
 // Prometheus-remote-write-compatible endpoints: a real Prometheus (started
 // with --web.enable-remote-write-receiver) and ASAPQuery's own remote-write
 // ingest endpoint. Using the same WriteRequest bytes against both means
@@ -21,6 +21,7 @@ import (
 func main() {
 	referenceURL := flag.String("reference-url", "", "base URL of the reference target (real Prometheus), e.g. http://localhost:9090")
 	testURL := flag.String("test-url", "", "base URL of the test target (ASAPQuery), e.g. http://localhost:9091")
+	datasetPath := flag.String("dataset", "", "optional YAML dataset fixture; defaults to the built-in dataset")
 	baseTimeFlag := flag.Int64("base-time-ms", 0, "base Unix time in ms to anchor the dataset's offsets to (default: now, floored to the minute, minus 30 minutes so the whole 20-minute window is safely in the past)")
 	flag.Parse()
 
@@ -38,11 +39,20 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := seeder.PushDataset(ctx, baseTimeMs, *referenceURL, *testURL); err != nil {
+	var err error
+	if *datasetPath == "" {
+		err = seeder.PushDataset(ctx, baseTimeMs, *referenceURL, *testURL)
+	} else {
+		fixture, loadErr := seeder.LoadFixture(*datasetPath)
+		if loadErr != nil {
+			log.Fatalf("loading dataset failed: %v", loadErr)
+		}
+		err = seeder.PushFixture(ctx, baseTimeMs, fixture, *referenceURL, *testURL)
+	}
+	if err != nil {
 		log.Fatalf("seeding failed: %v", err)
 	}
 
 	fmt.Printf("seeded dataset to %s and %s\n", *referenceURL, *testURL)
-	fmt.Printf("base-time-ms=%d (dataset offsets 0..1200s map to this base)\n", baseTimeMs)
-	fmt.Printf("dataset window: [%d, %d] ms unix\n", baseTimeMs, baseTimeMs+1200*1000)
+	fmt.Printf("base-time-ms=%d\n", baseTimeMs)
 }
