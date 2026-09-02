@@ -4,6 +4,7 @@ Exporter service management for experiments.
 
 import os
 from abc import abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from typing import Tuple, List, Dict, Any
 
 from .base import BaseService
@@ -45,6 +46,29 @@ def get_fake_exporter_target_nodes(args) -> List[int]:
     """Return exporter nodes, preserving the single-node local fallback."""
     worker_nodes = args.get_node_range(include_coordinator=False)
     return worker_nodes or [args.get_coordinator_node()]
+
+
+def execute_fake_exporter_commands_in_parallel(
+    provider: InfrastructureProvider,
+    node_commands: List[Tuple[int, str]],
+    **kwargs,
+) -> None:
+    """Run node-specific exporter commands concurrently."""
+    if not node_commands:
+        return
+
+    with ThreadPoolExecutor(max_workers=len(node_commands)) as executor:
+        futures = [
+            executor.submit(
+                provider.execute_command_parallel,
+                node_idxs=[node_idx],
+                cmd=cmd,
+                **kwargs,
+            )
+            for node_idx, cmd in node_commands
+        ]
+        for future in futures:
+            future.result()
 
 
 class BaseExporterService(BaseService):
@@ -399,10 +423,11 @@ class RustExporterService(BaseExporterService):
         num_ports = config["num_ports_per_server"]
         dataset = config["dataset"]
 
-        cmds = []
+        commands_by_port: List[List[Tuple[int, str]]] = []
         target_nodes = get_fake_exporter_target_nodes(self.args)
-        for worker_ordinal, node_idx in enumerate(target_nodes):
-            for port_ordinal in range(num_ports):
+        for port_ordinal in range(num_ports):
+            port_commands = []
+            for worker_ordinal, node_idx in enumerate(target_nodes):
                 seed = get_fake_exporter_seed(config, worker_ordinal, port_ordinal)
                 cmd = "./target/release/fake_exporter --port {} --valuescale {} --dataset {} --num-labels {} --num-values-per-label {} --metric-type {} --seed {}".format(
                     port_ordinal + config["start_port"],
@@ -413,7 +438,12 @@ class RustExporterService(BaseExporterService):
                     config["metric_type"],
                     seed,
                 )
-                cmds.append((node_idx, cmd))
+                port_commands.append((node_idx, cmd))
+            commands_by_port.append(port_commands)
+
+        cmds = [
+            command for port_commands in commands_by_port for command in port_commands
+        ]
 
         cmd_dir = f"{self.provider.get_home_dir()}/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_exporter_rust/fake_exporter"
 
@@ -426,11 +456,11 @@ class RustExporterService(BaseExporterService):
         ) as f:
             f.write("\n".join(cmd for _, cmd in cmds))
 
-        # Run commands in parallel across nodes
-        for node_idx, cmd in cmds:
-            self.provider.execute_command_parallel(
-                node_idxs=[node_idx],
-                cmd=cmd,
+        # Preserve cross-node fan-out while assigning each node its own seed.
+        for port_commands in commands_by_port:
+            execute_fake_exporter_commands_in_parallel(
+                self.provider,
+                port_commands,
                 cmd_dir=cmd_dir,
                 nohup=False,
                 popen=True,
@@ -459,7 +489,7 @@ class RustExporterService(BaseExporterService):
             for port_ordinal in range(num_ports):
                 actual_port = port_ordinal + config["start_port"]
                 seed = get_fake_exporter_seed(config, worker_ordinal, port_ordinal)
-                container_name = f"{BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME}-{actual_port}-rust"
+                container_name = f"{BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME}-{node_idx}-{actual_port}-rust"
 
                 # Build docker run command
                 docker_cmd = (
@@ -494,8 +524,9 @@ class RustExporterService(BaseExporterService):
         ) as f:
             f.write("\n".join(cmd for _, cmd in docker_run_cmds))
 
-        # Start containers in batches to avoid overwhelming Docker daemon
+        # Start containers in batches to avoid overwhelming Docker daemon.
         BATCH_SIZE = 5
+        node_batch_commands: List[Tuple[int, str]] = []
         for node_idx in target_nodes:
             node_commands = [
                 cmd
@@ -506,16 +537,18 @@ class RustExporterService(BaseExporterService):
                 batch = node_commands[i : i + BATCH_SIZE]
                 # Combine docker run commands in batch for one node.
                 batch_cmd = "; ".join(batch)
+                node_batch_commands.append((node_idx, batch_cmd))
 
-                self.provider.execute_command_parallel(
-                    node_idxs=[node_idx],
-                    cmd=batch_cmd,
-                    cmd_dir="",
-                    nohup=False,
-                    popen=True,
-                    redirect=True,
-                    wait=True,  # Wait for batch to complete
-                )
+        # Start each worker's batches concurrently.
+        execute_fake_exporter_commands_in_parallel(
+            self.provider,
+            node_batch_commands,
+            cmd_dir="",
+            nohup=False,
+            popen=True,
+            redirect=True,
+            wait=True,  # Wait for batch to complete
+        )
 
         return
 
@@ -539,8 +572,9 @@ class RustExporterService(BaseExporterService):
             **kwargs: Additional configuration (currently unused)
         """
         cmd = "pkill -f fake_exporter"
+        target_nodes = get_fake_exporter_target_nodes(self.args)
         self.provider.execute_command_parallel(
-            node_idxs=self.args.get_node_range(include_coordinator=False),
+            node_idxs=target_nodes,
             cmd=cmd,
             cmd_dir=None,
             nohup=False,
@@ -550,6 +584,7 @@ class RustExporterService(BaseExporterService):
 
     def _stop_containerized(self, **kwargs) -> None:
         """Stop fake exporters using containerized deployment."""
+        target_nodes = get_fake_exporter_target_nodes(self.args)
         try:
             if self.container_names is not None and len(self.container_names) > 0:
                 # Stop and remove containers by name
@@ -561,7 +596,7 @@ class RustExporterService(BaseExporterService):
                     cmd = f"docker stop {container_list} 2>/dev/null || true; docker rm {container_list} 2>/dev/null || true"
 
                     self.provider.execute_command_parallel(
-                        node_idxs=self.args.get_node_range(include_coordinator=False),
+                        node_idxs=target_nodes,
                         cmd=cmd,
                         cmd_dir=None,
                         nohup=False,
@@ -572,7 +607,7 @@ class RustExporterService(BaseExporterService):
                 # Fallback: stop all containers matching the base name pattern
                 cmd = f"docker ps -a --filter name={BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME} --format '{{{{.Names}}}}' | xargs -r docker stop; docker ps -a --filter name={BaseExporterService.FAKE_EXPORTER_BASE_CONTAINER_NAME} --format '{{{{.Names}}}}' | xargs -r docker rm"
                 self.provider.execute_command_parallel(
-                    node_idxs=self.args.get_node_range(include_coordinator=False),
+                    node_idxs=target_nodes,
                     cmd=cmd,
                     cmd_dir=None,
                     nohup=False,
