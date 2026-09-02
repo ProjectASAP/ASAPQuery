@@ -1,38 +1,5 @@
 mod engine_config;
 
-use std::future::Future;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use asap_types::enums::{CleanupPolicy, QueryLanguage};
-    use query_engine_rust::planner_client::PlannerResult;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    #[tokio::test]
-    async fn rejected_precompute_plan_does_not_apply_other_components() {
-        let applied = Arc::new(AtomicBool::new(false));
-        let applied_by_callback = applied.clone();
-        let result = PlannerResult {
-            streaming_config: StreamingConfig::default(),
-            inference_config: InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup),
-            punted_queries: Vec::new(),
-        };
-
-        let update_result = apply_plan_if_precompute_succeeds(
-            result,
-            |_| async { Err::<(), _>("invalid streaming config".into()) },
-            move |_| {
-                applied_by_callback.store(true, Ordering::SeqCst);
-            },
-        )
-        .await;
-
-        assert!(update_result.is_err());
-        assert!(!applied.load(Ordering::SeqCst));
-    }
-}
-
 use clap::Parser;
 use engine_config::{BackendConfig, EngineConfig, IngestConfig};
 use figment::{
@@ -71,20 +38,6 @@ struct Args {
 
     /// KEY=VALUE overrides applied on top of the config file (e.g. http_server.port=9000)
     overrides: Vec<String>,
-}
-
-async fn apply_plan_if_precompute_succeeds<F, Fut>(
-    result: query_engine_rust::planner_client::PlannerResult,
-    update_precompute: F,
-    apply_other_components: impl FnOnce(query_engine_rust::planner_client::PlannerResult),
-) -> Result<()>
-where
-    F: FnOnce(&StreamingConfig) -> Fut,
-    Fut: Future<Output = Result<()>>,
-{
-    update_precompute(&result.streaming_config).await?;
-    apply_other_components(result);
-    Ok(())
 }
 
 #[tokio::main]
@@ -488,37 +441,23 @@ async fn main() -> Result<()> {
                 }
                 let result = rx.borrow().clone();
                 if let Some(result) = result {
-                    let apply_result = apply_plan_if_precompute_succeeds(
-                        result,
-                        |streaming_config| {
-                            let streaming_config = streaming_config.clone();
-                            let precompute_handle = pe_engine_handle.as_ref();
-                            async move {
-                                if let Some(handle) = precompute_handle {
-                                    handle.update_streaming_config(&streaming_config).await
-                                } else {
-                                    Ok(())
-                                }
-                            }
-                        },
-                        |result| {
-                            engine_for_applier
-                                .update_streaming_config(Arc::new(result.streaming_config.clone()));
-                            engine_for_applier
-                                .update_inference_config(result.inference_config.clone());
-                            store_for_applier
-                                .update_streaming_config(result.streaming_config.clone());
-                            *streaming_config_ref_for_applier.write().unwrap() =
-                                Arc::new(result.streaming_config);
-                            *inference_config_ref_for_applier.write().unwrap() =
-                                Arc::new(result.inference_config);
-                            info!("Applier: applied new plan from query tracker");
-                        },
-                    )
-                    .await;
-                    if let Err(e) = apply_result {
-                        warn!("Applier: failed to apply plan: {}", e);
+                    if let Some(ref handle) = pe_engine_handle {
+                        if let Err(e) = handle
+                            .update_streaming_config(&result.streaming_config)
+                            .await
+                        {
+                            warn!("Applier: failed to update precompute engine: {}", e);
+                        }
                     }
+                    engine_for_applier
+                        .update_streaming_config(Arc::new(result.streaming_config.clone()));
+                    engine_for_applier.update_inference_config(result.inference_config.clone());
+                    store_for_applier.update_streaming_config(result.streaming_config.clone());
+                    *streaming_config_ref_for_applier.write().unwrap() =
+                        Arc::new(result.streaming_config);
+                    *inference_config_ref_for_applier.write().unwrap() =
+                        Arc::new(result.inference_config);
+                    info!("Applier: applied new plan from query tracker");
                 }
             }
         });

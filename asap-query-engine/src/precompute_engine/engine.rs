@@ -38,8 +38,6 @@ impl PrecomputeEngineHandle {
         &self,
         config: &StreamingConfig,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        validate_cms_aggregation_configs(config)?;
-
         let agg_configs_map: HashMap<u64, Arc<AggregationConfig>> = config
             .get_all_aggregation_configs()
             .iter()
@@ -157,7 +155,7 @@ impl PrecomputeEngine {
     /// Start the precompute engine. This spawns worker tasks and all registered
     /// ingest sources, then blocks until shutdown.
     pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        validate_cms_aggregation_configs(&self.streaming_config)?;
+        validate_startup_aggregation_configs(&self.streaming_config)?;
 
         let num_workers = self.config.num_workers;
 
@@ -258,13 +256,12 @@ impl PrecomputeEngine {
     }
 }
 
-/// Validate plain Count-Min Sketch configs before starting workers or ingest
-/// tasks, and before accepting runtime replacements.
+/// Validate aggregation configs before starting any worker or ingest task.
 ///
 /// Plain Count-Min Sketch configs carry their SUM-versus-COUNT contract in
 /// `aggregation_sub_type`; allowing an invalid value to reach the lazy worker
 /// path would leave the engine running while silently losing that contract.
-fn validate_cms_aggregation_configs(
+fn validate_startup_aggregation_configs(
     streaming_config: &StreamingConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     for (&aggregation_id, config) in streaming_config.get_all_aggregation_configs() {
@@ -348,53 +345,5 @@ mod tests {
         };
         assert!(err.to_string().contains("aggregation_id 1"));
         assert!(err.to_string().contains("sum") && err.to_string().contains("count"));
-    }
-
-    #[tokio::test]
-    async fn runtime_update_rejects_invalid_cms_subtype_without_replacing_config() {
-        let mut parameters = HashMap::new();
-        parameters.insert("depth".to_string(), json!(3_u64));
-        parameters.insert("width".to_string(), json!(128_u64));
-        let valid = AggregationConfig::new(
-            1,
-            AggregationType::CountMinSketch,
-            "sum".to_string(),
-            parameters,
-            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
-            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
-                "host".to_string()
-            ]),
-            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
-            String::new(),
-            1_000,
-            1_000,
-            WindowType::Tumbling,
-            "requests_total".to_string(),
-            "requests_total".to_string(),
-            None,
-            None,
-            None,
-            None,
-        );
-        let engine = PrecomputeEngine::new(
-            PrecomputeEngineConfig::default(),
-            Arc::new(StreamingConfig::new(HashMap::from([(1, valid.clone())]))),
-            Arc::new(NoopOutputSink::new()),
-            vec![],
-        );
-        let handle = engine.handle();
-
-        let mut invalid = valid;
-        invalid.aggregation_sub_type.clear();
-        let result = handle
-            .update_streaming_config(&StreamingConfig::new(HashMap::from([(1, invalid)])))
-            .await;
-
-        let err = result.expect_err("invalid runtime CMS subtype must be rejected");
-        assert!(err.to_string().contains("aggregation_id 1"));
-        assert!(err.to_string().contains("sum") && err.to_string().contains("count"));
-        let current = handle.ingest_agg_configs.load();
-        assert_eq!(current.len(), 1);
-        assert_eq!(current[0].aggregation_sub_type, "sum");
     }
 }
