@@ -14,6 +14,24 @@ from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
 
+def resolve_backend_config(
+    backend: dict,
+    prometheus_service: BaseService,
+    provider: InfrastructureProvider,
+    node_offset: int,
+    forward_unsupported_queries: bool,
+) -> dict:
+    """Resolve runtime backend URL and health settings for the query engine."""
+    backend_config = dict(backend)
+    if backend_config["type"] == "prometheus":
+        prometheus_host = provider.get_node_ip(node_offset)
+        prometheus_port = prometheus_service.get_query_endpoint_port()
+        backend_config["server"] = f"http://{prometheus_host}:{prometheus_port}"
+        backend_config["health_endpoint"] = prometheus_service.get_health_endpoint()
+    backend_config["forward_unsupported_queries"] = forward_unsupported_queries
+    return backend_config
+
+
 class BaseQueryEngineService(BaseService):
     """Base class for query engine services."""
 
@@ -238,9 +256,10 @@ class QueryEngineRustService(BaseQueryEngineService):
             dump_precomputes: Whether to dump precomputed values
             lock_strategy: Lock strategy for SimpleMapStore (global or per-key)
             backend_config: Fully resolved BackendConfig dict with type tag and all
-                            backend-specific fields (url/server/database/index as needed)
-                            plus forward_unsupported_queries. Matches the BackendConfig
-                            tagged union in asap-query-engine/src/engine_config.rs.
+                            backend-specific fields (url/server/database/index as needed),
+                            optional health_endpoint, and forward_unsupported_queries.
+                            Matches the BackendConfig tagged union in
+                            asap-query-engine/src/engine_config.rs.
             http_port: Port for the query engine's HTTP API server
             remote_write_port: Port the precompute engine listens on for Prometheus remote
                                write; should match streaming.remote_write.base_port (default 8080)

@@ -33,6 +33,10 @@ class PrometheusService(BaseService):
         """Get the query endpoint port for Prometheus."""
         return 9090
 
+    def get_health_endpoint(self) -> str:
+        """Get Prometheus health check endpoint."""
+        return "/-/ready"
+
     def start(self, experiment_output_dir: str, **kwargs) -> None:
         """
         Start Prometheus service.
