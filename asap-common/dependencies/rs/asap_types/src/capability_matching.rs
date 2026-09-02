@@ -18,7 +18,11 @@ use promql_utilities::query_logics::enums::AggregationType;
 /// Returns the aggregation types that can serve this statistic.
 pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
     match stat {
-        Statistic::Sum => &[AggregationType::Sum, AggregationType::MultipleSum],
+        Statistic::Sum => &[
+            AggregationType::Sum,
+            AggregationType::MultipleSum,
+            AggregationType::CountMinSketch,
+        ],
         Statistic::Count => &[
             AggregationType::CountMinSketch,
             AggregationType::CountMinSketchWithHeap,
@@ -187,6 +191,23 @@ pub fn topk_weighting_compatible(
     }
 }
 
+/// Plain Count-Min Sketches are value-weighted or event-weighted according to
+/// their subtype. A sketch with the other subtype cannot serve this statistic.
+fn plain_cms_sub_type_compatible(stat: Statistic, config: &AggregationConfig) -> bool {
+    if config.aggregation_type != AggregationType::CountMinSketch {
+        return true;
+    }
+
+    let expected_sub_type = match stat {
+        Statistic::Sum => "sum",
+        Statistic::Count => "count",
+        _ => unreachable!("plain CMS matching only supports SUM and COUNT"),
+    };
+    config
+        .aggregation_sub_type
+        .eq_ignore_ascii_case(expected_sub_type)
+}
+
 /// Aggregation priority comparator: prefer larger `window_size_ms` (descending).
 /// This is a separate function so callers can swap the policy without touching matching logic.
 pub fn aggregation_priority(a: &AggregationConfig, b: &AggregationConfig) -> Ordering {
@@ -244,6 +265,7 @@ pub fn find_compatible_aggregation(
                         &c.spatial_filter_normalized,
                         &requirements.spatial_filter_normalized,
                     )
+                    && plain_cms_sub_type_compatible(stat, c)
                     && topk_weighting_compatible(stat, c, requirements.topk_count_events);
                 if !ok {
                     debug!(
@@ -464,6 +486,88 @@ mod tests {
             find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
         assert!(result.is_some());
         assert_eq!(result.unwrap().aggregation_id_for_value, 1);
+    }
+
+    #[test]
+    fn plain_cms_matching_respects_sum_and_count_subtypes() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            1,
+            make_config(
+                1,
+                "cpu",
+                "CountMinSketch",
+                "sum",
+                300_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+        configs.insert(
+            2,
+            make_config(
+                2,
+                "cpu",
+                "CountMinSketch",
+                "count",
+                300_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+        configs.insert(
+            9,
+            make_config(
+                9,
+                "cpu",
+                "DeltaSetAggregator",
+                "",
+                300_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+
+        let sum =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""))
+                .expect("SUM should select the value-weighted sketch");
+        assert_eq!(sum.aggregation_id_for_value, 1);
+
+        let count = find_compatible_aggregation(
+            &configs,
+            &req("cpu", &[Statistic::Count], 300_000, &[], ""),
+        )
+        .expect("COUNT should select the event-weighted sketch");
+        assert_eq!(count.aggregation_id_for_value, 2);
+    }
+
+    #[test]
+    fn plain_cms_with_invalid_subtypes_is_excluded_from_matching() {
+        for invalid_sub_type in ["", "unknown", " sum "] {
+            let configs = single_config(make_config(
+                1,
+                "cpu",
+                "CountMinSketch",
+                invalid_sub_type,
+                300_000,
+                "tumbling",
+                &[],
+                "",
+            ));
+
+            let result = find_compatible_aggregation(
+                &configs,
+                &req("cpu", &[Statistic::Sum], 300_000, &[], ""),
+            );
+
+            assert!(
+                result.is_none(),
+                "invalid plain CMS subtype {invalid_sub_type:?} must not match SUM"
+            );
+        }
     }
 
     #[test]
@@ -1076,7 +1180,16 @@ mod tests {
 
     #[test]
     fn multi_pop_rejects_tumbling_delta_set_that_cannot_partition_sliding_value_window() {
-        let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        let mut value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            6_000,
+            "sliding",
+            &[],
+            "",
+        );
         value.slide_interval_ms = 1_000;
         let delta_keys = make_config(
             11,
@@ -1102,7 +1215,16 @@ mod tests {
 
     #[test]
     fn multi_pop_accepts_tumbling_delta_set_that_partitions_sliding_value_grid() {
-        let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        let mut value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            6_000,
+            "sliding",
+            &[],
+            "",
+        );
         value.slide_interval_ms = 1_000;
         let delta_keys = make_config(
             11,
@@ -1127,7 +1249,16 @@ mod tests {
 
     #[test]
     fn multi_pop_rejects_tumbling_set_key_on_mismatched_nonzero_grid_step() {
-        let value = make_config(10, "req", "CountMinSketch", "", 5_000, "tumbling", &[], "");
+        let value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            5_000,
+            "tumbling",
+            &[],
+            "",
+        );
         let mut keys = make_config(11, "req", "SetAggregator", "", 5_000, "tumbling", &[], "");
         keys.slide_interval_ms = 1_000;
         let configs = HashMap::from([(10, value), (11, keys)]);
@@ -1141,7 +1272,16 @@ mod tests {
 
     #[test]
     fn tumbling_set_pairing_normalizes_zero_slide_to_window_size() {
-        let mut value = make_config(10, "req", "CountMinSketch", "", 5_000, "tumbling", &[], "");
+        let mut value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            5_000,
+            "tumbling",
+            &[],
+            "",
+        );
         let mut key = make_config(11, "req", "SetAggregator", "", 5_000, "tumbling", &[], "");
         value.slide_interval_ms = 0;
         key.slide_interval_ms = 0;
@@ -1152,7 +1292,16 @@ mod tests {
 
     #[test]
     fn set_pairing_rejects_each_grid_mismatch_dimension() {
-        let value = make_config(10, "req", "CountMinSketch", "", 5_000, "sliding", &[], "");
+        let value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            5_000,
+            "sliding",
+            &[],
+            "",
+        );
         let mut key = make_config(11, "req", "SetAggregator", "", 5_000, "sliding", &[], "");
         key.slide_interval_ms = 1_000;
         assert!(!key_agg_compatible_with_value(&value, &key));
@@ -1166,7 +1315,16 @@ mod tests {
 
     #[test]
     fn delta_set_pairing_truth_table_checks_both_divisors() {
-        let mut value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        let mut value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            6_000,
+            "sliding",
+            &[],
+            "",
+        );
         value.slide_interval_ms = 2_000;
         let key_valid = make_config(
             11,
@@ -1212,7 +1370,16 @@ mod tests {
 
     #[test]
     fn delta_set_pairing_for_tumbling_values_does_not_apply_sliding_rules() {
-        let value = make_config(10, "req", "CountMinSketch", "", 6_000, "tumbling", &[], "");
+        let value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            6_000,
+            "tumbling",
+            &[],
+            "",
+        );
         let key = make_config(
             11,
             "req",
@@ -1228,7 +1395,16 @@ mod tests {
 
     #[test]
     fn matching_skips_incompatible_key_candidate_and_selects_compatible_one() {
-        let value = make_config(10, "req", "CountMinSketch", "", 6_000, "sliding", &[], "");
+        let value = make_config(
+            10,
+            "req",
+            "CountMinSketch",
+            "count",
+            6_000,
+            "sliding",
+            &[],
+            "",
+        );
         let mut incompatible =
             make_config(11, "req", "SetAggregator", "", 6_000, "sliding", &[], "");
         incompatible.slide_interval_ms = 2_000;
@@ -1255,7 +1431,7 @@ mod tests {
                 2,
                 "cpu",
                 "CountMinSketch",
-                "",
+                "count",
                 300_000,
                 "tumbling",
                 &["job"],

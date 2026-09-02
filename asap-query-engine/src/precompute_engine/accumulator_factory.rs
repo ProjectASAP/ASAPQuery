@@ -632,14 +632,16 @@ pub struct CmsAccumulatorUpdater {
     acc: CountMinSketchAccumulator,
     row_num: usize,
     col_num: usize,
+    count_events: bool,
 }
 
 impl CmsAccumulatorUpdater {
-    pub fn new(row_num: usize, col_num: usize) -> Self {
+    pub fn new(row_num: usize, col_num: usize, count_events: bool) -> Self {
         Self {
             acc: CountMinSketchAccumulator::new(row_num, col_num),
             row_num,
             col_num,
+            count_events,
         }
     }
 }
@@ -653,7 +655,8 @@ impl AccumulatorUpdater for CmsAccumulatorUpdater {
     }
 
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, _timestamp_ms: i64) {
-        self.acc.inner.update(&key.to_semicolon_str(), value);
+        let weight = if self.count_events { 1.0 } else { value };
+        self.acc.inner.update(&key.to_semicolon_str(), weight);
     }
 
     impl_accumulator_methods!(acc);
@@ -842,6 +845,35 @@ fn cms_params(config: &AggregationConfig) -> Result<(usize, usize), String> {
     Ok((row_num, col_num))
 }
 
+/// Resolve the weighting semantics for a plain Count-Min Sketch.
+///
+/// Unlike the heap variant, plain CMS uses `aggregation_sub_type` to
+/// distinguish approximate SUM from approximate COUNT. Do not silently
+/// default malformed configs: the wrong weighting produces plausible but
+/// incorrect results.
+fn cms_count_events_for_sub_type(sub_type: &str) -> Result<bool, String> {
+    if sub_type.eq_ignore_ascii_case("count") {
+        Ok(true)
+    } else if sub_type.eq_ignore_ascii_case("sum") {
+        Ok(false)
+    } else {
+        Err(format!(
+            "CountMinSketch requires aggregation_sub_type 'sum' or 'count', got '{sub_type}'"
+        ))
+    }
+}
+
+/// Validate the aggregation subtype for a heap-backed Count-Min Sketch.
+fn validate_cms_with_heap_sub_type(sub_type: &str) -> Result<(), String> {
+    if sub_type.eq_ignore_ascii_case("topk") {
+        Ok(())
+    } else {
+        Err(format!(
+            "CountMinSketchWithHeap requires aggregation_sub_type 'topk', got '{sub_type}'"
+        ))
+    }
+}
+
 /// Extract `(row_num, col_num, k)` for HydraKLL configs.
 fn hydra_kll_params(config: &AggregationConfig) -> Result<(usize, usize, u16), String> {
     let (row_num, col_num) = cms_params(config)?;
@@ -876,12 +908,15 @@ fn cms_heap_params(config: &AggregationConfig) -> Result<(usize, usize, usize), 
 /// Whether a CountMinSketchWithHeap config should count events (weight 1 per
 /// observation, COUNT semantics) rather than summing the sample value.
 /// Defaults to `true` so `COUNT(...)` top-k works out of the box.
-fn cms_count_events(config: &AggregationConfig) -> bool {
-    config
-        .parameters
-        .get("count_events")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true)
+fn cms_count_events(config: &AggregationConfig) -> Result<bool, String> {
+    match config.parameters.get("count_events") {
+        None => Ok(true),
+        Some(value) => value.as_bool().ok_or_else(|| {
+            format!(
+                "CountMinSketchWithHeap parameter 'count_events' must be a boolean, got {value}"
+            )
+        }),
+    }
 }
 
 /// Extract the HLL `precision` parameter from a config. Falls back to
@@ -938,7 +973,9 @@ pub fn create_accumulator_updater(
             "Increase" | "increase" => Ok(Box::new(MultipleIncreaseAccumulatorUpdater::new())),
             "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
                 let (row_num, col_num) = cms_params(config)?;
-                Ok(Box::new(CmsAccumulatorUpdater::new(row_num, col_num)))
+                Ok(Box::new(CmsAccumulatorUpdater::new(
+                    row_num, col_num, false,
+                )))
             }
             "HydraKLL" | "hydra_kll" => {
                 let (row_num, col_num, k) = hydra_kll_params(config)?;
@@ -965,15 +1002,21 @@ pub fn create_accumulator_updater(
         AggregationType::Increase => Ok(Box::new(IncreaseAccumulatorUpdater::new())),
         AggregationType::CountMinSketch => {
             let (row_num, col_num) = cms_params(config)?;
-            Ok(Box::new(CmsAccumulatorUpdater::new(row_num, col_num)))
+            let count_events = cms_count_events_for_sub_type(sub_type)?;
+            Ok(Box::new(CmsAccumulatorUpdater::new(
+                row_num,
+                col_num,
+                count_events,
+            )))
         }
         AggregationType::CountMinSketchWithHeap => {
+            validate_cms_with_heap_sub_type(sub_type)?;
             let (row_num, col_num, heap_size) = cms_heap_params(config)?;
             Ok(Box::new(CmsWithHeapAccumulatorUpdater::new(
                 row_num,
                 col_num,
                 heap_size,
-                cms_count_events(config),
+                cms_count_events(config)?,
             )))
         }
         AggregationType::HydraKLL => {
@@ -1125,7 +1168,7 @@ mod tests {
         )));
         assert!(config_is_keyed(&make_config(
             AggregationType::CountMinSketch,
-            ""
+            "sum"
         )));
         assert!(config_is_keyed(&make_config(AggregationType::HydraKLL, "")));
 
@@ -1172,7 +1215,11 @@ mod tests {
             };
         for (agg_type, sub_type, params) in [
             (AggregationType::DatasketchesKLL, "", kll_params_required()),
-            (AggregationType::CountMinSketch, "", cms_params_required()),
+            (
+                AggregationType::CountMinSketch,
+                "sum",
+                cms_params_required(),
+            ),
         ] {
             let config = make_config_with_params(agg_type, sub_type, params);
             let updater = create_accumulator_updater(&config).unwrap();
@@ -1416,7 +1463,7 @@ mod tests {
         let config = AggregationConfig::new(
             1,
             AggregationType::CountMinSketch,
-            String::new(),
+            "sum".to_string(),
             HashMap::new(),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -1452,7 +1499,7 @@ mod tests {
         let config = AggregationConfig::new(
             21,
             AggregationType::CountMinSketch,
-            String::new(),
+            "sum".to_string(),
             params,
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -1488,6 +1535,102 @@ mod tests {
         p.insert("row_num".to_string(), serde_json::json!(4_u64));
         p.insert("col_num".to_string(), serde_json::json!(1000_u64));
         p
+    }
+
+    fn cms_config(sub_type: &str) -> AggregationConfig {
+        AggregationConfig::new(
+            100,
+            AggregationType::CountMinSketch,
+            sub_type.to_string(),
+            cms_params_required(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            1_000,
+            1_000,
+            WindowType::Tumbling,
+            "test_metric".to_string(),
+            "test_metric".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_cms_count_subtype_uses_unit_weight() {
+        let config = cms_config("count");
+        let mut updater = create_accumulator_updater(&config).unwrap();
+        let key = KeyByLabelValues::new_with_labels(vec!["host-a".to_string()]);
+
+        for _ in 0..5 {
+            updater.update_keyed(&key, 1_000.0, 0);
+        }
+
+        let acc = updater.take_accumulator();
+        let cms = acc
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .expect("CountMinSketch accumulator");
+        assert_eq!(cms.query_key(&key), 5.0);
+    }
+
+    #[test]
+    fn test_cms_sum_subtype_uses_sample_weight() {
+        let config = cms_config("sum");
+        let mut updater = create_accumulator_updater(&config).unwrap();
+        let key = KeyByLabelValues::new_with_labels(vec!["host-a".to_string()]);
+
+        for _ in 0..5 {
+            updater.update_keyed(&key, 10.0, 0);
+        }
+
+        let acc = updater.take_accumulator();
+        let cms = acc
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .expect("CountMinSketch accumulator");
+        assert_eq!(cms.query_key(&key), 50.0);
+    }
+
+    #[test]
+    fn test_cms_rejects_empty_subtype() {
+        let config = cms_config("");
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("empty CountMinSketch subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("sum") && err.contains("count"));
+    }
+
+    #[test]
+    fn test_cms_rejects_unknown_subtype() {
+        let config = cms_config("frequency");
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("unknown CountMinSketch subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("frequency"));
+    }
+
+    #[test]
+    fn test_cms_accepts_case_insensitive_subtype() {
+        for sub_type in ["COUNT", "SuM"] {
+            create_accumulator_updater(&cms_config(sub_type))
+                .unwrap_or_else(|err| panic!("subtype '{sub_type}' should be accepted: {err}"));
+        }
+    }
+
+    #[test]
+    fn test_cms_rejects_whitespace_padded_subtype() {
+        let config = cms_config(" count ");
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("whitespace-padded CountMinSketch subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains(" count "));
     }
 
     fn cms_heap_params_required() -> std::collections::HashMap<String, serde_json::Value> {
@@ -1544,6 +1687,43 @@ mod tests {
             None,
             None,
         )
+    }
+
+    #[test]
+    fn test_cms_with_heap_rejects_empty_subtype() {
+        let mut config = cms_heap_config(cms_heap_params_required());
+        config.aggregation_sub_type.clear();
+
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("empty CountMinSketchWithHeap subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("topk"));
+    }
+
+    #[test]
+    fn test_cms_with_heap_rejects_unknown_subtype() {
+        let mut config = cms_heap_config(cms_heap_params_required());
+        config.aggregation_sub_type = "count".to_string();
+
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("unknown CountMinSketchWithHeap subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("count"));
+    }
+
+    #[test]
+    fn test_cms_with_heap_rejects_non_boolean_count_events() {
+        let mut parameters = cms_heap_params_required();
+        parameters.insert("count_events".to_string(), serde_json::json!("true"));
+        let config = cms_heap_config(parameters);
+
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("non-boolean count_events must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("count_events") && err.contains("boolean"));
     }
 
     #[test]
@@ -1618,7 +1798,10 @@ mod tests {
         params.insert("heapsize".to_string(), serde_json::json!(40));
         let config = cms_heap_config(params);
         assert_eq!(cms_heap_params(&config).unwrap(), (4, 2048, 40));
-        assert!(cms_count_events(&config), "count_events defaults to true");
+        assert!(
+            cms_count_events(&config).unwrap(),
+            "count_events defaults to true"
+        );
     }
 
     #[test]

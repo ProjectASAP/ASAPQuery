@@ -1351,6 +1351,7 @@ mod tests {
     use crate::precompute_operators::delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::precompute_operators::CountMinSketchAccumulator;
     use asap_sketchlib::KllSketch;
     use asap_types::enums::{AggregationType, WindowType};
 
@@ -1456,6 +1457,66 @@ mod tests {
             .into_iter()
             .map(|(ts, val)| (series_key.to_string(), ts, val))
             .collect()
+    }
+
+    #[test]
+    fn test_count_min_sketch_count_subtype_counts_events_through_worker() {
+        let mut config = make_agg_config_full(
+            6,
+            "requests_total",
+            AggregationType::CountMinSketch,
+            "count",
+            1_000,
+            1_000,
+            vec![],
+            vec!["host"],
+        );
+        config
+            .parameters
+            .insert("depth".to_string(), serde_json::json!(3_u64));
+        config
+            .parameters
+            .insert("width".to_string(), serde_json::json!(128_u64));
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(HashMap::from([(6, config)])),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        worker
+            .process_group_samples(
+                6,
+                "",
+                vec![
+                    ("requests_total{host=\"A\"}".to_string(), 100, 100.0),
+                    ("requests_total{host=\"A\"}".to_string(), 200, 200.0),
+                ],
+            )
+            .unwrap();
+
+        worker
+            .process_group_samples(
+                6,
+                "",
+                group_samples("requests_total{host=\"A\"}", vec![(5_000, 1.0)]),
+            )
+            .unwrap();
+
+        let captured = sink.drain();
+        let (_output, acc) = captured
+            .iter()
+            .find(|(output, _)| output.start_timestamp == 0)
+            .expect("worker should emit the closed [0, 1000) window");
+        let cms = acc
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .expect("worker should emit a CountMinSketch accumulator");
+        let key = KeyByLabelValues::new_with_labels(vec!["A".to_string()]);
+        assert_eq!(cms.query_key(&key), 2.0);
     }
 
     // -----------------------------------------------------------------------
