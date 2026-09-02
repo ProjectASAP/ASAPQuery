@@ -264,6 +264,8 @@ impl PrecomputeEngine {
 fn validate_startup_aggregation_configs(
     streaming_config: &StreamingConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let mut errors = Vec::new();
+
     for (&aggregation_id, config) in streaming_config.get_all_aggregation_configs() {
         if !matches!(
             config.aggregation_type,
@@ -272,13 +274,23 @@ fn validate_startup_aggregation_configs(
             continue;
         }
 
-        create_accumulator_updater(config).map(|_| ()).map_err(
-            |err| -> Box<dyn std::error::Error + Send + Sync> {
-                format!("invalid aggregation config for aggregation_id {aggregation_id}: {err}")
-                    .into()
-            },
-        )?;
+        if let Err(err) = create_accumulator_updater(config) {
+            errors.push((aggregation_id, err));
+        }
     }
+
+    if !errors.is_empty() {
+        errors.sort_by_key(|(aggregation_id, _)| *aggregation_id);
+        let details = errors
+            .into_iter()
+            .map(|(aggregation_id, err)| {
+                format!("invalid aggregation config for aggregation_id {aggregation_id}: {err}")
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(details.into());
+    }
+
     Ok(())
 }
 
@@ -395,5 +407,87 @@ mod tests {
         };
         assert!(err.to_string().contains("aggregation_id 1"));
         assert!(err.to_string().contains("topk"));
+    }
+
+    #[tokio::test]
+    async fn run_reports_all_invalid_cms_configs_in_aggregation_id_order() {
+        let cms_config = |id, aggregation_type, aggregation_sub_type, parameters| {
+            AggregationConfig::new(
+                id,
+                aggregation_type,
+                aggregation_sub_type,
+                parameters,
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+                    "host".to_string(),
+                ]),
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+                String::new(),
+                1_000,
+                1_000,
+                WindowType::Tumbling,
+                "requests_total".to_string(),
+                "requests_total".to_string(),
+                None,
+                None,
+                None,
+                None,
+            )
+        };
+
+        let mut heap_parameters = HashMap::new();
+        heap_parameters.insert("depth".to_string(), json!(3_u64));
+        heap_parameters.insert("width".to_string(), json!(128_u64));
+        heap_parameters.insert("heapsize".to_string(), json!(32_u64));
+
+        let configs = HashMap::from([
+            (
+                20,
+                cms_config(
+                    20,
+                    AggregationType::CountMinSketchWithHeap,
+                    String::new(),
+                    heap_parameters,
+                ),
+            ),
+            (
+                3,
+                cms_config(
+                    3,
+                    AggregationType::CountMinSketch,
+                    String::new(),
+                    HashMap::from([
+                        ("depth".to_string(), json!(3_u64)),
+                        ("width".to_string(), json!(128_u64)),
+                    ]),
+                ),
+            ),
+        ]);
+        let engine = PrecomputeEngine::new(
+            PrecomputeEngineConfig {
+                num_workers: 1,
+                late_data_policy: LateDataPolicy::Drop,
+                ..PrecomputeEngineConfig::default()
+            },
+            Arc::new(StreamingConfig::new(configs)),
+            Arc::new(NoopOutputSink::new()),
+            vec![Box::new(ShutdownSource)],
+        );
+
+        let result = engine.run().await;
+        let err = match result {
+            Ok(()) => panic!("invalid CMS configs must fail before startup"),
+            Err(err) => err.to_string(),
+        };
+        let id_3 = err
+            .find("aggregation_id 3")
+            .expect("CMS error should be reported");
+        let id_20 = err
+            .find("aggregation_id 20")
+            .expect("heap CMS error should be reported");
+        assert!(
+            id_3 < id_20,
+            "errors should be ordered by aggregation ID: {err}"
+        );
     }
 }

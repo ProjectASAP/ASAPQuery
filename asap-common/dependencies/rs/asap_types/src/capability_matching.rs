@@ -198,11 +198,14 @@ fn plain_cms_sub_type_compatible(stat: Statistic, config: &AggregationConfig) ->
         return true;
     }
 
-    match stat {
-        Statistic::Sum => config.aggregation_sub_type.eq_ignore_ascii_case("sum"),
-        Statistic::Count => config.aggregation_sub_type.eq_ignore_ascii_case("count"),
-        _ => false,
-    }
+    let expected_sub_type = match stat {
+        Statistic::Sum => "sum",
+        Statistic::Count => "count",
+        _ => unreachable!("plain CMS matching only supports SUM and COUNT"),
+    };
+    config
+        .aggregation_sub_type
+        .eq_ignore_ascii_case(expected_sub_type)
 }
 
 /// Aggregation priority comparator: prefer larger `window_size_ms` (descending).
@@ -539,6 +542,32 @@ mod tests {
         )
         .expect("COUNT should select the event-weighted sketch");
         assert_eq!(count.aggregation_id_for_value, 2);
+    }
+
+    #[test]
+    fn plain_cms_with_invalid_subtypes_is_excluded_from_matching() {
+        for invalid_sub_type in ["", "unknown", " sum "] {
+            let configs = single_config(make_config(
+                1,
+                "cpu",
+                "CountMinSketch",
+                invalid_sub_type,
+                300_000,
+                "tumbling",
+                &[],
+                "",
+            ));
+
+            let result = find_compatible_aggregation(
+                &configs,
+                &req("cpu", &[Statistic::Sum], 300_000, &[], ""),
+            );
+
+            assert!(
+                result.is_none(),
+                "invalid plain CMS subtype {invalid_sub_type:?} must not match SUM"
+            );
+        }
     }
 
     #[test]
