@@ -1,4 +1,5 @@
-use crate::data_model::StreamingConfig;
+use crate::data_model::{AggregationType, StreamingConfig};
+use crate::precompute_engine::accumulator_factory::create_accumulator_updater;
 use crate::precompute_engine::config::PrecomputeEngineConfig;
 use crate::precompute_engine::ingest_source::{IngestContext, IngestSource};
 use crate::precompute_engine::output_sink::OutputSink;
@@ -154,6 +155,8 @@ impl PrecomputeEngine {
     /// Start the precompute engine. This spawns worker tasks and all registered
     /// ingest sources, then blocks until shutdown.
     pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        validate_startup_aggregation_configs(&self.streaming_config)?;
+
         let num_workers = self.config.num_workers;
 
         let receivers = self
@@ -250,5 +253,97 @@ impl PrecomputeEngine {
         }
 
         Ok(())
+    }
+}
+
+/// Validate aggregation configs before starting any worker or ingest task.
+///
+/// Plain Count-Min Sketch configs carry their SUM-versus-COUNT contract in
+/// `aggregation_sub_type`; allowing an invalid value to reach the lazy worker
+/// path would leave the engine running while silently losing that contract.
+fn validate_startup_aggregation_configs(
+    streaming_config: &StreamingConfig,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    for (&aggregation_id, config) in streaming_config.get_all_aggregation_configs() {
+        if config.aggregation_type != AggregationType::CountMinSketch {
+            continue;
+        }
+
+        create_accumulator_updater(config).map(|_| ()).map_err(
+            |err| -> Box<dyn std::error::Error + Send + Sync> {
+                format!("invalid aggregation config for aggregation_id {aggregation_id}: {err}")
+                    .into()
+            },
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_model::{AggregationType, StreamingConfig, WindowType};
+    use crate::precompute_engine::config::LateDataPolicy;
+    use crate::precompute_engine::ingest_source::{IngestContext, IngestSource};
+    use crate::precompute_engine::output_sink::NoopOutputSink;
+    use async_trait::async_trait;
+    use serde_json::json;
+
+    struct ShutdownSource;
+
+    #[async_trait]
+    impl IngestSource for ShutdownSource {
+        async fn run(
+            self: Box<Self>,
+            ctx: IngestContext,
+        ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+            ctx.router.broadcast_shutdown().await
+        }
+    }
+
+    #[tokio::test]
+    async fn run_rejects_invalid_cms_subtype_before_starting_workers() {
+        let mut parameters = HashMap::new();
+        parameters.insert("depth".to_string(), json!(3_u64));
+        parameters.insert("width".to_string(), json!(128_u64));
+        let cms = AggregationConfig::new(
+            1,
+            AggregationType::CountMinSketch,
+            String::new(),
+            parameters,
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+                "host".to_string()
+            ]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            1_000,
+            1_000,
+            WindowType::Tumbling,
+            "requests_total".to_string(),
+            "requests_total".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let engine = PrecomputeEngine::new(
+            PrecomputeEngineConfig {
+                num_workers: 1,
+                late_data_policy: LateDataPolicy::Drop,
+                ..PrecomputeEngineConfig::default()
+            },
+            Arc::new(StreamingConfig::new(HashMap::from([(1, cms)]))),
+            Arc::new(NoopOutputSink::new()),
+            vec![Box::new(ShutdownSource)],
+        );
+
+        let result = engine.run().await;
+        let err = match result {
+            Ok(()) => panic!("invalid CMS subtype must fail before startup"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("aggregation_id 1"));
+        assert!(err.to_string().contains("sum") && err.to_string().contains("count"));
     }
 }
