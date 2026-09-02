@@ -403,9 +403,11 @@ impl AccumulatorUpdater for SetAggregatorUpdater {
 // DeltaSetAggregatorUpdater
 // ---------------------------------------------------------------------------
 
-/// Updater for `AggregationType::DeltaSetAggregator`, which records keys added
-/// during the current delta window. Removals are produced by the accumulator
-/// merge path when delta windows are combined.
+/// Updater for `AggregationType::DeltaSetAggregator`, which records keys observed
+/// during the current window. The worker's window-finalization step compares that
+/// population with the previous window to produce added and removed keys; the
+/// accumulator merge path only preserves the correct state when delta buckets are
+/// combined.
 pub struct DeltaSetAggregatorUpdater {
     acc: DeltaSetAggregatorAccumulator,
 }
