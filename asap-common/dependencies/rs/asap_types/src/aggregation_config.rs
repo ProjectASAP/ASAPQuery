@@ -9,7 +9,7 @@ use crate::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::AggregationType;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AggregationConfig {
     pub aggregation_id: u64,
     pub aggregation_type: AggregationType,

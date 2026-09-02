@@ -240,21 +240,26 @@ impl Worker {
                     break;
                 }
                 WorkerMessage::UpdateAggConfigs(new_configs) => {
-                    // Flush and evict group states for agg IDs that are being removed.
-                    // Must happen before swapping agg_configs so GroupState.config is
-                    // still valid during the final window close.
-                    let removed_ids: Vec<u64> = self
+                    // Flush and evict group states for removed or materially changed
+                    // aggregations. Must happen before swapping agg_configs so
+                    // GroupState.config is still valid during the final window close.
+                    let reset_ids: Vec<u64> = self
                         .agg_configs
-                        .keys()
-                        .filter(|id| !new_configs.contains_key(id))
-                        .copied()
+                        .iter()
+                        .filter_map(|(&id, old_config)| match new_configs.get(&id) {
+                            None => Some(id),
+                            Some(new_config) if old_config.as_ref() != new_config.as_ref() => {
+                                Some(id)
+                            }
+                            Some(_) => None,
+                        })
                         .collect();
 
-                    if !removed_ids.is_empty() {
+                    if !reset_ids.is_empty() {
                         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> =
                             Vec::new();
 
-                        for agg_id in &removed_ids {
+                        for agg_id in &reset_ids {
                             // Drain all group states for this agg_id in one move.
                             let Some(inner) = self.group_states.remove(agg_id) else {
                                 continue;
@@ -307,8 +312,8 @@ impl Worker {
                         if !emit_batch.is_empty() {
                             if let Err(e) = self.output_sink.emit_batch(emit_batch) {
                                 warn!(
-                                    "Worker {}: error flushing removed agg_ids {:?}: {}",
-                                    self.id, removed_ids, e
+                                    "Worker {}: error flushing reset agg_ids {:?}: {}",
+                                    self.id, reset_ids, e
                                 );
                             }
                         }
@@ -316,10 +321,10 @@ impl Worker {
                         self.group_count
                             .store(self.total_groups(), Ordering::Relaxed);
                         info!(
-                            "Worker {}: evicted {} removed agg_id(s) {:?}",
+                            "Worker {}: evicted {} reset agg_id(s) {:?}",
                             self.id,
-                            removed_ids.len(),
-                            removed_ids,
+                            reset_ids.len(),
+                            reset_ids,
                         );
                     }
 
@@ -2810,6 +2815,97 @@ aggregations:
             trailing_sum.sum.abs() < 1e-10,
             "trailing window should hold the t=10_000 sample (val=0.0), got {}",
             trailing_sum.sum
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update_agg_configs_recreates_state_when_cms_subtype_changes() {
+        let mut sum_config = make_agg_config(
+            1,
+            "requests_total",
+            AggregationType::CountMinSketch,
+            "sum",
+            1_000,
+            1_000,
+            vec![],
+        );
+        sum_config
+            .parameters
+            .insert("depth".to_string(), serde_json::json!(3_u64));
+        sum_config
+            .parameters
+            .insert("width".to_string(), serde_json::json!(128_u64));
+        let mut count_config = sum_config.clone();
+        count_config.aggregation_sub_type = "count".to_string();
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let (tx, rx) = tokio::sync::mpsc::channel(32);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
+        let worker = Worker::new(
+            0,
+            rx,
+            sink.clone(),
+            arc_configs(HashMap::from([(1, sum_config)])),
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 0,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::Drop,
+                wall_clock_grace_period_ms: 0,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
+        );
+        let handle = tokio::spawn(async move { worker.run().await });
+
+        tx.send(WorkerMessage::GroupSamples {
+            agg_id: 1,
+            group_key: String::new(),
+            samples: vec![("requests_total".to_string(), 100, 10.0)],
+            ingest_received_at: std::time::Instant::now(),
+        })
+        .await
+        .unwrap();
+        tx.send(WorkerMessage::UpdateAggConfigs(arc_configs(HashMap::from(
+            [(1, count_config)],
+        ))))
+        .await
+        .unwrap();
+        tx.send(WorkerMessage::GroupSamples {
+            agg_id: 1,
+            group_key: String::new(),
+            samples: vec![("requests_total".to_string(), 1_100, 10.0)],
+            ingest_received_at: std::time::Instant::now(),
+        })
+        .await
+        .unwrap();
+        tx.send(WorkerMessage::Shutdown).await.unwrap();
+        handle.await.unwrap();
+
+        let mut captured = sink.drain();
+        captured.sort_by_key(|(output, _)| output.start_timestamp);
+        assert_eq!(captured.len(), 2);
+
+        let first = captured[0]
+            .1
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .expect("first output should be CMS");
+        assert_eq!(
+            first.query_key(&KeyByLabelValues::new_with_labels(vec![])),
+            10.0
+        );
+
+        let second = captured[1]
+            .1
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .expect("second output should be CMS");
+        assert_eq!(
+            second.query_key(&KeyByLabelValues::new_with_labels(vec![])),
+            1.0
         );
     }
 
