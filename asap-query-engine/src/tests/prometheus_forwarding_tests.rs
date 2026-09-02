@@ -11,7 +11,7 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
 
 /// Mock Prometheus server for testing
-async fn start_mock_prometheus_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
+async fn start_mock_prometheus_server() -> Result<u16, Box<dyn std::error::Error>> {
     use axum::{extract::Query, response::Json, routing::get, Router};
     use serde_json::json;
     use std::collections::HashMap;
@@ -88,7 +88,8 @@ async fn start_mock_prometheus_server(port: u16) -> Result<(), Box<dyn std::erro
         .route("/api/v1/query", get(mock_query_handler))
         .route("/api/v1/query_range", get(mock_range_query_handler));
 
-    let listener = TcpListener::bind(format!("127.0.0.1:{port}")).await?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
 
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
@@ -96,7 +97,7 @@ async fn start_mock_prometheus_server(port: u16) -> Result<(), Box<dyn std::erro
 
     // Give the server time to start
     sleep(Duration::from_millis(100)).await;
-    Ok(())
+    Ok(port)
 }
 
 async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
@@ -137,8 +138,7 @@ async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
 #[tokio::test]
 async fn test_prometheus_forwarding_instant_query() {
     // Start mock Prometheus server
-    let prometheus_port = 19090;
-    start_mock_prometheus_server(prometheus_port).await.unwrap();
+    let prometheus_port = start_mock_prometheus_server().await.unwrap();
 
     // Start our HTTP server with forwarding enabled
     let (_server, server_port) = setup_test_server(prometheus_port).await;
@@ -168,8 +168,7 @@ async fn test_prometheus_forwarding_instant_query() {
 #[tokio::test]
 async fn test_prometheus_forwarding_error_handling() {
     // Start mock Prometheus server
-    let prometheus_port = 19092;
-    start_mock_prometheus_server(prometheus_port).await.unwrap();
+    let prometheus_port = start_mock_prometheus_server().await.unwrap();
 
     // Start our HTTP server with forwarding enabled
     let (_server, server_port) = setup_test_server(prometheus_port).await;
@@ -311,8 +310,7 @@ async fn test_prometheus_server_unreachable() {
 
 #[tokio::test]
 async fn test_prometheus_forwarding_range_query() {
-    let prometheus_port = 19094;
-    start_mock_prometheus_server(prometheus_port).await.unwrap();
+    let prometheus_port = start_mock_prometheus_server().await.unwrap();
 
     let (_server, server_port) = setup_test_server(prometheus_port).await;
 
