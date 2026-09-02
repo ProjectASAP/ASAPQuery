@@ -1,6 +1,6 @@
 use crate::data_model::{
-    AggregateCore, AggregationType, Measurement, MergeableAccumulator, SerializableToSink,
-    SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
+    AggregateCore, AggregationType, Measurement, MergeableAccumulator, QueryBounds,
+    SerializableToSink, SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-pub(crate) const INCREASE_BINARY_FORMAT_MAGIC: [u8; 4] = *b"INC6";
+pub(crate) const INCREASE_BINARY_FORMAT_MAGIC: [u8; 4] = *b"INC7";
 pub(crate) const RESET_RECORD_BYTES: usize =
     std::mem::size_of::<i64>() + std::mem::size_of::<f64>();
 
@@ -27,6 +27,7 @@ pub struct IncreaseAccumulator {
     pub starting_timestamp: i64,
     pub last_seen_measurement: Measurement,
     pub last_seen_timestamp: i64,
+    pub sample_count: u64,
     pub counter_reset_adjustment: f64,
     pub counter_reset_events: Vec<CounterResetEvent>,
 }
@@ -38,11 +39,32 @@ impl IncreaseAccumulator {
         last_seen_measurement: Measurement,
         last_seen_timestamp: i64,
     ) -> Self {
+        Self::new_with_sample_count(
+            starting_measurement,
+            starting_timestamp,
+            last_seen_measurement,
+            last_seen_timestamp,
+            1,
+        )
+    }
+
+    pub fn new_with_sample_count(
+        starting_measurement: Measurement,
+        starting_timestamp: i64,
+        last_seen_measurement: Measurement,
+        last_seen_timestamp: i64,
+        sample_count: u64,
+    ) -> Self {
+        assert!(
+            sample_count > 0,
+            "IncreaseAccumulator sample count must be positive"
+        );
         Self {
             starting_measurement,
             starting_timestamp,
             last_seen_measurement,
             last_seen_timestamp,
+            sample_count,
             counter_reset_adjustment: 0.0,
             counter_reset_events: Vec::new(),
         }
@@ -59,11 +81,79 @@ impl IncreaseAccumulator {
         }
         self.last_seen_measurement = measurement;
         self.last_seen_timestamp = timestamp;
+        self.sample_count = self
+            .sample_count
+            .checked_add(1)
+            .expect("IncreaseAccumulator sample count overflow");
     }
 
     fn increase(&self) -> f64 {
         self.last_seen_measurement.value - self.starting_measurement.value
             + self.counter_reset_adjustment
+    }
+
+    pub fn query_with_bounds(
+        &self,
+        statistic: Statistic,
+        bounds: &QueryBounds,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        if bounds.start_timestamp >= bounds.end_timestamp {
+            return Err("Query range must have a positive duration".into());
+        }
+        if self.sample_count < 2 {
+            return Err("At least two samples are required".into());
+        }
+
+        let sampled_interval = self
+            .last_seen_timestamp
+            .checked_sub(self.starting_timestamp)
+            .ok_or("Observed sample timestamps overflowed")? as f64;
+        if sampled_interval <= 0.0 {
+            return Err("Observed samples must span a positive duration".into());
+        }
+
+        let average_sample_interval = sampled_interval / (self.sample_count - 1) as f64;
+        let extrapolation_threshold = average_sample_interval * 1.1;
+        let mut duration_to_start =
+            self.starting_timestamp
+                .checked_sub(bounds.start_timestamp)
+                .ok_or("Start boundary duration overflowed")? as f64;
+        let mut duration_to_end = bounds
+            .end_timestamp
+            .checked_sub(self.last_seen_timestamp)
+            .ok_or("End boundary duration overflowed")? as f64;
+
+        if duration_to_start >= extrapolation_threshold {
+            duration_to_start = average_sample_interval / 2.0;
+        }
+        if duration_to_end >= extrapolation_threshold {
+            duration_to_end = average_sample_interval / 2.0;
+        }
+
+        let increase = self.increase();
+        if increase > 0.0 && self.starting_measurement.value >= 0.0 {
+            let duration_to_zero = sampled_interval * (self.starting_measurement.value / increase);
+            if duration_to_zero < duration_to_start {
+                duration_to_start = duration_to_zero;
+            }
+        }
+
+        let factor = (sampled_interval + duration_to_start + duration_to_end) / sampled_interval;
+        let query_interval = bounds
+            .end_timestamp
+            .checked_sub(bounds.start_timestamp)
+            .ok_or("Query range duration overflowed")? as f64;
+        let result = match statistic {
+            Statistic::Increase => increase * factor,
+            Statistic::Rate => increase * factor / query_interval * 1000.0,
+            _ => {
+                return Err(
+                    format!("Unsupported statistic in IncreaseAccumulator: {statistic:?}").into(),
+                )
+            }
+        };
+
+        Ok(result)
     }
 
     fn add_reset_event(&mut self, event: CounterResetEvent) {
@@ -95,6 +185,12 @@ impl IncreaseAccumulator {
         let last_seen_timestamp = data["last_seen_timestamp"]
             .as_i64()
             .ok_or("Missing or invalid 'last_seen_timestamp' field")?;
+        let sample_count = data["sample_count"]
+            .as_u64()
+            .ok_or("Missing or invalid 'sample_count' field")?;
+        if sample_count == 0 {
+            return Err("Sample count must be positive".into());
+        }
         let counter_reset_adjustment = data["counter_reset_adjustment"]
             .as_f64()
             .ok_or("Missing or invalid 'counter_reset_adjustment' field")?;
@@ -106,6 +202,7 @@ impl IncreaseAccumulator {
             last_seen_measurement,
             last_seen_timestamp,
         );
+        accumulator.sample_count = sample_count;
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
         accumulator.counter_reset_events = counter_reset_events;
         Ok(accumulator)
@@ -196,6 +293,24 @@ impl IncreaseAccumulator {
         offset += 8;
 
         if buffer.len() < offset + 8 {
+            return Err("Buffer too short for sample count".into());
+        }
+        let sample_count = u64::from_le_bytes([
+            buffer[offset],
+            buffer[offset + 1],
+            buffer[offset + 2],
+            buffer[offset + 3],
+            buffer[offset + 4],
+            buffer[offset + 5],
+            buffer[offset + 6],
+            buffer[offset + 7],
+        ]);
+        offset += 8;
+        if sample_count == 0 {
+            return Err("Sample count must be positive".into());
+        }
+
+        if buffer.len() < offset + 8 {
             return Err("Buffer too short for counter reset adjustment".into());
         }
         let counter_reset_adjustment = f64::from_le_bytes([
@@ -262,6 +377,7 @@ impl IncreaseAccumulator {
             last_seen_measurement,
             last_seen_timestamp,
         );
+        accumulator.sample_count = sample_count;
         accumulator.counter_reset_adjustment = counter_reset_adjustment;
         accumulator.counter_reset_events = counter_reset_events;
         Ok((accumulator, offset))
@@ -275,6 +391,7 @@ impl SerializableToSink for IncreaseAccumulator {
             "starting_timestamp": self.starting_timestamp,
             "last_seen_measurement": self.last_seen_measurement.serialize_to_json(),
             "last_seen_timestamp": self.last_seen_timestamp,
+            "sample_count": self.sample_count,
             "counter_reset_adjustment": self.counter_reset_adjustment,
             "counter_reset_events": self.counter_reset_events,
         })
@@ -300,6 +417,7 @@ impl SerializableToSink for IncreaseAccumulator {
 
         // Last seen timestamp and total reset adjustment
         buffer.extend_from_slice(&self.last_seen_timestamp.to_le_bytes());
+        buffer.extend_from_slice(&self.sample_count.to_le_bytes());
         buffer.extend_from_slice(&self.counter_reset_adjustment.to_le_bytes());
         buffer.extend_from_slice(&(self.counter_reset_events.len() as u32).to_le_bytes());
         for event in &self.counter_reset_events {
@@ -324,6 +442,15 @@ impl MergeableAccumulator<IncreaseAccumulator> for IncreaseAccumulator {
         let mut result = accumulators.remove(0);
 
         for acc in accumulators {
+            // Query-time merges receive disjoint pane/window observations.
+            // Reset events are deduplicated for defensive overlap handling,
+            // but arbitrary duplicate samples are not identifiable from this
+            // summary shape, so sample counts remain additive by contract.
+            result.sample_count = result
+                .sample_count
+                .checked_add(acc.sample_count)
+                .ok_or("Sample count overflow while merging IncreaseAccumulator")?;
+
             // Adjacent accumulators represent consecutive portions of the same
             // counter. A decrease at their boundary is also a reset.
             if acc.starting_timestamp >= result.last_seen_timestamp
@@ -405,6 +532,16 @@ impl AggregateCore for IncreaseAccumulator {
         use crate::data_model::SingleSubpopulationAggregate;
         self.query(statistic, None)
     }
+
+    fn query_statistic_with_bounds(
+        &self,
+        statistic: Statistic,
+        _key: &Option<crate::KeyByLabelValues>,
+        _query_kwargs: &HashMap<String, String>,
+        bounds: &QueryBounds,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        self.query_with_bounds(statistic, bounds)
+    }
 }
 
 impl SingleSubpopulationAggregate for IncreaseAccumulator {
@@ -480,6 +617,165 @@ impl SingleSubpopulationAggregateFactory for IncreaseAccumulatorFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn no_boundary_gap_keeps_increase_and_scales_rate_to_requested_range() {
+        let mut acc = IncreaseAccumulator::new(
+            Measurement::new(100.0),
+            1_000,
+            Measurement::new(100.0),
+            1_000,
+        );
+        acc.update(Measurement::new(110.0), 2_000);
+        acc.update(Measurement::new(120.0), 3_000);
+
+        let bounds = crate::data_model::QueryBounds::new(1_000, 3_000);
+
+        assert_eq!(
+            acc.query_with_bounds(Statistic::Increase, &bounds).unwrap(),
+            20.0
+        );
+        assert_eq!(
+            acc.query_with_bounds(Statistic::Rate, &bounds).unwrap(),
+            10.0
+        );
+    }
+
+    #[test]
+    fn large_boundary_gaps_are_limited_to_half_average_sample_interval() {
+        let mut acc = IncreaseAccumulator::new(
+            Measurement::new(100.0),
+            1_000,
+            Measurement::new(100.0),
+            1_000,
+        );
+        acc.update(Measurement::new(110.0), 2_000);
+        acc.update(Measurement::new(120.0), 3_000);
+
+        let bounds = crate::data_model::QueryBounds::new(-1_000, 5_000);
+
+        assert_eq!(
+            acc.query_with_bounds(Statistic::Increase, &bounds).unwrap(),
+            30.0
+        );
+        assert_eq!(
+            acc.query_with_bounds(Statistic::Rate, &bounds).unwrap(),
+            5.0
+        );
+    }
+
+    #[test]
+    fn exact_threshold_uses_half_an_average_sample_interval() {
+        let acc = IncreaseAccumulator::new_with_sample_count(
+            Measurement::new(100.0),
+            1_000,
+            Measurement::new(110.0),
+            2_000,
+            2,
+        );
+        let bounds = crate::data_model::QueryBounds::new(-100, 2_000);
+
+        // The left gap is exactly 1.1 times the average interval, so the
+        // inclusive threshold must choose half an interval (500ms).
+        assert_eq!(
+            acc.query_with_bounds(Statistic::Increase, &bounds).unwrap(),
+            15.0
+        );
+    }
+
+    #[test]
+    fn irregular_sample_intervals_use_the_average_interval() {
+        let acc = IncreaseAccumulator::new_with_sample_count(
+            Measurement::new(100.0),
+            0,
+            Measurement::new(125.0),
+            1_700,
+            3,
+        );
+        let bounds = crate::data_model::QueryBounds::new(-700, 2_400);
+
+        let expected_increase = 25.0 * 3_100.0 / 1_700.0;
+        let expected_rate = expected_increase / 3_100.0 * 1_000.0;
+        assert!(
+            (acc.query_with_bounds(Statistic::Increase, &bounds).unwrap() - expected_increase)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (acc.query_with_bounds(Statistic::Rate, &bounds).unwrap() - expected_rate).abs()
+                < 1e-12
+        );
+    }
+
+    #[test]
+    fn fewer_than_two_samples_and_degenerate_ranges_are_rejected() {
+        let single_sample = IncreaseAccumulator::new(
+            Measurement::new(100.0),
+            1_000,
+            Measurement::new(100.0),
+            1_000,
+        );
+        assert!(single_sample
+            .query_with_bounds(
+                Statistic::Increase,
+                &crate::data_model::QueryBounds::new(0, 2_000)
+            )
+            .is_err());
+
+        let two_samples = IncreaseAccumulator::new_with_sample_count(
+            Measurement::new(100.0),
+            1_000,
+            Measurement::new(110.0),
+            2_000,
+            2,
+        );
+        assert!(two_samples
+            .query_with_bounds(
+                Statistic::Rate,
+                &crate::data_model::QueryBounds::new(2_000, 2_000)
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn counter_resets_are_corrected_before_boundary_extrapolation() {
+        let mut acc = IncreaseAccumulator::new(
+            Measurement::new(100.0),
+            1_000,
+            Measurement::new(100.0),
+            1_000,
+        );
+        acc.update(Measurement::new(150.0), 2_000);
+        acc.update(Measurement::new(10.0), 3_000);
+        acc.update(Measurement::new(60.0), 4_000);
+
+        let bounds = crate::data_model::QueryBounds::new(0, 5_000);
+
+        let increase = acc.query_with_bounds(Statistic::Increase, &bounds).unwrap();
+        let rate = acc.query_with_bounds(Statistic::Rate, &bounds).unwrap();
+        assert!((increase - (110.0 * 5.0 / 3.0)).abs() < f64::EPSILON);
+        assert!((rate - (110.0 / 3.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn counter_extrapolation_is_clamped_to_duration_to_zero() {
+        let acc = IncreaseAccumulator::new_with_sample_count(
+            Measurement::new(1.0),
+            1_000,
+            Measurement::new(101.0),
+            3_000,
+            2,
+        );
+        let bounds = crate::data_model::QueryBounds::new(-500, 3_000);
+
+        // Without the counter-to-zero clamp, the 1.5s left gap would be
+        // extrapolated as if the counter had already been increasing before
+        // the first observed sample. Prometheus limits it to 20ms here.
+        assert_eq!(
+            acc.query_with_bounds(Statistic::Increase, &bounds).unwrap(),
+            101.0
+        );
+    }
 
     #[test]
     fn test_increase_accumulator_creation() {
@@ -599,6 +895,7 @@ mod tests {
         assert_eq!(merged.starting_timestamp, 500);
         assert_eq!(merged.last_seen_measurement.value, 30.0);
         assert_eq!(merged.last_seen_timestamp, 3000);
+        assert_eq!(merged.sample_count, 3);
     }
 
     #[test]
@@ -644,11 +941,14 @@ mod tests {
 
     #[test]
     fn test_increase_accumulator_serialization() {
-        let acc =
-            IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(25.0), 2000);
+        let mut acc =
+            IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(10.0), 1000);
+        acc.update(Measurement::new(15.0), 1500);
+        acc.update(Measurement::new(25.0), 2000);
 
         // Test JSON serialization
         let json = acc.serialize_to_json();
+        assert_eq!(json["sample_count"], 3);
         assert!(json.get("opaque_reset_adjustment").is_none());
         assert!(json.get("opaque_reset_ranges").is_none());
         let deserialized = IncreaseAccumulator::deserialize_from_json(&json).unwrap();
@@ -662,10 +962,11 @@ mod tests {
             deserialized.last_seen_measurement.value
         );
         assert_eq!(acc.last_seen_timestamp, deserialized.last_seen_timestamp);
+        assert_eq!(acc.sample_count, deserialized.sample_count);
 
         // Test byte serialization
         let bytes = acc.serialize_to_bytes();
-        assert_eq!(&bytes[..4], b"INC6");
+        assert_eq!(&bytes[..4], b"INC7");
         let deserialized_bytes = IncreaseAccumulator::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(
             acc.starting_measurement.value,
@@ -683,11 +984,13 @@ mod tests {
             acc.last_seen_timestamp,
             deserialized_bytes.last_seen_timestamp
         );
+        assert_eq!(acc.sample_count, deserialized_bytes.sample_count);
     }
 
     #[test]
     fn test_deserialize_from_bytes_rejects_previous_formats() {
         assert!(IncreaseAccumulator::deserialize_from_bytes(b"INC2").is_err());
+        assert!(IncreaseAccumulator::deserialize_from_bytes(b"INC6").is_err());
         assert!(IncreaseAccumulator::deserialize_from_bytes(b"INC5").is_err());
     }
 

@@ -1,6 +1,6 @@
 use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
-    MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
+    MultipleSubpopulationAggregate, QueryBounds, SerializableToSink, SingleSubpopulationAggregate,
 };
 use crate::precompute_operators::{CounterResetEvent, IncreaseAccumulator};
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,7 @@ struct MeasurementData {
     starting_timestamp: i64,
     last_seen_measurement: f64,
     last_seen_timestamp: i64,
+    sample_count: u64,
     counter_reset_adjustment: f64,
     counter_reset_events: Vec<CounterResetEvent>,
 }
@@ -122,6 +123,9 @@ impl MultipleIncreaseAccumulator {
             let starting_timestamp = values.starting_timestamp;
             let last_seen_measurement = Measurement::new(values.last_seen_measurement);
             let last_seen_timestamp = values.last_seen_timestamp;
+            if values.sample_count == 0 {
+                return Err("Sample count must be positive".into());
+            }
 
             let mut increase_accumulator = IncreaseAccumulator::new(
                 starting_measurement,
@@ -129,6 +133,7 @@ impl MultipleIncreaseAccumulator {
                 last_seen_measurement,
                 last_seen_timestamp,
             );
+            increase_accumulator.sample_count = values.sample_count;
             increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
             increase_accumulator.counter_reset_events = values.counter_reset_events;
 
@@ -173,6 +178,7 @@ impl MultipleIncreaseAccumulator {
                     starting_timestamp: increase_acc.starting_timestamp,
                     last_seen_measurement: increase_acc.last_seen_measurement.value,
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
+                    sample_count: increase_acc.sample_count,
                     counter_reset_adjustment: increase_acc.counter_reset_adjustment,
                     counter_reset_events: increase_acc.counter_reset_events.clone(),
                 },
@@ -291,6 +297,23 @@ impl AggregateCore for MultipleIncreaseAccumulator {
             .as_ref()
             .ok_or("Key required for MultipleIncreaseAccumulator")?;
         self.query(statistic, key_val, Some(query_kwargs))
+    }
+
+    fn query_statistic_with_bounds(
+        &self,
+        statistic: Statistic,
+        key: &Option<KeyByLabelValues>,
+        _query_kwargs: &std::collections::HashMap<String, String>,
+        bounds: &QueryBounds,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for MultipleIncreaseAccumulator")?;
+        let data = self
+            .increases
+            .get(key_val)
+            .ok_or_else(|| format!("Key {key_val} not found in MultipleIncreaseAccumulator"))?;
+        data.query_with_bounds(statistic, bounds)
     }
 }
 
@@ -454,6 +477,7 @@ mod tests {
         let merged_key1 = merged.increases.get(&key1).unwrap();
         assert_eq!(merged_key1.starting_measurement.value, 10.0); // Earlier start
         assert_eq!(merged_key1.last_seen_measurement.value, 30.0); // Later end
+        assert_eq!(merged_key1.sample_count, 2);
     }
 
     #[test]
@@ -462,7 +486,16 @@ mod tests {
 
         let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
 
-        acc.update(key.clone(), create_test_increase_accumulator(10.0, 25.0));
+        acc.update(
+            key.clone(),
+            IncreaseAccumulator::new_with_sample_count(
+                Measurement::new(10.0),
+                1_000,
+                Measurement::new(25.0),
+                2_000,
+                2,
+            ),
+        );
 
         // Test JSON serialization
         let json_value = acc.serialize_to_json();
@@ -472,6 +505,7 @@ mod tests {
         let deserialized_acc = deserialized.increases.get(&key).unwrap();
         assert_eq!(deserialized_acc.starting_measurement.value, 10.0);
         assert_eq!(deserialized_acc.last_seen_measurement.value, 25.0);
+        assert_eq!(deserialized_acc.sample_count, 2);
 
         // Test binary serialization
         let bytes = acc.serialize_to_bytes();
@@ -482,6 +516,61 @@ mod tests {
         let deserialized_acc_bytes = deserialized_bytes.increases.get(&key).unwrap();
         assert_eq!(deserialized_acc_bytes.starting_measurement.value, 10.0);
         assert_eq!(deserialized_acc_bytes.last_seen_measurement.value, 25.0);
+        assert_eq!(deserialized_acc_bytes.sample_count, 2);
+
+        let arroyo_round_trip = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+            &acc.serialize_to_bytes_arroyo(),
+        )
+        .unwrap();
+        assert_eq!(
+            arroyo_round_trip.increases.get(&key).unwrap().sample_count,
+            2
+        );
+    }
+
+    #[test]
+    fn keyed_queries_use_each_key_sample_count() {
+        let key_with_enough_samples = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let key_with_one_sample = KeyByLabelValues::new_with_labels(vec!["api".to_string()]);
+        let mut acc = MultipleIncreaseAccumulator::new();
+        acc.update(
+            key_with_enough_samples.clone(),
+            IncreaseAccumulator::new_with_sample_count(
+                Measurement::new(100.0),
+                1_000,
+                Measurement::new(110.0),
+                2_000,
+                2,
+            ),
+        );
+        acc.update(
+            key_with_one_sample.clone(),
+            IncreaseAccumulator::new(
+                Measurement::new(100.0),
+                1_000,
+                Measurement::new(100.0),
+                1_000,
+            ),
+        );
+
+        let bounds = crate::data_model::QueryBounds::new(1_000, 2_000);
+        let query_kwargs = HashMap::new();
+        assert!(acc
+            .query_statistic_with_bounds(
+                Statistic::Rate,
+                &Some(key_with_enough_samples),
+                &query_kwargs,
+                &bounds,
+            )
+            .is_ok());
+        assert!(acc
+            .query_statistic_with_bounds(
+                Statistic::Rate,
+                &Some(key_with_one_sample),
+                &query_kwargs,
+                &bounds,
+            )
+            .is_err());
     }
 
     #[test]
@@ -525,6 +614,7 @@ mod tests {
                 starting_timestamp: 0,
                 last_seen_measurement: 60.0,
                 last_seen_timestamp: 3_000,
+                sample_count: 4,
                 counter_reset_adjustment: 150.0,
                 counter_reset_events: vec![CounterResetEvent {
                     timestamp: 2_000,
