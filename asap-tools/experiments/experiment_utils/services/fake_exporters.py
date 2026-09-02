@@ -53,7 +53,12 @@ def execute_fake_exporter_commands_in_parallel(
     node_commands: List[Tuple[int, str]],
     **kwargs,
 ) -> None:
-    """Run node-specific exporter commands concurrently."""
+    """Run node-specific exporter commands concurrently.
+
+    The provider method applies one command to every node in ``node_idxs``.
+    Fake exporters need different commands per node because their seeds are
+    node-specific, so invoke it once per node while preserving concurrency.
+    """
     if not node_commands:
         return
 
