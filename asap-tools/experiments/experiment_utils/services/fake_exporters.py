@@ -531,29 +531,31 @@ class RustExporterService(BaseExporterService):
 
         # Start containers in batches to avoid overwhelming Docker daemon.
         BATCH_SIZE = 5
-        node_batch_commands: List[Tuple[int, str]] = []
-        for node_idx in target_nodes:
-            node_commands = [
-                cmd
-                for command_node_idx, cmd in docker_run_cmds
-                if command_node_idx == node_idx
-            ]
-            for i in range(0, len(node_commands), BATCH_SIZE):
-                batch = node_commands[i : i + BATCH_SIZE]
-                # Combine docker run commands in batch for one node.
-                batch_cmd = "; ".join(batch)
-                node_batch_commands.append((node_idx, batch_cmd))
+        node_commands_by_node: Dict[int, List[str]] = {
+            node_idx: [] for node_idx in target_nodes
+        }
+        for node_idx, command in docker_run_cmds:
+            node_commands_by_node[node_idx].append(command)
 
-        # Start each worker's batches concurrently.
-        execute_fake_exporter_commands_in_parallel(
-            self.provider,
-            node_batch_commands,
-            cmd_dir="",
-            nohup=False,
-            popen=True,
-            redirect=True,
-            wait=True,  # Wait for batch to complete
-        )
+        # Run one batch round at a time: nodes run concurrently within a round,
+        # while batches for the same node remain sequential.
+        for batch_start in range(0, num_ports, BATCH_SIZE):
+            node_batch_commands: List[Tuple[int, str]] = []
+            batch_end = batch_start + BATCH_SIZE
+            for node_idx in target_nodes:
+                batch = node_commands_by_node[node_idx][batch_start:batch_end]
+                if batch:
+                    node_batch_commands.append((node_idx, "; ".join(batch)))
+
+            execute_fake_exporter_commands_in_parallel(
+                self.provider,
+                node_batch_commands,
+                cmd_dir="",
+                nohup=False,
+                popen=True,
+                redirect=True,
+                wait=True,  # Wait for this batch round before starting the next.
+            )
 
         return
 
