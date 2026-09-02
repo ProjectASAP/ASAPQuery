@@ -10,6 +10,7 @@ from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
 DEFAULT_FAKE_EXPORTER_SEED = 0
+MAX_FAKE_EXPORTER_SEED = (1 << 64) - 1
 
 
 def get_fake_exporter_seed(
@@ -17,9 +18,27 @@ def get_fake_exporter_seed(
 ) -> int:
     """Derive a unique, reproducible seed for one exporter instance."""
     base_seed = config.get("seed", DEFAULT_FAKE_EXPORTER_SEED)
+    if (
+        not isinstance(base_seed, int)
+        or isinstance(base_seed, bool)
+        or not 0 <= base_seed <= MAX_FAKE_EXPORTER_SEED
+    ):
+        raise ValueError(
+            "fake_exporter.seed must be an integer in the range "
+            f"0..{MAX_FAKE_EXPORTER_SEED}, got {base_seed!r}"
+        )
+
     num_ports_per_server = config["num_ports_per_server"]
     exporter_ordinal = worker_ordinal * num_ports_per_server + port_ordinal
-    return base_seed + exporter_ordinal
+    derived_seed = base_seed + exporter_ordinal
+    if derived_seed > MAX_FAKE_EXPORTER_SEED:
+        raise ValueError(
+            "derived fake exporter seed exceeds the Rust u64 range: "
+            f"base seed {base_seed} with exporter ordinal {exporter_ordinal} "
+            f"produces {derived_seed}, maximum {MAX_FAKE_EXPORTER_SEED}"
+        )
+
+    return derived_seed
 
 
 def get_fake_exporter_target_nodes(args) -> List[int]:
