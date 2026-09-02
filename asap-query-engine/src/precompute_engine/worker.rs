@@ -435,9 +435,22 @@ impl Worker {
             .map(|(_, ts, _)| *ts)
             .max()
             .unwrap_or(i64::MIN);
+        let batch_min_ts = samples
+            .iter()
+            .map(|(_, ts, _)| *ts)
+            .min()
+            .unwrap_or(batch_max_ts);
         let previous_wm = state.previous_watermark_ms;
         let current_wm = if batch_max_ts > previous_wm {
             batch_max_ts
+        } else {
+            previous_wm
+        };
+        // On the first batch there is no prior watermark. Use the earliest
+        // sample as the closure baseline so a batch spanning multiple windows
+        // can close windows older than that sample after all samples are routed.
+        let closure_previous_wm = if previous_wm == i64::MIN {
+            batch_min_ts
         } else {
             previous_wm
         };
@@ -460,7 +473,7 @@ impl Worker {
 
             // Check if pane was already evicted (late data for a closed window)
             if !state.active_panes.contains_key(&pane_start)
-                && current_wm >= pane_start + state.window_manager.window_size_ms()
+                && previous_wm >= pane_start + state.window_manager.window_size_ms()
             {
                 let window_start = pane_start;
                 let window_end = pane_start + state.window_manager.window_size_ms();
@@ -523,7 +536,9 @@ impl Worker {
         }
 
         // Check for closed windows
-        let closed = state.window_manager.closed_windows(previous_wm, current_wm);
+        let closed = state
+            .window_manager
+            .closed_windows(closure_previous_wm, current_wm);
 
         for window_start in &closed {
             let (_, window_end) = state.window_manager.window_bounds(*window_start);
@@ -2526,6 +2541,61 @@ mod tests {
             sink.len(),
             0,
             "ForwardToStore must drop late DeltaSetAggregator samples"
+        );
+    }
+
+    #[test]
+    fn test_delta_set_aggregator_keeps_on_time_samples_in_first_multi_window_batch() {
+        let config = make_agg_config_full(
+            7,
+            "cpu",
+            AggregationType::DeltaSetAggregator,
+            "",
+            10_000,
+            0,
+            vec![],
+            vec!["host"],
+        );
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(7, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::ForwardToStore,
+        );
+
+        worker
+            .process_group_samples(
+                7,
+                "",
+                vec![
+                    ("cpu{host=\"a\"}".to_string(), 500, 1.0),
+                    ("cpu{host=\"b\"}".to_string(), 20_000, 1.0),
+                ],
+            )
+            .unwrap();
+        worker
+            .process_group_samples(7, "", vec![("cpu{host=\"b\"}".to_string(), 30_000, 1.0)])
+            .unwrap();
+
+        let first_window = sink
+            .drain()
+            .into_iter()
+            .find(|(output, _)| output.start_timestamp == 0)
+            .expect("first DeltaSetAggregator window should be emitted");
+        let first_delta = first_window
+            .1
+            .as_any()
+            .downcast_ref::<DeltaSetAggregatorAccumulator>()
+            .expect("first output should be DeltaSetAggregatorAccumulator");
+        let key_a = KeyByLabelValues::new_with_labels(vec!["a".to_string()]);
+        assert!(
+            first_delta.added.contains(&key_a),
+            "on-time key in the first batch must not be treated as late"
         );
     }
 
