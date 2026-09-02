@@ -472,6 +472,16 @@ impl Worker {
                         );
                         continue;
                     }
+                    LateDataPolicy::ForwardToStore
+                        if state.config.aggregation_type == AggregationType::DeltaSetAggregator =>
+                    {
+                        warn!(
+                            "Dropping late DeltaSetAggregator sample for evicted pane [{}, {}): ForwardToStore is unsupported for stateful key deltas",
+                            pane_start,
+                            pane_end
+                        );
+                        continue;
+                    }
                     LateDataPolicy::ForwardToStore => {
                         let mut updater = create_accumulator_updater(&state.config)?;
                         apply_sample(&mut *updater, series_key, *val, *ts, &state.config);
@@ -2461,6 +2471,61 @@ mod tests {
             (sum_acc.sum - 55.0).abs() < 1e-10,
             "late sample sum should be 55.0, got {}",
             sum_acc.sum
+        );
+    }
+
+    #[test]
+    fn test_late_data_forward_to_store_drops_delta_set_aggregator() {
+        let config = make_agg_config_full(
+            6,
+            "cpu",
+            AggregationType::DeltaSetAggregator,
+            "",
+            10_000,
+            0,
+            vec![],
+            vec!["host"],
+        );
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(6, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
+        let mut worker = Worker::new(
+            0,
+            rx,
+            sink.clone(),
+            arc_configs(agg_configs),
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 15_000,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::ForwardToStore,
+                wall_clock_grace_period_ms: 0,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
+        );
+
+        worker
+            .process_group_samples(6, "", group_samples("cpu{host=\"a\"}", vec![(500, 1.0)]))
+            .unwrap();
+        worker
+            .process_group_samples(6, "", group_samples("cpu{host=\"a\"}", vec![(20_000, 0.0)]))
+            .unwrap();
+        let _ = sink.drain();
+
+        worker
+            .process_group_samples(6, "", group_samples("cpu{host=\"b\"}", vec![(8_000, 55.0)]))
+            .unwrap();
+
+        assert_eq!(
+            sink.len(),
+            0,
+            "ForwardToStore must drop late DeltaSetAggregator samples"
         );
     }
 
