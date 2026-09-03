@@ -136,6 +136,9 @@ func (r RangeSpec) validate() error {
 	if r.EndOffsetSeconds <= r.StartOffsetSeconds {
 		return fmt.Errorf("range end must be after range start")
 	}
+	if r.EndOffsetSeconds-r.StartOffsetSeconds < float64(time.Millisecond)/float64(time.Second) {
+		return fmt.Errorf("range duration must be at least 1ms")
+	}
 	if r.StepSeconds <= 0 {
 		return fmt.Errorf("range step must be positive")
 	}

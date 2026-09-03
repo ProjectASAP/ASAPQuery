@@ -25,17 +25,19 @@ different labels to represent another series of the same metric. Sample
 timestamps are seconds relative to the run’s `baseTime`; values are written to
 both targets without changing the payload.
 
-Run the fixture with:
+Smoke-test the stack with the checked-in fixture and matching temporal suite:
 
 ```bash
 go run ./cmd/differential-runner \
-  --dataset ../datasets/cpu-example.yaml \
+  --dataset ../datasets/single-rate.yaml \
   --suite ../suites/temporal.yaml \
   --compose-file ../docker-compose.yml
 ```
 
 The runner derives the planner’s metric and label hints from the fixture. No
-source-code change is needed to add a dataset.
+source-code change is needed to add a dataset. To run the `cpu-example` above,
+create a suite whose expressions use `cpu_usage_seconds_total`, as shown in
+the next section.
 
 ## Add or change queries
 
@@ -137,6 +139,11 @@ targets:
 For ordinary queries, an error from either target makes the comparison fail.
 Two matching errors do not accidentally pass. With `expect_error: true`, both
 targets must return errors; a success from either target fails the comparison.
+
+This also makes the suite useful for finding unsupported ASAPQuery queries:
+leave `expect_error` unset for a query that Prometheus supports. A Prometheus
+success paired with an ASAPQuery error produces `passed: false` and records the
+ASAPQuery error in `testError`.
 
 ## Run with DEBUG logging
 

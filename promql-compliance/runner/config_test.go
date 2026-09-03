@@ -87,3 +87,18 @@ queries:
 		t.Fatal("LoadSuite accepted an instant time outside its range")
 	}
 }
+
+func TestLoadSuiteRejectsSubMillisecondRange(t *testing.T) {
+	_, err := LoadSuite([]byte(`name: sub-millisecond
+queries:
+  - name: too-small
+    expr: up
+    range:
+      start_offset_seconds: 0
+      end_offset_seconds: 0.0005
+      step_seconds: 0.0005
+`))
+	if err == nil {
+		t.Fatal("LoadSuite accepted a sub-millisecond range")
+	}
+}
