@@ -95,8 +95,8 @@ All cluster-data experiments use the global
 controller ingestion planning both use that setting; the exporter config does
 not define a second scrape interval. Query repetition delays are also 1 second.
 
-`controller.punting` is set to `false` in
-`asap-tools/experiments/config/config.yaml`.
+Because `controller.punting` is intentionally required in the shared config,
+the command below sets it explicitly to `false` for this experiment.
 
 ```bash
 cd /home/milind/Desktop/cmu/research/sketch_db_for_prometheus/code/ASAPQuery/asap-tools/experiments
@@ -108,6 +108,7 @@ python3 experiment_run_e2e.py \
   providers.cloudlab.hostname_suffix=scratch2.cloudmigration-PG0.utah.cloudlab.us \
   providers.cloudlab.node_offset=18 \
   providers.cloudlab.num_nodes=1 \
+  controller.punting=false \
   cluster_data_directory=/scratch/sketch_db_for_prometheus/cluster_traces
 ```
 
@@ -157,6 +158,7 @@ python3 experiment_run_e2e.py \
   providers.cloudlab.hostname_suffix=scratch2.cloudmigration-PG0.utah.cloudlab.us \
   providers.cloudlab.node_offset=18 \
   providers.cloudlab.num_nodes=1 \
+  controller.punting=false \
   cluster_data_directory=/scratch/sketch_db_for_prometheus/cluster_traces
 ```
 
