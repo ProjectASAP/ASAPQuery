@@ -82,6 +82,28 @@ go run ./cmd/differential-runner \
   --compose-file ../docker-compose.yml
 ```
 
+The default `make run` target uses `single-rate.yaml` and `temporal.yaml`.
+To run another pair through the same target, pass the paths as Make variables:
+
+```bash
+make run \
+  DATASET=../datasets/aggregations.yaml \
+  SUITE=../suites/aggregations.yaml
+```
+
+The PromQL differential CI workflow runs the checked-in pairs listed in the
+runner Makefile's `CASES` variable. Adding a YAML file does not automatically
+add it to CI; add a case there when adding a new dataset/suite pair.
+
+To run all checked-in pairs locally and write one report per pair:
+
+```bash
+make run-all
+```
+
+Reports are written to `/tmp/asapquery-differential-reports` by default. Set
+`REPORT_DIR` to choose another output directory.
+
 ## Change query timing
 
 `range.step_seconds` controls the evaluation cadence of a range query. It is
