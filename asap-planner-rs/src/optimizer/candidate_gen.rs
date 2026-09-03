@@ -22,6 +22,9 @@ pub struct CandidateConfig {
     pub query_method: QueryMethod,
     /// Number of retained windows used at query time (n for Merge, 1 for Direct/Subtract, 0 for Exact).
     pub n_windows: u64,
+    /// Number of distinct label groups represented by this candidate.
+    /// Subpopulation-aware sketches ignore this value during cost evaluation.
+    pub label_group_count: u64,
 }
 
 /// Enumerate all candidate configs for an AQE.
@@ -32,11 +35,24 @@ pub struct CandidateConfig {
 /// Multi-statistic AQEs (e.g. avg = [Sum, Count]) return only EXACT — a single
 /// sketch family cannot serve two incompatible statistics simultaneously.
 pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<CandidateConfig> {
+    enumerate_candidates_with_label_group_count(aqe, scrape_interval_ms, 1)
+}
+
+/// Enumerate candidates with a dataset-derived label-group count.
+pub fn enumerate_candidates_with_label_group_count(
+    aqe: &AQE,
+    scrape_interval_ms: u64,
+    label_group_count: u64,
+) -> Vec<CandidateConfig> {
+    assert!(
+        label_group_count > 0,
+        "label_group_count must be greater than zero"
+    );
     let mut candidates = Vec::new();
 
     if aqe.requirements.statistics.len() != 1 {
         // ponytail: multi-stat AQEs (avg) need two sketches; not supported in v1.
-        candidates.push(exact_candidate());
+        candidates.push(exact_candidate(label_group_count));
         return candidates;
     }
 
@@ -77,20 +93,22 @@ pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<Candidate
                     config: Some(config),
                     query_method: qm,
                     n_windows: n,
+                    label_group_count,
                 });
             }
         }
     }
 
-    candidates.push(exact_candidate());
+    candidates.push(exact_candidate(label_group_count));
     candidates
 }
 
-fn exact_candidate() -> CandidateConfig {
+fn exact_candidate(label_group_count: u64) -> CandidateConfig {
     CandidateConfig {
         config: None,
         query_method: QueryMethod::Exact,
         n_windows: 0,
+        label_group_count,
     }
 }
 
@@ -343,6 +361,17 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|c| c.config.is_none() && c.query_method == QueryMethod::Exact));
+    }
+
+    #[test]
+    fn stamps_dataset_label_group_count_on_every_candidate() {
+        let aqe = make_aqe(Statistic::Sum, 300_000, 60_000);
+        let candidates = enumerate_candidates_with_label_group_count(&aqe, 15_000, 7);
+
+        assert!(!candidates.is_empty());
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.label_group_count == 7));
     }
 
     #[test]

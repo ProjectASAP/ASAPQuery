@@ -7,6 +7,7 @@ use crate::config::input::ControllerConfig;
 use super::aqe_extractor::{extract_aqes, RQE};
 use super::atomic_costs::AtomicCostTable;
 use super::cost_model::CostWeights;
+use super::dataset::SeriesDataset;
 use super::greedy::greedy_assign;
 use super::solution::{OptimizerSolution, AQE};
 use super::translator::{translate, TranslationSummary};
@@ -24,6 +25,13 @@ fn run_pipeline(
     let aqes = extract_aqes(&rqes, schema, scrape_interval_ms);
     let solution = solve(aqes);
 
+    finish_pipeline(solution, solver_name)
+}
+
+fn finish_pipeline(
+    solution: OptimizerSolution,
+    solver_name: &str,
+) -> (StreamingConfig, InferenceConfig) {
     let summary = TranslationSummary::from_solution(&solution);
     tracing::info!(
         solver = solver_name,
@@ -66,25 +74,42 @@ pub fn run_all_exact_pipeline(
 /// No cross-AQE sharing — every deployed sketch serves exactly one AQE, even
 /// if two AQEs could share one. The Phase 3 MIP finds sharing opportunities.
 ///
-/// `arrival_rate_hz` is a placeholder arrival rate applied uniformly to every
-/// candidate's IngestCost; real per-config rates need Prometheus scrape-rate ×
-/// series-count data, which isn't wired up yet (see implementation plan TODOs).
+/// The dataset supplies each AQE's metric schema and label-group count before
+/// candidate selection. `arrival_rate_hz` remains a uniform placeholder until
+/// per-config scrape-rate data is available.
 pub fn run_greedy_pipeline(
     config: &ControllerConfig,
-    schema: &PromQLSchema,
+    dataset: &SeriesDataset,
     scrape_interval_ms: u64,
     arrival_rate_hz: f64,
     atomic_cost_table: &AtomicCostTable,
-) -> (StreamingConfig, InferenceConfig) {
-    run_pipeline(config, schema, scrape_interval_ms, "greedy", |aqes| {
-        greedy_assign(
-            aqes,
-            scrape_interval_ms,
-            arrival_rate_hz,
-            atomic_cost_table,
-            &CostWeights::default(),
-        )
-    })
+) -> Result<(StreamingConfig, InferenceConfig), super::dataset::DatasetError> {
+    dataset.validate_metric_hints(config.metrics.as_deref())?;
+    let schema = dataset.schema();
+    let rqes = config_to_rqes(config);
+    let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms);
+    let label_group_counts = dataset.profile_aqes(&aqes)?;
+
+    for (key, count) in &label_group_counts {
+        tracing::info!(
+            metric = %key.metric,
+            spatial_filter = %key.spatial_filter_normalized,
+            grouping_labels = ?key.grouping_labels.labels,
+            label_group_count = *count,
+            "optimizer dataset profile"
+        );
+    }
+
+    let solution = greedy_assign(
+        aqes,
+        scrape_interval_ms,
+        arrival_rate_hz,
+        atomic_cost_table,
+        &CostWeights::default(),
+        &label_group_counts,
+    );
+
+    Ok(finish_pipeline(solution, "greedy"))
 }
 
 /// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
@@ -147,11 +172,23 @@ mod tests {
     #[test]
     fn greedy_pipeline_deploys_a_config_for_a_mergeable_aqe() {
         let config = make_config(&[("min_over_time(metric[5m])", 60_000)]);
-        let schema = PromQLSchema::new();
+        let dataset = SeriesDataset::from_reader("metric,job\nmetric,api\n".as_bytes()).unwrap();
         let (streaming, inference) =
-            run_greedy_pipeline(&config, &schema, 60_000, 1.0, &AtomicCostTable::default());
+            run_greedy_pipeline(&config, &dataset, 60_000, 1.0, &AtomicCostTable::default())
+                .unwrap();
         assert!(!streaming.get_all_aggregation_configs().is_empty());
         assert!(!inference.query_configs.is_empty());
+    }
+
+    #[test]
+    fn greedy_pipeline_fails_when_dataset_does_not_match_workload() {
+        let config = make_config(&[("min_over_time(metric[5m])", 60_000)]);
+        let dataset = SeriesDataset::from_reader("metric,job\nother,api\n".as_bytes()).unwrap();
+
+        assert!(matches!(
+            run_greedy_pipeline(&config, &dataset, 60_000, 1.0, &AtomicCostTable::default()),
+            Err(super::super::dataset::DatasetError::MissingMetric(metric)) if metric == "metric"
+        ));
     }
 
     #[test]

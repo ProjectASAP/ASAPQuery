@@ -6,7 +6,9 @@
 
 use std::path::PathBuf;
 
-use asap_planner::optimizer::{load_atomic_cost_table, run_greedy_pipeline, AtomicCostTable};
+use asap_planner::optimizer::{
+    load_atomic_cost_table, run_greedy_pipeline, AtomicCostTable, SeriesDataset,
+};
 use asap_planner::ControllerConfig;
 use clap::Parser;
 
@@ -22,6 +24,10 @@ struct Args {
 
     #[arg(long = "data-ingestion-interval-ms")]
     data_ingestion_interval_ms: u64,
+
+    /// CSV series inventory used to derive metric schemas and label-group counts.
+    #[arg(long = "dataset")]
+    dataset: PathBuf,
 
     /// Placeholder arrival rate (items/sec) applied uniformly to every candidate's
     /// IngestCost. Real per-config rates aren't wired up yet — see the open TODOs
@@ -62,7 +68,7 @@ fn main() -> anyhow::Result<()> {
 
     let yaml_str = std::fs::read_to_string(&args.input_config)?;
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
-    let schema = config.schema_from_hints();
+    let dataset = SeriesDataset::from_path(&args.dataset)?;
 
     let atomic_cost_table = match &args.atomic_costs {
         Some(path) => load_atomic_cost_table(path)?,
@@ -76,11 +82,11 @@ fn main() -> anyhow::Result<()> {
 
     let (streaming, inference) = run_greedy_pipeline(
         &config,
-        &schema,
+        &dataset,
         args.data_ingestion_interval_ms,
         args.rho,
         &atomic_cost_table,
-    );
+    )?;
 
     let deployed = streaming.get_all_aggregation_configs();
     println!("=== Deployed streaming configs: {} ===", deployed.len());

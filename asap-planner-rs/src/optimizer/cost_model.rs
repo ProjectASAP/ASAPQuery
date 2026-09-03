@@ -1,4 +1,5 @@
 use asap_types::enums::WindowType;
+use promql_utilities::query_logics::enums::AggregationType;
 
 use super::candidate_gen::CandidateConfig;
 use super::constants::{
@@ -75,7 +76,7 @@ pub fn ingest_cost(
         return 0.0; // EXACT: no streaming config deployed.
     };
 
-    let subpopulation_count = SUBPOPULATION_COUNT;
+    let subpopulation_count = effective_subpopulation_count(candidate, agg_config.aggregation_type);
 
     // Defensive floor: slide_interval_ms is a plain u64 on a widely-shared struct;
     // guard against div-by-zero producing `inf` and poisoning cost comparisons.
@@ -108,7 +109,7 @@ pub fn query_cost(
     };
 
     // Subpopulation count; see ingest_cost comment.
-    let subpopulation_count = SUBPOPULATION_COUNT;
+    let subpopulation_count = effective_subpopulation_count(candidate, agg_config.aggregation_type);
     let props = sketch_properties(agg_config.aggregation_type);
 
     let (cpu, mem) = match &candidate.query_method {
@@ -139,6 +140,21 @@ pub fn query_cost(
     };
 
     weights.query_cpu * cpu + weights.query_mem * mem
+}
+
+fn effective_subpopulation_count(
+    candidate: &CandidateConfig,
+    aggregation_type: AggregationType,
+) -> f64 {
+    if sketch_properties(aggregation_type).subpopulation_aware {
+        SUBPOPULATION_COUNT
+    } else {
+        assert!(
+            candidate.label_group_count > 0,
+            "non-subpopulation-aware candidates require a positive label_group_count"
+        );
+        candidate.label_group_count as f64
+    }
 }
 
 /// Total cost rate contributed by assigning AQE `aqe` (with frequency
@@ -186,6 +202,7 @@ mod tests {
             config: None,
             query_method: QueryMethod::Exact,
             n_windows: 0,
+            label_group_count: 1,
         };
         let costs = AtomicCosts::default();
         let weights = CostWeights::default();
@@ -211,11 +228,13 @@ mod tests {
             config: Some(template.clone()),
             query_method: QueryMethod::Merge { num_windows: 2 },
             n_windows: 2,
+            label_group_count: 1,
         };
         let c5 = CandidateConfig {
             config: Some(template),
             query_method: QueryMethod::Merge { num_windows: 5 },
             n_windows: 5,
+            label_group_count: 1,
         };
 
         assert_eq!(
@@ -242,15 +261,86 @@ mod tests {
             config: Some(template.clone()),
             query_method: QueryMethod::Merge { num_windows: 5 },
             n_windows: 5,
+            label_group_count: 1,
         };
         let subtract = CandidateConfig {
             config: Some(template),
             query_method: QueryMethod::Subtract,
             n_windows: 5,
+            label_group_count: 1,
         };
 
         assert!(
             query_cost(&a, &subtract, &costs, &weights) < query_cost(&a, &merge, &costs, &weights)
+        );
+    }
+
+    #[test]
+    fn non_subpopulation_aware_cost_scales_with_label_group_count() {
+        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
+        let candidate = enumerate_candidates(&a, 60_000)
+            .into_iter()
+            .find(|candidate| {
+                candidate.config.as_ref().is_some_and(|config| {
+                    !sketch_properties(config.aggregation_type).subpopulation_aware
+                })
+            })
+            .expect("expected a non-subpopulation-aware candidate");
+        let one_group = CandidateConfig {
+            label_group_count: 1,
+            ..candidate.clone()
+        };
+        let five_groups = CandidateConfig {
+            label_group_count: 5,
+            ..candidate
+        };
+        let costs = AtomicCosts::default();
+        let weights = CostWeights {
+            ingest_mem: 1.0,
+            ingest_cpu: 0.0,
+            query_mem: 1.0,
+            query_cpu: 0.0,
+        };
+
+        assert_eq!(
+            ingest_cost(&five_groups, 1.0, &costs, &weights),
+            5.0 * ingest_cost(&one_group, 1.0, &costs, &weights)
+        );
+        assert_eq!(
+            query_cost(&a, &five_groups, &costs, &weights),
+            5.0 * query_cost(&a, &one_group, &costs, &weights)
+        );
+    }
+
+    #[test]
+    fn subpopulation_aware_cost_ignores_label_group_count() {
+        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
+        let candidate = enumerate_candidates(&a, 60_000)
+            .into_iter()
+            .find(|candidate| {
+                candidate.config.as_ref().is_some_and(|config| {
+                    sketch_properties(config.aggregation_type).subpopulation_aware
+                })
+            })
+            .expect("expected a subpopulation-aware candidate");
+        let one_group = CandidateConfig {
+            label_group_count: 1,
+            ..candidate.clone()
+        };
+        let five_groups = CandidateConfig {
+            label_group_count: 5,
+            ..candidate
+        };
+        let costs = AtomicCosts::default();
+        let weights = CostWeights::default();
+
+        assert_eq!(
+            ingest_cost(&one_group, 1.0, &costs, &weights),
+            ingest_cost(&five_groups, 1.0, &costs, &weights)
+        );
+        assert_eq!(
+            query_cost(&a, &one_group, &costs, &weights),
+            query_cost(&a, &five_groups, &costs, &weights)
         );
     }
 }
