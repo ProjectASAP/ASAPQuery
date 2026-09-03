@@ -1,8 +1,11 @@
+use std::collections::HashMap;
+
 use tracing::debug;
 
 use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
-use super::candidate_gen::enumerate_candidates;
+use super::candidate_gen::enumerate_candidates_with_label_group_count;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
+use super::dataset::ProfileKey;
 use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 
 /// Greedily assign each AQE to its independently-cheapest candidate config.
@@ -25,11 +28,23 @@ pub fn greedy_assign(
     arrival_rate_hz: f64,
     atomic_cost_table: &AtomicCostTable,
     weights: &CostWeights,
+    label_group_counts: &HashMap<ProfileKey, u64>,
 ) -> OptimizerSolution {
     let mut solution = OptimizerSolution::empty();
 
     for aqe in aqes {
-        let candidates = enumerate_candidates(&aqe, scrape_interval_ms);
+        let profile_key = ProfileKey::from_requirements(&aqe.requirements);
+        let label_group_count = *label_group_counts.get(&profile_key).unwrap_or_else(|| {
+            panic!(
+                "missing dataset profile for metric '{}' and grouping labels {:?}",
+                aqe.requirements.metric, aqe.requirements.grouping_labels.labels
+            )
+        });
+        let candidates = enumerate_candidates_with_label_group_count(
+            &aqe,
+            scrape_interval_ms,
+            label_group_count,
+        );
 
         let (best, costs) = candidates
             .into_iter()
@@ -86,6 +101,8 @@ pub fn greedy_assign(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use asap_types::query_requirements::QueryRequirements;
     use promql_utilities::data_model::KeyByLabelNames;
@@ -121,6 +138,20 @@ mod tests {
             1.0,
             &AtomicCostTable::default(),
             &CostWeights::default(),
+            &HashMap::from([
+                (
+                    ProfileKey::from_requirements(
+                        &make_aqe(Statistic::Min, 300_000, 300_000, 1.0 / 60.0).requirements,
+                    ),
+                    1,
+                ),
+                (
+                    ProfileKey::from_requirements(
+                        &make_aqe(Statistic::Max, 300_000, 300_000, 1.0 / 60.0).requirements,
+                    ),
+                    1,
+                ),
+            ]),
         );
 
         let mut seen_ids: StdHashMap<u64, ()> = StdHashMap::new();
@@ -150,11 +181,12 @@ mod tests {
             t_repeat_gcd_ms: 60_000,
         };
         let solution = greedy_assign(
-            vec![aqe],
+            vec![aqe.clone()],
             60_000,
             1.0,
             &AtomicCostTable::default(),
             &CostWeights::default(),
+            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
         );
         assert_eq!(solution.num_exact_fallback(), 1);
         assert!(solution.deployed_configs().is_empty());

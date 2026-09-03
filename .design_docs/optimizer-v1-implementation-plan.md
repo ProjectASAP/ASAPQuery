@@ -76,6 +76,7 @@ asap-planner-rs/src/optimizer/
 ├── translator.rs          translate(&OptimizerSolution) → (StreamingConfig, InferenceConfig)
 ├── aqe_extractor.rs       Rqe, extract_aqes()
 ├── pipeline.rs            run_all_exact_pipeline(), run_greedy_pipeline()
+├── dataset.rs             CSV series inventory, schema validation, and N_g profiling [#693]
 ├── sketch_properties.rs   algebraic properties per AggregationType    [Phase 2a, done]
 ├── candidate_gen.rs       enumerate candidate configs per AQE         [Phase 2b, done]
 ├── cost_model.rs          ingest/query cost formulas                  [Phase 2c, done]
@@ -150,6 +151,7 @@ pub struct CandidateConfig {
     pub config: Option<AggregationConfig>,  // None = EXACT fallback
     pub query_method: QueryMethod,
     pub n_windows: u64,
+    pub label_group_count: u64,             // dataset-derived N_g
 }
 pub fn enumerate_candidates(aqe: &Aqe, scrape_interval_secs: u64) -> Vec<CandidateConfig>
 ```
@@ -182,8 +184,10 @@ pub fn query_cost(a: &Aqe, candidate: &CandidateConfig, costs: &AtomicCosts, wei
 pub fn total_cost_rate(a: &Aqe, candidate: &CandidateConfig, rho_g: f64, costs: &AtomicCosts, weights: &CostWeights) -> f64
 ```
 
-Implements the design doc's formulas with `N(s,g) = 1` hardcoded everywhere (real `N_g` —
-distinct label-group count — needs Prometheus series-count profiling, not wired up; Phase 3).
+Implements the design doc's formulas with `N(s,g) = 1` for subpopulation-aware sketches and
+the dataset-derived `N_g` for per-label-group sketches. The CSV series inventory and exact
+filter profiling are implemented in `dataset.rs` (#693); Prometheus-backed profiling remains
+the follow-up in #525.
 `AtomicCosts` added `exact_query_cpu_secs` (not in the original plan) — without a non-zero cost
 for the EXACT fallback's query, `IngestCost=0, QueryCost=0` would make EXACT always win trivially.
 
@@ -216,9 +220,10 @@ For each AQE independently: `argmin` over `enumerate_candidates(aqe, ...)` by `t
 No feasibility filter needed (see 2d note) — every candidate from `enumerate_candidates` is valid
 for that AQE by construction. Assigns sequential `aggregation_id`s to deployed configs.
 
-`run_greedy_pipeline(config, schema, scrape_interval_secs, rho_g) -> (StreamingConfig, InferenceConfig)`
-added to `pipeline.rs` alongside `run_all_exact_pipeline()`. `rho_g` is currently a single
-placeholder value applied uniformly to every candidate — see open TODO below.
+`run_greedy_pipeline(config, dataset, scrape_interval_secs, rho_g) -> Result<(StreamingConfig, InferenceConfig), DatasetError>`
+added to `pipeline.rs` alongside `run_all_exact_pipeline()`. The dataset is required for the
+greedy path and supplies metric schemas plus the `N_g` profile for each AQE. `rho_g` is
+currently a single placeholder value applied uniformly to every candidate — see open TODO below.
 
 `translator.rs::build_inference_config()` now populates `query_configs`: for each assignment with
 a real `aggregation_id`, emits one `QueryConfig` per original query string, with
@@ -314,13 +319,17 @@ standalone `asap-optimizer-cli` binary (`asap-planner-rs/src/bin/optimizer_cli.r
 ```
 cargo run -p asap_planner --bin asap-optimizer-cli -- \
   --input_config <path/to/workload.yaml> \
+  --dataset <path/to/series-inventory.csv> \
   --data-ingestion-interval-ms 60000 \
   [--rho 1.0] \
   [--atomic-costs <path/to/atomic_costs.json>]
 ```
 
-Takes the same `ControllerConfig` YAML format as `asap-planner --input_config`
-(with a `metrics:` hints block for label schema — no live Prometheus needed).
+Takes the same `ControllerConfig` YAML format as `asap-planner --input_config`.
+The required CSV dataset is one row per unique metric series, with a fixed `metric`
+column and label columns. It derives the metric schema and each AQE's distinct
+group count; no live Prometheus connection is needed. A `metrics:` hints block, when
+present, is checked against the dataset and mismatches fail loudly.
 Prints deployed streaming configs and query configs to stdout. `--rho` is the
 placeholder arrival rate (see TODOs below — not real yet). `--atomic-costs` is
 optional; omit it and every candidate costs at the flat stub, same as before #549.
@@ -340,13 +349,14 @@ optional; omit it and every candidate costs at the flat stub, same as before #54
 
 ```
 # See what each candidate would cost, before selection:
-cargo run -p asap_planner --bin candidate-gen-dump -- \
+ cargo run -p asap_planner --bin candidate-gen-dump -- \
   --input_config workload.yaml --data-ingestion-interval-ms 60000 \
   --atomic-costs path/to/atomic_costs.json
 
 # Run the actual optimizer:
 cargo run -p asap_planner --bin asap-optimizer-cli -- \
   --input_config workload.yaml --data-ingestion-interval-ms 60000 \
+  --dataset path/to/series-inventory.csv \
   --atomic-costs path/to/atomic_costs.json
 ```
 
@@ -366,7 +376,7 @@ instead of `generator::generate_plan()`, likely behind an opt-in flag first.
 |---|---|---|
 | `aqe_extractor.rs` | `extract_requirements()` | Duplicates `build_query_requirements_promql` in `asap-query-engine/src/engines/simple_engine/promql.rs:614` — extract to shared free fn in `asap_types::query_requirements` |
 | `capability_matching.rs` | `labels_compatible()`, line 86 | Relax to superset matching — do in Phase 3b |
-| `cost_model.rs` | `ingest_cost()`, `query_cost()` | `N(s,g)` hardcoded to `1` everywhere; real `N_g` (distinct label-group count) needs Prometheus series-count profiling |
+| `cost_model.rs` | `ingest_cost()`, `query_cost()` | Prometheus-backed `N_g` profiling remains for #525; dataset-backed `N_g` is implemented in #693 |
 | `cost_model.rs` | `CostWeights::default()` | Self-consistent stub ratio (mem:cpu ≈ 1e-9:1), not real $/byte-sec vs $/cpu-sec calibration |
 | `greedy.rs`, `pipeline.rs` | `rho_g` parameter | Single placeholder value applied uniformly; real per-config rates need Prometheus scrape-rate × active-series-count, not wired up |
 | `translator.rs` | `retention_count_for_assignment(Subtract)` | Returns hardcoded `1`; should be the actual checkpoint count needed to cover the full lookback |
