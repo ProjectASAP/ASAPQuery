@@ -5,6 +5,8 @@ asap-quickstart/bin/
 # roborev snapshots
 /.roborev/
 
+# Differential test output
+promql-compliance/runner/differential-report.json
 /.agent/
 
 /**/*.log

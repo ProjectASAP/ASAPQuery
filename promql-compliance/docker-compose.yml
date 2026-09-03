@@ -1,0 +1,65 @@
+name: asapquery-differential
+
+volumes:
+  differential-planner-output:
+  differential-prometheus-data:
+
+services:
+  prometheus:
+    image: prom/prometheus:v3.9.1
+    ports:
+      - "${PROMETHEUS_PORT:-19090}:9090"
+    volumes:
+      - differential-prometheus-data:/prometheus
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:9090/-/ready || exit 1"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  planner:
+    build:
+      context: ..
+      dockerfile: asap-planner-rs/Dockerfile
+      cache_from:
+        - type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache
+    volumes:
+      - "${ASAP_TEST_CONFIG_DIR:?ASAP_TEST_CONFIG_DIR is required}/controller-config.yaml:/config/controller-config.yaml:ro"
+      - differential-planner-output:/asap-planner-output
+    command:
+      - "--input_config=/config/controller-config.yaml"
+      - "--output_dir=/asap-planner-output"
+      - "--data-ingestion-interval-ms=1000"
+      - "--streaming_engine=precompute"
+      - "--range-duration-ms=1800000"
+      - "--step-ms=60000"
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+  queryengine:
+    build:
+      context: ..
+      dockerfile: asap-query-engine/Dockerfile
+      cache_from:
+        - type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache
+    ports:
+      - "${ASAP_QUERY_PORT:-18088}:8088"
+      - "${ASAP_INGEST_PORT:-19091}:9091"
+    environment:
+      RUST_LOG: INFO
+      RUST_BACKTRACE: "1"
+    volumes:
+      - differential-planner-output:/asap-planner-output:ro
+      - "${ASAP_TEST_CONFIG_DIR:?ASAP_TEST_CONFIG_DIR is required}/engine_config.yaml:/config/engine_config.yaml:ro"
+    command: ["--config-file", "/config/engine_config.yaml"]
+    depends_on:
+      planner:
+        condition: service_completed_successfully
+      prometheus:
+        condition: service_healthy

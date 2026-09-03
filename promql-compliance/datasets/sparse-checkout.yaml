@@ -1,0 +1,74 @@
+name: sparse-checkout
+series:
+  - metric: http_requests_total
+    labels:
+      host: a
+    samples:
+      - {offset_seconds: 0, value: 0}
+      - {offset_seconds: 60, value: 60}
+      - {offset_seconds: 120, value: 120}
+      - {offset_seconds: 180, value: 180}
+      - {offset_seconds: 240, value: 240}
+      - {offset_seconds: 300, value: 300}
+      - {offset_seconds: 360, value: 360}
+      - {offset_seconds: 420, value: 420}
+      - {offset_seconds: 480, value: 480}
+      - {offset_seconds: 540, value: 540}
+      - {offset_seconds: 600, value: 600}
+      - {offset_seconds: 660, value: 660}
+      - {offset_seconds: 720, value: 720}
+      - {offset_seconds: 780, value: 780}
+      - {offset_seconds: 840, value: 840}
+      - {offset_seconds: 900, value: 900}
+      - {offset_seconds: 960, value: 960}
+      - {offset_seconds: 1020, value: 1020}
+      - {offset_seconds: 1080, value: 1080}
+      - {offset_seconds: 1140, value: 1140}
+      - {offset_seconds: 1200, value: 1200}
+  - metric: http_requests_total
+    labels:
+      host: b
+    samples:
+      - {offset_seconds: 0, value: 1000}
+      - {offset_seconds: 60, value: 1120}
+      - {offset_seconds: 120, value: 1240}
+      - {offset_seconds: 180, value: 1360}
+      - {offset_seconds: 240, value: 1480}
+      - {offset_seconds: 300, value: 1600}
+      - {offset_seconds: 360, value: 1720}
+      - {offset_seconds: 420, value: 1840}
+      - {offset_seconds: 480, value: 1960}
+      - {offset_seconds: 540, value: 2080}
+      - {offset_seconds: 600, value: 2200}
+      - {offset_seconds: 660, value: 2320}
+      - {offset_seconds: 720, value: 2440}
+      - {offset_seconds: 780, value: 2560}
+      - {offset_seconds: 840, value: 2680}
+      - {offset_seconds: 900, value: 2800}
+      - {offset_seconds: 960, value: 2920}
+      - {offset_seconds: 1020, value: 3040}
+      - {offset_seconds: 1080, value: 3160}
+      - {offset_seconds: 1140, value: 3280}
+      - {offset_seconds: 1200, value: 3400}
+  - metric: checkout_up
+    labels:
+      service: checkout
+      region: us-east
+    samples:
+      - {offset_seconds: 0, value: 1}
+      - {offset_seconds: 60, value: 1}
+      - {offset_seconds: 120, value: 1}
+      - {offset_seconds: 180, value: 1}
+      - {offset_seconds: 240, value: 1}
+      - {offset_seconds: 300, value: 1}
+  - metric: checkout_up
+    labels:
+      service: checkout
+      region: us-west
+    samples:
+      - {offset_seconds: 900, value: 1}
+      - {offset_seconds: 960, value: 1}
+      - {offset_seconds: 1020, value: 1}
+      - {offset_seconds: 1080, value: 1}
+      - {offset_seconds: 1140, value: 1}
+      - {offset_seconds: 1200, value: 1}

@@ -1,0 +1,13 @@
+name: temporal
+comparison_defaults:
+  value_tolerance:
+    relative: 0
+    absolute: 0.000001
+queries:
+  - name: request-rate
+    expr: rate(http_requests_total[5m])
+    instant_offsets_seconds: [300, 600, 1200]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
