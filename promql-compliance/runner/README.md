@@ -5,6 +5,13 @@ ASAPQuery. It sends the same remote-write bytes to both targets, evaluates
 each configured instant and range query, and also compares range-at-t against
 instant-at-t within each target.
 
+Start with:
+
+- [`../QUICK_START.md`](../QUICK_START.md) for the shortest working example.
+- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the stack and data/query flow.
+- [`../HOW_TO.md`](../HOW_TO.md) for adding datasets and queries, timing,
+  tolerance, DEBUG logging, and troubleshooting.
+
 Run the isolated Compose stack and execute the checked-in fixture/suite:
 
 ```bash
