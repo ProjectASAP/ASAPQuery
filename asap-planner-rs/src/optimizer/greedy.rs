@@ -104,9 +104,10 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::optimizer::atomic_costs::AtomicCostEntry;
     use asap_types::query_requirements::QueryRequirements;
     use promql_utilities::data_model::KeyByLabelNames;
-    use promql_utilities::query_logics::enums::Statistic;
+    use promql_utilities::query_logics::enums::{AggregationType, Statistic};
     use std::collections::HashMap as StdHashMap;
 
     fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64, freq_hz: f64) -> AQE {
@@ -190,5 +191,55 @@ mod tests {
         );
         assert_eq!(solution.num_exact_fallback(), 1);
         assert!(solution.deployed_configs().is_empty());
+    }
+
+    #[test]
+    fn missing_cms_with_heap_reference_cost_falls_back_to_exact() {
+        // Regression coverage for #651: an uncosted CMS-with-heap candidate
+        // must be dropped rather than inheriting the flat stub and winning.
+        let solution = greedy_assign(
+            vec![make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0)],
+            60_000,
+            1.0,
+            &AtomicCostTable::default(),
+            &CostWeights::default(),
+        );
+
+        assert_eq!(solution.num_exact_fallback(), 1);
+        assert!(solution.deployed_configs().is_empty());
+    }
+
+    #[test]
+    fn matching_cms_with_heap_reference_cost_can_be_deployed() {
+        let table = vec![AtomicCostEntry {
+            sketch: "cms-heap-topk-regularpath-vector2d".into(),
+            sketch_config: serde_json::json!({
+                "algorithm": "cms-heap-topk-regularpath-vector2d",
+                "params": { "rows": 3, "cols": 512 }
+            }),
+            mem_bytes_per_instance: 1.0,
+            insert_cpu_secs: 0.0,
+            merge_cpu_secs: 0.0,
+            query_cpu_secs: 0.0,
+        }];
+        let solution = greedy_assign(
+            vec![make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0)],
+            60_000,
+            1.0,
+            &table,
+            &CostWeights::default(),
+        );
+
+        assert_eq!(solution.num_exact_fallback(), 0);
+        assert_eq!(solution.deployed_configs().len(), 1);
+        assert_eq!(
+            solution
+                .deployed_configs()
+                .values()
+                .next()
+                .expect("one CMS-with-heap config deployed")
+                .aggregation_type,
+            AggregationType::CountMinSketchWithHeap
+        );
     }
 }

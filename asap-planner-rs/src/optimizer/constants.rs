@@ -5,6 +5,13 @@
 pub const CMS_DEPTHS: &[u64] = &[3, 5];
 pub const CMS_WIDTHS: &[u64] = &[512, 1024, 2048];
 pub const CMS_HEAP_SIZES: &[u64] = &[40, 200, 1000];
+// Temporary CMS-with-heap cost-model assumptions. The reference CPU costs
+// come from the fixed-top-k sketch-bench wrapper; these values describe the
+// runtime representation until sketch-bench sweeps the actual heap sizes.
+pub const CMS_HEAP_REFERENCE_HEAP_SIZE: u64 = 32;
+pub const CMS_HEAP_COUNTER_BYTES: f64 = 8.0;
+pub const CMS_HEAP_AVERAGE_KEY_BYTES: f64 = 32.0;
+pub const CMS_HEAP_ENTRY_OVERHEAD_BYTES: f64 = 32.0;
 pub const KLL_KS: &[u64] = &[200, 500];
 pub const HYDRA_ROWS: &[u64] = &[3, 5];
 pub const HYDRA_COLS: &[u64] = &[512, 1024];

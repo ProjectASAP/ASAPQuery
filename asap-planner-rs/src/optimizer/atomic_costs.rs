@@ -15,8 +15,13 @@ use promql_utilities::query_logics::enums::AggregationType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::constants::{EXACT_QUERY_CPU_SECS, SUBTRACT_CPU_SECS};
+use super::constants::{
+    CMS_HEAP_AVERAGE_KEY_BYTES, CMS_HEAP_COUNTER_BYTES, CMS_HEAP_ENTRY_OVERHEAD_BYTES,
+    CMS_HEAP_REFERENCE_HEAP_SIZE, EXACT_QUERY_CPU_SECS, SUBTRACT_CPU_SECS,
+};
 use super::cost_model::AtomicCosts;
+
+const CMS_HEAP_BENCHMARK: &str = "cms-heap-topk-regularpath-vector2d";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AtomicCostEntry {
@@ -41,7 +46,7 @@ pub fn load_atomic_cost_table(path: &Path) -> anyhow::Result<AtomicCostTable> {
 /// sketch-bench's (algorithm, params) key for one of ASAPQuery's benchmarked
 /// families, or `None` if `agg_type` isn't one sketch-bench measures at all
 /// (trivial O(1) accumulators — Sum/Increase/MinMax/... — and sketch types
-/// sketch-bench has no wrapper for yet — CountMinSketchWithHeap, HydraKLL).
+/// sketch-bench has no wrapper for yet — HydraKLL).
 ///
 /// Field names differ from ASAPQuery's own `parameters` map by design: each
 /// side picked its own config vocabulary independently, so this is a real
@@ -57,19 +62,6 @@ fn sketch_bench_key(
     agg_type: AggregationType,
     params: &HashMap<String, Value>,
 ) -> Option<(&'static str, Value)> {
-    fn require<'a>(
-        params: &'a HashMap<String, Value>,
-        key: &str,
-        agg_type: AggregationType,
-    ) -> &'a Value {
-        params.get(key).unwrap_or_else(|| {
-            panic!(
-                "{agg_type:?} candidate has no \"{key}\" param; sketch_bench_key's field \
-                 names have drifted from candidate_gen.rs's param_grid()"
-            )
-        })
-    }
-
     match agg_type {
         AggregationType::CountMinSketch => Some((
             "cms-fastpath-vector2d",
@@ -103,14 +95,20 @@ fn sketch_bench_key(
 ///   it (`subtract_cpu_secs`/`exact_query_cpu_secs` still come from the
 ///   stub — the table has neither: subtract isn't implemented upstream yet,
 ///   and EXACT isn't a sketch sketch-bench could measure).
-/// - Benchmarked family, no matching row (e.g. a param point outside the
-///   swept grid, or a family sketch-bench doesn't wrap yet like
-///   `CountMinSketchWithHeap`): `None` — drop the candidate, per #524.
+/// - `CountMinSketchWithHeap`: resolve through the temporary fixed-top-k
+///   reference model in [`resolve_cms_heap_costs`]. Missing or malformed
+///   reference data returns `None` and drops the candidate.
+/// - Other benchmarked families, no matching row: `None` — drop the candidate,
+///   per #524.
 pub fn resolve_atomic_costs(
     table: &AtomicCostTable,
     agg_type: AggregationType,
     params: &HashMap<String, Value>,
 ) -> Option<AtomicCosts> {
+    if agg_type == AggregationType::CountMinSketchWithHeap {
+        return resolve_cms_heap_costs(table, params, &CmsHeapCostAssumptions::default());
+    }
+
     let Some((sketch, sketch_params)) = sketch_bench_key(agg_type, params) else {
         tracing::warn!(
             ?agg_type,
@@ -131,6 +129,183 @@ pub fn resolve_atomic_costs(
             query_cpu_secs: entry.query_cpu_secs,
             exact_query_cpu_secs: EXACT_QUERY_CPU_SECS,
         })
+}
+
+/// Temporary cost model for the runtime CMS-with-heap implementation.
+///
+/// sketch-bench currently measures a fixed top-k=32 wrapper, while the
+/// runtime's heap size is a candidate parameter. CPU costs therefore scale
+/// linearly from the matching regular-path/top-k benchmark row. Memory is
+/// computed from the runtime's i64 CMS counters and an explicit estimate for
+/// each heap entry; the benchmark's i32-only matrix memory is not reused.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct CmsHeapCostAssumptions {
+    reference_heap_size: u64,
+    counter_bytes: f64,
+    average_key_bytes: f64,
+    heap_entry_overhead_bytes: f64,
+}
+
+impl Default for CmsHeapCostAssumptions {
+    fn default() -> Self {
+        Self {
+            reference_heap_size: CMS_HEAP_REFERENCE_HEAP_SIZE,
+            counter_bytes: CMS_HEAP_COUNTER_BYTES,
+            average_key_bytes: CMS_HEAP_AVERAGE_KEY_BYTES,
+            heap_entry_overhead_bytes: CMS_HEAP_ENTRY_OVERHEAD_BYTES,
+        }
+    }
+}
+
+impl CmsHeapCostAssumptions {
+    fn validate(self) {
+        assert!(
+            self.reference_heap_size > 0,
+            "CMS-with-heap reference_heap_size must be greater than zero"
+        );
+        assert!(
+            self.counter_bytes.is_finite() && self.counter_bytes >= 0.0,
+            "CMS-with-heap counter_bytes must be finite and non-negative"
+        );
+        assert!(
+            self.average_key_bytes.is_finite() && self.average_key_bytes >= 0.0,
+            "CMS-with-heap average_key_bytes must be finite and non-negative"
+        );
+        assert!(
+            self.heap_entry_overhead_bytes.is_finite() && self.heap_entry_overhead_bytes >= 0.0,
+            "CMS-with-heap heap_entry_overhead_bytes must be finite and non-negative"
+        );
+    }
+}
+
+/// Resolve a CMS-with-heap candidate from the fixed-top-k benchmark reference.
+///
+/// The helper deliberately returns `None` when the reference row is absent or
+/// malformed. The caller then drops this candidate, leaving the always-feasible
+/// EXACT candidate available. TODO(#651): turn these temporary warning paths
+/// into hard errors once sketch-bench sweeps cover the candidate grid.
+fn resolve_cms_heap_costs(
+    table: &AtomicCostTable,
+    params: &HashMap<String, Value>,
+    assumptions: &CmsHeapCostAssumptions,
+) -> Option<AtomicCosts> {
+    assumptions.validate();
+
+    let agg_type = AggregationType::CountMinSketchWithHeap;
+    let depth = require_u64(params, "depth", agg_type);
+    let width = require_u64(params, "width", agg_type);
+    let heap_size = require_u64(params, "heapsize", agg_type);
+    let count_events = require(params, "count_events", agg_type);
+    let heap_size_f64 = heap_size as f64;
+    let scale = heap_size_f64 / assumptions.reference_heap_size as f64;
+    let expected_config = serde_json::json!({
+        "algorithm": CMS_HEAP_BENCHMARK,
+        "params": { "rows": depth, "cols": width },
+    });
+
+    let Some(entry) = table
+        .iter()
+        .find(|entry| entry.sketch == CMS_HEAP_BENCHMARK && entry.sketch_config == expected_config)
+    else {
+        tracing::info!(
+            status = "missing_reference",
+            sketch = CMS_HEAP_BENCHMARK,
+            depth,
+            width,
+            heap_size,
+            count_events = ?count_events,
+            "cms-with-heap atomic cost measurement"
+        );
+        tracing::warn!(
+            sketch = CMS_HEAP_BENCHMARK,
+            depth,
+            width,
+            heap_size,
+            count_events = ?count_events,
+            "no CMS-with-heap reference cost for candidate; dropping candidate; \
+             TODO(#651): fail loudly once sketch-bench sweeps cover this grid"
+        );
+        return None;
+    };
+
+    if !valid_cost_entry(entry) {
+        tracing::info!(
+            status = "invalid_reference",
+            sketch = CMS_HEAP_BENCHMARK,
+            depth,
+            width,
+            heap_size,
+            count_events = ?count_events,
+            "cms-with-heap atomic cost measurement"
+        );
+        tracing::warn!(
+            sketch = CMS_HEAP_BENCHMARK,
+            depth,
+            width,
+            heap_size,
+            count_events = ?count_events,
+            "invalid CMS-with-heap reference cost for candidate; dropping candidate; \
+             TODO(#651): fail loudly once sketch-bench sweeps cover this grid"
+        );
+        return None;
+    }
+
+    let costs = AtomicCosts {
+        mem_bytes_per_instance: depth as f64 * width as f64 * assumptions.counter_bytes
+            + heap_size_f64
+                * (assumptions.average_key_bytes + assumptions.heap_entry_overhead_bytes),
+        insert_cpu_secs: entry.insert_cpu_secs * scale,
+        merge_cpu_secs: entry.merge_cpu_secs * scale,
+        subtract_cpu_secs: SUBTRACT_CPU_SECS,
+        query_cpu_secs: entry.query_cpu_secs * scale,
+        exact_query_cpu_secs: EXACT_QUERY_CPU_SECS,
+    };
+
+    tracing::info!(
+        status = "modeled",
+        sketch = CMS_HEAP_BENCHMARK,
+        depth,
+        width,
+        heap_size,
+        count_events = ?count_events,
+        mem_bytes_per_instance = costs.mem_bytes_per_instance,
+        insert_cpu_secs = costs.insert_cpu_secs,
+        merge_cpu_secs = costs.merge_cpu_secs,
+        query_cpu_secs = costs.query_cpu_secs,
+        "cms-with-heap atomic cost measurement"
+    );
+
+    Some(costs)
+}
+
+fn require_u64(params: &HashMap<String, Value>, key: &str, agg_type: AggregationType) -> u64 {
+    require(params, key, agg_type)
+        .as_u64()
+        .unwrap_or_else(|| panic!("{agg_type:?} candidate has non-integer \"{key}\" param"))
+}
+
+fn require<'a>(
+    params: &'a HashMap<String, Value>,
+    key: &str,
+    agg_type: AggregationType,
+) -> &'a Value {
+    params.get(key).unwrap_or_else(|| {
+        panic!(
+            "{agg_type:?} candidate has no \"{key}\" param; candidate_gen.rs's param_grid() \
+             has drifted"
+        )
+    })
+}
+
+fn valid_cost_entry(entry: &AtomicCostEntry) -> bool {
+    [
+        entry.mem_bytes_per_instance,
+        entry.insert_cpu_secs,
+        entry.merge_cpu_secs,
+        entry.query_cpu_secs,
+    ]
+    .iter()
+    .all(|cost| cost.is_finite() && *cost >= 0.0)
 }
 
 #[cfg(test)]
@@ -155,6 +330,34 @@ mod tests {
         HashMap::from([
             ("depth".to_string(), Value::from(depth)),
             ("width".to_string(), Value::from(width)),
+        ])
+    }
+
+    fn cms_heap_entry(depth: u64, width: u64) -> AtomicCostEntry {
+        AtomicCostEntry {
+            sketch: CMS_HEAP_BENCHMARK.into(),
+            sketch_config: serde_json::json!({
+                "algorithm": CMS_HEAP_BENCHMARK,
+                "params": { "rows": depth, "cols": width }
+            }),
+            mem_bytes_per_instance: 1.0,
+            insert_cpu_secs: 2.0,
+            merge_cpu_secs: 4.0,
+            query_cpu_secs: 8.0,
+        }
+    }
+
+    fn cms_heap_params(
+        depth: u64,
+        width: u64,
+        heap_size: u64,
+        count_events: bool,
+    ) -> HashMap<String, Value> {
+        HashMap::from([
+            ("depth".to_string(), Value::from(depth)),
+            ("width".to_string(), Value::from(width)),
+            ("heapsize".to_string(), Value::from(heap_size)),
+            ("count_events".to_string(), Value::from(count_events)),
         ])
     }
 
@@ -209,17 +412,81 @@ mod tests {
     }
 
     #[test]
-    fn cms_with_heap_has_no_translation_and_falls_back_to_the_stub() {
-        // Real sketch (not trivial), just not wrapped by sketch-bench yet --
-        // still goes through the stub path, same as a trivial accumulator,
-        // per the ASAPQuery#524 scope decision.
+    fn cms_with_heap_without_reference_cost_drops_the_candidate() {
+        // Until sketch-bench has a matching reference row, CMS-with-heap must
+        // not inherit the flat stub: the optimizer should retain EXACT as its
+        // visible fallback instead of silently selecting an uncosted sketch.
         let table: AtomicCostTable = vec![];
-        assert!(resolve_atomic_costs(
-            &table,
-            AggregationType::CountMinSketchWithHeap,
-            &HashMap::new()
-        )
-        .is_some());
+        let params = cms_heap_params(3, 1024, 40, true);
+        assert!(
+            resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cms_with_heap_scales_cpu_and_models_runtime_memory() {
+        let table = vec![cms_heap_entry(3, 1024)];
+        let assumptions = CmsHeapCostAssumptions {
+            reference_heap_size: 32,
+            counter_bytes: 8.0,
+            average_key_bytes: 10.0,
+            heap_entry_overhead_bytes: 6.0,
+        };
+        let params = cms_heap_params(3, 1024, 64, true);
+        let costs = resolve_cms_heap_costs(&table, &params, &assumptions)
+            .expect("matching CMS-with-heap reference row must resolve");
+
+        assert_eq!(
+            costs.mem_bytes_per_instance,
+            3.0 * 1024.0 * 8.0 + 64.0 * 16.0
+        );
+        assert_eq!(costs.insert_cpu_secs, 4.0);
+        assert_eq!(costs.merge_cpu_secs, 8.0);
+        assert_eq!(costs.query_cpu_secs, 16.0);
+        assert_eq!(costs.subtract_cpu_secs, SUBTRACT_CPU_SECS);
+        assert_eq!(costs.exact_query_cpu_secs, EXACT_QUERY_CPU_SECS);
+    }
+
+    #[test]
+    fn public_resolver_dispatches_cms_with_heap_to_the_reference_model() {
+        let table = vec![cms_heap_entry(3, 1024)];
+        let params = cms_heap_params(3, 1024, 32, true);
+        let costs = resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params)
+            .expect("public resolver must dispatch CMS-with-heap candidates");
+
+        assert_eq!(
+            costs.mem_bytes_per_instance,
+            3.0 * 1024.0 * 8.0 + 32.0 * 64.0
+        );
+        assert_eq!(costs.insert_cpu_secs, 2.0);
+        assert_eq!(costs.merge_cpu_secs, 4.0);
+        assert_eq!(costs.query_cpu_secs, 8.0);
+    }
+
+    #[test]
+    fn cms_with_heap_costs_ignore_count_events() {
+        let table = vec![cms_heap_entry(3, 1024)];
+        let assumptions = CmsHeapCostAssumptions::default();
+        let count_params = cms_heap_params(3, 1024, 40, true);
+        let value_params = cms_heap_params(3, 1024, 40, false);
+
+        assert_eq!(
+            resolve_cms_heap_costs(&table, &count_params, &assumptions),
+            resolve_cms_heap_costs(&table, &value_params, &assumptions)
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "reference_heap_size must be greater than zero")]
+    fn cms_with_heap_rejects_invalid_assumptions() {
+        let table = vec![cms_heap_entry(3, 1024)];
+        let params = cms_heap_params(3, 1024, 40, true);
+        let assumptions = CmsHeapCostAssumptions {
+            reference_heap_size: 0,
+            ..CmsHeapCostAssumptions::default()
+        };
+        resolve_cms_heap_costs(&table, &params, &assumptions);
     }
 
     #[test]
@@ -229,8 +496,8 @@ mod tests {
         // param_grid(), which always sets "depth"/"width". Landing here without
         // one means sketch_bench_key's field names have drifted from
         // param_grid()'s -- a real bug, not "this family has no data" (which
-        // resolve_atomic_costs already covers via cms_with_heap above and
-        // must stay visibly different from this case).
+        // the CMS-with-heap resolver handles separately and must stay visibly
+        // different from this case).
         let table: AtomicCostTable = vec![];
         let params = HashMap::from([("width".to_string(), Value::from(1024u64))]);
         resolve_atomic_costs(&table, AggregationType::CountMinSketch, &params);
