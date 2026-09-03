@@ -86,6 +86,32 @@ class ClusterDataConfigTest(unittest.TestCase):
             10000,
         )
 
+    def test_missing_cluster_data_interval_uses_shared_default(self):
+        with open(
+            EXPERIMENTS_DIR
+            / "config/experiment_type/cluster_data_alibaba_node_2022.yaml"
+        ) as config_file:
+            experiment_config = yaml.safe_load(config_file)
+        del experiment_config["exporters"]["exporter_list"]["cluster_data_exporter"][
+            "scrape_interval"
+        ]
+
+        prometheus_config = self._generate_config(experiment_config)
+        cde_job = next(
+            job
+            for job in prometheus_config["scrape_configs"]
+            if job["job_name"] == "cluster_data_exporter"
+        )
+
+        self.assertEqual(cde_job["scrape_interval"], "10s")
+        self.assertEqual(
+            get_prometheus_data_ingestion_interval_ms(
+                OmegaConf.create({"scrape_interval": "1s"}),
+                OmegaConf.create(experiment_config),
+            ),
+            10000,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

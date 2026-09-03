@@ -28,6 +28,7 @@ exporters:
       data_type: "msresource"
       data_year: 2021
       parts_mode: "all-parts"  # or "part-index" with part_index: 0
+      scrape_interval: "10s"
       # Optional configuration
       # log_level: "INFO"  # DEBUG, INFO, WARN, ERROR (default: INFO)
       # memory_limit: "2g"
