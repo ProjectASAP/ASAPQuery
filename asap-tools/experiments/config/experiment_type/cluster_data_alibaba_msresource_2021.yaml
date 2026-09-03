@@ -28,7 +28,6 @@ exporters:
       data_type: "msresource"
       data_year: 2021
       parts_mode: "all-parts"  # or "part-index" with part_index: 0
-      scrape_interval: "1s"
       # Optional configuration
       # log_level: "INFO"  # DEBUG, INFO, WARN, ERROR (default: INFO)
       # memory_limit: "2g"
@@ -43,7 +42,7 @@ query_groups:
   - sum by (microservice_id) (alibaba_microservice_cpu_usage)
   - alibaba_microservice_memory_usage
   - sum by (microservice_id) (alibaba_microservice_memory_usage)
-  repetition_delay_ms: 10000
+  repetition_delay_ms: 1000
   client_options:
     repetitions: 10
     query_time_offset: 10

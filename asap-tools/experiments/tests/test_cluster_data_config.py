@@ -40,7 +40,7 @@ class ClusterDataConfigTest(unittest.TestCase):
             with open(f"{output_dir}/prometheus.yml") as config_file:
                 return yaml.safe_load(config_file)
 
-    def test_google_scrape_interval_matches_controller_ingestion_interval(self):
+    def test_google_uses_global_scrape_interval(self):
         with open(
             EXPERIMENTS_DIR / "config/experiment_type/cluster_data_google.yaml"
         ) as config_file:
@@ -57,13 +57,12 @@ class ClusterDataConfigTest(unittest.TestCase):
         self.assertEqual(cde_job["scrape_timeout"], "1s")
         self.assertEqual(
             get_prometheus_data_ingestion_interval_ms(
-                OmegaConf.create({"scrape_interval": "1s"}),
-                OmegaConf.create(experiment_config),
+                OmegaConf.create({"scrape_interval": "1s"})
             ),
             1000,
         )
 
-    def test_alibaba_scrape_interval_matches_controller_ingestion_interval(self):
+    def test_alibaba_uses_global_scrape_interval(self):
         with open(
             EXPERIMENTS_DIR
             / "config/experiment_type/cluster_data_alibaba_node_2021.yaml"
@@ -80,29 +79,44 @@ class ClusterDataConfigTest(unittest.TestCase):
         self.assertEqual(cde_job["scrape_interval"], "1s")
         self.assertEqual(
             get_prometheus_data_ingestion_interval_ms(
-                OmegaConf.create({"scrape_interval": "1s"}),
-                OmegaConf.create(experiment_config),
+                OmegaConf.create({"scrape_interval": "1s"})
             ),
             1000,
         )
 
-    def test_missing_cluster_data_interval_fails_loudly(self):
+    def test_cluster_data_does_not_define_scrape_interval(self):
         with open(
             EXPERIMENTS_DIR
             / "config/experiment_type/cluster_data_alibaba_node_2022.yaml"
         ) as config_file:
             experiment_config = yaml.safe_load(config_file)
-        del experiment_config["exporters"]["exporter_list"]["cluster_data_exporter"][
-            "scrape_interval"
+        cde_config = experiment_config["exporters"]["exporter_list"][
+            "cluster_data_exporter"
         ]
+        self.assertNotIn("scrape_interval", cde_config)
 
-        with self.assertRaisesRegex(ValueError, "scrape_interval"):
-            self._generate_config(experiment_config)
-        with self.assertRaisesRegex(ValueError, "scrape_interval"):
-            get_prometheus_data_ingestion_interval_ms(
-                OmegaConf.create({"scrape_interval": "1s"}),
-                OmegaConf.create(experiment_config),
-            )
+        prometheus_config = self._generate_config(experiment_config)
+        cde_job = next(
+            job
+            for job in prometheus_config["scrape_configs"]
+            if job["job_name"] == "cluster_data_exporter"
+        )
+        self.assertEqual(cde_job["scrape_interval"], "1s")
+
+    def test_cluster_data_repetitions_use_one_second_delay(self):
+        for config_path in EXPERIMENTS_DIR.glob(
+            "config/experiment_type/cluster_data_*.yaml"
+        ):
+            with self.subTest(config=config_path.name):
+                with open(config_path) as config_file:
+                    experiment_config = yaml.safe_load(config_file)
+                self.assertTrue(experiment_config["query_groups"])
+                self.assertTrue(
+                    all(
+                        group["repetition_delay_ms"] == 1000
+                        for group in experiment_config["query_groups"]
+                    )
+                )
 
 
 if __name__ == "__main__":

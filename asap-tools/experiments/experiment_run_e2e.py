@@ -316,7 +316,7 @@ def main(cfg: DictConfig):
             node_offset=args.node_offset,
         )
         data_ingestion_interval_ms = config.get_prometheus_data_ingestion_interval_ms(
-            cfg.prometheus, cfg.experiment_params
+            cfg.prometheus
         )
 
         # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
