@@ -285,6 +285,9 @@ def main(args, experiment_config=None):
             "static_configs": [{"targets": targets}],
         }
 
+        if "scrape_timeout" in cluster_data_config:
+            scrape_job["scrape_timeout"] = cluster_data_config["scrape_timeout"]
+
         add_metric_relabel_configs(
             scrape_job, "cluster_data_exporter", experiment_config
         )

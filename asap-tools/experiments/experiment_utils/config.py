@@ -510,8 +510,9 @@ def read_workloads_config(experiment_params: DictConfig):
 
 
 def get_prometheus_data_ingestion_interval_ms(prometheus_config):
-    """Extract scrape interval from Prometheus configuration, returned in milliseconds."""
+    """Extract Prometheus' global scrape interval in milliseconds."""
     s = prometheus_config.scrape_interval
+
     # ponytail: check ms before s — "100ms".endswith("s") is True and would misroute
     if s.endswith("ms"):
         return int(s[:-2])

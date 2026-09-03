@@ -9,6 +9,11 @@ experiment:
   - mode: baseline
     server: prometheus
 
+# Monitoring tool configuration
+monitoring:
+  tool: prometheus
+  deployment_mode: bare_metal
+
 servers:
 - name: prometheus
   url: http://localhost:9090
@@ -34,6 +39,8 @@ exporters:
       #parts_mode: "all-parts"  # or "part-index" with part_index: 0
       parts_mode: "part-index"  # or "part-index" with part_index: 0
       part_index: 0
+      # A Google task_usage scrape contains many active task series.
+      scrape_timeout: "1s"
       # Optional configuration
       # log_level: "INFO"  # DEBUG, INFO, WARN, ERROR (default: INFO)
       # memory_limit: "2g"
@@ -52,7 +59,7 @@ query_groups:
   #- sum by (task_index) (google_canonical_memory_usage_0)
   ## Query Google max CPU usage
   #- google_max_cpu_usage_0
-  repetition_delay_ms: 10000
+  repetition_delay_ms: 1000
   client_options:
     repetitions: 10
     query_time_offset: 10

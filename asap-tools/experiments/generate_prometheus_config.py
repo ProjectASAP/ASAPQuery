@@ -282,13 +282,16 @@ def main(args, experiment_config=None):
 
         scrape_config = {
             "job_name": "cluster_data_exporter",
-            "scrape_interval": "10s",  # Fast scrape interval for high-resolution cluster data
+            "scrape_interval": config["global"]["scrape_interval"],
             "static_configs": [
                 {
                     "targets": [target],
                 }
             ],
         }
+
+        if "scrape_timeout" in cde_config:
+            scrape_config["scrape_timeout"] = cde_config["scrape_timeout"]
 
         # Add metric_relabel_configs to only keep required metrics
         add_metric_relabel_configs(

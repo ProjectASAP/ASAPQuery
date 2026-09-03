@@ -53,7 +53,7 @@ query_groups:
   #- sum by (node_id) (alibaba_node_cpu_usage)
   #- alibaba_node_memory_usage
   #- sum by (node_id) (alibaba_node_memory_usage)
-  repetition_delay_ms: 10000
+  repetition_delay_ms: 1000
   client_options:
     repetitions: 10
     query_time_offset: 10

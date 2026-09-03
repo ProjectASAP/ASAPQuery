@@ -42,7 +42,7 @@ query_groups:
   - sum by (microservice_id) (alibaba_microservice_cpu_usage)
   - alibaba_microservice_memory_usage
   - sum by (microservice_id) (alibaba_microservice_memory_usage)
-  repetition_delay_ms: 10000
+  repetition_delay_ms: 1000
   client_options:
     repetitions: 10
     query_time_offset: 10

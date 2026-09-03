@@ -332,6 +332,15 @@ def main(cfg: DictConfig):
                     experiment_output_dir=experiment_output_dir,
                     local_experiment_dir=local_experiment_dir,
                 )
+            if cluster_data_service and config.check_exporter_and_queries_exist(
+                "cluster_data_exporter", cfg.experiment_params
+            ):
+                cluster_data_service.start(
+                    config=exporter_config["exporter_list"]["cluster_data_exporter"],
+                    experiment_output_dir=experiment_output_dir,
+                    local_experiment_dir=local_experiment_dir,
+                    num_nodes=num_nodes_in_experiment,
+                )
             prometheus_service.start(
                 experiment_output_dir=experiment_output_dir,
                 local_experiment_dir=local_experiment_dir,
@@ -400,8 +409,12 @@ def main(cfg: DictConfig):
             )
 
         # Handle cluster data exporter for replaying cluster traces
-        if cluster_data_service and config.check_exporter_and_queries_exist(
-            "cluster_data_exporter", cfg.experiment_params
+        if (
+            cluster_data_service
+            and experiment_mode != constants.SKETCHDB_EXPERIMENT_NAME
+            and config.check_exporter_and_queries_exist(
+                "cluster_data_exporter", cfg.experiment_params
+            )
         ):
             cluster_data_service.start(
                 config=exporter_config["exporter_list"]["cluster_data_exporter"],
