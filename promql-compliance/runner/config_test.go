@@ -88,6 +88,22 @@ queries:
 	}
 }
 
+func TestLoadSuiteRejectsInstantOffsetOffRangeGrid(t *testing.T) {
+	_, err := LoadSuite([]byte(`name: off-grid
+queries:
+  - name: invalid-time
+    expr: up
+    instant_offsets_seconds: [330]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 600
+      step_seconds: 60
+`))
+	if err == nil {
+		t.Fatal("LoadSuite accepted an instant offset that is not on the range grid")
+	}
+}
+
 func TestLoadSuiteRejectsSubMillisecondRange(t *testing.T) {
 	_, err := LoadSuite([]byte(`name: sub-millisecond
 queries:

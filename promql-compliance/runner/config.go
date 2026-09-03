@@ -78,6 +78,13 @@ func LoadSuite(contents []byte) (Suite, error) {
 				if !finite(offset) || !query.Range.contains(offset) {
 					return Suite{}, fmt.Errorf("query %q instant offset %v is outside its range", query.Name, offset)
 				}
+				if !query.Range.containsGridOffset(offset) {
+					return Suite{}, fmt.Errorf(
+						"query %q instant offset %v is not aligned to the range start and step",
+						query.Name,
+						offset,
+					)
+				}
 			}
 		} else {
 			for _, offset := range query.InstantOffsetsSeconds {
@@ -147,6 +154,12 @@ func (r RangeSpec) validate() error {
 
 func (r RangeSpec) contains(offset float64) bool {
 	return offset >= r.StartOffsetSeconds && offset <= r.EndOffsetSeconds
+}
+
+func (r RangeSpec) containsGridOffset(offset float64) bool {
+	steps := (offset - r.StartOffsetSeconds) / r.StepSeconds
+	nearestStep := math.Round(steps)
+	return math.Abs(steps-nearestStep) <= 1e-9
 }
 
 func finite(value float64) bool {
