@@ -332,6 +332,10 @@ def main(cfg: DictConfig) -> None:
         cfg,
         required_params=[
             ("experiment.name", "Human-readable experiment name"),
+            (
+                "controller.punting",
+                "Enable query punting based on performance heuristics",
+            ),
         ]
         + config.required_cloudlab_params(cfg),
         script_name="experiment_run_clickhouse",

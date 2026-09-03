@@ -676,6 +676,10 @@ def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
     # Check for required parameters that must be provided via command line
     required_params = [
         ("experiment.name", "Human-readable experiment name"),
+        (
+            "controller.punting",
+            "Enable query punting based on performance heuristics",
+        ),
     ] + required_cloudlab_params(cfg)
 
     # Use the existing validate_basic_config function
