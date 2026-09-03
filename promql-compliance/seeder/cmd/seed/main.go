@@ -3,7 +3,7 @@
 // with --web.enable-remote-write-receiver) and ASAPQuery's own remote-write
 // ingest endpoint. Using the same WriteRequest bytes against both means
 // there's no risk of the two ingestion mechanisms disagreeing and producing
-// false diffs in the differential PromQL compliance harness (see issue
+// false diffs in the differential PromQL runner (see issue
 // #594).
 package main
 

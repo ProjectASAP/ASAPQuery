@@ -6,8 +6,8 @@ real Prometheus (started with `--web.enable-remote-write-receiver`) and
 ASAPQuery's own remote-write ingest endpoint (`asap-query-engine/src/drivers/ingest/prometheus_remote_write.rs`,
 served at `POST /api/v1/write`, snappy + protobuf, same wire format). Using
 the exact same code path against both targets means there's no risk of two
-different ingestion mechanisms producing false diffs in the comparison
-harness that consumes this.
+different ingestion mechanisms producing false diffs in the differential
+runner that consumes this.
 
 This is a standalone Go module (`go.mod` in this directory) — there is no
 other Go code in the ASAPQuery repo.
@@ -32,7 +32,7 @@ go run ./cmd/seed --reference-url=http://localhost:9090 --test-url=http://localh
 
 Each URL is the target's base URL; the seeder POSTs to `<url>/api/v1/write`.
 Prints the base timestamp (Unix ms) it anchored the dataset to — the
-comparison harness needs this to compute absolute query timestamps (see
+differential runner needs this to compute absolute query timestamps (see
 below).
 
 Optionally pass `--base-time-ms` to pin the anchor instead of using
