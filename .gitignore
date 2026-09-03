@@ -6,3 +6,5 @@ asap-quickstart/bin/
 /.roborev/
 
 /.agent/
+
+/**/*.log
