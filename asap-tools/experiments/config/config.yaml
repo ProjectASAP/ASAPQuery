@@ -98,7 +98,7 @@ query_engine:
 
 # Controller configuration
 controller:
-  punting: true  # Enable query punting based on performance heuristics (should_be_performant check)
+  punting: ???  # REQUIRED: Enable query punting based on performance heuristics (should_be_performant check)
 
 # Optional manual planner windowing override. Omit this block to preserve the
 # default tumbling-window behavior. For tumbling windows, omit
