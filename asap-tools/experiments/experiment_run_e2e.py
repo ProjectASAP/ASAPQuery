@@ -12,6 +12,7 @@ from experiment_utils.services import (
     KafkaService,
     FlinkService,
     QueryEngineRustService,
+    resolve_backend_config,
     ExporterServiceFactory,
     PrometheusKafkaAdapterService,
     ArroyoService,
@@ -484,22 +485,15 @@ def main(cfg: DictConfig):
 
             # in case we want to run query engine manually
             if not cfg.flow.replace_query_engine_with_dumb_consumer:
-                # Get prometheus port from prometheus service
-                prometheus_port = prometheus_service.get_query_endpoint_port()
                 # Get http port from query engine service
                 http_port = query_engine_service.get_http_port()
 
-                # Build a fully resolved BackendConfig dict.  For the prometheus
-                # backend the server URL depends on the runtime node IP, so we
-                # fill it in here rather than in config.yaml.
-                backend_config = dict(args.backend)
-                if backend_config["type"] == "prometheus":
-                    prometheus_host = provider.get_node_ip(args.node_offset)
-                    backend_config["server"] = (
-                        f"http://{prometheus_host}:{prometheus_port}"
-                    )
-                backend_config["forward_unsupported_queries"] = (
-                    args.forward_unsupported_queries
+                backend_config = resolve_backend_config(
+                    args.backend,
+                    prometheus_service,
+                    provider,
+                    args.node_offset,
+                    args.forward_unsupported_queries,
                 )
 
                 query_engine_service.start(

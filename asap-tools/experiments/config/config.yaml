@@ -87,7 +87,7 @@ cluster_data_directory: "/data/cluster_traces"  # Path to directory containing G
 # Backend configuration for the query engine (aligned with BackendConfig in asap-query-engine/src/engine_config.rs)
 backend:
   type: "prometheus"  # choices: ["prometheus", "clickhouse", "elastic_querydsl", "elastic_sql"]
-  # prometheus: server URL is built at runtime from the Prometheus service (no extra fields needed here)
+  # prometheus: server and health_endpoint are built at runtime from the monitoring service
   # clickhouse: url (e.g. "http://ch-host:8123"), database (e.g. "default")
   # elastic_querydsl / elastic_sql: url (e.g. "http://es-host:9200"), index (e.g. "metrics-*")
 

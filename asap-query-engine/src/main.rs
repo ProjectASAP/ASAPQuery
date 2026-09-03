@@ -315,6 +315,7 @@ async fn main() -> Result<()> {
             server,
             forward_unsupported_queries,
             fallback_timeout_secs,
+            ..
         } => AdapterConfig::prometheus_promql(
             server.clone(),
             *forward_unsupported_queries,
@@ -353,41 +354,11 @@ async fn main() -> Result<()> {
 
     if config.backend.forward_unsupported_queries() {
         let client = reqwest::Client::new();
-        let (health_url, backend_label) = match &config.backend {
-            BackendConfig::Prometheus { server, .. } => (
-                format!("{}/api/v1/status/runtimeinfo", server.trim_end_matches('/')),
-                server.clone(),
-            ),
-            BackendConfig::Clickhouse { url, .. } => {
-                (format!("{}/ping", url.trim_end_matches('/')), url.clone())
-            }
-            BackendConfig::ElasticQuerydsl { url, .. } | BackendConfig::ElasticSql { url, .. } => (
-                format!("{}/_cluster/health", url.trim_end_matches('/')),
-                url.clone(),
-            ),
-        };
-        match client
-            .get(&health_url)
-            .timeout(std::time::Duration::from_secs(5))
-            .send()
-            .await
-        {
-            Ok(resp) if resp.status().is_success() => {
-                info!("Backend reachable at {}", backend_label);
-            }
-            Ok(resp) => {
-                error!(
-                    "Backend at {} returned HTTP {} — cannot start",
-                    backend_label,
-                    resp.status()
-                );
-                std::process::exit(1);
-            }
-            Err(e) => {
-                error!("Cannot reach backend at {}: {}", backend_label, e);
-                std::process::exit(1);
-            }
+        if let Err(message) = check_backend_health(&client, &config.backend).await {
+            error!("{}", message);
+            std::process::exit(1);
         }
+        info!("Backend reachable at {}", config.backend.server_url());
     }
 
     let query_tracker = if config.query_tracker.enabled {
@@ -503,6 +474,29 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+async fn check_backend_health(
+    client: &reqwest::Client,
+    backend: &BackendConfig,
+) -> std::result::Result<(), String> {
+    let health_url = backend.health_check_url();
+    let backend_label = backend.server_url();
+
+    match client
+        .get(&health_url)
+        .timeout(std::time::Duration::from_secs(5))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => Ok(()),
+        Ok(resp) => Err(format!(
+            "Backend at {} returned HTTP {} — cannot start",
+            backend_label,
+            resp.status()
+        )),
+        Err(e) => Err(format!("Cannot reach backend at {}: {}", backend_label, e)),
+    }
+}
+
 /// Periodic memory diagnostics logger — runs every 30 seconds.
 async fn spawn_memory_diagnostics(
     store: Arc<SimpleMapStore>,
@@ -595,4 +589,36 @@ fn setup_logging(
     info!("Logging initialized (respects RUST_LOG environment variable)");
     info!("Logs will be written to: {}/query_engine.log", output_dir);
     Ok(guard)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_backend_health, BackendConfig};
+    use axum::{routing::get, Router};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn backend_health_check_uses_configured_endpoint_and_reports_failure() {
+        let app = Router::new().route(
+            "/health",
+            get(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let backend = BackendConfig::Prometheus {
+            server: format!("http://{}", address),
+            health_endpoint: "/health".to_string(),
+            forward_unsupported_queries: true,
+            fallback_timeout_secs: 30,
+        };
+        let error = check_backend_health(&reqwest::Client::new(), &backend)
+            .await
+            .unwrap_err();
+
+        assert!(error.contains("returned HTTP 503"));
+    }
 }

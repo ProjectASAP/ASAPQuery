@@ -100,6 +100,10 @@ pub enum BackendConfig {
         /// Prometheus server URL used for query forwarding and planner context.
         #[serde(default = "default_prometheus_server")]
         server: String,
+        /// Backend health endpoint used only for the startup reachability check.
+        /// This is independent from ASAPQuery's own runtime-info endpoint.
+        #[serde(default = "default_prometheus_health_endpoint")]
+        health_endpoint: String,
         /// When true, queries not answerable from sketches are forwarded to `server`.
         /// The server must be reachable at startup.
         #[serde(default)]
@@ -145,6 +149,7 @@ impl Default for BackendConfig {
     fn default() -> Self {
         BackendConfig::Prometheus {
             server: default_prometheus_server(),
+            health_endpoint: default_prometheus_health_endpoint(),
             forward_unsupported_queries: false,
             fallback_timeout_secs: default_fallback_timeout_secs(),
         }
@@ -181,10 +186,46 @@ impl BackendConfig {
             } => *forward_unsupported_queries,
         }
     }
+
+    /// Return the URL used to check that the configured backend is reachable.
+    pub fn health_check_url(&self) -> String {
+        match self {
+            BackendConfig::Prometheus {
+                server,
+                health_endpoint,
+                ..
+            } => join_endpoint(server, health_endpoint),
+            BackendConfig::Clickhouse { url, .. } => join_endpoint(url, "/ping"),
+            BackendConfig::ElasticQuerydsl { url, .. } | BackendConfig::ElasticSql { url, .. } => {
+                join_endpoint(url, "/_cluster/health")
+            }
+        }
+    }
+
+    pub fn server_url(&self) -> &str {
+        match self {
+            BackendConfig::Prometheus { server, .. } => server,
+            BackendConfig::Clickhouse { url, .. }
+            | BackendConfig::ElasticQuerydsl { url, .. }
+            | BackendConfig::ElasticSql { url, .. } => url,
+        }
+    }
+}
+
+fn join_endpoint(server: &str, endpoint: &str) -> String {
+    format!(
+        "{}/{}",
+        server.trim_end_matches('/'),
+        endpoint.trim_start_matches('/')
+    )
 }
 
 fn default_prometheus_server() -> String {
     "http://localhost:9090".to_string()
+}
+
+fn default_prometheus_health_endpoint() -> String {
+    "/-/ready".to_string()
 }
 
 fn default_fallback_timeout_secs() -> u64 {
@@ -538,6 +579,10 @@ output_dir: "./output"
         assert!(matches!(config.backend, BackendConfig::Prometheus { .. }));
         assert_eq!(config.backend.query_language(), QueryLanguage::promql);
         assert!(!config.backend.forward_unsupported_queries());
+        assert_eq!(
+            config.backend.health_check_url(),
+            "http://localhost:9090/-/ready"
+        );
     }
 
     #[test]
@@ -647,6 +692,30 @@ backend:
             panic!("expected Prometheus backend");
         }
         assert!(config.backend.forward_unsupported_queries());
+    }
+
+    #[test]
+    fn backend_prometheus_uses_configured_health_endpoint() {
+        // VictoriaMetrics does not implement Prometheus's runtime-info path;
+        // its /health endpoint must be used for the backend startup check.
+        let yaml = r#"
+streaming_engine: "precompute"
+ingest:
+  type: "http_remote_write"
+  port: 9090
+output_dir: "./output"
+backend:
+  type: "prometheus"
+  server: "http://victoriametrics:8428/"
+  health_endpoint: "/health"
+  forward_unsupported_queries: true
+"#;
+        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
+
+        assert_eq!(
+            config.backend.health_check_url(),
+            "http://victoriametrics:8428/health"
+        );
     }
 
     #[test]
