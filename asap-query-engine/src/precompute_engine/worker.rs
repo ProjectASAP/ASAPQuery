@@ -5,7 +5,7 @@ use crate::precompute_engine::accumulator_factory::{
 use crate::precompute_engine::config::LateDataPolicy;
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::WorkerMessage;
-use crate::precompute_engine::window_manager::WindowManager;
+use crate::precompute_engine::window_manager::{WindowBoundary, WindowManager, WindowManagerError};
 use crate::precompute_operators::delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
@@ -235,7 +235,7 @@ impl Worker {
                         warn!("Worker {} final flush error: {}", self.id, e);
                     }
                     // Force-close any windows still open after the final flush.
-                    // `flush_all` only advances the watermark by +1ms (plus the
+                    // `flush_all` only follows observed event time (plus the
                     // wall-clock fallback, whose grace may not have elapsed for a
                     // one-shot batch), so the trailing window can remain open and
                     // its data would never reach the store. No more samples will
@@ -272,18 +272,20 @@ impl Worker {
                                 }
                                 // Force-close all open windows; no new samples will arrive
                                 // for this removed agg_id. Advance to a *finite* bound
-                                // (`max_pane + window_size_ms`), NOT `i64::MAX`:
+                                // (`max_pane + window_size_ms + 1`), NOT `i64::MAX`:
                                 // `closed_windows` enumerates window starts one slide at a
                                 // time, so `i64::MAX` would loop ~`i64::MAX / slide` times
                                 // and overflow (see `force_close_all`).
                                 let mut active_panes = state.active_panes;
                                 let closed = match active_panes.keys().next_back() {
                                     Some(&max_pane) => {
-                                        let force_wm = max_pane
-                                            .saturating_add(state.window_manager.window_size_ms());
-                                        state
-                                            .window_manager
-                                            .closed_windows(state.previous_watermark_ms, force_wm)
+                                        let force_wm_ms = max_pane
+                                            .saturating_add(state.window_manager.window_size_ms())
+                                            .saturating_add(1);
+                                        state.window_manager.closed_windows(
+                                            state.previous_watermark_ms,
+                                            force_wm_ms,
+                                        )
                                     }
                                     None => Vec::new(), // no open panes
                                 };
@@ -374,7 +376,7 @@ impl Worker {
         &mut self,
         agg_id: u64,
         group_key: &str,
-    ) -> Option<&mut GroupState> {
+    ) -> Result<Option<&mut GroupState>, WindowManagerError> {
         // Fast path: group already exists — borrow-based lookup, no allocation.
         let exists = self
             .group_states
@@ -382,9 +384,15 @@ impl Worker {
             .is_some_and(|m| m.contains_key(group_key));
         if !exists {
             // Creation path: requires a config, and allocates the interned key once.
-            let config = Arc::clone(self.agg_configs.get(&agg_id)?);
+            let Some(config) = self.agg_configs.get(&agg_id).map(Arc::clone) else {
+                return Ok(None);
+            };
             let gs = GroupState {
-                window_manager: WindowManager::new(config.window_size_ms, config.slide_interval_ms),
+                window_manager: WindowManager::new(
+                    config.window_size_ms,
+                    config.slide_interval_ms,
+                    WindowBoundary::OpenClosed,
+                )?,
                 config,
                 active_panes: BTreeMap::new(),
                 delta_set_previous_keys: HashSet::new(),
@@ -398,7 +406,10 @@ impl Worker {
             self.group_count
                 .store(self.total_groups(), Ordering::Relaxed);
         }
-        self.group_states.get_mut(&agg_id)?.get_mut(group_key)
+        Ok(self
+            .group_states
+            .get_mut(&agg_id)
+            .and_then(|groups| groups.get_mut(group_key)))
     }
 
     /// Process a batch of samples for a specific (agg_id, group_key).
@@ -418,7 +429,7 @@ impl Worker {
         // on `self`); used to stamp each pane's birth time below.
         let now_ms = (self.now_ms_fn)();
 
-        let state = match self.get_or_create_group_state(agg_id, group_key) {
+        let state = match self.get_or_create_group_state(agg_id, group_key)? {
             Some(state) => state,
             None => {
                 warn!(
@@ -435,7 +446,7 @@ impl Worker {
             .map(|(_, ts, _)| *ts)
             .max()
             .unwrap_or(i64::MIN);
-        let batch_min_ts = samples
+        let batch_min_ms = samples
             .iter()
             .map(|(_, ts, _)| *ts)
             .min()
@@ -446,11 +457,12 @@ impl Worker {
         } else {
             previous_wm
         };
-        // On the first batch there is no prior watermark. Use the earliest
-        // sample as the closure baseline so a batch spanning multiple windows
-        // can close windows older than that sample after all samples are routed.
+        // On the first batch there is no prior watermark. Place the closure
+        // baseline one millisecond before the earliest sample so a batch that
+        // spans multiple windows can close every window strictly before its
+        // maximum timestamp.
         let closure_previous_wm = if previous_wm == i64::MIN {
-            batch_min_ts
+            batch_min_ms.saturating_sub(1)
         } else {
             previous_wm
         };
@@ -473,14 +485,14 @@ impl Worker {
 
             // Check if pane was already evicted (late data for a closed window)
             if !state.active_panes.contains_key(&pane_start)
-                && previous_wm >= pane_start + state.window_manager.window_size_ms()
+                && previous_wm > pane_start + state.window_manager.window_size_ms()
             {
                 let window_start = pane_start;
                 let window_end = pane_start + state.window_manager.window_size_ms();
                 match late_data_policy {
                     LateDataPolicy::Drop => {
                         debug!(
-                            "Dropping late sample for evicted pane [{}, {})",
+                            "Dropping late sample for evicted pane ({}, {}]",
                             pane_start, pane_end
                         );
                         continue;
@@ -489,7 +501,7 @@ impl Worker {
                         if state.config.aggregation_type == AggregationType::DeltaSetAggregator =>
                     {
                         warn!(
-                            "Dropping late DeltaSetAggregator sample for evicted pane [{}, {}): ForwardToStore is unsupported for stateful key deltas",
+                            "Dropping late DeltaSetAggregator sample for evicted pane ({}, {}]: ForwardToStore is unsupported for stateful key deltas",
                             pane_start,
                             pane_end
                         );
@@ -507,7 +519,7 @@ impl Worker {
                         );
                         emit_batch.push((output, updater.take_accumulator()));
                         debug!(
-                            "Forwarding late sample to store for evicted pane [{}, {})",
+                            "Forwarding late sample to store for evicted pane ({}, {}]",
                             pane_start, pane_end
                         );
                         continue;
@@ -650,20 +662,22 @@ impl Worker {
                     continue; // No samples received yet — no panes to close.
                 }
 
-                // Effective watermark: max(group's own, global) + 1ms for boundary.
-                let propagated_wm = if global_wm != i64::MIN {
+                // Effective watermark: the largest observed event time. Do not
+                // synthesize a +1ms advance here: for `(start, end]` panes, a
+                // separately delivered sample at `end` must remain writable.
+                let propagated_wm_ms = if global_wm != i64::MIN {
                     state.previous_watermark_ms.max(global_wm)
                 } else {
                     state.previous_watermark_ms
                 };
-                let mut effective_wm = propagated_wm.saturating_add(1);
+                let mut effective_wm_ms = propagated_wm_ms;
 
                 // Wall-clock fallback for stuck event-time. If every sample
                 // carries the same timestamp (e.g. a one-shot batch where
                 // all records fall in the same second), `previous_watermark_ms`
-                // freezes and `closed_windows(prev, prev+1)` returns empty
+                // freezes, so ordinary event-time closure cannot make progress.
                 // forever — the window never closes and the store stays empty
-                // even though data has been ingested. Force `effective_wm`
+                // even though data has been ingested. Force `effective_wm_ms`
                 // past `pane_start + window_size_ms` for any pane that has
                 // gone *idle* — untouched by a sample — for `window_size +
                 // grace` of WALL-CLOCK time. This deliberately does NOT
@@ -677,9 +691,10 @@ impl Worker {
                     let window_size_ms = state.window_manager.window_size_ms();
                     for (&pane_start, &pane_last_touch_ms) in &state.pane_wall_clock_last_touch_ms {
                         if now_ms.saturating_sub(pane_last_touch_ms) >= window_size_ms + grace_ms {
-                            let force_to = pane_start.saturating_add(window_size_ms);
-                            if force_to > effective_wm {
-                                effective_wm = force_to;
+                            let forced_watermark_ms =
+                                pane_start.saturating_add(window_size_ms).saturating_add(1);
+                            if forced_watermark_ms > effective_wm_ms {
+                                effective_wm_ms = forced_watermark_ms;
                             }
                         }
                     }
@@ -687,7 +702,7 @@ impl Worker {
 
                 let closed = state
                     .window_manager
-                    .closed_windows(state.previous_watermark_ms, effective_wm);
+                    .closed_windows(state.previous_watermark_ms, effective_wm_ms);
 
                 for window_start in &closed {
                     let (_, window_end) = state.window_manager.window_bounds(*window_start);
@@ -714,10 +729,10 @@ impl Worker {
 
                 // Update group watermark to reflect the advancement.
                 // Monotonic advance — never retreat. Both the event-time
-                // boundary `propagated_wm + 1` and the wall-clock fallback
-                // only push `effective_wm` forward, so this is safe.
-                if effective_wm > state.previous_watermark_ms {
-                    state.previous_watermark_ms = effective_wm;
+                // propagated event time and the wall-clock fallback only push
+                // `effective_wm_ms` forward, so this is safe.
+                if effective_wm_ms > state.previous_watermark_ms {
+                    state.previous_watermark_ms = effective_wm_ms;
                 }
 
                 state.prune_pane_wall_clock_last_touch();
@@ -738,8 +753,8 @@ impl Worker {
 
     /// Force-close every window still open on shutdown.
     ///
-    /// Unlike `flush_all` — which only advances the watermark by `+1ms` (plus
-    /// the wall-clock fallback, gated on grace having elapsed) — this emits the
+    /// Unlike `flush_all` — which only follows observed event time (plus the
+    /// wall-clock fallback, gated on grace having elapsed) — this emits the
     /// window for every remaining pane unconditionally, because no further
     /// samples will arrive once the engine is shutting down. Without it, a
     /// one-shot batch whose records all fall in a single window (so event-time
@@ -747,7 +762,7 @@ impl Worker {
     /// and never write it to the store.
     ///
     /// To advance past the open windows we use a *finite* bound derived from
-    /// the largest open pane (`max_pane + window_size_ms`) rather than
+    /// the largest open pane (`max_pane + window_size_ms + 1`) rather than
     /// `i64::MAX`: `WindowManager::closed_windows` enumerates window starts up
     /// to `current_wm` one slide at a time, so passing `i64::MAX` would loop
     /// ~`i64::MAX / slide` times and overflow. `max_pane + window_size_ms` is
@@ -768,15 +783,17 @@ impl Worker {
                     continue; // never received data — nothing to close
                 }
                 // The latest window start equals the largest open pane start;
-                // closing window `[start, start + size)` needs `wm >= start + size`.
+                // closing window `(start, start + size]` needs `wm > start + size`.
                 let Some(&max_pane) = state.active_panes.keys().next_back() else {
                     continue; // no open panes
                 };
-                let force_wm = max_pane.saturating_add(state.window_manager.window_size_ms());
+                let force_wm_ms = max_pane
+                    .saturating_add(state.window_manager.window_size_ms())
+                    .saturating_add(1);
 
                 let closed = state
                     .window_manager
-                    .closed_windows(state.previous_watermark_ms, force_wm);
+                    .closed_windows(state.previous_watermark_ms, force_wm_ms);
 
                 for window_start in &closed {
                     let (_, window_end) = state.window_manager.window_bounds(*window_start);
@@ -801,8 +818,8 @@ impl Worker {
                     }
                 }
 
-                if force_wm > state.previous_watermark_ms {
-                    state.previous_watermark_ms = force_wm;
+                if force_wm_ms > state.previous_watermark_ms {
+                    state.previous_watermark_ms = force_wm_ms;
                 }
                 state.prune_pane_wall_clock_last_touch();
             }
@@ -1290,7 +1307,7 @@ mod tests {
         );
 
         // Two samples, same srcip, DIFFERENT dstip, IDENTICAL wire value
-        // (pkt_len). Window [0, 1000).
+        // (pkt_len). Window (0, 1000].
         worker
             .process_group_samples(
                 4,
@@ -1310,7 +1327,7 @@ mod tests {
             )
             .unwrap();
 
-        // Advance the watermark past the window end to close [0, 1000).
+        // Advance the watermark past the window end to close (0, 1000].
         worker
             .process_group_samples(
                 4,
@@ -1327,7 +1344,7 @@ mod tests {
         let (_output, acc) = captured
             .iter()
             .find(|(o, _)| o.start_timestamp == 0)
-            .expect("window [0, 1000) should emit a closed HLL pane");
+            .expect("window (0, 1000] should emit a closed HLL pane");
         let hll = acc
             .as_any()
             .downcast_ref::<HllAccumulator>()
@@ -1510,7 +1527,7 @@ mod tests {
         let (_output, acc) = captured
             .iter()
             .find(|(output, _)| output.start_timestamp == 0)
-            .expect("worker should emit the closed [0, 1000) window");
+            .expect("worker should emit the closed (0, 1000] window");
         let cms = acc
             .as_any()
             .downcast_ref::<CountMinSketchAccumulator>()
@@ -1579,7 +1596,7 @@ mod tests {
             LateDataPolicy::Drop,
         );
 
-        // Samples in window [0, 10000ms): sum should be 1+2+3=6.
+        // Samples in window (0, 10000ms]: sum should be 1+2+3+100=106.
         // All go to the same group (agg_id=1, group_key="")
         worker
             .process_group_samples(1, "", group_samples("cpu", vec![(1000, 1.0)]))
@@ -1592,9 +1609,12 @@ mod tests {
             .unwrap();
         assert_eq!(sink.len(), 0);
 
-        // Sample at t=10000ms closes [0, 10000)
+        // Sample at t=10000ms belongs to (0, 10000]. A later timestamp closes it.
         worker
             .process_group_samples(1, "", group_samples("cpu", vec![(10000, 100.0)]))
+            .unwrap();
+        worker
+            .process_group_samples(1, "", group_samples("cpu", vec![(10001, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
@@ -1610,10 +1630,91 @@ mod tests {
             .downcast_ref::<SumAccumulator>()
             .expect("should be SumAccumulator");
         assert!(
-            (sum_acc.sum - 6.0).abs() < 1e-10,
-            "sum should be 1+2+3=6, got {}",
+            (sum_acc.sum - 106.0).abs() < 1e-10,
+            "sum should include the right-endpoint sample (1+2+3+100=106), got {}",
             sum_acc.sum
         );
+    }
+
+    /// With `(start, end]` semantics, samples at `end` remain writable until
+    /// observed event time advances past `end`, so separately delivered
+    /// endpoint samples cannot be dropped.
+    #[test]
+    fn first_batch_boundary_sample_waits_for_watermark_to_advance() {
+        let config = make_agg_config(
+            20,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            1_000,
+            0,
+            vec![],
+        );
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(HashMap::from([(20, config)])),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        worker
+            .process_group_samples(20, "", group_samples("cpu", vec![(1_000, 7.0)]))
+            .unwrap();
+
+        assert_eq!(sink.len(), 0, "endpoint remains writable");
+        worker
+            .process_group_samples(20, "", group_samples("cpu", vec![(1_001, 0.0)]))
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1);
+        let (output, accumulator) = &captured[0];
+        assert_eq!((output.start_timestamp, output.end_timestamp), (0, 1_000));
+        let sum = accumulator
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("sum config should emit SumAccumulator");
+        assert_eq!(sum.sum, 7.0);
+    }
+
+    #[test]
+    fn timestamp_zero_uses_the_nonnegative_origin_window() {
+        let config = make_agg_config(
+            21,
+            "cpu",
+            AggregationType::SingleSubpopulation,
+            "Sum",
+            1_000,
+            0,
+            vec![],
+        );
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(HashMap::from([(21, config)])),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        worker
+            .process_group_samples(21, "", group_samples("cpu", vec![(0, 7.0)]))
+            .unwrap();
+        worker
+            .process_group_samples(21, "", group_samples("cpu", vec![(1_001, 0.0)]))
+            .unwrap();
+
+        let captured = sink.drain();
+        assert_eq!(captured.len(), 1);
+        let (output, accumulator) = &captured[0];
+        assert_eq!((output.start_timestamp, output.end_timestamp), (0, 1_000));
+        let sum = accumulator
+            .as_any()
+            .downcast_ref::<SumAccumulator>()
+            .expect("sum config should emit SumAccumulator");
+        assert_eq!(sum.sum, 7.0);
     }
 
     #[test]
@@ -1649,7 +1750,7 @@ mod tests {
         worker
             .process_group_samples(2, "", vec![("cpu{host=\"b\"}".to_string(), 1_000, 1.0)])
             .unwrap();
-
+        worker.force_close_all().unwrap();
         let first_window = sink
             .drain()
             .into_iter()
@@ -1661,13 +1762,19 @@ mod tests {
             .downcast_ref::<DeltaSetAggregatorAccumulator>()
             .expect("first output should be DeltaSetAggregatorAccumulator");
         let key_a = KeyByLabelValues::new_with_labels(vec!["a".to_string()]);
+        let key_b = KeyByLabelValues::new_with_labels(vec!["b".to_string()]);
         assert!(first_delta.added.contains(&key_a));
+        assert!(first_delta.added.contains(&key_b));
         assert!(first_delta.removed.is_empty());
 
         worker
             .process_group_samples(2, "", vec![("cpu{host=\"b\"}".to_string(), 2_000, 1.0)])
             .unwrap();
+        worker
+            .process_group_samples(2, "", vec![("cpu{host=\"c\"}".to_string(), 2_001, 1.0)])
+            .unwrap();
 
+        worker.force_close_all().unwrap();
         let second_window = sink
             .drain()
             .into_iter()
@@ -1678,8 +1785,7 @@ mod tests {
             .as_any()
             .downcast_ref::<DeltaSetAggregatorAccumulator>()
             .expect("second output should be DeltaSetAggregatorAccumulator");
-        let key_b = KeyByLabelValues::new_with_labels(vec!["b".to_string()]);
-        assert!(second_delta.added.contains(&key_b));
+        assert!(second_delta.added.is_empty());
         assert!(second_delta.removed.contains(&key_a));
     }
 
@@ -1729,6 +1835,9 @@ mod tests {
         // Close the window
         worker
             .process_group_samples(1, "", group_samples("cpu{host=\"A\"}", vec![(10000, 0.0)]))
+            .unwrap();
+        worker
+            .process_group_samples(1, "", group_samples("cpu{host=\"A\"}", vec![(10001, 0.0)]))
             .unwrap();
 
         let captured = sink.drain();
@@ -1793,7 +1902,6 @@ mod tests {
                 group_samples("cpu{pattern=\"sine\"}", vec![(2000, 7.0)]),
             )
             .unwrap();
-
         // Close both groups' windows
         worker
             .process_group_samples(
@@ -1810,6 +1918,7 @@ mod tests {
             )
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(captured.len(), 2, "two groups → two outputs");
 
@@ -1890,6 +1999,7 @@ mod tests {
             )
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(captured.len(), 1, "one KLL output for the whole group");
 
@@ -1901,8 +2011,8 @@ mod tests {
             .expect("should be KLL");
         assert_eq!(
             kll.inner.count(),
-            3,
-            "KLL should contain all 3 series' samples"
+            4,
+            "KLL should contain all 3 interior samples plus the right endpoint"
         );
     }
 
@@ -1941,7 +2051,7 @@ mod tests {
         assert_eq!(sink.len(), 0);
 
         // Sample at t=45000ms → advances watermark to 45000ms
-        // Closes windows [0, 30000) and [10000, 40000)
+        // Closes windows (0, 30000] and (10000, 40000].
         worker
             .process_group_samples(2, "", group_samples("cpu", vec![(45_000, 0.0)]))
             .unwrap();
@@ -2020,6 +2130,7 @@ mod tests {
             .process_group_samples(3, "", group_samples("cpu{host=\"A\"}", vec![(10000, 0.0)]))
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(
             captured.len(),
@@ -2103,7 +2214,7 @@ mod tests {
             )
             .unwrap();
 
-        // Close the window [0, 10000).
+        // Close the window (0, 10000].
         worker
             .process_group_samples(
                 5,
@@ -2112,6 +2223,7 @@ mod tests {
             )
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(captured.len(), 1, "one group → one output");
 
@@ -2204,6 +2316,7 @@ mod tests {
             )
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(captured.len(), 1, "expected one closed window output");
 
@@ -2265,6 +2378,7 @@ mod tests {
             .process_group_samples(12, "", group_samples("latency", vec![(10_000, 0.0)]))
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(captured.len(), 1, "expected one closed window output");
 
@@ -2274,7 +2388,7 @@ mod tests {
             .downcast_ref::<DatasketchesKLLAccumulator>()
             .expect("hand-crafted engine should emit DatasketchesKLLAccumulator");
 
-        let arroyo_precompute_bytes = KllSketch::aggregate_kll(20, &[10.0, 20.0, 30.0])
+        let arroyo_precompute_bytes = KllSketch::aggregate_kll(20, &[10.0, 20.0, 30.0, 0.0])
             .expect("Arroyo KLL aggregation should produce bytes");
 
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
@@ -2371,6 +2485,7 @@ mod tests {
             )
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(captured.len(), 1, "expected one closed window output");
 
@@ -2709,6 +2824,7 @@ aggregations:
             .process_group_samples(10, "", group_samples("requests_total", vec![(10_000, 0.0)]))
             .unwrap();
 
+        worker.force_close_all().unwrap();
         let captured = sink.drain();
         assert_eq!(captured.len(), 1);
 
@@ -2794,11 +2910,11 @@ aggregations:
         let sink = Arc::new(CapturingOutputSink::new());
         let mut worker = make_worker(agg_configs, sink.clone(), false, 0, LateDataPolicy::Drop);
 
-        // Group A: send sample at t=5s (within window [0, 10s))
+        // Group A: send sample at t=5s (within window (0, 10s])
         worker
             .process_group_samples(1, "groupA", group_samples("cpu", vec![(5_000, 1.0)]))
             .unwrap();
-        // Group B: send sample at t=5s (within window [0, 10s))
+        // Group B: send sample at t=5s (within window (0, 10s])
         worker
             .process_group_samples(1, "groupB", group_samples("cpu", vec![(5_000, 2.0)]))
             .unwrap();
@@ -2815,7 +2931,7 @@ aggregations:
         worker.flush_all().unwrap();
         let flushed = sink.drain();
 
-        // Group B's window [0, 10s) should now be closed via propagation.
+        // Group B's window (0, 10s] should now be closed via propagation.
         let group_b_outputs: Vec<_> = flushed
             .iter()
             .filter(|(out, _)| {
@@ -3039,7 +3155,7 @@ aggregations:
         })
         .await
         .unwrap();
-        // t=10_000 closes window [0, 10_000).
+        // t=10_000 belongs to and closes window (0, 10_000].
         tx.send(WorkerMessage::GroupSamples {
             agg_id: 1,
             group_key: String::new(),
@@ -3053,17 +3169,13 @@ aggregations:
         handle.await.unwrap();
 
         let mut captured = sink.drain();
-        // Two windows close:
-        //  1. [0, 10_000) — closed inline when the t=10_000 sample advanced
-        //     the watermark; contains only the post-update t=5_000 sample.
-        //  2. [10_000, 20_000) — left open by the watermark but force-closed on
-        //     shutdown; contains the t=10_000 sample. Before the shutdown
-        //     force-close this trailing window was silently lost.
+        // One window closes: (0, 10_000] contains both post-update samples and
+        // closes inline when the right-endpoint sample advances the watermark.
         captured.sort_by_key(|(o, _)| o.start_timestamp);
         assert_eq!(
             captured.len(),
-            2,
-            "window [0,10_000) closes inline; [10_000,20_000) force-closes on shutdown"
+            1,
+            "window (0,10_000] should close inline with its endpoint sample"
         );
 
         let (output, acc) = &captured[0];
@@ -3076,26 +3188,11 @@ aggregations:
             .downcast_ref::<SumAccumulator>()
             .expect("should be SumAccumulator");
         // Pre-update sample (t=1000, val=1.0) was dropped — agg_id was unknown.
-        // Post-update sample (t=5000, val=2.0) is the only one in this window.
+        // The endpoint sample is zero, so the post-update sum remains 2.0.
         assert!(
             (sum_acc.sum - 2.0).abs() < 1e-10,
             "only post-update sample should be aggregated, got {}",
             sum_acc.sum
-        );
-
-        // The trailing window force-closed on shutdown holds the t=10_000
-        // sample (val=0.0).
-        let (trailing_output, trailing_acc) = &captured[1];
-        assert_eq!(trailing_output.start_timestamp, 10_000);
-        assert_eq!(trailing_output.end_timestamp, 20_000);
-        let trailing_sum = trailing_acc
-            .as_any()
-            .downcast_ref::<SumAccumulator>()
-            .expect("should be SumAccumulator");
-        assert!(
-            trailing_sum.sum.abs() < 1e-10,
-            "trailing window should hold the t=10_000 sample (val=0.0), got {}",
-            trailing_sum.sum
         );
     }
 
@@ -3152,12 +3249,12 @@ aggregations:
         );
         let handle = tokio::spawn(async move { worker.run().await });
 
-        // Open a window at a large epoch-ms timestamp; nothing advances the
+        // Open a window just after a large epoch-ms boundary; nothing advances the
         // watermark past it, so it's still open when the agg_id is removed.
         tx.send(WorkerMessage::GroupSamples {
             agg_id: 1,
             group_key: String::new(),
-            samples: vec![("cpu".to_string(), base_ms, 7.0)],
+            samples: vec![("cpu".to_string(), base_ms + 1, 7.0)],
             ingest_received_at: std::time::Instant::now(),
         })
         .await
@@ -3200,7 +3297,7 @@ aggregations:
     //
     // Reproduces the one-shot-batch failure mode: every record falls in the
     // same window and no later timestamp ever arrives to advance the
-    // watermark, so `flush_all`'s `+1ms` event-time advance is a no-op and the
+    // watermark, so an ordinary `flush_all` leaves the window open and the
     // window never closes — the store stays empty. The wall-clock fallback
     // force-closes the pane once it has been alive for `window_size + grace`
     // of wall-clock time. Uses an injected fake clock so it runs in
@@ -3223,15 +3320,8 @@ aggregations:
             arc_configs(agg_configs),
             WorkerRuntimeConfig {
                 max_buffer_per_series: 10_000,
-                // 1, not 0: every flush_all() call unconditionally nudges the
-                // event-time watermark forward by 1ms (the "+1ms boundary
-                // advance" that lets an idle stream make progress),
-                // independent of the wall-clock fallback these tests target.
-                // A test that calls flush_all() and then processes another
-                // same-timestamp touch would otherwise have that 1ms of
-                // drift alone mark the touch "late" and drop it via a wholly
-                // different code path. 1ms is the exact amount one
-                // intervening flush contributes, not an arbitrary buffer.
+                // Keep a small lateness allowance so this test isolates the
+                // wall-clock fallback rather than late-data handling.
                 allowed_lateness_ms: 1,
                 pass_raw_samples: false,
                 raw_mode_aggregation_id: 0,
@@ -3467,7 +3557,7 @@ aggregations:
         let sink = Arc::new(CapturingOutputSink::new());
         let mut worker = make_worker_with_grace(agg_configs, sink.clone(), 0);
 
-        // All samples land in window [0, 10_000); the watermark freezes below
+        // All samples land in window (0, 10_000]; the watermark freezes below
         // the window end because no later timestamp ever arrives.
         for i in 0..5 {
             worker

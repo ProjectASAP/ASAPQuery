@@ -75,19 +75,19 @@ Watermark (max_ts - allowed_lateness, where lateness=2):
 Window Lifecycle (window_size=5, slide=5):
                                                         │
   ┌─────────────────────┐                               │
-  │  Window [0, 5)      │                               │
-  │  collects: t=3,1,2,4│                               │
+  │  Window (0, 5]      │                               │
+  │ collects: t=3,1,5,2,4                               │
   │                     │── W=5 crosses end ──► EMIT    │
   └─────────────────────┘                               │
                                                         │
         ┌─────────────────────┐                         │
-        │  Window [5, 10)     │                         │
-        │  collects: t=5,7,9,6│                         │
+        │  Window (5, 10]     │                         │
+        │  collects: t=7,9,6,8│                         │
         │                     │── W=11 crosses end      │
         └─────────────────────┘           ──► EMIT      │
                                                         │
               ┌─────────────────────┐                   │
-              │  Window [10, 15)    │                    │
+              │  Window (10, 15]    │                    │
               │  collects: t=11,13  │  (still open,     │
               │  ...waiting...      │   W=11 < 15)      │
               └─────────────────────┘                   │
@@ -144,7 +144,7 @@ watermarks across all workers.
               global_wm = min(100s, 80s, 90s) = 80s
 
               On flush, each group's effective watermark becomes:
-                max(group_wm, global_wm) + 1ms
+                max(group_wm, global_wm)
 
               Worker 0: Group B (50s) → advanced to 80s → closes [50s, 80s] windows
               Worker 2: Group F (30s) → advanced to 80s → closes [30s, 80s] windows
@@ -316,7 +316,11 @@ for (id, rx) in receivers {
 
 ```rust
 let aggregations = matching_agg_configs(series_key).map(|(_, config)| AggregationState {
-    window_manager: WindowManager::new(config.window_size, config.slide_interval),
+    window_manager: WindowManager::new(
+        config.window_size,
+        config.slide_interval,
+        WindowBoundary::OpenClosed,
+    )?,
     config: config.clone(),
     active_panes: BTreeMap::new(),   // ← empty; no memory allocated for sketches yet
 }).collect();
@@ -350,10 +354,10 @@ of size `slide_interval`. Each window is composed of `W = window_size /
 slide_interval` consecutive panes. Consecutive windows share W-1 panes.
 
 ```
-Panes:     [0,10)  [10,20)  [20,30)  [30,40)  [40,50)
-Window A:  [───────── 0,30 ─────────)
-Window B:          [───────── 10,40 ─────────)
-Window C:                  [───────── 20,50 ─────────)
+Panes:     (0,10]  (10,20]  (20,30]  (30,40]  (40,50]
+Window A:  (───────── 0,30 ─────────]
+Window B:          (───────── 10,40 ─────────]
+Window C:                  (───────── 20,50 ─────────]
 ```
 
 **Why panes instead of subtraction?** Only Sum is invertible. MinMax, Increase,
@@ -376,11 +380,11 @@ zero merges — identical behavior to the non-pane approach.
 
 | Method | Description |
 |--------|-------------|
-| `pane_start_for(ts)` | Align timestamp to slide grid (same as `window_start_for`) |
-| `panes_for_window(ws)` | All pane starts composing window `[ws, ws+size)` |
+| `pane_start_for(ts)` | Assign to the pane ending at an exact grid boundary; otherwise align down |
+| `panes_for_window(ws)` | All pane starts composing window `(ws, ws+size]` |
 | `snapshot_accumulator()` | Non-destructive read of a pane's accumulator (for shared panes) |
 
-**Pane eviction:** When window `[S, S+W)` closes, pane `[S, S+slide)` is the
+**Pane eviction:** When window `(S, S+W]` closes, pane `(S, S+slide]` is the
 oldest pane and is not needed by any later window (next window starts at
 `S+slide`). It is destructively consumed via `take_accumulator()` and removed
 from `active_panes`. Remaining panes are read non-destructively via
@@ -439,6 +443,7 @@ Handles both tumbling and sliding window semantics.
 struct WindowManager {
     window_size_ms: i64,       // e.g. 60_000
     slide_interval_ms: i64,    // == window_size for tumbling; < window_size for sliding
+    boundary: WindowBoundary,  // currently only OpenClosed is supported
 }
 ```
 
@@ -447,15 +452,21 @@ struct WindowManager {
 | Method | Description |
 |--------|-------------|
 | `window_start_for(ts)` | Align timestamp down to nearest slide boundary |
-| `window_starts_containing(ts)` | All windows whose `[start, start+size)` includes `ts`. Tumbling → 1 window; sliding → `ceil(size/slide)` windows |
+| `window_starts_containing(ts)` | All windows whose `(start, start+size]` includes `ts`. Tumbling → 1 window; sliding → `ceil(size/slide)` windows |
 | `closed_windows(prev_wm, curr_wm)` | Windows that transitioned open→closed as the watermark advanced |
-| `window_bounds(start)` | Returns `(start, start + window_size_ms)` |
-| `pane_start_for(ts)` | Pane start for a timestamp (same slide-aligned grid as `window_start_for`) |
-| `panes_for_window(ws)` | All pane starts composing window `[ws, ws+size)`, in ascending order |
+| `window_bounds(start)` | Returns the numeric `(start, start + window_size_ms]` endpoints |
+| `pane_start_for(ts)` | Owning pane start under the configured endpoint semantics |
+| `panes_for_window(ws)` | All pane starts composing window `(ws, ws+size]`, in ascending order |
 | `slide_interval_ms()` | Slide interval accessor |
 
-**Window closure rule:** a window `[S, S + size)` closes when `watermark >= S + size`.
+**Window closure rule:** a window `(S, S + size]` closes when observed event time is
+strictly greater than `S + size`. This lets separately delivered samples exactly at
+the right endpoint join the same pane before it is evicted.
 Once closed, a window never reopens.
+
+`WindowBoundary` represents all four endpoint combinations (`OpenOpen`,
+`OpenClosed`, `ClosedOpen`, and `ClosedClosed`). The precompute engine currently
+accepts only `OpenClosed`; constructing a manager with another variant fails.
 
 #### Sliding window mechanics
 
@@ -468,11 +479,13 @@ let n = timestamp_ms.div_euclid(slide_interval_ms);
 n * slide_interval_ms
 ```
 
-**`window_starts_containing(ts)`** returns all windows whose `[start, start+size)`
-contains the timestamp, by walking backwards from the aligned start:
+**`window_starts_containing(ts)`** returns all windows whose `(start, start+size]`
+contains the timestamp. `pane_start_for` first subtracts one millisecond before
+alignment so an exact boundary belongs to the pane ending there (timestamp zero
+is the nonnegative-origin exception), then walks backwards:
 ```rust
-let mut start = window_start_for(timestamp_ms);
-while start + window_size_ms > timestamp_ms {
+let mut start = pane_start_for(timestamp_ms);
+while start + window_size_ms >= timestamp_ms {
     starts.push(start);
     start -= slide_interval_ms;
 }
@@ -483,8 +496,8 @@ each sample belongs to `ceil(window_size / slide_interval)` overlapping windows.
 
 **Example** (30s window, 10s slide):
 ```
-t=15s → belongs to windows [0, 30s), [10s, 40s), [-10s, 20s)   (3 windows)
-t=35s → belongs to windows [30s, 60s), [20s, 50s), [10s, 40s)  (3 windows)
+t=15s → belongs to windows (0, 30s], (10s, 40s], (-10s, 20s]   (3 windows)
+t=30s → belongs to windows (0, 30s], (10s, 40s], (20s, 50s]    (3 windows)
 ```
 
 **`closed_windows(prev_wm, curr_wm)`** finds windows that transitioned open→closed
@@ -571,10 +584,10 @@ metric{job=j1, instance=h1} → Worker 0 → pane accumulator with key (job=j1)
 metric{job=j1, instance=h2} → Worker 3 → pane accumulator with key (job=j1)
 ```
 
-Each worker independently closes its window and emits a separate `PrecomputedOutput` with key `(job=j1)` for the same window `[0, 60s)`. The store **appends** rather than overwrites on the same `(aggregation_id, key, window)` tuple:
+Each worker independently closes its window and emits a separate `PrecomputedOutput` with key `(job=j1)` for the same window `(0, 60s]`. The store **appends** rather than overwrites on the same `(aggregation_id, key, window)` tuple:
 
 ```
-store[(agg_id, key=(j1), [0,60s))] → [acc_worker0, acc_worker3]
+store[(agg_id, key=(j1), (0,60s])] → [acc_worker0, acc_worker3]
 ```
 
 Query-time `SummaryMergeMultipleExec` merges all entries for the same key and window via `AggregateCore::merge_with()`. No ingest-time cross-worker coordination is needed.
@@ -594,17 +607,17 @@ The pane-sharing optimization is an **intra-worker** implementation detail. From
 **Within a single worker** (e.g. Worker 0, series `{job=j1, instance=h1}`, 30s/10s sliding):
 
 ```
-Window [0, 30s)  — panes [0, 10s, 20s]
+Window (0, 30s]  — panes [0, 10s, 20s]
   pane 0:   take (evict — no future window needs it)
-  pane 10s: snapshot (shared with [10s, 40s))
-  pane 20s: snapshot (shared with [10s, 40s) and [20s, 50s))
-  → emit: acc_w0, key=(j1), window=[0,30s), sum = v_0 + v_10 + v_20
+  pane 10s: snapshot (shared with (10s, 40s])
+  pane 20s: snapshot (shared with (10s, 40s] and (20s, 50s])
+  → emit: acc_w0, key=(j1), window=(0,30s], sum = v_0 + v_10 + v_20
 
-Window [10s, 40s)  — panes [10s, 20s, 30s]
-  pane 10s: take (evict — snapshot for [0,30s) already completed)
+Window (10s, 40s]  — panes [10s, 20s, 30s]
+  pane 10s: take (evict — snapshot for (0,30s] already completed)
   pane 20s: snapshot
   pane 30s: snapshot (or take, depending on future windows)
-  → emit: acc_w0, key=(j1), window=[10s,40s), sum = v_10 + v_20 + v_30
+  → emit: acc_w0, key=(j1), window=(10s,40s], sum = v_10 + v_20 + v_30
 ```
 
 Worker 3 (series `{job=j1, instance=h2}`) performs the same steps independently — its own pane `BTreeMap`, its own snapshots, its own emits.
@@ -612,14 +625,14 @@ Worker 3 (series `{job=j1, instance=h2}`) performs the same steps independently 
 **What the store sees:**
 
 ```
-store[(agg_id, key=(j1), [0,  30s))] → [acc_w0, acc_w3]
-store[(agg_id, key=(j1), [10s,40s))] → [acc_w0, acc_w3]
-store[(agg_id, key=(j1), [20s,50s))] → [acc_w0, acc_w3]
+store[(agg_id, key=(j1), (0,  30s])] → [acc_w0, acc_w3]
+store[(agg_id, key=(j1), (10s,40s])] → [acc_w0, acc_w3]
+store[(agg_id, key=(j1), (20s,50s])] → [acc_w0, acc_w3]
 ```
 
 Each entry is a complete accumulator from one worker for one window. Query-time merge combines them identically to the tumbling case.
 
-The pane snapshot/take logic reduces memory and CPU inside each worker (avoiding re-accumulation of shared panes), but what exits the worker is always one standalone `Box<dyn AggregateCore>` per window. Consecutive sliding windows `[0,30s)` and `[10s,40s)` share panes *inside* the worker but have independent store entries — their cross-worker merges at query time are completely unrelated.
+The pane snapshot/take logic reduces memory and CPU inside each worker (avoiding re-accumulation of shared panes), but what exits the worker is always one standalone `Box<dyn AggregateCore>` per window. Consecutive sliding windows `(0,30s]` and `(10s,40s]` share panes *inside* the worker but have independent store entries — their cross-worker merges at query time are completely unrelated.
 
 ### Optional second-tier merge workers for cross-worker accumulator reduction
 
@@ -902,14 +915,14 @@ When a window is complete, the merge worker:
 This produces the canonical shape expected by merge-tier-enabled reads:
 
 ```
-store[(agg_id, key=(j1), [0,30s))]  -> [merged_acc]
-store[(agg_id, key=(j1), [10s,40s))] -> [merged_acc]
+store[(agg_id, key=(j1), (0,30s])]  -> [merged_acc]
+store[(agg_id, key=(j1), (10s,40s])] -> [merged_acc]
 ```
 
 and for tumbling windows:
 
 ```
-store[(agg_id, key=(j1), [0,60s))] -> [merged_acc]
+store[(agg_id, key=(j1), (0,60s]] -> [merged_acc]
 ```
 
 #### Query-path simplification
@@ -1092,7 +1105,7 @@ Two checks determine whether a sample is "late":
 
 2. **Window closure check** (window-level): the sample passes the watermark check
    but targets a window that is already closed
-   (`window not in active_windows && watermark >= window_end`).
+   (`window not in active_windows && watermark > window_end`).
 
 For case 2, the `LateDataPolicy` controls behavior:
 
@@ -1181,8 +1194,8 @@ store with the Kafka consumer path.
   | Test | What it verifies |
   |---|---|
   | `test_raw_mode_forwarding` | 3 samples -> 3 emits; `start == end == ts`, `SumAccumulator.sum == value` |
-  | `test_tumbling_window_correctness` | Samples at t=1s/5s/9s; window [0,10s) closes on t=10s; `sum=6` |
-  | `test_sliding_window_pane_sharing` | Sample at t=15s in 30s/10s window -> 2 emits for [0,30s) and [10s,40s), both `sum=42` via shared pane snapshot/take |
+| `test_tumbling_window_correctness` | Samples at t=1s/5s/9s/10s; window (0,10s] is emitted after time advances past 10s; `sum=106` |
+  | `test_sliding_window_pane_sharing` | Sample at t=15s in 30s/10s window -> 2 emits for (0,30s] and (10s,40s], both `sum=42` via shared pane snapshot/take |
   | `test_groupby_separate_emits_per_series` | Two series (`host=A`, `host=B`) on same worker -> 2 independent `MultipleSumAccumulator` emits (no ingest-time cross-series merge) |
   | `test_late_data_drop` | Sample behind `watermark - allowed_lateness_ms` with `Drop` policy -> 0 emits |
   | `test_late_data_forward_to_store` | Late sample for evicted pane with `ForwardToStore` -> 1 emit as mini-accumulator with correct window bounds and sum |
