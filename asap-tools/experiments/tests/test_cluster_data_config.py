@@ -9,6 +9,7 @@ import yaml
 from omegaconf import OmegaConf
 
 import generate_prometheus_config
+import generate_victoriametrics_config
 from experiment_utils.config import get_prometheus_data_ingestion_interval_ms
 
 
@@ -38,6 +39,21 @@ class ClusterDataConfigTest(unittest.TestCase):
             args.output_dir = output_dir
             generate_prometheus_config.main(args, experiment_config)
             with open(f"{output_dir}/prometheus.yml") as config_file:
+                return yaml.safe_load(config_file)
+
+    def _generate_vmagent_config(self, experiment_config):
+        args = SimpleNamespace(
+            num_nodes=1,
+            node_offset=18,
+            output_dir=None,
+            node_ip_prefix="10.10.1",
+            scrape_interval="1s",
+            remote_write_metric_names=None,
+        )
+        with tempfile.TemporaryDirectory() as output_dir:
+            args.output_dir = output_dir
+            generate_victoriametrics_config.main(args, experiment_config)
+            with open(f"{output_dir}/vmagent_scrape.yml") as config_file:
                 return yaml.safe_load(config_file)
 
     def test_google_uses_global_scrape_interval(self):
@@ -102,6 +118,34 @@ class ClusterDataConfigTest(unittest.TestCase):
             if job["job_name"] == "cluster_data_exporter"
         )
         self.assertEqual(cde_job["scrape_interval"], "1s")
+
+    def test_obsolete_cluster_data_interval_fails_loudly(self):
+        with open(
+            EXPERIMENTS_DIR
+            / "config/experiment_type/cluster_data_alibaba_node_2022.yaml"
+        ) as config_file:
+            experiment_config = yaml.safe_load(config_file)
+        experiment_config["exporters"]["exporter_list"]["cluster_data_exporter"][
+            "scrape_interval"
+        ] = "60s"
+
+        with self.assertRaisesRegex(ValueError, "no longer accepts"):
+            self._generate_config(experiment_config)
+
+    def test_victoriametrics_uses_global_interval_and_timeout(self):
+        with open(
+            EXPERIMENTS_DIR / "config/experiment_type/cluster_data_google.yaml"
+        ) as config_file:
+            experiment_config = yaml.safe_load(config_file)
+
+        vmagent_config = self._generate_vmagent_config(experiment_config)
+        self.assertEqual(vmagent_config["global"]["scrape_interval"], "1s")
+        cde_job = next(
+            job
+            for job in vmagent_config["scrape_configs"]
+            if job["job_name"] == "cluster_data_exporter"
+        )
+        self.assertEqual(cde_job["scrape_timeout"], "1s")
 
     def test_cluster_data_repetitions_use_one_second_delay(self):
         for config_path in EXPERIMENTS_DIR.glob(

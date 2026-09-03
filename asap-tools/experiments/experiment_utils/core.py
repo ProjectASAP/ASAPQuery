@@ -53,6 +53,13 @@ def read_exporter_config(experiment_params: DictConfig) -> Tuple[Optional[Dict],
                 f"Missing keys in cluster_data_exporter section: {missing_keys}",
             )
 
+        if "scrape_interval" in cde_config:
+            return (
+                None,
+                "cluster_data_exporter no longer accepts 'scrape_interval'; "
+                "set prometheus.scrape_interval instead",
+            )
+
         # Validate provider
         provider = cde_config.provider
         if provider not in ["google", "alibaba"]:
