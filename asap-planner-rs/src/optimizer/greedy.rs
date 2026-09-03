@@ -159,4 +159,20 @@ mod tests {
         assert_eq!(solution.num_exact_fallback(), 1);
         assert!(solution.deployed_configs().is_empty());
     }
+
+    #[test]
+    fn missing_cms_with_heap_reference_cost_falls_back_to_exact() {
+        // Regression coverage for #651: an uncosted CMS-with-heap candidate
+        // must be dropped rather than inheriting the flat stub and winning.
+        let solution = greedy_assign(
+            vec![make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0)],
+            60_000,
+            1.0,
+            &AtomicCostTable::default(),
+            &CostWeights::default(),
+        );
+
+        assert_eq!(solution.num_exact_fallback(), 1);
+        assert!(solution.deployed_configs().is_empty());
+    }
 }
