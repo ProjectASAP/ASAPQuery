@@ -602,6 +602,7 @@ class Args:
 
         # Controller configuration
         self.controller_punting = cfg.controller.punting
+        self.controller_auto_discover_labels = cfg.controller.auto_discover_labels
 
         # Aggregate cleanup configuration
         # Valid policies: "circular_buffer", "read_based", "no_cleanup"

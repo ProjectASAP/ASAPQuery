@@ -15,8 +15,8 @@ services:
       "--output_dir", "/app/output",
       "--data-ingestion-interval-ms", "{{ data_ingestion_interval_ms }}",
       "--streaming_engine", "{{ streaming_engine }}",
-      "--prometheus-url", "{{ prometheus_url }}",
-      "--query-language", "{{ query_language }}"{% if punting %},
+      "--query-language", "{{ query_language }}"{% if prometheus_url %},
+      "--prometheus-url", "{{ prometheus_url }}"{% endif %}{% if punting %},
       "--enable-punting"{% endif %}
     ]
     network_mode: "host"

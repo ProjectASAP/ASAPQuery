@@ -15,12 +15,33 @@ from experiment_utils.providers.base import InfrastructureProvider
 import constants
 from constants import (
     PROMETHEUS_CONFIG_DIR,
+    PROMETHEUS_REMOTE_WRITE_ENDPOINT,
     VMAGENT_SCRAPE_CONFIG_FILE,
     VMAGENT_REMOTE_WRITE_CONFIG_FILE,
     SKETCHDB_EXPERIMENT_NAME,
     BASELINE_EXPERIMENT_NAME,
 )
 import utils
+
+
+def get_remote_write_urls(node_ip: str, experiment_mode: str):
+    """Return vmagent destinations for the selected experiment mode."""
+    vmsingle_url = f"http://{node_ip}:8428{PROMETHEUS_REMOTE_WRITE_ENDPOINT}"
+
+    if experiment_mode == BASELINE_EXPERIMENT_NAME:
+        return [vmsingle_url]
+    if experiment_mode == SKETCHDB_EXPERIMENT_NAME:
+        # vmagent is configured with forcePromProto, matching the query
+        # engine's Prometheus remote-write endpoint.
+        return [
+            vmsingle_url,
+            f"http://{node_ip}:8080{PROMETHEUS_REMOTE_WRITE_ENDPOINT}",
+        ]
+
+    raise ValueError(
+        f"Invalid experiment_mode: {experiment_mode}. Must be "
+        f"'{BASELINE_EXPERIMENT_NAME}' or '{SKETCHDB_EXPERIMENT_NAME}'"
+    )
 
 
 class DockerVictoriaMetricsService(DockerServiceBase):
@@ -135,20 +156,7 @@ class DockerVictoriaMetricsService(DockerServiceBase):
 
         # Determine remote write URLs based on experiment mode
         node_ip = self.provider.get_node_ip(self.node_offset)
-        if experiment_mode == BASELINE_EXPERIMENT_NAME:
-            # Only write to vmsingle
-            remote_write_urls = [f"http://{node_ip}:8428/api/v1/write"]
-        elif experiment_mode == SKETCHDB_EXPERIMENT_NAME:
-            # Write to both vmsingle AND queryengine
-            remote_write_urls = [
-                f"http://{node_ip}:8428/api/v1/write",
-                f"http://{node_ip}:8080/receive",
-            ]
-        else:
-            # Invalid experiment mode
-            assert (
-                False
-            ), f"Invalid experiment_mode: {experiment_mode}. Must be '{BASELINE_EXPERIMENT_NAME}' or '{SKETCHDB_EXPERIMENT_NAME}'"
+        remote_write_urls = get_remote_write_urls(node_ip, experiment_mode)
 
         # Convert resource limits to strings if specified
         if cpu_limit is not None:

@@ -47,6 +47,9 @@ PROCESS_MONITOR_JOIN_TIMEOUT_SECONDS = 10
 
 PROMETHEUS_CONFIG_DIR = "prometheus_config"
 PROMETHEUS_CONFIG_FILE = "prometheus.yml"
+PROMETHEUS_REMOTE_WRITE_ENDPOINT = "/api/v1/write"
+HTTP_READINESS_CURL_TIMEOUT_SECONDS = 5
+QUERY_ENGINE_RUNTIME_INFO_ENDPOINT = "/api/v1/status/runtimeinfo"
 
 # VictoriaMetrics configuration files
 VMAGENT_SCRAPE_CONFIG_FILE = "vmagent_scrape.yml"

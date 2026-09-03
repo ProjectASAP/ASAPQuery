@@ -99,6 +99,7 @@ query_engine:
 # Controller configuration
 controller:
   punting: ???  # REQUIRED: Enable query punting based on performance heuristics (should_be_performant check)
+  auto_discover_labels: false  # Query Prometheus for metric labels instead of using config hints
 
 # Optional manual planner windowing override. Omit this block to preserve the
 # default tumbling-window behavior. For tumbling windows, omit

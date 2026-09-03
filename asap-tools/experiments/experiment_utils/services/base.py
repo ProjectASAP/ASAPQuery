@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Optional
 
 from experiment_utils.providers.base import InfrastructureProvider
+import constants
 
 
 class BaseService(ABC):
@@ -211,7 +212,11 @@ class DockerServiceBase(BaseService):
             if self.is_healthy():
                 # Additional check - try to access service health endpoint
                 try:
-                    cmd = f"curl -s {service_url}{health_endpoint}"
+                    cmd = (
+                        f"curl -fsS --max-time "
+                        f"{constants.HTTP_READINESS_CURL_TIMEOUT_SECONDS} "
+                        f"{service_url}{health_endpoint}"
+                    )
                     result = self.provider.execute_command(
                         node_idx=self.node_offset,
                         cmd=cmd,
