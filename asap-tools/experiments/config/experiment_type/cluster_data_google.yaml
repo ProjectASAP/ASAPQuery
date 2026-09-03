@@ -1,0 +1,83 @@
+# @package experiment_params
+# Example configuration for cluster_data_exporter with Google provider
+# This config replays Google cluster trace data (2011) as Prometheus metrics
+
+experiment:
+  - mode: sketchdb
+    server: sketchdb
+    #query_prometheus_too: True
+  - mode: baseline
+    server: prometheus
+
+servers:
+- name: prometheus
+  url: http://localhost:9090
+- name: sketchdb
+  url: http://localhost:8088
+
+workloads:
+  # deathstar:
+  #   use: True
+
+exporters:
+  only_start_if_queries_exist: True
+  exporter_list:
+    cluster_data_exporter:
+      provider: "google"
+      port: 40000
+      # Comma-separated list of Google metrics to export
+      # Available metrics: mean-cpu-usage-rate, canonical-memory-usage, assigned-memory-usage,
+      #   unmapped-page-cache-memory-usage, total-page-cache-memory-usage, max-memory-usage,
+      #   mean-disk-io-time, mean-local-disk-space-used, max-cpu-usage, max-disk-io-time,
+      #   cycles-per-instruction, memory-accesses-per-instruction, sample-portion, sampled-cpu-usage
+      metrics: "mean-cpu-usage-rate,canonical-memory-usage,max-cpu-usage"
+      #parts_mode: "all-parts"  # or "part-index" with part_index: 0
+      parts_mode: "part-index"  # or "part-index" with part_index: 0
+      part_index: 0
+      # Optional configuration
+      # log_level: "INFO"  # DEBUG, INFO, WARN, ERROR (default: INFO)
+      # memory_limit: "2g"
+      # cpu_limit: "2.0"
+
+query_groups:
+- id: 1
+  queries:
+  # Query Google CPU usage metrics
+  - quantile by () (0.5, google_mean_cpu_usage_rate_0)
+  #- google_mean_cpu_usage_rate_0
+  #- rate(google_mean_cpu_usage_rate_0[5m])
+  #- sum by (machine_id) (google_mean_cpu_usage_rate_0)
+  ## Query Google memory usage metrics
+  #- google_canonical_memory_usage_0
+  #- sum by (task_index) (google_canonical_memory_usage_0)
+  ## Query Google max CPU usage
+  #- google_max_cpu_usage_0
+  repetition_delay_ms: 10000
+  client_options:
+    repetitions: 10
+    query_time_offset: 10
+    starting_delay: 70
+  controller_options:
+    accuracy_sla: 0.99
+    latency_sla: 1
+
+metrics:
+  # Google metrics with aggregation_type=0
+  - metric: "google_mean_cpu_usage_rate_0"
+    labels: ['instance', 'job', 'task_index', 'machine_id']
+    exporter: cluster_data_exporter
+  #- metric: "google_mean_cpu_usage_rate_1"
+  #  labels: ['instance', 'job', 'task_index', 'machine_id']
+  #  exporter: cluster_data_exporter
+  #- metric: "google_canonical_memory_usage_0"
+  #  labels: ['instance', 'job', 'task_index', 'machine_id']
+  #  exporter: cluster_data_exporter
+  #- metric: "google_canonical_memory_usage_1"
+  #  labels: ['instance', 'job', 'task_index', 'machine_id']
+  #  exporter: cluster_data_exporter
+  #- metric: "google_max_cpu_usage_0"
+  #  labels: ['instance', 'job', 'task_index', 'machine_id']
+  #  exporter: cluster_data_exporter
+  #- metric: "google_max_cpu_usage_1"
+  #  labels: ['instance', 'job', 'task_index', 'machine_id']
+  #  exporter: cluster_data_exporter

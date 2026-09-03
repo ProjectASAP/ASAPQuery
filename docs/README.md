@@ -36,6 +36,7 @@ Task-oriented guides for common operations:
 - [Analyze Results](03-how-to-guides/experiments/analyze-results.md) - Post-experiment analysis
 
 ### Operations Tasks
+- [Run an Alibaba Cluster-Data Experiment](03-how-to-guides/operations/run-alibaba-cluster-data-experiment.md) - Replay Alibaba trace data through the end-to-end experiment runner
 - [Manual Stack Run for Prometheus](03-how-to-guides/operations/manual-stack-run-prometheus.md) - Run ASAP components manually to accelerate Prometheus
 - [Bootstrap Config from Query Log](03-how-to-guides/operations/bootstrap-config-from-query-log.md) - Auto-generate sketch configs from Prometheus query traffic
 - [Try asap-planner on a SQL Workload](03-how-to-guides/operations/try-asap-planner-sql.md) - Check SQL workload amenability without running the full stack
