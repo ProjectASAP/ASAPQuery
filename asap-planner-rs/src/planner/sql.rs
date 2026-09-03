@@ -10,7 +10,7 @@ use sql_utilities::ast_matching::SQLSchema;
 use sqlparser::dialect::ClickHouseDialect;
 use sqlparser::parser::Parser as SqlParser;
 
-use crate::config::input::{SketchParameterOverrides, TableDefinition};
+use crate::config::input::{SketchParameterOverrides, TableDefinition, WindowingConfig};
 use crate::error::ControllerError;
 use crate::planner::agg_config::{build_agg_configs_for_statistics, IntermediateAggConfig};
 use crate::planner::cleanup::get_sql_cleanup_param;
@@ -27,6 +27,7 @@ pub struct SQLSingleQueryProcessor {
     streaming_engine: StreamingEngine,
     sketch_parameters: Option<SketchParameterOverrides>,
     cleanup_policy: CleanupPolicy,
+    windowing: Option<WindowingConfig>,
 }
 
 impl SQLSingleQueryProcessor {
@@ -39,6 +40,7 @@ impl SQLSingleQueryProcessor {
         streaming_engine: StreamingEngine,
         sketch_parameters: Option<SketchParameterOverrides>,
         cleanup_policy: CleanupPolicy,
+        windowing: Option<WindowingConfig>,
     ) -> Self {
         Self {
             query_string,
@@ -48,6 +50,7 @@ impl SQLSingleQueryProcessor {
             streaming_engine,
             sketch_parameters,
             cleanup_policy,
+            windowing,
         }
     }
 
@@ -100,10 +103,18 @@ impl SQLSingleQueryProcessor {
         let value_column = agg_info.get_value_column_name().to_string();
 
         // Compute window
-        let window_cfg = compute_sql_window(
+        let mut window_cfg = compute_sql_window(
             &sql_query.query_data[0].time_info,
             self.data_ingestion_interval_ms,
             self.t_repeat_ms,
+        )?;
+        let data_range_ms =
+            (sql_query.query_data[0].time_info.get_duration() * 1000.0).round() as u64;
+        crate::planner::window::apply_windowing_override(
+            &mut window_cfg,
+            data_range_ms,
+            0,
+            self.windowing.as_ref(),
         )?;
 
         // Get all metadata columns for the table

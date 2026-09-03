@@ -4,10 +4,7 @@
 //! dispatch, range-query handling, and query dispatch.
 
 use super::SimpleEngine;
-use super::{
-    QueryExecutionContext, QueryMetadata, QueryTimestamps, RangeQueryExecutionContext,
-    RangeQueryParams, StoreQueryParams,
-};
+use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps, RangeQueryExecutionContext};
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
 use asap_types::query_requirements::build_query_requirements_promql;
@@ -19,6 +16,8 @@ use promql_utilities::query_logics::parsing::get_metric_and_spatial_filter;
 use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, warn};
+
+const METRIC_NAME_LABEL: &str = "__name__";
 
 /// Detects whether either side of a PromQL binary expression is a scalar
 /// (numeric literal), returning the scalar value, the other (vector) arm,
@@ -95,6 +94,18 @@ fn combine_scalar(
             InstantVectorElement::new(elem.labels, value)
         })
         .collect()
+}
+
+fn binary_matching_label_names(label_names: Vec<String>) -> Vec<String> {
+    label_names
+        .into_iter()
+        .filter(|label| label != METRIC_NAME_LABEL)
+        .collect()
+}
+
+fn is_supported_binary_arithmetic_op(op: &promql_parser::parser::token::TokenType) -> bool {
+    use promql_parser::parser::token::{T_ADD, T_DIV, T_MOD, T_MUL, T_POW, T_SUB};
+    matches!(op.id(), T_ADD | T_SUB | T_MUL | T_DIV | T_MOD | T_POW)
 }
 
 impl SimpleEngine {
@@ -341,7 +352,7 @@ impl SimpleEngine {
         let statistic_to_compute = requirements.statistics[0];
 
         if statistic_to_compute == Statistic::Topk {
-            let mut new_labels = vec!["__name__".to_string()];
+            let mut new_labels = vec![METRIC_NAME_LABEL.to_string()];
             new_labels.extend(query_output_labels.labels);
             query_output_labels = KeyByLabelNames::new(new_labels);
         }
@@ -413,7 +424,8 @@ impl SimpleEngine {
             other => {
                 let config = self.find_query_config_promql_structural(other)?;
                 let ctx = self.build_query_execution_context_from_ast(other, &config, time)?;
-                let label_names = ctx.metadata.query_output_labels.labels.clone();
+                let label_names =
+                    binary_matching_label_names(ctx.metadata.query_output_labels.labels.clone());
                 Some((ctx, label_names))
             }
         }
@@ -440,6 +452,12 @@ impl SimpleEngine {
             Expr::NumberLiteral(_) => None, // caller handles scalars
             Expr::Paren(paren) => self.evaluate_binary_arm(&paren.expr, time),
             Expr::Binary(binary) => {
+                if binary.modifier.is_some() {
+                    return None;
+                }
+                if !is_supported_binary_arithmetic_op(&binary.op) {
+                    return None;
+                }
                 // Nested binary expression — recurse on both sides
                 let (lhs_results, lhs_labels) = self.evaluate_binary_arm(&binary.lhs, time)?;
                 let (rhs_results, rhs_labels) = self.evaluate_binary_arm(&binary.rhs, time)?;
@@ -463,11 +481,10 @@ impl SimpleEngine {
                 // for just this arm. Accepted behavior change (#567); warn loudly
                 // so it's visible rather than silent.
                 let results = self
-                    // (true, true): safe unconditionally — both flags are
-                    // self-gated on statistic == Topk / a "k" kwarg being
-                    // present, same as the main instant-query path (see
-                    // execute_query_pipeline's doc comment).
-                    .execute_query_pipeline(&ctx, true, true)
+                    // Binary arms need Topk limiting, but must remain in the
+                    // unformatted intermediate label representation until
+                    // after the binary join.
+                    .execute_query_pipeline(&ctx, true, false)
                     .map_err(|e| {
                         warn!(
                             "Binary-expr arm for metric '{}' failed ({}) — \
@@ -500,6 +517,13 @@ impl SimpleEngine {
             Expr::Binary(b) => b,
             _ => return None,
         };
+
+        if !is_supported_binary_arithmetic_op(&binary.op) {
+            return None;
+        }
+        if binary.modifier.is_some() {
+            return None;
+        }
 
         let lhs = binary.lhs.as_ref();
         let rhs = binary.rhs.as_ref();
@@ -539,23 +563,6 @@ impl SimpleEngine {
             id if id == T_POW => lhs.powf(rhs),
             _ => f64::NAN,
         }
-    }
-
-    /// Widens `query`'s window to `[start_ms - lookback, end_ms]`, where
-    /// `lookback` is the width `query` already had (`end_timestamp -
-    /// start_timestamp`) before this call. Re-anchors whatever window an
-    /// aggregation's instant fetch already computed so it slides across the
-    /// whole range, without needing to know *why* that window is that width
-    /// — e.g. it's what lets the same call widen a Tumbling `values_query`,
-    /// a Sliding-window instant fetch, or (per #583) a `SetAggregator`'s
-    /// `[end-window_size, end]` keys window or a `DeltaSetAggregator`'s
-    /// `[0, end]` one, identically. Returns the lookback so callers can
-    /// derive bucket-count/step metadata from it.
-    fn widen_query_window(query: &mut StoreQueryParams, start_ms: u64, end_ms: u64) -> u64 {
-        let lookback_ms = query.end_timestamp - query.start_timestamp;
-        query.start_timestamp = start_ms.saturating_sub(lookback_ms);
-        query.end_timestamp = end_ms;
-        lookback_ms
     }
 
     /// Extends an instant `QueryExecutionContext` into a `RangeQueryExecutionContext`:
@@ -634,7 +641,7 @@ impl SimpleEngine {
                 None => (None, None, None),
             };
         // A zero window_size_ms would make execute_range_query_pipeline's
-        // per-step scan_window (`while t < window_end { ...; t += step_increment }`)
+        // per-step sum_window (`while t < window_end { ...; t += step_increment }`)
         // loop forever, since t would never advance. The value side is
         // accidentally protected from this by validate_range_query_params's
         // `step.is_multiple_of(tumbling_window_ms)` check (only 0 is a
@@ -649,11 +656,12 @@ impl SimpleEngine {
                 store_plan: extended_store_plan,
                 ..base_context
             },
-            range_params: RangeQueryParams {
-                start: start_ms,
-                end: end_ms,
-                step: step_ms,
-            },
+            // validate_range_query_params (above) already guarantees
+            // step_ms > 0 and start_ms < end_ms, so this matches the old
+            // per-step loop's `current_time` sequence exactly: start_ms,
+            // start_ms+step_ms, ..., the last value <= end_ms.
+            output_timestamps: (start_ms..=end_ms).step_by(step_ms as usize).collect(),
+            query_range_ms: lookback_ms,
             buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,
@@ -711,13 +719,23 @@ impl SimpleEngine {
             _ => return None,
         };
 
+        if !is_supported_binary_arithmetic_op(&binary.op) {
+            return None;
+        }
+        if binary.modifier.is_some() {
+            return None;
+        }
+
         let lhs = binary.lhs.as_ref();
         let rhs = binary.rhs.as_ref();
         let op = &binary.op;
 
         if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
             let (ctx, labels) = self.build_arm_range_context(vector_arm, start, end, step)?;
-            let results = self.execute_range_query_pipeline(&ctx).ok()?;
+            // Binary arms need Topk limiting, but must remain in the
+            // unformatted intermediate label representation until after the
+            // arithmetic operation.
+            let results = self.execute_range_query_pipeline(&ctx, true, false).ok()?;
             let combined: Vec<RangeVectorElement> = results
                 .into_iter()
                 .map(|mut elem| {
@@ -745,8 +763,13 @@ impl SimpleEngine {
         if lhs_labels != rhs_labels {
             return None;
         }
-        let lhs_results = self.execute_range_query_pipeline(&lhs_ctx).ok()?;
-        let rhs_results = self.execute_range_query_pipeline(&rhs_ctx).ok()?;
+        // Binary arms need Topk limiting, but not final presentation formatting.
+        let lhs_results = self
+            .execute_range_query_pipeline(&lhs_ctx, true, false)
+            .ok()?;
+        let rhs_results = self
+            .execute_range_query_pipeline(&rhs_ctx, true, false)
+            .ok()?;
 
         // Build lookup: label_key -> {timestamp -> value} for rhs
         let mut rhs_map: HashMap<KeyByLabelValues, HashMap<u64, f64>> = HashMap::new();
@@ -1307,9 +1330,11 @@ impl SimpleEngine {
         let context =
             self.build_range_query_execution_context_from_parsed(&ast, &query, start, end, step)?;
 
-        // Execute range query pipeline
+        // Execute range query pipeline. (true, true): self-gated, same as
+        // instant's handle_query_promql -- both flags are no-ops unless this
+        // query's statistic is Topk.
         let results: Vec<RangeVectorElement> = self
-            .execute_range_query_pipeline(&context)
+            .execute_range_query_pipeline(&context, true, true)
             .map_err(|e| {
                 warn!("Range query execution failed: {}", e);
                 e
@@ -1587,14 +1612,12 @@ mod topk_pipeline_tests {
         }
     }
 
-    /// A topk leaf wrapped in a binary expr (`topk(10, ...) + 0`) must still
-    /// get the same top-10 truncation and metric-name-prefixed formatting as
-    /// the bare `topk(10, ...)` query — evaluate_arm_native's leaf branch
-    /// used to hardcode (false, false) for enable_topk_limiting/formatting,
-    /// which would have returned all 15 unformatted (single-label) rows here
-    /// instead of the top 10 with the metric-name prefix.
+    /// A topk leaf wrapped in an arithmetic binary expr (`topk(10, ...) + 0`)
+    /// must still truncate to the top 10, while arithmetic output drops the
+    /// metric name. Binary-arm evaluation must not apply standalone Topk
+    /// presentation formatting before the arithmetic operation.
     #[test]
-    fn topk_wrapped_in_binary_expr_still_truncates_and_formats() {
+    fn topk_wrapped_in_binary_expr_truncates_without_metric_name() {
         let (engine, store) = build_topk_engine();
 
         let context = engine
@@ -1634,16 +1657,10 @@ mod topk_pipeline_tests {
                 "results must stay sorted by count descending"
             );
         }
-        assert_eq!(
-            results[0].labels.labels,
-            vec![METRIC.to_string(), "10.0.0.15".to_string()],
-        );
+        assert_eq!(results[0].labels.labels, vec!["10.0.0.15".to_string()],);
         assert_eq!(results[0].value, 150.0);
         for element in &results {
-            assert_eq!(
-                element.labels.labels[0], METRIC,
-                "binary-expr path must still prepend the metric name (PromQL top-k formatting)",
-            );
+            assert_eq!(element.labels.labels.len(), 1);
         }
     }
 }

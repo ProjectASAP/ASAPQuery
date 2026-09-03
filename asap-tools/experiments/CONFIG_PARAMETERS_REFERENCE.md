@@ -204,6 +204,29 @@ These parameters must be provided for all experiment scripts:
 - **Example**: `"10s"`
 - **Usage**: Controls pre-computed metric updates
 
+## Planner Windowing Override
+
+#### `windowing` (object, optional)
+- **Description**: Global manual override for the planner's window type
+- **Default**: Omitted, which preserves tumbling-window planning
+- **Choices**: `tumbling`, `sliding`
+- **Scope**: Applies to PromQL and SQL planner inputs; ElasticDSL is unchanged
+
+#### `windowing.type` (string, required when `windowing` is present)
+- **Description**: Selects the planner window type
+- **Choices**: `tumbling`, `sliding`
+
+#### `windowing.window_size_ms` (int, required)
+- **Description**: Explicit precompute window size in milliseconds
+- **Validation**: Must be greater than zero; every supported query's lookback
+  must be an exact multiple
+
+#### `windowing.slide_interval_ms` (int, required for sliding)
+- **Description**: Explicit sliding interval in milliseconds
+- **Validation**: Must be positive, no greater than `window_size_ms`, and evenly
+  divide it
+- **Constraint**: Omit this field for `tumbling`
+
 ---
 
 ## Monitoring Configuration
@@ -459,6 +482,11 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Example**: `5`
 - **SCHEMA ISSUE**: Values vary widely (1-10) across configs without clear pattern
 
+#### `experiment_params.exporters.exporter_list.fake_exporter.seed` (int, optional)
+- **Description**: Base seed for Rust fake exporter data generation. Each exporter receives a distinct seed derived from this base seed, worker ordinal, and port ordinal.
+- **Default**: `0`
+- **Example**: `42`
+
 #### `experiment_params.exporters.exporter_list.fake_exporter.start_port` (int, optional)
 - **Description**: Starting port number for fake exporters
 - **Default**: `50000`
@@ -704,6 +732,7 @@ python experiment_run_e2e.py \
 python experiment_run_e2e.py \
   experiment_type=cloud_demo \
   experiment_params.exporters.exporter_list.fake_exporter.num_ports_per_server=5 \
+  experiment_params.exporters.exporter_list.fake_exporter.seed=42 \
   experiment_params.exporters.exporter_list.fake_exporter.metric_type=gauge \
   [required params...]
 

@@ -6,8 +6,9 @@ use promql_utilities::query_logics::enums::{
     AggregationType, PromQLFunction, QueryTreatmentType, Statistic,
 };
 use promql_utilities::query_logics::parsing::get_metric_and_spatial_filter;
+use tracing::debug;
 
-use crate::config::input::SketchParameterOverrides;
+use crate::config::input::{SketchParameterOverrides, WindowingConfig};
 use crate::error::ControllerError;
 use crate::planner::agg_config::{build_agg_configs_for_statistics, IntermediateAggConfig};
 use crate::planner::cleanup::get_cleanup_param;
@@ -77,6 +78,7 @@ pub struct SingleQueryProcessor {
     range_duration_ms: u64,
     step_ms: u64,
     cleanup_policy: CleanupPolicy,
+    windowing: Option<WindowingConfig>,
 }
 
 impl SingleQueryProcessor {
@@ -91,6 +93,7 @@ impl SingleQueryProcessor {
         range_duration_ms: u64,
         step_ms: u64,
         cleanup_policy: CleanupPolicy,
+        windowing: Option<WindowingConfig>,
     ) -> Self {
         Self {
             query,
@@ -102,6 +105,7 @@ impl SingleQueryProcessor {
             range_duration_ms,
             step_ms,
             cleanup_policy,
+            windowing,
         }
     }
 
@@ -154,6 +158,7 @@ impl SingleQueryProcessor {
             self.range_duration_ms,
             self.step_ms,
             self.cleanup_policy,
+            self.windowing.clone(),
         )
     }
 
@@ -252,8 +257,26 @@ impl SingleQueryProcessor {
             self.data_ingestion_interval_ms,
             self.step_ms,
             &mut window_cfg,
+            self.windowing.is_none(),
         )
         .map_err(ControllerError::PlannerError)?;
+        crate::planner::window::apply_windowing_override(
+            &mut window_cfg,
+            requirements.data_range_ms,
+            self.step_ms,
+            self.windowing.as_ref(),
+        )?;
+
+        debug!(
+            query = %self.query,
+            metric = %metric,
+            data_range_ms = requirements.data_range_ms,
+            step_ms = self.step_ms,
+            window_type = ?window_cfg.window_type,
+            window_size_ms = window_cfg.window_size_ms,
+            slide_interval_ms = window_cfg.slide_interval_ms,
+            "Selected streaming window configuration"
+        );
 
         let subpopulation_labels = requirements.grouping_labels;
         let rollup = all_labels.difference(&subpopulation_labels);
@@ -289,6 +312,8 @@ impl SingleQueryProcessor {
                     requirements.data_range_ms,
                     self.t_repeat_ms,
                     window_cfg.window_type,
+                    window_cfg.window_size_ms,
+                    window_cfg.slide_interval_ms,
                     self.range_duration_ms,
                     self.step_ms,
                 )

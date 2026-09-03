@@ -366,6 +366,7 @@ def get_base_config() -> Dict:
                 "fake_exporter": {
                     "num_ports_per_server": 1,
                     "start_port": 50000,
+                    "seed": 0,
                     "dataset": "zipf",
                     "synthetic_data_value_scale": 10000,
                     "num_labels": 3,

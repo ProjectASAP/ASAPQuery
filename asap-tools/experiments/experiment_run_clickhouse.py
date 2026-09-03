@@ -114,6 +114,8 @@ from experiment_utils.services.remote_monitor_service import RemoteMonitorServic
 
 CLICKHOUSE_DATABASE = "default"
 REMOTE_PROCESS_POLLING_INTERVAL = 10
+CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE = "monitor_output_ingest.json"
+DEFAULT_MONITOR_INTERVAL_SECONDS = 1.0
 
 
 def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> None:
@@ -172,8 +174,16 @@ def _run_query_workload(
     query_engine_service: Optional[QueryEngineRustService],
     profile_query_engine: bool,
     profile_prometheus_time,
+    pre_query_wait_seconds: int = 0,
+    monitor_interval_seconds: float = DEFAULT_MONITOR_INTERVAL_SECONDS,
 ) -> None:
-    """Run the SQL query workload wrapped in remote_monitor (CPU/memory)."""
+    """Run the SQL query workload wrapped in remote_monitor (CPU/memory).
+
+    When ``pre_query_wait_seconds`` > 0, the monitor starts first and waits that
+    long before the query client runs, so a single monitor_output.json captures
+    the precompute/ingest phase (pc-worker threads) and the query phase in one
+    continuous, per-thread-attributed session.
+    """
     remote_monitor_service.start(
         controller_client_config=controller_client_config,
         experiment_output_dir=experiment_output_dir,
@@ -193,12 +203,127 @@ def _run_query_workload(
         use_container_prometheus_client=use_container,
         prometheus_client_parallel=parallel,
         backend_protocol="clickhouse",
+        pre_query_wait_seconds=pre_query_wait_seconds,
+        monitor_interval_seconds=monitor_interval_seconds,
     )
     if not manual_remote_monitor and constants.AVOID_REMOTE_MONITOR_LONG_SSH:
         remote_monitor_service.wait_for_remote_monitor_to_finish(
-            minimum_experiment_running_time=minimum_experiment_running_time,
+            minimum_experiment_running_time=(
+                minimum_experiment_running_time + pre_query_wait_seconds
+            ),
             polling_interval=REMOTE_PROCESS_POLLING_INTERVAL,
+            execution_mode="prometheus_client",
+            experiment_output_dir=experiment_output_dir,
         )
+
+
+def _run_clickhouse_ingest_with_monitor(
+    provider,
+    node_offset: int,
+    remote_monitor_service: RemoteMonitorService,
+    baseline_output_dir: str,
+    local_baseline_dir: str,
+    controller_client_config: str,
+    data_loader: ClickHouseDataLoaderService,
+    dataset_name: str,
+    remote_data_file: str,
+    table: str,
+    init_sql_file: str,
+    max_rows: int,
+    manual_remote_monitor: bool,
+    monitor_interval_seconds: float = DEFAULT_MONITOR_INTERVAL_SECONDS,
+) -> None:
+    """Bulk-load netflow into ClickHouse while sampling ``clickhouse`` CPU/memory."""
+    os.makedirs(local_baseline_dir, exist_ok=True)
+    provider.execute_command(
+        node_idx=node_offset,
+        cmd=f"mkdir -p {baseline_output_dir}",
+        cmd_dir="",
+        nohup=False,
+        popen=False,
+    )
+
+    print(
+        f"Starting ClickHouse ingest monitor "
+        f"({monitor_interval_seconds}s samples)..."
+    )
+    ingest_monitor_remote = os.path.join(
+        baseline_output_dir,
+        "remote_monitor_output",
+        CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
+    )
+    provider.execute_command(
+        node_idx=node_offset,
+        cmd=f"rm -f {ingest_monitor_remote}",
+        cmd_dir="",
+        nohup=False,
+        popen=False,
+        ignore_errors=True,
+    )
+    remote_monitor_service.start_clickhouse_ingest_monitor(
+        controller_client_config=controller_client_config,
+        experiment_output_dir=baseline_output_dir,
+        monitor_interval_seconds=monitor_interval_seconds,
+        monitor_output_file=CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
+        manual_mode=manual_remote_monitor,
+    )
+    if not manual_remote_monitor:
+        remote_monitor_service.wait_for_remote_monitor_start(
+            timeout=constants.REMOTE_MONITOR_START_TIMEOUT_SECONDS,
+            polling_interval=constants.REMOTE_MONITOR_START_POLL_INTERVAL_SECONDS,
+            execution_mode="ingest",
+            experiment_output_dir=baseline_output_dir,
+        )
+        time.sleep(constants.REMOTE_MONITOR_STARTUP_SETTLE_SECONDS)
+
+    try:
+        print("Loading data into ClickHouse...")
+        data_loader.start(
+            dataset_name=dataset_name,
+            remote_data_file=remote_data_file,
+            table=table,
+            init_sql_file=init_sql_file,
+            max_rows=max_rows,
+        )
+    finally:
+        print("Stopping ClickHouse ingest monitor...")
+        remote_monitor_service.signal_ingest_monitor_stop(baseline_output_dir)
+        try:
+            remote_monitor_service.wait_for_remote_monitor_process_exit(
+                polling_interval=constants.REMOTE_MONITOR_EXIT_POLL_INTERVAL_SECONDS,
+                execution_mode="ingest",
+                experiment_output_dir=baseline_output_dir,
+            )
+        finally:
+            remote_monitor_service.cleanup_ingest_monitor_stop_file(baseline_output_dir)
+
+    sync.rsync_experiment_data(
+        provider,
+        baseline_output_dir,
+        local_baseline_dir,
+        node_offset=node_offset,
+    )
+    ingest_monitor_path = os.path.join(
+        local_baseline_dir,
+        "remote_monitor_output",
+        CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE,
+    )
+    if os.path.isfile(ingest_monitor_path):
+        with open(ingest_monitor_path) as f:
+            ingest_data = json.load(f)
+        if not ingest_data:
+            raise RuntimeError(
+                f"ClickHouse ingest monitor wrote empty/null data to "
+                f"{ingest_monitor_path}. Check baseline/remote_monitor.out and "
+                "baseline/remote_monitor_output/remote_monitor.log on the node."
+            )
+    elif not manual_remote_monitor:
+        raise RuntimeError(
+            "ClickHouse ingest monitor output file was not created at "
+            f"{ingest_monitor_path} (absent after stop timeout or write skip). "
+            "Check baseline/remote_monitor.out on the node."
+        )
+    print(f"ClickHouse ingest monitor output: {ingest_monitor_path}")
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
@@ -207,6 +332,10 @@ def main(cfg: DictConfig) -> None:
         cfg,
         required_params=[
             ("experiment.name", "Human-readable experiment name"),
+            (
+                "controller.punting",
+                "Enable query punting based on performance heuristics",
+            ),
         ]
         + config.required_cloudlab_params(cfg),
         script_name="experiment_run_clickhouse",
@@ -223,6 +352,7 @@ def main(cfg: DictConfig) -> None:
     manual_remote_monitor = bool(cfg.manual.remote_monitor)
     profile_query_engine = bool(cfg.profiling.query_engine)
     profile_prometheus_time = cfg.profiling.prometheus_time
+    monitor_interval_seconds = float(cfg.flow.monitor_interval_seconds)
     minimum_experiment_running_time = config.get_minimum_experiment_running_time(
         cfg.experiment_params
     )
@@ -312,26 +442,46 @@ def main(cfg: DictConfig) -> None:
         image_tag=dataset_cfg.get("clickhouse_image_tag", "latest"),
     )
 
-    # --- load data once before the mode loop (DROP + reload) ---
+    # --- load data once before the mode loop (DROP + reload), with ingest monitor ---
     data_loader = ClickHouseDataLoaderService(
         provider,
         num_nodes=num_nodes,
         node_offset=node_offset,
         clickhouse_http_port=clickhouse_http_port,
     )
-    data_loader.start(
+    baseline_client_config = os.path.join(
+        experiment_root_output_dir,
+        "controller_client_configs",
+        f"{constants.BASELINE_EXPERIMENT_NAME}.yaml",
+    )
+    baseline_output_dir = os.path.join(
+        experiment_root_output_dir, constants.BASELINE_EXPERIMENT_NAME
+    )
+    local_baseline_dir = os.path.join(
+        local_experiment_root_dir, constants.BASELINE_EXPERIMENT_NAME
+    )
+    remote_monitor_service = RemoteMonitorService(provider, node_offset=node_offset)
+    _run_clickhouse_ingest_with_monitor(
+        provider=provider,
+        node_offset=node_offset,
+        remote_monitor_service=remote_monitor_service,
+        baseline_output_dir=baseline_output_dir,
+        local_baseline_dir=local_baseline_dir,
+        controller_client_config=baseline_client_config,
+        data_loader=data_loader,
         dataset_name=dataset_name,
         remote_data_file=remote_data_file,
         table=table,
         init_sql_file=init_sql_file,
         max_rows=max_rows,
+        manual_remote_monitor=manual_remote_monitor,
+        monitor_interval_seconds=monitor_interval_seconds,
     )
 
     # --- mode loop ---
     prometheus_client_service = PrometheusClientService(
         provider, use_container=use_container, node_offset=node_offset
     )
-    remote_monitor_service = RemoteMonitorService(provider, node_offset=node_offset)
 
     for experiment_mode in experiment_modes:
         print(f"Running experiment mode: {experiment_mode}")
@@ -377,7 +527,10 @@ def main(cfg: DictConfig) -> None:
 
             # Generate and rsync the planner input config to the node
             planner_input_yaml = config.generate_sql_planner_input(
-                ep.query_groups, dataset_cfg, cfg.get("sketch_parameters", None)
+                ep.query_groups,
+                dataset_cfg,
+                cfg.get("sketch_parameters", None),
+                cfg.get("windowing", None),
             )
             local_planner_input = os.path.join(
                 local_controller_dir, "planner_input.yaml"
@@ -424,7 +577,7 @@ def main(cfg: DictConfig) -> None:
                 flink_output_format="json",
                 data_ingestion_interval_ms=data_ingestion_interval_ms,
                 log_level="INFO",
-                profile_query_engine=False,
+                profile_query_engine=profile_query_engine,
                 manual=False,
                 streaming_engine="precompute",
                 controller_remote_output_dir=remote_controller_dir,
@@ -451,14 +604,21 @@ def main(cfg: DictConfig) -> None:
 
             query_engine_service.wait_until_ready()
 
-            steady_state_wait = int(cfg.flow.steady_state_wait)
-            print(f"Waiting {steady_state_wait}s for precompute ingest to complete...")
-            time.sleep(steady_state_wait)
-
             controller_client_config = os.path.join(
                 experiment_root_output_dir,
                 "controller_client_configs",
                 f"{experiment_mode}.yaml",
+            )
+
+            # Single continuous monitor spanning ingest + query: the monitor
+            # starts now (engine is ingesting) and waits steady_state_wait
+            # before the query client runs, so one monitor_output.json captures
+            # precompute CPU (pc-worker threads) during ingest and query CPU
+            # during the query phase, with per-thread attribution.
+            steady_state_wait = int(cfg.flow.steady_state_wait)
+            print(
+                f"Monitoring precompute+query CPU; waiting {steady_state_wait}s "
+                "for ingest before queries..."
             )
             _run_query_workload(
                 experiment_mode=experiment_mode,
@@ -473,6 +633,8 @@ def main(cfg: DictConfig) -> None:
                 query_engine_service=query_engine_service,
                 profile_query_engine=profile_query_engine,
                 profile_prometheus_time=profile_prometheus_time,
+                pre_query_wait_seconds=steady_state_wait,
+                monitor_interval_seconds=monitor_interval_seconds,
             )
 
             sync.rsync_experiment_data(
@@ -505,6 +667,7 @@ def main(cfg: DictConfig) -> None:
                 query_engine_service=None,
                 profile_query_engine=profile_query_engine,
                 profile_prometheus_time=profile_prometheus_time,
+                monitor_interval_seconds=monitor_interval_seconds,
             )
 
             sync.rsync_experiment_data(

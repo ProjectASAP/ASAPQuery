@@ -88,6 +88,11 @@ Example:
         required=True,
         help="Type of metric to generate (e.g., gauge, counter)",
     )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Base seed for random value generation",
+    )
 
     parser.add_argument(
         "--template-path",
@@ -132,6 +137,8 @@ Example:
     # Only include container_name if provided, so Jinja2 default filter can work
     if args.container_name:
         template_vars["container_name"] = args.container_name
+    if args.seed is not None:
+        template_vars["seed"] = args.seed
 
     # Set up file paths
     script_dir = Path(__file__).parent

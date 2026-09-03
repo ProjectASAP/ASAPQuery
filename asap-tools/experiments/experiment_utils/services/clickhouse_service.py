@@ -14,6 +14,25 @@ import constants
 import utils
 
 
+def _clickhouse_ping_ok(
+    provider: InfrastructureProvider, node_offset: int, http_port: int
+) -> bool:
+    """True iff ClickHouse's HTTP /ping on ``http_port`` returns exactly 'Ok.'."""
+    result = provider.execute_command(
+        node_idx=node_offset,
+        cmd=f"curl -sS http://localhost:{http_port}/ping",
+        cmd_dir=None,
+        nohup=False,
+        popen=False,
+        ignore_errors=True,
+    )
+    return (
+        isinstance(result, subprocess.CompletedProcess)
+        and result.returncode == 0
+        and result.stdout.strip() == "Ok."
+    )
+
+
 class ClickHouseService(DockerServiceBase):
     """Manages a ClickHouse Docker container on a remote CloudLab node."""
 
@@ -45,17 +64,7 @@ class ClickHouseService(DockerServiceBase):
 
     def is_healthy(self) -> bool:
         """ClickHouse is ready only when /ping returns exactly 'Ok.'"""
-        result = self.provider.execute_command(
-            node_idx=self.node_offset,
-            cmd=f"curl -s http://localhost:{self._http_port}/ping",
-            cmd_dir=None,
-            nohup=False,
-            popen=False,
-            ignore_errors=True,
-        )
-        if not isinstance(result, subprocess.CompletedProcess):
-            return False
-        return result.returncode == 0 and result.stdout.strip() == "Ok."
+        return _clickhouse_ping_ok(self.provider, self.node_offset, self._http_port)
 
     def start(
         self,
@@ -192,8 +201,10 @@ class ClickHouseDataLoaderService(BaseService):
 
     # H2O loader script (relative to _ASSETS_DIR).
     H2O_LOADER_SCRIPT = "h2o/loader.py"
+    JSON_LOADER_SCRIPT = "json/loader.py"
 
     H2O_BATCH_SIZE = 50_000
+    JSON_BATCH_SIZE = 100_000
 
     DEFAULT_TABLES = {
         "clickbench": "hits",
@@ -212,6 +223,12 @@ class ClickHouseDataLoaderService(BaseService):
         self.node_offset = node_offset
         self.clickhouse_http_port = clickhouse_http_port
         self.remote_data_file: Optional[str] = None
+
+    def is_healthy(self) -> bool:
+        """ClickHouse is ready only when /ping returns exactly 'Ok.'"""
+        return _clickhouse_ping_ok(
+            self.provider, self.node_offset, self.clickhouse_http_port
+        )
 
     def prepare(self, local_data_file: str, remote_dir: str) -> str:
         """Rsync a local data file to the remote node.
@@ -287,11 +304,17 @@ class ClickHouseDataLoaderService(BaseService):
             )
 
         url = f"http://localhost:{self.clickhouse_http_port}/"
-
-        print(f"Dropping table {table!r}...")
-        self._exec_sql(f"DROP TABLE IF EXISTS {table}", url)
+        self._ensure_clickhouse_http_ready()
 
         if init_sql_file is not None:
+            # init SQL owns DROP/CREATE for the raw table and any MVs / agg
+            # tables (e.g. netflow_init.sql). Skipping the standalone DROP
+            # avoids failing on dependents that still reference ``table``.
+            # Truncate the raw table first so idempotent CREATE TABLE IF NOT
+            # EXISTS scripts (e.g. quantile_demo/init.sql) cannot retain rows
+            # from a previous run. The init SQL remains responsible for
+            # resetting dependent materialized-view tables.
+            self._exec_sql(f"TRUNCATE TABLE IF EXISTS {table}", url)
             print(f"Running init SQL from {init_sql_file!r}...")
             remote_ddl = f"/tmp/{dataset_name}_init_{os.getpid()}.sql"
             self._rsync_to_remote(init_sql_file, remote_ddl)
@@ -300,6 +323,8 @@ class ClickHouseDataLoaderService(BaseService):
             finally:
                 self._remote_rm(remote_ddl)
         elif dataset_name in self.BUILTIN_DDL_FILES:
+            print(f"Dropping table {table!r}...")
+            self._exec_sql(f"DROP TABLE IF EXISTS {table}", url)
             local_ddl = os.path.join(
                 self._ASSETS_DIR, self.BUILTIN_DDL_FILES[dataset_name]
             )
@@ -310,17 +335,20 @@ class ClickHouseDataLoaderService(BaseService):
                 self._exec_sql_file(remote_ddl, url)
             finally:
                 self._remote_rm(remote_ddl)
-        elif dataset_name != "custom":
+        elif dataset_name == "custom":
+            print(f"Dropping table {table!r}...")
+            self._exec_sql(f"DROP TABLE IF EXISTS {table}", url)
+        else:
             raise ValueError(
                 f"No built-in DDL for dataset_name={dataset_name!r}; pass init_sql_file"
             )
 
         if dataset_name == "clickbench":
-            self._load_clickbench(remote_data_file, url, table, max_rows)
+            self._load_clickbench(remote_data_file, table, max_rows)
         elif dataset_name == "h2o":
             self._load_h2o(remote_data_file, url, batch_size, max_rows)
         elif dataset_name == "custom":
-            self._load_custom(remote_data_file, table, url, max_rows)
+            self._load_custom(remote_data_file, table, max_rows)
         else:
             raise ValueError(
                 f"Unsupported dataset_name={dataset_name!r}; "
@@ -409,6 +437,68 @@ class ClickHouseDataLoaderService(BaseService):
         for stmt in (s.strip() for s in result.stdout.split(";") if s.strip()):
             self._exec_sql(stmt, url)
 
+    def _ensure_clickhouse_http_ready(self, timeout: int = 150) -> None:
+        """Wait until ClickHouse HTTP /ping returns Ok. before bulk load."""
+        try:
+            self.wait_until_ready(timeout=timeout)
+        except RuntimeError as exc:
+            logs = self.provider.execute_command(
+                node_idx=self.node_offset,
+                cmd=f"docker logs {shlex.quote(ClickHouseService.CONTAINER_NAME)} --tail 30 2>&1",
+                cmd_dir=None,
+                nohup=False,
+                popen=False,
+                ignore_errors=True,
+            )
+            log_tail = ""
+            if isinstance(logs, subprocess.CompletedProcess):
+                log_tail = (logs.stdout or logs.stderr or "").strip()[-500:]
+            raise RuntimeError(
+                "ClickHouse HTTP is not ready before data load. "
+                f"Check clickhouse_logs/ on the experiment node. Recent logs: {log_tail}"
+            ) from exc
+
+    def _load_json_batched(
+        self,
+        remote_data_file: str,
+        table: str,
+        max_rows: int,
+        dataset_label: str,
+        batch_size: int = JSON_BATCH_SIZE,
+    ) -> None:
+        """Load JSON-lines in bounded batches via clickhouse-client."""
+        local_script = os.path.join(self._ASSETS_DIR, self.JSON_LOADER_SCRIPT)
+        remote_script = f"/tmp/json_loader_{os.getpid()}.py"
+        self._rsync_to_remote(local_script, remote_script)
+        try:
+            cmd = (
+                "python3 {} --data-file {} --table {} "
+                "--batch-size {} --max-rows {} --container {}"
+            ).format(
+                shlex.quote(remote_script),
+                shlex.quote(remote_data_file),
+                shlex.quote(table),
+                batch_size,
+                max_rows,
+                shlex.quote(ClickHouseService.CONTAINER_NAME),
+            )
+            result = self.provider.execute_command(
+                node_idx=self.node_offset,
+                cmd=cmd,
+                cmd_dir=None,
+                nohup=False,
+                popen=False,
+                ignore_errors=True,
+            )
+            if (
+                isinstance(result, subprocess.CompletedProcess)
+                and result.returncode != 0
+            ):
+                detail = (result.stderr or result.stdout or "").strip()[:300]
+                raise RuntimeError(f"{dataset_label} data load failed: {detail}")
+        finally:
+            self._remote_rm(remote_script)
+
     def _check_row_count(self, table: str, url: str) -> int:
         """Return the row count for a table on the remote node, or 0 on error."""
         cmd = "curl -sS {} --data {}".format(
@@ -431,44 +521,11 @@ class ClickHouseDataLoaderService(BaseService):
         return 0
 
     def _load_clickbench(
-        self, remote_data_file: str, url: str, table: str, max_rows: int
+        self, remote_data_file: str, table: str, max_rows: int
     ) -> None:
         """Stream a JSON-lines file (optionally gzipped) into ClickHouse."""
         print(f"Loading ClickBench data from {remote_data_file!r}...")
-        file_lower = remote_data_file.lower()
-        is_gz = file_lower.endswith(".json.gz") or file_lower.endswith(".jsonl.gz")
-        insert_sql = shlex.quote(f"INSERT INTO {table} FORMAT JSONEachRow")
-
-        if is_gz:
-            if max_rows > 0:
-                reader = "zcat {} | head -n {}".format(
-                    shlex.quote(remote_data_file), max_rows
-                )
-            else:
-                reader = "zcat {}".format(shlex.quote(remote_data_file))
-        else:
-            if max_rows > 0:
-                reader = "head -n {} {}".format(max_rows, shlex.quote(remote_data_file))
-            else:
-                reader = "cat {}".format(shlex.quote(remote_data_file))
-
-        cmd = (
-            "{} | docker exec -i clickhouse-server clickhouse-client --query {}".format(
-                reader, insert_sql
-            )
-        )
-
-        result = self.provider.execute_command(
-            node_idx=self.node_offset,
-            cmd=cmd,
-            cmd_dir=None,
-            nohup=False,
-            popen=False,
-        )
-        if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
-            raise RuntimeError(
-                f"ClickBench data load failed: {result.stderr.strip()[:200]}"
-            )
+        self._load_json_batched(remote_data_file, table, max_rows, "ClickBench")
 
     def _load_h2o(
         self, remote_data_file: str, url: str, batch_size: int, max_rows: int
@@ -503,48 +560,19 @@ class ClickHouseDataLoaderService(BaseService):
         finally:
             self._remote_rm(remote_script)
 
-    def _load_custom(
-        self, remote_data_file: str, table: str, url: str, max_rows: int
-    ) -> None:
+    def _load_custom(self, remote_data_file: str, table: str, max_rows: int) -> None:
         """Stream a custom JSON-lines file (plain or gzipped) into ClickHouse."""
         print(f"Loading custom data from {remote_data_file!r} into {table!r}...")
         file_lower = remote_data_file.lower()
-        is_gz = file_lower.endswith(".json.gz") or file_lower.endswith(".jsonl.gz")
-        is_json = file_lower.endswith(".json") or file_lower.endswith(".jsonl")
-        insert_sql = shlex.quote(f"INSERT INTO {table} FORMAT JSONEachRow")
-
-        if is_gz:
-            if max_rows > 0:
-                reader = "zcat {} | head -n {}".format(
-                    shlex.quote(remote_data_file), max_rows
-                )
-            else:
-                reader = "zcat {}".format(shlex.quote(remote_data_file))
-        elif is_json:
-            if max_rows > 0:
-                reader = "head -n {} {}".format(max_rows, shlex.quote(remote_data_file))
-            else:
-                reader = "cat {}".format(shlex.quote(remote_data_file))
-        else:
+        is_json = (
+            file_lower.endswith(".json")
+            or file_lower.endswith(".jsonl")
+            or file_lower.endswith(".json.gz")
+            or file_lower.endswith(".jsonl.gz")
+        )
+        if not is_json:
             raise ValueError(
                 f"Unsupported file format for {remote_data_file!r}. "
                 "Use dataset_name='h2o' for CSV files."
             )
-
-        cmd = (
-            "{} | docker exec -i clickhouse-server clickhouse-client --query {}".format(
-                reader, insert_sql
-            )
-        )
-
-        result = self.provider.execute_command(
-            node_idx=self.node_offset,
-            cmd=cmd,
-            cmd_dir=None,
-            nohup=False,
-            popen=False,
-        )
-        if isinstance(result, subprocess.CompletedProcess) and result.returncode != 0:
-            raise RuntimeError(
-                f"Custom data load failed: {result.stderr.strip()[:200]}"
-            )
+        self._load_json_batched(remote_data_file, table, max_rows, "Custom")

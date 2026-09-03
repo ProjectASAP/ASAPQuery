@@ -15,6 +15,7 @@ pub use asap_types::PromQLSchema;
 pub use config::input::ControllerConfig;
 pub use config::input::ElasticDSLControllerConfig;
 pub use config::input::SQLControllerConfig;
+pub use config::input::{WindowingConfig, WindowingType};
 pub use elastic_dsl::ElasticController;
 pub use elastic_dsl::ElasticIndexSchemaBuilder;
 pub use elastic_dsl::ElasticRuntimeOptions;

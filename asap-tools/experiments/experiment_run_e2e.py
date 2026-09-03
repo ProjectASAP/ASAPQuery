@@ -12,6 +12,7 @@ from experiment_utils.services import (
     KafkaService,
     FlinkService,
     QueryEngineRustService,
+    resolve_backend_config,
     ExporterServiceFactory,
     PrometheusKafkaAdapterService,
     ArroyoService,
@@ -200,6 +201,7 @@ def main(cfg: DictConfig):
             local_experiment_root_dir,
             cfg.aggregate_cleanup,
             cfg.get("sketch_parameters", None),
+            cfg.get("windowing", None),
         )
     )
     sync.rsync_controller_client_configs(
@@ -264,7 +266,10 @@ def main(cfg: DictConfig):
             )
 
         prometheus_client_service.stop()
-        remote_monitor_service.stop()
+        remote_monitor_service.stop(
+            execution_mode="timed" if skip_querying else "prometheus_client",
+            experiment_output_dir=experiment_output_dir,
+        )
         flink_service.stop_all_jobs()
         arroyo_service.stop_all_jobs()
         if args.do_local_flink:
@@ -480,22 +485,15 @@ def main(cfg: DictConfig):
 
             # in case we want to run query engine manually
             if not cfg.flow.replace_query_engine_with_dumb_consumer:
-                # Get prometheus port from prometheus service
-                prometheus_port = prometheus_service.get_query_endpoint_port()
                 # Get http port from query engine service
                 http_port = query_engine_service.get_http_port()
 
-                # Build a fully resolved BackendConfig dict.  For the prometheus
-                # backend the server URL depends on the runtime node IP, so we
-                # fill it in here rather than in config.yaml.
-                backend_config = dict(args.backend)
-                if backend_config["type"] == "prometheus":
-                    prometheus_host = provider.get_node_ip(args.node_offset)
-                    backend_config["server"] = (
-                        f"http://{prometheus_host}:{prometheus_port}"
-                    )
-                backend_config["forward_unsupported_queries"] = (
-                    args.forward_unsupported_queries
+                backend_config = resolve_backend_config(
+                    args.backend,
+                    prometheus_service,
+                    provider,
+                    args.node_offset,
+                    args.forward_unsupported_queries,
                 )
 
                 query_engine_service.start(
@@ -621,8 +619,10 @@ def main(cfg: DictConfig):
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             use_container_prometheus_client=args.use_container_prometheus_client,
             prometheus_client_parallel=args.prometheus_client_parallel,
-            backend_tool=cfg.experiment_params.monitoring.tool,
             backend_protocol="prometheus",
+            pre_query_wait_seconds=0,
+            monitor_interval_seconds=float(cfg.flow.monitor_interval_seconds),
+            backend_tool=cfg.experiment_params.monitoring.tool,
             timed_duration=minimum_experiment_running_time if skip_querying else None,
         )
 
@@ -631,6 +631,8 @@ def main(cfg: DictConfig):
             remote_monitor_service.wait_for_remote_monitor_to_finish(
                 minimum_experiment_running_time=minimum_experiment_running_time,
                 polling_interval=REMOTE_PROCESS_POLLING_INTERVAL,
+                execution_mode="timed" if skip_querying else "prometheus_client",
+                experiment_output_dir=experiment_output_dir,
             )
 
         if cfg.flow.replace_query_engine_with_dumb_consumer:

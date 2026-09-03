@@ -19,6 +19,10 @@ path = "src/bin/optimizer_cli.rs"
 name = "candidate-gen-dump"
 path = "src/bin/candidate_gen_dump.rs"
 
+[[bin]]
+name = "benchmark-promql-status"
+path = "src/bin/benchmark_promql_status.rs"
+
 [dependencies]
 asap_types.workspace = true
 promql_utilities.workspace = true

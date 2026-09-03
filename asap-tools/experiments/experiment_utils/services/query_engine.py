@@ -14,6 +14,24 @@ from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
 
+def resolve_backend_config(
+    backend: dict,
+    prometheus_service: BaseService,
+    provider: InfrastructureProvider,
+    node_offset: int,
+    forward_unsupported_queries: bool,
+) -> dict:
+    """Resolve runtime backend URL and health settings for the query engine."""
+    backend_config = dict(backend)
+    if backend_config["type"] == "prometheus":
+        prometheus_host = provider.get_node_ip(node_offset)
+        prometheus_port = prometheus_service.get_query_endpoint_port()
+        backend_config["server"] = f"http://{prometheus_host}:{prometheus_port}"
+        backend_config["health_endpoint"] = prometheus_service.get_health_endpoint()
+    backend_config["forward_unsupported_queries"] = forward_unsupported_queries
+    return backend_config
+
+
 class BaseQueryEngineService(BaseService):
     """Base class for query engine services."""
 
@@ -238,9 +256,10 @@ class QueryEngineRustService(BaseQueryEngineService):
             dump_precomputes: Whether to dump precomputed values
             lock_strategy: Lock strategy for SimpleMapStore (global or per-key)
             backend_config: Fully resolved BackendConfig dict with type tag and all
-                            backend-specific fields (url/server/database/index as needed)
-                            plus forward_unsupported_queries. Matches the BackendConfig
-                            tagged union in asap-query-engine/src/engine_config.rs.
+                            backend-specific fields (url/server/database/index as needed),
+                            optional health_endpoint, and forward_unsupported_queries.
+                            Matches the BackendConfig tagged union in
+                            asap-query-engine/src/engine_config.rs.
             http_port: Port for the query engine's HTTP API server
             remote_write_port: Port the precompute engine listens on for Prometheus remote
                                write; should match streaming.remote_write.base_port (default 8080)
@@ -306,6 +325,27 @@ class QueryEngineRustService(BaseQueryEngineService):
         """Start Rust QueryEngine using bare metal deployment."""
         output_dir = os.path.join(experiment_output_dir, "query_engine_output")
         local_output_dir = os.path.join(local_experiment_dir, "query_engine_output")
+        cmd_dir = os.path.join(
+            self.provider.get_home_dir(), "code", "asap-query-engine"
+        )
+        binary_name = (
+            constants.QUERY_ENGINE_RS_FP_BINARY_NAME
+            if profile_query_engine
+            else constants.QUERY_ENGINE_RS_BINARY_NAME
+        )
+        binary_path = f"../target/release/{binary_name}"
+
+        if profile_query_engine and not manual:
+            # Check on the target node before writing config or starting the
+            # service, so a profiling run cannot silently use a non-FP binary.
+            self.provider.execute_command(
+                node_idx=self.node_offset,
+                cmd=f"test -x {binary_path}",
+                cmd_dir=cmd_dir,
+                nohup=False,
+                popen=False,
+                ignore_errors=False,
+            )
 
         config = self._build_engine_config(
             output_dir=output_dir,
@@ -330,9 +370,6 @@ class QueryEngineRustService(BaseQueryEngineService):
             remote_path=os.path.join(output_dir, "engine_config.yaml"),
         )
 
-        cmd_dir = os.path.join(
-            self.provider.get_home_dir(), "code", "asap-query-engine"
-        )
         # Force UTC so naive datetime-string time literals in incoming SQL
         # queries parse the same way here as in ClickHouse (UTC by default)
         # and in asap-planner (see misc.py's ControllerService for the same
@@ -343,7 +380,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             # which execs argv[0] directly rather than re-parsing through a
             # shell -- a bare `VAR=val` prefix would make nohup try (and
             # fail) to exec "TZ=UTC" itself as the program name.
-            f"env TZ=UTC ../target/release/query_engine_rust"
+            f"env TZ=UTC {binary_path}"
             f" --config-file {output_dir}/engine_config.yaml"
             f" > {output_dir}/query_engine_rust.out 2>&1 &"
         )

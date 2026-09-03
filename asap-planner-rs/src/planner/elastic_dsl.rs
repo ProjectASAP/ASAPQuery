@@ -65,6 +65,12 @@ impl ElasticSingleQueryProcessor {
         let (treatment_type, statistics) = get_elastic_statistics(&query_info.aggregation)?;
 
         let t_repeat_ms = self.t_repeat_ms;
+        if t_repeat_ms < self.data_ingestion_interval_ms {
+            return Err(ControllerError::UnsupportedElasticDSLQuery(format!(
+                "repetition interval {}ms is shorter than the data ingestion interval {}ms",
+                t_repeat_ms, self.data_ingestion_interval_ms
+            )));
+        }
 
         // Validate and resolve the time-range predicate before building configs.
         let time_field = self.index_schema.time_field.clone();
@@ -83,7 +89,12 @@ impl ElasticSingleQueryProcessor {
                 ))
             }
             Some(tr) => {
-                let duration = tr.duration_ms().unwrap_or(t_repeat_ms);
+                let duration = tr.duration_ms().ok_or_else(|| {
+                    ControllerError::UnsupportedElasticDSLQuery(
+                        "time-range predicate must have finite, valid gte and lte bounds"
+                            .to_string(),
+                    )
+                })?;
                 if duration < self.data_ingestion_interval_ms {
                     return Err(ControllerError::UnsupportedElasticDSLQuery(format!(
                         "time-range duration {}ms is shorter than the data ingestion interval {}ms",
@@ -94,6 +105,12 @@ impl ElasticSingleQueryProcessor {
                 let window = if duration == self.data_ingestion_interval_ms {
                     self.data_ingestion_interval_ms
                 } else {
+                    if duration < t_repeat_ms {
+                        return Err(ControllerError::UnsupportedElasticDSLQuery(format!(
+                            "time-range duration {}ms is shorter than the repetition interval {}ms",
+                            duration, t_repeat_ms
+                        )));
+                    }
                     t_repeat_ms
                 };
                 (duration, window)

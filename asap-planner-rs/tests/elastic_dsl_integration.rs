@@ -524,6 +524,15 @@ fn time_range_query(duration: &str) -> String {
     )
 }
 
+fn one_sided_time_range_query(duration: &str) -> String {
+    format!(
+        r#"{{
+    "aggs": {{ "sum_cpu": {{ "sum": {{ "field": "cpu_usage" }} }} }},
+    "query": {{ "bool": {{ "filter": [{{ "range": {{ "@timestamp": {{ "gte": "now-{duration}" }} }} }}] }} }}
+}}"#
+    )
+}
+
 const QUERY_NO_TIME_RANGE: &str = r#"{
     "aggs": { "sum_cpu": { "sum": { "field": "cpu_usage" } } }
 }"#;
@@ -560,6 +569,21 @@ fn time_range_shorter_than_ingestion_interval_is_rejected() {
 }
 
 #[test]
+fn t_repeat_shorter_than_ingestion_interval_is_rejected() {
+    let result = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        &time_range_query("1m"),
+        0,
+        15_000,
+    );
+    assert!(matches!(
+        result,
+        Err(ControllerError::UnsupportedElasticDSLQuery(_))
+    ));
+}
+
+#[test]
 fn time_range_equal_to_ingestion_interval_uses_interval_as_window_size() {
     // data_ingestion_interval_ms = 15_000ms (15s), query range = 15s → Spatial: window = interval
     let out = try_elastic_with_interval(
@@ -574,13 +598,59 @@ fn time_range_equal_to_ingestion_interval_uses_interval_as_window_size() {
 }
 
 #[test]
-fn time_range_longer_than_ingestion_interval_uses_t_repeat_as_window_size() {
-    // data_ingestion_interval_ms = 15_000ms (15s), query range = 5m > 15s → Temporal: window = t_repeat_ms
+fn time_range_shorter_than_t_repeat_is_rejected() {
+    // data_ingestion_interval_ms = 15_000ms (15s), query range = 1m, t_repeat = 5m.
+    // A temporal precompute window must not outlive the query range it serves.
+    let t_repeat_ms = 300_000;
+    let result = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        &time_range_query("1m"),
+        t_repeat_ms,
+        15_000,
+    );
+    assert!(matches!(
+        result,
+        Err(ControllerError::UnsupportedElasticDSLQuery(_))
+    ));
+}
+
+#[test]
+fn one_sided_time_range_is_rejected() {
+    let result = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        &one_sided_time_range_query("1m"),
+        300_000,
+        15_000,
+    );
+    assert!(matches!(
+        result,
+        Err(ControllerError::UnsupportedElasticDSLQuery(_))
+    ));
+}
+
+#[test]
+fn time_range_equal_to_t_repeat_uses_t_repeat_as_window_size() {
     let t_repeat_ms = 300_000;
     let out = try_elastic_with_interval(
         "metrics",
         "\"@timestamp\"",
         &time_range_query("5m"),
+        t_repeat_ms,
+        15_000,
+    )
+    .unwrap();
+    assert!(out.all_tumbling_window_sizes_eq(t_repeat_ms));
+}
+
+#[test]
+fn time_range_at_least_t_repeat_uses_t_repeat_as_window_size() {
+    let t_repeat_ms = 300_000;
+    let out = try_elastic_with_interval(
+        "metrics",
+        "\"@timestamp\"",
+        &time_range_query("10m"),
         t_repeat_ms,
         15_000,
     )

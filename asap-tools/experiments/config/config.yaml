@@ -47,6 +47,7 @@ flow:
   no_teardown: false
   replace_query_engine_with_dumb_consumer: false
   steady_state_wait: 60
+  monitor_interval_seconds: 1.0  # remote_monitor CPU/memory sample interval (0.1 = 100ms)
   skip_copy_prometheus_data: false  # Skip copying Prometheus data back to local machine
 
 
@@ -86,7 +87,7 @@ cluster_data_directory: "/data/cluster_traces"  # Path to directory containing G
 # Backend configuration for the query engine (aligned with BackendConfig in asap-query-engine/src/engine_config.rs)
 backend:
   type: "prometheus"  # choices: ["prometheus", "clickhouse", "elastic_querydsl", "elastic_sql"]
-  # prometheus: server URL is built at runtime from the Prometheus service (no extra fields needed here)
+  # prometheus: server and health_endpoint are built at runtime from the monitoring service
   # clickhouse: url (e.g. "http://ch-host:8123"), database (e.g. "default")
   # elastic_querydsl / elastic_sql: url (e.g. "http://es-host:9200"), index (e.g. "metrics-*")
 
@@ -97,7 +98,15 @@ query_engine:
 
 # Controller configuration
 controller:
-  punting: true  # Enable query punting based on performance heuristics (should_be_performant check)
+  punting: ???  # REQUIRED: Enable query punting based on performance heuristics (should_be_performant check)
+
+# Optional manual planner windowing override. Omit this block to preserve the
+# default tumbling-window behavior. For tumbling windows, omit
+# slide_interval_ms. For sliding windows, both sizes are explicit.
+# windowing:
+#   type: "sliding"
+#   window_size_ms: 60000
+#   slide_interval_ms: 15000
 
 # Aggregate cleanup configuration
 # Policy options:

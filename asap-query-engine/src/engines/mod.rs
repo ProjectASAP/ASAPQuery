@@ -1,6 +1,7 @@
 pub(crate) mod merge_utils;
 pub mod query_result;
 pub mod simple_engine;
+pub(crate) mod sliding_window_composition;
 pub mod window_merger;
 
 pub use query_result::{InstantVector, QueryResult, RangeVector, RangeVectorElement, Sample};

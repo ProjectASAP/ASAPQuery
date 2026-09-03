@@ -326,6 +326,8 @@ impl AggregationType {
                 | AggregationType::CountMinSketch
                 | AggregationType::CountMinSketchWithHeap
                 | AggregationType::HydraKLL
+                | AggregationType::SetAggregator
+                | AggregationType::DeltaSetAggregator
         )
     }
 

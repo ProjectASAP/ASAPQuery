@@ -1,8 +1,8 @@
 use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
-    MultipleSubpopulationAggregate, SerializableToSink, SingleSubpopulationAggregate,
+    MultipleSubpopulationAggregate, QueryBounds, SerializableToSink, SingleSubpopulationAggregate,
 };
-use crate::precompute_operators::IncreaseAccumulator;
+use crate::precompute_operators::{CounterResetEvent, IncreaseAccumulator};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -18,11 +18,15 @@ pub struct MultipleIncreaseAccumulator {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct MeasurementData {
     starting_measurement: f64,
     starting_timestamp: i64,
     last_seen_measurement: f64,
     last_seen_timestamp: i64,
+    sample_count: u64,
+    counter_reset_adjustment: f64,
+    counter_reset_events: Vec<CounterResetEvent>,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -86,29 +90,9 @@ impl MultipleIncreaseAccumulator {
                 KeyByLabelValues::deserialize_from_bytes(&buffer[offset..offset + key_length])?;
             offset += key_length;
 
-            // Read IncreaseAccumulator data
-            if offset >= buffer.len() {
-                return Err("Buffer too short for increase accumulator data".into());
-            }
-            let increase_data = IncreaseAccumulator::deserialize_from_bytes(&buffer[offset..])?;
-
-            // Calculate consumed bytes for IncreaseAccumulator
-            // Structure: starting_measurement_len(4) + starting_measurement + starting_timestamp(8) +
-            //           last_seen_measurement_len(4) + last_seen_measurement + last_seen_timestamp(8)
-            let starting_measurement_len = u32::from_le_bytes([
-                buffer[offset],
-                buffer[offset + 1],
-                buffer[offset + 2],
-                buffer[offset + 3],
-            ]) as usize;
-            let last_seen_measurement_len = u32::from_le_bytes([
-                buffer[offset + 4 + starting_measurement_len + 8],
-                buffer[offset + 4 + starting_measurement_len + 8 + 1],
-                buffer[offset + 4 + starting_measurement_len + 8 + 2],
-                buffer[offset + 4 + starting_measurement_len + 8 + 3],
-            ]) as usize;
-            let consumed_bytes =
-                4 + starting_measurement_len + 8 + 4 + last_seen_measurement_len + 8;
+            // IncreaseAccumulator owns its binary framing and reports its length.
+            let (increase_data, consumed_bytes) =
+                IncreaseAccumulator::deserialize_from_bytes_with_consumed(&buffer[offset..])?;
             offset += consumed_bytes;
 
             accumulator.increases.insert(key, increase_data);
@@ -139,18 +123,43 @@ impl MultipleIncreaseAccumulator {
             let starting_timestamp = values.starting_timestamp;
             let last_seen_measurement = Measurement::new(values.last_seen_measurement);
             let last_seen_timestamp = values.last_seen_timestamp;
+            if values.sample_count == 0 {
+                return Err("Sample count must be positive".into());
+            }
 
-            let increase_accumulator = IncreaseAccumulator::new(
+            let mut increase_accumulator = IncreaseAccumulator::new(
                 starting_measurement,
                 starting_timestamp,
                 last_seen_measurement,
                 last_seen_timestamp,
             );
+            increase_accumulator.sample_count = values.sample_count;
+            increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
+            increase_accumulator.counter_reset_events = values.counter_reset_events;
 
             accumulator.increases.insert(key_obj, increase_accumulator);
         }
 
         Ok(accumulator)
+    }
+
+    fn merge_increase(
+        increases: &mut HashMap<KeyByLabelValues, IncreaseAccumulator>,
+        key: KeyByLabelValues,
+        data: IncreaseAccumulator,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let Some(existing_data) = increases.remove(&key) else {
+            increases.insert(key, data);
+            return Ok(());
+        };
+
+        match IncreaseAccumulator::merge_accumulators(vec![existing_data, data]) {
+            Ok(merged_data) => {
+                increases.insert(key, merged_data);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Serialize to Arroyo-compatible format (MessagePack HashMap<String, MeasurementData>)
@@ -169,6 +178,9 @@ impl MultipleIncreaseAccumulator {
                     starting_timestamp: increase_acc.starting_timestamp,
                     last_seen_measurement: increase_acc.last_seen_measurement.value,
                     last_seen_timestamp: increase_acc.last_seen_timestamp,
+                    sample_count: increase_acc.sample_count,
+                    counter_reset_adjustment: increase_acc.counter_reset_adjustment,
+                    counter_reset_events: increase_acc.counter_reset_events.clone(),
                 },
             );
         }
@@ -257,22 +269,10 @@ impl AggregateCore for MultipleIncreaseAccumulator {
             .downcast_ref::<MultipleIncreaseAccumulator>()
             .ok_or("Failed to downcast to MultipleIncreaseAccumulator")?;
 
-        // Clone self once, then merge other's data in-place
+        // Clone self once, then merge other's data in-place.
         let mut merged = self.clone();
         for (key, data) in &other_multiple_increase.increases {
-            if let Some(existing_data) = merged.increases.get_mut(key) {
-                // Merge in-place: take earliest start, latest end
-                if data.starting_timestamp < existing_data.starting_timestamp {
-                    existing_data.starting_measurement = data.starting_measurement.clone();
-                    existing_data.starting_timestamp = data.starting_timestamp;
-                }
-                if data.last_seen_timestamp > existing_data.last_seen_timestamp {
-                    existing_data.last_seen_measurement = data.last_seen_measurement.clone();
-                    existing_data.last_seen_timestamp = data.last_seen_timestamp;
-                }
-            } else {
-                merged.increases.insert(key.clone(), data.clone());
-            }
+            Self::merge_increase(&mut merged.increases, key.clone(), data.clone())?;
         }
 
         Ok(Box::new(merged))
@@ -297,6 +297,23 @@ impl AggregateCore for MultipleIncreaseAccumulator {
             .as_ref()
             .ok_or("Key required for MultipleIncreaseAccumulator")?;
         self.query(statistic, key_val, Some(query_kwargs))
+    }
+
+    fn query_statistic_with_bounds(
+        &self,
+        statistic: Statistic,
+        key: &Option<KeyByLabelValues>,
+        _query_kwargs: &std::collections::HashMap<String, String>,
+        bounds: &QueryBounds,
+    ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
+        let key_val = key
+            .as_ref()
+            .ok_or("Key required for MultipleIncreaseAccumulator")?;
+        let data = self
+            .increases
+            .get(key_val)
+            .ok_or_else(|| format!("Key {key_val} not found in MultipleIncreaseAccumulator"))?;
+        data.query_with_bounds(statistic, bounds)
     }
 }
 
@@ -332,20 +349,7 @@ impl MergeableAccumulator<MultipleIncreaseAccumulator> for MultipleIncreaseAccum
 
         for accumulator in accumulators {
             for (key, data) in accumulator.increases {
-                if let Some(existing_data) = result.increases.get_mut(&key) {
-                    // Merge in-place without cloning existing_data
-                    // Take the earliest start time and latest end time
-                    if data.starting_timestamp < existing_data.starting_timestamp {
-                        existing_data.starting_measurement = data.starting_measurement;
-                        existing_data.starting_timestamp = data.starting_timestamp;
-                    }
-                    if data.last_seen_timestamp > existing_data.last_seen_timestamp {
-                        existing_data.last_seen_measurement = data.last_seen_measurement;
-                        existing_data.last_seen_timestamp = data.last_seen_timestamp;
-                    }
-                } else {
-                    result.increases.insert(key, data);
-                }
+                Self::merge_increase(&mut result.increases, key, data)?;
             }
         }
 
@@ -429,6 +433,22 @@ mod tests {
     }
 
     #[test]
+    fn test_multiple_increase_accumulator_corrects_counter_reset() {
+        let mut acc = MultipleIncreaseAccumulator::new();
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut increase_acc = create_test_increase_accumulator_with_time(100.0, 0, 100.0, 0);
+
+        increase_acc.update(Measurement::new(150.0), 1_000);
+        increase_acc.update(Measurement::new(10.0), 2_000);
+        increase_acc.update(Measurement::new(60.0), 3_000);
+        acc.update(key.clone(), increase_acc);
+
+        assert_eq!(acc.query(Statistic::Increase, &key, None).unwrap(), 110.0);
+        let rate = acc.query(Statistic::Rate, &key, None).unwrap();
+        assert!((rate - (110.0 / 3.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
     fn test_multiple_increase_accumulator_merge() {
         let mut acc1 = MultipleIncreaseAccumulator::new();
         let mut acc2 = MultipleIncreaseAccumulator::new();
@@ -457,6 +477,7 @@ mod tests {
         let merged_key1 = merged.increases.get(&key1).unwrap();
         assert_eq!(merged_key1.starting_measurement.value, 10.0); // Earlier start
         assert_eq!(merged_key1.last_seen_measurement.value, 30.0); // Later end
+        assert_eq!(merged_key1.sample_count, 2);
     }
 
     #[test]
@@ -465,7 +486,16 @@ mod tests {
 
         let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
 
-        acc.update(key.clone(), create_test_increase_accumulator(10.0, 25.0));
+        acc.update(
+            key.clone(),
+            IncreaseAccumulator::new_with_sample_count(
+                Measurement::new(10.0),
+                1_000,
+                Measurement::new(25.0),
+                2_000,
+                2,
+            ),
+        );
 
         // Test JSON serialization
         let json_value = acc.serialize_to_json();
@@ -475,6 +505,7 @@ mod tests {
         let deserialized_acc = deserialized.increases.get(&key).unwrap();
         assert_eq!(deserialized_acc.starting_measurement.value, 10.0);
         assert_eq!(deserialized_acc.last_seen_measurement.value, 25.0);
+        assert_eq!(deserialized_acc.sample_count, 2);
 
         // Test binary serialization
         let bytes = acc.serialize_to_bytes();
@@ -485,6 +516,120 @@ mod tests {
         let deserialized_acc_bytes = deserialized_bytes.increases.get(&key).unwrap();
         assert_eq!(deserialized_acc_bytes.starting_measurement.value, 10.0);
         assert_eq!(deserialized_acc_bytes.last_seen_measurement.value, 25.0);
+        assert_eq!(deserialized_acc_bytes.sample_count, 2);
+
+        let arroyo_round_trip = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+            &acc.serialize_to_bytes_arroyo(),
+        )
+        .unwrap();
+        assert_eq!(
+            arroyo_round_trip.increases.get(&key).unwrap().sample_count,
+            2
+        );
+    }
+
+    #[test]
+    fn keyed_queries_use_each_key_sample_count() {
+        let key_with_enough_samples = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let key_with_one_sample = KeyByLabelValues::new_with_labels(vec!["api".to_string()]);
+        let mut acc = MultipleIncreaseAccumulator::new();
+        acc.update(
+            key_with_enough_samples.clone(),
+            IncreaseAccumulator::new_with_sample_count(
+                Measurement::new(100.0),
+                1_000,
+                Measurement::new(110.0),
+                2_000,
+                2,
+            ),
+        );
+        acc.update(
+            key_with_one_sample.clone(),
+            IncreaseAccumulator::new(
+                Measurement::new(100.0),
+                1_000,
+                Measurement::new(100.0),
+                1_000,
+            ),
+        );
+
+        let bounds = crate::data_model::QueryBounds::new(1_000, 2_000);
+        let query_kwargs = HashMap::new();
+        assert!(acc
+            .query_statistic_with_bounds(
+                Statistic::Rate,
+                &Some(key_with_enough_samples),
+                &query_kwargs,
+                &bounds,
+            )
+            .is_ok());
+        assert!(acc
+            .query_statistic_with_bounds(
+                Statistic::Rate,
+                &Some(key_with_one_sample),
+                &query_kwargs,
+                &bounds,
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn test_multiple_increase_counter_reset_correction_survives_serialization() {
+        let mut acc = MultipleIncreaseAccumulator::new();
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut increase_acc = create_test_increase_accumulator_with_time(100.0, 0, 100.0, 0);
+
+        increase_acc.update(Measurement::new(150.0), 1_000);
+        increase_acc.update(Measurement::new(10.0), 2_000);
+        increase_acc.update(Measurement::new(60.0), 3_000);
+        acc.update(key.clone(), increase_acc);
+
+        let json_round_trip =
+            MultipleIncreaseAccumulator::deserialize_from_json(&acc.serialize_to_json()).unwrap();
+        assert_eq!(
+            json_round_trip
+                .query(Statistic::Increase, &key, None)
+                .unwrap(),
+            110.0
+        );
+
+        let bytes_round_trip =
+            MultipleIncreaseAccumulator::deserialize_from_bytes(&acc.serialize_to_bytes()).unwrap();
+        assert_eq!(
+            bytes_round_trip
+                .query(Statistic::Increase, &key, None)
+                .unwrap(),
+            110.0
+        );
+    }
+
+    #[test]
+    fn test_arroyo_deserialization_supports_reset_aware_payloads() {
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut payload = HashMap::new();
+        payload.insert(
+            "web".to_string(),
+            MeasurementData {
+                starting_measurement: 100.0,
+                starting_timestamp: 0,
+                last_seen_measurement: 60.0,
+                last_seen_timestamp: 3_000,
+                sample_count: 4,
+                counter_reset_adjustment: 150.0,
+                counter_reset_events: vec![CounterResetEvent {
+                    timestamp: 2_000,
+                    adjustment: 150.0,
+                }],
+            },
+        );
+        let reset_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
+            &rmp_serde::to_vec(&payload).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            reset_aware.query(Statistic::Increase, &key, None).unwrap(),
+            110.0
+        );
     }
 
     #[test]
@@ -517,6 +662,31 @@ mod tests {
 
         let keys = trait_obj.get_keys().unwrap();
         assert_eq!(keys.len(), 1);
+    }
+
+    #[test]
+    fn test_trait_object_merge_corrects_counter_reset() {
+        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
+        let mut first = MultipleIncreaseAccumulator::new();
+        let mut first_data = create_test_increase_accumulator_with_time(100.0, 0, 100.0, 0);
+        first_data.update(Measurement::new(150.0), 1_000);
+        first.update(key.clone(), first_data);
+
+        let mut second = MultipleIncreaseAccumulator::new();
+        second.update(
+            key.clone(),
+            create_test_increase_accumulator_with_time(10.0, 2_000, 60.0, 3_000),
+        );
+
+        let merged = first.merge_with(&second).unwrap();
+        let merged = merged
+            .as_any()
+            .downcast_ref::<MultipleIncreaseAccumulator>()
+            .unwrap();
+        assert_eq!(
+            merged.query(Statistic::Increase, &key, None).unwrap(),
+            110.0
+        );
     }
 
     // #[test]

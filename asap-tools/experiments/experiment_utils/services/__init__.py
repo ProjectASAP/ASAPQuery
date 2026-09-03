@@ -10,6 +10,7 @@ from .kafka import KafkaService
 from .flink import FlinkService
 from .query_engine import (
     QueryEngineRustService,
+    resolve_backend_config,
 )
 from .monitoring import MonitoringService
 from .fake_exporters import (
@@ -131,6 +132,7 @@ __all__ = [
     "KafkaService",
     "FlinkService",
     "QueryEngineRustService",
+    "resolve_backend_config",
     "MonitoringService",
     "ExporterServiceFactory",
     "PythonExporterService",

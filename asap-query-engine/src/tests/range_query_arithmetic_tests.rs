@@ -19,6 +19,7 @@ mod tests {
     use crate::engines::query_result::{QueryResult, RangeVectorElement};
     use crate::engines::simple_engine::SimpleEngine;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::precompute_operators::CountMinSketchWithHeapAccumulator;
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
     use crate::AggregateCore;
@@ -285,5 +286,590 @@ mod tests {
             "BUG: arms grouped by different label sets must not join, even when their \
              values coincide, got {result:?}"
         );
+    }
+
+    /// Builds a SimpleEngine with one self-keyed topk-capable metric
+    /// (`metric_a`, `CountMinSketchWithHeap`, one ungrouped sketch per
+    /// bucket) and one plain grouped-sum metric (`metric_b`, `SumAccumulator`
+    /// per host), so a mixed `topk(k, metric_a) OP sum(metric_b) by (host)`
+    /// range query is constructible. Mirrors `build_range_topk_engine` in
+    /// `stage_e_instant_range_equivalence_tests.rs` for the topk side, and
+    /// `create_range_engine_two_metrics`'s per-host Sum buckets for the
+    /// plain side.
+    fn build_range_topk_plus_plain_engine(
+        topk_query: &str,
+        plain_query: &str,
+        topk_candidates: &[(&str, f64)],
+        plain_values: &[(&str, f64)],
+    ) -> SimpleEngine {
+        let mut aggregation_configs = HashMap::new();
+        aggregation_configs.insert(
+            1u64,
+            AggregationConfig {
+                aggregation_id: 1,
+                aggregation_type: AggregationType::CountMinSketchWithHeap,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::empty(),
+                aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: WINDOW_MS,
+                slide_interval_ms: WINDOW_MS,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "metric_a".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+        aggregation_configs.insert(
+            2u64,
+            AggregationConfig {
+                aggregation_id: 2,
+                aggregation_type: AggregationType::Sum,
+                aggregation_sub_type: String::new(),
+                parameters: HashMap::new(),
+                grouping_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                aggregated_labels: KeyByLabelNames::empty(),
+                rollup_labels: KeyByLabelNames::empty(),
+                original_yaml: String::new(),
+                window_size_ms: WINDOW_MS,
+                slide_interval_ms: WINDOW_MS,
+                window_type: WindowType::Tumbling,
+                spatial_filter: String::new(),
+                spatial_filter_normalized: String::new(),
+                metric: "metric_b".to_string(),
+                num_aggregates_to_retain: None,
+                read_count_threshold: None,
+                table_name: None,
+                value_column: None,
+            },
+        );
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for (host, value) in topk_candidates {
+            sketch.inner.update(host, *value);
+        }
+        let topk_output = PrecomputedOutput::new(0, WINDOW_MS, None, 1);
+        store
+            .insert_precomputed_output(topk_output, Box::new(sketch))
+            .unwrap();
+
+        for (host, value) in plain_values {
+            let key = KeyByLabelValues {
+                labels: vec![host.to_string()],
+            };
+            let plain_output = PrecomputedOutput::new(0, WINDOW_MS, Some(key), 2);
+            store
+                .insert_precomputed_output(
+                    plain_output,
+                    Box::new(SumAccumulator::with_sum(*value)) as Box<dyn AggregateCore>,
+                )
+                .unwrap();
+        }
+
+        let promql_schema = PromQLSchema::new()
+            .add_metric(
+                "metric_a".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )
+            .add_metric(
+                "metric_b".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            );
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![
+                QueryConfig::new(topk_query.to_string())
+                    .add_aggregation(AggregationReference::new(1, None)),
+                QueryConfig::new(plain_query.to_string())
+                    .add_aggregation(AggregationReference::new(2, None)),
+            ],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            WINDOW_MS,
+            QueryLanguage::promql,
+        )
+    }
+
+    // Regression test for issue #631: Topk preserves the original grouping
+    // labels for binary matching, while arithmetic drops the metric name.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_vector_vector_topk_lhs_plus_plain_rhs_joins_by_original_labels() {
+        let query = "topk(2, metric_a) + sum(metric_b) by (host)";
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 1000.0), ("host-b", 2000.0), ("host-c", 3000.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("Expected result for range topk/plain query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(elements.len(), 2);
+        let mut values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                assert_eq!(element.samples.len(), 1);
+                (element.labels.labels[0].clone(), element.samples[0].value)
+            })
+            .collect();
+        assert_eq!(values.remove("host-a"), Some(1100.0));
+        assert_eq!(values.remove("host-b"), Some(2050.0));
+        assert!(values.is_empty());
+    }
+
+    /// Builds a SimpleEngine with two independent self-keyed topk-capable
+    /// metrics (`metric_a`, `metric_b`, both `CountMinSketchWithHeap`, one
+    /// ungrouped sketch per bucket each), so a
+    /// `topk(k1, metric_a) OP topk(k2, metric_b)` range query is
+    /// constructible. Unlike the topk+plain mix
+    /// (`build_range_topk_plus_plain_engine`), both arms get `"__name__"`
+    /// prepended to their label *names* identically, so this shape actually
+    /// reaches `handle_binary_expr_range_promql`'s vector-vector join --
+    /// this is the shape PR #629 review Finding 1's `apply_range_topk`
+    /// formatting-before-join bug is reachable through.
+    fn build_range_two_topk_engine(
+        query_a: &str,
+        query_b: &str,
+        candidates_a: &[(&str, f64)],
+        candidates_b: &[(&str, f64)],
+    ) -> SimpleEngine {
+        let mut aggregation_configs = HashMap::new();
+        for (id, metric) in [(1u64, "metric_a"), (2u64, "metric_b")] {
+            aggregation_configs.insert(
+                id,
+                AggregationConfig {
+                    aggregation_id: id,
+                    aggregation_type: AggregationType::CountMinSketchWithHeap,
+                    aggregation_sub_type: String::new(),
+                    parameters: HashMap::new(),
+                    grouping_labels: KeyByLabelNames::empty(),
+                    aggregated_labels: KeyByLabelNames::new(vec!["host".to_string()]),
+                    rollup_labels: KeyByLabelNames::empty(),
+                    original_yaml: String::new(),
+                    window_size_ms: WINDOW_MS,
+                    slide_interval_ms: WINDOW_MS,
+                    window_type: WindowType::Tumbling,
+                    spatial_filter: String::new(),
+                    spatial_filter_normalized: String::new(),
+                    metric: metric.to_string(),
+                    num_aggregates_to_retain: None,
+                    read_count_threshold: None,
+                    table_name: None,
+                    value_column: None,
+                },
+            );
+        }
+
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs,
+        });
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        for (agg_id, candidates) in [(1u64, candidates_a), (2u64, candidates_b)] {
+            let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+            for (host, value) in candidates {
+                sketch.inner.update(host, *value);
+            }
+            let output = PrecomputedOutput::new(0, WINDOW_MS, None, agg_id);
+            store
+                .insert_precomputed_output(output, Box::new(sketch))
+                .unwrap();
+        }
+
+        let promql_schema = PromQLSchema::new()
+            .add_metric(
+                "metric_a".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            )
+            .add_metric(
+                "metric_b".to_string(),
+                KeyByLabelNames::new(vec!["host".to_string()]),
+            );
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![
+                QueryConfig::new(query_a.to_string())
+                    .add_aggregation(AggregationReference::new(1, None)),
+                QueryConfig::new(query_b.to_string())
+                    .add_aggregation(AggregationReference::new(2, None)),
+            ],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        SimpleEngine::new(
+            store,
+            inference_config,
+            streaming_config,
+            WINDOW_MS,
+            QueryLanguage::promql,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_vector_vector_topk_lhs_topk_rhs_joins_by_original_labels() {
+        let query = "topk(2, metric_a) + topk(2, metric_b)";
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), 1.0)
+            .expect("Expected result for instant topk/topk query");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+
+        assert_eq!(elements.len(), 1);
+        assert_eq!(elements[0].labels.labels, vec!["host-b".to_string()]);
+        assert!((elements[0].value - 250.0).abs() < 1e-10);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_vector_vector_topk_lhs_plus_plain_rhs_joins_by_original_labels() {
+        let query = "topk(2, metric_a) + sum(metric_b) by (host)";
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 1000.0), ("host-b", 2000.0), ("host-c", 3000.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_query_promql(query.to_string(), 1.0)
+            .expect("Expected result for instant topk/plain query");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+
+        assert_eq!(elements.len(), 2);
+        let mut values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                (element.labels.labels[0].clone(), element.value)
+            })
+            .collect();
+        assert_eq!(values.remove("host-a"), Some(1100.0));
+        assert_eq!(values.remove("host-b"), Some(2050.0));
+        assert!(values.is_empty());
+    }
+
+    // Regression test for issue #631: different Topk metric names must not
+    // become part of the intermediate vector-matching identity.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn test_range_vector_vector_topk_lhs_topk_rhs() {
+        // topk(2, metric_a): host-a=100, host-b=50 survive; host-c=10 dropped.
+        // topk(2, metric_b): host-b=200, host-c=300 survive; host-a=5 dropped.
+        // Only host-b survives both topks -> expected combined: host-b = 250.
+        let query = "topk(2, metric_a) + topk(2, metric_b)";
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+        );
+
+        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let (_, qr) = result.expect("Expected result for topk/topk range query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(
+            elements.len(),
+            1,
+            "Expected only host-b (present in both topks' surviving sets), got {elements:?}"
+        );
+        assert!(elements[0].labels.labels.contains(&"host-b".to_string()));
+        assert_eq!(elements[0].samples.len(), 1);
+        assert!((elements[0].samples[0].value - 250.0).abs() < 1e-10);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_preserves_matching_for_all_arithmetic_ops() {
+        for (op, expected, candidates_a, candidates_b) in [
+            (
+                "+",
+                250.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "-",
+                -150.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "*",
+                10_000.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "/",
+                0.25,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "%",
+                50.0,
+                vec![("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+                vec![("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
+            ),
+            (
+                "^",
+                8.0,
+                vec![("host-a", 1.0), ("host-b", 2.0), ("host-c", 0.0)],
+                vec![("host-a", 1.0), ("host-b", 3.0), ("host-c", 2.0)],
+            ),
+        ] {
+            let engine = build_range_two_topk_engine(
+                "topk(2, metric_a)",
+                "topk(2, metric_b)",
+                &candidates_a,
+                &candidates_b,
+            );
+            let query = format!("topk(2, metric_a) {op} topk(2, metric_b)");
+            let (_, qr) = engine
+                .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+                .unwrap_or_else(|| panic!("Expected result for operator {op}"));
+            let elements = matrix_values(qr);
+
+            assert_eq!(elements.len(), 1, "operator {op}");
+            assert_eq!(elements[0].labels.labels, vec!["host-b".to_string()]);
+            assert_eq!(elements[0].samples.len(), 1, "operator {op}");
+            assert!(
+                (elements[0].samples[0].value - expected).abs() < 1e-10,
+                "operator {op}: expected {expected}, got {}",
+                elements[0].samples[0].value
+            );
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_preserves_matching_for_power() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 2.0), ("host-b", 1.0)],
+            &[("host-a", 3.0), ("host-b", 1.0)],
+        );
+
+        let (_, qr) = engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) ^ topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .expect("Expected result for power operator");
+        let elements = matrix_values(qr);
+        let values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| (element.labels.labels[0].clone(), element.samples[0].value))
+            .collect();
+
+        assert_eq!(values.get("host-a"), Some(&8.0));
+        assert_eq!(values.get("host-b"), Some(&1.0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_join_with_no_matches_returns_empty_vector() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-c", 300.0), ("host-d", 200.0)],
+        );
+
+        let result =
+            engine.handle_query_promql("topk(2, metric_a) + topk(2, metric_b)".to_string(), 1.0);
+        let (_, qr) = result.expect("valid no-match join should return an empty vector");
+        let elements = match qr {
+            QueryResult::Vector(vector) => vector.values,
+            other => panic!("Expected instant vector result, got {other:?}"),
+        };
+        assert!(elements.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_join_with_no_matches_returns_empty_matrix() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-c", 300.0), ("host-d", 200.0)],
+        );
+
+        let result = engine.handle_range_query_promql(
+            "topk(2, metric_a) + topk(2, metric_b)".to_string(),
+            1.0,
+            2.0,
+            1.0,
+        );
+        let (_, qr) = result.expect("valid no-match join should return an empty matrix");
+        assert!(matrix_values(qr).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_scalar_arithmetic_drops_metric_name() {
+        let engine = build_range_topk_plus_plain_engine(
+            "topk(2, metric_a)",
+            "sum(metric_b) by (host)",
+            &[("host-a", 100.0), ("host-b", 50.0), ("host-c", 10.0)],
+            &[],
+        );
+
+        let (_, qr) = engine
+            .handle_range_query_promql("topk(2, metric_a) + 2".to_string(), 1.0, 2.0, 1.0)
+            .expect("Expected result for range topk/scalar query");
+        let elements = matrix_values(qr);
+
+        assert_eq!(elements.len(), 2);
+        let values: HashMap<String, f64> = elements
+            .into_iter()
+            .map(|element| {
+                assert_eq!(element.labels.labels.len(), 1);
+                assert_eq!(element.samples.len(), 1);
+                (element.labels.labels[0].clone(), element.samples[0].value)
+            })
+            .collect();
+        assert_eq!(values.get("host-a"), Some(&102.0));
+        assert_eq!(values.get("host-b"), Some(&52.0));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_comparison_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql("topk(2, metric_a) == topk(2, metric_b)".to_string(), 1.0,)
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_comparison_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) == topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nested_topk_binary_comparison_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql(
+                "(topk(2, metric_a) == topk(2, metric_b)) + topk(2, metric_a)".to_string(),
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn instant_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql(
+                "topk(2, metric_a) + on(__name__) topk(2, metric_b)".to_string(),
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn range_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) + on(__name__) topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn nested_topk_binary_matching_modifier_falls_back_to_prometheus() {
+        let engine = build_range_two_topk_engine(
+            "topk(2, metric_a)",
+            "topk(2, metric_b)",
+            &[("host-a", 100.0), ("host-b", 50.0)],
+            &[("host-a", 5.0), ("host-b", 200.0)],
+        );
+
+        assert!(engine
+            .handle_query_promql(
+                "(topk(2, metric_a) + on(__name__) topk(2, metric_b)) + topk(2, metric_a)"
+                    .to_string(),
+                1.0,
+            )
+            .is_none());
     }
 }

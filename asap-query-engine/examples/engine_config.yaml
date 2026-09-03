@@ -36,6 +36,8 @@ http_server:
 backend:
   type: "prometheus"
   server: "http://localhost:9090"         # used for forwarding and planner context
+  # Backend-only startup health check; ASAPQuery keeps /api/v1/status/runtimeinfo.
+  health_endpoint: "/-/ready"
   forward_unsupported_queries: false      # when true, server must be reachable at startup
 
 # ClickHouse — exposes an SQL-over-HTTP API.

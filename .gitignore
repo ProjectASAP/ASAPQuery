@@ -2,14 +2,11 @@ target/
 experiment_outputs/
 asap-quickstart/bin/
 
-# Runtime and generated files
-metadata/
-preprocessed_configs/
-status
-uuid
-store/
 # roborev snapshots
 /.roborev/
 
 # Differential test output
 promql-compliance/runner/differential-report.json
+/.agent/
+
+/**/*.log

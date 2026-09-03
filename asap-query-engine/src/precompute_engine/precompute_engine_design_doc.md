@@ -13,7 +13,7 @@ and VictoriaMetrics remote write), buffers them, computes windowed aggregations
 - Watermark-based windowed aggregation (tumbling and sliding windows)
 - Shared-nothing worker design: series are hash-partitioned across threads with no cross-worker coordination
 - Pluggable accumulator types (Sum, Min/Max, Increase, KLL, CMS, HydraKLL)
-- Configurable late-data handling (Drop or ForwardToStore)
+- Configurable late-data handling (Drop or ForwardToStore for supported aggregators)
 - Optional raw passthrough mode for bypassing aggregation
 
 ## 2. Architecture
@@ -100,7 +100,7 @@ Late data handling:
                               │
                Watermark W=8 ─┘
                t=3 < W - allowed_lateness(2) = 6?
-               3 < 6 → YES, late → DROP (or ForwardToStore)
+               3 < 6 → YES, late → DROP (or ForwardToStore for supported aggregators)
 ```
 
 ### Cross-group watermark propagation
@@ -205,7 +205,7 @@ pub struct PrecomputeEngineConfig {
 
 pub enum LateDataPolicy {
     Drop,            // Silently discard late samples for closed windows
-    ForwardToStore,  // Emit a mini-accumulator for query-time merge
+    ForwardToStore,  // Emit a mini-accumulator for query-time merge (not DeltaSetAggregator)
 }
 ```
 
@@ -396,7 +396,7 @@ from `active_panes`. Remaining panes are read non-destructively via
    a. Compute pane_start = pane_start_for(ts)
    b. If pane was evicted (late data for closed window):
       → late_data_policy == Drop:           skip
-      → late_data_policy == ForwardToStore:  create mini-accumulator, emit
+      → late_data_policy == ForwardToStore:  create mini-accumulator, emit (except DeltaSetAggregator, which drops)
    c. Else: get-or-create pane in active_panes, feed value (1 update per sample)
 5. Detect newly closed windows via closed_windows(prev_wm, current_wm)
 6. For each closed window:
@@ -585,7 +585,7 @@ Workers have independent watermarks. For a standard Prometheus scrape (all insta
 
 For staggered multi-source producers arriving at different times, the incompleteness window is bounded by the spread of producer arrival times. In both cases the result is **eventually consistent**: once all contributing workers have emitted, the store holds a complete set of accumulators and queries return the correct merged value.
 
-This deferred-merge design is intentional — it preserves the shared-nothing worker architecture with zero ingest-time cross-worker coordination. The store's append-multiple-per-window design and the query-time merge handle the fan-in correctly for both cross-series aggregation and `ForwardToStore` late data.
+This deferred-merge design is intentional — it preserves the shared-nothing worker architecture with zero ingest-time cross-worker coordination. The store's append-multiple-per-window design and the query-time merge handle the fan-in correctly for both cross-series aggregation and supported `ForwardToStore` late data.
 
 ### Sliding windows with cross-worker GROUP BY
 
@@ -795,12 +795,18 @@ When `LateDataPolicy::ForwardToStore` is active and a late sample falls into an
 already-closed (and potentially already-merged) window, the first-tier worker
 emits a `PartialWindowAggregate` for that window as it does today.
 
+This policy is not supported for `DeltaSetAggregator`. Its output is a
+stateful difference between consecutive key populations, so an independent
+late mini-accumulator cannot be appended safely. The worker drops such late
+samples and logs a warning.
+
 The merge tier treats these late partials as **store appends**, not as
 corrections to a finalized canonical entry. The canonical merged output written
 at finalization time remains unchanged. The store accumulates the late partial
 alongside it, and query-time `SummaryMergeMultipleExec` merges them on read.
 
-This is consistent with the existing `ForwardToStore` semantics and avoids the
+For supported aggregation types, this is consistent with the existing
+`ForwardToStore` semantics and avoids the
 need to read-modify-write a finalized store entry. The benefit of the merge tier
 (one canonical output per window) applies only to on-time data; late corrections
 fall back to the same append + query-time-merge path as the non-merge-tier
@@ -921,7 +927,8 @@ With the merge tier enabled for an aggregation:
 This removes the current ambiguity where the store can return multiple exact
 matches for one logical output window and the query layer must decide whether
 to merge or pick one. Late corrections (via `ForwardToStore`) continue to use
-query-time merge for their incremental updates.
+query-time merge for their incremental updates. `DeltaSetAggregator` is the
+exception: late samples are dropped rather than forwarded.
 
 #### Why a separate merge worker is preferable to routing by grouping key
 
@@ -1054,8 +1061,9 @@ struct StoreKeyData {
 ```
 
 Multiple entries per `(start_ts, end_ts)` are allowed — they are appended, not
-overwritten. This is what makes `ForwardToStore` late-data policy work: the late
-mini-accumulator is stored alongside the original window accumulator.
+overwritten. This is what makes the supported `ForwardToStore` late-data policy
+work: the late mini-accumulator is stored alongside the original window
+accumulator. `DeltaSetAggregator` does not use this path.
 
 ### Read path / query-time merge
 
@@ -1091,10 +1099,12 @@ For case 2, the `LateDataPolicy` controls behavior:
 - **Drop**: log at debug level and skip. No ghost accumulator is created
   (fixing the original bug where `or_insert_with` would create orphaned entries).
 
-- **ForwardToStore**: create a fresh `AccumulatorUpdater`, feed the single
-  late sample, wrap as `PrecomputedOutput`, and push into the same `emit_batch`
-  as normal closed-window outputs. The store appends it alongside the original
-  window data, and query-time merge combines them.
+- **ForwardToStore** (except `DeltaSetAggregator`): create a fresh
+  `AccumulatorUpdater`, feed the single late sample, wrap as `PrecomputedOutput`,
+  and push into the same `emit_batch` as normal closed-window outputs. The store
+  appends it alongside the original window data, and query-time merge combines
+  them. `DeltaSetAggregator` drops the sample because an append-only correction
+  cannot preserve stateful deltas.
 
 ## 8. Concurrency Model
 
@@ -1176,6 +1186,7 @@ store with the Kafka consumer path.
   | `test_groupby_separate_emits_per_series` | Two series (`host=A`, `host=B`) on same worker -> 2 independent `MultipleSumAccumulator` emits (no ingest-time cross-series merge) |
   | `test_late_data_drop` | Sample behind `watermark - allowed_lateness_ms` with `Drop` policy -> 0 emits |
   | `test_late_data_forward_to_store` | Late sample for evicted pane with `ForwardToStore` -> 1 emit as mini-accumulator with correct window bounds and sum |
+  | `test_late_data_forward_to_store_drops_delta_set_aggregator` | Late sample for evicted `DeltaSetAggregator` pane with `ForwardToStore` -> 0 emits |
 
 - **Unit tests -- other modules**: `window_manager.rs` (tumbling/sliding arithmetic, pane enumeration, closure detection), `series_buffer.rs` (ordering, watermark), `accumulator_factory.rs` (updater creation and reset), `series_router.rs` (consistent hash routing), `config.rs` (defaults).
 

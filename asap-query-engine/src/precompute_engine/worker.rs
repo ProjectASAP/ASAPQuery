@@ -1,4 +1,4 @@
-use crate::data_model::{AggregateCore, KeyByLabelValues, PrecomputedOutput};
+use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, PrecomputedOutput};
 use crate::precompute_engine::accumulator_factory::{
     create_accumulator_updater, AccumulatorUpdater,
 };
@@ -6,9 +6,10 @@ use crate::precompute_engine::config::LateDataPolicy;
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::WindowManager;
+use crate::precompute_operators::delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -25,6 +26,11 @@ struct GroupState {
     window_manager: WindowManager,
     /// Active panes keyed by pane_start_ms.
     active_panes: BTreeMap<i64, Box<dyn AccumulatorUpdater>>,
+    /// Key population emitted by the previous non-empty DeltaSetAggregator
+    /// window for this (aggregation_id, group_key). DeltaSetAggregator outputs
+    /// are differences between consecutive window populations, so this state
+    /// must live at group scope rather than inside a single pane updater.
+    delta_set_previous_keys: HashSet<KeyByLabelValues>,
     /// Per-group watermark: tracks the maximum timestamp seen across all
     /// series in this group on this worker.
     previous_watermark_ms: i64,
@@ -260,7 +266,7 @@ impl Worker {
                                 continue;
                             };
 
-                            for (group_key_str, state) in inner {
+                            for (group_key_str, mut state) in inner {
                                 if state.previous_watermark_ms == i64::MIN {
                                     continue; // No samples received — nothing to emit.
                                 }
@@ -290,6 +296,21 @@ impl Worker {
                                     if let Some(accumulator) =
                                         merge_panes_for_window(&mut active_panes, &pane_starts)
                                     {
+                                        let accumulator = match finalize_closed_accumulator(
+                                            accumulator,
+                                            &state.config,
+                                            &mut state.delta_set_previous_keys,
+                                        ) {
+                                            Ok(accumulator) => accumulator,
+                                            Err(e) => {
+                                                warn!(
+                                                    "Worker {}: failed to finalize DeltaSetAggregator \
+                                                     for removed agg_id={}: {}",
+                                                    self.id, agg_id, e
+                                                );
+                                                continue;
+                                            }
+                                        };
                                         let group_key_lv =
                                             build_group_key_label_values(&group_key_str);
                                         let output = PrecomputedOutput::new(
@@ -366,6 +387,7 @@ impl Worker {
                 window_manager: WindowManager::new(config.window_size_ms, config.slide_interval_ms),
                 config,
                 active_panes: BTreeMap::new(),
+                delta_set_previous_keys: HashSet::new(),
                 previous_watermark_ms: i64::MIN,
                 pane_wall_clock_last_touch_ms: BTreeMap::new(),
             };
@@ -413,9 +435,22 @@ impl Worker {
             .map(|(_, ts, _)| *ts)
             .max()
             .unwrap_or(i64::MIN);
+        let batch_min_ts = samples
+            .iter()
+            .map(|(_, ts, _)| *ts)
+            .min()
+            .unwrap_or(batch_max_ts);
         let previous_wm = state.previous_watermark_ms;
         let current_wm = if batch_max_ts > previous_wm {
             batch_max_ts
+        } else {
+            previous_wm
+        };
+        // On the first batch there is no prior watermark. Use the earliest
+        // sample as the closure baseline so a batch spanning multiple windows
+        // can close windows older than that sample after all samples are routed.
+        let closure_previous_wm = if previous_wm == i64::MIN {
+            batch_min_ts
         } else {
             previous_wm
         };
@@ -438,7 +473,7 @@ impl Worker {
 
             // Check if pane was already evicted (late data for a closed window)
             if !state.active_panes.contains_key(&pane_start)
-                && current_wm >= pane_start + state.window_manager.window_size_ms()
+                && previous_wm >= pane_start + state.window_manager.window_size_ms()
             {
                 let window_start = pane_start;
                 let window_end = pane_start + state.window_manager.window_size_ms();
@@ -447,6 +482,16 @@ impl Worker {
                         debug!(
                             "Dropping late sample for evicted pane [{}, {})",
                             pane_start, pane_end
+                        );
+                        continue;
+                    }
+                    LateDataPolicy::ForwardToStore
+                        if state.config.aggregation_type == AggregationType::DeltaSetAggregator =>
+                    {
+                        warn!(
+                            "Dropping late DeltaSetAggregator sample for evicted pane [{}, {}): ForwardToStore is unsupported for stateful key deltas",
+                            pane_start,
+                            pane_end
                         );
                         continue;
                     }
@@ -491,7 +536,9 @@ impl Worker {
         }
 
         // Check for closed windows
-        let closed = state.window_manager.closed_windows(previous_wm, current_wm);
+        let closed = state
+            .window_manager
+            .closed_windows(closure_previous_wm, current_wm);
 
         for window_start in &closed {
             let (_, window_end) = state.window_manager.window_bounds(*window_start);
@@ -499,6 +546,11 @@ impl Worker {
 
             if let Some(accumulator) = merge_panes_for_window(&mut state.active_panes, &pane_starts)
             {
+                let accumulator = finalize_closed_accumulator(
+                    accumulator,
+                    &state.config,
+                    &mut state.delta_set_previous_keys,
+                )?;
                 let key = build_group_key_label_values(group_key);
                 let output = PrecomputedOutput::new(
                     *window_start as u64,
@@ -644,6 +696,11 @@ impl Worker {
                     if let Some(accumulator) =
                         merge_panes_for_window(&mut state.active_panes, &pane_starts)
                     {
+                        let accumulator = finalize_closed_accumulator(
+                            accumulator,
+                            &state.config,
+                            &mut state.delta_set_previous_keys,
+                        )?;
                         let key = build_group_key_label_values(group_key);
                         let output = PrecomputedOutput::new(
                             *window_start as u64,
@@ -728,6 +785,11 @@ impl Worker {
                     if let Some(accumulator) =
                         merge_panes_for_window(&mut state.active_panes, &pane_starts)
                     {
+                        let accumulator = finalize_closed_accumulator(
+                            accumulator,
+                            &state.config,
+                            &mut state.delta_set_previous_keys,
+                        )?;
                         let key = build_group_key_label_values(group_key);
                         let output = PrecomputedOutput::new(
                             *window_start as u64,
@@ -1036,6 +1098,52 @@ fn merge_panes_for_window(
     merged
 }
 
+/// Convert a closed DeltaSetAggregator population into the stateful delta
+/// format used by the Arroyo implementation: keys newly present in this
+/// window go in `added`, and keys absent from this window go in `removed`.
+///
+/// The updater can only collect the current window's observed keys. The
+/// previous population therefore belongs to `GroupState`, which survives the
+/// per-pane updater lifecycle and is isolated for each `(agg_id, group_key)`.
+fn finalize_closed_accumulator(
+    accumulator: Box<dyn AggregateCore>,
+    config: &AggregationConfig,
+    previous_delta_set_keys: &mut HashSet<KeyByLabelValues>,
+) -> Result<Box<dyn AggregateCore>, Box<dyn std::error::Error + Send + Sync>> {
+    if config.aggregation_type != AggregationType::DeltaSetAggregator {
+        return Ok(accumulator);
+    }
+
+    let delta = accumulator
+        .as_any()
+        .downcast_ref::<DeltaSetAggregatorAccumulator>()
+        .ok_or_else(|| {
+            format!(
+                "DeltaSetAggregator config produced {} instead of DeltaSetAggregatorAccumulator",
+                accumulator.type_name()
+            )
+        })?;
+    let current_keys: HashSet<KeyByLabelValues> = delta
+        .get_keys()
+        .ok_or("DeltaSetAggregator accumulator could not resolve its current keys")?
+        .into_iter()
+        .collect();
+
+    let added = current_keys
+        .difference(previous_delta_set_keys)
+        .cloned()
+        .collect();
+    let removed = previous_delta_set_keys
+        .difference(&current_keys)
+        .cloned()
+        .collect();
+    *previous_delta_set_keys = current_keys;
+
+    Ok(Box::new(DeltaSetAggregatorAccumulator::new_with_sets(
+        added, removed,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1240,8 +1348,10 @@ mod tests {
     use crate::precompute_engine::config::LateDataPolicy;
     use crate::precompute_engine::output_sink::CapturingOutputSink;
     use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
+    use crate::precompute_operators::delta_set_aggregator_accumulator::DeltaSetAggregatorAccumulator;
     use crate::precompute_operators::multiple_sum_accumulator::MultipleSumAccumulator;
     use crate::precompute_operators::sum_accumulator::SumAccumulator;
+    use crate::precompute_operators::CountMinSketchAccumulator;
     use asap_sketchlib::KllSketch;
     use asap_types::enums::{AggregationType, WindowType};
 
@@ -1349,6 +1459,66 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn test_count_min_sketch_count_subtype_counts_events_through_worker() {
+        let mut config = make_agg_config_full(
+            6,
+            "requests_total",
+            AggregationType::CountMinSketch,
+            "count",
+            1_000,
+            1_000,
+            vec![],
+            vec!["host"],
+        );
+        config
+            .parameters
+            .insert("depth".to_string(), serde_json::json!(3_u64));
+        config
+            .parameters
+            .insert("width".to_string(), serde_json::json!(128_u64));
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(HashMap::from([(6, config)])),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        worker
+            .process_group_samples(
+                6,
+                "",
+                vec![
+                    ("requests_total{host=\"A\"}".to_string(), 100, 100.0),
+                    ("requests_total{host=\"A\"}".to_string(), 200, 200.0),
+                ],
+            )
+            .unwrap();
+
+        worker
+            .process_group_samples(
+                6,
+                "",
+                group_samples("requests_total{host=\"A\"}", vec![(5_000, 1.0)]),
+            )
+            .unwrap();
+
+        let captured = sink.drain();
+        let (_output, acc) = captured
+            .iter()
+            .find(|(output, _)| output.start_timestamp == 0)
+            .expect("worker should emit the closed [0, 1000) window");
+        let cms = acc
+            .as_any()
+            .downcast_ref::<CountMinSketchAccumulator>()
+            .expect("worker should emit a CountMinSketch accumulator");
+        let key = KeyByLabelValues::new_with_labels(vec!["A".to_string()]);
+        assert_eq!(cms.query_key(&key), 2.0);
+    }
+
     // -----------------------------------------------------------------------
     // Test: raw mode — each sample forwarded as SumAccumulator with sum==value
     // -----------------------------------------------------------------------
@@ -1444,6 +1614,73 @@ mod tests {
             "sum should be 1+2+3=6, got {}",
             sum_acc.sum
         );
+    }
+
+    #[test]
+    fn test_delta_set_aggregator_emits_changes_relative_to_previous_window() {
+        // Regression for the stateful DeltaSetAggregator contract: each
+        // non-empty window emits keys added to or removed from the previous
+        // window, matching asap-summary-ingest's Arroyo UDAF.
+        let config = make_agg_config_full(
+            2,
+            "cpu",
+            AggregationType::DeltaSetAggregator,
+            "",
+            1_000,
+            1_000,
+            vec![],
+            vec!["host"],
+        );
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(2, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        worker
+            .process_group_samples(2, "", vec![("cpu{host=\"a\"}".to_string(), 100, 1.0)])
+            .unwrap();
+        worker
+            .process_group_samples(2, "", vec![("cpu{host=\"b\"}".to_string(), 1_000, 1.0)])
+            .unwrap();
+
+        let first_window = sink
+            .drain()
+            .into_iter()
+            .find(|(output, _)| output.start_timestamp == 0)
+            .expect("first DeltaSetAggregator window should be emitted");
+        let first_delta = first_window
+            .1
+            .as_any()
+            .downcast_ref::<DeltaSetAggregatorAccumulator>()
+            .expect("first output should be DeltaSetAggregatorAccumulator");
+        let key_a = KeyByLabelValues::new_with_labels(vec!["a".to_string()]);
+        assert!(first_delta.added.contains(&key_a));
+        assert!(first_delta.removed.is_empty());
+
+        worker
+            .process_group_samples(2, "", vec![("cpu{host=\"b\"}".to_string(), 2_000, 1.0)])
+            .unwrap();
+
+        let second_window = sink
+            .drain()
+            .into_iter()
+            .find(|(output, _)| output.start_timestamp == 1_000)
+            .expect("second DeltaSetAggregator window should be emitted");
+        let second_delta = second_window
+            .1
+            .as_any()
+            .downcast_ref::<DeltaSetAggregatorAccumulator>()
+            .expect("second output should be DeltaSetAggregatorAccumulator");
+        let key_b = KeyByLabelValues::new_with_labels(vec!["b".to_string()]);
+        assert!(second_delta.added.contains(&key_b));
+        assert!(second_delta.removed.contains(&key_a));
     }
 
     // -----------------------------------------------------------------------
@@ -2310,6 +2547,116 @@ mod tests {
             (sum_acc.sum - 55.0).abs() < 1e-10,
             "late sample sum should be 55.0, got {}",
             sum_acc.sum
+        );
+    }
+
+    #[test]
+    fn test_late_data_forward_to_store_drops_delta_set_aggregator() {
+        let config = make_agg_config_full(
+            6,
+            "cpu",
+            AggregationType::DeltaSetAggregator,
+            "",
+            10_000,
+            0,
+            vec![],
+            vec!["host"],
+        );
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(6, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let (_tx, rx) = tokio::sync::mpsc::channel(1);
+        let wm = Arc::new(AtomicI64::new(i64::MIN));
+        let mut worker = Worker::new(
+            0,
+            rx,
+            sink.clone(),
+            arc_configs(agg_configs),
+            WorkerRuntimeConfig {
+                max_buffer_per_series: 10_000,
+                allowed_lateness_ms: 15_000,
+                pass_raw_samples: false,
+                raw_mode_aggregation_id: 0,
+                late_data_policy: LateDataPolicy::ForwardToStore,
+                wall_clock_grace_period_ms: 0,
+            },
+            Arc::new(AtomicUsize::new(0)),
+            wm.clone(),
+            vec![wm],
+        );
+
+        worker
+            .process_group_samples(6, "", group_samples("cpu{host=\"a\"}", vec![(500, 1.0)]))
+            .unwrap();
+        worker
+            .process_group_samples(6, "", group_samples("cpu{host=\"a\"}", vec![(20_000, 0.0)]))
+            .unwrap();
+        let _ = sink.drain();
+
+        worker
+            .process_group_samples(6, "", group_samples("cpu{host=\"b\"}", vec![(8_000, 55.0)]))
+            .unwrap();
+
+        assert_eq!(
+            sink.len(),
+            0,
+            "ForwardToStore must drop late DeltaSetAggregator samples"
+        );
+    }
+
+    #[test]
+    fn test_delta_set_aggregator_keeps_on_time_samples_in_first_multi_window_batch() {
+        let config = make_agg_config_full(
+            7,
+            "cpu",
+            AggregationType::DeltaSetAggregator,
+            "",
+            10_000,
+            0,
+            vec![],
+            vec!["host"],
+        );
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(7, config);
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(agg_configs),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::ForwardToStore,
+        );
+
+        worker
+            .process_group_samples(
+                7,
+                "",
+                vec![
+                    ("cpu{host=\"a\"}".to_string(), 500, 1.0),
+                    ("cpu{host=\"b\"}".to_string(), 20_000, 1.0),
+                ],
+            )
+            .unwrap();
+        worker
+            .process_group_samples(7, "", vec![("cpu{host=\"b\"}".to_string(), 30_000, 1.0)])
+            .unwrap();
+
+        let first_window = sink
+            .drain()
+            .into_iter()
+            .find(|(output, _)| output.start_timestamp == 0)
+            .expect("first DeltaSetAggregator window should be emitted");
+        let first_delta = first_window
+            .1
+            .as_any()
+            .downcast_ref::<DeltaSetAggregatorAccumulator>()
+            .expect("first output should be DeltaSetAggregatorAccumulator");
+        let key_a = KeyByLabelValues::new_with_labels(vec!["a".to_string()]);
+        assert!(
+            first_delta.added.contains(&key_a),
+            "on-time key in the first batch must not be treated as late"
         );
     }
 

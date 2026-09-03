@@ -1,4 +1,7 @@
 use asap_types::enums::WindowType;
+use std::fmt;
+
+use crate::config::input::{WindowingConfig, WindowingType};
 
 pub fn get_effective_repeat(t_repeat_ms: u64, step_ms: u64) -> u64 {
     if step_ms > 0 {
@@ -44,6 +47,7 @@ pub fn set_window_parameters(
     data_ingestion_interval_ms: u64,
     step_ms: u64,
     config: &mut IntermediateWindowConfig,
+    validate_step_alignment: bool,
 ) -> Result<(), String> {
     if t_repeat_ms < data_ingestion_interval_ms {
         return Err(format!(
@@ -76,7 +80,7 @@ pub fn set_window_parameters(
     // Catch a window size incompatible with its own planning-time step_ms
     // here, at planning time, instead of provisioning a window that would
     // reject every range query using exactly the step_ms it was planned for.
-    if step_ms > 0 && !step_ms.is_multiple_of(window_size_ms) {
+    if validate_step_alignment && step_ms > 0 && !step_ms.is_multiple_of(window_size_ms) {
         return Err(format!(
             "step_ms ({step_ms}ms) must be a multiple of the computed window size ({window_size_ms}ms)"
         ));
@@ -87,6 +91,114 @@ pub fn set_window_parameters(
     config.window_type = WindowType::Tumbling;
     Ok(())
 }
+
+pub fn apply_windowing_override(
+    config: &mut IntermediateWindowConfig,
+    data_range_ms: u64,
+    step_ms: u64,
+    windowing: Option<&WindowingConfig>,
+) -> Result<(), WindowingError> {
+    let Some(windowing) = windowing else {
+        return Ok(());
+    };
+    windowing
+        .validate()
+        .map_err(WindowingError::InvalidConfig)?;
+
+    if !data_range_ms.is_multiple_of(windowing.window_size_ms) {
+        return Err(WindowingError::DataRangeNotDivisible {
+            data_range_ms,
+            window_size_ms: windowing.window_size_ms,
+        });
+    }
+
+    match windowing.window_type {
+        WindowingType::Tumbling => {
+            config.window_type = WindowType::Tumbling;
+            config.window_size_ms = windowing.window_size_ms;
+            config.slide_interval_ms = config.window_size_ms;
+        }
+        WindowingType::Sliding => {
+            let slide_interval_ms = match windowing.slide_interval_ms {
+                Some(slide_interval_ms) => slide_interval_ms,
+                None => {
+                    return Err(WindowingError::InvalidConfig(
+                        "windowing.slide_interval_ms is required for sliding windows".to_string(),
+                    ));
+                }
+            };
+            config.window_size_ms = windowing.window_size_ms;
+            if !config.window_size_ms.is_multiple_of(slide_interval_ms) {
+                return Err(WindowingError::WindowSizeNotDivisible {
+                    window_size_ms: config.window_size_ms,
+                    slide_interval_ms,
+                });
+            }
+            config.window_type = WindowType::Sliding;
+            config.slide_interval_ms = slide_interval_ms;
+        }
+    }
+
+    let grid_interval_ms = match config.window_type {
+        WindowType::Tumbling => config.window_size_ms,
+        WindowType::Sliding => config.slide_interval_ms,
+    };
+    if step_ms > 0 && !step_ms.is_multiple_of(grid_interval_ms) {
+        return Err(WindowingError::StepNotDivisible {
+            step_ms,
+            grid_interval_ms,
+        });
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WindowingError {
+    InvalidConfig(String),
+    WindowSizeNotDivisible {
+        window_size_ms: u64,
+        slide_interval_ms: u64,
+    },
+    DataRangeNotDivisible {
+        data_range_ms: u64,
+        window_size_ms: u64,
+    },
+    StepNotDivisible {
+        step_ms: u64,
+        grid_interval_ms: u64,
+    },
+}
+
+impl fmt::Display for WindowingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfig(message) => f.write_str(message),
+            Self::WindowSizeNotDivisible {
+                window_size_ms,
+                slide_interval_ms,
+            } => write!(
+                f,
+                "windowing.window_size_ms ({window_size_ms}) must be evenly divisible by windowing.slide_interval_ms ({slide_interval_ms})"
+            ),
+            Self::DataRangeNotDivisible {
+                data_range_ms,
+                window_size_ms,
+            } => write!(
+                f,
+                "data_range_ms ({data_range_ms}) must be evenly divisible by window_size_ms ({window_size_ms})"
+            ),
+            Self::StepNotDivisible {
+                step_ms,
+                grid_interval_ms,
+            } => write!(
+                f,
+                "step_ms ({step_ms}) must be evenly divisible by final window grid interval ({grid_interval_ms})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WindowingError {}
 
 /// A mutable window config holder used during planning
 #[derive(Debug, Clone, Default)]
@@ -118,7 +230,7 @@ mod tests {
     #[test]
     fn set_window_parameters_temporal_shape() {
         let mut config = IntermediateWindowConfig::default();
-        set_window_parameters(300_000, 60_000, 15_000, 0, &mut config).unwrap();
+        set_window_parameters(300_000, 60_000, 15_000, 0, &mut config, true).unwrap();
         assert_eq!(config.window_size_ms, 60_000);
         assert_eq!(config.slide_interval_ms, 60_000);
         assert_eq!(config.window_type, WindowType::Tumbling);
@@ -129,7 +241,7 @@ mod tests {
         // data_range_ms == data_ingestion_interval_ms (spatial-only query),
         // t_repeat_ms also equal to the interval: unaffected by the relaxation.
         let mut config = IntermediateWindowConfig::default();
-        set_window_parameters(15_000, 15_000, 15_000, 0, &mut config).unwrap();
+        set_window_parameters(15_000, 15_000, 15_000, 0, &mut config, true).unwrap();
         assert_eq!(config.window_size_ms, 15_000);
     }
 
@@ -141,26 +253,26 @@ mod tests {
         // any cadence gives the latest available answer. window_size stays
         // exactly one interval regardless of t_repeat_ms.
         let mut config = IntermediateWindowConfig::default();
-        set_window_parameters(15_000, 60_000, 15_000, 0, &mut config).unwrap();
+        set_window_parameters(15_000, 60_000, 15_000, 0, &mut config, true).unwrap();
         assert_eq!(config.window_size_ms, 15_000);
     }
 
     #[test]
     fn set_window_parameters_rejects_t_repeat_below_interval() {
         let mut config = IntermediateWindowConfig::default();
-        assert!(set_window_parameters(300_000, 10_000, 15_000, 0, &mut config).is_err());
+        assert!(set_window_parameters(300_000, 10_000, 15_000, 0, &mut config, true).is_err());
     }
 
     #[test]
     fn set_window_parameters_rejects_data_range_below_t_repeat() {
         let mut config = IntermediateWindowConfig::default();
-        assert!(set_window_parameters(30_000, 60_000, 15_000, 0, &mut config).is_err());
+        assert!(set_window_parameters(30_000, 60_000, 15_000, 0, &mut config, true).is_err());
     }
 
     #[test]
     fn set_window_parameters_rejects_step_below_interval() {
         let mut config = IntermediateWindowConfig::default();
-        assert!(set_window_parameters(300_000, 60_000, 15_000, 10_000, &mut config).is_err());
+        assert!(set_window_parameters(300_000, 60_000, 15_000, 10_000, &mut config, true).is_err());
     }
 
     #[test]
@@ -171,8 +283,32 @@ mod tests {
         // otherwise provision a window that query-engine's
         // validate_range_query_params rejects for exactly this step_ms.
         let mut config = IntermediateWindowConfig::default();
-        let result = set_window_parameters(300_000, 40_000, 10_000, 100_000, &mut config);
+        let result = set_window_parameters(300_000, 40_000, 10_000, 100_000, &mut config, true);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("must be a multiple of"));
+    }
+
+    #[test]
+    fn sliding_override_rejects_data_range_not_multiple_of_window_size() {
+        let mut config = IntermediateWindowConfig {
+            window_size_ms: 60_000,
+            slide_interval_ms: 60_000,
+            window_type: WindowType::Tumbling,
+        };
+        let windowing = WindowingConfig {
+            window_type: WindowingType::Sliding,
+            window_size_ms: 60_000,
+            slide_interval_ms: Some(15_000),
+        };
+
+        let error = apply_windowing_override(&mut config, 90_000, 0, Some(&windowing)).unwrap_err();
+
+        assert_eq!(
+            error,
+            WindowingError::DataRangeNotDivisible {
+                data_range_ms: 90_000,
+                window_size_ms: 60_000,
+            }
+        );
     }
 }
