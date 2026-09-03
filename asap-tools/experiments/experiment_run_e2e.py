@@ -321,9 +321,6 @@ def main(cfg: DictConfig):
 
         # copy_controller_client_config(args.controller_client_config, local_experiment_dir)
         if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-            # The controller queries Prometheus to auto-infer metric labels, so
-            # exporters and Prometheus must be up and have at least one scrape
-            # worth of data before the controller runs.
             if config.check_exporter_and_queries_exist(
                 "fake_exporter", cfg.experiment_params
             ):
@@ -342,27 +339,34 @@ def main(cfg: DictConfig):
             # its process starts, so a fixed sleep alone can race.
             prometheus_service.wait_until_ready()
 
-            # Wait for two scrape intervals so Prometheus has series to return.
-            label_discovery_wait_ms = data_ingestion_interval_ms * 2
-            print(
-                f"Waiting {label_discovery_wait_ms / 1000}s for Prometheus to scrape initial data "
-                f"before running controller label inference..."
-            )
-            time.sleep(label_discovery_wait_ms / 1000)
+            # Config files already contain metric label hints. Only wait for
+            # scrape data when runtime label discovery has been explicitly
+            # enabled; otherwise the planner uses those hints directly.
+            discovery_backend = None
+            if args.controller_auto_discover_labels:
+                label_discovery_wait_ms = data_ingestion_interval_ms * 2
+                print(
+                    f"Waiting {label_discovery_wait_ms / 1000}s for Prometheus to scrape initial data "
+                    f"before running controller label inference..."
+                )
+                time.sleep(label_discovery_wait_ms / 1000)
+                discovery_backend = DiscoveryBackend(
+                    type="prometheus",
+                    url=f"http://localhost:{prometheus_service.get_query_endpoint_port()}",
+                    database=None,
+                )
+            else:
+                print(
+                    "Using metric labels from the controller config; "
+                    "Prometheus label discovery is disabled."
+                )
 
-            prometheus_url = (
-                f"http://localhost:{prometheus_service.get_query_endpoint_port()}"
-            )
             controller_service.start(
                 controller_input_file=controller_input_config,
                 streaming_engine=args.streaming_engine,
                 controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
                 punting=args.controller_punting,
-                discovery_backend=DiscoveryBackend(
-                    type="prometheus",
-                    url=prometheus_url,
-                    database=None,
-                ),
+                discovery_backend=discovery_backend,
                 data_ingestion_interval_ms=data_ingestion_interval_ms,
             )
             sync.rsync_controller_config_remote_to_local(

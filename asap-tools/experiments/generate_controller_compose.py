@@ -5,6 +5,7 @@ Helper script to generate docker-compose.yml for Controller from Jinja2 template
 import argparse
 import os
 import sys
+from typing import Optional
 from jinja2 import Template
 
 
@@ -18,7 +19,7 @@ def generate_compose_file(
     data_ingestion_interval_ms: int,
     streaming_engine: str,
     punting: bool,
-    prometheus_url: str,
+    prometheus_url: Optional[str],
     query_language: str,
 ):
     """Generate docker-compose.yml from template with provided variables."""
@@ -117,8 +118,8 @@ def main():
     )
     parser.add_argument(
         "--prometheus-url",
-        required=True,
-        help="Base URL of the Prometheus instance for metric label inference (e.g. http://localhost:9090)",
+        required=False,
+        help="Optional Prometheus URL for metric label inference (e.g. http://localhost:9090)",
     )
     parser.add_argument(
         "--query-language",

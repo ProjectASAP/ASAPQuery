@@ -205,7 +205,7 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
-        discovery_backend: DiscoveryBackend,
+        discovery_backend: Optional[DiscoveryBackend],
         data_ingestion_interval_ms: int,
         query_language: str = "promql",
         **kwargs,
@@ -218,7 +218,8 @@ class ControllerService(BaseService):
             streaming_engine: Type of streaming engine
             controller_remote_output_dir: Controller output directory
             punting: Enable query punting based on performance heuristics
-            discovery_backend: Backend used for label/column auto-discovery.
+            discovery_backend: Optional backend used for label/column auto-discovery.
+                When omitted, the planner uses schema hints from its input config.
                 PromQL mode: DiscoveryBackend(type="prometheus", url=<url>, database=None)
                 SQL mode:    DiscoveryBackend(type="clickhouse", url=<url>, database=<db>)
             data_ingestion_interval_ms: Data ingestion interval in milliseconds (required for all modes)
@@ -246,13 +247,27 @@ class ControllerService(BaseService):
                 query_language,
             )
 
+    @staticmethod
+    def _discovery_args(discovery_backend: Optional[DiscoveryBackend]) -> str:
+        """Return planner CLI arguments for an optional discovery backend."""
+        if discovery_backend is None:
+            return ""
+        if discovery_backend.type == "prometheus":
+            return f" --prometheus-url {discovery_backend.url}"
+        if discovery_backend.type == "clickhouse":
+            args = f" --clickhouse-url {discovery_backend.url}"
+            if discovery_backend.database:
+                args += f" --clickhouse-database {discovery_backend.database}"
+            return args
+        raise ValueError(f"Unsupported discovery backend: {discovery_backend.type}")
+
     def _start_bare_metal(
         self,
         controller_input_file: str,
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
-        discovery_backend: DiscoveryBackend,
+        discovery_backend: Optional[DiscoveryBackend],
         data_ingestion_interval_ms: int,
         query_language: str,
     ) -> None:
@@ -270,12 +285,7 @@ class ControllerService(BaseService):
             f" --query-language {query_language}"
         )
         cmd += f" --data-ingestion-interval-ms {data_ingestion_interval_ms}"
-        if discovery_backend.type == "prometheus":
-            cmd += f" --prometheus-url {discovery_backend.url}"
-        elif discovery_backend.type == "clickhouse":
-            cmd += f" --clickhouse-url {discovery_backend.url}"
-            if discovery_backend.database:
-                cmd += f" --clickhouse-database {discovery_backend.database}"
+        cmd += self._discovery_args(discovery_backend)
         if punting:
             cmd += " --enable-punting"
         cmd += " -v"
@@ -296,7 +306,7 @@ class ControllerService(BaseService):
         streaming_engine: str,
         controller_remote_output_dir: str,
         punting: bool,
-        discovery_backend: DiscoveryBackend,
+        discovery_backend: Optional[DiscoveryBackend],
         data_ingestion_interval_ms: int,
         query_language: str,
     ):
@@ -327,12 +337,7 @@ class ControllerService(BaseService):
         generate_cmd += f" --streaming-engine {streaming_engine}"
         generate_cmd += f" --query-language {query_language}"
         generate_cmd += f" --data-ingestion-interval-ms {data_ingestion_interval_ms}"
-        if discovery_backend.type == "prometheus":
-            generate_cmd += f" --prometheus-url {discovery_backend.url}"
-        elif discovery_backend.type == "clickhouse":
-            generate_cmd += f" --clickhouse-url {discovery_backend.url}"
-            if discovery_backend.database:
-                generate_cmd += f" --clickhouse-database {discovery_backend.database}"
+        generate_cmd += self._discovery_args(discovery_backend)
         if punting:
             generate_cmd += " --punting"
 
