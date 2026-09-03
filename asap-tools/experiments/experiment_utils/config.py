@@ -14,9 +14,6 @@ import constants
 from experiment_utils.providers.factory import create_provider
 
 
-DEFAULT_CLUSTER_DATA_SCRAPE_INTERVAL = "10s"
-
-
 def validate_basic_config(
     cfg: DictConfig,
     required_params: List[Tuple[str, str]],
@@ -527,9 +524,9 @@ def get_prometheus_data_ingestion_interval_ms(
         exporter_list = exporters.get("exporter_list", {})
         cluster_data_exporter = exporter_list.get("cluster_data_exporter")
         if cluster_data_exporter is not None:
-            s = cluster_data_exporter.get(
-                "scrape_interval", DEFAULT_CLUSTER_DATA_SCRAPE_INTERVAL
-            )
+            if "scrape_interval" not in cluster_data_exporter:
+                raise ValueError("cluster_data_exporter requires 'scrape_interval'")
+            s = cluster_data_exporter["scrape_interval"]
 
     # ponytail: check ms before s — "100ms".endswith("s") is True and would misroute
     if s.endswith("ms"):

@@ -53,14 +53,14 @@ class ClusterDataConfigTest(unittest.TestCase):
             if job["job_name"] == "cluster_data_exporter"
         )
 
-        self.assertEqual(cde_job["scrape_interval"], "60s")
-        self.assertEqual(cde_job["scrape_timeout"], "30s")
+        self.assertEqual(cde_job["scrape_interval"], "1s")
+        self.assertEqual(cde_job["scrape_timeout"], "1s")
         self.assertEqual(
             get_prometheus_data_ingestion_interval_ms(
                 OmegaConf.create({"scrape_interval": "1s"}),
                 OmegaConf.create(experiment_config),
             ),
-            60000,
+            1000,
         )
 
     def test_alibaba_scrape_interval_matches_controller_ingestion_interval(self):
@@ -77,16 +77,16 @@ class ClusterDataConfigTest(unittest.TestCase):
             if job["job_name"] == "cluster_data_exporter"
         )
 
-        self.assertEqual(cde_job["scrape_interval"], "10s")
+        self.assertEqual(cde_job["scrape_interval"], "1s")
         self.assertEqual(
             get_prometheus_data_ingestion_interval_ms(
                 OmegaConf.create({"scrape_interval": "1s"}),
                 OmegaConf.create(experiment_config),
             ),
-            10000,
+            1000,
         )
 
-    def test_missing_cluster_data_interval_uses_shared_default(self):
+    def test_missing_cluster_data_interval_fails_loudly(self):
         with open(
             EXPERIMENTS_DIR
             / "config/experiment_type/cluster_data_alibaba_node_2022.yaml"
@@ -96,21 +96,13 @@ class ClusterDataConfigTest(unittest.TestCase):
             "scrape_interval"
         ]
 
-        prometheus_config = self._generate_config(experiment_config)
-        cde_job = next(
-            job
-            for job in prometheus_config["scrape_configs"]
-            if job["job_name"] == "cluster_data_exporter"
-        )
-
-        self.assertEqual(cde_job["scrape_interval"], "10s")
-        self.assertEqual(
+        with self.assertRaisesRegex(ValueError, "scrape_interval"):
+            self._generate_config(experiment_config)
+        with self.assertRaisesRegex(ValueError, "scrape_interval"):
             get_prometheus_data_ingestion_interval_ms(
                 OmegaConf.create({"scrape_interval": "1s"}),
                 OmegaConf.create(experiment_config),
-            ),
-            10000,
-        )
+            )
 
 
 if __name__ == "__main__":

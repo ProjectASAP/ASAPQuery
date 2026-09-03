@@ -5,7 +5,6 @@ import argparse
 from omegaconf import DictConfig
 
 import experiment_utils
-from experiment_utils.config import DEFAULT_CLUSTER_DATA_SCRAPE_INTERVAL
 from utils import get_node_range
 
 
@@ -281,11 +280,12 @@ def main(args, experiment_config=None):
         target_node_idx = args.node_offset + 2
         target = f"{args.node_ip_prefix}.{target_node_idx}:{port}"
 
+        if "scrape_interval" not in cde_config:
+            raise ValueError("cluster_data_exporter requires 'scrape_interval'")
+
         scrape_config = {
             "job_name": "cluster_data_exporter",
-            "scrape_interval": cde_config.get(
-                "scrape_interval", DEFAULT_CLUSTER_DATA_SCRAPE_INTERVAL
-            ),
+            "scrape_interval": cde_config["scrape_interval"],
             "static_configs": [
                 {
                     "targets": [target],

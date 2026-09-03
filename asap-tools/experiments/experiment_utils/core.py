@@ -45,7 +45,7 @@ def read_exporter_config(experiment_params: DictConfig) -> Tuple[Optional[Dict],
         cde_config = exporters_config.exporter_list.cluster_data_exporter
 
         # Check required keys
-        required_keys = ["provider", "port"]
+        required_keys = ["provider", "port", "scrape_interval"]
         missing_keys = [key for key in required_keys if key not in cde_config]
         if missing_keys:
             return (
