@@ -281,6 +281,7 @@ type plannerQueryGroup struct {
 	RepetitionDelayMS int               `yaml:"repetition_delay_ms"`
 	ControllerOptions plannerController `yaml:"controller_options"`
 	StepMS            *int              `yaml:"step_ms,omitempty"`
+	RangeDurationMS   *int              `yaml:"range_duration_ms,omitempty"`
 }
 
 type plannerController struct {
@@ -334,6 +335,8 @@ func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite
 		if query.Range != nil {
 			stepMS := int(query.Range.StepSeconds * float64(time.Second/time.Millisecond))
 			group.StepMS = &stepMS
+			rangeDurationMS := int((query.Range.EndOffsetSeconds - query.Range.StartOffsetSeconds) * float64(time.Second/time.Millisecond))
+			group.RangeDurationMS = &rangeDurationMS
 		}
 		queryGroups = append(queryGroups, group)
 	}
@@ -401,8 +404,8 @@ func plannerRepetitionDelayMS(query QueryCase) (int, error) {
 		stepMS = int(query.Range.StepSeconds * float64(time.Second/time.Millisecond))
 	}
 	if stepMS > 0 && delayMS < stepMS && stepMS%delayMS != 0 {
-		delayMS = greatestCommonDivisor(delayMS, stepMS)
-		if delayMS < defaultDataIngestionIntervalMS {
+		delayMS = largestDivisorAtMost(stepMS, delayMS, defaultDataIngestionIntervalMS)
+		if delayMS == 0 {
 			return 0, fmt.Errorf(
 				"no repetition delay at least %dms divides evaluation step %dms within lookback %dms",
 				defaultDataIngestionIntervalMS, stepMS, lookbackMS,
@@ -426,9 +429,19 @@ func minInt(left, right int) int {
 	return left
 }
 
-func greatestCommonDivisor(left, right int) int {
-	for right != 0 {
-		left, right = right, left%right
+func largestDivisorAtMost(number, upper, lower int) int {
+	best := 0
+	for divisor := 1; divisor <= number/divisor; divisor++ {
+		if number%divisor != 0 {
+			continue
+		}
+		if divisor >= lower && divisor <= upper && divisor > best {
+			best = divisor
+		}
+		paired := number / divisor
+		if paired >= lower && paired <= upper && paired > best {
+			best = paired
+		}
 	}
-	return left
+	return best
 }

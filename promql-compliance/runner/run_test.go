@@ -89,9 +89,9 @@ func TestGeneratedPlannerGroupsUseCompatibleQueryTiming(t *testing.T) {
 			{Name: "instant", Expr: "up", InstantOffsetsSeconds: []float64{0}},
 			{
 				Name:                  "short-rate",
-				Expr:                  "rate(up[45s])",
+				Expr:                  "rate(up[1500ms])",
 				InstantOffsetsSeconds: []float64{60},
-				Range:                 &RangeSpec{StartOffsetSeconds: 60, EndOffsetSeconds: 120, StepSeconds: 60},
+				Range:                 &RangeSpec{StartOffsetSeconds: 60, EndOffsetSeconds: 120, StepSeconds: 2},
 			},
 		},
 	}
@@ -108,6 +108,7 @@ func TestGeneratedPlannerGroupsUseCompatibleQueryTiming(t *testing.T) {
 		QueryGroups []struct {
 			Queries           []string `yaml:"queries"`
 			RepetitionDelayMS int      `yaml:"repetition_delay_ms"`
+			RangeDurationMS   *int     `yaml:"range_duration_ms"`
 			StepMS            *int     `yaml:"step_ms"`
 		} `yaml:"query_groups"`
 	}
@@ -120,10 +121,13 @@ func TestGeneratedPlannerGroupsUseCompatibleQueryTiming(t *testing.T) {
 	if got, want := planner.QueryGroups[0].RepetitionDelayMS, defaultDataIngestionIntervalMS; got != want {
 		t.Fatalf("instant repetition delay = %d, want %d", got, want)
 	}
-	if got, want := planner.QueryGroups[1].RepetitionDelayMS, 15_000; got != want {
+	if got, want := planner.QueryGroups[1].RepetitionDelayMS, 1_000; got != want {
 		t.Fatalf("short-rate repetition delay = %d, want %d", got, want)
 	}
-	if planner.QueryGroups[1].StepMS == nil || *planner.QueryGroups[1].StepMS != 60_000 {
-		t.Fatalf("short-rate step_ms = %v, want 60000", planner.QueryGroups[1].StepMS)
+	if planner.QueryGroups[1].StepMS == nil || *planner.QueryGroups[1].StepMS != 2_000 {
+		t.Fatalf("short-rate step_ms = %v, want 2000", planner.QueryGroups[1].StepMS)
+	}
+	if planner.QueryGroups[1].RangeDurationMS == nil || *planner.QueryGroups[1].RangeDurationMS != 60_000 {
+		t.Fatalf("short-rate range_duration_ms = %v, want 60000", planner.QueryGroups[1].RangeDurationMS)
 	}
 }
