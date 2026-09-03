@@ -4,10 +4,24 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ProjectASAP/ASAPQuery/promql-compliance/seeder"
 	"gopkg.in/yaml.v3"
 )
+
+func TestDataProbeTimeUsesConfiguredEvaluationTime(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	probe, err := dataProbeTime(QueryCase{
+		InstantOffsetsSeconds: []float64{300, 600},
+	}, base)
+	if err != nil {
+		t.Fatalf("dataProbeTime: %v", err)
+	}
+	if got, want := probe, base.Add(300*time.Second); !got.Equal(want) {
+		t.Fatalf("probe time = %s, want %s", got, want)
+	}
+}
 
 func TestGeneratedConfigsUseCurrentPlannerAndEngineSchema(t *testing.T) {
 	directory := t.TempDir()
@@ -40,7 +54,7 @@ func TestGeneratedConfigsUseCurrentPlannerAndEngineSchema(t *testing.T) {
 	if err := yaml.Unmarshal(plannerContents, &planner); err != nil {
 		t.Fatalf("parse planner config: %v", err)
 	}
-	if got, want := planner.QueryGroups[0].RepetitionDelayMS, 10_000; got != want {
+	if got, want := planner.QueryGroups[0].RepetitionDelayMS, defaultPlannerWindowMS; got != want {
 		t.Fatalf("planner repetition delay = %d, want %d", got, want)
 	}
 

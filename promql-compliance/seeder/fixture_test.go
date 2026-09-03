@@ -51,3 +51,27 @@ func TestLoadFixtureRejectsInvalidShape(t *testing.T) {
 		t.Fatal("LoadFixture succeeded for a fixture without series")
 	}
 }
+
+func TestBuildWriteRequestsFromFixtureBatchesOrdersEventTime(t *testing.T) {
+	fixture := Fixture{
+		Name: "ordered",
+		Series: []FixtureSeries{{
+			Metric: "up",
+			Samples: []FixtureSample{
+				{OffsetSeconds: 60, Value: 2},
+				{OffsetSeconds: 0, Value: 1},
+			},
+		}},
+	}
+
+	requests := BuildWriteRequestsFromFixtureBatches(1_700_000_000_000, fixture)
+	if got, want := len(requests), 2; got != want {
+		t.Fatalf("batch count = %d, want %d", got, want)
+	}
+	if got, want := requests[0].Timeseries[0].Samples[0].Timestamp, int64(1_700_000_000_000); got != want {
+		t.Fatalf("first batch timestamp = %d, want %d", got, want)
+	}
+	if got, want := requests[1].Timeseries[0].Samples[0].Timestamp, int64(1_700_000_060_000); got != want {
+		t.Fatalf("second batch timestamp = %d, want %d", got, want)
+	}
+}

@@ -3,10 +3,12 @@ package runner
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/ProjectASAP/ASAPQuery/promql-compliance/seeder"
@@ -16,6 +18,8 @@ import (
 
 const (
 	defaultDatasetAge      = 30 * time.Minute
+	defaultPlannerWindow   = 5 * time.Minute
+	defaultPlannerWindowMS = int(defaultPlannerWindow / time.Millisecond)
 	serviceReadyTimeout    = 3 * time.Minute
 	dataReadyTimeout       = 3 * time.Minute
 	readinessPollInterval  = time.Second
@@ -89,29 +93,35 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	if err := waitForQueryEndpoint(ctx, reference, fixture.Series[0].Metric, base); err != nil {
+	probeQuery := suite.Queries[0].Expr
+	if err := waitForHTTPReady(ctx, options.ReferenceURL); err != nil {
 		return Report{}, fmt.Errorf("reference target is not ready: %w", err)
 	}
-	if err := waitForQueryEndpoint(ctx, test, fixture.Series[0].Metric, base); err != nil {
+	if err := waitForHTTPReady(ctx, options.TestURL); err != nil {
 		return Report{}, fmt.Errorf("test target is not ready: %w", err)
 	}
 
-	request := seeder.BuildWriteRequestFromFixture(base.UnixMilli(), fixture)
-	body, err := seeder.EncodeSnappy(request)
+	requests := seeder.BuildWriteRequestsFromFixtureBatches(base.UnixMilli(), fixture)
+	for index, request := range requests {
+		body, err := seeder.EncodeSnappy(request)
+		if err != nil {
+			return Report{}, fmt.Errorf("encode dataset %q batch %d: %w", fixture.Name, index, err)
+		}
+		if err := seeder.PushEncoded(ctx, options.ReferenceWriteURL, body); err != nil {
+			return Report{}, fmt.Errorf("seed reference target batch %d: %w", index, err)
+		}
+		if err := seeder.PushEncoded(ctx, options.TestWriteURL, body); err != nil {
+			return Report{}, fmt.Errorf("seed test target batch %d: %w", index, err)
+		}
+	}
+	probeTime, err := dataProbeTime(suite.Queries[0], base)
 	if err != nil {
-		return Report{}, fmt.Errorf("encode dataset %q: %w", fixture.Name, err)
+		return Report{}, err
 	}
-	if err := seeder.PushEncoded(ctx, options.ReferenceWriteURL, body); err != nil {
-		return Report{}, fmt.Errorf("seed reference target: %w", err)
-	}
-	if err := seeder.PushEncoded(ctx, options.TestWriteURL, body); err != nil {
-		return Report{}, fmt.Errorf("seed test target: %w", err)
-	}
-	lastSample := base.Add(time.Duration(maxOffsetSeconds(fixture)) * time.Second)
-	if err := waitForData(ctx, reference, fixture.Series[0].Metric, lastSample); err != nil {
+	if err := waitForData(ctx, reference, probeQuery, probeTime); err != nil {
 		return Report{}, fmt.Errorf("reference target did not expose seeded data: %w", err)
 	}
-	if err := waitForData(ctx, test, fixture.Series[0].Metric, lastSample); err != nil {
+	if err := waitForData(ctx, test, probeQuery, probeTime); err != nil {
 		return Report{}, fmt.Errorf("test target did not expose seeded data: %w", err)
 	}
 
@@ -122,43 +132,59 @@ func runBaseTime(baseTimeMS int64) time.Time {
 	if baseTimeMS != 0 {
 		return time.UnixMilli(baseTimeMS).UTC()
 	}
-	return time.Now().UTC().Truncate(time.Minute).Add(-defaultDatasetAge)
+	return time.Now().UTC().Truncate(defaultPlannerWindow).Add(-defaultDatasetAge)
 }
 
-func maxOffsetSeconds(fixture seeder.Fixture) int64 {
-	var result int64
-	for _, series := range fixture.Series {
-		for _, sample := range series.Samples {
-			if sample.OffsetSeconds > result {
-				result = sample.OffsetSeconds
-			}
-		}
+func dataProbeTime(query QueryCase, base time.Time) (time.Time, error) {
+	if offsets := query.InstantTimes(base); len(offsets) > 0 {
+		return offsets[0], nil
 	}
-	return result
+	interval, err := query.RangeAt(base)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("select data probe time: %w", err)
+	}
+	return interval.End, nil
 }
 
-func waitForQueryEndpoint(ctx context.Context, target QueryAPI, metric string, timestamp time.Time) error {
+func waitForHTTPReady(ctx context.Context, baseURL string) error {
 	deadline, cancel := context.WithTimeout(ctx, serviceReadyTimeout)
 	defer cancel()
+	healthURL := strings.TrimRight(baseURL, "/") + "/api/v1/status/runtimeinfo"
+	client := &http.Client{}
+	var lastErr error
 	for {
-		_, _, err := target.Query(deadline, metric, timestamp)
+		request, err := http.NewRequestWithContext(deadline, http.MethodGet, healthURL, nil)
 		if err == nil {
-			return nil
+			response, requestErr := client.Do(request)
+			if requestErr == nil {
+				_ = response.Body.Close()
+				if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+					return nil
+				}
+				lastErr = fmt.Errorf("HTTP %s", response.Status)
+			} else {
+				lastErr = requestErr
+			}
+		} else {
+			lastErr = err
 		}
 		select {
 		case <-deadline.Done():
+			if lastErr != nil {
+				return fmt.Errorf("last query error: %w", lastErr)
+			}
 			return deadline.Err()
 		case <-time.After(readinessPollInterval):
 		}
 	}
 }
 
-func waitForData(ctx context.Context, target QueryAPI, metric string, timestamp time.Time) error {
+func waitForData(ctx context.Context, target QueryAPI, query string, timestamp time.Time) error {
 	deadline, cancel := context.WithTimeout(ctx, dataReadyTimeout)
 	defer cancel()
 	var lastErr error
 	for {
-		value, _, err := target.Query(deadline, metric, timestamp)
+		value, _, err := target.Query(deadline, query, timestamp)
 		if err != nil {
 			lastErr = err
 		} else if hasSamples(value) {
@@ -169,7 +195,7 @@ func waitForData(ctx context.Context, target QueryAPI, metric string, timestamp 
 			if lastErr != nil {
 				return fmt.Errorf("last query error: %w", lastErr)
 			}
-			return fmt.Errorf("metric %q is still empty", metric)
+			return fmt.Errorf("query %q is still empty", query)
 		case <-time.After(readinessPollInterval):
 		}
 	}
@@ -297,7 +323,7 @@ func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite
 	}
 	config := plannerConfig{
 		QueryGroups: []plannerQueryGroup{{
-			ID: 1, Queries: queries, RepetitionDelayMS: 10_000,
+			ID: 1, Queries: queries, RepetitionDelayMS: defaultPlannerWindowMS,
 			ControllerOptions: plannerController{AccuracySLA: 0.99, LatencySLA: 1},
 		}},
 		Metrics: plannerMetrics,

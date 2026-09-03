@@ -1,0 +1,27 @@
+name: single-rate
+series:
+  - metric: http_requests_total
+    labels:
+      host: a
+    samples:
+      - {offset_seconds: 0, value: 0}
+      - {offset_seconds: 60, value: 60}
+      - {offset_seconds: 120, value: 120}
+      - {offset_seconds: 180, value: 180}
+      - {offset_seconds: 240, value: 240}
+      - {offset_seconds: 300, value: 300}
+      - {offset_seconds: 360, value: 360}
+      - {offset_seconds: 420, value: 420}
+      - {offset_seconds: 480, value: 480}
+      - {offset_seconds: 540, value: 540}
+      - {offset_seconds: 600, value: 600}
+      - {offset_seconds: 660, value: 660}
+      - {offset_seconds: 720, value: 720}
+      - {offset_seconds: 780, value: 780}
+      - {offset_seconds: 840, value: 840}
+      - {offset_seconds: 900, value: 900}
+      - {offset_seconds: 960, value: 960}
+      - {offset_seconds: 1020, value: 1020}
+      - {offset_seconds: 1080, value: 1080}
+      - {offset_seconds: 1140, value: 1140}
+      - {offset_seconds: 1200, value: 1200}

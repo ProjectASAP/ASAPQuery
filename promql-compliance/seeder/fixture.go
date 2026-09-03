@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/prometheus/prometheus/prompb"
 	"gopkg.in/yaml.v3"
@@ -77,4 +78,34 @@ func BuildWriteRequestFromFixture(baseTimeMs int64, fixture Fixture) *prompb.Wri
 		})
 	}
 	return BuildWriteRequest(baseTimeMs, series)
+}
+
+// BuildWriteRequestsFromFixtureBatches converts a fixture into timestamp-ordered
+// remote-write batches. Sending one event-time slice at a time lets streaming
+// engines advance and close windows as they would during normal ingestion.
+func BuildWriteRequestsFromFixtureBatches(baseTimeMs int64, fixture Fixture) []*prompb.WriteRequest {
+	byOffset := make(map[int64][]SeriesDef)
+	for _, input := range fixture.Series {
+		for _, sample := range input.Samples {
+			byOffset[sample.OffsetSeconds] = append(byOffset[sample.OffsetSeconds], SeriesDef{
+				Name:   input.Metric,
+				Labels: input.Labels,
+				Samples: []Sample{{
+					OffsetSeconds: sample.OffsetSeconds,
+					Value:         sample.Value,
+				}},
+			})
+		}
+	}
+	offsets := make([]int64, 0, len(byOffset))
+	for offset := range byOffset {
+		offsets = append(offsets, offset)
+	}
+	sort.Slice(offsets, func(i, j int) bool { return offsets[i] < offsets[j] })
+
+	requests := make([]*prompb.WriteRequest, 0, len(offsets))
+	for _, offset := range offsets {
+		requests = append(requests, BuildWriteRequest(baseTimeMs, byOffset[offset]))
+	}
+	return requests
 }

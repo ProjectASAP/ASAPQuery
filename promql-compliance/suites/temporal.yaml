@@ -4,13 +4,6 @@ comparison_defaults:
     relative: 0
     absolute: 0.000001
 queries:
-  - name: checkout-gap
-    expr: checkout_up{service="checkout"}
-    instant_offsets_seconds: [300, 660, 900, 1200]
-    range:
-      start_offset_seconds: 0
-      end_offset_seconds: 1200
-      step_seconds: 60
   - name: request-rate
     expr: rate(http_requests_total[5m])
     instant_offsets_seconds: [300, 600, 1200]
