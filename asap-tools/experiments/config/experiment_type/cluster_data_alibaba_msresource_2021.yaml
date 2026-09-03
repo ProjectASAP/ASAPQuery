@@ -1,0 +1,60 @@
+# @package experiment_params
+# Example configuration for cluster_data_exporter with Alibaba MSResource 2021 provider
+# This config replays Alibaba microservice resource metrics (2021) as Prometheus metrics
+
+experiment:
+  - mode: sketchdb
+    server: sketchdb
+    query_prometheus_too: True
+  #- mode: baseline
+  #  server: prometheus
+
+servers:
+- name: prometheus
+  url: http://localhost:9090
+- name: sketchdb
+  url: http://localhost:8088
+
+workloads:
+  # deathstar:
+  #   use: True
+
+exporters:
+  only_start_if_queries_exist: True
+  exporter_list:
+    cluster_data_exporter:
+      provider: "alibaba"
+      port: 40000
+      data_type: "msresource"
+      data_year: 2021
+      parts_mode: "all-parts"  # or "part-index" with part_index: 0
+      # Optional configuration
+      # log_level: "INFO"  # DEBUG, INFO, WARN, ERROR (default: INFO)
+      # memory_limit: "2g"
+      # cpu_limit: "2.0"
+
+query_groups:
+- id: 1
+  queries:
+  # Query Alibaba microservice metrics
+  - alibaba_microservice_cpu_usage
+  - rate(alibaba_microservice_cpu_usage[5m])
+  - sum by (microservice_id) (alibaba_microservice_cpu_usage)
+  - alibaba_microservice_memory_usage
+  - sum by (microservice_id) (alibaba_microservice_memory_usage)
+  repetition_delay_ms: 10000
+  client_options:
+    repetitions: 10
+    query_time_offset: 10
+    starting_delay: 70
+  controller_options:
+    accuracy_sla: 0.99
+    latency_sla: 1
+
+metrics:
+  - metric: "alibaba_microservice_cpu_usage"
+    labels: ['instance', 'job', 'microservice_id']
+    exporter: cluster_data_exporter
+  - metric: "alibaba_microservice_memory_usage"
+    labels: ['instance', 'job', 'microservice_id']
+    exporter: cluster_data_exporter
