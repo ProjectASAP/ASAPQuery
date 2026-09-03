@@ -13,17 +13,20 @@ import (
 
 	"github.com/ProjectASAP/ASAPQuery/promql-compliance/seeder"
 	"github.com/prometheus/common/model"
+	promqlparser "github.com/prometheus/prometheus/promql/parser"
 	"gopkg.in/yaml.v3"
 )
 
 const (
-	defaultDatasetAge      = 30 * time.Minute
-	defaultPlannerWindow   = 5 * time.Minute
-	defaultPlannerWindowMS = int(defaultPlannerWindow / time.Millisecond)
-	serviceReadyTimeout    = 3 * time.Minute
-	dataReadyTimeout       = 3 * time.Minute
-	readinessPollInterval  = time.Second
-	composeShutdownTimeout = time.Minute
+	defaultDatasetAge              = 30 * time.Minute
+	defaultPlannerWindow           = 5 * time.Minute
+	defaultPlannerWindowMS         = int(defaultPlannerWindow / time.Millisecond)
+	defaultDataIngestionIntervalMS = 1000
+	defaultPlannerStepMS           = 60_000
+	serviceReadyTimeout            = 3 * time.Minute
+	dataReadyTimeout               = 3 * time.Minute
+	readinessPollInterval          = time.Second
+	composeShutdownTimeout         = time.Minute
 )
 
 type RunOptions struct {
@@ -277,6 +280,7 @@ type plannerQueryGroup struct {
 	Queries           []string          `yaml:"queries"`
 	RepetitionDelayMS int               `yaml:"repetition_delay_ms"`
 	ControllerOptions plannerController `yaml:"controller_options"`
+	StepMS            *int              `yaml:"step_ms,omitempty"`
 }
 
 type plannerController struct {
@@ -317,17 +321,26 @@ func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite
 		sort.Strings(labels)
 		plannerMetrics = append(plannerMetrics, plannerMetric{Metric: metric, Labels: labels})
 	}
-	queries := make([]string, 0, len(suite.Queries))
-	for _, query := range suite.Queries {
-		queries = append(queries, query.Expr)
+	queryGroups := make([]plannerQueryGroup, 0, len(suite.Queries))
+	for index, query := range suite.Queries {
+		repetitionDelayMS, err := plannerRepetitionDelayMS(query)
+		if err != nil {
+			return fmt.Errorf("query %q: %w", query.Name, err)
+		}
+		group := plannerQueryGroup{
+			ID: index + 1, Queries: []string{query.Expr}, RepetitionDelayMS: repetitionDelayMS,
+			ControllerOptions: plannerController{AccuracySLA: 0.99, LatencySLA: 1},
+		}
+		if query.Range != nil {
+			stepMS := int(query.Range.StepSeconds * float64(time.Second/time.Millisecond))
+			group.StepMS = &stepMS
+		}
+		queryGroups = append(queryGroups, group)
 	}
 	config := plannerConfig{
-		QueryGroups: []plannerQueryGroup{{
-			ID: 1, Queries: queries, RepetitionDelayMS: defaultPlannerWindowMS,
-			ControllerOptions: plannerController{AccuracySLA: 0.99, LatencySLA: 1},
-		}},
-		Metrics: plannerMetrics,
-		Cleanup: plannerCleanup{Policy: "read_based"},
+		QueryGroups: queryGroups,
+		Metrics:     plannerMetrics,
+		Cleanup:     plannerCleanup{Policy: "read_based"},
 	}
 	contents, err := yaml.Marshal(config)
 	if err != nil {
@@ -358,4 +371,64 @@ streaming_config: "/asap-planner-output/streaming_config.yaml"
 		return fmt.Errorf("write generated engine config: %w", err)
 	}
 	return nil
+}
+
+func plannerRepetitionDelayMS(query QueryCase) (int, error) {
+	lookbackMS := defaultDataIngestionIntervalMS
+	if expr, err := promqlparser.NewParser(promqlparser.Options{}).ParseExpr(query.Expr); err == nil {
+		maxRange := time.Duration(0)
+		promqlparser.Inspect(expr, func(node promqlparser.Node, _ []promqlparser.Node) error {
+			switch node := node.(type) {
+			case *promqlparser.MatrixSelector:
+				maxRange = maxDuration(maxRange, node.Range)
+			case *promqlparser.SubqueryExpr:
+				maxRange = maxDuration(maxRange, node.Range)
+			}
+			return nil
+		})
+		if maxRange > 0 {
+			lookbackMS = int(maxRange / time.Millisecond)
+		}
+	}
+
+	delayMS := minInt(defaultPlannerWindowMS, lookbackMS)
+	if delayMS < defaultDataIngestionIntervalMS {
+		delayMS = defaultDataIngestionIntervalMS
+	}
+
+	stepMS := defaultPlannerStepMS
+	if query.Range != nil {
+		stepMS = int(query.Range.StepSeconds * float64(time.Second/time.Millisecond))
+	}
+	if stepMS > 0 && delayMS < stepMS && stepMS%delayMS != 0 {
+		delayMS = greatestCommonDivisor(delayMS, stepMS)
+		if delayMS < defaultDataIngestionIntervalMS {
+			return 0, fmt.Errorf(
+				"no repetition delay at least %dms divides evaluation step %dms within lookback %dms",
+				defaultDataIngestionIntervalMS, stepMS, lookbackMS,
+			)
+		}
+	}
+	return delayMS, nil
+}
+
+func maxDuration(left, right time.Duration) time.Duration {
+	if right > left {
+		return right
+	}
+	return left
+}
+
+func minInt(left, right int) int {
+	if right < left {
+		return right
+	}
+	return left
+}
+
+func greatestCommonDivisor(left, right int) int {
+	for right != 0 {
+		left, right = right, left%right
+	}
+	return left
 }

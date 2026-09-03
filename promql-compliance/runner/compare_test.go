@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -9,9 +10,40 @@ import (
 	"github.com/prometheus/common/model"
 )
 
+func TestCompareQueryRejectsUnexpectedSharedErrors(t *testing.T) {
+	err := errors.New("query failed")
+	outcome := responseComparison(nil, nil, err, err, ComparisonPolicy{}, false)
+
+	if outcome.Passed {
+		t.Fatal("comparison passed even though both targets failed unexpectedly")
+	}
+	if outcome.ReferenceError != err.Error() || outcome.TestError != err.Error() {
+		t.Fatalf("errors = %#v, want both target errors recorded", outcome)
+	}
+}
+
+func TestCompareQueryAcceptsSharedExpectedErrors(t *testing.T) {
+	err := errors.New("query failed")
+	outcome := responseComparison(nil, nil, err, err, ComparisonPolicy{}, true)
+
+	if !outcome.Passed {
+		t.Fatal("comparison rejected matching expected errors")
+	}
+}
+
 type fakeTarget struct {
 	rangeValue  model.Value
 	instantByMS map[int64]model.Value
+}
+
+type errorTarget struct{ err error }
+
+func (target errorTarget) Query(context.Context, string, time.Time, ...clientv1.Option) (model.Value, clientv1.Warnings, error) {
+	return nil, nil, target.err
+}
+
+func (target errorTarget) QueryRange(context.Context, string, clientv1.Range, ...clientv1.Option) (model.Value, clientv1.Warnings, error) {
+	return nil, nil, target.err
 }
 
 func (f fakeTarget) Query(_ context.Context, _ string, ts time.Time, _ ...clientv1.Option) (model.Value, clientv1.Warnings, error) {
@@ -20,6 +52,26 @@ func (f fakeTarget) Query(_ context.Context, _ string, ts time.Time, _ ...client
 
 func (f fakeTarget) QueryRange(_ context.Context, _ string, _ clientv1.Range, _ ...clientv1.Option) (model.Value, clientv1.Warnings, error) {
 	return f.rangeValue, nil, nil
+}
+
+func TestCompareQueryDoesNotPassWhenBothTargetsFailUnexpectedly(t *testing.T) {
+	err := errors.New("query failed")
+	query := QueryCase{
+		Name:                  "failing-query",
+		Expr:                  "rate(up[5m])",
+		InstantOffsetsSeconds: []float64{0},
+	}
+
+	report, compareErr := CompareQuery(
+		context.Background(), errorTarget{err: err}, errorTarget{err: err}, query,
+		time.Unix(1_700_000_000, 0).UTC(), ComparisonPolicy{},
+	)
+	if compareErr != nil {
+		t.Fatalf("CompareQuery: %v", compareErr)
+	}
+	if report.Passed {
+		t.Fatalf("query passed despite both targets failing: %#v", report.Instant[0].Comparison)
+	}
 }
 
 func TestCompareQueryChecksEveryInstantTimeAndTargetParity(t *testing.T) {
