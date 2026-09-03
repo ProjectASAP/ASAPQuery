@@ -26,6 +26,8 @@ services:
     build:
       context: ..
       dockerfile: asap-planner-rs/Dockerfile
+      cache_from:
+        - type=registry,ref=ghcr.io/projectasap/asap-planner-rs:buildcache
     volumes:
       - "${ASAP_TEST_CONFIG_DIR:?ASAP_TEST_CONFIG_DIR is required}/controller-config.yaml:/config/controller-config.yaml:ro"
       - differential-planner-output:/asap-planner-output
@@ -44,6 +46,8 @@ services:
     build:
       context: ..
       dockerfile: asap-query-engine/Dockerfile
+      cache_from:
+        - type=registry,ref=ghcr.io/projectasap/asap-query-engine:buildcache
     ports:
       - "${ASAP_QUERY_PORT:-18088}:8088"
       - "${ASAP_INGEST_PORT:-19091}:9091"

@@ -41,7 +41,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	report, err := runner.Run(ctx, runner.RunOptions{
 		DatasetPath:       *datasetPath,
