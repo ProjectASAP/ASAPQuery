@@ -449,6 +449,22 @@ mod tests {
     }
 
     #[test]
+    fn public_resolver_dispatches_cms_with_heap_to_the_reference_model() {
+        let table = vec![cms_heap_entry(3, 1024)];
+        let params = cms_heap_params(3, 1024, 32, true);
+        let costs = resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params)
+            .expect("public resolver must dispatch CMS-with-heap candidates");
+
+        assert_eq!(
+            costs.mem_bytes_per_instance,
+            3.0 * 1024.0 * 8.0 + 32.0 * 64.0
+        );
+        assert_eq!(costs.insert_cpu_secs, 2.0);
+        assert_eq!(costs.merge_cpu_secs, 4.0);
+        assert_eq!(costs.query_cpu_secs, 8.0);
+    }
+
+    #[test]
     fn cms_with_heap_costs_ignore_count_events() {
         let table = vec![cms_heap_entry(3, 1024)];
         let assumptions = CmsHeapCostAssumptions::default();
