@@ -7,7 +7,9 @@ use std::io::BufReader;
 use std::ops::Index;
 
 use crate::aggregation_config::{AggregationConfig, AggregationIdInfo};
-use crate::capability_matching::find_compatible_aggregation as common_find_compatible;
+use crate::capability_matching::{
+    find_compatible_aggregation as common_find_compatible, CapabilityMatchingError,
+};
 use crate::enums::QueryLanguage;
 use crate::inference_config::{InferenceConfig, SchemaConfig};
 use crate::query_requirements::QueryRequirements;
@@ -111,7 +113,7 @@ impl StreamingConfig {
     pub fn find_compatible_aggregation(
         &self,
         requirements: &QueryRequirements,
-    ) -> Option<AggregationIdInfo> {
+    ) -> Result<Option<AggregationIdInfo>, CapabilityMatchingError> {
         common_find_compatible(&self.aggregation_configs, requirements)
     }
 }
@@ -127,5 +129,114 @@ impl Index<u64> for StreamingConfig {
 impl Default for StreamingConfig {
     fn default() -> Self {
         Self::new(HashMap::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::aggregation_config::AggregationConfigError;
+
+    #[test]
+    fn rejects_heap_config_without_count_events() {
+        let yaml: Value = serde_yaml::from_str(
+            r#"
+aggregations:
+  - aggregationId: 1
+    aggregationType: CountMinSketchWithHeap
+    aggregationSubType: topk
+    parameters:
+      depth: 3
+      width: 1024
+      heapsize: 20
+    labels:
+      grouping: []
+      aggregated: [instance]
+      rollup: []
+    metric: http_requests_total
+    windowSizeMs: 15000
+    slideIntervalMs: 15000
+    windowType: tumbling
+    spatialFilter: ''
+"#,
+        )
+        .unwrap();
+
+        let error = StreamingConfig::from_yaml_data(&yaml, None)
+            .expect_err("heap config without count_events must be rejected");
+
+        assert!(matches!(
+            error.downcast_ref::<AggregationConfigError>(),
+            Some(AggregationConfigError::MissingCountEvents { aggregation_id: 1 })
+        ));
+    }
+
+    #[test]
+    fn rejects_heap_config_with_non_boolean_count_events() {
+        let yaml: Value = serde_yaml::from_str(
+            r#"
+aggregations:
+  - aggregationId: 1
+    aggregationType: CountMinSketchWithHeap
+    aggregationSubType: topk
+    parameters:
+      depth: 3
+      width: 1024
+      heapsize: 20
+      count_events: "false"
+    labels:
+      grouping: []
+      aggregated: [instance]
+      rollup: []
+    metric: http_requests_total
+    windowSizeMs: 15000
+    slideIntervalMs: 15000
+    windowType: tumbling
+    spatialFilter: ''
+"#,
+        )
+        .unwrap();
+
+        let error = StreamingConfig::from_yaml_data(&yaml, None)
+            .expect_err("heap config with non-boolean count_events must be rejected");
+
+        assert!(error.to_string().contains("aggregation 1"));
+        assert!(error.to_string().contains("count_events"));
+        assert!(error.to_string().contains("boolean"));
+    }
+
+    #[test]
+    fn rejects_count_events_on_non_heap_config() {
+        let yaml: Value = serde_yaml::from_str(
+            r#"
+aggregations:
+  - aggregationId: 1
+    aggregationType: CountMinSketch
+    aggregationSubType: sum
+    parameters:
+      depth: 3
+      width: 1024
+      count_events: false
+    labels:
+      grouping: []
+      aggregated: [instance]
+      rollup: []
+    metric: http_requests_total
+    windowSizeMs: 15000
+    slideIntervalMs: 15000
+    windowType: tumbling
+    spatialFilter: ''
+"#,
+        )
+        .unwrap();
+
+        let error = StreamingConfig::from_yaml_data(&yaml, None)
+            .expect_err("count_events on a non-heap aggregation must be rejected");
+
+        assert!(error.to_string().contains("aggregation 1"));
+        assert!(error.to_string().contains("count_events"));
+        assert!(error
+            .to_string()
+            .contains("only valid for CountMinSketchWithHeap"));
     }
 }

@@ -5,11 +5,19 @@ use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
 use tracing::{debug, warn};
 
-use crate::aggregation_config::{AggregationConfig, AggregationIdInfo};
+use crate::aggregation_config::{AggregationConfig, AggregationConfigError, AggregationIdInfo};
 use crate::enums::WindowType;
 use crate::query_requirements::QueryRequirements;
 use crate::utils::normalize_spatial_filter;
 use promql_utilities::query_logics::enums::AggregationType;
+
+#[derive(Debug, thiserror::Error)]
+pub enum CapabilityMatchingError {
+    #[error(transparent)]
+    InvalidAggregationConfig(#[from] AggregationConfigError),
+    #[error("top-k query requirements must specify count_events weighting")]
+    MissingTopkWeighting,
+}
 
 // ---------------------------------------------------------------------------
 // Pure compatibility helpers
@@ -158,15 +166,14 @@ pub fn spatial_filter_compatible(config_filter: &str, req_filter: &str) -> bool 
     config_norm == req_norm
 }
 
-/// Reads the `count_events` parameter from a `CountMinSketchWithHeap` config.
-/// Defaults to `true` (COUNT semantics) so existing count top-k configs that
-/// omit the flag keep matching COUNT top-k queries.
+/// Reads the required `count_events` parameter from a validated
+/// `CountMinSketchWithHeap` config.
 fn config_count_events(config: &AggregationConfig) -> bool {
     config
         .parameters
         .get("count_events")
         .and_then(|v| v.as_bool())
-        .unwrap_or(true)
+        .expect("aggregation configs are validated before capability matching")
 }
 
 /// Top-k weighting compatibility. Only constrains `Statistic::Topk` candidates;
@@ -221,7 +228,8 @@ pub fn aggregation_priority(a: &AggregationConfig, b: &AggregationConfig) -> Ord
 /// Find a compatible aggregation (or pair of aggregations for multi-population queries)
 /// given all available aggregation configs and a set of query requirements.
 ///
-/// Returns `None` if no fully compatible match exists.
+/// Returns `Ok(None)` if no fully compatible match exists and `Err` if any
+/// aggregation config is malformed.
 ///
 /// Algorithm:
 /// 1. For each statistic, collect and sort compatible candidates.
@@ -232,9 +240,21 @@ pub fn aggregation_priority(a: &AggregationConfig, b: &AggregationConfig) -> Ord
 pub fn find_compatible_aggregation(
     configs: &HashMap<u64, AggregationConfig>,
     requirements: &QueryRequirements,
-) -> Option<AggregationIdInfo> {
+) -> Result<Option<AggregationIdInfo>, CapabilityMatchingError> {
+    if requirements.statistics.contains(&Statistic::Topk)
+        && requirements.topk_count_events.is_none()
+    {
+        return Err(CapabilityMatchingError::MissingTopkWeighting);
+    }
+
+    let mut configs_by_id: Vec<&AggregationConfig> = configs.values().collect();
+    configs_by_id.sort_by_key(|config| config.aggregation_id);
+    for config in configs_by_id {
+        config.validate()?;
+    }
+
     if requirements.statistics.is_empty() {
-        return None;
+        return Ok(None);
     }
 
     debug!(
@@ -289,7 +309,7 @@ pub fn find_compatible_aggregation(
                 statistic = ?stat,
                 "capability matching: no compatible aggregation found for statistic",
             );
-            return None;
+            return Ok(None);
         }
 
         debug!(
@@ -321,7 +341,7 @@ pub fn find_compatible_aggregation(
                 required_window_size_ms = value_agg.window_size_ms,
                 "capability matching: no matching window/labels for multi-statistic requirement",
             );
-            return None;
+            return Ok(None);
         }
     }
 
@@ -364,7 +384,10 @@ pub fn find_compatible_aggregation(
                 ),
             }
         }
-        ka?
+        let Some(ka) = ka else {
+            return Ok(None);
+        };
+        ka
     } else {
         value_agg
     };
@@ -378,12 +401,12 @@ pub fn find_compatible_aggregation(
         "capability matching: resolved",
     );
 
-    Some(AggregationIdInfo {
+    Ok(Some(AggregationIdInfo {
         aggregation_id_for_value: value_agg.aggregation_id,
         aggregation_type_for_value: value_agg.aggregation_type,
         aggregation_id_for_key: key_agg.aggregation_id,
         aggregation_type_for_key: key_agg.aggregation_type,
-    })
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -396,6 +419,16 @@ mod tests {
     use crate::utils::normalize_spatial_filter;
     use promql_utilities::data_model::KeyByLabelNames;
     use std::collections::HashMap;
+
+    /// Existing matching tests exercise valid configurations and keep their
+    /// Option-focused assertions; an unexpected validation error should fail them.
+    fn find_compatible_aggregation(
+        configs: &HashMap<u64, AggregationConfig>,
+        requirements: &QueryRequirements,
+    ) -> Option<AggregationIdInfo> {
+        super::find_compatible_aggregation(configs, requirements)
+            .expect("test aggregation configs should be valid")
+    }
 
     #[allow(clippy::too_many_arguments)]
     fn make_config(
@@ -411,7 +444,7 @@ mod tests {
         let grouping_labels =
             KeyByLabelNames::new(grouping.iter().map(|s| s.to_string()).collect());
         let spatial_filter_normalized = normalize_spatial_filter(spatial_filter);
-        AggregationConfig {
+        let mut config = AggregationConfig {
             aggregation_id: id,
             aggregation_type: agg_type.parse::<AggregationType>().expect("valid agg type"),
             aggregation_sub_type: sub_type.to_string(),
@@ -430,7 +463,13 @@ mod tests {
             read_count_threshold: None,
             table_name: None,
             value_column: None,
+        };
+        if config.aggregation_type == AggregationType::CountMinSketchWithHeap {
+            config
+                .parameters
+                .insert("count_events".to_string(), serde_json::Value::Bool(true));
         }
+        config
     }
 
     fn req(
@@ -448,6 +487,16 @@ mod tests {
             spatial_filter_normalized: normalize_spatial_filter(spatial_filter),
             topk_count_events: None,
         }
+    }
+
+    fn topk_req_with_range(
+        metric: &str,
+        data_range_ms: u64,
+        count_events: Option<bool>,
+    ) -> QueryRequirements {
+        let mut requirements = req(metric, &[Statistic::Topk], data_range_ms, &[], "");
+        requirements.topk_count_events = count_events;
+        requirements
     }
 
     fn assert_key_compatibility_cases(
@@ -976,10 +1025,8 @@ mod tests {
                 "",
             ),
         );
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("req", &[Statistic::Topk], 300_000, &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &topk_req_with_range("req", 300_000, Some(true)));
         let info = result.unwrap();
         assert_eq!(info.aggregation_id_for_value, 10);
         assert_eq!(info.aggregation_id_for_key, 11);
@@ -998,10 +1045,8 @@ mod tests {
             &[],
             "",
         ));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("req", &[Statistic::Topk], 300_000, &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &topk_req_with_range("req", 300_000, Some(true)));
         assert!(result.is_none());
     }
 
@@ -1137,10 +1182,8 @@ mod tests {
                 "",
             ),
         );
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("req", &[Statistic::Topk], 300_000, &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &topk_req_with_range("req", 300_000, Some(true)));
         assert!(
             result.is_none(),
             "a Sliding DeltaSetAggregator must never be selected as the paired key agg"
@@ -1169,10 +1212,8 @@ mod tests {
             11,
             make_config(11, "req", "SetAggregator", "", 300_000, "sliding", &[], ""),
         );
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("req", &[Statistic::Topk], 300_000, &[], ""),
-        );
+        let result =
+            find_compatible_aggregation(&configs, &topk_req_with_range("req", 300_000, Some(true)));
         let info =
             result.expect("Sliding SetAggregator on the value aggregation's grid must be accepted");
         assert_eq!(info.aggregation_id_for_key, 11);
@@ -1573,9 +1614,7 @@ mod tests {
     }
 
     fn topk_req(metric: &str, count_events: Option<bool>) -> QueryRequirements {
-        let mut r = req(metric, &[Statistic::Topk], 1_000, &[], "");
-        r.topk_count_events = count_events;
-        r
+        topk_req_with_range(metric, 1_000, count_events)
     }
 
     #[test]
@@ -1621,38 +1660,44 @@ mod tests {
     }
 
     #[test]
-    fn topk_count_query_matches_sketch_without_explicit_flag() {
-        // Configs that omit `count_events` default to count semantics, so a
-        // COUNT top-k query still matches (backwards compatibility).
+    fn topk_matching_rejects_sketch_without_count_events() {
+        // A missing weighting flag is malformed configuration, not implicit
+        // COUNT semantics. Capability matching must distinguish it from a miss.
         let mut configs = HashMap::new();
-        configs.insert(
+        let mut malformed = make_config(
             7,
-            make_config(
-                7,
-                "netflow_table",
-                "CountMinSketchWithHeap",
-                "",
-                1_000,
-                "tumbling",
-                &[],
-                "",
-            ),
+            "netflow_table",
+            "CountMinSketchWithHeap",
+            "",
+            1_000,
+            "tumbling",
+            &[],
+            "",
         );
+        malformed.parameters.remove("count_events");
+        configs.insert(7, malformed);
         configs.insert(9, make_key_agg(9, "netflow_table"));
-        let result = find_compatible_aggregation(&configs, &topk_req("netflow_table", Some(true)))
-            .expect("default (no flag) sketch should serve COUNT top-k");
-        assert_eq!(result.aggregation_id_for_value, 7);
+        let error =
+            super::find_compatible_aggregation(&configs, &topk_req("netflow_table", Some(true)))
+                .expect_err("missing count_events must be a capability-matching error");
+        assert!(matches!(
+            error,
+            CapabilityMatchingError::InvalidAggregationConfig(
+                AggregationConfigError::MissingCountEvents { aggregation_id: 7 }
+            )
+        ));
     }
 
     #[test]
-    fn topk_unconstrained_weighting_matches_any_sketch() {
-        // `topk_count_events: None` (e.g. PromQL top-k) imposes no weighting
-        // constraint, so any heap sketch on the metric matches.
+    fn topk_without_weighting_is_rejected_as_ambiguous() {
         let mut configs = HashMap::new();
         configs.insert(3, make_topk_config(3, "netflow_table", false));
         configs.insert(9, make_key_agg(9, "netflow_table"));
-        let result = find_compatible_aggregation(&configs, &topk_req("netflow_table", None))
-            .expect("unconstrained top-k should match regardless of count_events");
-        assert_eq!(result.aggregation_id_for_value, 3);
+        let error = super::find_compatible_aggregation(&configs, &topk_req("netflow_table", None))
+            .expect_err("top-k without an explicit weighting must be rejected");
+        assert!(matches!(
+            error,
+            CapabilityMatchingError::MissingTopkWeighting
+        ));
     }
 }

@@ -32,8 +32,8 @@ pub struct QueryRequirements {
     ///   * `Some(true)`  → COUNT semantics (`count_events: true`, weight 1/event),
     ///   * `Some(false)` → SUM semantics (`count_events: false`, weight = value).
     ///
-    /// `None` for non-top-k requirements (and for PromQL top-k, which does not
-    /// constrain the sketch weighting); matching ignores it when `None`.
+    /// PromQL top-k is value-weighted, so it uses `Some(false)`. `None` is only
+    /// valid for non-top-k requirements.
     pub topk_count_events: Option<bool>,
 }
 
@@ -91,12 +91,14 @@ pub fn build_query_requirements_promql(
         all_labels
     };
 
+    let topk_count_events = statistics.contains(&Statistic::Topk).then_some(false);
+
     Some(QueryRequirements {
         metric,
         statistics,
         data_range_ms,
         grouping_labels,
         spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
-        topk_count_events: None,
+        topk_count_events,
     })
 }

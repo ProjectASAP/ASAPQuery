@@ -1242,7 +1242,8 @@ impl SimpleEngine {
                 .read()
                 .unwrap()
                 .clone()
-                .find_compatible_aggregation(&requirements)?
+                .find_compatible_aggregation(&requirements)
+                .unwrap_or_else(|error| panic!("capability matching failed: {error}"))?
         };
 
         let result =
@@ -1433,6 +1434,24 @@ mod topk_pipeline_tests {
     // Aligned to the 1s scrape interval (multiple of 1000ms).
     const QUERY_TIME: f64 = 1_759_276_810.0;
     const TOPK_QUERY: &str = "topk(10, transfer_events)";
+
+    #[test]
+    fn promql_topk_requirements_are_explicitly_value_weighted() {
+        let (engine, _store) = build_topk_engine();
+        let ast = promql_parser::parser::parse(TOPK_QUERY).unwrap();
+        let match_result = engine
+            .find_matching_controller_pattern(&ast, TOPK_QUERY)
+            .expect("topk query should match");
+        let schema = PromQLSchema::new().add_metric(
+            METRIC.to_string(),
+            KeyByLabelNames::new(vec!["srcip".to_string()]),
+        );
+        let requirements =
+            asap_types::build_query_requirements_promql(TOPK_QUERY, &match_result, &schema, 1000)
+                .expect("topk requirements should build");
+
+        assert_eq!(requirements.topk_count_events, Some(false));
+    }
 
     fn build_topk_engine() -> (SimpleEngine, Arc<SimpleMapStore>) {
         let promql_schema = PromQLSchema::new().add_metric(

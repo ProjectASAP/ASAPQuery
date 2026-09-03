@@ -9,6 +9,25 @@ use crate::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::AggregationType;
 
+#[derive(Debug, thiserror::Error)]
+pub enum AggregationConfigError {
+    #[error(
+        "aggregation {aggregation_id} (CountMinSketchWithHeap) missing required parameter 'count_events'"
+    )]
+    MissingCountEvents { aggregation_id: u64 },
+    #[error(
+        "aggregation {aggregation_id} (CountMinSketchWithHeap) parameter 'count_events' must be a boolean, got {value}"
+    )]
+    InvalidCountEventsType { aggregation_id: u64, value: Value },
+    #[error(
+        "aggregation {aggregation_id} ({aggregation_type}) parameter 'count_events' is only valid for CountMinSketchWithHeap"
+    )]
+    MisplacedCountEvents {
+        aggregation_id: u64,
+        aggregation_type: AggregationType,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggregationConfig {
     pub aggregation_id: u64,
@@ -49,6 +68,31 @@ pub struct AggregationIdInfo {
 // TODO: need to implement deserialization methods
 
 impl AggregationConfig {
+    pub fn validate(&self) -> Result<(), AggregationConfigError> {
+        if self.aggregation_type == AggregationType::CountMinSketchWithHeap {
+            match self.parameters.get("count_events") {
+                None => {
+                    return Err(AggregationConfigError::MissingCountEvents {
+                        aggregation_id: self.aggregation_id,
+                    })
+                }
+                Some(value) if !value.is_boolean() => {
+                    return Err(AggregationConfigError::InvalidCountEventsType {
+                        aggregation_id: self.aggregation_id,
+                        value: value.clone(),
+                    })
+                }
+                Some(_) => {}
+            }
+        } else if self.parameters.contains_key("count_events") {
+            return Err(AggregationConfigError::MisplacedCountEvents {
+                aggregation_id: self.aggregation_id,
+                aggregation_type: self.aggregation_type,
+            });
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         aggregation_id: u64,
@@ -177,7 +221,7 @@ impl AggregationConfig {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        Ok(Self::new(
+        let config = Self::new(
             aggregation_id,
             aggregation_type,
             aggregation_sub_type,
@@ -195,7 +239,9 @@ impl AggregationConfig {
             read_count_threshold,
             table_name,
             value_column,
-        ))
+        );
+        config.validate()?;
+        Ok(config)
     }
 
     pub fn deserialize_from_bytes(
@@ -323,7 +369,7 @@ impl AggregationConfig {
             }
         };
 
-        Ok(Self::new(
+        let config = Self::new(
             aggregation_id,
             aggregation_type,
             aggregation_sub_type,
@@ -341,7 +387,9 @@ impl AggregationConfig {
             read_count_threshold,
             table_name,
             value_column,
-        ))
+        );
+        config.validate()?;
+        Ok(config)
     }
 }
 

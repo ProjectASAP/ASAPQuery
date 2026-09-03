@@ -1,5 +1,6 @@
 use asap_planner::{Controller, ControllerError, PromQLSchema, RuntimeOptions, StreamingEngine};
 use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::AggregationType;
 use std::path::Path;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -455,6 +456,25 @@ fn topk_produces_count_min_sketch_with_heap() {
     .unwrap();
     let out = c.generate().unwrap();
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
+        Some(serde_yaml::Value::Bool(false)),
+        "PromQL topk ranks sample values, not observation counts"
+    );
+}
+
+#[test]
+fn heap_parameters_require_explicit_count_events_weighting() {
+    let error = asap_planner::planner::sketch::build_sketch_parameters(
+        AggregationType::CountMinSketchWithHeap,
+        "topk",
+        Some(5),
+        None,
+        None,
+    )
+    .expect_err("heap planning without count_events must be rejected");
+
+    assert!(error.contains("count_events"));
 }
 
 #[test]
