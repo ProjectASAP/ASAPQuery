@@ -12,6 +12,7 @@ python experiment_run_e2e.py \
   providers.cloudlab.num_nodes=4 \
   providers.cloudlab.username=myuser \
   providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
+  controller.punting=false \
   prometheus.local_config_dir=/path/to/prometheus/config
 ```
 
@@ -23,6 +24,8 @@ All experiment scripts require these core parameters:
 - `providers.cloudlab.num_nodes`: Number of CloudLab nodes
 - `providers.cloudlab.username`: Your CloudLab username
 - `providers.cloudlab.hostname_suffix`: CloudLab experiment hostname suffix
+- `controller.punting`: Whether to enable controller query punting (`true` or
+  `false`) for runners that use the shared Hydra validation
 
 ### Script-Specific Required Parameters
 - **experiment_run_clickhouse.py**: `experiment_type=clickhouse`, `experiment_params.dataset.name`, `experiment_params.dataset.local_data_file`, `experiment_params.query_groups[0].sql_file`
@@ -110,6 +113,7 @@ python experiment_run_e2e.py \
   providers.cloudlab.num_nodes=2 \
   providers.cloudlab.username=myuser \
   providers.cloudlab.hostname_suffix=dev.cloudlab.us \
+  controller.punting=false \
   prometheus.local_config_dir=/path/to/prometheus/config \
   logging.level=DEBUG \
   flow.steady_state_wait=60
@@ -206,6 +210,7 @@ python experiment_run_clickhouse.py \
   providers.cloudlab.num_nodes=1 \
   providers.cloudlab.username=myuser \
   providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
+  controller.punting=false \
   experiment_params.dataset.name=clickbench \
   experiment_params.dataset.local_data_file=/path/to/hits.json \
   'experiment_params.query_groups[0].sql_file=/path/to/queries.sql'
@@ -234,6 +239,7 @@ python experiment_run_e2e.py \
   providers.cloudlab.num_nodes=4 \
   providers.cloudlab.username=myuser \
   providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
+  controller.punting=false \
   prometheus.local_config_dir=/path/to/prometheus/config
 ```
 
@@ -244,7 +250,8 @@ python experiment_run_exporters_and_prometheus.py \
   experiment.name=monitoring_test \
   providers.cloudlab.num_nodes=4 \
   providers.cloudlab.username=myuser \
-  providers.cloudlab.hostname_suffix=myexp.cloudlab.us
+  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
+  controller.punting=false
 ```
 
 ### experiment_run_empty_flink.py (Simplified Streaming)
@@ -337,6 +344,7 @@ python experiment_run_e2e.py \
   providers.cloudlab.num_nodes=4 \
   providers.cloudlab.username=user \
   providers.cloudlab.hostname_suffix=exp.cloudlab.us \
+  controller.punting=false \
   prometheus.local_config_dir=/path/to/config
 ```
 

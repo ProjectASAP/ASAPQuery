@@ -118,6 +118,11 @@ CLICKHOUSE_INGEST_MONITOR_OUTPUT_FILE = "monitor_output_ingest.json"
 DEFAULT_MONITOR_INTERVAL_SECONDS = 1.0
 
 
+def _start_clickhouse_controller(controller_service, cfg, **kwargs):
+    """Start the ClickHouse planner using the configured punting setting."""
+    controller_service.start(punting=cfg.controller.punting, **kwargs)
+
+
 def _inline_sql_queries_in_experiment_config(local_experiment_root_dir: str) -> None:
     """Enrich the saved experiment_params.yaml by inlining SQL from sql_file references.
 
@@ -545,13 +550,14 @@ def main(cfg: DictConfig) -> None:
             controller_service = ControllerService(
                 provider=provider, use_container=False, node_offset=node_offset
             )
-            controller_service.start(
+            _start_clickhouse_controller(
+                controller_service,
+                cfg,
                 controller_input_file=os.path.join(
                     remote_controller_dir, "planner_input.yaml"
                 ),
                 streaming_engine="precompute",
                 controller_remote_output_dir=remote_controller_dir,
-                punting=False,
                 discovery_backend=DiscoveryBackend(
                     type="clickhouse",
                     url=clickhouse_url,
