@@ -553,10 +553,10 @@ class QueryEngineRustService(BaseQueryEngineService):
 
     def is_healthy(self) -> bool:
         """
-        Check if Rust query engine is healthy by checking if process is running.
+        Check that the Rust query engine process and HTTP API are ready.
 
         Returns:
-            True if Rust query engine process is running
+            True if the process is running and its HTTP API is ready
         """
         if self.use_container:
             return self._is_healthy_containerized()
@@ -578,7 +578,7 @@ class QueryEngineRustService(BaseQueryEngineService):
             import subprocess
 
             assert isinstance(result, subprocess.CompletedProcess)
-            return result.stdout.strip() != ""
+            return result.stdout.strip() != "" and self._is_runtime_info_ready()
         except Exception:
             return False
 
@@ -595,9 +595,27 @@ class QueryEngineRustService(BaseQueryEngineService):
                 ignore_errors=True,
             )
             assert isinstance(result, subprocess.CompletedProcess)
-            return result.stdout.strip() == "true"
+            return result.stdout.strip() == "true" and self._is_runtime_info_ready()
         except Exception:
             return False
+
+    def _is_runtime_info_ready(self) -> bool:
+        """Check that the query API serves its runtime-info endpoint."""
+        cmd = (
+            f"curl -fsS --max-time {constants.HTTP_READINESS_CURL_TIMEOUT_SECONDS} "
+            f"http://127.0.0.1:{self.get_http_port()}"
+            f"{constants.QUERY_ENGINE_RUNTIME_INFO_ENDPOINT} >/dev/null"
+        )
+        result = self.provider.execute_command(
+            node_idx=self.node_offset,
+            cmd=cmd,
+            cmd_dir=None,
+            nohup=False,
+            popen=False,
+            ignore_errors=True,
+        )
+        assert isinstance(result, subprocess.CompletedProcess)
+        return result.returncode == 0
 
     def get_monitoring_keyword(self) -> str:
         """
