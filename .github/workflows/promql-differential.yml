@@ -1,17 +1,17 @@
 name: PromQL Differential Tests
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
-    branches: [main]
-    paths:
-      - 'promql-compliance/**'
-      - 'asap-query-engine/**'
-      - 'asap-planner-rs/**'
-      - 'asap-common/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/promql-differential.yml'
+  # pull_request:
+  #   types: [opened, synchronize, reopened, ready_for_review]
+  #   branches: [main]
+  #   paths:
+  #     - 'promql-compliance/**'
+  #     - 'asap-query-engine/**'
+  #     - 'asap-planner-rs/**'
+  #     - 'asap-common/**'
+  #     - 'Cargo.toml'
+  #     - 'Cargo.lock'
+  #     - '.github/workflows/promql-differential.yml'
   workflow_dispatch:
 
 concurrency:
