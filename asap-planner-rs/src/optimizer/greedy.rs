@@ -197,12 +197,14 @@ mod tests {
     fn missing_cms_with_heap_reference_cost_falls_back_to_exact() {
         // Regression coverage for #651: an uncosted CMS-with-heap candidate
         // must be dropped rather than inheriting the flat stub and winning.
+        let aqe = make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0);
         let solution = greedy_assign(
-            vec![make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0)],
+            vec![aqe.clone()],
             60_000,
             1.0,
             &AtomicCostTable::default(),
             &CostWeights::default(),
+            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
         );
 
         assert_eq!(solution.num_exact_fallback(), 1);
@@ -222,12 +224,14 @@ mod tests {
             merge_cpu_secs: 0.0,
             query_cpu_secs: 0.0,
         }];
+        let aqe = make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0);
         let solution = greedy_assign(
-            vec![make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0)],
+            vec![aqe.clone()],
             60_000,
             1.0,
             &table,
             &CostWeights::default(),
+            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
         );
 
         assert_eq!(solution.num_exact_fallback(), 0);
