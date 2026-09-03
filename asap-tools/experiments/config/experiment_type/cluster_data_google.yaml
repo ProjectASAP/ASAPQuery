@@ -9,6 +9,11 @@ experiment:
   - mode: baseline
     server: prometheus
 
+# Monitoring tool configuration
+monitoring:
+  tool: prometheus
+  deployment_mode: bare_metal
+
 servers:
 - name: prometheus
   url: http://localhost:9090
@@ -34,6 +39,9 @@ exporters:
       #parts_mode: "all-parts"  # or "part-index" with part_index: 0
       parts_mode: "part-index"  # or "part-index" with part_index: 0
       part_index: 0
+      # A Google task_usage scrape contains many active task series.
+      scrape_interval: "60s"
+      scrape_timeout: "30s"
       # Optional configuration
       # log_level: "INFO"  # DEBUG, INFO, WARN, ERROR (default: INFO)
       # memory_limit: "2g"
