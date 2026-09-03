@@ -26,7 +26,7 @@ jobs:
   differential:
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +55,7 @@ jobs:
 
       - name: Run live PromQL differential suite
         working-directory: promql-compliance/runner
-        run: make run
+        run: make run-all
 
       - name: Upload differential report and service logs
         if: always()
@@ -63,6 +63,6 @@ jobs:
         with:
           name: promql-differential-results
           path: |
-            promql-compliance/runner/differential-report.json
+            /tmp/asapquery-differential-reports/*.json
             /tmp/asapquery-differential-*
           if-no-files-found: warn
