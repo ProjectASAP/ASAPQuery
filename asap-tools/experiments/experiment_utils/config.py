@@ -509,9 +509,23 @@ def read_workloads_config(experiment_params: DictConfig):
     return workloads_config
 
 
-def get_prometheus_data_ingestion_interval_ms(prometheus_config):
-    """Extract scrape interval from Prometheus configuration, returned in milliseconds."""
+def get_prometheus_data_ingestion_interval_ms(
+    prometheus_config, experiment_params=None
+):
+    """Extract the effective scrape interval, returned in milliseconds.
+
+    Cluster-data exporters may override the global Prometheus scrape interval
+    for their per-target job. Use that same experiment setting for controller
+    planning and query-engine ingestion when it is present.
+    """
     s = prometheus_config.scrape_interval
+    if experiment_params is not None:
+        exporters = experiment_params.get("exporters", {})
+        exporter_list = exporters.get("exporter_list", {})
+        cluster_data_exporter = exporter_list.get("cluster_data_exporter")
+        if cluster_data_exporter is not None:
+            s = cluster_data_exporter.get("scrape_interval", s)
+
     # ponytail: check ms before s — "100ms".endswith("s") is True and would misroute
     if s.endswith("ms"):
         return int(s[:-2])

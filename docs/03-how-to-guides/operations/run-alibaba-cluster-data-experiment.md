@@ -89,6 +89,8 @@ sketchdb-cluster-data-exporter:latest
 The checked-in experiment configuration is
 `asap-tools/experiments/config/experiment_type/cluster_data_alibaba_node_2021.yaml`.
 It runs four global CPU quantiles, ten repetitions each, at 3x replay speed.
+Its cluster-data scrape interval is explicitly set to 10 seconds, and the
+controller uses that same interval for ingestion planning.
 
 `controller.punting` is set to `false` in
 `asap-tools/experiments/config/config.yaml`.
@@ -159,7 +161,8 @@ This configuration runs both `sketchdb` and `baseline` modes. Google
 `task_usage` produces a much larger `/metrics` response than the Alibaba
 Node trace, so the Google config sets the cluster-data scrape interval to
 60 seconds and timeout to 30 seconds. The Prometheus config generator honors
-these optional exporter settings; Alibaba retains its 10-second default.
+these optional exporter settings. The Google query repetition delay is also
+60 seconds so repetitions do not outrun new scrapes.
 
 The default query is:
 

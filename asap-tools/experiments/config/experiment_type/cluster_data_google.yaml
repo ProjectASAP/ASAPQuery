@@ -60,7 +60,7 @@ query_groups:
   #- sum by (task_index) (google_canonical_memory_usage_0)
   ## Query Google max CPU usage
   #- google_max_cpu_usage_0
-  repetition_delay_ms: 10000
+  repetition_delay_ms: 60000
   client_options:
     repetitions: 10
     query_time_offset: 10
