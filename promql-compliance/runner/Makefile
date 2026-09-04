@@ -7,7 +7,8 @@ REPORT_DIR ?= /tmp/asapquery-differential-reports
 CASES := \
 	single-rate-temporal:../datasets/single-rate.yaml:../suites/temporal.yaml \
 	sparse-checkout-temporal:../datasets/sparse-checkout.yaml:../suites/temporal.yaml \
-	aggregations:../datasets/aggregations.yaml:../suites/aggregations.yaml
+	aggregations:../datasets/aggregations.yaml:../suites/aggregations.yaml \
+	aggregations-dense-cadence:../datasets/aggregations-dense-cadence.yaml:../suites/aggregations.yaml
 
 test:
 	go test ./...

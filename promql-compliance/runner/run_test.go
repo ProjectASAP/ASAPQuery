@@ -23,6 +23,34 @@ func TestDataProbeTimeUsesConfiguredEvaluationTime(t *testing.T) {
 	}
 }
 
+func TestLatestEvaluationIsMaxAcrossQueriesAndOwningQuery(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	suite := Suite{
+		Name: "mixed",
+		Queries: []QueryCase{
+			{Name: "early-instant", Expr: "early", InstantOffsetsSeconds: []float64{300, 600}},
+			{Name: "late-range", Expr: "late", Range: &RangeSpec{StartOffsetSeconds: 0, EndOffsetSeconds: 1200, StepSeconds: 60}},
+			{Name: "mid-instant", Expr: "mid", InstantOffsetsSeconds: []float64{900}},
+		},
+	}
+	query, latest, ok := latestEvaluation(suite, base)
+	if !ok {
+		t.Fatal("latestEvaluation: expected a result")
+	}
+	if want := base.Add(1200 * time.Second); !latest.Equal(want) {
+		t.Fatalf("latest evaluation time = %s, want %s (the range's end, not the highest instant offset)", latest, want)
+	}
+	if query.Name != "late-range" {
+		t.Fatalf("latest evaluation query = %q, want %q (the query that timestamp actually belongs to)", query.Name, "late-range")
+	}
+}
+
+func TestLatestEvaluationEmptySuite(t *testing.T) {
+	if _, _, ok := latestEvaluation(Suite{Name: "empty"}, time.Now()); ok {
+		t.Fatal("latestEvaluation: expected no result for a suite with no queries")
+	}
+}
+
 func TestGeneratedConfigsUseCurrentPlannerAndEngineSchema(t *testing.T) {
 	directory := t.TempDir()
 	fixture := seeder.Fixture{
