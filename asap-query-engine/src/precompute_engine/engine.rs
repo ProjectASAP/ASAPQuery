@@ -258,9 +258,10 @@ impl PrecomputeEngine {
 
 /// Validate aggregation configs before starting any worker or ingest task.
 ///
-/// Count-Min Sketch configs carry their semantic contract in subtype fields or
-/// parameters; allowing an invalid value to reach the lazy worker path would
-/// leave the engine running while silently losing that contract.
+/// Count-Min Sketch and MultipleSum configs carry their semantic contract in
+/// subtype fields or parameters; allowing an invalid value to reach the lazy
+/// worker path would leave the engine running while silently losing that
+/// contract.
 fn validate_startup_aggregation_configs(
     streaming_config: &StreamingConfig,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -269,7 +270,9 @@ fn validate_startup_aggregation_configs(
     for (&aggregation_id, config) in streaming_config.get_all_aggregation_configs() {
         if !matches!(
             config.aggregation_type,
-            AggregationType::CountMinSketch | AggregationType::CountMinSketchWithHeap
+            AggregationType::CountMinSketch
+                | AggregationType::CountMinSketchWithHeap
+                | AggregationType::MultipleSum
         ) {
             continue;
         }
@@ -356,6 +359,49 @@ mod tests {
         let result = engine.run().await;
         let err = match result {
             Ok(()) => panic!("invalid CMS subtype must fail before startup"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("aggregation_id 1"));
+        assert!(err.to_string().contains("sum") && err.to_string().contains("count"));
+    }
+
+    #[tokio::test]
+    async fn run_rejects_invalid_multiple_sum_subtype_before_starting_workers() {
+        let multiple_sum = AggregationConfig::new(
+            1,
+            AggregationType::MultipleSum,
+            String::new(),
+            HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+                "host".to_string()
+            ]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            1_000,
+            1_000,
+            WindowType::Tumbling,
+            "requests_total".to_string(),
+            "requests_total".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let engine = PrecomputeEngine::new(
+            PrecomputeEngineConfig {
+                num_workers: 1,
+                late_data_policy: LateDataPolicy::Drop,
+                ..PrecomputeEngineConfig::default()
+            },
+            Arc::new(StreamingConfig::new(HashMap::from([(1, multiple_sum)]))),
+            Arc::new(NoopOutputSink::new()),
+            vec![Box::new(ShutdownSource)],
+        );
+
+        let result = engine.run().await;
+        let err = match result {
+            Ok(()) => panic!("invalid MultipleSum subtype must fail before startup"),
             Err(err) => err,
         };
         assert!(err.to_string().contains("aggregation_id 1"));
