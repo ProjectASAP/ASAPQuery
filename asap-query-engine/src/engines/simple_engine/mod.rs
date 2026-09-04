@@ -301,6 +301,7 @@ impl SimpleEngine {
                 AggregationOperator::Quantile,
                 AggregationOperator::Min,
                 AggregationOperator::Max,
+                AggregationOperator::Topk,
             ]
             .into_iter()
             .filter_map(move |op| {

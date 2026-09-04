@@ -107,7 +107,42 @@ pub fn get_is_collapsable(
         ),
         AggregationOperator::Min => temporal_aggregation == PromQLFunction::MinOverTime,
         AggregationOperator::Max => temporal_aggregation == PromQLFunction::MaxOverTime,
+        // topk ranks by whatever value the temporal function produces per
+        // series: sum_over_time's summed value or count_over_time's event
+        // count. See `Statistic::Topk`'s handling in `get_statistics_to_compute`
+        // and `promql_topk_count_events`, which derive from the same pairing.
+        AggregationOperator::Topk => matches!(
+            temporal_aggregation,
+            PromQLFunction::SumOverTime | PromQLFunction::CountOverTime
+        ),
         _ => false,
+    }
+}
+
+/// For a topk match result, the `count_events` weighting the wrapped temporal
+/// function implies:
+///   * no temporal function (raw vector topk), or `sum_over_time` → `Some(false)`
+///     (value-weighted: topk ranks by the value itself),
+///   * `count_over_time` → `Some(true)` (count-weighted: topk ranks by the
+///     per-series event count).
+///
+/// Returns `None` if the match result is not a topk aggregation.
+pub fn promql_topk_count_events(
+    match_result: &crate::ast_matching::PromQLMatchResult,
+) -> Option<bool> {
+    if match_result
+        .get_aggregation_op()?
+        .parse::<AggregationOperator>()
+        != Ok(AggregationOperator::Topk)
+    {
+        return None;
+    }
+    match match_result
+        .get_function_name()
+        .and_then(|name| name.parse::<PromQLFunction>().ok())
+    {
+        Some(PromQLFunction::CountOverTime) => Some(true),
+        _ => Some(false),
     }
 }
 

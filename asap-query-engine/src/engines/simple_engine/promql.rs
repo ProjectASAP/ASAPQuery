@@ -1453,6 +1453,47 @@ mod topk_pipeline_tests {
         assert_eq!(requirements.topk_count_events, Some(false));
     }
 
+    #[test]
+    fn topk_over_sum_over_time_matches_and_is_value_weighted() {
+        // https://github.com/ProjectASAP/asap-internal/issues/699
+        let (engine, _store) = build_topk_engine();
+        let query = "topk(1, sum_over_time(transfer_events[5m]))";
+        let ast = promql_parser::parser::parse(query).unwrap();
+        let match_result = engine
+            .find_matching_controller_pattern(&ast, query)
+            .expect("topk over sum_over_time should match a controller pattern");
+        let schema = PromQLSchema::new().add_metric(
+            METRIC.to_string(),
+            KeyByLabelNames::new(vec!["srcip".to_string()]),
+        );
+        let requirements =
+            asap_types::build_query_requirements_promql(query, &match_result, &schema, 1000)
+                .expect("topk over sum_over_time requirements should build");
+
+        assert_eq!(requirements.statistics, vec![Statistic::Topk]);
+        assert_eq!(requirements.topk_count_events, Some(false));
+    }
+
+    #[test]
+    fn topk_over_count_over_time_matches_and_is_count_weighted() {
+        let (engine, _store) = build_topk_engine();
+        let query = "topk by (job) (3, count_over_time(transfer_events[5m]))";
+        let ast = promql_parser::parser::parse(query).unwrap();
+        let match_result = engine
+            .find_matching_controller_pattern(&ast, query)
+            .expect("topk over count_over_time should match a controller pattern");
+        let schema = PromQLSchema::new().add_metric(
+            METRIC.to_string(),
+            KeyByLabelNames::new(vec!["srcip".to_string()]),
+        );
+        let requirements =
+            asap_types::build_query_requirements_promql(query, &match_result, &schema, 1000)
+                .expect("topk over count_over_time requirements should build");
+
+        assert_eq!(requirements.statistics, vec![Statistic::Topk]);
+        assert_eq!(requirements.topk_count_events, Some(true));
+    }
+
     fn build_topk_engine() -> (SimpleEngine, Arc<SimpleMapStore>) {
         let promql_schema = PromQLSchema::new().add_metric(
             METRIC.to_string(),

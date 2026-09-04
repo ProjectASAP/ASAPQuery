@@ -1,6 +1,7 @@
 use crate::config::input::SketchParameterOverrides;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::query_logics::enums::AggregationType;
+use promql_utilities::query_logics::logics::promql_topk_count_events;
 use std::collections::HashMap;
 
 // Default sketch parameters
@@ -163,11 +164,18 @@ pub fn build_sketch_parameters_from_promql(
     } else {
         None
     };
+    let topk_count_events = if aggregation_type == AggregationType::CountMinSketchWithHeap {
+        Some(promql_topk_count_events(match_result).ok_or_else(|| {
+            "topk query missing required aggregation match to derive count_events".to_string()
+        })?)
+    } else {
+        None
+    };
     build_sketch_parameters(
         aggregation_type,
         aggregation_sub_type,
         topk_k,
-        Some(false),
+        topk_count_events,
         sketch_params,
     )
 }

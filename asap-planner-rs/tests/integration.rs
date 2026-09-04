@@ -464,6 +464,62 @@ fn topk_produces_count_min_sketch_with_heap() {
 }
 
 #[test]
+fn topk_over_sum_over_time_produces_value_weighted_heap() {
+    // https://github.com/ProjectASAP/asap-internal/issues/699 — topk wrapping
+    // a temporal aggregation must still be planned, not silently omitted.
+    let c = Controller::from_yaml_with_schema(
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "topk(1, sum_over_time(http_requests_total[5m]))"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
+        Some(serde_yaml::Value::Bool(false)),
+        "topk ranks the summed value, not the observation count"
+    );
+}
+
+#[test]
+fn topk_over_count_over_time_produces_count_weighted_heap() {
+    let c = Controller::from_yaml_with_schema(
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "topk by (job) (3, count_over_time(http_requests_total[5m]))"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
+        Some(serde_yaml::Value::Bool(true)),
+        "topk over count_over_time ranks the observation count"
+    );
+}
+
+#[test]
 fn heap_parameters_require_explicit_count_events_weighting() {
     let error = asap_planner::planner::sketch::build_sketch_parameters(
         AggregationType::CountMinSketchWithHeap,

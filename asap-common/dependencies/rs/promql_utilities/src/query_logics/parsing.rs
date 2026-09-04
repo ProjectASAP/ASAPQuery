@@ -84,11 +84,16 @@ pub fn get_metric_and_spatial_filter(match_result: &PromQLMatchResult) -> (Strin
 ///   reachable via a pattern already narrowed to a collapsable `(function,
 ///   op)` pair (see `get_is_collapsable`, and #508's pattern-narrowing fix
 ///   that makes non-collapsable combinations fail to match at all) — asserted
-///   below rather than silently trusted. The statistic still comes from the
-///   *function*, never the outer op: e.g. `count_over_time` + `sum` needs a
-///   `Count` accumulator, not a `Sum` one — summing per-series counts gives
-///   the group's total count, so the outer op only describes how per-series
-///   results combine, never which statistic must be precomputed.
+///   below rather than silently trusted. Which side supplies the statistic
+///   then depends on the outer op:
+///     - `topk`: the statistic is always `Topk` — a `topk(k, sum_over_time(x))`
+///       still needs a heavy-hitter sketch, not a `Sum` accumulator, so the
+///       outer op is never dropped (see #699).
+///     - every other collapsable op: the statistic comes from the *function*,
+///       never the outer op — e.g. `count_over_time` + `sum` needs a `Count`
+///       accumulator, not a `Sum` one, since summing per-series counts gives
+///       the group's total count. Here the outer op only describes how
+///       per-series results combine, never which statistic must be precomputed.
 ///
 /// Returns a typed error if the matched statistic/function name is not
 /// recognized, so callers can decide whether to skip or fail the query.
@@ -107,20 +112,23 @@ pub fn get_statistics_to_compute(
     };
 
     let statistic_to_compute: Option<String> = if has_function && has_aggregation {
+        let aggregation_op = match_result
+            .get_aggregation_op()
+            .and_then(|o| o.parse::<AggregationOperator>().ok());
         debug_assert!(
             match_result
                 .get_function_name()
                 .and_then(|f| f.parse::<PromQLFunction>().ok())
-                .zip(
-                    match_result
-                        .get_aggregation_op()
-                        .and_then(|o| o.parse::<AggregationOperator>().ok())
-                )
+                .zip(aggregation_op)
                 .is_some_and(|(f, o)| get_is_collapsable(f, o)),
             "a match with both function and aggregation tokens must be collapsable \
              (patterns are narrowed to only collapsable pairs, see #508)"
         );
-        function_statistic(match_result)
+        if aggregation_op == Some(AggregationOperator::Topk) {
+            Some(AggregationOperator::Topk.as_str().to_string())
+        } else {
+            function_statistic(match_result)
+        }
     } else if has_function {
         function_statistic(match_result)
     } else if has_aggregation {
