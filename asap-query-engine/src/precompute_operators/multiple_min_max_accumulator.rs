@@ -3,6 +3,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -169,10 +170,10 @@ impl MultipleMinMaxAccumulator {
 }
 
 impl SerializableToSink for MultipleMinMaxAccumulator {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         let mut values_obj = serde_json::Map::new();
         for (key, value) in &self.values {
-            let key_json = key.serialize_to_json();
+            let key_json = key.serialize_to_json()?;
             let key_str = serde_json::to_string(&key_json).unwrap();
             values_obj.insert(
                 key_str,
@@ -180,13 +181,13 @@ impl SerializableToSink for MultipleMinMaxAccumulator {
             );
         }
 
-        serde_json::json!({
+        Ok(serde_json::json!({
             "values": values_obj,
             "sub_type": self.sub_type
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         let mut buffer = Vec::new();
 
         // Write number of entries
@@ -194,7 +195,7 @@ impl SerializableToSink for MultipleMinMaxAccumulator {
 
         // Write each key-value pair
         for (key, value) in &self.values {
-            let key_bytes = key.serialize_to_bytes();
+            let key_bytes = key.serialize_to_bytes()?;
 
             // Write key length and data
             buffer.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
@@ -204,7 +205,7 @@ impl SerializableToSink for MultipleMinMaxAccumulator {
             buffer.extend_from_slice(&value.to_le_bytes());
         }
 
-        buffer
+        Ok(buffer)
     }
 }
 
@@ -469,13 +470,13 @@ mod tests {
         acc.add_value(key.clone(), 42.5);
 
         // Test JSON serialization
-        let json = acc.serialize_to_json();
+        let json = acc.serialize_to_json().unwrap();
         let deserialized = MultipleMinMaxAccumulator::deserialize_from_json(&json).unwrap();
         assert_eq!(deserialized.values.get(&key), Some(&42.5));
         assert_eq!(deserialized.sub_type, "min");
 
         // Test byte serialization
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         let deserialized_bytes =
             MultipleMinMaxAccumulator::deserialize_from_bytes(&bytes, "min".to_string()).unwrap();
         assert_eq!(deserialized_bytes.values.get(&key), Some(&42.5));

@@ -3,6 +3,7 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, SerializableToSink,
 };
 use asap_sketchlib::{message_pack_format::MessagePackCodec, CountMinSketch};
+use asap_types::traits::SerializationError;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -157,16 +158,21 @@ impl CountMinSketchAccumulator {
 }
 
 impl SerializableToSink for CountMinSketchAccumulator {
-    fn serialize_to_json(&self) -> Value {
-        serde_json::json!({
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+        Ok(serde_json::json!({
             "row_num": self.inner.rows(),
             "col_num": self.inner.cols(),
             "sketch": self.inner.sketch()
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.to_msgpack().unwrap_or_default()
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        self.inner
+            .to_msgpack()
+            .map_err(|e| SerializationError::Bytes {
+                type_name: "CountMinSketchAccumulator",
+                source: e.to_string().into(),
+            })
     }
 }
 
@@ -342,7 +348,7 @@ mod tests {
             ),
         };
 
-        let bytes = cms.serialize_to_bytes();
+        let bytes = cms.serialize_to_bytes().unwrap();
         let deserialized =
             CountMinSketchAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
 

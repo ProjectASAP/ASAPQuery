@@ -202,11 +202,14 @@ impl<T: Store + Send + Sync + 'static> KafkaConsumer<T> {
                 );
                 debug!("{}", batch[0].0.get_freshness_debug_string());
                 for (item, _) in batch.iter() {
+                    let json_str = item
+                        .serialize_to_json()
+                        .map_err(|e| e.to_string())
+                        .and_then(|v| serde_json::to_string(&v).map_err(|e| e.to_string()))
+                        .unwrap_or_else(|e| format!("failed to serialize: {e}"));
                     debug!(
                         "Received message: {} with aggregation_id: {}",
-                        serde_json::to_string(&item.serialize_to_json())
-                            .unwrap_or_else(|_| "failed to serialize".to_string()),
-                        item.aggregation_id
+                        json_str, item.aggregation_id
                     );
                 }
             }

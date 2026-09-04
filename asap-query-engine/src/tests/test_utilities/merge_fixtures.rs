@@ -7,6 +7,7 @@
 use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, SerializableToSink};
 use crate::precompute_operators::CountMinSketchAccumulator;
 use asap_sketchlib::CountMinSketch;
+use asap_types::traits::SerializationError;
 use serde_json::Value;
 use std::any::Any;
 
@@ -36,9 +37,9 @@ pub fn oracle_sequential_fold(buckets: &[Box<dyn AggregateCore>]) -> Box<dyn Agg
     acc
 }
 
-/// Mock accumulator whose `merge_with` fails under a condition the test
-/// fully controls (a `poisoned` flag), independent of any real
-/// accumulator's library-specific error conditions.
+/// Mock accumulator whose `merge_with` and serialization fail under a
+/// condition the test fully controls (a `poisoned` flag), independent of
+/// any real accumulator's library-specific error conditions.
 #[derive(Clone, Debug)]
 pub struct PoisonableAccumulator {
     pub id: u32,
@@ -46,11 +47,23 @@ pub struct PoisonableAccumulator {
 }
 
 impl SerializableToSink for PoisonableAccumulator {
-    fn serialize_to_json(&self) -> Value {
-        serde_json::json!({"id": self.id})
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+        if self.poisoned {
+            return Err(SerializationError::Json {
+                type_name: "PoisonableAccumulator",
+                source: format!("poisoned accumulator id {}", self.id).into(),
+            });
+        }
+        Ok(serde_json::json!({"id": self.id}))
     }
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.id.to_le_bytes().to_vec()
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        if self.poisoned {
+            return Err(SerializationError::Bytes {
+                type_name: "PoisonableAccumulator",
+                source: format!("poisoned accumulator id {}", self.id).into(),
+            });
+        }
+        Ok(self.id.to_le_bytes().to_vec())
     }
 }
 
@@ -93,5 +106,30 @@ impl AggregateCore for PoisonableAccumulator {
         _query_kwargs: &std::collections::HashMap<String, String>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
         Err("PoisonableAccumulator does not support query_statistic".into())
+    }
+}
+
+#[cfg(test)]
+mod poisoned_serialization_tests {
+    use super::*;
+
+    // Regression test for #673: a poisoned accumulator must return an error
+    // from the serialization boundary, not empty bytes/JSON.
+    #[test]
+    fn poisoned_accumulator_fails_serialization_loudly() {
+        let acc = PoisonableAccumulator {
+            id: 3,
+            poisoned: true,
+        };
+
+        let bytes_err = acc
+            .serialize_to_bytes()
+            .expect_err("poisoned accumulator must fail serialize_to_bytes");
+        assert!(bytes_err.to_string().contains("PoisonableAccumulator"));
+
+        let json_err = acc
+            .serialize_to_json()
+            .expect_err("poisoned accumulator must fail serialize_to_json");
+        assert!(json_err.to_string().contains("PoisonableAccumulator"));
     }
 }

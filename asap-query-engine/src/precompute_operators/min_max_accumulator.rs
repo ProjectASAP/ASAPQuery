@@ -3,6 +3,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -97,14 +98,14 @@ impl MinMaxAccumulator {
 }
 
 impl SerializableToSink for MinMaxAccumulator {
-    fn serialize_to_json(&self) -> Value {
-        serde_json::json!({
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+        Ok(serde_json::json!({
             "value": self.value,
             "sub_type": self.sub_type
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         let mut bytes = self.value.to_le_bytes().to_vec();
         let sub_type_byte = match self.sub_type.as_str() {
             "min" => 0u8,
@@ -112,7 +113,7 @@ impl SerializableToSink for MinMaxAccumulator {
             _ => unreachable!("MinMaxAccumulator sub_type is always 'min' or 'max'"),
         };
         bytes.push(sub_type_byte);
-        bytes
+        Ok(bytes)
     }
 }
 
@@ -381,13 +382,13 @@ mod tests {
         let acc = MinMaxAccumulator::with_value(42.5, "min".to_string()).unwrap();
 
         // Test JSON serialization
-        let json = acc.serialize_to_json();
+        let json = acc.serialize_to_json().unwrap();
         let deserialized = MinMaxAccumulator::deserialize_from_json(&json).unwrap();
         assert_eq!(acc.value, deserialized.value);
         assert_eq!(acc.sub_type, deserialized.sub_type);
 
         // Test byte serialization
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         let deserialized_bytes = MinMaxAccumulator::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(acc.value, deserialized_bytes.value);
         assert_eq!(acc.sub_type, deserialized_bytes.sub_type);

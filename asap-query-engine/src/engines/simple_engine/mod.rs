@@ -2462,6 +2462,7 @@ mod topk_metadata_tests {
 mod range_query_tests {
     use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, SerializableToSink};
     use crate::engines::window_merger::NaiveMerger;
+    use asap_types::traits::SerializationError;
     use serde_json::Value;
     use std::any::Any;
 
@@ -2479,12 +2480,12 @@ mod range_query_tests {
     }
 
     impl SerializableToSink for MockBucketAccumulator {
-        fn serialize_to_json(&self) -> Value {
-            serde_json::json!({"bucket_id": self.bucket_id, "value": self.value})
+        fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+            Ok(serde_json::json!({"bucket_id": self.bucket_id, "value": self.value}))
         }
 
-        fn serialize_to_bytes(&self) -> Vec<u8> {
-            format!("{}:{}", self.bucket_id, self.value).into_bytes()
+        fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+            Ok(format!("{}:{}", self.bucket_id, self.value).into_bytes())
         }
     }
 
@@ -3256,6 +3257,7 @@ mod merge_accumulators_regression_tests_596 {
     use crate::tests::test_utilities::{
         cms_from_matrix, oracle_sequential_fold, PoisonableAccumulator,
     };
+    use asap_types::traits::SerializationError;
     use serde_json::Value;
     use std::any::Any;
     use std::collections::HashMap;
@@ -3480,11 +3482,11 @@ mod merge_accumulators_regression_tests_596 {
     }
 
     impl SerializableToSink for MockOrderedLogAccumulator {
-        fn serialize_to_json(&self) -> Value {
-            serde_json::json!({"log": self.log, "last": self.last})
+        fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+            Ok(serde_json::json!({"log": self.log, "last": self.last}))
         }
-        fn serialize_to_bytes(&self) -> Vec<u8> {
-            Vec::new()
+        fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+            Ok(Vec::new())
         }
     }
 

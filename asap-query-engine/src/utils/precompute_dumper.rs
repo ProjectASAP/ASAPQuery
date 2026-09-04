@@ -61,7 +61,13 @@ impl PrecomputeDumper {
             timestamp,
             metadata: output.clone(),
             accumulator_type: accumulator.type_name().to_string(),
-            accumulator_data_bytes: accumulator.serialize_to_bytes(),
+            accumulator_data_bytes: accumulator.serialize_to_bytes().map_err(|e| {
+                format!(
+                    "aggregation_id={}: failed to serialize {}: {e}",
+                    output.aggregation_id,
+                    accumulator.type_name()
+                )
+            })?,
         };
 
         // Serialize to MessagePack
@@ -132,6 +138,7 @@ impl Drop for PrecomputeDumper {
 mod tests {
     use super::*;
     use crate::precompute_operators::SumAccumulator;
+    use crate::tests::test_utilities::PoisonableAccumulator;
     use tempfile::TempDir;
 
     #[test]
@@ -172,5 +179,34 @@ mod tests {
         // Test flushing
         let flush_result = dumper.flush();
         assert!(flush_result.is_ok());
+    }
+
+    // Regression test for #673: a serialization failure must surface as an
+    // error carrying the aggregation id, and nothing may be written to the
+    // dump file for that record.
+    #[test]
+    fn test_dump_precompute_fails_loudly_on_serialization_error() {
+        let temp_dir = TempDir::new().unwrap();
+        let output_dir = temp_dir.path().to_str().unwrap();
+
+        let mut dumper = PrecomputeDumper::new(output_dir).unwrap();
+
+        let accumulator = PoisonableAccumulator {
+            id: 7,
+            poisoned: true,
+        };
+        let output = PrecomputedOutput {
+            start_timestamp: 1000,
+            end_timestamp: 2000,
+            key: None,
+            aggregation_id: 42,
+        };
+
+        let err = dumper
+            .dump_precompute(&output, &accumulator)
+            .expect_err("serialization failure must propagate as an error");
+        assert!(err.to_string().contains("aggregation_id=42"));
+        assert!(err.to_string().contains("PoisonableAccumulator"));
+        assert_eq!(dumper.get_dump_count(), 0, "no record should be persisted");
     }
 }

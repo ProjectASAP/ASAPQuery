@@ -109,6 +109,7 @@ mod tests {
     use crate::tests::test_utilities::{
         cms_from_matrix, oracle_sequential_fold, PoisonableAccumulator,
     };
+    use asap_types::traits::SerializationError;
     use serde_json::Value;
     use std::any::Any;
 
@@ -125,12 +126,12 @@ mod tests {
     }
 
     impl SerializableToSink for MockSumAccumulator {
-        fn serialize_to_json(&self) -> Value {
-            serde_json::json!({"value": self.value})
+        fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+            Ok(serde_json::json!({"value": self.value}))
         }
 
-        fn serialize_to_bytes(&self) -> Vec<u8> {
-            self.value.to_le_bytes().to_vec()
+        fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+            Ok(self.value.to_le_bytes().to_vec())
         }
     }
 

@@ -1,3 +1,4 @@
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use std::ops::Add;
 
@@ -11,14 +12,14 @@ impl Measurement {
         Self { value }
     }
 
-    pub fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.value.to_le_bytes().to_vec()
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        Ok(self.value.to_le_bytes().to_vec())
     }
 
-    pub fn serialize_to_json(&self) -> serde_json::Value {
-        serde_json::json!({
+    pub fn serialize_to_json(&self) -> Result<serde_json::Value, SerializationError> {
+        Ok(serde_json::json!({
             "value": self.value
-        })
+        }))
     }
 
     pub fn deserialize_from_json(data: &serde_json::Value) -> Result<Self, serde_json::Error> {
@@ -79,7 +80,7 @@ mod tests {
     #[test]
     fn test_serialization() {
         let measurement = Measurement::new(42.5);
-        let json = measurement.serialize_to_json();
+        let json = measurement.serialize_to_json().unwrap();
         let deserialized = Measurement::deserialize_from_json(&json).unwrap();
         assert_eq!(measurement, deserialized);
     }
@@ -87,7 +88,7 @@ mod tests {
     #[test]
     fn test_byte_serialization() {
         let measurement = Measurement::new(42.5);
-        let bytes = measurement.serialize_to_bytes();
+        let bytes = measurement.serialize_to_bytes().unwrap();
         let deserialized = Measurement::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(measurement, deserialized);
     }

@@ -2,6 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, Measurement, MergeableAccumulator, QueryBounds,
     SerializableToSink, SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -385,21 +386,21 @@ impl IncreaseAccumulator {
 }
 
 impl SerializableToSink for IncreaseAccumulator {
-    fn serialize_to_json(&self) -> Value {
-        serde_json::json!({
-            "starting_measurement": self.starting_measurement.serialize_to_json(),
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+        Ok(serde_json::json!({
+            "starting_measurement": self.starting_measurement.serialize_to_json()?,
             "starting_timestamp": self.starting_timestamp,
-            "last_seen_measurement": self.last_seen_measurement.serialize_to_json(),
+            "last_seen_measurement": self.last_seen_measurement.serialize_to_json()?,
             "last_seen_timestamp": self.last_seen_timestamp,
             "sample_count": self.sample_count,
             "counter_reset_adjustment": self.counter_reset_adjustment,
             "counter_reset_events": self.counter_reset_events,
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        let starting_measurement_bytes = self.starting_measurement.serialize_to_bytes();
-        let last_seen_measurement_bytes = self.last_seen_measurement.serialize_to_bytes();
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        let starting_measurement_bytes = self.starting_measurement.serialize_to_bytes()?;
+        let last_seen_measurement_bytes = self.last_seen_measurement.serialize_to_bytes()?;
 
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&INCREASE_BINARY_FORMAT_MAGIC);
@@ -425,7 +426,7 @@ impl SerializableToSink for IncreaseAccumulator {
             buffer.extend_from_slice(&event.adjustment.to_le_bytes());
         }
 
-        buffer
+        Ok(buffer)
     }
 }
 
@@ -947,7 +948,7 @@ mod tests {
         acc.update(Measurement::new(25.0), 2000);
 
         // Test JSON serialization
-        let json = acc.serialize_to_json();
+        let json = acc.serialize_to_json().unwrap();
         assert_eq!(json["sample_count"], 3);
         assert!(json.get("opaque_reset_adjustment").is_none());
         assert!(json.get("opaque_reset_ranges").is_none());
@@ -965,7 +966,7 @@ mod tests {
         assert_eq!(acc.sample_count, deserialized.sample_count);
 
         // Test byte serialization
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         assert_eq!(&bytes[..4], b"INC7");
         let deserialized_bytes = IncreaseAccumulator::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(
@@ -1012,8 +1013,8 @@ mod tests {
             IncreaseAccumulator::new(Measurement::new(10.0), 1000, Measurement::new(25.0), 2000);
         let second =
             IncreaseAccumulator::new(Measurement::new(30.0), 3000, Measurement::new(45.0), 4000);
-        let first_bytes = first.serialize_to_bytes();
-        let second_bytes = second.serialize_to_bytes();
+        let first_bytes = first.serialize_to_bytes().unwrap();
+        let second_bytes = second.serialize_to_bytes().unwrap();
         let mut combined = first_bytes.clone();
         combined.extend_from_slice(&second_bytes);
 
@@ -1040,14 +1041,15 @@ mod tests {
         acc.update(Measurement::new(60.0), 3_000);
 
         let json_round_trip =
-            IncreaseAccumulator::deserialize_from_json(&acc.serialize_to_json()).unwrap();
+            IncreaseAccumulator::deserialize_from_json(&acc.serialize_to_json().unwrap()).unwrap();
         assert_eq!(
             json_round_trip.query(Statistic::Increase, None).unwrap(),
             110.0
         );
 
         let bytes_round_trip =
-            IncreaseAccumulator::deserialize_from_bytes(&acc.serialize_to_bytes()).unwrap();
+            IncreaseAccumulator::deserialize_from_bytes(&acc.serialize_to_bytes().unwrap())
+                .unwrap();
         assert_eq!(
             bytes_round_trip.query(Statistic::Increase, None).unwrap(),
             110.0

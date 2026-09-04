@@ -394,7 +394,7 @@ impl AggregationConfig {
 }
 
 impl SerializableToSink for AggregationConfig {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, crate::traits::SerializationError> {
         let mut json = serde_json::json!({
             "aggregationId": self.aggregation_id,
             "aggregationType": self.aggregation_type,
@@ -426,10 +426,10 @@ impl SerializableToSink for AggregationConfig {
             json["valueColumn"] = serde_json::json!(value_column);
         }
 
-        json
+        Ok(json)
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.original_yaml.as_bytes().to_vec()
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, crate::traits::SerializationError> {
+        Ok(self.original_yaml.as_bytes().to_vec())
     }
 }

@@ -326,13 +326,23 @@ mod tests {
                 .unwrap_or_else(|| panic!("missing bucket {range:?}"))
                 .1
                 .serialize_to_json()
+                .unwrap()
         };
         let j1 = json_for((0, 3_000));
         let j2 = json_for((1_000, 4_000));
         let j3 = json_for((2_000, 5_000));
-        assert_eq!(j1, SumAccumulator::with_sum(1.0).serialize_to_json());
-        assert_eq!(j2, SumAccumulator::with_sum(2.0).serialize_to_json());
-        assert_eq!(j3, SumAccumulator::with_sum(3.0).serialize_to_json());
+        assert_eq!(
+            j1,
+            SumAccumulator::with_sum(1.0).serialize_to_json().unwrap()
+        );
+        assert_eq!(
+            j2,
+            SumAccumulator::with_sum(2.0).serialize_to_json().unwrap()
+        );
+        assert_eq!(
+            j3,
+            SumAccumulator::with_sum(3.0).serialize_to_json().unwrap()
+        );
     }
 
     /// Range query spanning both sealed epochs and the still-open (mutable)
@@ -383,9 +393,11 @@ mod tests {
         for i in 2..n {
             let range = (i * 60_000, (i + 1) * 60_000);
             let acc = &buckets.iter().find(|(r, _)| *r == range).unwrap().1;
-            let expected_json = SumAccumulator::with_sum(i as f64).serialize_to_json();
+            let expected_json = SumAccumulator::with_sum(i as f64)
+                .serialize_to_json()
+                .unwrap();
             assert_eq!(
-                acc.serialize_to_json(),
+                acc.serialize_to_json().unwrap(),
                 expected_json,
                 "window {i} must return its own value across the sealed/mutable epoch boundary"
             );

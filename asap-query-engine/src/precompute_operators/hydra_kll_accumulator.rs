@@ -6,6 +6,7 @@ use crate::{
     KeyByLabelValues,
 };
 use asap_sketchlib::{message_pack_format::MessagePackCodec, HydraKllSketch};
+use asap_types::traits::SerializationError;
 use base64::{engine::general_purpose, Engine as _};
 use std::collections::HashMap;
 
@@ -49,15 +50,20 @@ impl HydraKllSketchAccumulator {
 }
 
 impl SerializableToSink for HydraKllSketchAccumulator {
-    fn serialize_to_json(&self) -> serde_json::Value {
+    fn serialize_to_json(&self) -> Result<serde_json::Value, SerializationError> {
         // Mirror Python implementation: {"sketch": base64_encoded_string}
-        let sketch_bytes = self.inner.to_msgpack().unwrap_or_default();
+        let sketch_bytes = self.serialize_to_bytes()?;
         let sketch_b64 = general_purpose::STANDARD.encode(&sketch_bytes);
-        serde_json::json!({ "sketch": sketch_b64 })
+        Ok(serde_json::json!({ "sketch": sketch_b64 }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.to_msgpack().unwrap_or_default()
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        self.inner
+            .to_msgpack()
+            .map_err(|e| SerializationError::Bytes {
+                type_name: "HydraKllSketchAccumulator",
+                source: e.to_string().into(),
+            })
     }
 }
 
