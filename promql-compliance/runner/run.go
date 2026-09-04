@@ -130,13 +130,16 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 
 	// Also wait for the suite's LATEST timestamp, not just its earliest:
 	// a streaming target's trailing window can still be open even once
-	// earlier points are ready (#705 follow-up).
-	latestTime, ok := latestEvaluationTime(suite, base)
+	// earlier points are ready (#705 follow-up). Probe with the query
+	// that timestamp actually belongs to -- suite.Queries[0] may not even
+	// be evaluated that far out, so its own value there proves nothing
+	// (roborev job 191).
+	latestQuery, latestTime, ok := latestEvaluation(suite, base)
 	if ok && latestTime.After(probeTime) {
-		if err := waitForData(ctx, reference, probeQuery, latestTime); err != nil {
+		if err := waitForData(ctx, reference, latestQuery.Expr, latestTime); err != nil {
 			return Report{}, fmt.Errorf("reference target did not close its latest window: %w", err)
 		}
-		if err := waitForData(ctx, test, probeQuery, latestTime); err != nil {
+		if err := waitForData(ctx, test, latestQuery.Expr, latestTime); err != nil {
 			return Report{}, fmt.Errorf("test target did not close its latest window: %w", err)
 		}
 	}
@@ -144,29 +147,33 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 	return CompareSuite(ctx, reference, test, suite, fixture.Name, base)
 }
 
-// latestEvaluationTime is the max instant offset / range end across the
-// whole suite -- the last timestamp anything will be evaluated at.
-func latestEvaluationTime(suite Suite, base time.Time) (time.Time, bool) {
+// latestEvaluation is the query and timestamp representing the latest
+// evaluation point across the whole suite (the max instant offset / range
+// end), so a caller can probe readiness with a query actually configured
+// for that timestamp.
+func latestEvaluation(suite Suite, base time.Time) (QueryCase, time.Time, bool) {
 	found := false
+	var latestQuery QueryCase
 	var latestOffset float64
-	consider := func(offset float64) {
+	consider := func(query QueryCase, offset float64) {
 		if !found || offset > latestOffset {
+			latestQuery = query
 			latestOffset = offset
 			found = true
 		}
 	}
 	for _, query := range suite.Queries {
 		for _, offset := range query.InstantOffsetsSeconds {
-			consider(offset)
+			consider(query, offset)
 		}
 		if query.Range != nil {
-			consider(query.Range.EndOffsetSeconds)
+			consider(query, query.Range.EndOffsetSeconds)
 		}
 	}
 	if !found {
-		return time.Time{}, false
+		return QueryCase{}, time.Time{}, false
 	}
-	return addSeconds(base, latestOffset), true
+	return latestQuery, addSeconds(base, latestOffset), true
 }
 
 func runBaseTime(baseTimeMS int64) time.Time {

@@ -9,6 +9,14 @@ series:
   # Each series also has one extra sample at offset_seconds 1260, past the
   # suite's last evaluated offset (1200) so the trailing window has a real
   # later sample to close on, instead of only the wall-clock idle fallback.
+  #
+  # Known gap (roborev job 191): every series shares the same cadence, so
+  # count_over_time(data[5m]) ties across all of them. topk-*-count-over-time
+  # and topk-*-count-over-time-by-job may pick different tied members on
+  # Prometheus vs. ASAPQuery -- not a reliable green signal for those two
+  # query shapes specifically. (topk-*-count-over-time-by-job-instance is
+  # fine: job+instance already uniquely identifies each series, so those
+  # groups have one member each and can't tie.)
   - metric: data
     labels:
       job: frontend
