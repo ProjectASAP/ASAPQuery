@@ -79,8 +79,14 @@ pub fn does_precompute_operator_support_subpopulations(
         // CountMinSketch supports subpopulations only for certain statistics
         AggregationType::CountMinSketch => matches!(statistic, Statistic::Sum | Statistic::Count),
 
-        // CountMinSketchWithHeap is only supported for Topk — does not support subpopulations
-        AggregationType::CountMinSketchWithHeap if matches!(statistic, Statistic::Topk) => false,
+        // CountMinSketchWithHeap (Topk) is a heavy-hitters sketch: one heap
+        // instance tracks many keys internally (like MultipleSum's HashMap),
+        // it just doesn't need an *external* paired key aggregation to
+        // enumerate them (unlike CountMinSketch/HydraKLL) -- it discovers its
+        // own top-k keys via CmsHeapItem. So it supports subpopulations the
+        // same way MultipleSum does: labels go in `aggregated`, not
+        // `grouping` (see `set_subpopulation_labels`).
+        AggregationType::CountMinSketchWithHeap if matches!(statistic, Statistic::Topk) => true,
 
         AggregationType::HLL => false,
 
@@ -203,6 +209,16 @@ mod tests {
         assert!(does_precompute_operator_support_subpopulations(
             Statistic::Sum,
             AggregationType::CountMinSketch,
+        ));
+
+        // CountMinSketchWithHeap (topk) is self-keyed but still tracks many
+        // keys internally -- the labels belong in `aggregated`, not
+        // `grouping` (#699 differential run: a planner regression here
+        // routed every sample to one degenerate empty key, producing
+        // `__name__="data",instance=""` with the real labels dropped).
+        assert!(does_precompute_operator_support_subpopulations(
+            Statistic::Topk,
+            AggregationType::CountMinSketchWithHeap,
         ));
     }
 

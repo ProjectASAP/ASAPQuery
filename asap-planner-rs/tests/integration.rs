@@ -490,6 +490,31 @@ query_groups:
         Some(serde_yaml::Value::Bool(false)),
         "topk ranks the summed value, not the observation count"
     );
+    // The heap tracks per-key state internally (it's a heavy-hitters sketch,
+    // not a single running total), so ingest must build a real per-sample
+    // key from every schema label -- not route everything to one degenerate
+    // empty key. Regression test for the differential suite's observed
+    // `__name__="data",instance=""` (job dropped) output: the planner was
+    // putting the label set in `grouping` (routing-only, unused by a
+    // self-keyed sketch) instead of `aggregated` (the in-sketch key).
+    let mut aggregated = out.aggregation_labels("CountMinSketchWithHeap", "aggregated");
+    aggregated.sort();
+    let mut expected = vec![
+        "instance".to_string(),
+        "job".to_string(),
+        "method".to_string(),
+        "status".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(
+        aggregated, expected,
+        "topk's heap must track every schema label as its in-sketch key"
+    );
+    assert!(
+        out.aggregation_labels("CountMinSketchWithHeap", "grouping")
+            .is_empty(),
+        "topk has one heap instance per query, not one per grouping-label combination"
+    );
 }
 
 #[test]
