@@ -293,7 +293,7 @@ pub fn find_compatible_aggregation(
             .filter(|c| {
                 let ok = c.metric == requirements.metric
                     && types.contains(&c.aggregation_type)
-                    && sub_type.is_none_or(|st| c.aggregation_sub_type == st)
+                    && sub_type.is_none_or(|st| c.aggregation_sub_type.eq_ignore_ascii_case(st))
                     && window_compatible(c, requirements.data_range_ms)
                     && labels_compatible(&c.grouping_labels, &requirements.grouping_labels)
                     && spatial_filter_compatible(
@@ -1013,6 +1013,29 @@ mod tests {
         let result =
             find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Max], 300_000, &[], ""));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn sub_type_matching_is_case_insensitive() {
+        // AggregationConfig::validate() accepts "MAX" (case-insensitive), so
+        // capability matching must recognize it too, or an accepted config
+        // silently becomes unreachable for Max queries (roborev #715/194).
+        let configs = single_config(make_config(
+            1,
+            "cpu",
+            "MinMax",
+            "MAX",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        ));
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Max], 300_000, &[], ""));
+        assert!(
+            result.is_some(),
+            "uppercase 'MAX' subtype must still match a Max query"
+        );
     }
 
     // --- multi-population ---
