@@ -485,6 +485,11 @@ mod tests {
                 .parameters
                 .insert("count_events".to_string(), serde_json::Value::Bool(true));
         }
+        if config.aggregation_type == AggregationType::HLL {
+            config
+                .parameters
+                .insert("precision".to_string(), serde_json::Value::from(14));
+        }
         config
     }
 

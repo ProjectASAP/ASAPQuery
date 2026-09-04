@@ -9,6 +9,11 @@ use crate::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::AggregationType;
 
+/// Valid range for the HLL `precision` parameter, per the underlying
+/// `HyperLogLogPlus` storage (`datafusion_summary_library::physical::hll`).
+pub const HLL_MIN_PRECISION: u32 = 4;
+pub const HLL_MAX_PRECISION: u32 = 18;
+
 #[derive(Debug, thiserror::Error)]
 pub enum AggregationConfigError {
     #[error(
@@ -25,6 +30,31 @@ pub enum AggregationConfigError {
     MisplacedCountEvents {
         aggregation_id: u64,
         aggregation_type: AggregationType,
+    },
+    #[error("aggregation {aggregation_id} (HLL) missing required parameter 'precision'")]
+    MissingPrecision { aggregation_id: u64 },
+    #[error(
+        "aggregation {aggregation_id} (HLL) parameter 'precision' must be an integer, got {value}"
+    )]
+    InvalidPrecisionType { aggregation_id: u64, value: Value },
+    #[error(
+        "aggregation {aggregation_id} (HLL) parameter 'precision' must be between {HLL_MIN_PRECISION} and {HLL_MAX_PRECISION}, got {value}"
+    )]
+    PrecisionOutOfRange { aggregation_id: u64, value: u64 },
+    #[error(
+        "aggregation {aggregation_id} ({aggregation_type}) parameter 'precision' is only valid for HLL"
+    )]
+    MisplacedPrecision {
+        aggregation_id: u64,
+        aggregation_type: AggregationType,
+    },
+    #[error(
+        "aggregation {aggregation_id} ({aggregation_type}) aggregation_sub_type must be 'min' or 'max', got '{sub_type}'"
+    )]
+    InvalidMinMaxSubType {
+        aggregation_id: u64,
+        aggregation_type: AggregationType,
+        sub_type: String,
     },
 }
 
@@ -69,28 +99,88 @@ pub struct AggregationIdInfo {
 
 impl AggregationConfig {
     pub fn validate(&self) -> Result<(), AggregationConfigError> {
+        self.validate_count_events()?;
+        self.validate_hll_precision()?;
+        self.validate_minmax_subtype()?;
+        Ok(())
+    }
+
+    fn validate_count_events(&self) -> Result<(), AggregationConfigError> {
         if self.aggregation_type == AggregationType::CountMinSketchWithHeap {
             match self.parameters.get("count_events") {
-                None => {
-                    return Err(AggregationConfigError::MissingCountEvents {
-                        aggregation_id: self.aggregation_id,
-                    })
-                }
+                None => Err(AggregationConfigError::MissingCountEvents {
+                    aggregation_id: self.aggregation_id,
+                }),
                 Some(value) if !value.is_boolean() => {
-                    return Err(AggregationConfigError::InvalidCountEventsType {
+                    Err(AggregationConfigError::InvalidCountEventsType {
                         aggregation_id: self.aggregation_id,
                         value: value.clone(),
                     })
                 }
-                Some(_) => {}
+                Some(_) => Ok(()),
             }
         } else if self.parameters.contains_key("count_events") {
-            return Err(AggregationConfigError::MisplacedCountEvents {
+            Err(AggregationConfigError::MisplacedCountEvents {
                 aggregation_id: self.aggregation_id,
                 aggregation_type: self.aggregation_type,
-            });
+            })
+        } else {
+            Ok(())
         }
-        Ok(())
+    }
+
+    fn validate_hll_precision(&self) -> Result<(), AggregationConfigError> {
+        if self.aggregation_type == AggregationType::HLL {
+            match self.parameters.get("precision") {
+                None => Err(AggregationConfigError::MissingPrecision {
+                    aggregation_id: self.aggregation_id,
+                }),
+                Some(value) => match value.as_u64() {
+                    None => Err(AggregationConfigError::InvalidPrecisionType {
+                        aggregation_id: self.aggregation_id,
+                        value: value.clone(),
+                    }),
+                    Some(precision)
+                        if precision < HLL_MIN_PRECISION as u64
+                            || precision > HLL_MAX_PRECISION as u64 =>
+                    {
+                        Err(AggregationConfigError::PrecisionOutOfRange {
+                            aggregation_id: self.aggregation_id,
+                            value: precision,
+                        })
+                    }
+                    Some(_) => Ok(()),
+                },
+            }
+        } else if self.parameters.contains_key("precision") {
+            Err(AggregationConfigError::MisplacedPrecision {
+                aggregation_id: self.aggregation_id,
+                aggregation_type: self.aggregation_type,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_minmax_subtype(&self) -> Result<(), AggregationConfigError> {
+        let is_minmax = matches!(
+            self.aggregation_type,
+            AggregationType::MinMax | AggregationType::MultipleMinMax
+        );
+        if !is_minmax {
+            return Ok(());
+        }
+        if self.aggregation_sub_type.eq_ignore_ascii_case("min")
+            || self.aggregation_sub_type.eq_ignore_ascii_case("max")
+        {
+            Ok(())
+        } else {
+            Err(AggregationConfigError::InvalidMinMaxSubType {
+                aggregation_id: self.aggregation_id,
+                aggregation_type: self.aggregation_type,
+                sub_type: self.aggregation_sub_type.clone(),
+            })
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

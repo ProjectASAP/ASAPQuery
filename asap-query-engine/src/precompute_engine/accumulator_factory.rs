@@ -3,7 +3,7 @@ use crate::precompute_operators::{
     CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
     DeltaSetAggregatorAccumulator, HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator,
     MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
-    MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
+    MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator,
 };
 use asap_types::aggregation_config::AggregationConfig;
 
@@ -914,26 +914,11 @@ fn cms_count_events(config: &AggregationConfig) -> Result<bool, String> {
         .expect("validation guarantees a boolean count_events parameter"))
 }
 
-/// Extract the HLL `precision` parameter from a config. Falls back to
-/// `DEFAULT_HLL_PRECISION` (14) when absent or non-numeric. The valid range is
-/// 4..=18 per the underlying `HllSketch` storage; out-of-range values are
-/// clamped and warned about so a typo doesn't crash the streaming worker.
+/// Extract the HLL `precision` parameter from a config.
 fn hll_precision_param(config: &AggregationConfig) -> u32 {
-    let raw = config
-        .parameters
-        .get("precision")
-        .and_then(|v| v.as_u64())
-        .map(|v| v as u32);
-    match raw {
-        Some(p) if (4..=18).contains(&p) => p,
-        Some(p) => {
-            tracing::warn!(
-                "HLL precision {p} is out of range (4..=18); using default {DEFAULT_HLL_PRECISION}"
-            );
-            DEFAULT_HLL_PRECISION
-        }
-        None => DEFAULT_HLL_PRECISION,
-    }
+    config.parameters["precision"]
+        .as_u64()
+        .expect("validation guarantees an in-range integer precision parameter") as u32
 }
 
 // ---------------------------------------------------------------------------
@@ -1238,7 +1223,7 @@ mod tests {
             42,
             AggregationType::HLL,
             String::new(),
-            HashMap::new(),
+            HashMap::from([("precision".to_string(), serde_json::json!(14))]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -1318,15 +1303,16 @@ mod tests {
     }
 
     #[test]
-    fn test_hll_updater_default_precision_is_14() {
-        // When no `precision` parameter is supplied, the factory must use the
-        // documented default (14) — not whatever the type default resolves to.
+    fn test_hll_updater_honors_explicit_precision() {
+        // `precision` is a required parameter (issue #674: a missing/invalid
+        // precision must not silently fall back to a default — see
+        // AggregationConfig::validate() regression tests in asap_types).
         use std::collections::HashMap;
         let config = AggregationConfig::new(
             7,
             AggregationType::HLL,
             String::new(),
-            HashMap::new(),
+            HashMap::from([("precision".to_string(), serde_json::json!(14))]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -1360,7 +1346,7 @@ mod tests {
             7,
             AggregationType::HLL,
             String::new(),
-            HashMap::new(),
+            HashMap::from([("precision".to_string(), serde_json::json!(14))]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
