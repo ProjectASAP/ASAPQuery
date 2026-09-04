@@ -35,18 +35,22 @@ impl IngestSource for HttpIngestSource {
             samples_ingested: AtomicU64::new(0),
         });
 
-        tokio::spawn(log_ingest_throughput(state.clone()));
+        let addr = format!("0.0.0.0:{}", self.config.port);
+        // Bind before spawning the ticker so a bind failure returns early
+        // without leaving an orphaned diagnostics task behind.
+        let listener = TcpListener::bind(&addr).await?;
+        info!("HTTP ingest server listening on {}", addr);
+
+        let ticker = tokio::spawn(log_ingest_throughput(state.clone()));
 
         let app = Router::new()
             .route("/api/v1/write", post(handle_prometheus_ingest))
             .route("/api/v1/import", post(handle_victoriametrics_ingest))
             .with_state(state);
 
-        let addr = format!("0.0.0.0:{}", self.config.port);
-        info!("HTTP ingest server listening on {}", addr);
-
-        let listener = TcpListener::bind(&addr).await?;
-        axum::serve(listener, app).await?;
+        let result = axum::serve(listener, app).await;
+        ticker.abort();
+        result?;
         Ok(())
     }
 }
