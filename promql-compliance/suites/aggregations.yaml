@@ -74,6 +74,25 @@ queries:
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
 
+  # Bare-selector topk (no wrapped temporal function): unlike every
+  # topk-over-temporal case below, this keeps __name__ -- see #710.
+  - name: topk-1-bare
+    expr: "topk(1, data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: topk-3-bare
+    expr: "topk(3, data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: topk-5-bare
+    expr: "topk(5, data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: topk-10-bare
+    expr: "topk(10, data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+
   # Zero-label grouping is the ordinary aggregate form. One- and two-label
   # forms retain job, then job+instance, respectively.
   - name: topk-1-sum-over-time

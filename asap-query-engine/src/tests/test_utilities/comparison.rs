@@ -187,6 +187,7 @@ mod tests {
                 query_output_labels: KeyByLabelNames::new(vec!["L1".to_string(), "L2".to_string()]),
                 statistic_to_compute: Statistic::Sum,
                 query_kwargs: HashMap::new(),
+                keep_metric_name: true,
             },
             store_plan: StoreQueryPlan {
                 values_query: StoreQueryParams {

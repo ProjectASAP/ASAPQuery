@@ -136,6 +136,8 @@ impl SimpleEngine {
             query_output_labels: query_output_labels.clone(),
             statistic_to_compute,
             query_kwargs: query_kwargs.clone(),
+            // Elastic never computes Topk, so this is never read.
+            keep_metric_name: true,
         };
         Some((metric, metadata))
     }
