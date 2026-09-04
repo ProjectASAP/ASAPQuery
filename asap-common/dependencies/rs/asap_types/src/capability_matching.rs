@@ -191,6 +191,21 @@ pub fn topk_weighting_compatible(
     }
 }
 
+/// Ordinary COUNT vs a heap-backed Count-Min Sketch. A heap configured with
+/// `count_events: false` is value-weighted (SUM semantics) and must not serve
+/// ordinary `COUNT(...)`, even though `CountMinSketchWithHeap` is otherwise a
+/// compatible aggregation type for `Statistic::Count` (#666). Only constrains
+/// heap CMS candidates for `Statistic::Count`; every other case passes
+/// unconditionally.
+fn count_heap_weighting_compatible(stat: Statistic, config: &AggregationConfig) -> bool {
+    if stat != Statistic::Count
+        || config.aggregation_type != AggregationType::CountMinSketchWithHeap
+    {
+        return true;
+    }
+    config_count_events(config)
+}
+
 /// Plain Count-Min Sketches are value-weighted or event-weighted according to
 /// their subtype. A sketch with the other subtype cannot serve this statistic.
 fn plain_cms_sub_type_compatible(stat: Statistic, config: &AggregationConfig) -> bool {
@@ -266,7 +281,8 @@ pub fn find_compatible_aggregation(
                         &requirements.spatial_filter_normalized,
                     )
                     && plain_cms_sub_type_compatible(stat, c)
-                    && topk_weighting_compatible(stat, c, requirements.topk_count_events);
+                    && topk_weighting_compatible(stat, c, requirements.topk_count_events)
+                    && count_heap_weighting_compatible(stat, c);
                 if !ok {
                     debug!(
                         agg_id = c.aggregation_id,
@@ -1654,5 +1670,81 @@ mod tests {
         let result = find_compatible_aggregation(&configs, &topk_req("netflow_table", None))
             .expect("unconstrained top-k should match regardless of count_events");
         assert_eq!(result.aggregation_id_for_value, 3);
+    }
+
+    // --- issue #666: ordinary COUNT must reject a sum-weighted heap CMS ---
+
+    #[test]
+    fn ordinary_count_rejects_sum_weighted_heap() {
+        // A heap sketch configured with count_events: false is value-weighted
+        // (SUM semantics) and must not serve an ordinary COUNT query, even
+        // though CountMinSketchWithHeap is in Statistic::Count's compatible
+        // types list.
+        let mut configs = HashMap::new();
+        configs.insert(1, make_topk_config(1, "netflow_table", false));
+        configs.insert(9, make_key_agg(9, "netflow_table"));
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("netflow_table", &[Statistic::Count], 1_000, &[], ""),
+        );
+        assert!(
+            result.is_none(),
+            "ordinary COUNT must not match a count_events: false heap sketch",
+        );
+    }
+
+    #[test]
+    fn ordinary_count_accepts_count_weighted_heap() {
+        let mut configs = HashMap::new();
+        configs.insert(1, make_topk_config(1, "netflow_table", true));
+        configs.insert(9, make_key_agg(9, "netflow_table"));
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("netflow_table", &[Statistic::Count], 1_000, &[], ""),
+        )
+        .expect("ordinary COUNT should match a count_events: true heap sketch");
+        assert_eq!(result.aggregation_id_for_value, 1);
+    }
+
+    #[test]
+    fn ordinary_count_accepts_heap_with_default_count_events() {
+        // Configs that omit `count_events` default to count semantics.
+        let mut configs = HashMap::new();
+        configs.insert(
+            7,
+            make_config(
+                7,
+                "netflow_table",
+                "CountMinSketchWithHeap",
+                "",
+                1_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+        configs.insert(9, make_key_agg(9, "netflow_table"));
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("netflow_table", &[Statistic::Count], 1_000, &[], ""),
+        )
+        .expect("ordinary COUNT should match a heap sketch with default count_events");
+        assert_eq!(result.aggregation_id_for_value, 7);
+    }
+
+    #[test]
+    fn ordinary_count_picks_count_weighted_over_sum_weighted_heap() {
+        // Both variants present on the same metric: COUNT must resolve to the
+        // count-weighted one, never the sum-weighted one.
+        let mut configs = HashMap::new();
+        configs.insert(1, make_topk_config(1, "netflow_table", true));
+        configs.insert(2, make_topk_config(2, "netflow_table", false));
+        configs.insert(9, make_key_agg(9, "netflow_table"));
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("netflow_table", &[Statistic::Count], 1_000, &[], ""),
+        )
+        .expect("ordinary COUNT should match the count_events: true sketch");
+        assert_eq!(result.aggregation_id_for_value, 1);
     }
 }
