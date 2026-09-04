@@ -90,6 +90,7 @@ pub fn build_patterns() -> Vec<PromQLPattern> {
             AggregationOperator::Quantile,
             AggregationOperator::Min,
             AggregationOperator::Max,
+            AggregationOperator::Topk,
         ]
         .into_iter()
         .filter_map(move |op| {
@@ -131,10 +132,11 @@ mod tests {
     }
 
     #[test]
-    fn exactly_four_collapsable_one_temporal_one_spatial_patterns() {
-        // 2 ONLY_TEMPORAL + 1 ONLY_SPATIAL + 4 collapsable ONE_TEMPORAL_ONE_SPATIAL
-        // (sum+sum_over_time, sum+count_over_time, min+min_over_time, max+max_over_time).
-        assert_eq!(build_patterns().len(), 7);
+    fn exactly_six_collapsable_one_temporal_one_spatial_patterns() {
+        // 2 ONLY_TEMPORAL + 1 ONLY_SPATIAL + 6 collapsable ONE_TEMPORAL_ONE_SPATIAL
+        // (sum+sum_over_time, sum+count_over_time, min+min_over_time,
+        // max+max_over_time, topk+sum_over_time, topk+count_over_time).
+        assert_eq!(build_patterns().len(), 9);
     }
 
     #[test]
@@ -143,6 +145,10 @@ mod tests {
         assert!(matches_some_pattern("sum(count_over_time(x[5m]))"));
         assert!(matches_some_pattern("min(min_over_time(x[5m]))"));
         assert!(matches_some_pattern("max(max_over_time(x[5m]))"));
+        assert!(matches_some_pattern("topk(1, sum_over_time(x[5m]))"));
+        assert!(matches_some_pattern(
+            "topk by (job) (3, count_over_time(x[5m]))"
+        ));
     }
 
     #[test]
@@ -162,6 +168,14 @@ mod tests {
         assert!(
             !matches_some_pattern("min(max_over_time(x[5m]))"),
             "min+max_over_time is not collapsable"
+        );
+        assert!(
+            !matches_some_pattern("topk(1, rate(x[5m]))"),
+            "topk+rate is not collapsable"
+        );
+        assert!(
+            !matches_some_pattern("topk(1, avg_over_time(x[5m]))"),
+            "topk+avg_over_time is not collapsable"
         );
     }
 }

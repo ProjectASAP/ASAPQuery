@@ -1,6 +1,7 @@
 use crate::config::input::SketchParameterOverrides;
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::query_logics::enums::AggregationType;
+use promql_utilities::query_logics::logics::promql_topk_count_events;
 use std::collections::HashMap;
 
 // Default sketch parameters
@@ -18,8 +19,7 @@ const DEFAULT_HLL_PRECISION: u64 = 14;
 /// `topk_k` is required for `CountMinSketchWithHeap`. PromQL supplies it from
 /// the `topk(k, …)` query argument; SQL supplies it from `LIMIT k`.
 ///
-/// `topk_count_events` disambiguates COUNT vs SUM SQL top-k (`true` / `false`).
-/// PromQL passes `None` and omits the parameter (defaults to count semantics).
+/// `topk_count_events` disambiguates event-count vs value-weighted top-k.
 pub fn build_sketch_parameters(
     aggregation_type: AggregationType,
     aggregation_sub_type: &str,
@@ -61,6 +61,9 @@ pub fn build_sketch_parameters(
             }
             let k = topk_k
                 .ok_or_else(|| "CountMinSketchWithHeap requires a topk k value".to_string())?;
+            let count_events = topk_count_events.ok_or_else(|| {
+                "CountMinSketchWithHeap requires explicit count_events weighting".to_string()
+            })?;
             let depth = sketch_params
                 .and_then(|p| p.count_min_sketch_with_heap.as_ref())
                 .map(|p| p.depth)
@@ -80,12 +83,10 @@ pub fn build_sketch_parameters(
                 "heapsize".to_string(),
                 serde_json::Value::Number((k * heap_mult).into()),
             );
-            if let Some(count_events) = topk_count_events {
-                m.insert(
-                    "count_events".to_string(),
-                    serde_json::Value::Bool(count_events),
-                );
-            }
+            m.insert(
+                "count_events".to_string(),
+                serde_json::Value::Bool(count_events),
+            );
             Ok(m)
         }
 
@@ -163,11 +164,18 @@ pub fn build_sketch_parameters_from_promql(
     } else {
         None
     };
+    let topk_count_events = if aggregation_type == AggregationType::CountMinSketchWithHeap {
+        Some(promql_topk_count_events(match_result).ok_or_else(|| {
+            "topk query missing required aggregation match to derive count_events".to_string()
+        })?)
+    } else {
+        None
+    };
     build_sketch_parameters(
         aggregation_type,
         aggregation_sub_type,
         topk_k,
-        None,
+        topk_count_events,
         sketch_params,
     )
 }

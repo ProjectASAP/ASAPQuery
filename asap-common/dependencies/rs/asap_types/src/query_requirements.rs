@@ -1,6 +1,7 @@
 use promql_utilities::ast_matching::PromQLMatchResult;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
+use promql_utilities::query_logics::logics::promql_topk_count_events;
 use promql_utilities::query_logics::parsing::{
     get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
 };
@@ -32,8 +33,9 @@ pub struct QueryRequirements {
     ///   * `Some(true)`  → COUNT semantics (`count_events: true`, weight 1/event),
     ///   * `Some(false)` → SUM semantics (`count_events: false`, weight = value).
     ///
-    /// `None` for non-top-k requirements (and for PromQL top-k, which does not
-    /// constrain the sketch weighting); matching ignores it when `None`.
+    /// PromQL top-k over a raw vector or `sum_over_time` is value-weighted
+    /// (`Some(false)`); over `count_over_time` it is count-weighted
+    /// (`Some(true)`). `None` is only valid for non-top-k requirements.
     pub topk_count_events: Option<bool>,
 }
 
@@ -91,12 +93,14 @@ pub fn build_query_requirements_promql(
         all_labels
     };
 
+    let topk_count_events = promql_topk_count_events(match_result);
+
     Some(QueryRequirements {
         metric,
         statistics,
         data_range_ms,
         grouping_labels,
         spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
-        topk_count_events: None,
+        topk_count_events,
     })
 }

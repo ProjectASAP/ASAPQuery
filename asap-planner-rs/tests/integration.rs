@@ -1,5 +1,6 @@
 use asap_planner::{Controller, ControllerError, PromQLSchema, RuntimeOptions, StreamingEngine};
 use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::AggregationType;
 use std::path::Path;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -455,6 +456,106 @@ fn topk_produces_count_min_sketch_with_heap() {
     .unwrap();
     let out = c.generate().unwrap();
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
+        Some(serde_yaml::Value::Bool(false)),
+        "PromQL topk ranks sample values, not observation counts"
+    );
+}
+
+#[test]
+fn topk_over_sum_over_time_produces_value_weighted_heap() {
+    // https://github.com/ProjectASAP/asap-internal/issues/699 — topk wrapping
+    // a temporal aggregation must still be planned, not silently omitted.
+    let c = Controller::from_yaml_with_schema(
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "topk(1, sum_over_time(http_requests_total[5m]))"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
+        Some(serde_yaml::Value::Bool(false)),
+        "topk ranks the summed value, not the observation count"
+    );
+    // The heap tracks per-key state internally (it's a heavy-hitters sketch,
+    // not a single running total), so ingest must build a real per-sample
+    // key from every schema label -- not route everything to one degenerate
+    // empty key. Regression test for the differential suite's observed
+    // `__name__="data",instance=""` (job dropped) output: the planner was
+    // putting the label set in `grouping` (routing-only, unused by a
+    // self-keyed sketch) instead of `aggregated` (the in-sketch key).
+    let mut aggregated = out.aggregation_labels("CountMinSketchWithHeap", "aggregated");
+    aggregated.sort();
+    let mut expected = vec![
+        "instance".to_string(),
+        "job".to_string(),
+        "method".to_string(),
+        "status".to_string(),
+    ];
+    expected.sort();
+    assert_eq!(
+        aggregated, expected,
+        "topk's heap must track every schema label as its in-sketch key"
+    );
+    assert!(
+        out.aggregation_labels("CountMinSketchWithHeap", "grouping")
+            .is_empty(),
+        "topk has one heap instance per query, not one per grouping-label combination"
+    );
+}
+
+#[test]
+fn topk_over_count_over_time_produces_count_weighted_heap() {
+    let c = Controller::from_yaml_with_schema(
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "topk by (job) (3, count_over_time(http_requests_total[5m]))"
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#,
+        http_requests_schema(),
+        arroyo_opts(),
+    )
+    .unwrap();
+    let out = c.generate().unwrap();
+    assert_eq!(out.inference_query_count(), 1);
+    assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
+    assert_eq!(
+        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
+        Some(serde_yaml::Value::Bool(true)),
+        "topk over count_over_time ranks the observation count"
+    );
+}
+
+#[test]
+fn heap_parameters_require_explicit_count_events_weighting() {
+    let error = asap_planner::planner::sketch::build_sketch_parameters(
+        AggregationType::CountMinSketchWithHeap,
+        "topk",
+        Some(5),
+        None,
+        None,
+    )
+    .expect_err("heap planning without count_events must be rejected");
+
+    assert!(error.contains("count_events"));
 }
 
 #[test]

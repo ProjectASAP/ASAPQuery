@@ -434,6 +434,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sql_utilities",
+ "thiserror 1.0.69",
  "tracing",
 ]
 

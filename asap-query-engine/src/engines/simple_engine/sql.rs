@@ -501,7 +501,8 @@ impl SimpleEngine {
                 .read()
                 .unwrap()
                 .clone()
-                .find_compatible_aggregation(&requirements)?
+                .find_compatible_aggregation(&requirements)
+                .unwrap_or_else(|error| panic!("capability matching failed: {error}"))?
         };
         let metric = &match_result.outer_data()?.metric;
 
@@ -1484,17 +1485,14 @@ mod topk_pipeline_tests {
     }
 
     #[test]
-    fn count_topk_capability_fallback_defaults_count_events_true() {
-        // Heap omits `count_events`; matcher treats that as count semantics.
+    #[should_panic(
+        expected = "capability matching failed: aggregation 113 (CountMinSketchWithHeap) missing required parameter 'count_events'"
+    )]
+    fn count_topk_capability_fallback_rejects_missing_count_events() {
+        // Invalid weighting metadata must fail loudly instead of becoming a
+        // capability miss that could fall back to the source database.
         let engine = build_capability_fallback_engine(vec![make_heap_agg(HEAP_DEFAULT_ID, None)]);
-        let context = engine
-            .build_query_execution_context_sql(topk_query(10), QUERY_TIME)
-            .expect("COUNT top-k should match a sketch with default count_events");
-
-        assert_eq!(
-            context.agg_info.aggregation_id_for_value, HEAP_DEFAULT_ID,
-            "default (no flag) heap must serve COUNT top-k",
-        );
+        let _ = engine.build_query_execution_context_sql(topk_query(10), QUERY_TIME);
     }
 
     #[test]
@@ -1517,14 +1515,15 @@ mod topk_pipeline_tests {
     }
 
     #[test]
-    fn sum_topk_capability_fallback_rejects_count_only_default_heap() {
-        // Only a default (count-weighted) sketch exists; SUM top-k cannot be served.
-        let engine = build_capability_fallback_engine(vec![make_heap_agg(HEAP_DEFAULT_ID, None)]);
+    fn sum_topk_capability_fallback_rejects_explicit_count_only_heap() {
+        // Only an explicitly count-weighted sketch exists; SUM top-k cannot be served.
+        let engine =
+            build_capability_fallback_engine(vec![make_heap_agg(HEAP_DEFAULT_ID, Some(true))]);
         assert!(
             engine
                 .build_query_execution_context_sql(sum_topk_query(5), QUERY_TIME)
                 .is_none(),
-            "SUM top-k must not fall back to a count_events-default sketch",
+            "SUM top-k must not fall back to a count_events: true sketch",
         );
     }
 }

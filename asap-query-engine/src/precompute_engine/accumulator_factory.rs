@@ -905,18 +905,13 @@ fn cms_heap_params(config: &AggregationConfig) -> Result<(usize, usize, usize), 
     Ok((row_num, col_num, heap_size))
 }
 
-/// Whether a CountMinSketchWithHeap config should count events (weight 1 per
-/// observation, COUNT semantics) rather than summing the sample value.
-/// Defaults to `true` so `COUNT(...)` top-k works out of the box.
+/// Whether a validated CountMinSketchWithHeap config counts events (weight 1
+/// per observation) rather than summing the sample value.
 fn cms_count_events(config: &AggregationConfig) -> Result<bool, String> {
-    match config.parameters.get("count_events") {
-        None => Ok(true),
-        Some(value) => value.as_bool().ok_or_else(|| {
-            format!(
-                "CountMinSketchWithHeap parameter 'count_events' must be a boolean, got {value}"
-            )
-        }),
-    }
+    config.validate().map_err(|error| error.to_string())?;
+    Ok(config.parameters["count_events"]
+        .as_bool()
+        .expect("validation guarantees a boolean count_events parameter"))
 }
 
 /// Extract the HLL `precision` parameter from a config. Falls back to
@@ -953,6 +948,7 @@ fn hll_precision_param(config: &AggregationConfig) -> u32 {
 pub fn create_accumulator_updater(
     config: &AggregationConfig,
 ) -> Result<Box<dyn AccumulatorUpdater>, String> {
+    config.validate().map_err(|error| error.to_string())?;
     let sub_type = config.aggregation_sub_type.as_str();
 
     match config.aggregation_type {
@@ -1638,6 +1634,7 @@ mod tests {
         p.insert("depth".to_string(), serde_json::json!(3_u64));
         p.insert("width".to_string(), serde_json::json!(1024_u64));
         p.insert("heapsize".to_string(), serde_json::json!(32_u64));
+        p.insert("count_events".to_string(), serde_json::json!(true));
         p
     }
 
@@ -1748,7 +1745,7 @@ mod tests {
 
     #[test]
     fn test_cms_with_heap_count_events_uses_unit_weight() {
-        // count_events (the default) → each observation contributes weight 1, so
+        // count_events=true → each observation contributes weight 1, so
         // the per-key estimate is the EVENT COUNT, not the sum of sample values.
         let config = cms_heap_config(cms_heap_params_required());
         let mut updater = create_accumulator_updater(&config).unwrap();
@@ -1791,17 +1788,28 @@ mod tests {
     }
 
     #[test]
-    fn test_cms_heap_params_reads_depth_width_heapsize() {
+    fn test_cms_with_heap_factory_rejects_missing_count_events() {
         let mut params = std::collections::HashMap::new();
         params.insert("depth".to_string(), serde_json::json!(4));
         params.insert("width".to_string(), serde_json::json!(2048));
         params.insert("heapsize".to_string(), serde_json::json!(40));
         let config = cms_heap_config(params);
+        let error = create_accumulator_updater(&config)
+            .err()
+            .expect("missing count_events must be rejected");
+        assert!(error.contains("aggregation 101"));
+        assert!(error.contains("count_events"));
+    }
+
+    #[test]
+    fn test_cms_heap_params_reads_depth_width_heapsize() {
+        let mut params = cms_heap_params_required();
+        params.insert("depth".to_string(), serde_json::json!(4));
+        params.insert("width".to_string(), serde_json::json!(2048));
+        params.insert("heapsize".to_string(), serde_json::json!(40));
+        let config = cms_heap_config(params);
+
         assert_eq!(cms_heap_params(&config).unwrap(), (4, 2048, 40));
-        assert!(
-            cms_count_events(&config).unwrap(),
-            "count_events defaults to true"
-        );
     }
 
     #[test]
