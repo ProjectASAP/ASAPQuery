@@ -387,7 +387,7 @@ fn test_exact_query_is_stable_across_repeated_calls(strategy: LockStrategy) {
             "[{}] call #{call}: repeated exact query must keep finding the inserted window",
             label(strategy)
         );
-        jsons.push(result.get(&None).unwrap()[0].1.serialize_to_json());
+        jsons.push(result.get(&None).unwrap()[0].1.serialize_to_json().unwrap());
     }
     assert!(
         jsons.iter().all(|j| j == &jsons[0]),
@@ -493,8 +493,10 @@ fn test_exact_query_correct_across_interleaved_inserts_and_queries(strategy: Loc
                 "[{}] window {j} must be retrievable after inserting window {i}",
                 label(strategy)
             );
-            let expected = SumAccumulator::with_sum(j as f64).serialize_to_json();
-            let actual = result.get(&None).unwrap()[0].1.serialize_to_json();
+            let expected = SumAccumulator::with_sum(j as f64)
+                .serialize_to_json()
+                .unwrap();
+            let actual = result.get(&None).unwrap()[0].1.serialize_to_json().unwrap();
             assert_eq!(
                 actual,
                 expected,
@@ -543,8 +545,10 @@ fn test_exact_query_correct_after_epoch_rotation(strategy: LockStrategy) {
             "[{}] window {i} must be retrievable via exact query after epoch rotation",
             label(strategy)
         );
-        let expected = SumAccumulator::with_sum(i as f64).serialize_to_json();
-        let actual = result.get(&None).unwrap()[0].1.serialize_to_json();
+        let expected = SumAccumulator::with_sum(i as f64)
+            .serialize_to_json()
+            .unwrap();
+        let actual = result.get(&None).unwrap()[0].1.serialize_to_json().unwrap();
         assert_eq!(
             actual,
             expected,
@@ -1224,7 +1228,7 @@ fn roundtrip<A: AggregateCore + 'static>(
 ) -> (Box<dyn AggregateCore>, Box<dyn AggregateCore>) {
     let store = make_store_simple(strategy);
     let original_box: Box<dyn AggregateCore> = Box::new(original);
-    let original_json = original_box.serialize_to_json();
+    let original_json = original_box.serialize_to_json().unwrap();
 
     let (out, acc) = unkeyed_entry(1, 1_000, 2_000, original_box);
     store.insert_precomputed_output(out, acc).unwrap();
@@ -1247,7 +1251,7 @@ fn roundtrip<A: AggregateCore + 'static>(
 
     // Return a SumAccumulator that carries the original JSON as a workaround —
     // instead, compare directly here using the captured JSON.
-    let retrieved_json = retrieved.serialize_to_json();
+    let retrieved_json = retrieved.serialize_to_json().unwrap();
     assert_eq!(
         original_json,
         retrieved_json,
@@ -1313,7 +1317,7 @@ fn test_clone_fidelity_delta_set_aggregator(strategy: LockStrategy) {
     let mut acc = DeltaSetAggregatorAccumulator::new();
     acc.add_key(key(&["svc", "added-1"]));
     acc.remove_key(key(&["svc", "removed-1"]));
-    let original_json = acc.serialize_to_json();
+    let original_json = acc.serialize_to_json().unwrap();
 
     let acc_box: Box<dyn AggregateCore> = Box::new(acc);
     let (out, boxed) = unkeyed_entry(1, 1_000, 2_000, acc_box);
@@ -1325,7 +1329,7 @@ fn test_clone_fidelity_delta_set_aggregator(strategy: LockStrategy) {
     let retrieved = &result.get(&None).unwrap()[0].1;
     assert_eq!(
         original_json,
-        retrieved.serialize_to_json(),
+        retrieved.serialize_to_json().unwrap(),
         "[{}] DeltaSetAggregatorAccumulator: clone must preserve added/removed sets",
         label(strategy)
     );

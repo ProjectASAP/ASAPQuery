@@ -2,6 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, MultipleSubpopulationAggregateFactory, SerializableToSink,
 };
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -150,10 +151,10 @@ impl Default for MultipleSumAccumulator {
 }
 
 impl SerializableToSink for MultipleSumAccumulator {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         let mut sums_obj = serde_json::Map::new();
         for (key, sum) in &self.sums {
-            let key_json = key.serialize_to_json();
+            let key_json = key.serialize_to_json()?;
             let key_str = serde_json::to_string(&key_json).unwrap();
             sums_obj.insert(
                 key_str,
@@ -161,12 +162,12 @@ impl SerializableToSink for MultipleSumAccumulator {
             );
         }
 
-        serde_json::json!({
+        Ok(serde_json::json!({
             "sums": sums_obj
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         let mut buffer = Vec::new();
 
         // Write number of entries
@@ -174,7 +175,7 @@ impl SerializableToSink for MultipleSumAccumulator {
 
         // Write each key-value pair
         for (key, sum) in &self.sums {
-            let key_bytes = key.serialize_to_bytes();
+            let key_bytes = key.serialize_to_bytes()?;
 
             // Write key length and data
             buffer.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
@@ -184,7 +185,7 @@ impl SerializableToSink for MultipleSumAccumulator {
             buffer.extend_from_slice(&sum.to_le_bytes());
         }
 
-        buffer
+        Ok(buffer)
     }
 }
 
@@ -418,12 +419,12 @@ mod tests {
         acc.add_sum(key.clone(), 42.5);
 
         // Test JSON serialization
-        let json = acc.serialize_to_json();
+        let json = acc.serialize_to_json().unwrap();
         let deserialized = MultipleSumAccumulator::deserialize_from_json(&json).unwrap();
         assert_eq!(deserialized.sums.get(&key), Some(&42.5));
 
         // Test byte serialization
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         let deserialized_bytes = MultipleSumAccumulator::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(deserialized_bytes.sums.get(&key), Some(&42.5));
     }

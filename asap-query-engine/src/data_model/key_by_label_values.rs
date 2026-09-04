@@ -1,3 +1,4 @@
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 // use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -25,8 +26,11 @@ impl KeyByLabelValues {
         self.labels.get(index)
     }
 
-    pub fn serialize_to_json(&self) -> serde_json::Value {
-        serde_json::to_value(&self.labels).unwrap_or(serde_json::Value::Null)
+    pub fn serialize_to_json(&self) -> Result<serde_json::Value, SerializationError> {
+        serde_json::to_value(&self.labels).map_err(|e| SerializationError::Json {
+            type_name: "KeyByLabelValues",
+            source: e.into(),
+        })
     }
 
     pub fn deserialize_from_json(data: &serde_json::Value) -> Result<Self, serde_json::Error> {
@@ -34,8 +38,11 @@ impl KeyByLabelValues {
         Ok(Self { labels })
     }
 
-    pub fn serialize_to_bytes(&self) -> Vec<u8> {
-        bincode::serialize(&self.labels).unwrap_or_default()
+    pub fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        bincode::serialize(&self.labels).map_err(|e| SerializationError::Bytes {
+            type_name: "KeyByLabelValues",
+            source: e.into(),
+        })
     }
 
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
@@ -118,7 +125,7 @@ mod tests {
         let mut key = KeyByLabelValues::new();
         key.insert("test".to_string());
 
-        let json = key.serialize_to_json();
+        let json = key.serialize_to_json().unwrap();
         let deserialized = KeyByLabelValues::deserialize_from_json(&json).unwrap();
         assert_eq!(key, deserialized);
     }
@@ -128,7 +135,7 @@ mod tests {
         let mut key = KeyByLabelValues::new();
         key.insert("test".to_string());
 
-        let bytes = key.serialize_to_bytes();
+        let bytes = key.serialize_to_bytes().unwrap();
         let deserialized = KeyByLabelValues::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(key, deserialized);
     }

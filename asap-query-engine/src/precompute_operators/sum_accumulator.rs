@@ -2,6 +2,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate, SingleSubpopulationAggregateFactory,
 };
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -64,15 +65,15 @@ impl Default for SumAccumulator {
 }
 
 impl SerializableToSink for SumAccumulator {
-    fn serialize_to_json(&self) -> Value {
-        serde_json::json!({
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+        Ok(serde_json::json!({
             "sum": self.sum
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         // Match Python's struct.pack("<f", self.sum) - 4-byte little-endian float
-        (self.sum as f32).to_le_bytes().to_vec()
+        Ok((self.sum as f32).to_le_bytes().to_vec())
     }
 }
 
@@ -252,12 +253,12 @@ mod tests {
         let acc = SumAccumulator::with_sum(42.5);
 
         // Test JSON serialization
-        let json = acc.serialize_to_json();
+        let json = acc.serialize_to_json().unwrap();
         let deserialized = SumAccumulator::deserialize_from_json(&json).unwrap();
         assert_eq!(acc.sum, deserialized.sum);
 
         // Test byte serialization
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         let deserialized_bytes = SumAccumulator::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(acc.sum, deserialized_bytes.sum);
     }

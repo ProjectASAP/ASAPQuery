@@ -3,6 +3,7 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, SerializableToSink,
 };
 use asap_sketchlib::{message_pack_format::MessagePackCodec, SetAggregator};
+use asap_types::traits::SerializationError;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 
@@ -109,7 +110,8 @@ impl SetAggregatorAccumulator {
         for key in &self.added {
             sa.update(&key.to_semicolon_str());
         }
-        sa.to_msgpack().unwrap_or_default()
+        sa.to_msgpack()
+            .expect("Failed to serialize SetAggregator to MessagePack")
     }
 }
 
@@ -120,25 +122,25 @@ impl Default for SetAggregatorAccumulator {
 }
 
 impl SerializableToSink for SetAggregatorAccumulator {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         let added_json: Vec<Value> = self
             .added
             .iter()
             .map(|key| key.serialize_to_json())
-            .collect();
-        serde_json::json!({ "added": added_json })
+            .collect::<Result<_, _>>()?;
+        Ok(serde_json::json!({ "added": added_json }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         // Legacy binary format; matches deserialize_from_bytes().
         let mut buffer = Vec::new();
         buffer.extend_from_slice(&(self.added.len() as u32).to_le_bytes());
         for key in &self.added {
-            let key_bytes = key.serialize_to_bytes();
+            let key_bytes = key.serialize_to_bytes()?;
             buffer.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
             buffer.extend_from_slice(&key_bytes);
         }
-        buffer
+        Ok(buffer)
     }
 }
 
@@ -303,14 +305,14 @@ mod tests {
         acc.add_key(key2.clone());
 
         // Test JSON serialization
-        let json_value = acc.serialize_to_json();
+        let json_value = acc.serialize_to_json().unwrap();
         let deserialized = SetAggregatorAccumulator::deserialize_from_json(&json_value).unwrap();
         assert_eq!(deserialized.added.len(), 2);
         assert!(deserialized.added.contains(&key1));
         assert!(deserialized.added.contains(&key2));
 
         // Test binary serialization
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         let deserialized_bytes = SetAggregatorAccumulator::deserialize_from_bytes(&bytes).unwrap();
         assert_eq!(deserialized_bytes.added.len(), 2);
         assert!(deserialized_bytes.added.contains(&key1));

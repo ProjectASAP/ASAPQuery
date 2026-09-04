@@ -10,6 +10,7 @@ use crate::data_model::{
     AggregateCore, AggregationType, MergeableAccumulator, SerializableToSink,
     SingleSubpopulationAggregate,
 };
+use asap_types::traits::SerializationError;
 
 /// Default HLL precision when streaming config omits `parameters.precision`.
 pub const DEFAULT_HLL_PRECISION: u32 = 14;
@@ -61,18 +62,23 @@ impl Default for HllAccumulator {
 }
 
 impl SerializableToSink for HllAccumulator {
-    fn serialize_to_json(&self) -> Value {
-        let bytes = self.inner.to_msgpack().unwrap_or_default();
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
+        let bytes = self.serialize_to_bytes()?;
         let b64 = general_purpose::STANDARD.encode(&bytes);
-        serde_json::json!({
+        Ok(serde_json::json!({
             "sketch": b64,
             "precision": self.inner.precision,
             "variant": format!("{:?}", self.inner.variant),
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.to_msgpack().unwrap_or_default()
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        self.inner
+            .to_msgpack()
+            .map_err(|e| SerializationError::Bytes {
+                type_name: "HllAccumulator",
+                source: e.to_string().into(),
+            })
     }
 }
 
@@ -322,14 +328,14 @@ mod tests {
         // to_bytes/from_bytes drop the register state and only persist the count,
         // which would corrupt any merge that happens after a store round-trip.
         let original = build_with_n_unique(2000, 14);
-        let bytes = original.serialize_to_bytes();
+        let bytes = original.serialize_to_bytes().unwrap();
         assert!(!bytes.is_empty(), "serialize_to_bytes must produce data");
         let restored =
             HllAccumulator::deserialize_from_bytes_arroyo(&bytes).expect("msgpack round trip");
         assert_eq!(restored.precision(), original.precision());
         assert_eq!(restored.estimate(), original.estimate());
         // Bytes must be stable across re-encode (canonical form).
-        assert_eq!(restored.serialize_to_bytes(), bytes);
+        assert_eq!(restored.serialize_to_bytes().unwrap(), bytes);
     }
 
     #[test]
@@ -338,7 +344,7 @@ mod tests {
         // then merge new data — if the restored sketch had dropped its register
         // state, the post-merge estimate would underflow.
         let acc_a = build_with_n_unique(1000, 14);
-        let bytes = acc_a.serialize_to_bytes();
+        let bytes = acc_a.serialize_to_bytes().unwrap();
         let restored =
             HllAccumulator::deserialize_from_bytes_arroyo(&bytes).expect("msgpack round trip");
 
@@ -364,7 +370,7 @@ mod tests {
     #[test]
     fn json_serialisation_includes_sketch_blob_and_precision() {
         let acc = build_with_n_unique(100, 14);
-        let json = acc.serialize_to_json();
+        let json = acc.serialize_to_json().unwrap();
         assert!(json.get("sketch").and_then(|v| v.as_str()).is_some());
         assert_eq!(json["precision"], 14);
     }

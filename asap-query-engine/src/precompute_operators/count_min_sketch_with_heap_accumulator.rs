@@ -3,6 +3,7 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, SerializableToSink,
 };
 use asap_sketchlib::{message_pack_format::MessagePackCodec, CmsHeapItem, CountMinSketchWithHeap};
+use asap_types::traits::SerializationError;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -108,7 +109,7 @@ impl CountMinSketchWithHeapAccumulator {
 }
 
 impl SerializableToSink for CountMinSketchWithHeapAccumulator {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         let heap_items: Vec<Value> = self
             .inner
             .topk_heap_items()
@@ -121,17 +122,22 @@ impl SerializableToSink for CountMinSketchWithHeapAccumulator {
             })
             .collect();
 
-        serde_json::json!({
+        Ok(serde_json::json!({
             "row_num": self.inner.rows(),
             "col_num": self.inner.cols(),
             "heap_size": self.inner.heap_size,
             "sketch": self.inner.sketch_matrix(),
             "topk_heap": heap_items
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.to_msgpack().unwrap_or_default()
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        self.inner
+            .to_msgpack()
+            .map_err(|e| SerializationError::Bytes {
+                type_name: "CountMinSketchWithHeapAccumulator",
+                source: e.to_string().into(),
+            })
     }
 }
 
@@ -325,7 +331,7 @@ mod tests {
             inner: CountMinSketchWithHeap::from_legacy_matrix(sketch, topk_heap, 2, 3, 5),
         };
 
-        let bytes = cms.serialize_to_bytes();
+        let bytes = cms.serialize_to_bytes().unwrap();
         let deserialized =
             CountMinSketchWithHeapAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
 

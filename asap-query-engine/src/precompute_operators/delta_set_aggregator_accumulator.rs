@@ -3,6 +3,7 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, SerializableToSink,
 };
 use asap_sketchlib::{message_pack_format::MessagePackCodec, DeltaResult};
+use asap_types::traits::SerializationError;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
@@ -178,21 +179,21 @@ impl Default for DeltaSetAggregatorAccumulator {
 }
 
 impl SerializableToSink for DeltaSetAggregatorAccumulator {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         let added_json: Vec<Value> = self
             .added
             .iter()
             .map(|key| key.serialize_to_json())
-            .collect();
+            .collect::<Result<_, _>>()?;
         let removed_json: Vec<Value> = self
             .removed
             .iter()
             .map(|key| key.serialize_to_json())
-            .collect();
-        serde_json::json!({ "added": added_json, "removed": removed_json })
+            .collect::<Result<_, _>>()?;
+        Ok(serde_json::json!({ "added": added_json, "removed": removed_json }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         // Delegate to sketch-core canonical DeltaResult msgpack format
         let added: HashSet<String> = self
             .added
@@ -206,7 +207,10 @@ impl SerializableToSink for DeltaSetAggregatorAccumulator {
             .collect();
         DeltaResult { added, removed }
             .to_msgpack()
-            .unwrap_or_default()
+            .map_err(|e| SerializationError::Bytes {
+                type_name: "DeltaSetAggregatorAccumulator",
+                source: e.to_string().into(),
+            })
     }
 }
 
@@ -473,7 +477,7 @@ mod tests {
         acc.remove_key(key2.clone());
 
         // Test binary (msgpack) serialization roundtrip
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         let deserialized_bytes =
             DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
 

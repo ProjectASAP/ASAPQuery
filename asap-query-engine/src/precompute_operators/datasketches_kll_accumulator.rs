@@ -3,6 +3,7 @@ use crate::data_model::{
     SingleSubpopulationAggregate,
 };
 use asap_sketchlib::{message_pack_format::MessagePackCodec, KllSketch};
+use asap_types::traits::SerializationError;
 use base64::{engine::general_purpose, Engine as _};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -105,15 +106,20 @@ unsafe impl Send for DatasketchesKLLAccumulator {}
 unsafe impl Sync for DatasketchesKLLAccumulator {}
 
 impl SerializableToSink for DatasketchesKLLAccumulator {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         // Mirror Python implementation: {"sketch": base64_encoded_string}
         let sketch_bytes = self.inner.sketch_bytes();
         let sketch_b64 = general_purpose::STANDARD.encode(&sketch_bytes);
-        serde_json::json!({ "sketch": sketch_b64 })
+        Ok(serde_json::json!({ "sketch": sketch_b64 }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
-        self.inner.to_msgpack().unwrap_or_default()
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
+        self.inner
+            .to_msgpack()
+            .map_err(|e| SerializationError::Bytes {
+                type_name: "DatasketchesKLLAccumulator",
+                source: e.to_string().into(),
+            })
     }
 }
 
@@ -318,7 +324,7 @@ mod tests {
             kll.update(i as f64);
         }
 
-        let bytes = kll.serialize_to_bytes();
+        let bytes = kll.serialize_to_bytes().unwrap();
         let deserialized =
             DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
 

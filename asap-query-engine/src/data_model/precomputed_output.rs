@@ -6,6 +6,7 @@ use tracing::error;
 
 use crate::data_model::traits::SerializableToSink;
 use crate::data_model::{AggregationType, KeyByLabelValues, StreamingConfig};
+use asap_types::traits::SerializationError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PrecomputedOutput {
@@ -442,19 +443,27 @@ impl PrecomputedOutput {
 }
 
 impl SerializableToSink for PrecomputedOutput {
-    fn serialize_to_json(&self) -> serde_json::Value {
+    fn serialize_to_json(&self) -> Result<serde_json::Value, SerializationError> {
         // Default implementation without precompute data for backward compatibility
-        serde_json::json!({
+        let key_json = self
+            .key
+            .as_ref()
+            .map(|k| k.serialize_to_json())
+            .transpose()?;
+        Ok(serde_json::json!({
             // "config": self.config.serialize_to_json(),
             "start_timestamp": self.start_timestamp,
             "end_timestamp": self.end_timestamp,
-            "key": self.key.as_ref().map(|k| k.serialize_to_json())
-        })
+            "key": key_json
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         // Default implementation without precompute data for backward compatibility
-        serde_json::to_vec(self).unwrap_or_else(|_| Vec::new())
+        serde_json::to_vec(self).map_err(|e| SerializationError::Bytes {
+            type_name: "PrecomputedOutput",
+            source: e.into(),
+        })
     }
 }
 

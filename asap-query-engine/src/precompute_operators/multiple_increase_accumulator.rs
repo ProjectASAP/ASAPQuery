@@ -3,6 +3,7 @@ use crate::data_model::{
     MultipleSubpopulationAggregate, QueryBounds, SerializableToSink, SingleSubpopulationAggregate,
 };
 use crate::precompute_operators::{CounterResetEvent, IncreaseAccumulator};
+use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -200,24 +201,24 @@ impl Default for MultipleIncreaseAccumulator {
 }
 
 impl SerializableToSink for MultipleIncreaseAccumulator {
-    fn serialize_to_json(&self) -> Value {
+    fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         let entries: Vec<Value> = self
             .increases
             .iter()
             .map(|(key, data)| {
-                serde_json::json!({
-                    "key": key.serialize_to_json(),
-                    "increase_data": data.serialize_to_json()
-                })
+                Ok(serde_json::json!({
+                    "key": key.serialize_to_json()?,
+                    "increase_data": data.serialize_to_json()?
+                }))
             })
-            .collect();
+            .collect::<Result<_, SerializationError>>()?;
 
-        serde_json::json!({
+        Ok(serde_json::json!({
             "entries": entries
-        })
+        }))
     }
 
-    fn serialize_to_bytes(&self) -> Vec<u8> {
+    fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
         let mut buffer = Vec::new();
 
         // Write number of entries
@@ -225,15 +226,15 @@ impl SerializableToSink for MultipleIncreaseAccumulator {
 
         // Write each key-value pair
         for (key, data) in &self.increases {
-            let key_bytes = key.serialize_to_bytes();
+            let key_bytes = key.serialize_to_bytes()?;
             buffer.extend_from_slice(&(key_bytes.len() as u32).to_le_bytes());
             buffer.extend_from_slice(&key_bytes);
 
-            let data_bytes = data.serialize_to_bytes();
+            let data_bytes = data.serialize_to_bytes()?;
             buffer.extend_from_slice(&data_bytes);
         }
 
-        buffer
+        Ok(buffer)
     }
 }
 
@@ -498,7 +499,7 @@ mod tests {
         );
 
         // Test JSON serialization
-        let json_value = acc.serialize_to_json();
+        let json_value = acc.serialize_to_json().unwrap();
         let deserialized = MultipleIncreaseAccumulator::deserialize_from_json(&json_value).unwrap();
 
         assert_eq!(deserialized.increases.len(), 1);
@@ -508,7 +509,7 @@ mod tests {
         assert_eq!(deserialized_acc.sample_count, 2);
 
         // Test binary serialization
-        let bytes = acc.serialize_to_bytes();
+        let bytes = acc.serialize_to_bytes().unwrap();
         let deserialized_bytes =
             MultipleIncreaseAccumulator::deserialize_from_bytes(&bytes).unwrap();
 
@@ -585,7 +586,8 @@ mod tests {
         acc.update(key.clone(), increase_acc);
 
         let json_round_trip =
-            MultipleIncreaseAccumulator::deserialize_from_json(&acc.serialize_to_json()).unwrap();
+            MultipleIncreaseAccumulator::deserialize_from_json(&acc.serialize_to_json().unwrap())
+                .unwrap();
         assert_eq!(
             json_round_trip
                 .query(Statistic::Increase, &key, None)
@@ -594,7 +596,8 @@ mod tests {
         );
 
         let bytes_round_trip =
-            MultipleIncreaseAccumulator::deserialize_from_bytes(&acc.serialize_to_bytes()).unwrap();
+            MultipleIncreaseAccumulator::deserialize_from_bytes(&acc.serialize_to_bytes().unwrap())
+                .unwrap();
         assert_eq!(
             bytes_round_trip
                 .query(Statistic::Increase, &key, None)
