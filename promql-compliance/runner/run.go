@@ -128,7 +128,45 @@ func Run(ctx context.Context, options RunOptions) (Report, error) {
 		return Report{}, fmt.Errorf("test target did not expose seeded data: %w", err)
 	}
 
+	// Also wait for the suite's LATEST timestamp, not just its earliest:
+	// a streaming target's trailing window can still be open even once
+	// earlier points are ready (#705 follow-up).
+	latestTime, ok := latestEvaluationTime(suite, base)
+	if ok && latestTime.After(probeTime) {
+		if err := waitForData(ctx, reference, probeQuery, latestTime); err != nil {
+			return Report{}, fmt.Errorf("reference target did not close its latest window: %w", err)
+		}
+		if err := waitForData(ctx, test, probeQuery, latestTime); err != nil {
+			return Report{}, fmt.Errorf("test target did not close its latest window: %w", err)
+		}
+	}
+
 	return CompareSuite(ctx, reference, test, suite, fixture.Name, base)
+}
+
+// latestEvaluationTime is the max instant offset / range end across the
+// whole suite -- the last timestamp anything will be evaluated at.
+func latestEvaluationTime(suite Suite, base time.Time) (time.Time, bool) {
+	found := false
+	var latestOffset float64
+	consider := func(offset float64) {
+		if !found || offset > latestOffset {
+			latestOffset = offset
+			found = true
+		}
+	}
+	for _, query := range suite.Queries {
+		for _, offset := range query.InstantOffsetsSeconds {
+			consider(offset)
+		}
+		if query.Range != nil {
+			consider(query.Range.EndOffsetSeconds)
+		}
+	}
+	if !found {
+		return time.Time{}, false
+	}
+	return addSeconds(base, latestOffset), true
 }
 
 func runBaseTime(baseTimeMS int64) time.Time {

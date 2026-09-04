@@ -1,0 +1,173 @@
+name: aggregations-dense-cadence
+series:
+  # Same as aggregations.yaml, but every series samples at 60s (the query
+  # step) instead of backend/i-2 and worker/i-2 sampling slower than it --
+  # that mismatch is #705's sparse-cadence bug. aggregations.yaml is left
+  # as the red case tracking it; this is the green baseline for the same
+  # query shapes.
+  #
+  # Each series also has one extra sample at offset_seconds 1260, past the
+  # suite's last evaluated offset (1200) so the trailing window has a real
+  # later sample to close on, instead of only the wall-clock idle fallback.
+  - metric: data
+    labels:
+      job: frontend
+      instance: i-1
+    samples:
+      - {offset_seconds: 0, value: 100}
+      - {offset_seconds: 60, value: 160}
+      - {offset_seconds: 120, value: 220}
+      - {offset_seconds: 180, value: 280}
+      - {offset_seconds: 240, value: 340}
+      - {offset_seconds: 300, value: 400}
+      - {offset_seconds: 360, value: 460}
+      - {offset_seconds: 420, value: 520}
+      - {offset_seconds: 480, value: 580}
+      - {offset_seconds: 540, value: 640}
+      - {offset_seconds: 600, value: 700}
+      - {offset_seconds: 660, value: 760}
+      - {offset_seconds: 720, value: 820}
+      - {offset_seconds: 780, value: 880}
+      - {offset_seconds: 840, value: 940}
+      - {offset_seconds: 900, value: 1000}
+      - {offset_seconds: 960, value: 1060}
+      - {offset_seconds: 1020, value: 1120}
+      - {offset_seconds: 1080, value: 1180}
+      - {offset_seconds: 1140, value: 1240}
+      - {offset_seconds: 1200, value: 1300}
+      - {offset_seconds: 1260, value: 1360}
+  - metric: data
+    labels:
+      job: frontend
+      instance: i-2
+    samples:
+      - {offset_seconds: 0, value: 200}
+      - {offset_seconds: 60, value: 320}
+      - {offset_seconds: 120, value: 440}
+      - {offset_seconds: 180, value: 560}
+      - {offset_seconds: 240, value: 680}
+      - {offset_seconds: 300, value: 800}
+      - {offset_seconds: 360, value: 920}
+      - {offset_seconds: 420, value: 1040}
+      - {offset_seconds: 480, value: 1160}
+      - {offset_seconds: 540, value: 1280}
+      - {offset_seconds: 600, value: 1400}
+      - {offset_seconds: 660, value: 1520}
+      - {offset_seconds: 720, value: 1640}
+      - {offset_seconds: 780, value: 1760}
+      - {offset_seconds: 840, value: 1880}
+      - {offset_seconds: 900, value: 2000}
+      - {offset_seconds: 960, value: 2120}
+      - {offset_seconds: 1020, value: 2240}
+      - {offset_seconds: 1080, value: 2360}
+      - {offset_seconds: 1140, value: 2480}
+      - {offset_seconds: 1200, value: 2600}
+      - {offset_seconds: 1260, value: 2720}
+  - metric: data
+    labels:
+      job: backend
+      instance: i-1
+    samples:
+      - {offset_seconds: 0, value: 300}
+      - {offset_seconds: 60, value: 480}
+      - {offset_seconds: 120, value: 660}
+      - {offset_seconds: 180, value: 840}
+      - {offset_seconds: 240, value: 1020}
+      - {offset_seconds: 300, value: 1200}
+      - {offset_seconds: 360, value: 1380}
+      - {offset_seconds: 420, value: 1560}
+      - {offset_seconds: 480, value: 1740}
+      - {offset_seconds: 540, value: 1920}
+      - {offset_seconds: 600, value: 2100}
+      - {offset_seconds: 660, value: 2280}
+      - {offset_seconds: 720, value: 2460}
+      - {offset_seconds: 780, value: 2640}
+      - {offset_seconds: 840, value: 2820}
+      - {offset_seconds: 900, value: 3000}
+      - {offset_seconds: 960, value: 3180}
+      - {offset_seconds: 1020, value: 3360}
+      - {offset_seconds: 1080, value: 3540}
+      - {offset_seconds: 1140, value: 3720}
+      - {offset_seconds: 1200, value: 3900}
+      - {offset_seconds: 1260, value: 4080}
+  - metric: data
+    labels:
+      job: backend
+      instance: i-2
+    samples:
+      - {offset_seconds: 0, value: 400}
+      - {offset_seconds: 60, value: 640}
+      - {offset_seconds: 120, value: 880}
+      - {offset_seconds: 180, value: 1120}
+      - {offset_seconds: 240, value: 1360}
+      - {offset_seconds: 300, value: 1600}
+      - {offset_seconds: 360, value: 1840}
+      - {offset_seconds: 420, value: 2080}
+      - {offset_seconds: 480, value: 2320}
+      - {offset_seconds: 540, value: 2560}
+      - {offset_seconds: 600, value: 2800}
+      - {offset_seconds: 660, value: 3040}
+      - {offset_seconds: 720, value: 3280}
+      - {offset_seconds: 780, value: 3520}
+      - {offset_seconds: 840, value: 3760}
+      - {offset_seconds: 900, value: 4000}
+      - {offset_seconds: 960, value: 4240}
+      - {offset_seconds: 1020, value: 4480}
+      - {offset_seconds: 1080, value: 4720}
+      - {offset_seconds: 1140, value: 4960}
+      - {offset_seconds: 1200, value: 5200}
+      - {offset_seconds: 1260, value: 5440}
+  - metric: data
+    labels:
+      job: worker
+      instance: i-1
+    samples:
+      - {offset_seconds: 0, value: 500}
+      - {offset_seconds: 60, value: 800}
+      - {offset_seconds: 120, value: 1100}
+      - {offset_seconds: 180, value: 1400}
+      - {offset_seconds: 240, value: 1700}
+      - {offset_seconds: 300, value: 2000}
+      - {offset_seconds: 360, value: 2300}
+      - {offset_seconds: 420, value: 2600}
+      - {offset_seconds: 480, value: 2900}
+      - {offset_seconds: 540, value: 3200}
+      - {offset_seconds: 600, value: 3500}
+      - {offset_seconds: 660, value: 3800}
+      - {offset_seconds: 720, value: 4100}
+      - {offset_seconds: 780, value: 4400}
+      - {offset_seconds: 840, value: 4700}
+      - {offset_seconds: 900, value: 5000}
+      - {offset_seconds: 960, value: 5300}
+      - {offset_seconds: 1020, value: 5600}
+      - {offset_seconds: 1080, value: 5900}
+      - {offset_seconds: 1140, value: 6200}
+      - {offset_seconds: 1200, value: 6500}
+      - {offset_seconds: 1260, value: 6800}
+  - metric: data
+    labels:
+      job: worker
+      instance: i-2
+    samples:
+      - {offset_seconds: 0, value: 600}
+      - {offset_seconds: 60, value: 960}
+      - {offset_seconds: 120, value: 1320}
+      - {offset_seconds: 180, value: 1680}
+      - {offset_seconds: 240, value: 2040}
+      - {offset_seconds: 300, value: 2400}
+      - {offset_seconds: 360, value: 2760}
+      - {offset_seconds: 420, value: 3120}
+      - {offset_seconds: 480, value: 3480}
+      - {offset_seconds: 540, value: 3840}
+      - {offset_seconds: 600, value: 4200}
+      - {offset_seconds: 660, value: 4560}
+      - {offset_seconds: 720, value: 4920}
+      - {offset_seconds: 780, value: 5280}
+      - {offset_seconds: 840, value: 5640}
+      - {offset_seconds: 900, value: 6000}
+      - {offset_seconds: 960, value: 6360}
+      - {offset_seconds: 1020, value: 6720}
+      - {offset_seconds: 1080, value: 7080}
+      - {offset_seconds: 1140, value: 7440}
+      - {offset_seconds: 1200, value: 7800}
+      - {offset_seconds: 1260, value: 8160}
