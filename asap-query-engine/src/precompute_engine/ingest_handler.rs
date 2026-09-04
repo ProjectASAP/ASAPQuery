@@ -4,9 +4,11 @@ use crate::precompute_engine::ingest_source::{route_decoded_samples, IngestConte
 use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+const INGEST_DIAG_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct HttpIngestConfig {
     pub port: u16,
@@ -33,6 +35,8 @@ impl IngestSource for HttpIngestSource {
             samples_ingested: AtomicU64::new(0),
         });
 
+        tokio::spawn(log_ingest_throughput(state.clone()));
+
         let app = Router::new()
             .route("/api/v1/write", post(handle_prometheus_ingest))
             .route("/api/v1/import", post(handle_victoriametrics_ingest))
@@ -51,6 +55,24 @@ impl IngestSource for HttpIngestSource {
 struct HttpIngestState {
     ctx: IngestContext,
     samples_ingested: AtomicU64,
+}
+
+/// Logs ingest throughput every `INGEST_DIAG_INTERVAL`, resetting the counter
+/// each tick so the log reports a per-interval rate rather than a lifetime total.
+async fn log_ingest_throughput(state: Arc<HttpIngestState>) {
+    let mut interval = tokio::time::interval(INGEST_DIAG_INTERVAL);
+    interval.tick().await; // first tick fires immediately; skip it
+    loop {
+        interval.tick().await;
+        let samples = state.samples_ingested.swap(0, Ordering::Relaxed);
+        let secs = INGEST_DIAG_INTERVAL.as_secs_f64();
+        debug!(
+            "[INGEST_DIAG] samples_ingested: {} in {:.0}s ({:.1} samples/sec)",
+            samples,
+            secs,
+            samples as f64 / secs,
+        );
+    }
 }
 
 async fn handle_prometheus_ingest(
