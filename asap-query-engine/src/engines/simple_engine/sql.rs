@@ -469,6 +469,9 @@ impl SimpleEngine {
             query_output_labels: query_output_labels.clone(),
             statistic_to_compute,
             query_kwargs: query_kwargs.clone(),
+            // SQL top-k never enables Topk output formatting (rows stay as
+            // bare `(group-by columns, value)`), so this is never read.
+            keep_metric_name: true,
         };
 
         // Calculate timestamps

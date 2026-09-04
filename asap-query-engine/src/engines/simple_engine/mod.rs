@@ -43,6 +43,12 @@ pub struct QueryMetadata {
     pub statistic_to_compute: Statistic,
     /// Additional parameters (e.g., "quantile" -> "0.95", "k" -> "10")
     pub query_kwargs: HashMap<String, String>,
+    /// Whether a Topk query's output should carry the wrapped metric's
+    /// `__name__` (Prometheus's DropName, mirrored here only for Topk: a
+    /// bare `topk(k, metric)` keeps it, but `topk(k, sum_over_time(...))`
+    /// forwards sum_over_time's dropped name -- #710). Unused outside the
+    /// PromQL Topk formatting path.
+    pub keep_metric_name: bool,
 }
 
 /// Parameters for a single store query
@@ -1102,7 +1108,7 @@ impl SimpleEngine {
             unformatted_results,
             &context.metadata.statistic_to_compute,
             &context.metric,
-            enable_topk_formatting,
+            enable_topk_formatting && context.metadata.keep_metric_name,
         );
         if enable_topk_limiting && context.metadata.statistic_to_compute == Statistic::Topk {
             results.truncate(Self::parse_topk_limit(&context.metadata.query_kwargs)?);
@@ -2426,7 +2432,10 @@ impl SimpleEngine {
         // not once per timestep -- a separate pass over the final results,
         // after every timestamp's ranking above has already decided which
         // groups/samples survive.
-        if enable_topk_formatting && context.base.metadata.statistic_to_compute == Statistic::Topk {
+        if enable_topk_formatting
+            && context.base.metadata.statistic_to_compute == Statistic::Topk
+            && context.base.metadata.keep_metric_name
+        {
             for elem in results.values_mut() {
                 Self::prepend_metric_name(&context.base.metric, &mut elem.labels);
             }

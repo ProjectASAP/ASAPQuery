@@ -351,7 +351,13 @@ impl SimpleEngine {
         }
         let statistic_to_compute = requirements.statistics[0];
 
-        if statistic_to_compute == Statistic::Topk {
+        // A wrapped temporal function (`"function"` token present, e.g.
+        // sum_over_time/count_over_time) drops __name__ in real Prometheus,
+        // and topk forwards that; a bare vector selector under topk keeps
+        // it. See #710.
+        let keep_metric_name = !match_result.tokens.contains_key("function");
+
+        if statistic_to_compute == Statistic::Topk && keep_metric_name {
             let mut new_labels = vec![METRIC_NAME_LABEL.to_string()];
             new_labels.extend(query_output_labels.labels);
             query_output_labels = KeyByLabelNames::new(new_labels);
@@ -369,6 +375,7 @@ impl SimpleEngine {
             query_output_labels: query_output_labels.clone(),
             statistic_to_compute,
             query_kwargs,
+            keep_metric_name,
         };
 
         let (query_plan, do_merge, value_window_type) = self
@@ -1722,5 +1729,221 @@ mod topk_pipeline_tests {
         for element in &results {
             assert_eq!(element.labels.labels.len(), 1);
         }
+    }
+
+    const TOPK_OVER_SUM_OVER_TIME_QUERY: &str = "topk(10, sum_over_time(transfer_events[5m]))";
+    // Must be aligned to the 5m (300_000ms) window, unlike QUERY_TIME (only
+    // 1s-aligned) -- `execute_query_pipeline`'s instant-as-range widening
+    // re-anchors the store window at the raw query time, not the aligned
+    // window `create_store_query_plan` computed, so an unaligned time here
+    // would look up a window the inserted PrecomputedOutput never covers.
+    const TOPK_OVER_SUM_OVER_TIME_QUERY_TIME: f64 = 1_759_276_800.0;
+
+    const TOPK_OVER_COUNT_OVER_TIME_QUERY: &str = "topk(10, count_over_time(transfer_events[5m]))";
+
+    /// Same engine shape as `build_topk_engine`, but the registered query
+    /// wraps a temporal aggregation (`sum_over_time`/`count_over_time`)
+    /// instead of a bare vector selector -- #710.
+    fn build_topk_over_temporal_engine(query: &str) -> (SimpleEngine, Arc<SimpleMapStore>) {
+        let promql_schema = PromQLSchema::new().add_metric(
+            METRIC.to_string(),
+            KeyByLabelNames::new(vec!["srcip".to_string()]),
+        );
+        let query_config = QueryConfig::new(query.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::PromQL(promql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 300_000,
+            slide_interval_ms: 300_000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+        let engine = SimpleEngine::new(
+            store.clone(),
+            inference_config,
+            streaming_config,
+            1000,
+            QueryLanguage::promql,
+        );
+        (engine, store)
+    }
+
+    /// #710: `topk(k, count_over_time(...))` forwards count_over_time's
+    /// dropped metric name, same as sum_over_time -- the fix reads "is a
+    /// temporal function wrapped" generically, not a per-function allowlist.
+    #[test]
+    fn topk_over_count_over_time_output_labels_drop_metric_name() {
+        let (engine, _store) = build_topk_over_temporal_engine(TOPK_OVER_COUNT_OVER_TIME_QUERY);
+
+        let context = engine
+            .build_query_execution_context_promql(
+                TOPK_OVER_COUNT_OVER_TIME_QUERY.to_string(),
+                TOPK_OVER_SUM_OVER_TIME_QUERY_TIME,
+            )
+            .expect(
+                "topk(k, count_over_time(...)) should build a context via the query_config path",
+            );
+
+        assert_eq!(context.metadata.statistic_to_compute, Statistic::Topk);
+        assert_eq!(
+            context.metadata.query_output_labels.labels,
+            vec!["srcip".to_string()],
+            "count_over_time drops __name__, and topk forwards that -- no __name__ column here",
+        );
+    }
+
+    /// #710: `topk(k, sum_over_time(...))` forwards sum_over_time's dropped
+    /// metric name (real Prometheus DropName semantics) -- unlike bare
+    /// `topk(k, metric)`, which keeps it.
+    #[test]
+    fn topk_over_sum_over_time_output_labels_drop_metric_name() {
+        let (engine, _store) = build_topk_over_temporal_engine(TOPK_OVER_SUM_OVER_TIME_QUERY);
+
+        let context = engine
+            .build_query_execution_context_promql(
+                TOPK_OVER_SUM_OVER_TIME_QUERY.to_string(),
+                TOPK_OVER_SUM_OVER_TIME_QUERY_TIME,
+            )
+            .expect("topk(k, sum_over_time(...)) should build a context via the query_config path");
+
+        assert_eq!(
+            context.metadata.statistic_to_compute,
+            Statistic::Topk,
+            "topk(...) must resolve to Statistic::Topk",
+        );
+        assert_eq!(
+            context.metadata.query_output_labels.labels,
+            vec!["srcip".to_string()],
+            "sum_over_time drops __name__, and topk forwards that -- no __name__ column here",
+        );
+    }
+
+    /// #710: the actual result rows (not just the header) must agree with
+    /// `query_output_labels` on whether __name__ is present -- a mismatch
+    /// would silently misalign every downstream label when the wire format
+    /// zips header keys against row label values positionally
+    /// (`convert_query_result_to_prometheus`, `utils/http.rs`).
+    #[test]
+    fn topk_over_sum_over_time_rows_drop_metric_name_and_match_header_length() {
+        let (engine, store) = build_topk_over_temporal_engine(TOPK_OVER_SUM_OVER_TIME_QUERY);
+
+        let context = engine
+            .build_query_execution_context_promql(
+                TOPK_OVER_SUM_OVER_TIME_QUERY.to_string(),
+                TOPK_OVER_SUM_OVER_TIME_QUERY_TIME,
+            )
+            .expect("context should build");
+        let window = &context.store_plan.values_query;
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for i in 1..=15u64 {
+            let srcip = format!("10.0.0.{i}");
+            sketch.inner.update(&srcip, (i * 10) as f64);
+        }
+
+        let output =
+            PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .expect("insert should succeed");
+
+        let results = engine
+            .execute_query_pipeline(&context, true, true)
+            .expect("pipeline should produce results");
+
+        assert_eq!(results.len(), 10, "topk(10, ...) must truncate to 10 rows");
+        for element in &results {
+            assert_eq!(
+                element.labels.labels.len(),
+                1,
+                "sum_over_time drops __name__ -- row must carry only srcip, no metric-name prefix",
+            );
+            assert!(
+                element.labels.labels[0].starts_with("10.0.0."),
+                "the one label must be the srcip value, not the metric name: {:?}",
+                element.labels.labels,
+            );
+            assert_eq!(
+                element.labels.labels.len(),
+                context.metadata.query_output_labels.labels.len(),
+                "row label count must match the output-labels header, or the wire format's \
+                 positional zip silently misaligns every subsequent label",
+            );
+        }
+    }
+
+    /// #710 side effect: a topk-over-temporal-function leaf inside a binary
+    /// arithmetic expression derives its output-label *header* from the same
+    /// `query_output_labels` this fix corrects (`resolve_arm_leaf_context` ->
+    /// `binary_matching_label_names`), even though row *values* never carry
+    /// the metric name in a binary arm regardless (formatting is disabled
+    /// there, per `topk_wrapped_in_binary_expr_truncates_without_metric_name`
+    /// above). Before this fix the header claimed a __name__ column no row
+    /// ever filled; confirm it no longer does for a wrapped temporal
+    /// function.
+    #[test]
+    fn topk_over_sum_over_time_wrapped_in_binary_expr_header_has_no_metric_name() {
+        let (engine, store) = build_topk_over_temporal_engine(TOPK_OVER_SUM_OVER_TIME_QUERY);
+
+        let context = engine
+            .build_query_execution_context_promql(
+                TOPK_OVER_SUM_OVER_TIME_QUERY.to_string(),
+                TOPK_OVER_SUM_OVER_TIME_QUERY_TIME,
+            )
+            .expect("context should build");
+        let window = &context.store_plan.values_query;
+
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for i in 1..=15u64 {
+            let srcip = format!("10.0.0.{i}");
+            sketch.inner.update(&srcip, (i * 10) as f64);
+        }
+        let output =
+            PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .expect("insert should succeed");
+
+        let (output_labels, _) = engine
+            .handle_query_promql(
+                format!("{TOPK_OVER_SUM_OVER_TIME_QUERY} + 0"),
+                TOPK_OVER_SUM_OVER_TIME_QUERY_TIME,
+            )
+            .expect("binary-expr-wrapped topk-over-sum_over_time should still resolve");
+
+        assert_eq!(
+            output_labels.labels,
+            vec!["srcip".to_string()],
+            "sum_over_time drops __name__ -- the binary-expr header must not claim it either",
+        );
     }
 }
