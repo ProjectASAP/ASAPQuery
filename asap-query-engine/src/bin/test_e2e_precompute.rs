@@ -611,8 +611,8 @@ fn make_sum_agg_config(
     };
     AggregationConfig::new(
         agg_id,
-        AggregationType::SingleSubpopulation,
-        "Sum".to_string(),
+        AggregationType::Sum,
+        "".to_string(),
         HashMap::new(),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),

@@ -177,8 +177,8 @@ mod tests {
     fn make_agg_config(id: u64, metric: &str) -> AggregationConfig {
         AggregationConfig::new(
             id,
-            AggregationType::SingleSubpopulation,
-            "Sum".to_string(),
+            AggregationType::Sum,
+            "".to_string(),
             HashMap::new(),
             KeyByLabelNames::new(vec![]),
             KeyByLabelNames::new(vec![]),

@@ -289,9 +289,6 @@ pub enum AggregationType {
     SetAggregator,
     DeltaSetAggregator,
     HLL,
-    // ---------- legacy config wrapper names ----------
-    SingleSubpopulation,
-    MultipleSubpopulation,
 }
 
 impl AggregationType {
@@ -310,8 +307,6 @@ impl AggregationType {
             AggregationType::SetAggregator => "SetAggregator",
             AggregationType::DeltaSetAggregator => "DeltaSetAggregator",
             AggregationType::HLL => "HLL",
-            AggregationType::SingleSubpopulation => "SingleSubpopulation",
-            AggregationType::MultipleSubpopulation => "MultipleSubpopulation",
         }
     }
 
@@ -319,8 +314,7 @@ impl AggregationType {
     pub fn is_keyed(self) -> bool {
         matches!(
             self,
-            AggregationType::MultipleSubpopulation
-                | AggregationType::MultipleSum
+            AggregationType::MultipleSum
                 | AggregationType::MultipleIncrease
                 | AggregationType::MultipleMinMax
                 | AggregationType::CountMinSketch
@@ -377,8 +371,6 @@ impl FromStr for AggregationType {
             "SetAggregator" => Ok(AggregationType::SetAggregator),
             "DeltaSetAggregator" => Ok(AggregationType::DeltaSetAggregator),
             "HLL" | "HyperLogLog" => Ok(AggregationType::HLL),
-            "SingleSubpopulation" => Ok(AggregationType::SingleSubpopulation),
-            "MultipleSubpopulation" => Ok(AggregationType::MultipleSubpopulation),
             // Legacy accumulator-suffixed aliases
             "SumAccumulator" | "SumAggregator" | "sum" => Ok(AggregationType::Sum),
             "IncreaseAccumulator" | "IncreaseAggregator" | "increase" => {

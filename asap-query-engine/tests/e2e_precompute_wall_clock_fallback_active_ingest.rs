@@ -50,8 +50,8 @@ use query_engine_rust::precompute_operators::sum_accumulator::SumAccumulator;
 fn netflow_agg_config(metric: &str, window_size_ms: u64) -> AggregationConfig {
     AggregationConfig::new(
         1,
-        AggregationType::SingleSubpopulation,
-        "Sum".to_string(),
+        AggregationType::Sum,
+        "".to_string(),
         HashMap::new(),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
         promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
