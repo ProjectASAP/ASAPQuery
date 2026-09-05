@@ -51,9 +51,8 @@ Key properties:
 ASAP builds sketches in **real-time** using streaming pipelines:
 
 1. **Prometheus** scrapes metrics from exporters
-2. **Remote Write** sends metrics to **Arroyo** (streaming engine)
-3. **Arroyo** builds sketches using SQL queries
-4. **QueryEngine** consumes sketches and answers queries
+2. **Remote Write** sends metrics directly to **QueryEngine** (precompute engine)
+3. **QueryEngine** builds sketches in real-time and answers queries using them
 
 ### Query Protocol
 
@@ -97,10 +96,10 @@ This ensures compatibility while accelerating what's possible.
 │                     ASAP Components                         │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  ┌──────────┐      ┌──────────┐      ┌──────────┐           │
-│  │ Arroyo   │  →   │  Kafka   │  →   │  Query   │           │
-│  │          │      │          │      │  Engine  │           │
-│  └──────────┘      └──────────┘      └──────────┘           │
+│                    ┌──────────┐                             │
+│                    │  Query   │                             │
+│                    │  Engine  │                             │
+│                    └──────────┘                             │
 └─────────────────────────────────────────────────────────────┘
                                 ↓
                     ┌───────────────────────┐
