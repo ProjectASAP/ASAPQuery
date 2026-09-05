@@ -204,6 +204,44 @@ pub fn get_spatial_aggregation_output_labels(
     }
 }
 
+/// For `topk` queries with an explicit `by`/`without` modifier, returns the
+/// labels used to *bucket* the input before ranking.
+///
+/// Per PromQL semantics, `topk`/`bottomk` are selectors, not reducers: `by`/
+/// `without` only buckets the input series for independent per-bucket
+/// ranking, it never changes the output's label set (unlike `sum by (...)`
+/// etc, which collapse the output down to the by-clause labels) -- that's
+/// exactly why `get_spatial_aggregation_output_labels` always returns all
+/// labels for `topk` regardless of any modifier. This function recovers the
+/// modifier's labels separately, for callers that need the bucketing
+/// information itself (#714: `topk by (job) (k, x)` needs one independent
+/// top-k ranking per `job` value, not one ranking over the whole input).
+///
+/// Returns `None` when there's no modifier (a bare `topk(k, x)` ranks across
+/// the whole input in a single bucket) or when the aggregation isn't `topk`.
+pub fn get_topk_by_labels(
+    match_result: &PromQLMatchResult,
+    all_labels: &KeyByLabelNames,
+) -> Option<KeyByLabelNames> {
+    let aggregation_token = match_result
+        .tokens
+        .get("aggregation")
+        .and_then(|token| token.aggregation.as_ref())?;
+
+    if aggregation_token.op.parse::<AggregationOperator>() != Ok(AggregationOperator::Topk) {
+        return None;
+    }
+
+    let modifier = aggregation_token.modifier.as_ref()?;
+    Some(match modifier.modifier_type {
+        AggregationModifierType::By => KeyByLabelNames::new(modifier.labels.clone()),
+        AggregationModifierType::Without => {
+            let without_labels = KeyByLabelNames::new(modifier.labels.clone());
+            all_labels.difference(&without_labels)
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

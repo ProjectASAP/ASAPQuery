@@ -268,6 +268,9 @@ impl SimpleEngine {
             // `count_events: false` (value-weighted) one. This disambiguates two
             // CountMinSketchWithHeap configs on the same metric during matching.
             topk_count_events: topk.map(|t| t.count_events()),
+            // SQL topk has no by/without-style bucketing clause (see the
+            // grouping_labels comment above) -- always a single ranking.
+            topk_by_labels: None,
         }
     }
 
