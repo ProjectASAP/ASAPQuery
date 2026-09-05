@@ -665,8 +665,10 @@ def get_sql_query(
         streaming_aggregation_config.aggregationType == "multipleincrease"
     )
 
-    # This is just a patch for topk query.
-    if streaming_aggregation_config.aggregationSubType == "topk":
+    # This is just a patch for topk query. aggregationType, not aggregationSubType,
+    # identifies a topk config -- CountMinSketchWithHeap's sub_type carries the
+    # SUM/COUNT weighting instead (ASAPQuery#670).
+    if streaming_aggregation_config.aggregationType == "countminsketchwithheap":
         key_list = all_labels_agg_columns
     else:
         key_list = fully_qualified_agg_columns
