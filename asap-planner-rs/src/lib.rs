@@ -29,8 +29,6 @@ pub use sql::SQLRuntimeOptions;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamingEngine {
-    Arroyo,
-    Flink,
     Precompute,
 }
 

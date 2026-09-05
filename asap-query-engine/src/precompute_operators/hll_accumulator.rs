@@ -45,14 +45,6 @@ impl HllAccumulator {
     pub fn precision(&self) -> u32 {
         self.inner.precision
     }
-
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let inner = HllSketch::from_msgpack(buffer)
-            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
-        Ok(Self { inner })
-    }
 }
 
 impl Default for HllAccumulator {
@@ -316,54 +308,6 @@ mod tests {
         assert!(
             msg.contains("HllAccumulator") || msg.contains("Cannot merge"),
             "error message should mention HllAccumulator, got: {msg}",
-        );
-    }
-
-    #[test]
-    fn msgpack_round_trip_preserves_estimate() {
-        // Real serialisation: the register array survives encode→decode and the
-        // estimate is identical (modulo the lossless f64 estimator math).
-        // This is the property that the existing
-        // `datafusion_summary_library::physical::hll::HllSketch` lacks — its
-        // to_bytes/from_bytes drop the register state and only persist the count,
-        // which would corrupt any merge that happens after a store round-trip.
-        let original = build_with_n_unique(2000, 14);
-        let bytes = original.serialize_to_bytes().unwrap();
-        assert!(!bytes.is_empty(), "serialize_to_bytes must produce data");
-        let restored =
-            HllAccumulator::deserialize_from_bytes_arroyo(&bytes).expect("msgpack round trip");
-        assert_eq!(restored.precision(), original.precision());
-        assert_eq!(restored.estimate(), original.estimate());
-        // Bytes must be stable across re-encode (canonical form).
-        assert_eq!(restored.serialize_to_bytes().unwrap(), bytes);
-    }
-
-    #[test]
-    fn round_trip_then_merge_recovers_full_state() {
-        // Regression guard for the lossy-serialisation footgun: serialize, deserialize,
-        // then merge new data — if the restored sketch had dropped its register
-        // state, the post-merge estimate would underflow.
-        let acc_a = build_with_n_unique(1000, 14);
-        let bytes = acc_a.serialize_to_bytes().unwrap();
-        let restored =
-            HllAccumulator::deserialize_from_bytes_arroyo(&bytes).expect("msgpack round trip");
-
-        let mut acc_b = HllAccumulator::new(14);
-        for i in 1000..2000 {
-            acc_b.update(i as f64);
-        }
-        let merged = restored
-            .merge_with(&acc_b)
-            .expect("merge restored + new must succeed");
-        let est = merged
-            .as_any()
-            .downcast_ref::<HllAccumulator>()
-            .unwrap()
-            .estimate();
-        // 2000 distinct values; allow 5% tolerance.
-        assert!(
-            est > 1800.0 && est < 2200.0,
-            "post-round-trip merge estimate should be ≈2000, got {est}",
         );
     }
 

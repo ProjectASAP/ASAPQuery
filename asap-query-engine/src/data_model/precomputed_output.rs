@@ -1,11 +1,8 @@
-use chrono::DateTime;
-use flate2::read::GzDecoder;
 use serde::{Deserialize, Serialize};
-use std::io::Read as _;
 use tracing::error;
 
 use crate::data_model::traits::SerializableToSink;
-use crate::data_model::{AggregationType, KeyByLabelValues, StreamingConfig};
+use crate::data_model::KeyByLabelValues;
 use asap_types::traits::SerializationError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -139,106 +136,6 @@ impl PrecomputedOutput {
     //     })
     // }
 
-    /// Deserialization for Arroyo streaming engine
-    pub fn deserialize_from_json_arroyo(
-        data: &serde_json::Value,
-        // streaming_config: &HashMap<u64, AggregationConfig>,
-        streaming_config: &StreamingConfig,
-    ) -> Result<
-        (Self, Box<dyn crate::data_model::AggregateCore>),
-        Box<dyn std::error::Error + Send + Sync>,
-    > {
-        let aggregation_id = data
-            .get("aggregation_id")
-            .and_then(|v| v.as_u64())
-            .ok_or("Missing or invalid 'aggregation_id' field")?;
-
-        // Parse window timestamps from Arroyo format
-        let window = data
-            .get("window")
-            .ok_or("Missing 'window' field in Arroyo data")?;
-        let start_str = window
-            .get("start")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing or invalid 'start' field in window")?;
-        let end_str = window
-            .get("end")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing or invalid 'end' field in window")?;
-
-        // Parse timestamps with Z suffix - convert to milliseconds
-        let start_timestamp = (DateTime::parse_from_rfc3339(&format!("{start_str}Z"))
-            .map_err(|e| format!("Failed to parse start timestamp: {e}"))?
-            .timestamp() as u64)
-            * 1000;
-        let end_timestamp = (DateTime::parse_from_rfc3339(&format!("{end_str}Z"))
-            .map_err(|e| format!("Failed to parse end timestamp: {e}"))?
-            .timestamp() as u64)
-            * 1000;
-
-        // Parse key from semicolon-separated format - always create KeyByLabelValues (even if empty)
-        let key_str = data.get("key").and_then(|v| v.as_str()).unwrap_or("");
-        let labels: Vec<String> = key_str.split(';').map(|s| s.to_string()).collect();
-        // let key = Some(KeyByLabelValues::new_with_labels(
-        //     labels
-        //         .into_iter()
-        //         .enumerate()
-        //         .map(|(i, v)| (format!("label_{i}"), v))
-        //         .collect(),
-        // ));
-        let key = Some(KeyByLabelValues::new_with_labels(labels));
-
-        // Get aggregation type from streaming config lookup
-        let config = streaming_config
-            .get_aggregation_config(aggregation_id)
-            .ok_or_else(|| {
-                format!("Aggregation ID {aggregation_id} not found in streaming config")
-            })?
-            .clone();
-
-        let precomputed_output = Self {
-            start_timestamp,
-            end_timestamp,
-            key,
-            aggregation_id,
-        };
-
-        // data["precompute"] has been compressed using the following logic
-        // fn gzip_compress(data: &[u8]) -> Option<Vec<u8>> {
-        //     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        //     encoder.write_all(&data).ok()?;
-        //     encoder.finish().ok()
-        // }
-
-        // Extract and decompress precompute data
-        // Equivalent python code:
-        // precompute_bytes = bytes.fromhex(data["precompute"])
-        // precompute_bytes = gzip.decompress(precompute_bytes)
-        let precompute_hex = data
-            .get("precompute")
-            .and_then(|v| v.as_str())
-            .ok_or("Missing or invalid 'precompute' field")?;
-
-        // NOTE: Check if hex decoding is actually needed - might depend on Arroyo's JSON serialization
-        let compressed_bytes = hex::decode(precompute_hex)
-            .map_err(|e| format!("Failed to decode hex precompute data: {e}"))?;
-
-        // Decompress gzip data
-
-        let mut decoder = GzDecoder::new(&compressed_bytes[..]);
-        let mut precompute_bytes = Vec::new();
-        decoder
-            .read_to_end(&mut precompute_bytes)
-            .map_err(|e| format!("Failed to decompress precompute data: {e}"))?;
-
-        let precompute = Self::create_precompute_from_bytes(
-            config.aggregation_type,
-            Vec::as_slice(&precompute_bytes),
-        )?;
-
-        Ok((precomputed_output, precompute))
-    }
-
     // /// Deserialize from JSON and extract precompute data following Python implementation
     // /// This is the public method that should be used by Kafka consumer
     // pub fn deserialize_from_json_with_precompute(
@@ -360,86 +257,6 @@ impl PrecomputedOutput {
     //         _ => Err(format!("Unknown precompute type: {precompute_type}").into()),
     //     }
     // }
-
-    /// Factory method to create precompute accumulator from bytes
-    fn create_precompute_from_bytes(
-        precompute_type: AggregationType,
-        buffer: &[u8],
-    ) -> Result<Box<dyn crate::data_model::AggregateCore>, Box<dyn std::error::Error + Send + Sync>>
-    {
-        use crate::precompute_operators::*;
-
-        match precompute_type {
-            AggregationType::Sum => {
-                let accumulator = SumAccumulator::deserialize_from_bytes_arroyo(buffer)
-                    .map_err(|e| format!("Failed to deserialize SumAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::MinMax => {
-                let accumulator = MinMaxAccumulator::deserialize_from_bytes(buffer)
-                    .map_err(|e| format!("Failed to deserialize MinMaxAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::Increase => {
-                let accumulator = IncreaseAccumulator::deserialize_from_bytes(buffer)
-                    .map_err(|e| format!("Failed to deserialize IncreaseAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::MultipleSum => {
-                let accumulator = MultipleSumAccumulator::deserialize_from_bytes_arroyo(buffer)
-                    .map_err(|e| format!("Failed to deserialize MultipleSumAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::MultipleMinMax => {
-                let accumulator =
-                    MultipleMinMaxAccumulator::deserialize_from_bytes(buffer, "min".to_string())
-                        .map_err(|e| {
-                            format!("Failed to deserialize MultipleMinMaxAccumulator: {e}")
-                        })?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::MultipleIncrease => {
-                let accumulator = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
-                    buffer,
-                )
-                .map_err(|e| format!("Failed to deserialize MultipleIncreaseAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::CountMinSketch => {
-                let accumulator = CountMinSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
-                    .map_err(|e| format!("Failed to deserialize CountMinSketchAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::CountMinSketchWithHeap => {
-                let accumulator =
-                    CountMinSketchWithHeapAccumulator::deserialize_from_bytes_arroyo(buffer)
-                        .map_err(|e| {
-                            format!("Failed to deserialize CountMinSketchWithHeapAccumulator: {e}")
-                        })?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::DatasketchesKLL => {
-                let accumulator = DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(buffer)
-                    .map_err(|e| {
-                        format!("Failed to deserialize DatasketchesKLLAccumulator: {e}")
-                    })?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::HydraKLL => {
-                let accumulator = HydraKllSketchAccumulator::deserialize_from_bytes_arroyo(buffer)
-                    .map_err(|e| format!("Failed to deserialize HydraKllSketchAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            AggregationType::DeltaSetAggregator => {
-                let accumulator = DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(
-                    buffer,
-                )
-                .map_err(|e| format!("Failed to deserialize DeltaSetAggregatorAccumulator: {e}"))?;
-                Ok(Box::new(accumulator))
-            }
-            _ => Err(format!("Unknown precompute type: {precompute_type:?}").into()),
-        }
-    }
 }
 
 impl SerializableToSink for PrecomputedOutput {

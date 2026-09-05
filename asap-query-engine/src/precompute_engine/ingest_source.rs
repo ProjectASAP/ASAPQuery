@@ -24,7 +24,7 @@ pub struct IngestContext {
 
 /// An ingest source for the precompute engine.
 ///
-/// Implementors decode incoming data (HTTP, Kafka, file, etc.) and push it
+/// Implementors decode incoming data (HTTP, file, etc.) and push it
 /// into the engine via [`route_decoded_samples`].
 #[async_trait::async_trait]
 pub trait IngestSource: Send + Sync {
