@@ -6,6 +6,7 @@ use promql_utilities::query_logics::enums::Statistic;
 use tracing::{debug, warn};
 
 use crate::aggregation_config::{AggregationConfig, AggregationConfigError, AggregationIdInfo};
+use crate::aggregation_mode::{AggregationMode, CountMode};
 use crate::enums::WindowType;
 use crate::query_requirements::QueryRequirements;
 use crate::utils::normalize_spatial_filter;
@@ -166,24 +167,23 @@ pub fn spatial_filter_compatible(config_filter: &str, req_filter: &str) -> bool 
     config_norm == req_norm
 }
 
-/// Reads the required `count_events` parameter from a validated
-/// `CountMinSketchWithHeap` config.
-fn config_count_events(config: &AggregationConfig) -> bool {
-    config
-        .parameters
-        .get("count_events")
-        .and_then(|v| v.as_bool())
-        .expect("aggregation configs are validated before capability matching")
+/// Reads the SUM/COUNT weighting from a validated CMS-family config
+/// (`CountMinSketch` or `CountMinSketchWithHeap`).
+fn config_count_mode(config: &AggregationConfig) -> CountMode {
+    match config.mode() {
+        Ok(AggregationMode::SumOrCount(mode)) => mode,
+        _ => panic!("aggregation configs are validated before capability matching"),
+    }
 }
 
 /// Top-k weighting compatibility. Only constrains `Statistic::Topk` candidates;
 /// every other statistic passes unconditionally.
 ///
-/// A COUNT top-k query (`Some(true)`) must be served by a `count_events: true`
-/// sketch and a SUM top-k query (`Some(false)`) by a `count_events: false`
-/// (value-weighted) sketch. This is what tells two `CountMinSketchWithHeap`
-/// configs on the same metric apart. `None` (non-top-k, or PromQL top-k which
-/// does not pin the weighting) imposes no constraint.
+/// A COUNT top-k query (`Some(true)`) must be served by a COUNT-weighted sketch
+/// and a SUM top-k query (`Some(false)`) by a SUM-weighted (value-weighted)
+/// sketch. This is what tells two `CountMinSketchWithHeap` configs on the same
+/// metric apart. `None` (non-top-k, or PromQL top-k which does not pin the
+/// weighting) imposes no constraint.
 pub fn topk_weighting_compatible(
     stat: Statistic,
     config: &AggregationConfig,
@@ -193,41 +193,31 @@ pub fn topk_weighting_compatible(
         return true;
     }
     match req_count_events {
-        Some(want) => config_count_events(config) == want,
+        Some(want) => config_count_mode(config) == CountMode::from_count_events(want),
         None => true,
     }
 }
 
-/// Ordinary COUNT vs a heap-backed Count-Min Sketch. A heap configured with
-/// `count_events: false` is value-weighted (SUM semantics) and must not serve
-/// ordinary `COUNT(...)`, even though `CountMinSketchWithHeap` is otherwise a
-/// compatible aggregation type for `Statistic::Count` (#666). Only constrains
-/// heap CMS candidates for `Statistic::Count`; every other case passes
-/// unconditionally.
-fn count_heap_weighting_compatible(stat: Statistic, config: &AggregationConfig) -> bool {
-    if stat != Statistic::Count
-        || config.aggregation_type != AggregationType::CountMinSketchWithHeap
-    {
-        return true;
-    }
-    config_count_events(config)
-}
-
-/// Plain Count-Min Sketches are value-weighted or event-weighted according to
-/// their subtype. A sketch with the other subtype cannot serve this statistic.
-fn plain_cms_sub_type_compatible(stat: Statistic, config: &AggregationConfig) -> bool {
-    if config.aggregation_type != AggregationType::CountMinSketch {
+/// CMS-family sketches (`CountMinSketch`, `CountMinSketchWithHeap`) are SUM- or
+/// COUNT-weighted according to their `aggregation_sub_type`. A SUM statistic
+/// must be served by a SUM-weighted sketch and a COUNT statistic by a
+/// COUNT-weighted one (this also covers heap CMS serving ordinary `COUNT(...)`,
+/// #666); other statistics (e.g. Topk, handled by `topk_weighting_compatible`)
+/// aren't constrained here.
+fn cms_family_sub_type_compatible(stat: Statistic, config: &AggregationConfig) -> bool {
+    if !matches!(
+        config.aggregation_type,
+        AggregationType::CountMinSketch | AggregationType::CountMinSketchWithHeap
+    ) {
         return true;
     }
 
-    let expected_sub_type = match stat {
-        Statistic::Sum => "sum",
-        Statistic::Count => "count",
-        _ => unreachable!("plain CMS matching only supports SUM and COUNT"),
+    let expected = match stat {
+        Statistic::Sum => CountMode::Sum,
+        Statistic::Count => CountMode::Count,
+        _ => return true,
     };
-    config
-        .aggregation_sub_type
-        .eq_ignore_ascii_case(expected_sub_type)
+    config_count_mode(config) == expected
 }
 
 /// Aggregation priority comparator: prefer larger `window_size_ms` (descending).
@@ -300,9 +290,8 @@ pub fn find_compatible_aggregation(
                         &c.spatial_filter_normalized,
                         &requirements.spatial_filter_normalized,
                     )
-                    && plain_cms_sub_type_compatible(stat, c)
-                    && topk_weighting_compatible(stat, c, requirements.topk_count_events)
-                    && count_heap_weighting_compatible(stat, c);
+                    && cms_family_sub_type_compatible(stat, c)
+                    && topk_weighting_compatible(stat, c, requirements.topk_count_events);
                 if !ok {
                     debug!(
                         agg_id = c.aggregation_id,
@@ -480,11 +469,6 @@ mod tests {
             table_name: None,
             value_column: None,
         };
-        if config.aggregation_type == AggregationType::CountMinSketchWithHeap {
-            config
-                .parameters
-                .insert("count_events".to_string(), serde_json::Value::Bool(true));
-        }
         if config.aggregation_type == AggregationType::HLL {
             config
                 .parameters
@@ -615,7 +599,9 @@ mod tests {
     }
 
     #[test]
-    fn plain_cms_with_invalid_subtypes_is_excluded_from_matching() {
+    fn plain_cms_with_invalid_sub_type_is_rejected() {
+        // Consistent with MinMax and heap-CMS: an invalid sub_type is malformed
+        // configuration, caught at validate() rather than silently excluded.
         for invalid_sub_type in ["", "unknown", " sum "] {
             let configs = single_config(make_config(
                 1,
@@ -628,15 +614,22 @@ mod tests {
                 "",
             ));
 
-            let result = find_compatible_aggregation(
+            let error = super::find_compatible_aggregation(
                 &configs,
                 &req("cpu", &[Statistic::Sum], 300_000, &[], ""),
-            );
-
-            assert!(
-                result.is_none(),
-                "invalid plain CMS subtype {invalid_sub_type:?} must not match SUM"
-            );
+            )
+            .expect_err(&format!(
+                "invalid plain CMS subtype {invalid_sub_type:?} must be rejected"
+            ));
+            assert!(matches!(
+                error,
+                CapabilityMatchingError::InvalidAggregationConfig(
+                    AggregationConfigError::InvalidSubType {
+                        aggregation_id: 1,
+                        ..
+                    }
+                )
+            ));
         }
     }
 
@@ -1049,7 +1042,7 @@ mod tests {
                 10,
                 "req",
                 "CountMinSketchWithHeap",
-                "",
+                "count",
                 300_000,
                 "tumbling",
                 &[],
@@ -1083,7 +1076,7 @@ mod tests {
             10,
             "req",
             "CountMinSketchWithHeap",
-            "",
+            "count",
             300_000,
             "tumbling",
             &[],
@@ -1206,7 +1199,7 @@ mod tests {
                 10,
                 "req",
                 "CountMinSketchWithHeap",
-                "",
+                "count",
                 300_000,
                 "tumbling",
                 &[],
@@ -1245,7 +1238,7 @@ mod tests {
                 10,
                 "req",
                 "CountMinSketchWithHeap",
-                "",
+                "count",
                 300_000,
                 "sliding",
                 &[],
@@ -1596,7 +1589,7 @@ mod tests {
                 2,
                 "cpu",
                 "CountMinSketch",
-                "",
+                "count",
                 900_000,
                 "tumbling",
                 &["job"],
@@ -1638,23 +1631,19 @@ mod tests {
         )
     }
 
-    /// `CountMinSketchWithHeap` config with an explicit `count_events` parameter.
+    /// `CountMinSketchWithHeap` config with an explicit SUM/COUNT weighting.
     fn make_topk_config(id: u64, metric: &str, count_events: bool) -> AggregationConfig {
-        let mut c = make_config(
+        let sub_type = if count_events { "count" } else { "sum" };
+        make_config(
             id,
             metric,
             "CountMinSketchWithHeap",
-            "",
+            sub_type,
             1_000,
             "tumbling",
             &[],
             "",
-        );
-        c.parameters.insert(
-            "count_events".to_string(),
-            serde_json::Value::Bool(count_events),
-        );
-        c
+        )
     }
 
     fn topk_req(metric: &str, count_events: Option<bool>) -> QueryRequirements {
@@ -1704,11 +1693,12 @@ mod tests {
     }
 
     #[test]
-    fn topk_matching_rejects_sketch_without_count_events() {
-        // A missing weighting flag is malformed configuration, not implicit
-        // COUNT semantics. Capability matching must distinguish it from a miss.
+    fn topk_matching_rejects_sketch_with_invalid_sub_type() {
+        // A missing/unrecognized weighting is malformed configuration, not
+        // implicit COUNT semantics. Capability matching must distinguish it
+        // from a miss.
         let mut configs = HashMap::new();
-        let mut malformed = make_config(
+        let malformed = make_config(
             7,
             "netflow_table",
             "CountMinSketchWithHeap",
@@ -1718,16 +1708,18 @@ mod tests {
             &[],
             "",
         );
-        malformed.parameters.remove("count_events");
         configs.insert(7, malformed);
         configs.insert(9, make_key_agg(9, "netflow_table"));
         let error =
             super::find_compatible_aggregation(&configs, &topk_req("netflow_table", Some(true)))
-                .expect_err("missing count_events must be a capability-matching error");
+                .expect_err("invalid sub_type must be a capability-matching error");
         assert!(matches!(
             error,
             CapabilityMatchingError::InvalidAggregationConfig(
-                AggregationConfigError::MissingCountEvents { aggregation_id: 7 }
+                AggregationConfigError::InvalidSubType {
+                    aggregation_id: 7,
+                    ..
+                }
             )
         ));
     }
@@ -1777,32 +1769,6 @@ mod tests {
         )
         .expect("ordinary COUNT should match a count_events: true heap sketch");
         assert_eq!(result.aggregation_id_for_value, 1);
-    }
-
-    #[test]
-    fn ordinary_count_accepts_heap_with_default_count_events() {
-        // Configs that omit `count_events` default to count semantics.
-        let mut configs = HashMap::new();
-        configs.insert(
-            7,
-            make_config(
-                7,
-                "netflow_table",
-                "CountMinSketchWithHeap",
-                "",
-                1_000,
-                "tumbling",
-                &[],
-                "",
-            ),
-        );
-        configs.insert(9, make_key_agg(9, "netflow_table"));
-        let result = find_compatible_aggregation(
-            &configs,
-            &req("netflow_table", &[Statistic::Count], 1_000, &[], ""),
-        )
-        .expect("ordinary COUNT should match a heap sketch with default count_events");
-        assert_eq!(result.aggregation_id_for_value, 7);
     }
 
     #[test]

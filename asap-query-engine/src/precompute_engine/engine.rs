@@ -414,7 +414,6 @@ mod tests {
         parameters.insert("depth".to_string(), json!(3_u64));
         parameters.insert("width".to_string(), json!(128_u64));
         parameters.insert("heapsize".to_string(), json!(32_u64));
-        parameters.insert("count_events".to_string(), json!(true));
         let cms = AggregationConfig::new(
             1,
             AggregationType::CountMinSketchWithHeap,
@@ -453,7 +452,7 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("aggregation_id 1"));
-        assert!(err.to_string().contains("topk"));
+        assert!(err.to_string().contains("sum") && err.to_string().contains("count"));
     }
 
     #[tokio::test]

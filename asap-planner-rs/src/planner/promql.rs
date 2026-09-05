@@ -16,6 +16,7 @@ use crate::planner::patterns::build_patterns;
 use crate::planner::sketch::build_sketch_parameters_from_promql;
 use crate::planner::window::{set_window_parameters, IntermediateWindowConfig};
 use crate::StreamingEngine;
+use promql_utilities::query_logics::logics::promql_topk_count_events;
 
 /// Represents one arm of a binary arithmetic expression in the planner.
 #[derive(Debug, Clone)]
@@ -281,7 +282,7 @@ impl SingleQueryProcessor {
         let subpopulation_labels = requirements.grouping_labels;
         let rollup = all_labels.difference(&subpopulation_labels);
 
-        let configs = build_agg_configs_for_statistics(
+        let mut configs = build_agg_configs_for_statistics(
             &requirements.statistics,
             treatment_type,
             &subpopulation_labels,
@@ -301,6 +302,21 @@ impl SingleQueryProcessor {
             },
         )
         .map_err(ControllerError::PlannerError)?;
+
+        if requirements.statistics.contains(&Statistic::Topk) {
+            // map_statistic_to_precompute_operator() emits the placeholder
+            // sub_type "topk" for Statistic::Topk; the real SUM/COUNT weighting
+            // is only known here, from the match result (#670). Already
+            // validated Some by build_sketch_parameters_from_promql above.
+            let count_events = promql_topk_count_events(&match_result)
+                .expect("build_sketch_parameters_from_promql already validated this is Some");
+            for cfg in &mut configs {
+                if cfg.aggregation_type == AggregationType::CountMinSketchWithHeap {
+                    cfg.aggregation_sub_type =
+                        if count_events { "count" } else { "sum" }.to_string();
+                }
+            }
+        }
 
         // Calculate cleanup param
         let cleanup_param = if self.cleanup_policy == CleanupPolicy::NoCleanup {

@@ -456,9 +456,8 @@ fn topk_produces_count_min_sketch_with_heap() {
     .unwrap();
     let out = c.generate().unwrap();
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
-        Some(serde_yaml::Value::Bool(false)),
+    assert!(
+        out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "sum"),
         "PromQL topk ranks sample values, not observation counts"
     );
 }
@@ -485,9 +484,8 @@ query_groups:
     let out = c.generate().unwrap();
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
-        Some(serde_yaml::Value::Bool(false)),
+    assert!(
+        out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "sum"),
         "topk ranks the summed value, not the observation count"
     );
     // The heap tracks per-key state internally (it's a heavy-hitters sketch,
@@ -537,9 +535,8 @@ query_groups:
     let out = c.generate().unwrap();
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events"),
-        Some(serde_yaml::Value::Bool(true)),
+    assert!(
+        out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "count"),
         "topk over count_over_time ranks the observation count"
     );
 }
