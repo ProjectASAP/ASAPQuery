@@ -40,7 +40,7 @@ macro_rules! impl_accumulator_methods {
 /// This provides a uniform interface over all accumulator types so that the
 /// worker loop doesn't need to know which concrete type it's dealing with.
 pub trait AccumulatorUpdater: Send {
-    /// Feed a single (value, timestamp_ms) pair — for SingleSubpopulation types.
+    /// Feed a single (value, timestamp_ms) pair — for single-population (non-keyed) types.
     fn update_single(&mut self, value: f64, timestamp_ms: i64);
 
     /// Feed a keyed (key, value, timestamp_ms) triple — for keyed aggregation types.
@@ -796,8 +796,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 pub fn config_is_keyed(config: &AggregationConfig) -> bool {
     matches!(
         config.aggregation_type,
-        AggregationType::MultipleSubpopulation
-            | AggregationType::MultipleSum
+        AggregationType::MultipleSum
             | AggregationType::MultipleIncrease
             | AggregationType::MultipleMinMax
             | AggregationType::CountMinSketch
@@ -933,35 +932,6 @@ pub fn create_accumulator_updater(
     let sub_type = config.aggregation_sub_type.as_str();
 
     match config.aggregation_type {
-        AggregationType::SingleSubpopulation => match sub_type {
-            "Sum" | "sum" => Ok(Box::new(SumAccumulatorUpdater::new())),
-            "Min" | "min" => Ok(Box::new(MinMaxAccumulatorUpdater::new(false))),
-            "Max" | "max" => Ok(Box::new(MinMaxAccumulatorUpdater::new(true))),
-            "Increase" | "increase" => Ok(Box::new(IncreaseAccumulatorUpdater::new())),
-            "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
-                Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
-            }
-            other => Err(format!("Unknown SingleSubpopulation sub_type '{other}'")),
-        },
-        AggregationType::MultipleSubpopulation => match sub_type {
-            "Sum" | "sum" => Ok(Box::new(MultipleSumAccumulatorUpdater::new(false))),
-            "Min" | "min" => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(false))),
-            "Max" | "max" => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(true))),
-            "Increase" | "increase" => Ok(Box::new(MultipleIncreaseAccumulatorUpdater::new())),
-            "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
-                let (row_num, col_num) = cms_params(config)?;
-                Ok(Box::new(CmsAccumulatorUpdater::new(
-                    row_num, col_num, false,
-                )))
-            }
-            "HydraKLL" | "hydra_kll" => {
-                let (row_num, col_num, k) = hydra_kll_params(config)?;
-                Ok(Box::new(HydraKllAccumulatorUpdater::new(
-                    row_num, col_num, k,
-                )))
-            }
-            other => Err(format!("Unknown MultipleSubpopulation sub_type '{other}'")),
-        },
         AggregationType::DatasketchesKLL => {
             Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
         }
@@ -1116,10 +1086,6 @@ mod tests {
         };
 
         // Non-keyed types
-        assert!(!config_is_keyed(&make_config(
-            AggregationType::SingleSubpopulation,
-            "Sum"
-        )));
         assert!(!config_is_keyed(&make_config(AggregationType::Sum, "")));
         assert!(!config_is_keyed(&make_config(
             AggregationType::DatasketchesKLL,
@@ -1131,10 +1097,6 @@ mod tests {
         )));
 
         // Keyed types
-        assert!(config_is_keyed(&make_config(
-            AggregationType::MultipleSubpopulation,
-            "Sum"
-        )));
         assert!(config_is_keyed(&make_config(
             AggregationType::MultipleSum,
             "sum"
@@ -1153,21 +1115,14 @@ mod tests {
         )));
         assert!(config_is_keyed(&make_config(AggregationType::HydraKLL, "")));
 
-        // Verify agreement with updater.is_keyed() for types that need no sketch params.
-        for (agg_type, sub_type) in &[
-            (AggregationType::SingleSubpopulation, "Sum"),
-            (AggregationType::MultipleSubpopulation, "Sum"),
-            (AggregationType::MultipleSum, "sum"),
-        ] {
-            let config = make_config(*agg_type, sub_type);
-            let updater = create_accumulator_updater(&config).unwrap();
-            assert_eq!(
-                config_is_keyed(&config),
-                updater.is_keyed(),
-                "config_is_keyed disagrees with updater.is_keyed() for type={:?}",
-                agg_type
-            );
-        }
+        // Verify agreement with updater.is_keyed() for a type that needs no sketch params.
+        let config = make_config(AggregationType::MultipleSum, "sum");
+        let updater = create_accumulator_updater(&config).unwrap();
+        assert_eq!(
+            config_is_keyed(&config),
+            updater.is_keyed(),
+            "config_is_keyed disagrees with updater.is_keyed() for MultipleSum",
+        );
 
         // Sketch types require params — build configs with the required parameters.
         let make_config_with_params =
@@ -1376,14 +1331,14 @@ mod tests {
 
     #[test]
     fn test_kll_k_param_capital_k() {
-        // SingleSubpopulation/KLL with capital "K" param should use it (not default to 200)
+        // Capital "K" param should be used (not defaulted to 200)
         use std::collections::HashMap;
         let mut params = HashMap::new();
         params.insert("K".to_string(), serde_json::Value::from(50_u64));
         let config = AggregationConfig::new(
             1,
-            AggregationType::SingleSubpopulation,
-            "DatasketchesKLL".to_string(),
+            AggregationType::DatasketchesKLL,
+            "".to_string(),
             params,
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -1989,22 +1944,5 @@ mod tests {
                 "reset must clear {aggregation_type:?} keys"
             );
         }
-    }
-
-    #[test]
-    fn test_factory_rejects_unknown_subpopulation_sub_type() {
-        let mut config = key_aggregation_config(AggregationType::SingleSubpopulation);
-        config.aggregation_sub_type = "not-an-aggregation".to_string();
-        let err = create_accumulator_updater(&config)
-            .err()
-            .expect("unknown subpopulation subtype must not default to Sum");
-        assert!(err.contains("Unknown SingleSubpopulation sub_type"));
-
-        let mut config = key_aggregation_config(AggregationType::MultipleSubpopulation);
-        config.aggregation_sub_type = "not-an-aggregation".to_string();
-        let err = create_accumulator_updater(&config)
-            .err()
-            .expect("unknown subpopulation subtype must not default to MultipleSum");
-        assert!(err.contains("Unknown MultipleSubpopulation sub_type"));
     }
 }

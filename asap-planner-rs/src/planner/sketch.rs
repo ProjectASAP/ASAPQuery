@@ -138,8 +138,6 @@ pub fn build_sketch_parameters(
             m.insert("k".to_string(), serde_json::Value::Number(k.into()));
             Ok(m)
         }
-
-        other => Err(format!("Aggregation type {} not supported", other)),
     }
 }
 
