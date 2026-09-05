@@ -972,6 +972,77 @@ impl SimpleEngine {
         Ok(Some(merged))
     }
 
+    /// Row label order for `merge_grouped_and_self_keyed`: `query_output_labels`
+    /// minus the leading `__name__` a topk query gets there (added later by a
+    /// separate pass, not present on a row's labels yet at this point). SQL
+    /// topk leaves `query_output_labels` empty (it returns bare group-by/value
+    /// rows, not named output labels), so falls back to the aggregation
+    /// config's own `grouping_labels ++ aggregated_labels` order instead.
+    fn topk_row_label_order(
+        metadata: &QueryMetadata,
+        grouping_labels: &KeyByLabelNames,
+        aggregated_labels: &KeyByLabelNames,
+    ) -> KeyByLabelNames {
+        let stripped =
+            if metadata.statistic_to_compute == Statistic::Topk && metadata.keep_metric_name {
+                KeyByLabelNames::new(metadata.query_output_labels.labels[1..].to_vec())
+            } else {
+                metadata.query_output_labels.clone()
+            };
+
+        if stripped.labels.is_empty() && metadata.statistic_to_compute == Statistic::Topk {
+            let mut combined = grouping_labels.labels.clone();
+            combined.extend(aggregated_labels.labels.iter().cloned());
+            KeyByLabelNames::new(combined)
+        } else {
+            stripped
+        }
+    }
+
+    /// Combines a partition's grouping-key values with a self-keyed
+    /// accumulator's own key values into one full row, ordered to match
+    /// `query_output_labels`.
+    ///
+    /// `KeyByLabelValues` holds only values, not names: `fallback_key`'s
+    /// values line up with `grouping_labels`, `self_key`'s with
+    /// `aggregated_labels`. Looks up each `query_output_labels` name on
+    /// either side and reassembles them in that order.
+    ///
+    /// Returns `None` if some name isn't covered by either side, so the
+    /// caller can skip the row instead of emitting a mislabeled one.
+    fn merge_grouped_and_self_keyed(
+        grouping_labels: &KeyByLabelNames,
+        fallback_key: &Option<KeyByLabelValues>,
+        aggregated_labels: &KeyByLabelNames,
+        self_key: &KeyByLabelValues,
+        query_output_labels: &KeyByLabelNames,
+    ) -> Option<KeyByLabelValues> {
+        let mut by_name: HashMap<&str, &str> = HashMap::new();
+        if let Some(fallback) = fallback_key {
+            by_name.extend(
+                grouping_labels
+                    .labels
+                    .iter()
+                    .map(String::as_str)
+                    .zip(fallback.labels.iter().map(String::as_str)),
+            );
+        }
+        by_name.extend(
+            aggregated_labels
+                .labels
+                .iter()
+                .map(String::as_str)
+                .zip(self_key.labels.iter().map(String::as_str)),
+        );
+
+        query_output_labels
+            .labels
+            .iter()
+            .map(|name| by_name.get(name.as_str()).map(|v| v.to_string()))
+            .collect::<Option<Vec<String>>>()
+            .map(KeyByLabelValues::new_with_labels)
+    }
+
     /// Collects all results based on whether keys are separate or not
     /// Resolves a value group's expansion keys and queries `statistic` for
     /// each, returning `(key, value)` pairs. Shared by both
@@ -998,11 +1069,19 @@ impl SimpleEngine {
     /// - A resolved key whose `query_precompute_for_statistic` call fails
     ///   (e.g. keys/value skew for a dual-population metric) is skipped with
     ///   a warning; the rest of the group's keys still return.
+    ///
+    /// `grouping_labels`/`aggregated_labels`/`query_output_labels` are only
+    /// used in the self-keyed branch, to merge `fallback_key` back into each
+    /// self-key instead of discarding it.
+    #[allow(clippy::too_many_arguments)]
     fn resolve_and_query_group(
         &self,
         value_precompute: Option<&dyn AggregateCore>,
         keys_precompute: Option<&dyn AggregateCore>,
         fallback_key: &Option<KeyByLabelValues>,
+        grouping_labels: &KeyByLabelNames,
+        aggregated_labels: &KeyByLabelNames,
+        query_output_labels: &KeyByLabelNames,
         statistic: &Statistic,
         query_kwargs: &HashMap<String, String>,
         query_bounds: Option<&QueryBounds>,
@@ -1016,40 +1095,75 @@ impl SimpleEngine {
             return Vec::new();
         };
 
-        let resolved_keys: Vec<Option<KeyByLabelValues>> = match keys_precompute {
-            Some(kp) => match kp.get_keys() {
-                Some(keys) => keys.into_iter().map(Some).collect(),
-                None => {
-                    warn!(
-                        "Group {:?}'s keys accumulator produced no resolvable key set -- \
-                         skipping this group instead of failing the whole query",
-                        fallback_key
-                    );
-                    return Vec::new();
-                }
-            },
-            None => match value_precompute.get_keys() {
-                Some(keys) => keys.into_iter().map(Some).collect(),
-                None => vec![fallback_key.clone()],
-            },
-        };
+        // (query_key, output_key): `query_key` is what the accumulator itself
+        // understands (its own internal key format); `output_key` is what
+        // the caller sees as this row's identity. They differ only in the
+        // self-keyed + grouped case, where `query_key` stays the heap's own
+        // self-key (only that matches what it was indexed under) while
+        // `output_key` is the self-key merged with the partition's grouping
+        // value.
+        let resolved_keys: Vec<(Option<KeyByLabelValues>, Option<KeyByLabelValues>)> =
+            match keys_precompute {
+                Some(kp) => match kp.get_keys() {
+                    Some(keys) => keys
+                        .into_iter()
+                        .map(|k| (Some(k.clone()), Some(k)))
+                        .collect(),
+                    None => {
+                        warn!(
+                            "Group {:?}'s keys accumulator produced no resolvable key set -- \
+                             skipping this group instead of failing the whole query",
+                            fallback_key
+                        );
+                        return Vec::new();
+                    }
+                },
+                None => match value_precompute.get_keys() {
+                    Some(keys) => keys
+                        .into_iter()
+                        .filter_map(|self_key| {
+                            let output_key = Self::merge_grouped_and_self_keyed(
+                                grouping_labels,
+                                fallback_key,
+                                aggregated_labels,
+                                &self_key,
+                                query_output_labels,
+                            );
+                            if output_key.is_none() {
+                                warn!(
+                                    "Group {:?}: self-key {:?} doesn't cover query_output_labels \
+                                     {:?} (grouping={:?}, aggregated={:?}) -- skipping this key",
+                                    fallback_key,
+                                    self_key,
+                                    query_output_labels,
+                                    grouping_labels,
+                                    aggregated_labels
+                                );
+                                return None;
+                            }
+                            Some((Some(self_key), output_key))
+                        })
+                        .collect(),
+                    None => vec![(fallback_key.clone(), fallback_key.clone())],
+                },
+            };
 
         resolved_keys
             .into_iter()
-            .filter_map(|key| {
+            .filter_map(|(query_key, output_key)| {
                 match self.query_precompute_for_statistic(
                     value_precompute,
                     statistic,
-                    &key,
+                    &query_key,
                     query_kwargs,
                     query_bounds,
                 ) {
-                    Ok(value) => Some((key, value)),
+                    Ok(value) => Some((output_key, value)),
                     Err(e) => {
                         warn!(
                             "Failed to query statistic for key {:?} in group {:?}: {} -- \
                              skipping this key instead of failing the whole query",
-                            key, fallback_key, e
+                            query_key, fallback_key, e
                         );
                         None
                     }
@@ -1058,20 +1172,38 @@ impl SimpleEngine {
             .collect()
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_arguments)]
     fn collect_all_results(
         &self,
         merged_values: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
         merged_keys: Option<&HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>>,
+        grouping_labels: &KeyByLabelNames,
+        aggregated_labels: &KeyByLabelNames,
+        query_output_labels: &KeyByLabelNames,
         statistic: &Statistic,
         query_kwargs: &HashMap<String, String>,
     ) -> Result<HashMap<Option<KeyByLabelValues>, f64>, String> {
         if let Some(keys_map) = merged_keys {
             // Separate keys and values
-            self.collect_results_separate_keys(merged_values, keys_map, statistic, query_kwargs)
+            self.collect_results_separate_keys(
+                merged_values,
+                keys_map,
+                grouping_labels,
+                aggregated_labels,
+                query_output_labels,
+                statistic,
+                query_kwargs,
+            )
         } else {
             // Same aggregation for keys and values
-            self.collect_results_same_aggregation(merged_values, statistic, query_kwargs)
+            self.collect_results_same_aggregation(
+                merged_values,
+                grouping_labels,
+                aggregated_labels,
+                query_output_labels,
+                statistic,
+                query_kwargs,
+            )
         }
     }
 
@@ -1097,9 +1229,17 @@ impl SimpleEngine {
             context.value_window_type,
         )?;
 
+        let row_label_order = Self::topk_row_label_order(
+            &context.metadata,
+            &context.grouping_labels,
+            &context.aggregated_labels,
+        );
         let unformatted_results = self.collect_all_results(
             &merged_values,
             merged_keys.as_ref(),
+            &context.grouping_labels,
+            &context.aggregated_labels,
+            &row_label_order,
             &context.metadata.statistic_to_compute,
             &context.metadata.query_kwargs,
         )?;
@@ -1527,10 +1667,14 @@ impl SimpleEngine {
 
     /// Collects results when key and value use different aggregations
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn collect_results_separate_keys(
         &self,
         merged_values: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
         merged_keys: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
+        grouping_labels: &KeyByLabelNames,
+        aggregated_labels: &KeyByLabelNames,
+        query_output_labels: &KeyByLabelNames,
         statistic: &Statistic,
         query_kwargs: &HashMap<String, String>,
     ) -> Result<HashMap<Option<KeyByLabelValues>, f64>, String> {
@@ -1542,6 +1686,9 @@ impl SimpleEngine {
                 value_precompute,
                 Some(keys_precompute.as_ref()),
                 group_key,
+                grouping_labels,
+                aggregated_labels,
+                query_output_labels,
                 statistic,
                 query_kwargs,
                 None,
@@ -1562,9 +1709,13 @@ impl SimpleEngine {
     /// heap can hold more than `k` candidates and is not value-sorted, so
     /// dropping keys now could discard a true top-k member.
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn collect_results_same_aggregation(
         &self,
         merged_outputs: &HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>,
+        grouping_labels: &KeyByLabelNames,
+        aggregated_labels: &KeyByLabelNames,
+        query_output_labels: &KeyByLabelNames,
         statistic: &Statistic,
         query_kwargs: &HashMap<String, String>,
     ) -> Result<HashMap<Option<KeyByLabelValues>, f64>, String> {
@@ -1575,6 +1726,9 @@ impl SimpleEngine {
                 Some(value_precompute.as_ref()),
                 None,
                 group_key,
+                grouping_labels,
+                aggregated_labels,
+                query_output_labels,
                 statistic,
                 query_kwargs,
                 None,
@@ -2177,6 +2331,12 @@ impl SimpleEngine {
             None
         };
 
+        let row_label_order = Self::topk_row_label_order(
+            &context.base.metadata,
+            &context.base.grouping_labels,
+            &context.base.aggregated_labels,
+        );
+
         // Step-major: for each output timestamp, visit every group, not the
         // other way around. Required for topk correctness -- ranking a
         // timestamp's candidates means seeing every group's value at that
@@ -2194,12 +2354,9 @@ impl SimpleEngine {
                     .ok_or("Query range underflows timestamp range".to_string())?,
                 current_time_i64,
             );
-            // This timestamp's (key, value) pairs across every group,
-            // collected before insertion into `results` so a topk query can
-            // rank/truncate them as one step-local set (#581 stage E.3 --
-            // folds what used to be a separate apply_range_topk pass,
-            // re-deriving this same per-timestamp grouping from the
-            // finished `results` afterward, directly into this loop).
+            // This timestamp's (key, value) pairs from every group, each
+            // group already ranked/truncated to k on its own before landing
+            // here.
             let mut step_results: Vec<(KeyByLabelValues, f64)> = Vec::new();
 
             for (bucket_map, keys_source) in &groups {
@@ -2382,41 +2539,43 @@ impl SimpleEngine {
                     KeysSource::PerStep { .. } => None,
                 };
 
-                // See the note above KeysSource: dual-population always
-                // resolves via keys_precompute; single-population lets the
-                // value accumulator's own get_keys() (read after merging
-                // this window, since e.g. a top-k heap's keys depend on the
-                // window's data) take priority, falling back to
-                // fallback_key otherwise. Same resolver instant uses
-                // (resolve_and_query_group) -- see #581.
-                for (key, value) in self.resolve_and_query_group(
-                    Some(merged.as_ref()),
-                    keys_precompute.as_deref(),
-                    &fallback_key,
-                    &context.base.metadata.statistic_to_compute,
-                    &context.base.metadata.query_kwargs,
-                    Some(&query_bounds),
-                ) {
+                // Dual-population groups resolve via keys_precompute;
+                // single-population groups let the value accumulator's own
+                // get_keys() take priority once merged, falling back to
+                // fallback_key otherwise. Same resolver the instant path uses.
+                let mut group_results: Vec<(KeyByLabelValues, f64)> = self
+                    .resolve_and_query_group(
+                        Some(merged.as_ref()),
+                        keys_precompute.as_deref(),
+                        &fallback_key,
+                        &context.base.grouping_labels,
+                        &context.base.aggregated_labels,
+                        &row_label_order,
+                        &context.base.metadata.statistic_to_compute,
+                        &context.base.metadata.query_kwargs,
+                        Some(&query_bounds),
+                    )
+                    .into_iter()
                     // A fully unlabeled result (fallback_key was None and
                     // the value accumulator has no self-keys) has no
-                    // RangeVectorElement representation (labels:
-                    // KeyByLabelValues, not Option) -- matches today's
+                    // RangeVectorElement representation -- matches today's
                     // behavior of producing no sample for this combination.
-                    let Some(key) = key else { continue };
-                    step_results.push((key, value));
-                }
-            }
+                    .filter_map(|(key, value)| key.map(|key| (key, value)))
+                    .collect();
 
-            // Rank this timestamp's candidates across every group and
-            // truncate to k -- tie-broken by label for determinism, since
-            // `step_results`' order ultimately traces back to a HashMap
-            // iteration (`groups`, built from `all_data`/`keys_raw_data`)
-            // and would otherwise keep a different group on every process
-            // run when two groups tie at the k-th value.
-            if let Some(k) = topk_k {
-                step_results
-                    .sort_by(|a, b| Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels));
-                step_results.truncate(k);
+                // Rank and truncate to k within this group only -- a
+                // `topk by (job)` partition's own candidates compete only
+                // against each other, not against other jobs' candidates.
+                // Tie-broken by label for determinism (HashMap iteration
+                // order isn't stable across runs).
+                if let Some(k) = topk_k {
+                    group_results.sort_by(|a, b| {
+                        Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels)
+                    });
+                    group_results.truncate(k);
+                }
+
+                step_results.extend(group_results);
             }
 
             for (key, value) in step_results {
