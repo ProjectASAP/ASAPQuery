@@ -1,6 +1,6 @@
 # How to Add a New Sketch Algorithm
 
-Adding a new sketch requires changes to 3 components: asap-common (sketch selection logic), asap-summary-ingest (UDF for building sketches), and asap-query-engine (deserialization and query logic).
+Adding a new sketch requires changes to 2 components: asap-common (sketch selection logic) and asap-query-engine (accumulator and query logic). The precompute engine builds sketches in-process from Prometheus remote write, so there's no separate UDF/pipeline-configuration step.
 
 ## Step 1: asap-common - Define Sketch Mapping
 
@@ -14,35 +14,15 @@ Adding a new sketch requires changes to 3 components: asap-common (sketch select
 
 ---
 
-## Step 2: asap-summary-ingest - Create Sketch UDF
+## Step 2: asap-query-engine - Implement Accumulator
 
-**File to create**: `asap-summary-ingest/templates/udfs/yoursketchname_[subop].rs.j2` (or `.rs` if no template vars)
-
-**What to implement**:
-- Rust UDF function using `#[udf]` macro
-- Input: `Vec<f64>` (values to aggregate)
-- Output: `Option<Vec<u8>>` (serialized sketch using MessagePack)
-- Serialization format: Wrap sketch in struct with parameters, serialize with `rmp_serde`
-
-**Naming convention**: Lowercase sketch name with optional sub-operator suffix (e.g., `datasketcheskll_.rs.j2`, `countminsketch_sum.rs.j2`)
-
-**Validate**: Run `python validate_udfs.py` to check UDF compiles.
-
-**Reference examples**:
-- `asap-summary-ingest/templates/udfs/datasketcheskll_.rs.j2`
-- `asap-summary-ingest/templates/udfs/countminsketch_sum.rs.j2`
-
----
-
-## Step 3: asap-query-engine - Implement Accumulator
-
-### 3.1 Create Accumulator File
+### 2.1 Create Accumulator File
 
 **File to create**: `asap-query-engine/src/precompute_operators/your_sketch_accumulator.rs`
 
 **What to implement**:
 - `YourSketchAccumulator` struct with sketch state
-- `deserialize_from_bytes_arroyo()` - Deserialize from MessagePack (must match UDF format)
+- `deserialize_from_json()` - Deserialize from the JSON wire format
 - Query methods (e.g., `get_quantile()`, `get_sum()`)
 - `merge_multiple()` - Merge multiple accumulators efficiently
 - Implement traits:
@@ -53,7 +33,7 @@ Adding a new sketch requires changes to 3 components: asap-common (sketch select
 
 **Key requirement**: `get_accumulator_type()` must return the sketch name from CommonDependencies (PascalCase).
 
-### 3.2 Register Accumulator
+### 2.2 Register Accumulator
 
 **File to modify**: `asap-query-engine/src/precompute_operators/mod.rs`
 
@@ -63,11 +43,11 @@ pub mod your_sketch_accumulator;
 pub use your_sketch_accumulator::*;
 ```
 
-### 3.3 Add Deserialization Dispatcher
+### 2.3 Wire Up the Precompute Engine
 
-**Files to search**: Look for "DatasketchesKLL" pattern in `asap-query-engine/src/stores/` or `asap-query-engine/src/drivers/ingest/`
+**Files to search**: Look for the "DatasketchesKLL" pattern in `asap-query-engine/src/precompute_engine/accumulator_factory.rs`.
 
-**What to add**: Match case for your sketch name calling `YourSketchAccumulator::deserialize_from_bytes_arroyo(buffer)`.
+**What to add**: A match arm for your sketch's `AggregationType` that constructs `YourSketchAccumulator`.
 
 **Reference examples**:
 - `asap-query-engine/src/precompute_operators/datasketches_kll_accumulator.rs`
@@ -75,7 +55,7 @@ pub use your_sketch_accumulator::*;
 
 ---
 
-## Step 4: asap-planner-rs - Sketch Parameters (Optional)
+## Step 3: asap-planner-rs - Sketch Parameters (Optional)
 
 **Usually**: asap-planner-rs picks up sketch automatically from asap-common mapping. Custom sketch parameters (size, epsilon, etc.) can be added in the Rust source under `asap-planner-rs/src/`.
 
@@ -83,10 +63,9 @@ pub use your_sketch_accumulator::*;
 
 ## Testing Checklist
 
-- [ ] `validate_udfs.py` passes (ArroyoSketch)
 - [ ] `cargo build --release` succeeds (asap-query-engine)
 - [ ] `cargo test` passes (asap-query-engine)
-- [ ] End-to-end: asap-planner-rs → asap-summary-ingest → Arroyo → Kafka → QueryEngine → Query result
+- [ ] End-to-end: asap-planner-rs → QueryEngine (precompute engine) → Query result
 
 ---
 
@@ -95,7 +74,6 @@ pub use your_sketch_accumulator::*;
 | Component | Format | Example |
 |-----------|--------|---------|
 | asap-common mapping | PascalCase | `DatasketchesKLL` |
-| asap-summary-ingest UDF filename | lowercase_subop | `datasketcheskll_.rs.j2` |
 | QueryEngine accumulator | PascalCase + Accumulator | `DatasketchesKLLAccumulator` |
 | `get_accumulator_type()` return | Must match mapping | `"DatasketchesKLL"` |
 
@@ -103,7 +81,5 @@ pub use your_sketch_accumulator::*;
 
 ## Common Issues
 
-- **UDF won't compile**: Check Rust syntax, dependencies in `[dependencies]` comment block
-- **Deserialization fails**: MessagePack format must match exactly between UDF and accumulator
 - **Query returns no results**: Check `get_statistic_values()` handles correct `Statistic` enum
 - **Sketch not found**: Verify name matches across all components (case-sensitive)

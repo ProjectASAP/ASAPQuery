@@ -28,7 +28,7 @@ asap-planner \
   --prometheus-url http://localhost:9090 \
   --output_dir ./configs \
   --prometheus_scrape_interval_ms 15000 \
-  --streaming_engine arroyo
+  --streaming_engine precompute
 ```
 
 This writes `streaming_config.yaml` and `inference_config.yaml` to `./configs/`.

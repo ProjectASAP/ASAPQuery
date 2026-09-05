@@ -4,39 +4,21 @@ This guide covers running the ASAP stack manually with Clickhouse for developmen
 
 ## Prerequisites
 
-- Kafka installed
-- Arroyo built at `~/code/arroyo/target/release/arroyo`
 - asap-query-engine built at `~/code/asap-query-engine/target/release/query_engine_rust`
-- asap-tools/data-sources/prometheus-exporters built (fake_kafka_exporter)
 - Clickhouse installed and accessible
 
 ## Directory Structure
 
 ```
 ~/code/
-├── asap-summary-ingest/     # Pipeline configuration scripts
-│   ├── config.yaml         # Arroyo cluster config
-│   └── run_arroyosketch.py # Creates sources, sinks, and pipelines
 ├── asap-query-engine/      # Query interception layer
-├── asap-tools/data-sources/prometheus-exporters/  # Data generators
-│   └── fake_kafka_exporter/
 └── asap-tools/experiments/ # Automated experiment framework
 ```
 
 ## Config Files
 
-Two config files are needed for ASAP mode. These must match the schema produced by fake_kafka_exporter.
+Two config files are needed for ASAP mode. The examples below use a data file with records shaped like:
 
-**Example fake_kafka_exporter invocation:**
-```bash
-./target/release/fake_kafka_exporter \
-    --kafka-topic raw_data_topic \
-    --metadata-columns hostname,datacenter \
-    --num-values-per-metadata-column 10,5 \
-    --value-columns cpu_usage,memory_usage
-```
-
-This produces records like:
 ```json
 {"time": 1234567890000, "hostname": "hostname_0", "datacenter": "datacenter_0", "cpu_usage": 45.2, "memory_usage": 72.1}
 ```
@@ -61,7 +43,7 @@ queries:
     GROUP BY datacenter
 ```
 
-**streaming_config.yaml** - Defines streaming aggregations for Arroyo:
+**streaming_config.yaml** - Defines streaming aggregations for the precompute engine:
 ```yaml
 aggregations:
 - aggregationId: 1
@@ -90,36 +72,9 @@ tables:
 
 ## Baseline Mode (Clickhouse Only)
 
-Baseline mode runs queries directly against Clickhouse without ASAP's streaming layer.
+Baseline mode runs queries directly against Clickhouse without ASAP's precompute layer.
 
-### 1. Start Kafka
-
-```bash
-cd ~/kafka
-./bin/kafka-server-start.sh ./config/kraft/server.properties
-```
-
-Wait for Kafka to be ready, then create topics:
-```bash
-./bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
-    --topic raw_data_topic --partitions 1 --replication-factor 1
-```
-
-### 2. Start Data Exporter
-
-The fake_kafka_exporter generates synthetic data and writes directly to Kafka:
-
-```bash
-cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_kafka_exporter
-./target/release/fake_kafka_exporter \
-    --kafka-topic raw_data_topic \
-    --metadata-columns hostname,datacenter \
-    --num-values-per-metadata-column 10,5 \
-    --value-columns cpu_usage,memory_usage \
-    --frequency 1
-```
-
-### 3. Start Clickhouse
+### 1. Start Clickhouse
 
 Install timezone data (required for Clickhouse):
 ```bash
@@ -131,24 +86,9 @@ Start the Clickhouse server:
 clickhouse-server
 ```
 
-### 4. Configure Clickhouse to Ingest from Kafka
-
-Create a Kafka engine table to consume from the raw data topic. Run these commands in `clickhouse-client`:
+### 2. Create the Table and Load Data
 
 ```sql
-CREATE TABLE kafka_table (
-    time DateTime64(3),
-    hostname String,
-    datacenter String,
-    cpu_usage Float64,
-    memory_usage Float64
-) ENGINE = Kafka
-SETTINGS
-    kafka_broker_list = 'localhost:9092',
-    kafka_topic_list = 'raw_data_topic',
-    kafka_group_name = 'clickhouse_consumer',
-    kafka_format = 'JSONEachRow';
-
 CREATE TABLE metrics_table (
     time DateTime64(3),
     hostname String,
@@ -157,12 +97,16 @@ CREATE TABLE metrics_table (
     memory_usage Float64
 ) ENGINE = MergeTree()
 ORDER BY (datacenter, hostname, time);
-
-CREATE MATERIALIZED VIEW cpu_usage_mv TO metrics_table AS
-SELECT * FROM kafka_table;
 ```
 
-### 5. Query Clickhouse
+Generate a data file of newline-delimited JSON records shaped like the example above (e.g. `data.jsonl`), then bulk-load it directly over ClickHouse's HTTP interface:
+
+```bash
+curl -s 'http://localhost:8123/?query=INSERT%20INTO%20metrics_table%20FORMAT%20JSONEachRow' \
+    --data-binary @data.jsonl
+```
+
+### 3. Query Clickhouse
 
 Query via HTTP protocol (we can use clickhouse-client, but ASAP only supports HTTP protocol for now so use HTTP).
 The query parameter in the request is a URL-encoded form of a SQL query. See https://www.urlencoder.org/.
@@ -184,128 +128,54 @@ curl 'http://localhost:8123/?query=SELECT%20datacenter%2C%20quantile%280.99%29%2
 
 ## ASAP Mode
 
-ASAP mode adds Arroyo (streaming aggregation) and QueryEngineRust (query interception) to accelerate queries using sketches. Data flows through Kafka to both Arroyo (for sketches) and Clickhouse (for fallback queries).
+ASAP mode runs QueryEngineRust's precompute engine to build sketches, with Clickhouse configured as the fallback backend for queries the sketches can't answer. The precompute engine reads the same data file directly (no message broker in between).
 
-### 1. Start Kafka
+### 1. Start Clickhouse
 
-```bash
-cd ~/kafka
-./bin/kafka-server-start.sh ./config/kraft/server.properties
-```
+Same as baseline (including timezone setup), and create `metrics_table` and load `data.jsonl` as in the Baseline section.
 
-Wait for Kafka to be ready, then create topics:
-```bash
-./bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
-    --topic raw_data_topic --partitions 1 --replication-factor 1
-
-./bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
-    --topic sketch_topic --partitions 1 --replication-factor 1 \
-    --config max.message.bytes=20971520
-```
-
-### 2. Start Data Exporter
-
-Same as baseline - exporter writes to Kafka:
-
-```bash
-cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_kafka_exporter
-./target/release/fake_kafka_exporter \
-    --kafka-topic raw_data_topic \
-    --metadata-columns hostname,datacenter \
-    --num-values-per-metadata-column 10,5 \
-    --value-columns cpu_usage,memory_usage \
-    --frequency 1
-```
-
-### 3. Start Clickhouse
-
-Same as baseline (including timezone setup). Start the server and configure Kafka ingestion:
 ```bash
 clickhouse-server
 ```
 
-Then create the tables as shown in the Baseline section (step 4).
+### 2. Start QueryEngineRust
 
-### 4. Start Arroyo Cluster
+Write `engine_config.yaml` (see `asap-query-engine/examples/engine_config.yaml` for the full schema):
 
-```bash
-cd ~/code/arroyo
-./target/release/arroyo --config ~/code/asap-summary-ingest/config.yaml cluster
+```yaml
+output_dir: "./output"
+log_level: "INFO"
+data_ingestion_interval_ms: 1000
+streaming_engine: "precompute"
+http_server:
+  port: 8088
+backend:
+  type: "clickhouse"
+  url: "http://localhost:8123"
+  database: "default"
+  forward_unsupported_queries: true
+store:
+  lock_strategy: "per-key"
+ingest:
+  type: "json"
+  path: "/path/to/data.jsonl"
+  metric_name: "metrics_table"
+  value_col: "cpu_usage"
+  label_cols: ["hostname", "datacenter"]
+  timestamp_col: "time"
+  timestamp_unit: "seconds"
+inference_config: "/path/to/inference_config.yaml"
+streaming_config: "/path/to/streaming_config.yaml"
 ```
-
-Arroyo API runs at `http://localhost:5115`. Verify with:
-```bash
-curl http://localhost:5115/api/v1/pipelines
-```
-
-### 5. Configure ArroyoSketch Pipeline
-
-Run `run_arroyosketch.py` to create Arroyo sources, sinks, and pipeline. For Clickhouse, always use Kafka source:
-
-```bash
-cd ~/code/asap-summary-ingest
-python run_arroyosketch.py \
-    --source_type kafka \
-    --kafka_input_format json \
-    --input_kafka_topic raw_data_topic \
-    --output_format json \
-    --pipeline_name my_pipeline \
-    --config_file_path /path/to/streaming_config.yaml \
-    --output_kafka_topic sketch_topic \
-    --output_dir ./outputs \
-    --parallelism 1 \
-    --query_language sql
-```
-
-The script outputs the pipeline ID. Verify the pipeline is running:
-```bash
-curl http://localhost:5115/api/v1/pipelines
-```
-
-### 6. Start QueryEngineRust
-
-Check main.rs. It may be hardcoded to initialize the Prometheus-HTTP adapter. Change it the Clickhouse-HTTP adapter in the source code and recompile. We will make this configurable by a command line option in the future.
-
-Replace
-```rust
-let adapter_config = AdapterConfig::prometheus_promql(
-    args.prometheus_server.clone(),
-    args.forward_unsupported_queries,
-);
-```
-
-with
-
-```rust
-let adapter_config = AdapterConfig::clickhouse_sql(
-    "http://localhost:8123".to_string(), // ClickHouse server URL
-    "default".to_string(),               // Database name
-    true,                                // Always forward (fallback for every query)
-);
-```
-
-Recompile with `cargo build --release`.
 
 ```bash
 cd ~/code/asap-query-engine
-./target/release/query_engine_rust \
-    --kafka-topic sketch_topic \
-    --input-format json \
-    --config /path/to/inference_config.yaml \
-    --streaming-config /path/to/streaming_config.yaml \
-    --http-port 8088 \
-    --delete-existing-db \
-    --log-level info \
-    --output-dir ./output \
-    --streaming-engine arroyo \
-    --query-language SQL \
-    --lock-strategy per-key
-    --prometheus-scrape-interval 1 \ # this should not be required for Clickhouse, but currently is required
+./target/release/query_engine_rust --config-file engine_config.yaml
 ```
 
-QueryEngine now listens on port 8088 and intercepts SQL queries.
+QueryEngine now listens on port 8088 and intercepts SQL queries, replaying `data.jsonl` through the precompute engine to build sketches.
 
-### 7. Query via QueryEngine
+### 3. Query via QueryEngine
 
 Direct queries to QueryEngineRust instead of Clickhouse, using the Clickhouse HTTP protocol.
 The query parameter in the request is a URL-encoded form of a SQL query. See https://www.urlencoder.org/.

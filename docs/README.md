@@ -12,8 +12,6 @@ Quick onboarding for new developers:
 Deep dives into each component:
 - [Component Index](02-components/README.md) - Component overview & 1-liners
 - [Query Engine](02-components/query-engine.md) - Rust query processor
-- [Arroyo](02-components/arroyo.md) - Streaming engine (fork + customizations)
-- [asap-summary-ingest](02-components/arroyosketch.md) - Pipeline configurator
 - [asap-planner-rs](02-components/controller.md) - Auto-configuration service
 - [Exporters](02-components/exporters.md) - Metric generators
 - [asap-tools](02-components/utilities.md) - Experiment framework
@@ -59,5 +57,4 @@ Technical details co-located with code:
 - [asap-query-engine](../asap-query-engine/docs/README.md) - Extensibility guides
 - [asap-tools/Experiments](../asap-tools/docs/architecture.md) - Experiment framework architecture
 - [asap-planner-rs](../asap-planner-rs/README.md) - Controller internals
-- [asap-summary-ingest](../asap-summary-ingest/README.md) - Pipeline configuration
 - [asap-tools/data-sources/prometheus-exporters](../asap-tools/data-sources/prometheus-exporters/README.md) - Exporter implementations
