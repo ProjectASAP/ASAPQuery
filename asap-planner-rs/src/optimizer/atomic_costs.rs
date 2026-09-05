@@ -195,7 +195,6 @@ fn resolve_cms_heap_costs(
     let depth = require_u64(params, "depth", agg_type);
     let width = require_u64(params, "width", agg_type);
     let heap_size = require_u64(params, "heapsize", agg_type);
-    let count_events = require(params, "count_events", agg_type);
     let heap_size_f64 = heap_size as f64;
     let scale = heap_size_f64 / assumptions.reference_heap_size as f64;
     let expected_config = serde_json::json!({
@@ -213,7 +212,6 @@ fn resolve_cms_heap_costs(
             depth,
             width,
             heap_size,
-            count_events = ?count_events,
             "cms-with-heap atomic cost measurement"
         );
         tracing::warn!(
@@ -221,7 +219,6 @@ fn resolve_cms_heap_costs(
             depth,
             width,
             heap_size,
-            count_events = ?count_events,
             "no CMS-with-heap reference cost for candidate; dropping candidate; \
              TODO(#651): fail loudly once sketch-bench sweeps cover this grid"
         );
@@ -235,7 +232,6 @@ fn resolve_cms_heap_costs(
             depth,
             width,
             heap_size,
-            count_events = ?count_events,
             "cms-with-heap atomic cost measurement"
         );
         tracing::warn!(
@@ -243,7 +239,6 @@ fn resolve_cms_heap_costs(
             depth,
             width,
             heap_size,
-            count_events = ?count_events,
             "invalid CMS-with-heap reference cost for candidate; dropping candidate; \
              TODO(#651): fail loudly once sketch-bench sweeps cover this grid"
         );
@@ -267,7 +262,6 @@ fn resolve_cms_heap_costs(
         depth,
         width,
         heap_size,
-        count_events = ?count_events,
         mem_bytes_per_instance = costs.mem_bytes_per_instance,
         insert_cpu_secs = costs.insert_cpu_secs,
         merge_cpu_secs = costs.merge_cpu_secs,
@@ -347,17 +341,11 @@ mod tests {
         }
     }
 
-    fn cms_heap_params(
-        depth: u64,
-        width: u64,
-        heap_size: u64,
-        count_events: bool,
-    ) -> HashMap<String, Value> {
+    fn cms_heap_params(depth: u64, width: u64, heap_size: u64) -> HashMap<String, Value> {
         HashMap::from([
             ("depth".to_string(), Value::from(depth)),
             ("width".to_string(), Value::from(width)),
             ("heapsize".to_string(), Value::from(heap_size)),
-            ("count_events".to_string(), Value::from(count_events)),
         ])
     }
 
@@ -417,7 +405,7 @@ mod tests {
         // not inherit the flat stub: the optimizer should retain EXACT as its
         // visible fallback instead of silently selecting an uncosted sketch.
         let table: AtomicCostTable = vec![];
-        let params = cms_heap_params(3, 1024, 40, true);
+        let params = cms_heap_params(3, 1024, 40);
         assert!(
             resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params)
                 .is_none()
@@ -433,7 +421,7 @@ mod tests {
             average_key_bytes: 10.0,
             heap_entry_overhead_bytes: 6.0,
         };
-        let params = cms_heap_params(3, 1024, 64, true);
+        let params = cms_heap_params(3, 1024, 64);
         let costs = resolve_cms_heap_costs(&table, &params, &assumptions)
             .expect("matching CMS-with-heap reference row must resolve");
 
@@ -451,7 +439,7 @@ mod tests {
     #[test]
     fn public_resolver_dispatches_cms_with_heap_to_the_reference_model() {
         let table = vec![cms_heap_entry(3, 1024)];
-        let params = cms_heap_params(3, 1024, 32, true);
+        let params = cms_heap_params(3, 1024, 32);
         let costs = resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params)
             .expect("public resolver must dispatch CMS-with-heap candidates");
 
@@ -465,23 +453,10 @@ mod tests {
     }
 
     #[test]
-    fn cms_with_heap_costs_ignore_count_events() {
-        let table = vec![cms_heap_entry(3, 1024)];
-        let assumptions = CmsHeapCostAssumptions::default();
-        let count_params = cms_heap_params(3, 1024, 40, true);
-        let value_params = cms_heap_params(3, 1024, 40, false);
-
-        assert_eq!(
-            resolve_cms_heap_costs(&table, &count_params, &assumptions),
-            resolve_cms_heap_costs(&table, &value_params, &assumptions)
-        );
-    }
-
-    #[test]
     #[should_panic(expected = "reference_heap_size must be greater than zero")]
     fn cms_with_heap_rejects_invalid_assumptions() {
         let table = vec![cms_heap_entry(3, 1024)];
-        let params = cms_heap_params(3, 1024, 40, true);
+        let params = cms_heap_params(3, 1024, 40);
         let assumptions = CmsHeapCostAssumptions {
             reference_heap_size: 0,
             ..CmsHeapCostAssumptions::default()
