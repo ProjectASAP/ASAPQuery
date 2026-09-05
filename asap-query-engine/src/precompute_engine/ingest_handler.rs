@@ -4,9 +4,11 @@ use crate::precompute_engine::ingest_source::{route_decoded_samples, IngestConte
 use axum::{body::Bytes, extract::State, http::StatusCode, routing::post, Router};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
+
+const INGEST_DIAG_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct HttpIngestConfig {
     pub port: u16,
@@ -33,15 +35,23 @@ impl IngestSource for HttpIngestSource {
             samples_ingested: AtomicU64::new(0),
         });
 
+        let addr = format!("0.0.0.0:{}", self.config.port);
+        // Bind before spawning the ticker so a bind failure returns early
+        // without leaving an orphaned diagnostics task behind.
+        let listener = TcpListener::bind(&addr).await?;
+        info!("HTTP ingest server listening on {}", addr);
+
+        // Held for its Drop impl: aborts the ticker on every exit path,
+        // including the run() future itself being dropped/cancelled by a
+        // future caller mid-await (a plain JoinHandle would not — dropping
+        // it just detaches the task, leaving it running).
+        let _ticker_guard = AbortOnDrop(tokio::spawn(log_ingest_throughput(state.clone())));
+
         let app = Router::new()
             .route("/api/v1/write", post(handle_prometheus_ingest))
             .route("/api/v1/import", post(handle_victoriametrics_ingest))
             .with_state(state);
 
-        let addr = format!("0.0.0.0:{}", self.config.port);
-        info!("HTTP ingest server listening on {}", addr);
-
-        let listener = TcpListener::bind(&addr).await?;
         axum::serve(listener, app).await?;
         Ok(())
     }
@@ -51,6 +61,44 @@ impl IngestSource for HttpIngestSource {
 struct HttpIngestState {
     ctx: IngestContext,
     samples_ingested: AtomicU64,
+}
+
+/// Aborts the wrapped task when dropped, so it can't outlive its owner.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+/// Logs ingest throughput every `INGEST_DIAG_INTERVAL`, resetting the counter
+/// each tick so the log reports a per-interval rate rather than a lifetime total.
+///
+/// Measures actual elapsed time (rather than assuming exactly
+/// `INGEST_DIAG_INTERVAL` passed) and uses `MissedTickBehavior::Delay` so a
+/// runtime stall produces one accurately-labeled longer interval instead of a
+/// burst of back-to-back catch-up ticks each misreporting against the fixed
+/// interval.
+async fn log_ingest_throughput(state: Arc<HttpIngestState>) {
+    let mut interval = tokio::time::interval(INGEST_DIAG_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval.tick().await; // first tick fires immediately; skip it
+    let mut last = Instant::now();
+    loop {
+        interval.tick().await;
+        let now = Instant::now();
+        let elapsed = now.duration_since(last);
+        last = now;
+        let samples = state.samples_ingested.swap(0, Ordering::Relaxed);
+        let secs = elapsed.as_secs_f64();
+        debug!(
+            "[INGEST_DIAG] samples_ingested: {} in {:.1}s ({:.1} samples/sec)",
+            samples,
+            secs,
+            samples as f64 / secs,
+        );
+    }
 }
 
 async fn handle_prometheus_ingest(
@@ -98,5 +146,57 @@ async fn handle_victoriametrics_ingest(
             warn!("Routing error: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AbortOnDrop;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Regression test for roborev job 199: a plain `JoinHandle` does not
+    /// cancel its task on drop, so the diagnostics ticker would keep running
+    /// (and keep the ingest state alive) if `HttpIngestSource::run` were ever
+    /// dropped/cancelled mid-flight by a future caller. `AbortOnDrop` must
+    /// actually abort the task, not just detach it.
+    ///
+    /// Checks ongoing progress rather than a single far-future flag (roborev
+    /// job 200): the wrapped task increments a counter on a fast, observable
+    /// cadence, so a merely-detached task (bug) keeps advancing the counter
+    /// after drop, while a genuinely aborted task (fix) does not. An earlier
+    /// version of this test only checked a flag set after a 60s sleep — that
+    /// passed even with `AbortOnDrop::drop` doing nothing, since the check
+    /// window (50ms) never reached the 60s mark either way.
+    #[tokio::test]
+    async fn abort_on_drop_cancels_the_wrapped_task() {
+        let counter = Arc::new(AtomicU64::new(0));
+        let task_counter = counter.clone();
+        let guard = AbortOnDrop(tokio::spawn(async move {
+            loop {
+                task_counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }));
+
+        // Synchronize with task startup before measuring.
+        while counter.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+
+        drop(guard);
+        let count_at_drop = counter.load(Ordering::SeqCst);
+
+        // A merely-detached task has ample time here to advance the counter
+        // several more times (100ms / 5ms per tick); an aborted task cannot
+        // make any further progress at all.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            count_at_drop,
+            "task kept running after the guard was dropped — it was merely detached, not aborted"
+        );
     }
 }
