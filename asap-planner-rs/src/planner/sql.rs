@@ -141,7 +141,7 @@ impl SQLSingleQueryProcessor {
         let topk_k = sql_topk.map(|t| t.k);
         let topk_count_events = sql_topk.map(|t| t.count_events());
 
-        let mut configs = build_agg_configs_for_statistics(
+        let configs = build_agg_configs_for_statistics(
             &statistics,
             treatment_type,
             &spatial_output,
@@ -162,17 +162,6 @@ impl SQLSingleQueryProcessor {
             },
         )
         .map_err(ControllerError::SqlParse)?;
-
-        if sql_topk.is_some() {
-            for cfg in &mut configs {
-                if cfg.aggregation_type == AggregationType::CountMinSketchWithHeap {
-                    // Heap-only self-keyed layout: the GROUP BY column is tracked
-                    // inside the sketch's aggregated dimension, not as a partition key.
-                    cfg.grouping_labels = KeyByLabelNames::empty();
-                    cfg.aggregated_labels = spatial_output.clone();
-                }
-            }
-        }
 
         // SQLPatternParser always produces second-based durations; convert to ms.
         // For a single-scrape-interval query this equals data_ingestion_interval_ms

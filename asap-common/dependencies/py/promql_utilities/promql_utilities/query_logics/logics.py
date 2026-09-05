@@ -97,9 +97,12 @@ def does_precompute_operator_support_subpopulations(
     elif (
         precompute_operator == "CountMinSketchWithHeap" and statistic == Statistic.TOPK
     ):
-        # topk and bottomk do not support subpopulations!
-        # other usages of CountMinSketchWithHeap will fall through.
-        return False
+        # CountMinSketchWithHeap (topk) is a heavy-hitters sketch: one heap
+        # instance tracks many keys internally (like MultipleSum), it just
+        # doesn't need an *external* paired key aggregation to enumerate them
+        # -- it discovers its own top-k keys. So it supports subpopulations
+        # the same way MultipleSum does.
+        return True
     # elif precompute_operator == "UnivMon":
     #     return statistic in ["sum", "count", "avg"]
     else:
