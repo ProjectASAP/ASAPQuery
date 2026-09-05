@@ -61,9 +61,11 @@ pub fn build_sketch_parameters(
             }
             let k = topk_k
                 .ok_or_else(|| "CountMinSketchWithHeap requires a topk k value".to_string())?;
-            let count_events = topk_count_events.ok_or_else(|| {
-                "CountMinSketchWithHeap requires explicit count_events weighting".to_string()
-            })?;
+            if topk_count_events.is_none() {
+                return Err(
+                    "CountMinSketchWithHeap requires explicit count_events weighting".to_string(),
+                );
+            }
             let depth = sketch_params
                 .and_then(|p| p.count_min_sketch_with_heap.as_ref())
                 .map(|p| p.depth)
@@ -82,10 +84,6 @@ pub fn build_sketch_parameters(
             m.insert(
                 "heapsize".to_string(),
                 serde_json::Value::Number((k * heap_mult).into()),
-            );
-            m.insert(
-                "count_events".to_string(),
-                serde_json::Value::Bool(count_events),
             );
             Ok(m)
         }
@@ -138,8 +136,6 @@ pub fn build_sketch_parameters(
             m.insert("k".to_string(), serde_json::Value::Number(k.into()));
             Ok(m)
         }
-
-        other => Err(format!("Aggregation type {} not supported", other)),
     }
 }
 

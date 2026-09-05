@@ -61,40 +61,55 @@ pub fn enumerate_candidates_with_label_group_count(
 
     for &agg_type in compatible_agg_types(stat) {
         let props = sketch_properties(agg_type);
-        let sub_type = derive_sub_type(stat, agg_type);
 
-        for params in param_grid(agg_type, aqe.requirements.topk_count_events) {
-            for (window_type, w, slide_interval, n) in
-                window_candidates(range_a_ms, aqe.t_repeat_gcd_ms, scrape_interval_ms)
-            {
-                // DeltaSetAggregator only tracks added/removed keys since the
-                // last window, so it's only correct for non-overlapping
-                // (tumbling) windows (#588) -- same invariant enforced by
-                // capability_matching's window_compatible() at query time.
-                if !key_agg_window_valid(agg_type, window_type) {
-                    continue;
+        // CountMinSketchWithHeap's SUM/COUNT weighting lives in aggregation_sub_type
+        // (#670), so unlike other types it can vary independently of the sketch's
+        // dimension params -- enumerate both weightings when the query doesn't pin one.
+        let sub_type_variants: Vec<String> = if agg_type == AggregationType::CountMinSketchWithHeap
+        {
+            match aqe.requirements.topk_count_events {
+                Some(true) => vec!["count".to_string()],
+                Some(false) => vec!["sum".to_string()],
+                None => vec!["count".to_string(), "sum".to_string()],
+            }
+        } else {
+            vec![derive_sub_type(stat, agg_type)]
+        };
+
+        for sub_type in &sub_type_variants {
+            for params in param_grid(agg_type) {
+                for (window_type, w, slide_interval, n) in
+                    window_candidates(range_a_ms, aqe.t_repeat_gcd_ms, scrape_interval_ms)
+                {
+                    // DeltaSetAggregator only tracks added/removed keys since the
+                    // last window, so it's only correct for non-overlapping
+                    // (tumbling) windows (#588) -- same invariant enforced by
+                    // capability_matching's window_compatible() at query time.
+                    if !key_agg_window_valid(agg_type, window_type) {
+                        continue;
+                    }
+
+                    let Some(qm) = determine_query_method(n, &props) else {
+                        continue;
+                    };
+
+                    let config = build_config(
+                        aqe,
+                        agg_type,
+                        sub_type,
+                        &params,
+                        window_type,
+                        w,
+                        slide_interval,
+                        n,
+                    );
+                    candidates.push(CandidateConfig {
+                        config: Some(config),
+                        query_method: qm,
+                        n_windows: n,
+                        label_group_count,
+                    });
                 }
-
-                let Some(qm) = determine_query_method(n, &props) else {
-                    continue;
-                };
-
-                let config = build_config(
-                    aqe,
-                    agg_type,
-                    &sub_type,
-                    &params,
-                    window_type,
-                    w,
-                    slide_interval,
-                    n,
-                );
-                candidates.push(CandidateConfig {
-                    config: Some(config),
-                    query_method: qm,
-                    n_windows: n,
-                    label_group_count,
-                });
             }
         }
     }
@@ -234,11 +249,12 @@ fn build_config(
 }
 
 /// aggregation_sub_type string expected by the streaming engine and capability matching.
+/// Not called for `CountMinSketchWithHeap` -- its sub_type carries SUM/COUNT
+/// weighting, enumerated separately in the caller (#670).
 fn derive_sub_type(stat: Statistic, agg_type: AggregationType) -> String {
     match (stat, agg_type) {
         (Statistic::Min, _) => "min",
         (Statistic::Max, _) => "max",
-        (Statistic::Topk, _) => "topk",
         (Statistic::Sum, AggregationType::CountMinSketch | AggregationType::MultipleSum) => "sum",
         (Statistic::Count, AggregationType::CountMinSketch) => "count",
         _ => "",
@@ -246,10 +262,7 @@ fn derive_sub_type(stat: Statistic, agg_type: AggregationType) -> String {
     .to_string()
 }
 
-fn param_grid(
-    agg_type: AggregationType,
-    topk_count_events: Option<bool>,
-) -> Vec<HashMap<String, Value>> {
+fn param_grid(agg_type: AggregationType) -> Vec<HashMap<String, Value>> {
     match agg_type {
         AggregationType::CountMinSketch => {
             let mut grids = Vec::new();
@@ -265,28 +278,15 @@ fn param_grid(
         }
 
         AggregationType::CountMinSketchWithHeap => {
-            let count_events_variants: &[bool] = match topk_count_events {
-                Some(v) => {
-                    if v {
-                        &[true]
-                    } else {
-                        &[false]
-                    }
-                }
-                None => &[true, false],
-            };
             let mut grids = Vec::new();
             for &d in CMS_DEPTHS {
                 for &w in CMS_WIDTHS {
                     for &h in CMS_HEAP_SIZES {
-                        for &ce in count_events_variants {
-                            let mut m = HashMap::new();
-                            m.insert("depth".into(), Value::from(d));
-                            m.insert("width".into(), Value::from(w));
-                            m.insert("heapsize".into(), Value::from(h));
-                            m.insert("count_events".into(), Value::from(ce));
-                            grids.push(m);
-                        }
+                        let mut m = HashMap::new();
+                        m.insert("depth".into(), Value::from(d));
+                        m.insert("width".into(), Value::from(w));
+                        m.insert("heapsize".into(), Value::from(h));
+                        grids.push(m);
                     }
                 }
             }

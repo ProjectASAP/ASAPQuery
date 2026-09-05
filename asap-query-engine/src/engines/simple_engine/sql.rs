@@ -1133,7 +1133,7 @@ mod topk_pipeline_tests {
     }
 
     /// Build a SQL engine whose only aggregation is a self-keyed, value-weighted
-    /// (`count_events: false`) `CountMinSketchWithHeap` over `netflow_table`,
+    /// (`aggregation_sub_type: "sum"`) `CountMinSketchWithHeap` over `netflow_table`,
     /// referenced by a single-aggregation `SUM(pkt_len)` query_config. Mirrors
     /// `build_topk_engine` but for SUM top-k, so the engine resolves it
     /// self-keyed via the query_config path (the same path COUNT uses).
@@ -1158,15 +1158,13 @@ mod topk_pipeline_tests {
             cleanup_policy: CleanupPolicy::NoCleanup,
         };
 
-        // count_events: false ⇒ the heap is weighted by the summed value rather
+        // sub_type "sum" ⇒ the heap is weighted by the summed value rather
         // than the event count (SUM semantics).
-        let mut parameters = HashMap::new();
-        parameters.insert("count_events".to_string(), serde_json::json!(false));
         let agg_config = AggregationConfig {
             aggregation_id: AGG_ID,
             aggregation_type: AggregationType::CountMinSketchWithHeap,
-            aggregation_sub_type: String::new(),
-            parameters,
+            aggregation_sub_type: "sum".to_string(),
+            parameters: HashMap::new(),
             grouping_labels: KeyByLabelNames::empty(),
             aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
             rollup_labels: KeyByLabelNames::empty(),
@@ -1216,19 +1214,20 @@ mod topk_pipeline_tests {
         SQLSchema::new(vec![table])
     }
 
-    /// `CountMinSketchWithHeap` for capability-matching tests. When `count_events`
-    /// is `None`, the parameter is omitted so the config relies on the default
-    /// (`count_events: true`).
+    /// `CountMinSketchWithHeap` for capability-matching tests. `count_events`
+    /// selects the sub_type: `Some(true)` -> "count", `Some(false)` -> "sum",
+    /// `None` -> empty (invalid, for testing the missing-weighting failure path).
     fn make_heap_agg(id: u64, count_events: Option<bool>) -> AggregationConfig {
-        let mut parameters = HashMap::new();
-        if let Some(count_events) = count_events {
-            parameters.insert("count_events".to_string(), serde_json::json!(count_events));
-        }
+        let sub_type = match count_events {
+            Some(true) => "count",
+            Some(false) => "sum",
+            None => "",
+        };
         AggregationConfig {
             aggregation_id: id,
             aggregation_type: AggregationType::CountMinSketchWithHeap,
-            aggregation_sub_type: String::new(),
-            parameters,
+            aggregation_sub_type: sub_type.to_string(),
+            parameters: HashMap::new(),
             grouping_labels: KeyByLabelNames::empty(),
             aggregated_labels: KeyByLabelNames::new(vec!["srcip".to_string()]),
             rollup_labels: KeyByLabelNames::empty(),
@@ -1489,7 +1488,7 @@ mod topk_pipeline_tests {
 
     #[test]
     #[should_panic(
-        expected = "capability matching failed: aggregation 113 (CountMinSketchWithHeap) missing required parameter 'count_events'"
+        expected = "capability matching failed: aggregation 113 (CountMinSketchWithHeap): CountMinSketchWithHeap requires aggregation_sub_type 'sum' or 'count'"
     )]
     fn count_topk_capability_fallback_rejects_missing_count_events() {
         // Invalid weighting metadata must fail loudly instead of becoming a

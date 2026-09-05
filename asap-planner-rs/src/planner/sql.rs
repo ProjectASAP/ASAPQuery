@@ -163,13 +163,18 @@ impl SQLSingleQueryProcessor {
         )
         .map_err(ControllerError::SqlParse)?;
 
-        if sql_topk.is_some() {
+        if let Some(count_events) = topk_count_events {
             for cfg in &mut configs {
                 if cfg.aggregation_type == AggregationType::CountMinSketchWithHeap {
                     // Heap-only self-keyed layout: the GROUP BY column is tracked
                     // inside the sketch's aggregated dimension, not as a partition key.
                     cfg.grouping_labels = KeyByLabelNames::empty();
                     cfg.aggregated_labels = spatial_output.clone();
+                    // map_statistic_to_precompute_operator() emits the placeholder
+                    // sub_type "topk"; the real SUM/COUNT weighting is only known
+                    // here, from the detected topk clause (#670).
+                    cfg.aggregation_sub_type =
+                        if count_events { "count" } else { "sum" }.to_string();
                 }
             }
         }
