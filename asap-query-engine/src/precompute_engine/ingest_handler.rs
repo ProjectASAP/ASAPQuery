@@ -41,16 +41,18 @@ impl IngestSource for HttpIngestSource {
         let listener = TcpListener::bind(&addr).await?;
         info!("HTTP ingest server listening on {}", addr);
 
-        let ticker = tokio::spawn(log_ingest_throughput(state.clone()));
+        // Held for its Drop impl: aborts the ticker on every exit path,
+        // including the run() future itself being dropped/cancelled by a
+        // future caller mid-await (a plain JoinHandle would not — dropping
+        // it just detaches the task, leaving it running).
+        let _ticker_guard = AbortOnDrop(tokio::spawn(log_ingest_throughput(state.clone())));
 
         let app = Router::new()
             .route("/api/v1/write", post(handle_prometheus_ingest))
             .route("/api/v1/import", post(handle_victoriametrics_ingest))
             .with_state(state);
 
-        let result = axum::serve(listener, app).await;
-        ticker.abort();
-        result?;
+        axum::serve(listener, app).await?;
         Ok(())
     }
 }
@@ -59,6 +61,15 @@ impl IngestSource for HttpIngestSource {
 struct HttpIngestState {
     ctx: IngestContext,
     samples_ingested: AtomicU64,
+}
+
+/// Aborts the wrapped task when dropped, so it can't outlive its owner.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// Logs ingest throughput every `INGEST_DIAG_INTERVAL`, resetting the counter
@@ -124,5 +135,36 @@ async fn handle_victoriametrics_ingest(
             warn!("Routing error: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AbortOnDrop;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Regression test for roborev job 199: a plain `JoinHandle` does not
+    /// cancel its task on drop, so the diagnostics ticker would keep running
+    /// (and keep the ingest state alive) if `HttpIngestSource::run` were ever
+    /// dropped/cancelled mid-flight by a future caller. `AbortOnDrop` must
+    /// actually abort the task, not just detach it.
+    #[tokio::test]
+    async fn abort_on_drop_cancels_the_wrapped_task() {
+        let ran_to_completion = Arc::new(AtomicBool::new(false));
+        let flag = ran_to_completion.clone();
+        let guard = AbortOnDrop(tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            flag.store(true, Ordering::SeqCst);
+        }));
+
+        drop(guard);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(
+            !ran_to_completion.load(Ordering::SeqCst),
+            "task should have been aborted, not left to run to completion"
+        );
     }
 }
