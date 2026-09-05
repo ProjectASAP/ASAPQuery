@@ -1539,6 +1539,71 @@ mod tests {
         assert_eq!(cms.query_key(&key), 2.0);
     }
 
+    #[test]
+    fn test_multiple_sum_count_subtype_counts_events_through_worker() {
+        let config = make_agg_config_full(
+            7,
+            "requests_total",
+            AggregationType::MultipleSum,
+            "count",
+            1_000,
+            1_000,
+            vec![],
+            vec!["host"],
+        );
+
+        let sink = Arc::new(CapturingOutputSink::new());
+        let mut worker = make_worker(
+            arc_configs(HashMap::from([(7, config)])),
+            sink.clone(),
+            false,
+            0,
+            LateDataPolicy::Drop,
+        );
+
+        worker
+            .process_group_samples(
+                7,
+                "",
+                vec![
+                    ("requests_total{host=\"A\"}".to_string(), 100, 100.0),
+                    ("requests_total{host=\"A\"}".to_string(), 200, 200.0),
+                ],
+            )
+            .unwrap();
+
+        worker
+            .process_group_samples(
+                7,
+                "",
+                group_samples("requests_total{host=\"A\"}", vec![(5_000, 1.0)]),
+            )
+            .unwrap();
+
+        let captured = sink.drain();
+        let (_output, acc) = captured
+            .iter()
+            .find(|(output, _)| output.start_timestamp == 0)
+            .expect("worker should emit the closed (0, 1000] window");
+        let multiple_sum = acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("worker should emit a MultipleSum accumulator");
+        let key = KeyByLabelValues::new_with_labels(vec!["A".to_string()]);
+        use crate::data_model::MultipleSubpopulationAggregate;
+        assert_eq!(
+            multiple_sum
+                .query(
+                    promql_utilities::query_logics::enums::Statistic::Count,
+                    &key,
+                    None
+                )
+                .unwrap(),
+            2.0,
+            "count subtype should count events (2), not sum values (300)"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Test: raw mode — each sample forwarded as SumAccumulator with sum==value
     // -----------------------------------------------------------------------

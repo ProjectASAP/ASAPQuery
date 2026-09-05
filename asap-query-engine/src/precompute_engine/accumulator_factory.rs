@@ -461,19 +461,15 @@ impl AccumulatorUpdater for DeltaSetAggregatorUpdater {
 
 pub struct MultipleSumAccumulatorUpdater {
     acc: MultipleSumAccumulator,
+    count_events: bool,
 }
 
 impl MultipleSumAccumulatorUpdater {
-    pub fn new() -> Self {
+    pub fn new(count_events: bool) -> Self {
         Self {
             acc: MultipleSumAccumulator::new(),
+            count_events,
         }
-    }
-}
-
-impl Default for MultipleSumAccumulatorUpdater {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -486,7 +482,8 @@ impl AccumulatorUpdater for MultipleSumAccumulatorUpdater {
     }
 
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, _timestamp_ms: i64) {
-        self.acc.update(key.clone(), value);
+        let weight = if self.count_events { 1.0 } else { value };
+        self.acc.update(key.clone(), weight);
     }
 
     impl_accumulator_methods!(acc);
@@ -845,20 +842,19 @@ fn cms_params(config: &AggregationConfig) -> Result<(usize, usize), String> {
     Ok((row_num, col_num))
 }
 
-/// Resolve the weighting semantics for a plain Count-Min Sketch.
+/// Resolve the weighting semantics for aggregation types that dispatch SUM vs
+/// COUNT via `aggregation_sub_type` (plain CountMinSketch, MultipleSum).
 ///
-/// Unlike the heap variant, plain CMS uses `aggregation_sub_type` to
-/// distinguish approximate SUM from approximate COUNT. Do not silently
-/// default malformed configs: the wrong weighting produces plausible but
-/// incorrect results.
-fn cms_count_events_for_sub_type(sub_type: &str) -> Result<bool, String> {
+/// Do not silently default malformed configs: the wrong weighting produces
+/// plausible but incorrect results.
+fn sum_or_count_events_for_sub_type(agg_type_name: &str, sub_type: &str) -> Result<bool, String> {
     if sub_type.eq_ignore_ascii_case("count") {
         Ok(true)
     } else if sub_type.eq_ignore_ascii_case("sum") {
         Ok(false)
     } else {
         Err(format!(
-            "CountMinSketch requires aggregation_sub_type 'sum' or 'count', got '{sub_type}'"
+            "{agg_type_name} requires aggregation_sub_type 'sum' or 'count', got '{sub_type}'"
         ))
     }
 }
@@ -948,7 +944,7 @@ pub fn create_accumulator_updater(
             other => Err(format!("Unknown SingleSubpopulation sub_type '{other}'")),
         },
         AggregationType::MultipleSubpopulation => match sub_type {
-            "Sum" | "sum" => Ok(Box::new(MultipleSumAccumulatorUpdater::new())),
+            "Sum" | "sum" => Ok(Box::new(MultipleSumAccumulatorUpdater::new(false))),
             "Min" | "min" => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(false))),
             "Max" | "max" => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(true))),
             "Increase" | "increase" => Ok(Box::new(MultipleIncreaseAccumulatorUpdater::new())),
@@ -969,7 +965,10 @@ pub fn create_accumulator_updater(
         AggregationType::DatasketchesKLL => {
             Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
         }
-        AggregationType::MultipleSum => Ok(Box::new(MultipleSumAccumulatorUpdater::new())),
+        AggregationType::MultipleSum => {
+            let count_events = sum_or_count_events_for_sub_type("MultipleSum", sub_type)?;
+            Ok(Box::new(MultipleSumAccumulatorUpdater::new(count_events)))
+        }
         AggregationType::MultipleIncrease => {
             Ok(Box::new(MultipleIncreaseAccumulatorUpdater::new()))
         }
@@ -983,7 +982,7 @@ pub fn create_accumulator_updater(
         AggregationType::Increase => Ok(Box::new(IncreaseAccumulatorUpdater::new())),
         AggregationType::CountMinSketch => {
             let (row_num, col_num) = cms_params(config)?;
-            let count_events = cms_count_events_for_sub_type(sub_type)?;
+            let count_events = sum_or_count_events_for_sub_type("CountMinSketch", sub_type)?;
             Ok(Box::new(CmsAccumulatorUpdater::new(
                 row_num,
                 col_num,
@@ -1017,6 +1016,7 @@ pub fn create_accumulator_updater(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data_model::MultipleSubpopulationAggregate;
     use asap_types::enums::{AggregationType, WindowType};
 
     #[test]
@@ -1066,7 +1066,7 @@ mod tests {
 
     #[test]
     fn test_multiple_sum_updater() {
-        let mut updater = MultipleSumAccumulatorUpdater::new();
+        let mut updater = MultipleSumAccumulatorUpdater::new(false);
         assert!(updater.is_keyed());
 
         let key_a = KeyByLabelValues::new_with_labels(vec!["a".to_string()]);
@@ -1137,7 +1137,7 @@ mod tests {
         )));
         assert!(config_is_keyed(&make_config(
             AggregationType::MultipleSum,
-            ""
+            "sum"
         )));
         assert!(config_is_keyed(&make_config(
             AggregationType::MultipleIncrease,
@@ -1157,7 +1157,7 @@ mod tests {
         for (agg_type, sub_type) in &[
             (AggregationType::SingleSubpopulation, "Sum"),
             (AggregationType::MultipleSubpopulation, "Sum"),
-            (AggregationType::MultipleSum, ""),
+            (AggregationType::MultipleSum, "sum"),
         ] {
             let config = make_config(*agg_type, sub_type);
             let updater = create_accumulator_updater(&config).unwrap();
@@ -1610,6 +1610,120 @@ mod tests {
         let config = cms_config(" count ");
         let err = match create_accumulator_updater(&config) {
             Ok(_) => panic!("whitespace-padded CountMinSketch subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains(" count "));
+    }
+
+    fn multiple_sum_config(sub_type: &str) -> AggregationConfig {
+        AggregationConfig::new(
+            200,
+            AggregationType::MultipleSum,
+            sub_type.to_string(),
+            std::collections::HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            1_000,
+            1_000,
+            WindowType::Tumbling,
+            "test_metric".to_string(),
+            "test_metric".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_multiple_sum_count_subtype_uses_unit_weight() {
+        let config = multiple_sum_config("count");
+        let mut updater = create_accumulator_updater(&config).unwrap();
+        let key = KeyByLabelValues::new_with_labels(vec!["host-a".to_string()]);
+
+        for _ in 0..5 {
+            updater.update_keyed(&key, 1_000.0, 0);
+        }
+
+        let acc = updater.take_accumulator();
+        let multiple_sum = acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("MultipleSum accumulator");
+        assert_eq!(
+            multiple_sum
+                .query(
+                    promql_utilities::query_logics::enums::Statistic::Count,
+                    &key,
+                    None
+                )
+                .unwrap(),
+            5.0
+        );
+    }
+
+    #[test]
+    fn test_multiple_sum_sum_subtype_uses_sample_weight() {
+        let config = multiple_sum_config("sum");
+        let mut updater = create_accumulator_updater(&config).unwrap();
+        let key = KeyByLabelValues::new_with_labels(vec!["host-a".to_string()]);
+
+        for _ in 0..5 {
+            updater.update_keyed(&key, 10.0, 0);
+        }
+
+        let acc = updater.take_accumulator();
+        let multiple_sum = acc
+            .as_any()
+            .downcast_ref::<MultipleSumAccumulator>()
+            .expect("MultipleSum accumulator");
+        assert_eq!(
+            multiple_sum
+                .query(
+                    promql_utilities::query_logics::enums::Statistic::Sum,
+                    &key,
+                    None
+                )
+                .unwrap(),
+            50.0
+        );
+    }
+
+    #[test]
+    fn test_multiple_sum_rejects_empty_subtype() {
+        let config = multiple_sum_config("");
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("empty MultipleSum subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("sum") && err.contains("count"));
+    }
+
+    #[test]
+    fn test_multiple_sum_rejects_unknown_subtype() {
+        let config = multiple_sum_config("frequency");
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("unknown MultipleSum subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("frequency"));
+    }
+
+    #[test]
+    fn test_multiple_sum_accepts_case_insensitive_subtype() {
+        for sub_type in ["COUNT", "SuM"] {
+            create_accumulator_updater(&multiple_sum_config(sub_type))
+                .unwrap_or_else(|err| panic!("subtype '{sub_type}' should be accepted: {err}"));
+        }
+    }
+
+    #[test]
+    fn test_multiple_sum_rejects_whitespace_padded_subtype() {
+        let config = multiple_sum_config(" count ");
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("whitespace-padded MultipleSum subtype must fail"),
             Err(err) => err,
         };
         assert!(err.contains(" count "));

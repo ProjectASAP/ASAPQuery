@@ -239,7 +239,7 @@ fn derive_sub_type(stat: Statistic, agg_type: AggregationType) -> String {
         (Statistic::Min, _) => "min",
         (Statistic::Max, _) => "max",
         (Statistic::Topk, _) => "topk",
-        (Statistic::Sum, AggregationType::CountMinSketch) => "sum",
+        (Statistic::Sum, AggregationType::CountMinSketch | AggregationType::MultipleSum) => "sum",
         (Statistic::Count, AggregationType::CountMinSketch) => "count",
         _ => "",
     }
@@ -361,6 +361,27 @@ mod tests {
         assert!(candidates
             .iter()
             .any(|c| c.config.is_none() && c.query_method == QueryMethod::Exact));
+    }
+
+    #[test]
+    fn multiple_sum_candidates_get_a_non_empty_sub_type() {
+        // MultipleSum's factory now rejects an empty aggregation_sub_type (#503) --
+        // the optimizer must derive "sum" for it, same as it already does for
+        // CountMinSketch, or every MultipleSum candidate fails to ingest.
+        let aqe = make_aqe(Statistic::Sum, 300_000, 60_000);
+        let candidates = enumerate_candidates(&aqe, 15_000);
+        let multiple_sum_configs: Vec<_> = candidates
+            .iter()
+            .filter_map(|c| c.config.as_ref())
+            .filter(|cfg| cfg.aggregation_type == AggregationType::MultipleSum)
+            .collect();
+        assert!(
+            !multiple_sum_configs.is_empty(),
+            "expected at least one MultipleSum candidate"
+        );
+        for cfg in multiple_sum_configs {
+            assert_eq!(cfg.aggregation_sub_type, "sum");
+        }
     }
 
     #[test]
