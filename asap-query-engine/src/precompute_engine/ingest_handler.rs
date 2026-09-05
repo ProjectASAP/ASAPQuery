@@ -141,7 +141,7 @@ async fn handle_victoriametrics_ingest(
 #[cfg(test)]
 mod tests {
     use super::AbortOnDrop;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -150,21 +150,42 @@ mod tests {
     /// (and keep the ingest state alive) if `HttpIngestSource::run` were ever
     /// dropped/cancelled mid-flight by a future caller. `AbortOnDrop` must
     /// actually abort the task, not just detach it.
+    ///
+    /// Checks ongoing progress rather than a single far-future flag (roborev
+    /// job 200): the wrapped task increments a counter on a fast, observable
+    /// cadence, so a merely-detached task (bug) keeps advancing the counter
+    /// after drop, while a genuinely aborted task (fix) does not. An earlier
+    /// version of this test only checked a flag set after a 60s sleep — that
+    /// passed even with `AbortOnDrop::drop` doing nothing, since the check
+    /// window (50ms) never reached the 60s mark either way.
     #[tokio::test]
     async fn abort_on_drop_cancels_the_wrapped_task() {
-        let ran_to_completion = Arc::new(AtomicBool::new(false));
-        let flag = ran_to_completion.clone();
+        let counter = Arc::new(AtomicU64::new(0));
+        let task_counter = counter.clone();
         let guard = AbortOnDrop(tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            flag.store(true, Ordering::SeqCst);
+            loop {
+                task_counter.fetch_add(1, Ordering::SeqCst);
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
         }));
 
-        drop(guard);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Synchronize with task startup before measuring.
+        while counter.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
 
-        assert!(
-            !ran_to_completion.load(Ordering::SeqCst),
-            "task should have been aborted, not left to run to completion"
+        drop(guard);
+        let count_at_drop = counter.load(Ordering::SeqCst);
+
+        // A merely-detached task has ample time here to advance the counter
+        // several more times (100ms / 5ms per tick); an aborted task cannot
+        // make any further progress at all.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert_eq!(
+            counter.load(Ordering::SeqCst),
+            count_at_drop,
+            "task kept running after the guard was dropped — it was merely detached, not aborted"
         );
     }
 }
