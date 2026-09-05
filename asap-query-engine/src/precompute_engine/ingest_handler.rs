@@ -74,15 +74,26 @@ impl Drop for AbortOnDrop {
 
 /// Logs ingest throughput every `INGEST_DIAG_INTERVAL`, resetting the counter
 /// each tick so the log reports a per-interval rate rather than a lifetime total.
+///
+/// Measures actual elapsed time (rather than assuming exactly
+/// `INGEST_DIAG_INTERVAL` passed) and uses `MissedTickBehavior::Delay` so a
+/// runtime stall produces one accurately-labeled longer interval instead of a
+/// burst of back-to-back catch-up ticks each misreporting against the fixed
+/// interval.
 async fn log_ingest_throughput(state: Arc<HttpIngestState>) {
     let mut interval = tokio::time::interval(INGEST_DIAG_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     interval.tick().await; // first tick fires immediately; skip it
+    let mut last = Instant::now();
     loop {
         interval.tick().await;
+        let now = Instant::now();
+        let elapsed = now.duration_since(last);
+        last = now;
         let samples = state.samples_ingested.swap(0, Ordering::Relaxed);
-        let secs = INGEST_DIAG_INTERVAL.as_secs_f64();
+        let secs = elapsed.as_secs_f64();
         debug!(
-            "[INGEST_DIAG] samples_ingested: {} in {:.0}s ({:.1} samples/sec)",
+            "[INGEST_DIAG] samples_ingested: {} in {:.1}s ({:.1} samples/sec)",
             samples,
             secs,
             samples as f64 / secs,
