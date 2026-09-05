@@ -90,19 +90,15 @@ class QueryEngineRustService(BaseQueryEngineService):
     def _build_engine_config(
         self,
         output_dir: str,
-        flink_output_format: str,
         data_ingestion_interval_ms: int,
         log_level: str,
         streaming_engine: str,
         controller_config_dir: str,
-        compress_json: bool,
         backend: dict,
         http_port: int,
         remote_write_port: int,
-        dump_precomputes: bool,
         lock_strategy: str,
         profile_query_engine: bool,
-        kafka_broker: str,
         ingest_json_config: Optional[dict],
     ) -> dict:
         """
@@ -110,50 +106,36 @@ class QueryEngineRustService(BaseQueryEngineService):
 
         Args:
             output_dir: Output directory path (remote host path or container-internal path)
-            flink_output_format: Kafka input_format when streaming_engine=arroyo
             data_ingestion_interval_ms: Prometheus scraping interval in milliseconds
             log_level: Logging level
-            streaming_engine: 'arroyo' (Kafka ingest) or 'precompute' (HTTP remote write)
+            streaming_engine: only 'precompute' (HTTP remote write) is supported
             controller_config_dir: Directory containing inference_config.yaml and streaming_config.yaml
-            compress_json: Whether incoming JSON is gzip-compressed (arroyo/Kafka only)
             backend: BackendConfig dict with type tag and backend-specific fields.
                      For prometheus: {"type": "prometheus", "server": "http://...", ...}
                      For clickhouse: {"type": "clickhouse", "url": "...", "database": "...", ...}
                      For elastic_querydsl/elastic_sql: {"type": "...", "url": "...", "index": "...", ...}
                      Must include "forward_unsupported_queries" key.
             http_port: Port for the query engine's HTTP API server
-            remote_write_port: Port to listen on for Prometheus remote write (precompute only);
+            remote_write_port: Port to listen on for Prometheus remote write;
                                should match streaming.remote_write.base_port in the Hydra config
-            dump_precomputes: Whether to dump received precomputes to output_dir for debugging
             lock_strategy: Lock strategy for SimpleMapStore ('global' or 'per-key')
-            kafka_broker: Kafka broker address, e.g. '10.10.1.1:9092' (arroyo only)
 
         Returns:
             Dict matching the EngineConfig YAML schema
         """
-        # Ingest config depends on the streaming engine.
-        # Both flink and arroyo produce to the same Kafka topic.
-        if streaming_engine in ("arroyo", "flink"):
-            ingest: dict = {
-                "type": "kafka",
-                "broker": kafka_broker,
-                "topic": constants.FLINK_OUTPUT_TOPIC,
-                "input_format": flink_output_format,
-                "decompress_json": compress_json,
-            }
-        elif streaming_engine == "precompute":
-            if ingest_json_config is not None:
-                ingest = {"type": "json", **ingest_json_config}
-            else:
-                ingest = {
-                    "type": "http_remote_write",
-                    "port": remote_write_port,
-                }
-        else:
+        if streaming_engine != "precompute":
             raise ValueError(
                 f"streaming_engine='{streaming_engine}' is not supported by the Rust query engine. "
-                "Use 'flink', 'arroyo', or 'precompute'."
+                "Only 'precompute' is supported."
             )
+
+        if ingest_json_config is not None:
+            ingest = {"type": "json", **ingest_json_config}
+        else:
+            ingest = {
+                "type": "http_remote_write",
+                "port": remote_write_port,
+            }
 
         return {
             "output_dir": output_dir,
@@ -164,7 +146,6 @@ class QueryEngineRustService(BaseQueryEngineService):
             "backend": backend,  # already fully resolved by caller
             "store": {"lock_strategy": lock_strategy},
             "ingest": ingest,
-            "precompute_engine": {"dump_precomputes": dump_precomputes},
             "inference_config": os.path.join(
                 controller_config_dir, "inference_config.yaml"
             ),
@@ -222,15 +203,12 @@ class QueryEngineRustService(BaseQueryEngineService):
         self,
         experiment_output_dir: str,
         local_experiment_dir: str,
-        flink_output_format: str,
         data_ingestion_interval_ms: int,
         log_level: str,
         profile_query_engine: bool,
         manual: bool,
         streaming_engine: str,
         controller_remote_output_dir: str,
-        compress_json: bool,
-        dump_precomputes: bool,
         lock_strategy: str,
         backend_config: dict,
         http_port: int,
@@ -244,16 +222,12 @@ class QueryEngineRustService(BaseQueryEngineService):
             experiment_output_dir: Remote directory for experiment output
             local_experiment_dir: Local experiment directory (used to write the engine
                                   config YAML locally before rsyncing to remote)
-            flink_output_format: Format of data from Flink (used as Kafka input_format
-                                 when streaming_engine=arroyo)
             data_ingestion_interval_ms: Prometheus scraping interval in milliseconds
             log_level: Logging level
             profile_query_engine: Whether to enable profiling
             manual: Whether to run in manual mode
-            streaming_engine: Type of streaming engine ('arroyo' or 'precompute')
+            streaming_engine: only 'precompute' is supported
             controller_remote_output_dir: Controller output directory
-            compress_json: Whether JSON is compressed (arroyo/Kafka only)
-            dump_precomputes: Whether to dump precomputed values
             lock_strategy: Lock strategy for SimpleMapStore (global or per-key)
             backend_config: Fully resolved BackendConfig dict with type tag and all
                             backend-specific fields (url/server/database/index as needed),
@@ -268,18 +242,15 @@ class QueryEngineRustService(BaseQueryEngineService):
             self._start_containerized(
                 experiment_output_dir,
                 local_experiment_dir,
-                flink_output_format,
                 data_ingestion_interval_ms,
                 log_level,
                 profile_query_engine,
                 manual,
                 streaming_engine,
                 controller_remote_output_dir,
-                compress_json,
                 backend_config,
                 http_port,
                 remote_write_port,
-                dump_precomputes,
                 lock_strategy,
                 ingest_json_config,
             )
@@ -287,18 +258,15 @@ class QueryEngineRustService(BaseQueryEngineService):
             self._start_bare_metal(
                 experiment_output_dir,
                 local_experiment_dir,
-                flink_output_format,
                 data_ingestion_interval_ms,
                 log_level,
                 profile_query_engine,
                 manual,
                 streaming_engine,
                 controller_remote_output_dir,
-                compress_json,
                 backend_config,
                 http_port,
                 remote_write_port,
-                dump_precomputes,
                 lock_strategy,
                 ingest_json_config,
             )
@@ -307,18 +275,15 @@ class QueryEngineRustService(BaseQueryEngineService):
         self,
         experiment_output_dir: str,
         local_experiment_dir: str,
-        flink_output_format: str,
         data_ingestion_interval_ms: int,
         log_level: str,
         profile_query_engine: bool,
         manual: bool,
         streaming_engine: str,
         controller_remote_output_dir: str,
-        compress_json: bool,
         backend_config: dict,
         http_port: int,
         remote_write_port: int,
-        dump_precomputes: bool,
         lock_strategy: str,
         ingest_json_config: Optional[dict],
     ) -> None:
@@ -349,19 +314,15 @@ class QueryEngineRustService(BaseQueryEngineService):
 
         config = self._build_engine_config(
             output_dir=output_dir,
-            flink_output_format=flink_output_format,
             data_ingestion_interval_ms=data_ingestion_interval_ms,
             log_level=log_level,
             streaming_engine=streaming_engine,
             controller_config_dir=controller_remote_output_dir,
-            compress_json=compress_json,
             backend=backend_config,
             http_port=http_port,
             remote_write_port=remote_write_port,
-            dump_precomputes=dump_precomputes,
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
-            kafka_broker=f"{self.provider.get_node_ip(self.node_offset)}:9092",
             ingest_json_config=ingest_json_config,
         )
         self._write_engine_config_to_remote(
@@ -398,18 +359,15 @@ class QueryEngineRustService(BaseQueryEngineService):
         self,
         experiment_output_dir: str,
         local_experiment_dir: str,
-        flink_output_format: str,
         data_ingestion_interval_ms: int,
         log_level: str,
         profile_query_engine: bool,
         manual: bool,
         streaming_engine: str,
         controller_remote_output_dir: str,
-        compress_json: bool,
         backend_config: dict,
         http_port: int,
         remote_write_port: int,
-        dump_precomputes: bool,
         lock_strategy: str,
         ingest_json_config: Optional[dict],
     ) -> None:
@@ -425,19 +383,15 @@ class QueryEngineRustService(BaseQueryEngineService):
 
         config = self._build_engine_config(
             output_dir=container_output_dir,
-            flink_output_format=flink_output_format,
             data_ingestion_interval_ms=data_ingestion_interval_ms,
             log_level=log_level,
             streaming_engine=streaming_engine,
             controller_config_dir=container_controller_dir,
-            compress_json=compress_json,
             backend=backend_config,
             http_port=http_port,
             remote_write_port=remote_write_port,
-            dump_precomputes=dump_precomputes,
             lock_strategy=lock_strategy,
             profile_query_engine=profile_query_engine,
-            kafka_broker=f"{self.provider.get_node_ip(self.node_offset)}:9092",
             ingest_json_config=ingest_json_config,
         )
         # Write the config to the host path that is volume-mounted as /app/outputs,

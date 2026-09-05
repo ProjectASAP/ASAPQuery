@@ -108,7 +108,7 @@ def main():
     parser.add_argument(
         "--streaming-engine",
         required=True,
-        choices=["flink", "arroyo", "precompute"],
+        choices=["precompute"],
         help="Streaming engine",
     )
     parser.add_argument(

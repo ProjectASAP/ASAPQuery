@@ -8,7 +8,7 @@ import glob
 
 # Configuration
 # Query time offset accounts for data freshness delay in the pipeline:
-# exporter → prometheus scrape → remote write → arroyo → kafka → query engine
+# exporter → prometheus scrape → remote write → query engine
 # This prevents queries from requesting data that hasn't been processed yet
 QUERY_TIME_OFFSET = 10  # seconds
 

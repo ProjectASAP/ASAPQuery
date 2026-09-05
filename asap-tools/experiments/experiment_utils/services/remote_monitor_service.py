@@ -7,13 +7,12 @@ import re
 import shlex
 import time
 import subprocess
-from typing import List, Optional
+from typing import Optional
 
 import constants
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 from .query_engine import BaseQueryEngineService
-from .arroyo import ArroyoService
 
 
 class RemoteMonitorService(BaseService):
@@ -37,15 +36,9 @@ class RemoteMonitorService(BaseService):
         experiment_mode: str,
         profile_query_engine: bool,
         profile_prometheus_time: Optional[int],
-        profile_flink: bool,
-        flink_pids: Optional[List[int]],
-        profile_arroyo: bool,
-        arroyo_pids: Optional[List[int]],
         manual_mode: bool,
-        do_local_flink: bool,
         streaming_engine: str,
         query_engine_service: "BaseQueryEngineService",
-        arroyo_service: Optional["ArroyoService"],
         controller_remote_output_dir: str,
         use_container_prometheus_client: bool,
         prometheus_client_parallel: bool,
@@ -106,18 +99,6 @@ class RemoteMonitorService(BaseService):
                     keywords.append(query_engine_service.get_monitoring_keyword())
                 else:
                     keywords.append(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
-
-                if streaming_engine == "flink":
-                    keywords.append("sketch-0.1.jar")
-                    if not do_local_flink:
-                        keywords.append(
-                            "org.apache.flink.runtime.taskexecutor.TaskManagerRunner"
-                        )
-                elif streaming_engine == "arroyo":
-                    if arroyo_service is not None:
-                        keywords.append(arroyo_service.get_monitoring_keyword())
-                    else:
-                        keywords.append("arroyo.*worker")
 
         if use_timed_mode:
             # Build command for timed mode (skip_querying)
@@ -223,14 +204,6 @@ class RemoteMonitorService(BaseService):
 
             if profile_query_engine:
                 cmd += " --profile_query_engine"
-
-            if profile_flink and flink_pids:
-                cmd += " --profile_flink_pids {}".format(",".join(map(str, flink_pids)))
-
-            if profile_arroyo and arroyo_pids:
-                cmd += " --profile_arroyo_pids {}".format(
-                    ",".join(map(str, arroyo_pids))
-                )
 
         if profile_prometheus_time is not None:
             cmd += " --profile_prometheus_time {}".format(profile_prometheus_time)

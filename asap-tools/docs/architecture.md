@@ -24,7 +24,7 @@ The experiment framework is a **service-oriented, provider-abstracted architectu
 
 ### Key Architectural Principles
 
-1. **Service Abstraction**: Uniform interface for all components (Kafka, Flink, Prometheus, etc.)
+1. **Service Abstraction**: Uniform interface for all components (Prometheus, QueryEngine, etc.)
 2. **Provider Abstraction**: Infrastructure-independent (currently CloudLab, extensible to AWS/K8s)
 3. **Declarative Configuration**: Hydra-based hierarchical configuration composition
 4. **Lifecycle Management**: Automated setup → run → teardown → data collection
@@ -36,8 +36,7 @@ experiment_run_e2e.py (Main Orchestrator)
 ├── InfrastructureProvider (CloudLabProvider)
 │   └── SSH-based command execution
 ├── Service Layer
-│   ├── Infrastructure Services (Kafka, Prometheus)
-│   ├── Streaming Services (Flink, Arroyo)
+│   ├── Infrastructure Services (Prometheus)
 │   ├── Query Services (QueryEngine)
 │   ├── Data Generation (Exporters, DeathStar)
 │   ├── Monitoring Services (Throughput, Health)
@@ -88,12 +87,9 @@ Rsync configs to remote nodes
 ───────────────────────────────────────
 IF mode == "sketchdb":
   ├─ Start controller
-  ├─ Create Kafka topics
   ├─ Start exporters (fake/avalanche)
   ├─ Start DeathStar workload (if configured)
-  ├─ Start Kafka adapter (if use_kafka_ingest)
-  ├─ Start streaming engine (Flink or Arroyo)
-  ├─ Start query engine
+  ├─ Start query engine (precompute, HTTP remote write)
   └─ Start Prometheus
 ELSE IF mode == "prometheus":
   ├─ Start exporters
@@ -135,36 +131,6 @@ Local analysis (separate scripts)
 
 ## Data Flow
 
-<!-- ### SketchDB Mode with Kafka Ingest
-
-```
-Fake Exporters
-  ↓ (expose metrics)
-Prometheus
-  ↓ (scrape metrics)
-Prometheus Remote Write API
-  ↓
-PrometheusKafkaAdapter
-  ↓ (convert to Kafka messages)
-Kafka INPUT Topic
-  ↓ (consume)
-Flink/Arroyo (SketchJob)
-  ├─ Parse metrics
-  ├─ Build sketches
-  └─ Serialize sketches
-  ↓ (produce)
-Kafka OUTPUT Topic
-  ↓ (consume)
-QueryEngine
-  ├─ Deserialize sketches
-  ├─ Parse PromQL queries
-  └─ Execute queries over sketches
-  ↓
-PromQL Query Results
-  ↓
-asap-tools/queriers/prometheus-client (logs results)
-``` -->
-
 ### SketchDB Mode with Ingest from Prometheus Remote Write
 
 ```
@@ -174,15 +140,15 @@ Prometheus
   ↓ (scrape metrics)
 Prometheus Remote Write API
   ↓ (HTTP POST)
-Arroyo RemoteWrite Endpoint
+QueryEngine (precompute engine)
   ├─ Parse Prometheus remote write format
   ├─ Build sketches in real-time
-  └─ Serialize sketches
-  ↓ (produce)
-Kafka OUTPUT Topic
-  ↓ (consume)
-QueryEngine
-  └─ (same as above)
+  ├─ Parse PromQL queries
+  └─ Execute queries over sketches
+  ↓
+PromQL Query Results
+  ↓
+asap-tools/queriers/prometheus-client (logs results)
 ```
 
 ### Prometheus Baseline Mode
@@ -209,8 +175,6 @@ In **experiment_run_e2e.py** (Lines 124-169), you'll see services being initiali
 
 ```python
 # Initialize all services
-kafka_service = KafkaService(provider, args.node_offset, num_tries=5)
-flink_service = FlinkService(provider, args.node_offset)
 query_engine_service = QueryEngineServiceFactory.create_query_engine_service(
     args.query_engine_language,
     provider,
@@ -225,12 +189,7 @@ These services are then started/stopped throughout the experiment lifecycle. Let
 
 ### 1. Infrastructure Services
 
-These provide the foundational messaging and monitoring infrastructure:
-
-- **`KafkaService`** - Manages Kafka broker for streaming data between components
-  - Creates topics for sketch data
-  - Handles broker lifecycle
-  - Used in: SketchDB mode for streaming sketches from Arroyo to QueryEngine
+These provide the foundational monitoring infrastructure:
 
 - **`PrometheusService` / `DockerPrometheusService`** - Runs Prometheus server
   - Scrapes metrics from exporters
@@ -244,30 +203,14 @@ These provide the foundational messaging and monitoring infrastructure:
   - cadvisor: Container metrics
   - Used in: Monitoring experiment infrastructure itself
 
-### 2. Streaming Engine Services
-
-These process metrics streams and build sketches in real-time:
-
-- **`FlinkService`** - Apache Flink cluster management
-  - Starts JobManager and TaskManagers
-  - Submits sketch-building jobs
-  - Monitors job status
-  - Used in: SketchDB mode with Flink
-
-- **`ArroyoService`** - Arroyo streaming engine (containerized or bare-metal)
-  - Receives Prometheus remote write directly
-  - Builds sketches in real-time
-  - Produces to Kafka output topic
-  - Used in: SketchDB mode with Arroyo (current default)
-
 ### 3. Query Processing Services
 
 These answer PromQL queries over sketches:
 
 - **`QueryEngineService` (Python)** - Legacy Python implementation
 - **`QueryEngineRustService` (Rust)** - Production Rust implementation
-  - Consumes sketches from Kafka
-  - Maintains sketch state
+  - Receives Prometheus remote write directly (precompute engine)
+  - Builds sketches in real-time and maintains sketch state
   - Executes PromQL queries
   - Returns approximate results
 - **`QueryEngineServiceFactory`** - Creates appropriate engine based on language choice
@@ -291,15 +234,6 @@ These generate synthetic metric workloads for benchmarking:
   - Real-world microservices architecture
   - Used in: Realistic workload experiments
 
-### 5. Adapter Services
-
-These bridge between different components:
-
-- **`PrometheusKafkaAdapterService`** - Converts Prometheus remote write → Kafka
-  - Receives HTTP remote write requests
-  - Publishes to Kafka input topic
-  - Used in: Legacy Kafka ingestion mode (deprecated)
-
 ### 6. Monitoring Services
 
 These monitor the experiment itself:
@@ -309,10 +243,6 @@ These monitor the experiment itself:
   - Monitors process health
   - Profiles components (CPU, memory)
   - Records timing and results
-
-- **`ArroyoThroughputMonitor`** - Tracks Arroyo pipeline throughput
-  - Monitors metrics/second processed
-  - Used in: Performance analysis
 
 - **`PrometheusThroughputMonitor`** - Tracks Prometheus ingestion rate
   - Monitors samples/second ingested
@@ -337,25 +267,18 @@ These provide control plane functionality:
   - Logs results and timing
   - Used in: All query execution
 
-- **`DumbKafkaConsumerService`** - Simple Kafka consumer for debugging
-  - Consumes and prints Kafka messages
-  - Used in: Debugging data flow
-
 ### How Services Work Together
 
 In a typical SketchDB experiment:
 
 1. **Setup Phase**:
-   - `KafkaService` creates topics
-   - `ArroyoService` starts and connects to Kafka
-   - `QueryEngineService` starts consuming from Kafka output topic
-   - `PrometheusService` configures remote write to Arroyo
+   - `QueryEngineRustService` starts, listening for Prometheus remote write
+   - `PrometheusService` configures remote write to the query engine
 
 2. **Workload Phase**:
    - `RustExporterService` exposes metrics
-   - Prometheus scrapes and sends to Arroyo via remote write
-   - Arroyo builds sketches and publishes to Kafka
-   - QueryEngine maintains sketch state
+   - Prometheus scrapes and sends to the query engine via remote write
+   - QueryEngine builds sketches in real-time and maintains sketch state
 
 3. **Query Phase**:
    - `RemoteMonitorService` coordinates query execution
@@ -363,7 +286,7 @@ In a typical SketchDB experiment:
    - Results are logged and compared
 
 4. **Monitoring Phase**:
-   - `ArroyoThroughputMonitor` tracks throughput
+   - `PrometheusThroughputMonitor` tracks throughput
    - `PrometheusHealthMonitor` checks scrape health
    - `SystemExportersService` provides infrastructure metrics
 
@@ -375,7 +298,7 @@ Now that you've seen what services do in practice, let's understand how they're 
 
 ### Design Philosophy
 
-All services follow a **uniform interface** pattern. Whether you're starting Kafka, Flink, or Prometheus, the code looks the same:
+All services follow a **uniform interface** pattern. Whether you're starting QueryEngine or Prometheus, the code looks the same:
 
 ```python
 service.start(**kwargs)  # Start the service
@@ -659,9 +582,6 @@ experiments/
 │   │   └── factory.py                 # Provider factory
 │   └── services/                      # Service implementations
 │       ├── base.py                    # Base service classes
-│       ├── kafka.py                   # KafkaService
-│       ├── flink.py                   # FlinkService
-│       ├── arroyo.py                  # ArroyoService
 │       ├── query_engine.py            # QueryEngineService
 │       ├── prometheus.py              # PrometheusService
 │       ├── exporters.py               # Exporter services
@@ -885,10 +805,8 @@ class MyStreamingEngineService(BaseService):
 
 ```python
 if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-    if args.streaming_engine == "flink":
-        # Existing Flink code
-    elif args.streaming_engine == "arroyo":
-        # Existing Arroyo code
+    if args.streaming_engine == "precompute":
+        # Existing precompute code
     elif args.streaming_engine == "myengine":
         my_engine_service.start()
         job_id = my_engine_service.run_myengine_sketch(...)
@@ -898,7 +816,7 @@ if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
 
 ### 1. Service-Oriented Architecture
 
-**Rationale:** Each component (Kafka, Flink, Prometheus) is an independent service with uniform interface. This enables:
+**Rationale:** Each component (QueryEngine, Prometheus) is an independent service with uniform interface. This enables:
 - Easy addition of new components
 - Clear separation of concerns
 - Independent testing of services

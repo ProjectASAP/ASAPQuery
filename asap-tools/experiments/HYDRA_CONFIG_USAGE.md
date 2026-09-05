@@ -30,10 +30,8 @@ All experiment scripts require these core parameters:
 ### Script-Specific Required Parameters
 - **experiment_run_clickhouse.py**: `experiment_type=clickhouse`, `experiment_params.dataset.name`, `experiment_params.dataset.local_data_file`, `experiment_params.query_groups[0].sql_file`
 - **experiment_run_e2e.py**: `experiment_type`, `prometheus.local_config_dir`
-- **experiment_run_empty_flink.py**: `experiment.config_file`
 - **experiment_run_e2e_no_queryengine.py**: `experiment.config_file`, `prometheus.local_config_dir`
 - **experiment_run_sketchdboffline.py**: `experiment_variants.sketchdboffline.*` parameters
-- **experiment_run_flink_with_different_num_aggregations.py**: `experiment_variants.flink_aggregations.*` parameters
 - **experiment_run_exporters_and_prometheus.py**: No additional required parameters
 
 ### Optional Override Parameters
@@ -44,8 +42,6 @@ logging.level: DEBUG|INFO|WARNING|ERROR
 # Profiling options
 profiling.query_engine: true/false
 profiling.prometheus_time: 60  # seconds
-profiling.flink: true/false
-profiling.arroyo: true/false
 
 # Manual mode
 manual.query_engine: true/false
@@ -56,11 +52,7 @@ flow.no_teardown: true/false
 flow.steady_state_wait: 300  # seconds
 
 # Streaming engine
-streaming.engine: flink|arroyo|precompute
-streaming.flink_input_format: json|avro-json|avro-binary
-streaming.flink_output_format: json|byte
-streaming.enable_object_reuse: true/false
-streaming.do_local_flink: true/false
+streaming.engine: precompute
 streaming.forward_unsupported_queries: true/false
 
 # Prometheus configuration
@@ -87,7 +79,6 @@ ls config/experiment_type/
 ```bash
 # Select experiment type
 python experiment_run_e2e.py experiment_type=cloud_demo [other params...]
-python experiment_run_e2e.py experiment_type=flink_compress_config [other params...]
 python experiment_run_e2e.py experiment_type=my_exp_config [other params...]
 ```
 
@@ -121,14 +112,12 @@ python experiment_run_e2e.py \
 
 ### Performance Testing
 ```bash
-# Test with different streaming engines
+# Test with different node counts / parallelism
 python experiment_run_e2e.py \
-  experiment.name=arroyo_perf \
+  experiment.name=precompute_perf \
   experiment_type=my_exp_config \
   providers.cloudlab.num_nodes=8 \
-  streaming.engine=arroyo \
-  streaming.enable_object_reuse=true \
-  profiling.arroyo=true \
+  streaming.parallelism=4 \
   [required params...]
 ```
 
@@ -144,9 +133,6 @@ python experiment_run_e2e.py experiment.name=nodes_4 experiment_type=cloud_demo 
 python experiment_run_e2e.py experiment.name=nodes_8 experiment_type=cloud_demo providers.cloudlab.num_nodes=8 [required params...]
 python experiment_run_e2e.py experiment.name=nodes_16 experiment_type=cloud_demo providers.cloudlab.num_nodes=16 [required params...]
 
-# Test different streaming engines
-python experiment_run_e2e.py experiment.name=flink_test experiment_type=cloud_demo streaming.engine=flink [required params...]
-python experiment_run_e2e.py experiment.name=arroyo_test experiment_type=cloud_demo streaming.engine=arroyo [required params...]
 ```
 
 ## All Experiment Scripts
@@ -254,17 +240,6 @@ python experiment_run_exporters_and_prometheus.py \
   controller.punting=false
 ```
 
-### experiment_run_empty_flink.py (Simplified Streaming)
-```bash
-# Flink + Prometheus + Exporters (no query engine)
-python experiment_run_empty_flink.py \
-  experiment.name=empty_flink_test \
-  experiment.config_file=/path/to/config.yml \
-  providers.cloudlab.num_nodes=4 \
-  providers.cloudlab.username=myuser \
-  providers.cloudlab.hostname_suffix=myexp.cloudlab.us
-```
-
 ### experiment_run_e2e_no_queryengine.py (E2E without Query Engine)
 ```bash
 # Full streaming pipeline without query engine
@@ -284,19 +259,6 @@ python experiment_run_sketchdboffline.py \
   experiment_variants.sketchdboffline.experiment_dir=/path/to/data \
   experiment_variants.sketchdboffline.groupby=[label_0,instance] \
   experiment_variants.sketchdboffline.aggregation=avg
-```
-
-### experiment_run_flink_with_different_num_aggregations.py (Performance Analysis)
-```bash
-# Flink performance testing with aggregation scaling
-python experiment_run_flink_with_different_num_aggregations.py \
-  experiment.name=flink_perf \
-  providers.cloudlab.username=myuser \
-  providers.cloudlab.hostname_suffix=myexp.cloudlab.us \
-  experiment_variants.flink_aggregations.config=/path/to/config.yaml \
-  experiment_variants.flink_aggregations.aggregation_id=0 \
-  experiment_variants.flink_aggregations.min_aggregations=1 \
-  experiment_variants.flink_aggregations.max_aggregations=10
 ```
 
 ## Hydra Features
