@@ -262,15 +262,16 @@ pub fn find_compatible_aggregation(
         return Err(CapabilityMatchingError::MissingTopkWeighting);
     }
 
-    let mut configs_by_id: Vec<&AggregationConfig> = configs.values().collect();
-    configs_by_id.sort_by_key(|config| config.aggregation_id);
-    for config in configs_by_id {
-        config.validate()?;
-    }
-
     if requirements.statistics.is_empty() {
         return Ok(None);
     }
+
+    // Configs are validated lazily below, scoped to only those actually
+    // considered as candidates for the current requirement -- a malformed
+    // config for an unrelated metric/type must not fail queries that would
+    // never have selected it.
+    let mut configs_by_id: Vec<&AggregationConfig> = configs.values().collect();
+    configs_by_id.sort_by_key(|config| config.aggregation_id);
 
     debug!(
         metric = %requirements.metric,
@@ -288,34 +289,53 @@ pub fn find_compatible_aggregation(
         let types = compatible_agg_types(stat);
         let sub_type = required_sub_type(stat);
 
-        let mut candidates: Vec<&AggregationConfig> = configs
-            .values()
-            .filter(|c| {
-                let ok = c.metric == requirements.metric
-                    && types.contains(&c.aggregation_type)
-                    && sub_type.is_none_or(|st| c.aggregation_sub_type.eq_ignore_ascii_case(st))
-                    && window_compatible(c, requirements.data_range_ms)
-                    && labels_compatible(&c.grouping_labels, &requirements.grouping_labels)
-                    && spatial_filter_compatible(
-                        &c.spatial_filter_normalized,
-                        &requirements.spatial_filter_normalized,
-                    )
-                    && plain_cms_sub_type_compatible(stat, c)
-                    && topk_weighting_compatible(stat, c, requirements.topk_count_events)
-                    && count_heap_weighting_compatible(stat, c);
-                if !ok {
-                    debug!(
-                        agg_id = c.aggregation_id,
-                        agg_type = %c.aggregation_type,
-                        metric = %c.metric,
-                        window_size_ms = c.window_size_ms,
-                        "capability matching: rejected config for {:?}",
-                        stat,
-                    );
-                }
-                ok
-            })
-            .collect();
+        let mut candidates: Vec<&AggregationConfig> = Vec::new();
+        for &c in &configs_by_id {
+            let basic_ok = c.metric == requirements.metric
+                && types.contains(&c.aggregation_type)
+                && sub_type.is_none_or(|st| c.aggregation_sub_type.eq_ignore_ascii_case(st))
+                && window_compatible(c, requirements.data_range_ms)
+                && labels_compatible(&c.grouping_labels, &requirements.grouping_labels)
+                && spatial_filter_compatible(
+                    &c.spatial_filter_normalized,
+                    &requirements.spatial_filter_normalized,
+                );
+            if !basic_ok {
+                debug!(
+                    agg_id = c.aggregation_id,
+                    agg_type = %c.aggregation_type,
+                    metric = %c.metric,
+                    window_size_ms = c.window_size_ms,
+                    "capability matching: rejected config for {:?}",
+                    stat,
+                );
+                continue;
+            }
+
+            // Only validate configs that are actually relevant to this
+            // requirement (basic_ok above): `topk_weighting_compatible` /
+            // `count_heap_weighting_compatible` rely on `count_events` being
+            // present and boolean on any CountMinSketchWithHeap candidate.
+            if c.aggregation_type == AggregationType::CountMinSketchWithHeap {
+                c.validate()?;
+            }
+
+            let ok = plain_cms_sub_type_compatible(stat, c)
+                && topk_weighting_compatible(stat, c, requirements.topk_count_events)
+                && count_heap_weighting_compatible(stat, c);
+            if !ok {
+                debug!(
+                    agg_id = c.aggregation_id,
+                    agg_type = %c.aggregation_type,
+                    metric = %c.metric,
+                    window_size_ms = c.window_size_ms,
+                    "capability matching: rejected config for {:?}",
+                    stat,
+                );
+                continue;
+            }
+            candidates.push(c);
+        }
 
         candidates.sort_by(|a, b| aggregation_priority(a, b));
 
@@ -1730,6 +1750,36 @@ mod tests {
                 AggregationConfigError::MissingCountEvents { aggregation_id: 7 }
             )
         ));
+    }
+
+    #[test]
+    fn malformed_heap_config_on_unrelated_metric_does_not_break_matching() {
+        // A malformed CountMinSketchWithHeap config for a metric no part of
+        // this query cares about must not fail matching for that query --
+        // validation is scoped to configs actually considered as candidates,
+        // not applied unconditionally across the whole config map (#roborev).
+        let mut configs = HashMap::new();
+        let mut malformed = make_config(
+            7,
+            "other_table",
+            "CountMinSketchWithHeap",
+            "",
+            1_000,
+            "tumbling",
+            &[],
+            "",
+        );
+        malformed.parameters.remove("count_events");
+        configs.insert(7, malformed);
+        configs.insert(
+            1,
+            make_config(1, "cpu", "Sum", "", 300_000, "tumbling", &[], ""),
+        );
+
+        let result =
+            find_compatible_aggregation(&configs, &req("cpu", &[Statistic::Sum], 300_000, &[], ""));
+        let info = result.expect("unrelated malformed heap config must not break this match");
+        assert_eq!(info.aggregation_id_for_value, 1);
     }
 
     #[test]
