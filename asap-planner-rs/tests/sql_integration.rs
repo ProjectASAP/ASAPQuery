@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 
 fn sql_opts() -> SQLRuntimeOptions {
     SQLRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         // Fixed evaluation time so NOW()-relative timestamps are deterministic.
         query_evaluation_time: Some(1_000_000.0),
         data_ingestion_interval_ms: 15_000,
@@ -654,7 +654,7 @@ aggregate_cleanup:
 
 fn sql_opts_1s_ingest() -> SQLRuntimeOptions {
     SQLRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         query_evaluation_time: Some(1_000_000.0),
         data_ingestion_interval_ms: 1_000,
     }
@@ -1200,7 +1200,7 @@ fn sub_second_data_ingestion_interval_ms() {
              WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() \
              GROUP BY srcip";
     let opts = SQLRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         query_evaluation_time: Some(1_000_000.0),
         data_ingestion_interval_ms: 500,
     };

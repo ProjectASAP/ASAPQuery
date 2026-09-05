@@ -35,15 +35,6 @@ impl HydraKllSketchAccumulator {
         Err("deserialize_from_bytes for HydraKllSketchAccumulator not implemented".into())
     }
 
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            inner: HydraKllSketch::from_msgpack(buffer)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
-        })
-    }
-
     pub fn query_key(&self, key: &KeyByLabelValues, quantile: f64) -> f64 {
         self.inner.quantile(&key.to_semicolon_str(), quantile)
     }

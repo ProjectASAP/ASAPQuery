@@ -2360,9 +2360,9 @@ mod tests {
     async fn range_query_self_keyed_topk_expands_with_non_none_outer_key() {
         // Same bug as range_query_self_keyed_topk_expands_without_keys_query,
         // but the value data is stored under a real, non-None outer
-        // group_key -- mirrors what real Arroyo/worker.rs ingestion actually
-        // writes for "empty grouping" self-keyed accumulators (deserialize_
-        // from_json_arroyo always wraps Some(key), even for empty grouping;
+        // group_key -- mirrors what real worker.rs ingestion actually
+        // writes for "empty grouping" self-keyed accumulators (the outer
+        // group key is always Some(key), even for empty grouping;
         // "None" is specific to this codebase's existing CountMinSketchWithHeap
         // test convention, not a guarantee). A fix that only calls
         // merged.get_keys() when the outer key is None (rather than always,
@@ -2408,7 +2408,7 @@ mod tests {
         sketch.inner.update("host-c", 10.0);
 
         // Non-None outer key -- e.g. Some(KeyByLabelValues{labels: [""]}),
-        // exactly what deserialize_from_json_arroyo produces for "" grouping.
+        // exactly what real worker.rs ingestion produces for "" grouping.
         let non_none_key = Some(KeyByLabelValues::new_with_labels(vec![String::new()]));
         let output = PrecomputedOutput::new(0, 1000, non_none_key, 1);
         store

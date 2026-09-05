@@ -35,19 +35,6 @@ impl DatasketchesKLLAccumulator {
         self.inner.quantile(quantile)
     }
 
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        debug!(
-            "Deserializing DatasketchesKLLAccumulator from MessagePack buffer of size {}",
-            buffer.len()
-        );
-        Ok(Self {
-            inner: KllSketch::from_msgpack(buffer)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
-        })
-    }
-
     /// Merge multiple accumulators efficiently without cloning all of them.
     pub fn merge_multiple(
         accumulators: &[Box<dyn crate::data_model::AggregateCore>],
@@ -315,23 +302,6 @@ mod tests {
         assert_eq!(merged.inner.count(), 10);
         assert_eq!(merged.get_quantile(0.0), 1.0);
         assert_eq!(merged.get_quantile(1.0), 10.0);
-    }
-
-    #[test]
-    fn test_datasketches_kll_serialization() {
-        let mut kll = DatasketchesKLLAccumulator::new(200);
-        for i in 1..=5 {
-            kll.update(i as f64);
-        }
-
-        let bytes = kll.serialize_to_bytes().unwrap();
-        let deserialized =
-            DatasketchesKLLAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
-
-        assert_eq!(deserialized.inner.k, 200);
-        assert_eq!(deserialized.inner.count(), 5);
-        assert_eq!(deserialized.get_quantile(0.0), 1.0);
-        assert_eq!(deserialized.get_quantile(1.0), 5.0);
     }
 
     #[test]
