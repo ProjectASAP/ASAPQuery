@@ -252,6 +252,32 @@ class TestGetSqlQuerySQL:
         assert '"host"' in sql_query
         assert '"region"' in sql_query
 
+    @pytest.mark.parametrize("sub_type", ["count", "sum"])
+    def test_sql_query_topk_uses_all_labels_regardless_of_weighting(
+        self, sql_schema_config, sql_agg_config, sql_template, sub_type
+    ):
+        """CountMinSketchWithHeap (topk) is self-keyed on every schema label,
+        not just `aggregated` -- this is keyed by aggregationType, since
+        aggregationSubType now carries SUM/COUNT weighting instead of a
+        "topk" marker (ASAPQuery#670)."""
+        sql_agg_config.aggregationType = "countminsketchwithheap"
+        sql_agg_config.aggregationSubType = sub_type
+
+        sql_query, agg_function, _ = get_sql_query(
+            streaming_aggregation_config=sql_agg_config,
+            schema_config=sql_schema_config,
+            query_language="sql",
+            sql_template=sql_template,
+            source_table="test_source",
+            sink_table="test_sink",
+            source_type="kafka",
+            use_nested_labels=False,
+        )
+
+        assert agg_function == f"countminsketchwithheap_{sub_type}"
+        for label in ("host", "region", "service"):
+            assert f'"{label}"' in sql_query
+
 
 class TestGetSqlQueryPromQL:
     """Tests for get_sql_query with PromQL mode (backward compatibility)."""

@@ -156,7 +156,7 @@ impl CountMinSketchWithHeap {
 }
 
 #[udf]
-fn countminsketchwithheap_topk(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
+fn countminsketchwithheap_count(keys: Vec<&str>, values: Vec<f64>) -> Option<Vec<u8>> {
     if keys.len() != values.len() {
         return None;
     }
