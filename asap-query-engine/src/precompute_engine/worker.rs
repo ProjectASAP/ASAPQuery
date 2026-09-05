@@ -1294,6 +1294,9 @@ mod tests {
             vec!["srcip"],
         );
         config.value_column = Some("dstip".to_string());
+        config
+            .parameters
+            .insert("precision".to_string(), serde_json::json!(14));
         let mut agg_configs = HashMap::new();
         agg_configs.insert(4, config);
 
