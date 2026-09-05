@@ -39,7 +39,7 @@ cd $$REPO_ROOT/asap-tools
 **What it does:**
 - Configures storage on all CloudLab nodes
 - Rsyncs all code from local machine to CloudLab
-- Installs external components (Prometheus, Kafka, Flink, Docker, etc.)
+- Installs external components (Prometheus, Docker, etc.)
 - Builds internal components (Docker images, Rust binaries)
 
 ### Running an Experiment
@@ -154,8 +154,7 @@ python experiment_run_e2e.py \
 ```bash
 # Disable Docker for that service
 python experiment_run_e2e.py ... \
-  use_container.query_engine=false \
-  use_container.arroyo=false
+  use_container.query_engine=false
 ```
 
 ### Running Parallel Experiments on a single Cloudlab cluster

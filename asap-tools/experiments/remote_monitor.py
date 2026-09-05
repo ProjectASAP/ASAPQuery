@@ -16,7 +16,6 @@ from classes.query_cost import CostModelOption
 from classes.QueryCostExporter import QueryCostExporterHook
 from classes.ProcessMonitorHook import ProcessMonitorHook
 
-import utils
 import constants
 
 
@@ -76,91 +75,6 @@ def get_pids(keyword) -> List[int]:
     if len(pids) == 0:
         raise ValueError(f"No processes found for keyword {keyword}")
     return [int(pid) for pid in pids]
-
-
-def start_profiling_flink_pids(flink_pids):
-    asprof_bin = "/scratch/sketch_db_for_prometheus/asprof/bin/asprof"
-    cmd = ";".join(["{} start {}".format(asprof_bin, pid) for pid in flink_pids])
-    logger.debug("Starting profiling for flink pids with command: {}".format(cmd))
-    utils.run_cmd(cmd, popen=False, ignore_errors=False)
-
-
-def stop_profiling_flink_pids(flink_pids, experiment_output_dir, store: bool):
-    asprof_bin = "/scratch/sketch_db_for_prometheus/asprof/bin/asprof"
-    flink_profiles_dir = os.path.join(experiment_output_dir, "flink_profiles")
-    os.makedirs(flink_profiles_dir, exist_ok=True)
-
-    cmds = []
-    for pid in flink_pids:
-        if not store:
-            cmd = "{} stop {} > /dev/null 2>&1".format(asprof_bin, pid)
-            cmds.append(cmd)
-        else:
-            for format in ["flamegraph", "tree", "flat"]:
-                cmd = "{} stop -o {} -f {} {}".format(
-                    asprof_bin,
-                    format,
-                    os.path.join(flink_profiles_dir, "{}.{}".format(pid, format)),
-                    pid,
-                )
-                cmds.append(cmd)
-
-    logger.debug("Stopping profiling for flink pids with command: {}".format(cmds))
-    utils.run_cmd(";".join(cmds), popen=False, ignore_errors=not store)
-
-
-def start_profiling_arroyo_pids(arroyo_pids, experiment_output_dir):
-    arroyo_flamegraph_pids = []
-
-    arroyo_profiles_dir = os.path.join(experiment_output_dir, "arroyo_profiles")
-    os.makedirs(arroyo_profiles_dir, exist_ok=True)
-
-    flamegraph_bin = os.path.expanduser("~/.cargo/bin/flamegraph")
-
-    for pid in arroyo_pids:
-        output_file = os.path.join(
-            arroyo_profiles_dir, "arroyo_worker_{}.svg".format(pid)
-        )
-        cmd = "{} -o {} --pid {} --no-inline".format(flamegraph_bin, output_file, pid)
-        logger.debug("Starting flamegraph for PID {} with command: {}".format(pid, cmd))
-        proc = subprocess.Popen(cmd, shell=True)
-        arroyo_flamegraph_pids.append(proc.pid)
-
-    logger.debug(
-        "Started flamegraph processes with PIDs: {}".format(arroyo_flamegraph_pids)
-    )
-    return arroyo_flamegraph_pids
-
-
-def stop_profiling_arroyo_pids(
-    arroyo_flamegraph_pids, experiment_output_dir, store: bool
-):
-    if not store:
-        for flamegraph_pid in arroyo_flamegraph_pids:
-            try:
-                os.kill(flamegraph_pid, signal.SIGTERM)
-                logger.debug("Killed flamegraph process PID: {}".format(flamegraph_pid))
-            except ProcessLookupError:
-                logger.debug(
-                    "Flamegraph process PID {} already terminated".format(
-                        flamegraph_pid
-                    )
-                )
-    else:
-        for flamegraph_pid in arroyo_flamegraph_pids:
-            try:
-                os.kill(flamegraph_pid, signal.SIGTERM)
-                logger.debug(
-                    "Stopped flamegraph process PID: {}".format(flamegraph_pid)
-                )
-            except ProcessLookupError:
-                logger.debug(
-                    "Flamegraph process PID {} already terminated".format(
-                        flamegraph_pid
-                    )
-                )
-
-    logger.debug("Stopped profiling for arroyo pids")
 
 
 def start_profiling_query_engine_pids(qe_pids, experiment_output_dir):
@@ -386,23 +300,6 @@ def main(args):
         ),
     )
 
-    if args.profile_flink_pids:
-        logger.debug("Starting profiling for flink pids")
-        logger.debug("Checking if profilers are already running. If so, stopping them.")
-        stop_profiling_flink_pids(
-            args.profile_flink_pids, args.experiment_output_dir, store=False
-        )
-        start_profiling_flink_pids(args.profile_flink_pids)
-
-    arroyo_flamegraph_pids = None
-    if args.profile_arroyo_pids:
-        logger.debug("Starting profiling for arroyo pids")
-        logger.debug("Checking if profilers are already running. If so, stopping them.")
-        stop_profiling_arroyo_pids([], args.experiment_output_dir, store=False)
-        arroyo_flamegraph_pids = start_profiling_arroyo_pids(
-            args.profile_arroyo_pids, args.experiment_output_dir
-        )
-
     if args.execution_mode == "prometheus_client":
         # Wait out the precompute/ingest phase while the monitor is already
         # sampling, so a single monitor_output.json captures precompute CPU
@@ -484,18 +381,6 @@ def main(args):
     elif args.execution_mode == "timed":
         logger.debug(f"Running for {args.time_to_run} seconds")
         time.sleep(args.time_to_run)
-
-    if args.profile_flink_pids:
-        logger.debug("Stopping profiling for flink pids")
-        stop_profiling_flink_pids(
-            args.profile_flink_pids, args.experiment_output_dir, store=True
-        )
-
-    if args.profile_arroyo_pids and arroyo_flamegraph_pids:
-        logger.debug("Stopping profiling for arroyo pids")
-        stop_profiling_arroyo_pids(
-            arroyo_flamegraph_pids, args.experiment_output_dir, store=True
-        )
 
     if qe_flamegraph_procs:
         logger.debug("Stopping profiling for query engine pids")
@@ -579,8 +464,6 @@ if __name__ == "__main__":
     )
     parser.add_argument("--profile_query_engine", action="store_true")
     parser.add_argument("--profile_prometheus_time", type=int, required=False)
-    parser.add_argument("--profile_flink_pids", type=str, required=False)
-    parser.add_argument("--profile_arroyo_pids", type=str, required=False)
     parser.add_argument("--time_to_run", type=int, required=False)
     parser.add_argument(
         "--use_container_prometheus_client",
@@ -601,7 +484,7 @@ if __name__ == "__main__":
         "--streaming_engine",
         type=str,
         required=True,
-        help="Streaming engine type (e.g. precompute, arroyo)",
+        help="Streaming engine type (e.g. precompute)",
     )
     parser.add_argument(
         "--backend_protocol",
@@ -631,12 +514,4 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     args.keywords = args.keywords.strip().split(",")
-    if args.profile_flink_pids:
-        args.profile_flink_pids = [
-            int(pid) for pid in args.profile_flink_pids.split(",")
-        ]
-    if args.profile_arroyo_pids:
-        args.profile_arroyo_pids = [
-            int(pid) for pid in args.profile_arroyo_pids.split(",")
-        ]
     main(args)

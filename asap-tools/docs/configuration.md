@@ -195,54 +195,9 @@ to generate scripts, folded stacks, and flamegraphs.
 profiling.prometheus_time=300  # Profile for 5 minutes
 ```
 
-### profiling.flink
-
-**Type:** `bool`
-**Default:** `false`
-**Category:** Monitoring
-**Description:** Enable profiling of Flink worker processes.
-**Captures:** CPU and memory profiles of Flink TaskManager JVMs
-
-**Example:**
-```bash
-profiling.flink=true
-```
-
-**Only applies when:** `streaming.engine=flink`
-
-### profiling.arroyo
-
-**Type:** `bool`
-**Default:** `false`
-**Category:** Monitoring
-**Description:** Enable profiling of Arroyo worker processes.
-**Captures:** CPU profiles of Arroyo pipeline workers
-
-**Example:**
-```bash
-profiling.arroyo=true
-```
-
-**Only applies when:** `streaming.engine=arroyo`
-
 ## Monitoring Options
 
 These options collect performance metrics during the experiment to track system behavior over time.
-
-### throughput.arroyo
-
-**Type:** `bool`
-**Default:** `false`
-**Category:** Monitoring
-**Description:** Track Arroyo pipeline throughput during experiment by polling Arroyo metrics endpoint.
-**Captures:** Metrics/second ingested, sketches/second produced, pipeline lag
-
-**Example:**
-```bash
-throughput.arroyo=true
-```
-
-**Output:** Throughput metrics saved to experiment output directory.
 
 ### throughput.prometheus
 
@@ -338,20 +293,6 @@ docker logs sketchdb-queryengine-rust
 curl http://localhost:8088/api/v1/query?query=...
 ```
 
-### flow.replace_query_engine_with_dumb_consumer
-
-**Type:** `bool`
-**Default:** `false`
-**Category:** Experimental
-**Description:** Replace query engine with simple Kafka consumer for testing sketch output without query processing.
-
-**Example:**
-```bash
-flow.replace_query_engine_with_dumb_consumer=true
-```
-
-**When to use:** Testing streaming engine output in isolation.
-
 ### flow.steady_state_wait
 
 **Type:** `int`
@@ -375,15 +316,14 @@ All streaming engine options are in the `streaming` section.
 ### streaming.engine
 
 **Type:** `string`
-**Default:** `"arroyo"`
+**Default:** `"precompute"`
 **Category:** Deployment
-**Options:** `"flink"`, `"arroyo"`
-**Description:** Streaming engine to use. Arroyo is recommended for production.
+**Options:** `"precompute"`
+**Description:** Streaming engine to use. `precompute` (HTTP remote write into the Rust query engine) is the only supported engine.
 
 **Example:**
 ```bash
-streaming.engine=arroyo  # Use Arroyo (recommended)
-streaming.engine=flink   # Use Flink
+streaming.engine=precompute
 ```
 
 ### streaming.parallelism
@@ -400,64 +340,6 @@ streaming.parallelism=4  # 4 parallel workers
 
 **When to use:** High-throughput scenarios requiring more parallelism.
 
-### streaming.flink_input_format
-
-**Type:** `string`
-**Default:** `"json"`
-**Category:** Experimental
-**Options:** `"json"`, `"avro-json"`, `"avro-binary"`
-**Description:** Data format for streaming input from Kafka.
-
-**Example:**
-```bash
-streaming.flink_input_format=json  # Use JSON (human-readable)
-streaming.flink_input_format=avro-binary  # Use Avro (efficient)
-```
-
-### streaming.flink_output_format
-
-**Type:** `string`
-**Default:** `"json"`
-**Category:** Experimental
-**Options:** `"json"`, `"byte"`
-**Description:** Data format for streaming output to Kafka.
-
-**Example:**
-```bash
-streaming.flink_output_format=json  # Use JSON
-streaming.flink_output_format=byte  # Use binary
-```
-
-### streaming.enable_object_reuse
-
-**Type:** `bool`
-**Default:** `false`
-**Category:** Experimental
-**Description:** Flink optimization - reuse objects to reduce GC pressure.
-
-**Example:**
-```bash
-streaming.enable_object_reuse=true
-```
-
-**When to use:** High-throughput Flink jobs with GC issues.
-**Only applies when:** `streaming.engine=flink`
-
-### streaming.do_local_flink
-
-**Type:** `bool`
-**Default:** `false`
-**Category:** Debugging
-**Description:** Run Flink in local mode (single JVM) for faster iteration during development.
-
-**Example:**
-```bash
-streaming.do_local_flink=true
-```
-
-**When to use:** Developing Flink jobs, want faster startup.
-**Only applies when:** `streaming.engine=flink`
-
 ### streaming.forward_unsupported_queries
 
 **Type:** `bool`
@@ -469,23 +351,6 @@ streaming.do_local_flink=true
 ```bash
 streaming.forward_unsupported_queries=true
 ```
-
-### streaming.use_kafka_ingest
-
-**Type:** `bool`
-**Default:** `false`
-**Category:** Deployment
-**Description:** Use Kafka for metric ingestion (legacy). Default is Prometheus remote write API (recommended).
-
-**Example:**
-```bash
-streaming.use_kafka_ingest=false  # Use remote write (recommended)
-streaming.use_kafka_ingest=true   # Use Kafka (legacy)
-```
-
-**Data flow comparison:**
-- Remote write: `Exporters → Prometheus → RemoteWrite API → Arroyo`
-- Kafka: `Exporters → Prometheus → KafkaAdapter → Kafka → Flink/Arroyo`
 
 ### streaming.remote_write.ip
 
@@ -674,18 +539,6 @@ use_container.query_engine=false  # Run as bare-metal binary
 
 **When to use false:** Debugging query engine, want direct access to binary.
 
-### use_container.arroyo
-
-**Type:** `bool`
-**Default:** `true`
-**Category:** Deployment
-**Description:** Deploy Arroyo as Docker container vs bare-metal.
-
-**Example:**
-```bash
-use_container.arroyo=false  # Run bare-metal
-```
-
 ### use_container.controller
 
 **Type:** `bool`
@@ -826,7 +679,7 @@ remote_write_ip: ${remote_write_ip:${cloudlab.node_offset}}
 python experiment_run_e2e.py ... logging.level=DEBUG
 
 # Override nested parameter
-python experiment_run_e2e.py ... streaming.engine=flink
+python experiment_run_e2e.py ... streaming.parallelism=2
 
 # Override deeply nested parameter
 python experiment_run_e2e.py ... experiment_params.query_groups.0.client_options.repetitions=20
@@ -836,15 +689,6 @@ python experiment_run_e2e.py ... \
   logging.level=DEBUG \
   flow.no_teardown=true \
   streaming.parallelism=4
-```
-
-### Using Config Groups
-
-Load additional config groups:
-
-```bash
-# Apply overrides from docs/overrides/arroyo.yaml
-python experiment_run_e2e.py ... +overrides=arroyo
 ```
 
 ## Parameter Dependencies and Constraints

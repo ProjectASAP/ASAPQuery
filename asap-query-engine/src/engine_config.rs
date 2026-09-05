@@ -1,27 +1,7 @@
 use asap_types::enums::QueryLanguage;
-use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
+use query_engine_rust::data_model::enums::{LockStrategy, StreamingEngine};
 
 pub fn check_config(config: &EngineConfig) -> Result<(), String> {
-    match (&config.ingest, &config.streaming_engine) {
-        (IngestConfig::Kafka { .. }, StreamingEngine::Arroyo) => {}
-        (
-            IngestConfig::HttpRemoteWrite { .. }
-            | IngestConfig::Csv { .. }
-            | IngestConfig::Json { .. },
-            StreamingEngine::Precompute,
-        ) => {}
-        (IngestConfig::Otlp { .. }, StreamingEngine::Arroyo) => {}
-        (IngestConfig::Otlp { .. }, StreamingEngine::Precompute) => {
-            return Err("ingest.type=otlp requires streaming_engine=arroyo (precompute engine does not apply to OTLP)".into());
-        }
-        (IngestConfig::Kafka { .. }, StreamingEngine::Precompute) => {
-            return Err("ingest.type=kafka requires streaming_engine=arroyo".into());
-        }
-        (_, StreamingEngine::Arroyo) => {
-            return Err("streaming_engine=arroyo requires ingest.type=kafka".into());
-        }
-    }
-
     if let IngestConfig::Csv {
         timestamp_col: None,
         ts_step_ms: None,
@@ -265,14 +245,6 @@ pub enum IngestConfig {
         #[serde(default = "default_http_remote_write_port")]
         port: u16,
     },
-    Kafka {
-        #[serde(default = "default_kafka_broker")]
-        broker: String,
-        topic: String,
-        input_format: InputFormat,
-        #[serde(default)]
-        decompress_json: bool,
-    },
     Csv {
         path: String,
         metric_name: String,
@@ -318,10 +290,6 @@ fn default_http_remote_write_port() -> u16 {
     9090
 }
 
-fn default_kafka_broker() -> String {
-    "localhost:9092".to_string()
-}
-
 fn default_csv_batch_size() -> usize {
     1000
 }
@@ -350,7 +318,6 @@ pub struct PrecomputeSettings {
     pub max_buffer_per_series: usize,
     pub flush_interval_ms: u64,
     pub channel_buffer_size: usize,
-    pub dump_precomputes: bool,
     /// Wall-clock grace period (ms) for the flush fallback that force-closes
     /// idle windows when event-time stagnates (e.g. one-shot batch ingest
     /// where every record shares a timestamp). Set to <= 0 to disable and
@@ -367,7 +334,6 @@ impl Default for PrecomputeSettings {
             max_buffer_per_series: 10000,
             flush_interval_ms: 1000,
             channel_buffer_size: 10000,
-            dump_precomputes: false,
             wall_clock_grace_period_ms: 5000,
         }
     }
@@ -430,48 +396,7 @@ output_dir: "./output"
     }
 
     #[test]
-    fn check_config_valid_kafka_arroyo() {
-        let yaml = r#"
-streaming_engine: "arroyo"
-ingest:
-  type: "kafka"
-  topic: "my-topic"
-  input_format: "json"
-output_dir: "./output"
-"#;
-        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
-        assert!(check_config(&config).is_ok());
-    }
-
-    #[test]
-    fn check_config_rejects_kafka_with_precompute() {
-        let yaml = r#"
-streaming_engine: "precompute"
-ingest:
-  type: "kafka"
-  topic: "t"
-  input_format: "json"
-output_dir: "./output"
-"#;
-        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
-        assert!(check_config(&config).is_err());
-    }
-
-    #[test]
-    fn check_config_rejects_http_with_arroyo() {
-        let yaml = r#"
-streaming_engine: "arroyo"
-ingest:
-  type: "http_remote_write"
-  port: 9090
-output_dir: "./output"
-"#;
-        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
-        assert!(check_config(&config).is_err());
-    }
-
-    #[test]
-    fn check_config_rejects_otlp_with_precompute() {
+    fn check_config_valid_otlp_precompute() {
         let yaml = r#"
 streaming_engine: "precompute"
 ingest:
@@ -479,7 +404,7 @@ ingest:
 output_dir: "./output"
 "#;
         let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
-        assert!(check_config(&config).is_err());
+        assert!(check_config(&config).is_ok());
     }
 
     #[test]
@@ -525,18 +450,6 @@ ingest:
   label_cols: ["OS", "RegionID"]
   timestamp_col: "EventTime"
   timestamp_unit: "seconds"
-output_dir: "./output"
-"#;
-        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
-        assert!(check_config(&config).is_ok());
-    }
-
-    #[test]
-    fn check_config_valid_otlp_arroyo() {
-        let yaml = r#"
-streaming_engine: "arroyo"
-ingest:
-  type: "otlp"
 output_dir: "./output"
 "#;
         let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();

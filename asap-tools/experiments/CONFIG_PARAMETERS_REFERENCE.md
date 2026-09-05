@@ -54,7 +54,7 @@ These parameters must be provided for all experiment scripts:
 - **Example**: `"/path/to/prometheus/config"`
 - **Validation**: Directory must exist and be readable
 - **Required by**: `experiment_run_e2e.py`, `experiment_run_e2e_no_queryengine.py`
-- **Not required by**: `experiment_run_exporters_and_prometheus.py`, `experiment_run_empty_flink.py`
+- **Not required by**: `experiment_run_exporters_and_prometheus.py`
 
 ---
 
@@ -83,18 +83,6 @@ These parameters must be provided for all experiment scripts:
 - **Range**: 1-3600 seconds
 - **Example**: `60`
 - **Usage**: Profiles Prometheus for specified duration
-
-#### `profiling.flink` (boolean, optional)
-- **Description**: Enable profiling for Flink streaming engine
-- **Default**: `false`
-- **Example**: `true`
-- **Usage**: Enables Flink JVM profiling
-
-#### `profiling.arroyo` (boolean, optional)
-- **Description**: Enable profiling for Arroyo streaming engine
-- **Default**: `false`
-- **Example**: `true`
-- **Usage**: Enables Arroyo profiling when using Arroyo engine
 
 ---
 
@@ -137,35 +125,9 @@ These parameters must be provided for all experiment scripts:
 #### `streaming.engine` (string, optional)
 - **Description**: Which streaming engine to use
 - **Default**: `"precompute"`
-- **Choices**: `"flink"`, `"arroyo"`, `"precompute"`
+- **Choices**: `"precompute"`
 - **Example**: `"precompute"`
 - **Usage**: Selects streaming processing framework
-
-#### `streaming.flink_input_format` (string, optional)
-- **Description**: Input data format for Flink
-- **Default**: `"json"`
-- **Choices**: `"json"`, `"avro-json"`, `"avro-binary"`
-- **Example**: `"avro-json"`
-- **Usage**: Controls Flink data deserialization
-
-#### `streaming.flink_output_format` (string, optional)
-- **Description**: Output data format for Flink
-- **Default**: `"json"`
-- **Choices**: `"json"`, `"byte"`
-- **Example**: `"byte"`
-- **Usage**: Controls Flink data serialization
-
-#### `streaming.enable_object_reuse` (boolean, optional)
-- **Description**: Enable object reuse optimization in streaming engine
-- **Default**: `false`
-- **Example**: `true`
-- **Usage**: Performance optimization for high-throughput scenarios
-
-#### `streaming.do_local_flink` (boolean, optional)
-- **Description**: Run Flink locally instead of on CloudLab cluster
-- **Default**: `false`
-- **Example**: `true`
-- **Usage**: Development mode for local testing
 
 #### `streaming.forward_unsupported_queries` (boolean, optional)
 - **Description**: Forward unsupported queries to Prometheus
@@ -374,35 +336,6 @@ monitoring:
 - **Description**: Aggregation function to apply
 - **Choices**: `"sum"`, `"avg"`, `"count"`, `"min"`, `"max"`
 - **Example**: `"sum"`
-
-### For experiment_run_flink_with_different_num_aggregations.py
-
-#### `experiment_variants.flink_aggregations.aggregation_id` (int, required)
-- **Description**: ID of the aggregation query to duplicate for testing
-- **Range**: 0 to number of queries - 1
-- **Example**: `0`
-
-#### `experiment_variants.flink_aggregations.min_aggregations` (int, required)
-- **Description**: Minimum number of aggregations to test
-- **Range**: 1-100
-- **Example**: `1`
-
-#### `experiment_variants.flink_aggregations.max_aggregations` (int, required)
-- **Description**: Maximum number of aggregations to test
-- **Range**: min_aggregations to 1000
-- **Example**: `10`
-- **Constraint**: Must be >= min_aggregations
-
-#### `experiment_variants.flink_aggregations.profile_duration` (int, optional)
-- **Description**: Seconds to run Flink before starting profiling
-- **Default**: `300`
-- **Range**: 60-3600 seconds
-- **Example**: `120`
-
-#### `experiment_variants.flink_aggregations.config` (string, required)
-- **Description**: Path to base configuration file for aggregation testing
-- **Example**: `"/path/to/base_config.yaml"`
-- **Validation**: File must exist and be valid YAML
 
 ---
 
@@ -739,8 +672,8 @@ python experiment_run_e2e.py \
 # Override streaming engine
 python experiment_run_e2e.py \
   experiment_type=cloud_demo \
-  streaming.engine=arroyo \
-  streaming.enable_object_reuse=true \
+  streaming.engine=precompute \
+  streaming.parallelism=4 \
   [required params...]
 ```
 
@@ -751,7 +684,6 @@ python experiment_run_e2e.py \
   providers.cloudlab.num_nodes=2 \
   logging.level=DEBUG \
   flow.steady_state_wait=60 \
-  streaming.do_local_flink=true \
   [required params...]
 ```
 

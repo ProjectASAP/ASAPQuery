@@ -59,8 +59,6 @@ struct Args {
 
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
 enum EngineArg {
-    Arroyo,
-    Flink,
     Precompute,
 }
 
@@ -76,8 +74,6 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let engine = match args.streaming_engine {
-        EngineArg::Arroyo => StreamingEngine::Arroyo,
-        EngineArg::Flink => StreamingEngine::Flink,
         EngineArg::Precompute => StreamingEngine::Precompute,
     };
 

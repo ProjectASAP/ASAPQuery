@@ -1057,9 +1057,9 @@ The only network hops in the system are at the edges: HTTP ingest (in) and
 HTTP query (out). Serialization of accumulators only happens on the read path
 when query results are returned to clients.
 
-This is in contrast to the external Kafka ingest path, where precomputes from
-Arroyo/Flink arrive hex-encoded + gzip-compressed + MessagePack-serialized and
-require multiple deserialization steps.
+This was in contrast to the old external Kafka ingest path (now removed),
+where precomputes from Arroyo/Flink arrived hex-encoded + gzip-compressed +
+MessagePack-serialized and required multiple deserialization steps.
 
 The `SimpleMapStore` (PerKey variant) uses:
 ```
@@ -1184,8 +1184,7 @@ cargo run --bin precompute_engine -- \
 ### Embedded in main binary
 
 The precompute engine is also embedded in the main `query_engine_rust` binary,
-enabled via `--enable-prometheus-remote-write`. In this mode it shares the
-store with the Kafka consumer path.
+enabled via `streaming_engine: precompute` in the engine config.
 
 ## 11. Testing
 

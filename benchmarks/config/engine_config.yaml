@@ -24,7 +24,6 @@ precompute_engine:
   max_buffer_per_series: 10000
   flush_interval_ms: 1000
   channel_buffer_size: 10000
-  dump_precomputes: false
 
 query_tracker:
   enabled: false

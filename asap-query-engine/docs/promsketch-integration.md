@@ -4,7 +4,7 @@
 
 QueryEngine supports two parallel data ingestion paths:
 
-1. **Precomputed pipeline**: A Kafka topic carrying pre-aggregated sketch buckets is consumed by `KafkaConsumer`, stored in `SimpleMapStore`, and served through the standard query path.
+1. **Precomputed pipeline**: The precompute engine receives Prometheus remote write directly, builds pre-aggregated sketch buckets in-process, stores them in `SimpleMapStore`, and serves them through the standard query path.
 2. **Raw sample pipeline (Prometheus Remote Write)**: A standalone HTTP endpoint (`/api/v1/write`) accepts standard Prometheus remote write requests (Snappy-compressed protobuf). Decoded samples are inserted into `PromSketchStore` (which maintains live EHUniv, EHKLL, and USampling sketch instances per series) and served through the sketch query path.
 
 When a query arrives, the engine tries the sketch path first, then falls through to the precomputed path, and finally (optionally) to a remote Prometheus server.
@@ -20,7 +20,8 @@ Raw Samples Path (Prometheus Remote Write):
                                                                    (EHUniv, EHKLL, USampling)
 
 Precomputed Path:
-  Prometheus --> PrecomputeEngine --> Kafka [precomputed] --> KafkaConsumer --> SimpleMapStore
+  Prometheus --> POST /api/v1/write --> PrecomputeEngine --> SimpleMapStore
+                                        (builds sketches in-process)
 
 Query Path:
   HTTP Request --> SimpleEngine

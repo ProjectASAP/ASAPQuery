@@ -5,10 +5,10 @@ use std::path::Path;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-fn arroyo_opts() -> RuntimeOptions {
+fn default_opts() -> RuntimeOptions {
     RuntimeOptions {
         data_ingestion_interval_ms: 15_000,
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         enable_punting: false,
         range_duration_ms: 0,
         step_ms: 0,
@@ -33,7 +33,7 @@ fn config_file_sliding_window_override_generates_per_query_candidates() {
     let controller = Controller::from_file_with_schema(
         Path::new("tests/test_data/windowing/promql_sliding.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -73,7 +73,7 @@ windowing:
 query_groups: []
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     );
     let error = match result {
         Ok(_) => panic!("sliding config without a divisor should be rejected"),
@@ -110,7 +110,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -143,7 +143,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -167,7 +167,7 @@ windowing:
 query_groups: []
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     );
     let error = match result {
         Ok(_) => panic!("sliding config with divisor 1 should be rejected"),
@@ -190,7 +190,7 @@ windowing:
 query_groups: []
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     );
     let error = match result {
         Ok(_) => panic!("tumbling config with a divisor should be rejected"),
@@ -219,7 +219,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -256,7 +256,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -284,7 +284,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -332,7 +332,7 @@ fn query_log_instant_produces_valid_configs() {
     let c = Controller::from_query_log_with_schema(
         Path::new("tests/comparison/test_data/query_logs/instant_only.log"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -345,7 +345,7 @@ fn query_log_range_produces_valid_configs() {
     let c = Controller::from_query_log_with_schema(
         Path::new("tests/comparison/test_data/query_logs/range_only.log"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -358,7 +358,7 @@ fn query_log_single_occurrence_excluded() {
     let c = Controller::from_query_log_with_schema(
         Path::new("tests/comparison/test_data/query_logs/single_occurrence.log"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -371,7 +371,7 @@ fn query_log_malformed_lines_skipped() {
     let c = Controller::from_query_log_with_schema(
         Path::new("tests/comparison/test_data/query_logs/with_malformed.log"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -384,7 +384,7 @@ fn query_log_output_files_written() {
     let c = Controller::from_query_log_with_schema(
         Path::new("tests/comparison/test_data/query_logs/instant_only.log"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     c.generate_to_dir(dir.path()).unwrap();
@@ -399,7 +399,7 @@ fn quantile_over_time_produces_kll() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/quantile_over_time.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -413,7 +413,7 @@ fn rate_produces_multiple_increase_only() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/rate_increase.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -426,7 +426,7 @@ fn only_spatial_window_equals_scrape_interval() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/spatial_quantile.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -438,7 +438,7 @@ fn duplicate_aggregation_configs_are_deduped() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/deduplicated.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -451,7 +451,7 @@ fn topk_produces_count_min_sketch_with_heap() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/topk.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -479,7 +479,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -531,7 +531,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -563,7 +563,7 @@ fn range_query_uses_effective_repeat() {
     let opts = RuntimeOptions {
         range_duration_ms: 3_600_000,
         step_ms: 30_000,
-        ..arroyo_opts()
+        ..default_opts()
     };
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/range_query.yaml"),
@@ -581,7 +581,7 @@ fn output_files_written_to_dir() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/mixed_workload.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     c.generate_to_dir(dir.path()).unwrap();
@@ -596,7 +596,7 @@ fn rate_tumbling_window_size_equals_effective_repeat() {
     let opts = RuntimeOptions {
         range_duration_ms: 3_600_000,
         step_ms: 30_000,
-        ..arroyo_opts()
+        ..default_opts()
     };
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/rate_increase.yaml"),
@@ -614,7 +614,7 @@ fn increase_tumbling_window_size_equals_effective_repeat() {
     let opts = RuntimeOptions {
         range_duration_ms: 3_600_000,
         step_ms: 30_000,
-        ..arroyo_opts()
+        ..default_opts()
     };
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/increase.yaml"),
@@ -633,7 +633,7 @@ fn quantile_over_time_tumbling_window_size_equals_effective_repeat() {
     let opts = RuntimeOptions {
         range_duration_ms: 3_600_000,
         step_ms: 30_000,
-        ..arroyo_opts()
+        ..default_opts()
     };
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/quantile_over_time.yaml"),
@@ -652,7 +652,7 @@ fn sum_over_time_produces_count_min_sketch_with_delta_set() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/sum_over_time.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -666,7 +666,7 @@ fn sum_by_produces_count_min_sketch_with_delta_set() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/sum_by.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -681,7 +681,7 @@ fn sum_by_rollup_excludes_groupby_labels() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/sum_by.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -710,7 +710,7 @@ aggregate_cleanup:
     // Invalid policy is now caught at deserialization time (YamlParse) rather than at
     // generate() time (PlannerError), since the field is typed as Option<CleanupPolicy>.
     assert!(matches!(
-        Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts()),
+        Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts()),
         Err(ControllerError::YamlParse(_))
     ));
 }
@@ -728,7 +728,8 @@ query_groups:
       accuracy_sla: 0.99
       latency_sla: 1.0
 "#;
-    let c = Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts()).unwrap();
+    let c =
+        Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts()).unwrap();
     assert!(matches!(
         c.generate(),
         Err(ControllerError::DuplicateQuery(_))
@@ -754,7 +755,8 @@ query_groups:
       accuracy_sla: 0.99
       latency_sla: 1.0
 "#;
-    let c = Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts()).unwrap();
+    let c =
+        Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts()).unwrap();
     assert!(matches!(
         c.generate(),
         Err(ControllerError::DuplicateQuery(_))
@@ -775,7 +777,8 @@ query_groups:
       latency_sla: 1.0
 "#;
     // Schema only knows about http_requests_total, not unknown_metric.
-    let c = Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts()).unwrap();
+    let c =
+        Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts()).unwrap();
     let out = c.generate().unwrap();
     assert_eq!(out.inference_query_count(), 0);
     assert_eq!(out.streaming_aggregation_count(), 0);
@@ -784,7 +787,7 @@ query_groups:
 #[test]
 fn malformed_yaml_returns_parse_error() {
     let result =
-        Controller::from_yaml_with_schema("{ invalid yaml :", PromQLSchema::new(), arroyo_opts());
+        Controller::from_yaml_with_schema("{ invalid yaml :", PromQLSchema::new(), default_opts());
     assert!(matches!(result, Err(ControllerError::YamlParse(_))));
 }
 
@@ -802,7 +805,7 @@ metrics:
   - metric: "http_requests_total"
     labels: ["instance"]
 "#;
-    let result = Controller::from_yaml_with_schema(yaml, http_requests_schema(), arroyo_opts());
+    let result = Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts());
     assert!(result.is_ok());
 }
 
@@ -817,7 +820,7 @@ fn temporal_overlapping_window_size_equals_t_repeat() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -831,7 +834,7 @@ fn temporal_overlapping_all_function_types_present() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -847,7 +850,7 @@ fn temporal_overlapping_cleanup_param_equals_range_over_repeat() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -876,7 +879,7 @@ fn binary_arithmetic_produces_two_leaf_configs() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic.yaml"),
         binary_arithmetic_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -891,7 +894,7 @@ fn binary_arithmetic_deduplicates_shared_arm() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_dedup.yaml"),
         binary_arithmetic_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -906,7 +909,7 @@ fn nested_binary_arithmetic_produces_three_leaf_configs() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_nested.yaml"),
         nested_binary_arithmetic_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -919,7 +922,7 @@ fn binary_arithmetic_scalar_constant_produces_one_leaf_config() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_scalar.yaml"),
         binary_arithmetic_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -933,7 +936,7 @@ fn binary_arithmetic_with_non_acceleratable_arm_produces_no_configs() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/binary_arithmetic_non_acceleratable.yaml"),
         binary_arithmetic_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -966,7 +969,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         binary_arithmetic_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -1001,7 +1004,7 @@ query_groups:
       latency_sla: 1.0
 "#,
         binary_arithmetic_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
 
@@ -1020,7 +1023,7 @@ fn temporal_overlapping_rate_increase_deduped() {
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/temporal_overlapping.yaml"),
         http_requests_schema(),
-        arroyo_opts(),
+        default_opts(),
     )
     .unwrap();
     let out = c.generate().unwrap();
@@ -1039,7 +1042,7 @@ fn sub_second_scrape_interval_window_size_equals_scrape_interval() {
     // 100ms would be indistinguishable from 0 under the old seconds-only model.
     let opts = RuntimeOptions {
         data_ingestion_interval_ms: 100,
-        ..arroyo_opts()
+        ..default_opts()
     };
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/spatial_quantile.yaml"),
@@ -1058,7 +1061,7 @@ fn sub_second_scrape_interval_round_trips_through_generated_yaml() {
     // rounded or truncated.
     let opts = RuntimeOptions {
         data_ingestion_interval_ms: 100,
-        ..arroyo_opts()
+        ..default_opts()
     };
     let c = Controller::from_file_with_schema(
         Path::new("tests/comparison/test_data/configs/spatial_quantile.yaml"),

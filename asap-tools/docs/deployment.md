@@ -54,8 +54,6 @@ The script executes these phases in order:
 - Installs third-party software:
   - Common dependencies (Python 3.11, Rust, Go, Docker)
   - Prometheus v2.53.2
-  - Kafka v3.8.0
-  - Flink v1.20.0
   - Grafana
   - Benchmark tools and exporters
 
@@ -65,8 +63,6 @@ The script executes these phases in order:
   - asap-common (base Docker image)
   - asap-query-engine (Rust binary + Docker image)
   - asap-planner-rs (Rust binary + Docker image)
-  - Arroyo (Node.js frontend + Rust binary + Docker image)
-  - asap-summary-ingest (Python scripts)
   - asap-tools/queriers/prometheus-client, asap-tools/data-sources/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
 
 ### Directory Structure Created
@@ -77,13 +73,9 @@ The script executes these phases in order:
 │   ├── asap-tools/
 │   ├── asap-query-engine/
 │   ├── asap-planner-rs/
-│   ├── asap-summary-ingest/
-│   ├── arroyo/
 │   ├── asap-common/
 │   └── asap-tools/prometheus-benchmark/
 ├── prometheus/                     # Prometheus binaries
-├── kafka/                          # Kafka installation
-├── flink/                          # Flink installation
 └── experiment_outputs/             # Experiment results
 ```
 
@@ -148,7 +140,6 @@ asap-common
 asap_sketchlib
 asap-query-engine
 asap-planner-rs
-asap-summary-ingest
 asap-quickstart
 asap-tools/data-sources/prometheus-exporters
 asap-tools/queriers/prometheus-client
@@ -157,9 +148,7 @@ asap-tools/execution-utilities
 
 **Deprecated Components (commented out):**
 ```bash
-# FlinkSketch               # Legacy Flink implementation
 # QueryEngine               # Python version (replaced by Rust)
-# prometheus-kafka-adapter  # Legacy Kafka adapter
 ```
 
 ### Component Structure
@@ -216,24 +205,11 @@ These are third-party software installed from source or packages:
 - Extracted to `/scratch/prometheus/`
 - Configured with custom scrape configs per experiment
 
-#### 3. Kafka v3.8.0
-- Downloaded from Apache mirrors
-- Configured in KRaft mode (no ZooKeeper)
-- Settings:
-  - Log retention: 10 minutes
-  - Max message size: 10 MB
-  - Replication factor: 1
-
-#### 4. Flink v1.20.0
-- Downloaded from Apache mirrors
-- Extracted to `/scratch/flink/`
-- Configured for cluster mode
-
-#### 5. Grafana
+#### 3. Grafana
 - Installed via setup scripts
 - Used for visualization dashboards
 
-#### 6. Benchmarks & Exporters
+#### 4. Benchmarks & Exporters
 - Avalanche (high-cardinality load generator)
 - prometheus-benchmark tools
 - asprof (profiling tools)
@@ -271,46 +247,11 @@ docker build . -f Dockerfile -t sketchdb-controller:latest
 ```
 **Deployment:** Docker container only
 
-#### 4. arroyo
-**What:** Streaming engine for processing metrics and building sketches
-**Build Process:**
-```bash
-cd arroyo
-# Install Node.js 18 via NVM
-nvm install 18
-# Install pnpm
-npm install -g pnpm
-# Build frontend
-cd crates/arroyo-console
-pnpm install
-pnpm build
-cd ../..
-# Compile Rust binary
-cargo build --release
-# Build Docker image
-docker build -t arroyo-full:latest .
-# Install refinery CLI for migrations
-cargo install refinery_cli
-```
-**Components:**
-- PostgreSQL database (for metadata)
-- Web console (Node.js/React frontend)
-- Controller and workers (Rust binaries)
-
-#### 5. asap-summary-ingest
-**What:** Python scripts for deploying asap-summary-ingest pipelines
-**Build Process:**
-```bash
-cd asap-summary-ingest
-pip install -r requirements.txt  # jinja2 for templating
-```
-**Deployment:** Python scripts, no Docker image
-
-#### 6. asap-tools/queriers/prometheus-client
+#### 4. asap-tools/queriers/prometheus-client
 **What:** Client for executing PromQL queries against Prometheus or SketchDB
 **Build Process:** Language-specific (Python or Rust)
 
-#### 7. asap-tools/data-sources/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
+#### 5. asap-tools/data-sources/prometheus-exporters, asap-tools/execution-utilities, asap-tools/prometheus-benchmark
 **What:** Various testing and monitoring tools
 **Build Process:** Component-specific
 

@@ -3,7 +3,7 @@
 # Usage:
 #   query-engine-rust --config-file engine_config.yaml
 #   query-engine-rust --config-file engine_config.yaml precompute_engine.num_workers=8
-#   query-engine-rust --config-file engine_config.yaml http_server.port=9000 ingest.topic=new-topic
+#   query-engine-rust --config-file engine_config.yaml http_server.port=9000 ingest.port=9091
 
 # ---------------------------------------------------------------------------
 # Core
@@ -15,10 +15,8 @@ log_level: "INFO"                # DEBUG | INFO | WARN | ERROR (also respects RU
 # Data ingestion interval in milliseconds. Used by the query tracker and planner.
 data_ingestion_interval_ms: 15000
 
-# Processing backend. Must be consistent with the ingest source chosen below:
-#   arroyo     → requires ingest.type=kafka
-#   precompute → requires ingest.type=http_remote_write or csv
-streaming_engine: "precompute"   # arroyo | precompute
+# Processing backend. Only one value exists today.
+streaming_engine: "precompute"
 
 # ---------------------------------------------------------------------------
 # HTTP query server
@@ -70,21 +68,12 @@ store:
 
 # ---------------------------------------------------------------------------
 # Ingest source — choose exactly one type.
-# streaming_engine must match the chosen type (see above).
 # ---------------------------------------------------------------------------
 
 # HTTP remote write (Prometheus remote write protocol):
 ingest:
   type: "http_remote_write"
   port: 9090
-
-# Kafka:
-# ingest:
-#   type: "kafka"
-#   broker: "localhost:9092"
-#   topic: "my-topic"
-#   input_format: "json"         # json | byte
-#   decompress_json: false
 
 # CSV file:
 # ingest:
@@ -99,8 +88,8 @@ ingest:
 #   batch_size: 1000
 
 # OTLP (OpenTelemetry metrics — gRPC + HTTP):
-# Requires streaming_engine: "arroyo". No precompute or Kafka path is used for OTLP;
-# the receiver runs as a standalone gRPC/HTTP server.
+# The receiver runs as a standalone gRPC/HTTP server, independent of the
+# precompute engine.
 # ingest:
 #   type: "otlp"
 #   grpc_port: 4317
@@ -116,7 +105,6 @@ precompute_engine:
   max_buffer_per_series: 10000   # max buffered samples per series before eviction
   flush_interval_ms: 1000        # how often the flush timer fires
   channel_buffer_size: 10000     # capacity of router-to-worker channels
-  dump_precomputes: false        # dump received precomputes to output_dir for debugging
 
 # ---------------------------------------------------------------------------
 # Query tracker / planner (optional — Prometheus backend only)

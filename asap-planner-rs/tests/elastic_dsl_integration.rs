@@ -54,7 +54,7 @@ fn try_elastic_with_interval(
     let mut file = NamedTempFile::new().unwrap();
     file.write_all(yaml.as_bytes()).unwrap();
     let opts = ElasticRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         data_ingestion_interval_ms,
     };
     ElasticController::from_file(Path::new(file.path()), opts)?.generate()
@@ -72,7 +72,7 @@ fn elastic_output_with_interval(
     file.write_all(yaml.as_bytes()).unwrap();
 
     let opts = ElasticRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         data_ingestion_interval_ms,
     };
 
@@ -114,7 +114,7 @@ fn assert_index_schema(
 #[test]
 fn elastic_querydsl_emits_index_schema() {
     let opts = ElasticRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         data_ingestion_interval_ms: 15_000,
     };
     let c = ElasticController::from_file(Path::new("tests/elastic_example.yaml"), opts).unwrap();
@@ -438,7 +438,7 @@ aggregate_cleanup:
     file.write_all(yaml.as_bytes()).unwrap();
 
     let opts = ElasticRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         data_ingestion_interval_ms: 15_000,
     };
 

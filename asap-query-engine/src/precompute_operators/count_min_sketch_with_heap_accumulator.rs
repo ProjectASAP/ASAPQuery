@@ -82,15 +82,6 @@ impl CountMinSketchWithHeapAccumulator {
         })
     }
 
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self {
-            inner: CountMinSketchWithHeap::from_msgpack(buffer)
-                .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?,
-        })
-    }
-
     pub fn deserialize_from_bytes(_buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         Err("deserialize_from_bytes for CountMinSketchWithHeapAccumulator not implemented".into())
     }
@@ -317,43 +308,6 @@ mod tests {
         let result = CountMinSketchWithHeapAccumulator::merge_accumulators(vec![cms1, cms2]);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("dimension"));
-    }
-
-    #[test]
-    fn test_count_min_sketch_with_heap_serialization() {
-        // Use from_legacy_matrix for a controlled state that round-trips correctly with both backends.
-        let sketch = vec![vec![0.0, 42.0, 0.0], vec![0.0, 0.0, 100.0]];
-        let topk_heap = vec![CmsHeapItem {
-            key: "test_key".to_string(),
-            value: 99.0,
-        }];
-        let cms = CountMinSketchWithHeapAccumulator {
-            inner: CountMinSketchWithHeap::from_legacy_matrix(sketch, topk_heap, 2, 3, 5),
-        };
-
-        let bytes = cms.serialize_to_bytes().unwrap();
-        let deserialized =
-            CountMinSketchWithHeapAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
-
-        assert_eq!(deserialized.inner.rows(), 2);
-        assert_eq!(deserialized.inner.cols(), 3);
-        assert_eq!(deserialized.inner.heap_size, 5);
-        assert_eq!(deserialized.inner.sketch_matrix()[0][1], 42.0);
-        // [1][2] may be 100 (legacy, no hash collision) or 199 (100+99 when test_key hashes there)
-        assert!(
-            deserialized.inner.sketch_matrix()[1][2] >= 100.0,
-            "expected >= 100, got {}",
-            deserialized.inner.sketch_matrix()[1][2]
-        );
-        assert_eq!(deserialized.inner.topk_heap_items().len(), 1);
-        assert_eq!(deserialized.inner.topk_heap_items()[0].key, "test_key");
-        // With sketchlib backend, heap stores CMS estimate (min over buckets for key).
-        // "test_key" may hash to (0,1) and (1,2) giving min(42,100)=42, or other values.
-        assert!(
-            deserialized.inner.topk_heap_items()[0].value >= 42.0,
-            "expected >= 42, got {}",
-            deserialized.inner.topk_heap_items()[0].value
-        );
     }
 
     #[test]

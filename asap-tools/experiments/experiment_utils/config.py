@@ -559,11 +559,8 @@ class Args:
         # Profiling options
         self.profile_query_engine = cfg.profiling.query_engine
         self.profile_prometheus_time = cfg.profiling.prometheus_time
-        self.profile_flink = cfg.profiling.flink
-        self.profile_arroyo = cfg.profiling.arroyo
 
         # Throughput monitoring options
-        self.throughput_arroyo = cfg.throughput.arroyo
         self.throughput_prometheus = cfg.throughput.prometheus
 
         # Health check monitoring options
@@ -580,12 +577,7 @@ class Args:
         # Streaming engine configuration
         self.streaming_engine = cfg.streaming.engine
         self.parallelism = cfg.streaming.parallelism
-        self.flink_input_format = cfg.streaming.flink_input_format
-        self.flink_output_format = cfg.streaming.flink_output_format
-        self.enable_object_reuse = cfg.streaming.enable_object_reuse
-        self.do_local_flink = cfg.streaming.do_local_flink
         self.forward_unsupported_queries = cfg.streaming.forward_unsupported_queries
-        self.use_kafka_ingest = cfg.streaming.use_kafka_ingest
         # Remote write configuration (self.remote_write_ip set above, near
         # provider construction)
         self.remote_write_base_port = cfg.streaming.remote_write.base_port
@@ -597,7 +589,6 @@ class Args:
         self.backend = OmegaConf.to_container(cfg.backend, resolve=True)
 
         # Query engine options
-        self.dump_precomputes = cfg.query_engine.dump_precomputes
         self.lock_strategy = cfg.query_engine.lock_strategy
 
         # Controller configuration
@@ -610,7 +601,6 @@ class Args:
 
         # Container configuration
         self.use_container_query_engine = cfg.use_container.query_engine
-        self.use_container_arroyo = cfg.use_container.arroyo
         self.use_container_controller = cfg.use_container.controller
         self.use_container_fake_exporter = cfg.use_container.fake_exporter
         self.use_container_prometheus_client = cfg.use_container.prometheus_client

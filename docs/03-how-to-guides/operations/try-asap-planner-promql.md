@@ -68,8 +68,7 @@ asap-planner \
   -v
 ```
 
-- `--streaming_engine` just needs a valid value (`precompute`, `arroyo`, or `flink`) — none are
-  actually started.
+- `--streaming_engine` just needs a valid value (`precompute`) — nothing is actually started.
 - `-v` logs which queries were skipped and why.
 - Optional: add `--prometheus-url http://localhost:9090` to auto-infer label sets from a live
   Prometheus instead of hand-listing them under `metrics`.

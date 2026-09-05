@@ -150,26 +150,6 @@ impl DeltaSetAggregatorAccumulator {
 
         Ok(Self { added, removed })
     }
-
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        // Delegate to sketch-core canonical DeltaResult msgpack format
-        let delta = DeltaResult::from_msgpack(buffer)
-            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
-
-        let mut added = HashSet::new();
-        for item in &delta.added {
-            added.insert(KeyByLabelValues::from_semicolon_str(item));
-        }
-
-        let mut removed = HashSet::new();
-        for item in &delta.removed {
-            removed.insert(KeyByLabelValues::from_semicolon_str(item));
-        }
-
-        Ok(Self { added, removed })
-    }
 }
 
 impl Default for DeltaSetAggregatorAccumulator {
@@ -466,25 +446,6 @@ mod tests {
                 i + 1
             );
         }
-    }
-
-    #[test]
-    fn test_delta_set_aggregator_serialization() {
-        let mut acc = DeltaSetAggregatorAccumulator::new();
-        let key1 = create_test_key("web");
-        let key2 = create_test_key("api");
-        acc.add_key(key1.clone());
-        acc.remove_key(key2.clone());
-
-        // Test binary (msgpack) serialization roundtrip
-        let bytes = acc.serialize_to_bytes().unwrap();
-        let deserialized_bytes =
-            DeltaSetAggregatorAccumulator::deserialize_from_bytes_arroyo(&bytes).unwrap();
-
-        assert_eq!(deserialized_bytes.added.len(), 1);
-        assert_eq!(deserialized_bytes.removed.len(), 1);
-        assert!(deserialized_bytes.added.contains(&key1));
-        assert!(deserialized_bytes.removed.contains(&key2));
     }
 
     #[test]

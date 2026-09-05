@@ -6,8 +6,6 @@ of the experiment infrastructure with consistent start/stop interfaces.
 """
 
 from .base import BaseService, DockerServiceBase
-from .kafka import KafkaService
-from .flink import FlinkService
 from .query_engine import (
     QueryEngineRustService,
     resolve_backend_config,
@@ -25,19 +23,15 @@ from .cluster_data_exporter import (
 )
 from .system_exporters import SystemExportersService
 from .prometheus import PrometheusService
-from .prometheus_kafka_adapter import PrometheusKafkaAdapterService
 from .prometheus_client_service import QueryClientService, PrometheusClientService
 from .remote_monitor_service import RemoteMonitorService
 from .docker_prometheus import DockerPrometheusService
 from .docker_victoriametrics import DockerVictoriaMetricsService
-from .arroyo import ArroyoService
-from .arroyo_throughput_monitor import ArroyoThroughputMonitor
 from .prometheus_throughput_monitor import PrometheusThroughputMonitor
 from .prometheus_health_monitor import PrometheusHealthMonitor
 from .misc import (
     DeathstarService,
     ControllerService,
-    DumbKafkaConsumerService,
 )
 from .grafana import GrafanaService
 from .clickhouse_service import ClickHouseService, ClickHouseDataLoaderService
@@ -129,8 +123,6 @@ def create_prometheus_service(cfg, provider, num_nodes: int, node_offset: int):
 __all__ = [
     "BaseService",
     "DockerServiceBase",
-    "KafkaService",
-    "FlinkService",
     "QueryEngineRustService",
     "resolve_backend_config",
     "MonitoringService",
@@ -142,19 +134,15 @@ __all__ = [
     "DataExporterFactory",
     "SystemExportersService",
     "PrometheusService",
-    "PrometheusKafkaAdapterService",
     "QueryClientService",
     "PrometheusClientService",
     "RemoteMonitorService",
     "DockerPrometheusService",
     "DockerVictoriaMetricsService",
-    "ArroyoService",
-    "ArroyoThroughputMonitor",
     "PrometheusThroughputMonitor",
     "PrometheusHealthMonitor",
     "DeathstarService",
     "ControllerService",
-    "DumbKafkaConsumerService",
     "GrafanaService",
     "create_prometheus_service",
     "ClickHouseService",
