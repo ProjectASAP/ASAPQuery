@@ -145,6 +145,9 @@ impl SQLSingleQueryProcessor {
             &statistics,
             treatment_type,
             &spatial_output,
+            // SQL topk has no by/without-style bucketing clause -- always a
+            // single global ranking (see comment in build_query_requirements_sql).
+            None,
             &rollup,
             &window_cfg,
             table_name,

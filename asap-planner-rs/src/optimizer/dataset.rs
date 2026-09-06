@@ -432,6 +432,7 @@ mod tests {
             ),
             spatial_filter_normalized: filter.to_string(),
             topk_count_events: None,
+            topk_by_labels: None,
         }
     }
 

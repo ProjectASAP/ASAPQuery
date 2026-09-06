@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{debug, warn};
 
-const METRIC_NAME_LABEL: &str = "__name__";
+pub(super) const METRIC_NAME_LABEL: &str = "__name__";
 
 /// Detects whether either side of a PromQL binary expression is a scalar
 /// (numeric literal), returning the scalar value, the other (vector) arm,

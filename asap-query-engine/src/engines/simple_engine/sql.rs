@@ -268,6 +268,9 @@ impl SimpleEngine {
             // `count_events: false` (value-weighted) one. This disambiguates two
             // CountMinSketchWithHeap configs on the same metric during matching.
             topk_count_events: topk.map(|t| t.count_events()),
+            // SQL topk has no by/without-style bucketing clause (see the
+            // grouping_labels comment above) -- always a single ranking.
+            topk_by_labels: None,
         }
     }
 
@@ -1123,6 +1126,82 @@ mod topk_pipeline_tests {
         )
     }
 
+    /// Same shape as `build_spatiotemporal_topk_engine`, but GROUP BY two
+    /// columns (`dstip, srcip`) instead of one -- regression coverage for a
+    /// self-keyed heap's output row silently dropping a real GROUP BY
+    /// column.
+    fn build_spatiotemporal_two_column_topk_engine() -> (SimpleEngine, Arc<SimpleMapStore>) {
+        let template = "SELECT dstip, srcip, COUNT(pkt_len) FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() GROUP BY dstip, srcip";
+
+        let value_cols: HashSet<String> = ["pkt_len"].iter().map(|s| s.to_string()).collect();
+        let labels: HashSet<String> = ["srcip", "dstip", "proto"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let table = Table::new(METRIC.to_string(), "time".to_string(), value_cols, labels);
+        let sql_schema = SQLSchema::new(vec![table]);
+
+        let query_config = QueryConfig::new(template.to_string())
+            .add_aggregation(AggregationReference::new(AGG_ID, None));
+
+        let inference_config = InferenceConfig {
+            schema: SchemaConfig::SQL(sql_schema),
+            query_configs: vec![query_config],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        };
+
+        let agg_config = AggregationConfig {
+            aggregation_id: AGG_ID,
+            aggregation_type: AggregationType::CountMinSketchWithHeap,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::new(vec!["dstip".to_string(), "srcip".to_string()]),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 2000,
+            slide_interval_ms: 2000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: METRIC.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        };
+
+        let mut agg_configs = HashMap::new();
+        agg_configs.insert(AGG_ID, agg_config);
+        let streaming_config = Arc::new(StreamingConfig {
+            aggregation_configs: agg_configs,
+        });
+
+        let store = Arc::new(SimpleMapStore::new(
+            streaming_config.clone(),
+            CleanupPolicy::NoCleanup,
+        ));
+
+        let engine = SimpleEngine::new(
+            store.clone(),
+            inference_config,
+            streaming_config,
+            1000,
+            QueryLanguage::sql,
+        );
+        (engine, store)
+    }
+
+    /// Incoming top-k query over a 2-second window grouped by two columns.
+    fn two_column_topk_query(limit: u64) -> String {
+        format!(
+            "SELECT dstip, srcip, COUNT(pkt_len) AS transfer_events FROM netflow_table \
+             WHERE time BETWEEN DATEADD(s, -2, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' \
+             GROUP BY dstip, srcip ORDER BY transfer_events DESC LIMIT {limit}"
+        )
+    }
+
     /// Incoming SUM top-k query over a 1-second absolute window.
     fn sum_topk_query(limit: u64) -> String {
         format!(
@@ -1442,6 +1521,82 @@ mod topk_pipeline_tests {
             results.iter().map(|e| e.labels.labels[0].clone()).collect();
         let expected: HashSet<String> = (6..=15u64).map(|i| format!("10.0.0.{i}")).collect();
         assert_eq!(returned, expected);
+    }
+
+    /// Regression: a self-keyed SpatioTemporal top-k grouped by two columns
+    /// must keep both in the output row. Two distinct `dstip` values share
+    /// the same `srcip` -- if the first `query_output_labels` entry were
+    /// ever silently dropped (mistaken for a `__name__` prefix that SQL
+    /// doesn't have here), those two rows would collide onto the same
+    /// `srcip`-only key.
+    #[test]
+    fn spatiotemporal_topk_preserves_both_group_by_columns() {
+        let (engine, store) = build_spatiotemporal_two_column_topk_engine();
+
+        let context = engine
+            .build_query_execution_context_sql(two_column_topk_query(10), QUERY_TIME)
+            .expect("context should build");
+        let window = &context.store_plan.values_query;
+        let output_label_names = context.metadata.query_output_labels.labels.clone();
+        assert_eq!(
+            output_label_names.len(),
+            2,
+            "query_output_labels must carry both GROUP BY columns: {output_label_names:?}",
+        );
+
+        // aggregated_labels is [dstip, srcip] (see the engine builder), so
+        // heap keys join in that order regardless of query_output_labels'
+        // own order.
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        sketch.inner.update("10.0.0.1;shared-src", 100.0);
+        sketch.inner.update("10.0.0.2;shared-src", 200.0);
+        sketch.inner.update("10.0.0.3;other-src", 50.0);
+
+        let output =
+            PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);
+        store
+            .insert_precomputed_output(output, Box::new(sketch))
+            .expect("insert should succeed");
+
+        let results = engine
+            .execute_query_pipeline(&context, true, false)
+            .expect("pipeline should produce results");
+
+        assert_eq!(
+            results.len(),
+            3,
+            "all 3 distinct (dstip, srcip) pairs must survive, not collapse to fewer"
+        );
+
+        let rows: HashSet<(String, String, u64)> = results
+            .iter()
+            .map(|e| {
+                assert_eq!(
+                    e.labels.labels.len(),
+                    2,
+                    "row must carry both GROUP BY columns: {:?}",
+                    e.labels.labels,
+                );
+                let by_name: HashMap<&str, &str> = output_label_names
+                    .iter()
+                    .map(String::as_str)
+                    .zip(e.labels.labels.iter().map(String::as_str))
+                    .collect();
+                (
+                    by_name["dstip"].to_string(),
+                    by_name["srcip"].to_string(),
+                    e.value as u64,
+                )
+            })
+            .collect();
+        let expected: HashSet<(String, String, u64)> = [
+            ("10.0.0.1".to_string(), "shared-src".to_string(), 100),
+            ("10.0.0.2".to_string(), "shared-src".to_string(), 200),
+            ("10.0.0.3".to_string(), "other-src".to_string(), 50),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(rows, expected);
     }
 
     #[test]
