@@ -2,6 +2,8 @@ mod elastic;
 mod promql;
 mod sql;
 
+use promql::METRIC_NAME_LABEL;
+
 use crate::data_model::{
     AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
     StreamingConfig,
@@ -973,22 +975,31 @@ impl SimpleEngine {
     }
 
     /// Row label order for `merge_grouped_and_self_keyed`: `query_output_labels`
-    /// minus the leading `__name__` a topk query gets there (added later by a
-    /// separate pass, not present on a row's labels yet at this point). SQL
-    /// topk leaves `query_output_labels` empty (it returns bare group-by/value
-    /// rows, not named output labels), so falls back to the aggregation
-    /// config's own `grouping_labels ++ aggregated_labels` order instead.
+    /// minus a leading `__name__`, if present (added later by a separate
+    /// pass, not present on a row's labels yet at this point -- checked by
+    /// its literal value, not `metadata.keep_metric_name`, since SQL sets
+    /// that flag unconditionally for reasons unrelated to `__name__`).
+    /// Some SQL query shapes leave `query_output_labels` empty entirely (SQL
+    /// bare-row topk has no named-output-label concept at all), so this
+    /// falls back to the aggregation config's own `grouping_labels ++
+    /// aggregated_labels` order in that case.
     fn topk_row_label_order(
         metadata: &QueryMetadata,
         grouping_labels: &KeyByLabelNames,
         aggregated_labels: &KeyByLabelNames,
     ) -> KeyByLabelNames {
-        let stripped =
-            if metadata.statistic_to_compute == Statistic::Topk && metadata.keep_metric_name {
-                KeyByLabelNames::new(metadata.query_output_labels.labels[1..].to_vec())
-            } else {
-                metadata.query_output_labels.clone()
-            };
+        let stripped = if metadata.statistic_to_compute == Statistic::Topk
+            && metadata
+                .query_output_labels
+                .labels
+                .first()
+                .map(String::as_str)
+                == Some(METRIC_NAME_LABEL)
+        {
+            KeyByLabelNames::new(metadata.query_output_labels.labels[1..].to_vec())
+        } else {
+            metadata.query_output_labels.clone()
+        };
 
         if stripped.labels.is_empty() && metadata.statistic_to_compute == Statistic::Topk {
             let mut combined = grouping_labels.labels.clone();
