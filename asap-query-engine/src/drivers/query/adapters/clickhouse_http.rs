@@ -7,11 +7,33 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Json, Response},
 };
+use chrono::{TimeZone, Utc};
 use promql_utilities::data_model::KeyByLabelNames;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::debug;
+
+/// Renders an epoch-millisecond bucket timestamp the way ClickHouse renders
+/// its own `DateTime` columns in TabSeparated output - `YYYY-MM-DD
+/// HH:MM:SS`, UTC. Falls back to the raw integer only if the timestamp is
+/// out of `chrono`'s representable range (never expected in practice).
+fn format_clickhouse_datetime(timestamp_ms: u64) -> String {
+    Utc.timestamp_millis_opt(timestamp_ms as i64)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| timestamp_ms.to_string())
+}
+
+/// Renders a bucket timestamp the way ClickHouse renders its `Date` type -
+/// `YYYY-MM-DD`, no time component. Only used for buckets built from
+/// `toDate(...)` - see `RangeVector::is_date_bucket`.
+fn format_clickhouse_date(timestamp_ms: u64) -> String {
+    Utc.timestamp_millis_opt(timestamp_ms as i64)
+        .single()
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| timestamp_ms.to_string())
+}
 
 /// ClickHouse HTTP protocol adapter
 pub struct ClickHouseHttpAdapter {
@@ -113,36 +135,59 @@ impl QueryResponseAdapter for ClickHouseHttpAdapter {
             QueryResult::Vector(instant_vector) => {
                 for element in &instant_vector.values {
                     // Add label values
-                    for (i, _label_name) in label_names.iter().enumerate() {
-                        let label_value = element.labels.get(i).map(|s| s.as_str()).unwrap_or("");
-                        output.push_str(label_value);
-                        output.push('\t');
+                    let label_values: Vec<&str> = label_names
+                        .iter()
+                        .enumerate()
+                        .map(|(i, _label_name)| {
+                            element.labels.get(i).map(|s| s.as_str()).unwrap_or("")
+                        })
+                        .collect();
+                    output.push_str(&label_values.join("\t"));
+                    // Add the value column, unless this result has none at
+                    // all (e.g. `SELECT DISTINCT col` - every row is pure
+                    // label columns, no aggregate to render).
+                    if instant_vector.has_value {
+                        if !label_values.is_empty() {
+                            output.push('\t');
+                        }
+                        output.push_str(&element.value.to_string());
                     }
-                    // Add value column
-                    output.push_str(&element.value.to_string());
                     output.push('\n');
                 }
             }
             QueryResult::Matrix(range_vector) => {
-                // Format range-vector results as TabSeparated rows:
+                // Pivot by timestamp: ClickHouse's own TabSeparated output
+                // for a bucketed GROUP BY (e.g. `toStartOfHour(ts) AS hour,
+                // count(*) AS cnt ... GROUP BY hour`) is one row per bucket
+                // with N value columns and a real DateTime string - e.g.
+                // `2024-01-05 00:00:00\t2517469\n` - not one row per
+                // (series, sample) pair with a raw epoch-ms timestamp and a
+                // label column, which is what this used to render (and
+                // which no ClickHouse client could ever match against,
+                // since ClickHouse's own response has neither the label
+                // text nor a millisecond integer timestamp).
                 //
-                // output_label<TAB>timestamp_ms<TAB>value
-                //
-                // For bucketed SQL queries, each range-vector element is one output
-                // column such as "announcements" or "withdrawals", and each sample
-                // timestamp is the bucket timestamp.
-                for element in &range_vector.values {
-                    for sample in &element.samples {
-                        for (i, _label_name) in label_names.iter().enumerate() {
-                            let label_value =
-                                element.labels.get(i).map(|s| s.as_str()).unwrap_or("");
-                            output.push_str(label_value);
+                // Every element in `range_vector.values` shares the same
+                // ordered set of bucket timestamps by construction
+                // (handle_bucketed_countif_sql in
+                // engines/simple_engine/sql.rs builds each one from the
+                // same `while ts < end_timestamp { ...; ts += bucket_ms }`
+                // loop), so pivoting by sample *position* - not a
+                // timestamp lookup - is sound here without assuming
+                // anything about map ordering.
+                if let Some(first) = range_vector.values.first() {
+                    for (i, sample) in first.samples.iter().enumerate() {
+                        let ts_str = if range_vector.is_date_bucket {
+                            format_clickhouse_date(sample.timestamp)
+                        } else {
+                            format_clickhouse_datetime(sample.timestamp)
+                        };
+                        output.push_str(&ts_str);
+                        for element in &range_vector.values {
                             output.push('\t');
+                            let value = element.samples.get(i).map(|s| s.value).unwrap_or(0.0);
+                            output.push_str(&value.to_string());
                         }
-
-                        output.push_str(&sample.timestamp.to_string());
-                        output.push('\t');
-                        output.push_str(&sample.value.to_string());
                         output.push('\n');
                     }
                 }

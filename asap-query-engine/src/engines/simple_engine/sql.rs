@@ -11,16 +11,34 @@ use crate::engines::query_result::{
 use asap_types::query_requirements::QueryRequirements;
 use asap_types::utils::normalize_spatial_filter;
 use promql_utilities::data_model::KeyByLabelNames;
-use promql_utilities::query_logics::enums::Statistic;
+use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 use sql_utilities::ast_matching::{
     detect_sql_topk, SQLPatternMatcher, SQLPatternParser, SQLQuery, SqlTopk, TopkWeighting,
 };
 use sql_utilities::ast_matching::pattern_rewrites::{
-    build_moas_surrogate, build_multi_aggregate_surrogates, looks_like_moas_registered_sql,
-    looks_like_moas_sql, parse_moas_query, parse_multi_aggregate_query,
-    rewrite_lag_transition_query, rewrite_token_explode_query, rewrite_token_select_query,
+    build_derived_ratio_surrogates, build_grand_total_pct_surrogate,
+    build_group_array_distinct_surrogate,
+    build_group_by_having_count_surrogate, build_hidden_countif_having_surrogates,
+    build_two_stage_histogram_inner_surrogate, build_weekly_moas_histogram_inner_surrogate,
+    parse_correlated_in_subquery_query, parse_weekly_moas_histogram_query,
+    build_moas_surrogate, build_multi_aggregate_surrogates,
+    build_running_total_surrogate, build_select_distinct_surrogate,
+    looks_like_moas_registered_sql, looks_like_moas_sql, parse_bucketed_topn_query,
+    parse_derived_ratio_query, parse_grand_total_pct_query, parse_group_array_distinct_query,
+    parse_group_by_having_count_query, parse_hidden_countif_having_query,
+    parse_two_stage_histogram_query, parse_computed_group_by_query, find_matching_close_paren,
+    parse_arg_agg_query, parse_moas_query, parse_multi_aggregate_query, parse_order_by_and_limit,
+    parse_running_total_query, parse_select_distinct_query, rewrite_computed_group_by_query,
+    rewrite_arrayzip_edge_explode_query,
+    rewrite_flat_token_explode_query, rewrite_lag_gap_query, rewrite_lag_transition_query,
+    rewrite_arg_agg_query, rewrite_raw_value_agg_query,
+    rewrite_token_explode_query,
+    rewrite_token_select_query,
+    ArgAggMatch, GroupArrayDistinctMatch, MultiAggregateMatch, RatioDenominator,
 };
-use sql_utilities::sqlhelper::{OrderByItem, SQLBucketedCountIfQueryData, SQLQueryData};
+use sql_utilities::sqlhelper::{
+    HavingFilter, OrderByItem, SQLBucketedCountIfQueryData, SQLQueryData,
+};
 use sqlparser::dialect::*;
 use sqlparser::parser::Parser as parser;
 use std::collections::{HashMap, HashSet};
@@ -41,6 +59,10 @@ pub struct SqlPostProcessing {
     pub order_by: Vec<OrderByItem>,
     /// `LIMIT N`. None when no LIMIT clause is present.
     pub limit: Option<u64>,
+    /// `HAVING <aggregation_alias> <op> <literal>` - filters groups by the
+    /// aggregate's own computed value (`element.value`) before ORDER BY /
+    /// LIMIT are applied, matching SQL's own evaluation order.
+    pub having: Option<HavingFilter>,
 }
 
 impl SqlPostProcessing {
@@ -49,24 +71,35 @@ impl SqlPostProcessing {
             aggregation_alias: query_data.aggregation_alias.clone(),
             order_by: query_data.order_by.clone(),
             limit: query_data.limit,
+            having: query_data.having.clone(),
         }
     }
 
-    /// Returns `true` when there's no ordering or truncation to apply, so the
-    /// caller can short-circuit any deconstruction of the result.
+    /// Returns `true` when there's no filtering, ordering, or truncation to
+    /// apply, so the caller can short-circuit any deconstruction of the
+    /// result.
     fn is_noop(&self) -> bool {
-        self.order_by.is_empty() && self.limit.is_none()
+        self.order_by.is_empty() && self.limit.is_none() && self.having.is_none()
     }
 
-    /// Apply ORDER BY + LIMIT to a `QueryResult`. Only `QueryResult::Vector`
-    /// is rewritten; matrices pass through unchanged (range queries don't
-    /// flow through `handle_query_sql`).
+    /// Apply HAVING + ORDER BY + LIMIT to a `QueryResult`, in that order -
+    /// HAVING filters groups by their aggregate value first, then the
+    /// survivors are sorted and truncated. Only `QueryResult::Vector` is
+    /// rewritten; matrices pass through unchanged (range queries don't flow
+    /// through `handle_query_sql`).
     pub fn apply(&self, output_labels: &KeyByLabelNames, result: QueryResult) -> QueryResult {
         if self.is_noop() {
             return result;
         }
         match result {
-            QueryResult::Vector(InstantVector { values, timestamp }) => {
+            QueryResult::Vector(InstantVector {
+                mut values,
+                timestamp,
+                has_value,
+            }) => {
+                if let Some(having) = &self.having {
+                    values.retain(|e| having.op.evaluate(e.value, having.value));
+                }
                 let values = sort_and_truncate_instant_vector(
                     values,
                     &output_labels.labels,
@@ -74,7 +107,11 @@ impl SqlPostProcessing {
                     &self.order_by,
                     self.limit,
                 );
-                QueryResult::Vector(InstantVector { values, timestamp })
+                QueryResult::Vector(InstantVector {
+                    values,
+                    timestamp,
+                    has_value,
+                })
             }
             other => other,
         }
@@ -126,7 +163,16 @@ fn sort_and_truncate_instant_vector(
                     Some(idx) => {
                         let av = a.labels.labels.get(idx).map(String::as_str).unwrap_or("");
                         let bv = b.labels.labels.get(idx).map(String::as_str).unwrap_or("");
-                        av.cmp(bv)
+                        // Numeric-if-both-parse, else lexicographic - a
+                        // label ORDER BY on a computed integer column (e.g.
+                        // `length(splitByChar(...))`) needs "2" before
+                        // "10", which plain string comparison gets wrong.
+                        match (av.parse::<f64>(), bv.parse::<f64>()) {
+                            (Ok(an), Ok(bn)) => {
+                                an.partial_cmp(&bn).unwrap_or(std::cmp::Ordering::Equal)
+                            }
+                            _ => av.cmp(bv),
+                        }
                     }
                 };
                 let ord = if asc { ord } else { ord.reverse() };
@@ -236,11 +282,33 @@ impl SimpleEngine {
         &self,
         match_result: &SQLQuery,
         topk: Option<SqlTopk>,
+        spatial_filter: Option<&str>,
     ) -> QueryRequirements {
         let query_data = match_result
             .outer_data()
             .expect("build_query_requirements_sql called on valid SQLQuery");
-        let metric = query_data.metric.clone();
+        // AggregationConfig.metric is derived as "{table_name}.{value_column}"
+        // for SQL configs (see aggregation_config.rs's from_yaml deserialization,
+        // "Derive metric from table_name.value_column for internal use") - the
+        // bare table name query_data.metric alone never matches any registered
+        // config here, so every capability-matching lookup for a SQL query
+        // failed with "no compatible aggregation found" regardless of shape.
+        //
+        // query_data.metric is already the right table name for both cases.
+        // For a plain COUNT it's the real table unchanged. For an aggregation
+        // over a non-value column (uniqExact(prefix), quantile over a derived
+        // length, etc.), rewrite_raw_value_agg_query (called earlier, in
+        // build_query_execution_context_sql_with_post_processing) already
+        // rewrote this query's FROM clause to the synthetic
+        // "derived_value_{col}_{table}" surrogate table before it was parsed
+        // into match_result - see that function's doc comment. Re-deriving
+        // "derived_value_{col}_{table}" here from an already-derived
+        // query_data.metric double-prefixes it
+        // (derived_value_x_derived_value_x_table), which is exactly why the
+        // capability-matching lookup still failed after the first attempt at
+        // this fix.
+        let value_column_name = query_data.aggregation_info.get_value_column_name();
+        let metric = format!("{}.{}", query_data.metric, value_column_name);
 
         let statistic_name = query_data.aggregation_info.get_name().to_lowercase();
 
@@ -270,7 +338,16 @@ impl SimpleEngine {
             statistics,
             data_range_ms,
             grouping_labels,
-            spatial_filter_normalized: normalize_spatial_filter(""),
+            // Was hardcoded to normalize_spatial_filter("") regardless of the
+            // query's actual filter, so spatial_filter_compatible always
+            // rejected any config with a non-empty registered filter (i.e.
+            // virtually every real query, since almost all of them filter on
+            // `collector = '...'`). Can't be recovered from `query_data` above
+            // (that's match_result.outer_data(), the PATTERN-flattened view -
+            // query_info_to_pattern's flatten_query_info step drops
+            // spatial_filter entirely when building it) - the caller must
+            // pass the original, unflattened query's filter through instead.
+            spatial_filter_normalized: normalize_spatial_filter(spatial_filter.unwrap_or("")),
             // COUNT top-k needs a `count_events: true` sketch; SUM top-k needs a
             // `count_events: false` (value-weighted) one. This disambiguates two
             // CountMinSketchWithHeap configs on the same metric during matching.
@@ -283,22 +360,95 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let query = Self::rewrite_recognized_pattern(&query);
+        // Bucketed countIf (e.g. `SELECT toStartOfFiveMinutes(timestamp) AS
+        // bucket, countIf(operation = 'A') AS anns ... GROUP BY bucket`) must
+        // be tried on the ORIGINAL, un-rewritten query text, before anything
+        // else touches it. The computed-GROUP-BY rewrite below matches ANY
+        // 2+-item SELECT with a computed first expression - including this
+        // shape's own bucket function - and replaces it with a bare alias;
+        // once that happens, parse_bucketed_countif_query can no longer see
+        // the bucket function it needs to recognize the shape at all, and
+        // the classic single-aggregate parser it would fall through to
+        // doesn't understand `countIf(...)` as an aggregate either. Mirrors
+        // get_streaming_aggregation_configs's own dispatch priority (planner
+        // side), which checks this exact shape before computed-group-by for
+        // the same reason.
+        if let Some(result) = self.handle_bucketed_countif_sql(&query, time) {
+            return Some(result);
+        }
+
+        // Must run on the RAW query, before any rewrite (including the one
+        // right below) replaces a computed-GROUP-BY expression with its bare
+        // alias - see `build_query_execution_context_sql_with_post_processing`'s
+        // doc comment for why this can only be detected here, once, and
+        // threaded down explicitly.
+        let computed_group_by_alias = parse_computed_group_by_query(&query).map(|m| m.alias);
+
+        let query = self.rewrite_recognized_pattern(&query);
 
         if let Some(result) = self.handle_moas_sql(&query, time) {
             return Some(result);
         }
 
-        if let Some(result) = self.handle_bucketed_countif_sql(&query, time) {
+        if let Some(result) = self.handle_select_distinct_sql(&query, time) {
             return Some(result);
         }
 
-        if let Some(result) = self.handle_multi_aggregate_sql(&query, time) {
+        if let Some(result) = self.handle_arg_agg_sql(&query, time) {
             return Some(result);
         }
 
-        let (context, post) =
-            self.build_query_execution_context_sql_with_post_processing(query, time)?;
+        if let Some(result) = self.handle_avg_sql(&query, computed_group_by_alias.as_deref(), time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_group_by_having_count_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_hidden_countif_having_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_two_stage_histogram_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_correlated_in_subquery_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_weekly_moas_histogram_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_grand_total_pct_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_running_total_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_bucketed_topn_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.handle_derived_ratio_sql(&query, time) {
+            return Some(result);
+        }
+
+        if let Some(result) =
+            self.handle_multi_aggregate_sql(&query, computed_group_by_alias.as_deref(), time)
+        {
+            return Some(result);
+        }
+
+        let (context, post) = self.build_query_execution_context_sql_with_post_processing(
+            query,
+            computed_group_by_alias.as_deref(),
+            time,
+        )?;
         let is_topk = context.metadata.statistic_to_compute == Statistic::Topk;
         // Top-k: enable heap-based limiting (truncate to k) but NOT PromQL-style
         // metric-name formatting; the sketch heap already produces the ranked
@@ -314,12 +464,17 @@ impl SimpleEngine {
     }
 
     /// Tries each recognized complex-SQL-shape rewrite in turn (lag-
-    /// transition, token-select, token-explode) and returns the first one
-    /// that fires, or the original query unchanged if none do. These are
-    /// the same detectors asap-planner-rs uses to decide what to build -
-    /// shared via sql_utilities::ast_matching::pattern_rewrites so the two
-    /// can never silently disagree about what a given raw query means.
-    pub(crate) fn rewrite_recognized_pattern(sql: &str) -> String {
+    /// transition, token-select, token-explode, raw/computed-value
+    /// aggregate) and returns the first one that fires, or the original
+    /// query unchanged if none do. These are the same detectors
+    /// asap-planner-rs uses to decide what to build - shared via
+    /// sql_utilities::ast_matching::pattern_rewrites so the two can never
+    /// silently disagree about what a given raw query means. An instance
+    /// method (not the free function it once was) because the
+    /// raw/computed-value-aggregate rewrite needs the live schema to check
+    /// whether a column is already a real value column - a check the
+    /// planner's own copy of this logic also makes.
+    pub(crate) fn rewrite_recognized_pattern(&self, sql: &str) -> String {
         // MOAS has its own detection + surrogate-building (parse_moas_query /
         // handle_moas_sql) that must run on the *raw* query text. The
         // tokenized MOAS shape also satisfies looks_like_token_select_sql
@@ -336,6 +491,10 @@ impl SimpleEngine {
             warn!("lag-transition rewrite produced SQL: {}", rewritten);
             return rewritten;
         }
+        if let Some(rewritten) = rewrite_lag_gap_query(sql) {
+            warn!("lag-gap rewrite produced SQL: {}", rewritten);
+            return rewritten;
+        }
         if let Some(rewritten) = rewrite_token_select_query(sql) {
             warn!("token-select rewrite produced SQL: {}", rewritten);
             return rewritten;
@@ -343,6 +502,39 @@ impl SimpleEngine {
         if let Some(rewritten) = rewrite_token_explode_query(sql) {
             warn!("token-explode rewrite produced SQL: {}", rewritten);
             return rewritten;
+        }
+        if let Some(rewritten) = rewrite_flat_token_explode_query(sql) {
+            warn!("flat token-explode rewrite produced SQL: {}", rewritten);
+            return rewritten;
+        }
+        if let Some(rewritten) = rewrite_arrayzip_edge_explode_query(sql) {
+            warn!("arrayZip edge-explode rewrite produced SQL: {}", rewritten);
+            return rewritten;
+        }
+        if let Some(rewritten) = rewrite_computed_group_by_query(sql) {
+            warn!("computed-GROUP-BY rewrite produced SQL: {}", rewritten);
+            return rewritten;
+        }
+        // MIN/MAX/SUM/AVG/uniqExact over a raw (non-value) column, or a
+        // computed expression / trivial toString wrapper around one - see
+        // rewrite_raw_value_agg_query's doc comment. Needs the live schema,
+        // unlike every rewrite above.
+        {
+            let schema = match &self.inference_config.read().unwrap().schema {
+                SchemaConfig::SQL(sql_schema) => Some(sql_schema.clone()),
+                SchemaConfig::ElasticSQL(sql_schema) => Some(sql_schema.clone()),
+                _ => None,
+            };
+            if let Some(schema) = schema {
+                if let Some(rewritten) = rewrite_raw_value_agg_query(sql, &schema) {
+                    warn!("raw/computed-value-aggregate rewrite produced SQL: {}", rewritten);
+                    return rewritten;
+                }
+                if let Some(rewritten) = rewrite_arg_agg_query(sql, &schema) {
+                    warn!("arg-aggregate rewrite produced SQL: {}", rewritten);
+                    return rewritten;
+                }
+            }
         }
         sql.to_string()
     }
@@ -356,7 +548,7 @@ impl SimpleEngine {
         query: String,
         time: f64,
     ) -> Option<QueryExecutionContext> {
-        self.build_query_execution_context_sql_with_post_processing(query, time)
+        self.build_query_execution_context_sql_with_post_processing(query, None, time)
             .map(|(ctx, _)| ctx)
     }
 
@@ -529,6 +721,1220 @@ impl SimpleEngine {
         Some((output_labels, QueryResult::vector(values, end_timestamp)))
     }
 
+    /// `SELECT DISTINCT <col> FROM ... WHERE ...`, no GROUP BY - see
+    /// `SelectDistinctMatch` / `get_select_distinct_streaming_aggregation_configs`
+    /// on the planner side. The registered precompute is a `SetAggregator`
+    /// with an empty grouping key tracking `col`'s exact distinct values (the
+    /// same swap MOAS makes for `COUNT(DISTINCT label)` under a GROUP BY,
+    /// just with no outer group), so this reads back every distinct value
+    /// across the whole time window - one output row per value, no numeric
+    /// aggregate at all.
+    fn handle_select_distinct_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_select_distinct_query(query)?;
+
+        warn!("SELECT DISTINCT handler matched query");
+
+        let schema = match &self.inference_config.read().unwrap().schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
+            SchemaConfig::PromQL(_) => {
+                warn!("SELECT DISTINCT handler: non-SQL schema");
+                return None;
+            }
+            &SchemaConfig::ElasticQueryDSL(_) => {
+                warn!("SELECT DISTINCT handler: ElasticQueryDSL schema");
+                return None;
+            }
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
+        };
+
+        let surrogate = build_select_distinct_surrogate(&m);
+
+        let statements = match parser::parse_sql(&GenericDialect {}, surrogate.as_str()) {
+            Ok(statements) => statements,
+            Err(e) => {
+                warn!("SELECT DISTINCT handler: could not parse surrogate query: {}", e);
+                return None;
+            }
+        };
+
+        let query_data = match SQLPatternParser::new(&schema, time).parse_query(&statements) {
+            Some(qd) => qd,
+            None => {
+                warn!("SELECT DISTINCT handler: SQLPatternParser rejected surrogate query");
+                return None;
+            }
+        };
+
+        // The ordinary structural matcher, not a dedicated lookup like
+        // MOAS's find_query_config_sql_moas - the surrogate is exactly the
+        // classic single-aggregate CARDINALITY shape, and matches_sql_pattern
+        // now compares spatial_filter too, so this correctly finds *this*
+        // query's own registered config rather than colliding with another
+        // SELECT DISTINCT query over a different filter.
+        let query_config = match self.find_query_config_sql(&query_data) {
+            Some(config) => config,
+            None => {
+                warn!("SELECT DISTINCT handler: no query_config found");
+                return None;
+            }
+        };
+
+        let aggregation_id = match query_config.aggregations.first() {
+            Some(agg) => agg.aggregation_id,
+            None => {
+                warn!("SELECT DISTINCT handler: query_config has no aggregations");
+                return None;
+            }
+        };
+
+        let end_timestamp = self.align_end_timestamp_sql(Self::convert_query_time_to_data_time(
+            query_data.time_info.get_start() + query_data.time_info.get_duration(),
+        ));
+        let duration_ms = (query_data.time_info.get_duration() * 1000.0).round() as u64;
+        let start_timestamp = match end_timestamp.checked_sub(duration_ms) {
+            Some(ts) => ts,
+            None => {
+                warn!("SELECT DISTINCT handler: invalid start/end timestamps");
+                return None;
+            }
+        };
+
+        let params = StoreQueryParams {
+            metric: query_data.metric.clone(),
+            aggregation_id,
+            start_timestamp,
+            end_timestamp,
+            is_exact_query: false,
+        };
+
+        let timestamped_map = match self.execute_store_query(&params) {
+            Ok(map) => map,
+            Err(e) => {
+                warn!("SELECT DISTINCT handler: store query failed: {}", e);
+                return None;
+            }
+        };
+
+        let mut distinct_values: HashSet<String> = HashSet::new();
+        // Empty grouping key -> one global group; unlike MOAS (which skips a
+        // `None` group_key as "not a real prefix"), every group here is the
+        // one we want, so both `None` and `Some(_)` are read.
+        for (_group_key, timestamped_buckets) in timestamped_map {
+            for (_bucket, precompute) in timestamped_buckets {
+                if let Some(keys) = precompute.get_keys() {
+                    for key in keys {
+                        if let Some(value) = key.get(0) {
+                            if !value.is_empty() {
+                                distinct_values.insert(value.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        warn!(
+            "SELECT DISTINCT handler: produced {} distinct values",
+            distinct_values.len()
+        );
+
+        let mut values_vec: Vec<String> = distinct_values.into_iter().collect();
+        values_vec.sort();
+
+        let elements: Vec<InstantVectorElement> = values_vec
+            .into_iter()
+            .map(|v| InstantVectorElement::new(KeyByLabelValues::new_with_labels(vec![v]), 0.0))
+            .collect();
+
+        let output_labels = KeyByLabelNames::new(vec![m.column.clone()]);
+        let (order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        let post = SqlPostProcessing {
+            aggregation_alias: None,
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(
+            &output_labels,
+            QueryResult::vector_without_value(elements, end_timestamp),
+        );
+
+        Some((output_labels, result))
+    }
+
+    /// `argMax(x, <time_column>)` / `argMin(x, <time_column>)` - see
+    /// `ArgAggMatch`'s doc comment for the shape and
+    /// `get_arg_agg_streaming_aggregation_configs`'s for the planner-side
+    /// half. `MultipleArgAccumulator`'s real result is a string, which
+    /// `AggregateCore::query_statistic` (numeric-only) can't return, so it
+    /// gets its own dedicated handler rather than the classic
+    /// `execute_context` path - the result is rendered as an extra LABEL
+    /// column (via `query_statistic_string` + `vector_without_value`,
+    /// exactly like `SELECT DISTINCT`'s own label-only result above),
+    /// alongside the `GROUP BY` column, rather than a numeric `value`.
+    fn handle_arg_agg_sql(&self, query: &str, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+        let (m, values, end_timestamp) = self.try_execute_arg_agg_branch(query, time)?;
+
+        let elements: Vec<InstantVectorElement> = values
+            .into_iter()
+            .map(|(mut labels, arg_value)| {
+                labels.push(arg_value);
+                InstantVectorElement::new(KeyByLabelValues::new_with_labels(labels), 0.0)
+            })
+            .collect();
+
+        let output_labels = KeyByLabelNames::new(vec![m.group_by_col.clone(), m.alias.clone()]);
+        let limit = m.limit.as_ref().and_then(|s| s.parse::<u64>().ok());
+        let post = SqlPostProcessing {
+            aggregation_alias: None,
+            order_by: Vec::new(),
+            limit,
+            having: None,
+        };
+        let result = post.apply(
+            &output_labels,
+            QueryResult::vector_without_value(elements, end_timestamp),
+        );
+
+        Some((output_labels, result))
+    }
+
+    /// Splits a query containing a standalone `avg(<expr>)` aggregate into
+    /// two surrogates - one with `avg(<expr>)` replaced by `sum(<expr>)`,
+    /// one with the SAME call replaced by `count(<expr>)`- otherwise
+    /// textually identical (same GROUP BY / WHERE / everything else).
+    /// Case-insensitive on the function name; returns `None` if no `avg(`
+    /// is found or its parens don't balance.
+    ///
+    /// The count half is NOT `count(*)`: when `<expr>` is a raw/computed
+    /// column (not already a real value column - the usual case, e.g.
+    /// `length(splitByChar(...))`), `get_raw_value_agg_streaming_aggregation_configs`
+    /// (planner side) registers BOTH of AVG's [Sum, Count] statistics on
+    /// the SAME derived-value virtual table, via the SAME
+    /// `build_agg_configs_for_statistics` call. `count(*)` never triggers
+    /// that derived-table rewrite at query time (`rewrite_raw_value_agg_query`'s
+    /// trigger list is `MIN/MAX/SUM/AVG/CARDINALITY/QUANTILE` - COUNT isn't
+    /// in it, since counting real rows never needs the indirection), so it
+    /// stays on the original base table and can never find that registration
+    /// - `count(<expr>)` does trigger it, correctly landing on the same
+    /// derived table AVG's own sum half uses.
+    ///
+    /// Since COUNT itself isn't in that trigger list either, `count(<expr>)`
+    /// can't do this via the ordinary rewrite path in one step. Disguises it
+    /// as `sum(<expr>)` (which DOES trigger the rewrite), runs the shared
+    /// rewrite once to land on the correct derived table, then swaps the
+    /// surviving `sum(` back to `count(` in the result - a query already
+    /// naming a real value column on that derived table, which
+    /// `rewrite_raw_value_agg_query` correctly no-ops on if run again
+    /// (`schema.is_valid_value_column` already true), so this is safe to
+    /// hand to the ordinary `build_query_execution_context_sql_with_post_processing`
+    /// path afterward without any special handling there.
+    fn split_avg_query(&self, query: &str) -> Option<(String, String)> {
+        let lower = query.to_lowercase();
+        let avg_idx = lower.find("avg(")?;
+        let open_paren = avg_idx + "avg".len();
+        let close_paren = find_matching_close_paren(query, open_paren)?;
+        let before = &query[..avg_idx];
+        let call_with_parens = &query[open_paren..=close_paren];
+        let after = &query[close_paren + 1..];
+        let sum_sql = format!("{before}sum{call_with_parens}{after}");
+
+        let rewritten = self.rewrite_recognized_pattern(&sum_sql);
+        let rewritten_lower = rewritten.to_lowercase();
+        let sum_idx = rewritten_lower.find("sum(")?;
+        let count_sql = format!("{}count{}", &rewritten[..sum_idx], &rewritten[sum_idx + 3..]);
+
+        Some((sum_sql, count_sql))
+    }
+
+    /// Computes a standalone `avg(<expr>)` aggregate by independently
+    /// executing the equivalent `sum(<expr>)` and `count(*)` queries -
+    /// each through the exact same machinery any ordinary single-aggregate
+    /// query already uses - and dividing the two results per group key.
+    ///
+    /// There is no `Statistic::Avg`: `AggregationOperator::Avg` maps to
+    /// `[Statistic::Sum, Statistic::Count]` (see its doc comment), and
+    /// nowhere in the execution pipeline - `QueryExecutionContext`,
+    /// `AggregationIdInfo`, `StoreQueryPlan` - is there a way to carry two
+    /// aggregation ids for one query or a step that merges/divides two
+    /// results; each of those types carries exactly one statistic end to
+    /// end. Composing two complete, already-correct single-aggregate
+    /// executions and dividing their outputs sidesteps teaching that whole
+    /// pipeline a new dual-aggregation concept for what is, in the end,
+    /// pure post-processing arithmetic - at the cost of computing the
+    /// underlying sum and count as two separate store round-trips instead
+    /// of one.
+    ///
+    /// Deliberately skips each sub-query's OWN `SqlPostProcessing`
+    /// (ORDER BY / LIMIT/HAVING would be parsed off of `sum(...)`/`count(*)`
+    /// text and target the wrong quantity) - callers apply the ORIGINAL
+    /// query's post-processing to the divided result instead.
+    fn try_execute_avg_branch(
+        &self,
+        query: &str,
+        computed_group_by_alias: Option<&str>,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, InstantVector)> {
+        let (sum_sql, count_sql) = self.split_avg_query(query)?;
+
+        let (sum_context, _sum_post) = self.build_query_execution_context_sql_with_post_processing(
+            sum_sql,
+            computed_group_by_alias,
+            time,
+        )?;
+        let (sum_labels, sum_result) = self.execute_context(sum_context, false, false)?;
+        let QueryResult::Vector(sum_vector) = sum_result else {
+            warn!("avg handler: sum branch did not produce an instant vector");
+            return None;
+        };
+
+        let (count_context, _count_post) = self.build_query_execution_context_sql_with_post_processing(
+            count_sql,
+            computed_group_by_alias,
+            time,
+        )?;
+        let (_count_labels, count_result) = self.execute_context(count_context, false, false)?;
+        let QueryResult::Vector(count_vector) = count_result else {
+            warn!("avg handler: count branch did not produce an instant vector");
+            return None;
+        };
+
+        let count_by_key: HashMap<Vec<String>, f64> = count_vector
+            .values
+            .into_iter()
+            .map(|e| (e.labels.labels, e.value))
+            .collect();
+
+        let end_timestamp = sum_vector.timestamp;
+        let values: Vec<InstantVectorElement> = sum_vector
+            .values
+            .into_iter()
+            .filter_map(|e| {
+                let count = *count_by_key.get(&e.labels.labels)?;
+                if count == 0.0 {
+                    return None;
+                }
+                Some(InstantVectorElement::new(e.labels, e.value / count))
+            })
+            .collect();
+
+        Some((
+            sum_labels,
+            InstantVector {
+                values,
+                timestamp: end_timestamp,
+                has_value: true,
+            },
+        ))
+    }
+
+    /// Standalone `avg(<expr>)` with no other aggregate in the same query
+    /// (q013/q187's shape: a computed-GROUP-BY key plus one avg) - the
+    /// `avg(x), count(*)` shape (q035/q091/q145) instead goes through
+    /// `handle_multi_aggregate_sql`, which special-cases the avg branch the
+    /// same way. Applies the query's OWN ORDER BY / LIMIT to the divided
+    /// result, since `try_execute_avg_branch` deliberately skips post-
+    /// processing on its two internal sub-queries.
+    fn handle_avg_sql(
+        &self,
+        query: &str,
+        computed_group_by_alias: Option<&str>,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        if !query.to_lowercase().contains("avg(") {
+            return None;
+        }
+        // Multiple aggregates (avg alongside count/sum/etc.) belong to
+        // handle_multi_aggregate_sql instead - only claim the truly
+        // standalone shape here.
+        if parse_multi_aggregate_query(query).is_some() {
+            return None;
+        }
+
+        let (output_labels, vector) =
+            self.try_execute_avg_branch(query, computed_group_by_alias, time)?;
+
+        // `query` at this point has already been through rewrite_recognized_pattern,
+        // so a computed-GROUP-BY alias (if any) is already bare - parse_computed_group_by_query
+        // can no longer recognize the shape to hand back order_by_and_limit (same
+        // reasoning as build_query_execution_context_sql_with_post_processing's
+        // doc comment). ORDER BY / LIMIT always trail everything else in every
+        // shape this handler claims, so just take the tail from whichever
+        // keyword appears first.
+        let lower = query.to_lowercase();
+        let tail_start = ["order by", "limit"]
+            .iter()
+            .filter_map(|kw| lower.find(kw))
+            .min();
+        let order_by_and_limit = tail_start
+            .map(|i| query[i..].trim_end_matches(';').trim())
+            .unwrap_or("");
+        let (order_by, limit) = parse_order_by_and_limit(order_by_and_limit);
+        let post = SqlPostProcessing {
+            aggregation_alias: None,
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(&output_labels, QueryResult::Vector(vector));
+
+        Some((output_labels, result))
+    }
+
+    /// Shared core of the ARGMAX/ARGMIN shape: parses `query` as an
+    /// `ArgAggMatch`, reads and merges the underlying accumulator's state
+    /// across every window the query range spans, and returns each group
+    /// key's `query_statistic_string` result. Used both by the standalone
+    /// single-aggregate handler above and by the multi-aggregate
+    /// "all-labels" combiner below, which needs exactly this per-branch
+    /// (group key -> arg-value string) mapping - not a fully rendered
+    /// result - to build one combined row per key across several branches.
+    fn try_execute_arg_agg_branch(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(ArgAggMatch, HashMap<Vec<String>, String>, u64)> {
+        let m = parse_arg_agg_query(query)?;
+
+        let schema = match &self.inference_config.read().unwrap().schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
+            SchemaConfig::PromQL(_) => return None,
+            &SchemaConfig::ElasticQueryDSL(_) => return None,
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
+        };
+
+        let statements = parser::parse_sql(&GenericDialect {}, query).ok()?;
+        let query_data = SQLPatternParser::new(&schema, time).parse_query(&statements)?;
+
+        // Sanity check: the generic parser's `get_aggregation` accepts a
+        // 2-argument aggregate call by silently keeping only the first
+        // argument (see its own doc comment on the "other aggregations"
+        // branch) - confirm what it actually saw really is ARGMAX/ARGMIN
+        // before treating query_data as this handler's own shape.
+        if !matches!(query_data.aggregation_info.get_name(), "ARGMAX" | "ARGMIN") {
+            return None;
+        }
+
+        let query_config = self.find_query_config_sql(&query_data)?;
+        let aggregation_id = query_config.aggregations.first()?.aggregation_id;
+
+        let end_timestamp = self.align_end_timestamp_sql(Self::convert_query_time_to_data_time(
+            query_data.time_info.get_start() + query_data.time_info.get_duration(),
+        ));
+        let duration_ms = (query_data.time_info.get_duration() * 1000.0).round() as u64;
+        let start_timestamp = end_timestamp.checked_sub(duration_ms)?;
+
+        let params = StoreQueryParams {
+            metric: query_data.metric.clone(),
+            aggregation_id,
+            start_timestamp,
+            end_timestamp,
+            is_exact_query: false,
+        };
+
+        let timestamped_map = self
+            .execute_store_query(&params)
+            .map_err(|e| {
+                warn!("arg-aggregate handler: store query failed: {}", e);
+                e
+            })
+            .ok()?;
+
+        // Merge across every window the query range spans into one
+        // accumulator per group key - same reasoning, same shared utility,
+        // as the classic numeric path (MinMax etc).
+        let merged =
+            self.merge_precomputed_outputs(&timestamped_map, true, AggregationType::MultipleArg);
+
+        let statistic = if m.is_max { Statistic::ArgMax } else { Statistic::ArgMin };
+
+        let mut values: HashMap<Vec<String>, String> = HashMap::new();
+        for (key, precompute) in &merged {
+            let Some(key) = key else {
+                continue;
+            };
+            let arg_value = match precompute.query_statistic_string(
+                statistic,
+                &Some(key.clone()),
+                &HashMap::new(),
+            ) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("arg-aggregate handler: query_statistic_string failed: {}", e);
+                    continue;
+                }
+            };
+            values.insert(key.labels.clone(), arg_value);
+        }
+
+        Some((m, values, end_timestamp))
+    }
+
+    /// Core of the groupArray(DISTINCT col) shape (optionally `GROUP BY
+    /// <group_col>`) - see `GroupArrayDistinctMatch`. Reads the exact
+    /// `SetAggregator` set `get_group_array_distinct_streaming_aggregation_configs`
+    /// registers (planner side) and, per group key, formats its member
+    /// values as a ClickHouse-style `['a','b']` array string. No FROM-
+    /// clause rewrite needed first (unlike `try_execute_arg_agg_branch`) -
+    /// this mechanism registers directly against the query's own real
+    /// table, the same way MOAS/SELECT DISTINCT do, rather than a derived
+    /// virtual table.
+    fn try_execute_group_array_distinct_branch(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(GroupArrayDistinctMatch, HashMap<Vec<String>, String>, u64)> {
+        let m = parse_group_array_distinct_query(query)?;
+
+        let schema = match &self.inference_config.read().unwrap().schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
+            SchemaConfig::PromQL(_) => return None,
+            &SchemaConfig::ElasticQueryDSL(_) => return None,
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
+        };
+
+        let surrogate = build_group_array_distinct_surrogate(&m);
+
+        let statements = parser::parse_sql(&GenericDialect {}, surrogate.as_str()).ok()?;
+        let query_data = SQLPatternParser::new(&schema, time).parse_query(&statements)?;
+
+        let query_config = self.find_query_config_sql(&query_data)?;
+        let aggregation_id = query_config.aggregations.first()?.aggregation_id;
+
+        let end_timestamp = self.align_end_timestamp_sql(Self::convert_query_time_to_data_time(
+            query_data.time_info.get_start() + query_data.time_info.get_duration(),
+        ));
+        let duration_ms = (query_data.time_info.get_duration() * 1000.0).round() as u64;
+        let start_timestamp = end_timestamp.checked_sub(duration_ms)?;
+
+        let params = StoreQueryParams {
+            metric: query_data.metric.clone(),
+            aggregation_id,
+            start_timestamp,
+            end_timestamp,
+            is_exact_query: false,
+        };
+
+        let timestamped_map = self
+            .execute_store_query(&params)
+            .map_err(|e| {
+                warn!("groupArray(DISTINCT) handler: store query failed: {}", e);
+                e
+            })
+            .ok()?;
+
+        let mut per_group: HashMap<Vec<String>, HashSet<String>> = HashMap::new();
+        for (group_key, timestamped_buckets) in timestamped_map {
+            // Empty grouping (m.group_by is None) treats every bucket as
+            // the one global group, same as handle_select_distinct_sql; a
+            // real grouping column (m.group_by is Some) discards a missing
+            // key, same as handle_moas_sql.
+            let row_key: Vec<String> = if m.group_by.is_some() {
+                match group_key {
+                    Some(k) if !k.labels.is_empty() => k.labels,
+                    _ => continue,
+                }
+            } else {
+                Vec::new()
+            };
+
+            let entry = per_group.entry(row_key).or_default();
+            for (_bucket, precompute) in timestamped_buckets {
+                if let Some(keys) = precompute.get_keys() {
+                    for key in keys {
+                        if let Some(value) = key.get(0) {
+                            if !value.is_empty() {
+                                entry.insert(value.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let values: HashMap<Vec<String>, String> = per_group
+            .into_iter()
+            .map(|(key, set)| {
+                let mut sorted: Vec<String> = set.into_iter().collect();
+                sorted.sort();
+                (key, Self::format_clickhouse_string_array(&sorted))
+            })
+            .collect();
+
+        Some((m, values, end_timestamp))
+    }
+
+    /// Renders a ClickHouse-style `['a','b']` array literal - the closest
+    /// text representation of groupArray(DISTINCT ...)'s actual return
+    /// type available through this label-column-only rendering path (see
+    /// `handle_multi_aggregate_all_labels_sql`'s doc comment).
+    fn format_clickhouse_string_array(values: &[String]) -> String {
+        let quoted: Vec<String> = values
+            .iter()
+            .map(|v| format!("'{}'", v.replace('\'', "\\'")))
+            .collect();
+        format!("[{}]", quoted.join(","))
+    }
+
+    /// `round(<agg> * <mult> / sum(<same agg>) OVER (), <decimals>) AS
+    /// <alias>` - each group's share of the whole result set's total, see
+    /// `GrandTotalPctMatch`. Executes the single base-aggregate surrogate
+    /// the planner registered, then computes the total (and each row's
+    /// percentage of it) entirely at serve time from that surrogate's own
+    /// already-fetched per-key results - no second surrogate, no
+    /// ingest-time work, unlike lagInFrame-style window functions which
+    /// need a value from a DIFFERENT row (previous-in-partition) and so
+    /// genuinely need per-row ingest-time state.
+    fn handle_grand_total_pct_sql(&self, query: &str, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_grand_total_pct_query(query)?;
+        let surrogate = build_grand_total_pct_surrogate(&m);
+
+        let (context, post) =
+            self.build_query_execution_context_sql_with_post_processing(surrogate, None, time)?;
+        let (output_labels, result) = self.execute_context(context, false, false)?;
+        let result = post.apply(&output_labels, result);
+
+        let QueryResult::Vector(InstantVector { values, timestamp, .. }) = result else {
+            warn!("grand-total-pct handler: expected instant vector result");
+            return None;
+        };
+
+        let total: f64 = values.iter().map(|e| e.value).sum();
+        let factor = 10f64.powi(m.decimals as i32);
+
+        let new_values: Vec<InstantVectorElement> = values
+            .into_iter()
+            .map(|element| {
+                let agg_value = element.value;
+                let pct = if total == 0.0 {
+                    0.0
+                } else {
+                    ((agg_value * m.multiplier / total) * factor).round() / factor
+                };
+                let mut label_values = element.labels.labels;
+                label_values.push(agg_value.to_string());
+                InstantVectorElement::new(KeyByLabelValues::new_with_labels(label_values), pct)
+            })
+            .collect();
+
+        let mut output_label_names = output_labels.labels;
+        output_label_names.push(m.agg_alias.clone());
+        let output_labels = KeyByLabelNames {
+            labels: output_label_names,
+        };
+
+        let (order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        let final_post = SqlPostProcessing {
+            aggregation_alias: Some(m.pct_alias.clone()),
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = final_post.apply(&output_labels, QueryResult::vector(new_values, timestamp));
+
+        Some((output_labels, result))
+    }
+
+    /// `row_number() OVER (PARTITION BY <bucket> ORDER BY <cnt> DESC) AS rnk
+    /// ... WHERE rnk <= N`, see `BucketedTopNMatch`. The planner registered
+    /// one aggregation (key column grouped, window size forced to the
+    /// bucket size); this queries it once PER bucket, with the bucket's own
+    /// [start, start+bucket_ms) substituted into a fresh copy of the
+    /// surrogate each time - since that range exactly equals the
+    /// registered window size, the ordinary execution path serves it as a
+    /// single un-merged window (ordinary correctness already exercised by
+    /// any classic query whose own duration equals its window size), so no
+    /// new store-layer code is needed. Ranking and top-N selection happen
+    /// here, in memory, per bucket's small already-fetched result.
+    fn handle_bucketed_topn_sql(&self, query: &str, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+        use chrono::{DateTime, NaiveDateTime, Utc};
+
+        let m = parse_bucketed_topn_query(query)?;
+
+        let start_ms = NaiveDateTime::parse_from_str(&m.start, "%Y-%m-%d %H:%M:%S")
+            .ok()?
+            .and_utc()
+            .timestamp_millis();
+        let end_ms = NaiveDateTime::parse_from_str(&m.end, "%Y-%m-%d %H:%M:%S")
+            .ok()?
+            .and_utc()
+            .timestamp_millis();
+        let bucket_ms = m.bucket_ms as i64;
+        if bucket_ms <= 0 || start_ms >= end_ms {
+            return None;
+        }
+
+        // hour -> Vec<(key, count)>, in first-seen (bucket) order so the
+        // final ORDER BY hour, rnk renders buckets chronologically even
+        // though HashMap iteration itself is unordered.
+        let mut bucket_order: Vec<String> = Vec::new();
+        let mut per_bucket: HashMap<String, Vec<(String, f64)>> = HashMap::new();
+
+        let mut bucket_start_ms = start_ms;
+        while bucket_start_ms < end_ms {
+            let bucket_end_ms = (bucket_start_ms + bucket_ms).min(end_ms);
+            let bucket_start_str = DateTime::<Utc>::from_timestamp_millis(bucket_start_ms)?
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+            let bucket_end_str = DateTime::<Utc>::from_timestamp_millis(bucket_end_ms)?
+                .format("%Y-%m-%d %H:%M:%S")
+                .to_string();
+
+            let bucket_from_where = m
+                .from_where
+                .replacen(&m.start, &bucket_start_str, 1)
+                .replacen(&m.end, &bucket_end_str, 1);
+            let surrogate = format!(
+                "SELECT {key}, count(*) AS {alias} {from_where} GROUP BY {key}",
+                key = m.key_col,
+                alias = m.cnt_alias,
+                from_where = bucket_from_where,
+            );
+
+            if let Some((output_labels, result)) = self
+                .build_query_execution_context_sql_with_post_processing(surrogate, None, time)
+                .and_then(|(context, post)| {
+                    self.execute_context(context, false, false)
+                        .map(|(labels, result)| (labels.clone(), post.apply(&labels, result)))
+                })
+            {
+                if let QueryResult::Vector(InstantVector { values, .. }) = result {
+                    if !values.is_empty() {
+                        let key_idx = output_labels.labels.iter().position(|l| l == &m.key_col);
+                        let rows: Vec<(String, f64)> = values
+                            .into_iter()
+                            .map(|element| {
+                                let key_val = key_idx
+                                    .and_then(|i| element.labels.labels.get(i).cloned())
+                                    .unwrap_or_default();
+                                (key_val, element.value)
+                            })
+                            .collect();
+                        bucket_order.push(bucket_start_str.clone());
+                        per_bucket.insert(bucket_start_str, rows);
+                    }
+                }
+            }
+
+            bucket_start_ms += bucket_ms;
+        }
+
+        let mut values: Vec<InstantVectorElement> = Vec::new();
+        for bucket_label in &bucket_order {
+            let mut rows = per_bucket.remove(bucket_label).unwrap_or_default();
+            rows.sort_by(|a, b| {
+                if m.descending {
+                    b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+                } else {
+                    a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                }
+            });
+            for (rnk, (key_val, cnt)) in rows.into_iter().take(m.n as usize).enumerate() {
+                let rnk = (rnk + 1) as f64;
+                let label_values = vec![bucket_label.clone(), key_val, cnt.to_string()];
+                values.push(InstantVectorElement::new(
+                    KeyByLabelValues::new_with_labels(label_values),
+                    rnk,
+                ));
+            }
+        }
+
+        let output_labels = KeyByLabelNames {
+            labels: vec![m.bucket_alias.clone(), m.key_col.clone(), m.cnt_alias.clone()],
+        };
+
+        let (order_by, limit) = parse_order_by_and_limit(&m.outer_order_by_and_limit);
+        let final_post = SqlPostProcessing {
+            aggregation_alias: Some(m.rnk_alias.clone()),
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = final_post.apply(
+            &output_labels,
+            QueryResult::vector(values, Self::convert_query_time_to_data_time(time)),
+        );
+
+        Some((output_labels, result))
+    }
+
+    /// `sum(<agg_alias>) OVER (ORDER BY <col>) AS <alias>` over a subquery
+    /// that's itself the plain classic single-aggregate shape, see
+    /// `RunningTotalMatch`. Executes the inner surrogate (unchanged - it IS
+    /// the classic shape), sorts its own results into the window's own
+    /// ORDER BY, walks a cumulative sum, then applies the OUTER query's own
+    /// ORDER BY/LIMIT for final rendering (which may differ from the
+    /// window's sort - the running total's VALUES are fixed by the window
+    /// order; only their final display order can differ).
+    fn handle_running_total_sql(&self, query: &str, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_running_total_query(query)?;
+        let surrogate = build_running_total_surrogate(&m);
+
+        let (context, _post) =
+            self.build_query_execution_context_sql_with_post_processing(surrogate, None, time)?;
+        let (output_labels, result) = self.execute_context(context, false, false)?;
+
+        let QueryResult::Vector(InstantVector { mut values, timestamp, .. }) = result else {
+            warn!("running-total handler: expected instant vector result");
+            return None;
+        };
+
+        // window_order_col is always either the aggregate alias (the
+        // element's numeric .value) or a group-by column (a label) - both
+        // resolvable the same way sort_and_truncate_instant_vector does.
+        if m.window_order_col == m.agg_alias {
+            values.sort_by(|a, b| {
+                b.value
+                    .partial_cmp(&a.value)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            if m.window_order_ascending {
+                values.reverse();
+            }
+        } else if let Some(idx) = output_labels.labels.iter().position(|l| l == &m.window_order_col) {
+            values.sort_by(|a, b| {
+                let av = a.labels.labels.get(idx).map(String::as_str).unwrap_or("");
+                let bv = b.labels.labels.get(idx).map(String::as_str).unwrap_or("");
+                av.cmp(bv)
+            });
+            if !m.window_order_ascending {
+                values.reverse();
+            }
+        }
+
+        let mut running = 0.0;
+        let new_values: Vec<InstantVectorElement> = values
+            .into_iter()
+            .map(|element| {
+                let agg_value = element.value;
+                running += agg_value;
+                let mut label_values = element.labels.labels;
+                label_values.push(agg_value.to_string());
+                InstantVectorElement::new(KeyByLabelValues::new_with_labels(label_values), running)
+            })
+            .collect();
+
+        let mut output_label_names = output_labels.labels;
+        output_label_names.push(m.agg_alias.clone());
+        let output_labels = KeyByLabelNames {
+            labels: output_label_names,
+        };
+
+        let (order_by, limit) = parse_order_by_and_limit(&m.outer_order_by_and_limit);
+        let final_post = SqlPostProcessing {
+            aggregation_alias: Some(m.running_alias.clone()),
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = final_post.apply(&output_labels, QueryResult::vector(new_values, timestamp));
+
+        Some((output_labels, result))
+    }
+
+    /// `SELECT <cols> FROM ... GROUP BY <same cols> HAVING count(*) <op>
+    /// <n>` - no aggregate anywhere in the SELECT list, see
+    /// `GroupByHavingCountMatch` / the planner's own handling of this
+    /// shape. Builds and executes the same `count(*) AS __having_count__
+    /// ... HAVING __having_count__ <op> <n>` surrogate the planner
+    /// registered - reusing the ordinary classic single-aggregate + HAVING
+    /// serving path unchanged - then drops the hidden count column from
+    /// the result (`vector_without_value`, the same mechanism SELECT
+    /// DISTINCT uses), since the original query never asked for it.
+    fn handle_group_by_having_count_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_group_by_having_count_query(query)?;
+        let surrogate = build_group_by_having_count_surrogate(&m);
+
+        let (context, post) =
+            self.build_query_execution_context_sql_with_post_processing(surrogate, None, time)?;
+        let (output_labels, result) = self.execute_context(context, false, false)?;
+        let result = post.apply(&output_labels, result);
+
+        let QueryResult::Vector(InstantVector { values, timestamp, .. }) = result else {
+            warn!("group-by-having-count handler: expected instant vector result");
+            return None;
+        };
+
+        Some((
+            output_labels,
+            QueryResult::vector_without_value(values, timestamp),
+        ))
+    }
+
+    /// `SELECT <col>, <agg>(<arg>) AS <alias> FROM ... GROUP BY <col>
+    /// HAVING countIf(<cond1>) <op1> <n1> [AND countIf(<cond2>) <op2>
+    /// <n2> ...]` - see `HiddenCountifHavingMatch`'s doc comment (q113's
+    /// "peers with only withdrawals, no announcements" shape). Executes
+    /// the exposed aggregate's own surrogate plus one per hidden countIf
+    /// (the same split the planner registered - `build_hidden_countif_having_surrogates`
+    /// is shared between both sides), filters the exposed rows by the
+    /// hidden branches' resolved values, and renders a result shaped
+    /// exactly like an ordinary classic single-aggregate query - the
+    /// hidden branches never appear as output columns, only as a filter.
+    fn handle_hidden_countif_having_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_hidden_countif_having_query(query)?;
+        let surrogates = build_hidden_countif_having_surrogates(&m);
+
+        let mut per_surrogate: Vec<(KeyByLabelNames, InstantVector)> = Vec::new();
+        for surrogate in &surrogates {
+            let (context, post) = self.build_query_execution_context_sql_with_post_processing(
+                surrogate.clone(),
+                None,
+                time,
+            )?;
+            let (output_labels, result) = self.execute_context(context, false, false)?;
+            let result = post.apply(&output_labels, result);
+            let QueryResult::Vector(vector) = result else {
+                warn!("hidden-countIf-HAVING handler: expected instant vector result");
+                return None;
+            };
+            per_surrogate.push((output_labels, vector));
+        }
+
+        let (exposed_labels, exposed_vector) = per_surrogate.remove(0);
+        let end_timestamp = exposed_vector.timestamp;
+
+        let hidden_maps: Vec<HashMap<Vec<String>, f64>> = per_surrogate
+            .iter()
+            .map(|(_labels, vector)| {
+                vector
+                    .values
+                    .iter()
+                    .map(|e| (e.labels.labels.clone(), e.value))
+                    .collect()
+            })
+            .collect();
+
+        let values: Vec<InstantVectorElement> = exposed_vector
+            .values
+            .into_iter()
+            .filter(|element| {
+                m.hidden.iter().zip(hidden_maps.iter()).all(|((_, op, threshold), map)| {
+                    let actual = map.get(&element.labels.labels).copied().unwrap_or(0.0);
+                    match op.as_str() {
+                        ">" => actual > *threshold,
+                        ">=" => actual >= *threshold,
+                        "<" => actual < *threshold,
+                        "<=" => actual <= *threshold,
+                        "=" => actual == *threshold,
+                        "!=" | "<>" => actual != *threshold,
+                        _ => true,
+                    }
+                })
+            })
+            .collect();
+
+        let (order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        let post = SqlPostProcessing {
+            aggregation_alias: Some(m.alias.clone()),
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(&exposed_labels, QueryResult::vector(values, end_timestamp));
+
+        Some((exposed_labels, result))
+    }
+
+    /// `SELECT <outer_col>, count(*) AS <outer_alias> FROM (SELECT
+    /// <inner_col>, count(*) AS <inner_alias> FROM ... GROUP BY
+    /// <inner_col>) GROUP BY <outer_col>` - see `TwoStageHistogramMatch`'s
+    /// doc comment (q078's "how many prefixes had N updates" shape). The
+    /// inner query is executed through the ordinary classic pipeline
+    /// (exactly as if it had been asked for standalone), then its own
+    /// result rows are locally re-aggregated into a histogram - no second
+    /// precompute read at all, since the inner query's result set already
+    /// carries everything the outer stage needs.
+    fn handle_two_stage_histogram_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_two_stage_histogram_query(query)?;
+        let inner_surrogate = build_two_stage_histogram_inner_surrogate(&m);
+
+        let (context, post) = self.build_query_execution_context_sql_with_post_processing(
+            inner_surrogate,
+            None,
+            time,
+        )?;
+        let (_inner_labels, inner_result) = self.execute_context(context, false, false)?;
+        let inner_result = post.apply(&_inner_labels, inner_result);
+        let QueryResult::Vector(inner_vector) = inner_result else {
+            warn!("two-stage histogram handler: expected instant vector result");
+            return None;
+        };
+
+        let mut histogram: HashMap<String, f64> = HashMap::new();
+        for element in &inner_vector.values {
+            let bucket = element.value.to_string();
+            *histogram.entry(bucket).or_insert(0.0) += 1.0;
+        }
+
+        let values: Vec<InstantVectorElement> = histogram
+            .into_iter()
+            .map(|(bucket, tally)| {
+                InstantVectorElement::new(KeyByLabelValues::new_with_labels(vec![bucket]), tally)
+            })
+            .collect();
+
+        let output_labels = KeyByLabelNames::new(vec![m.outer_group_col.clone()]);
+        let (order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        let post = SqlPostProcessing {
+            aggregation_alias: Some(m.outer_alias.clone()),
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(
+            &output_labels,
+            QueryResult::vector(values, inner_vector.timestamp),
+        );
+
+        Some((output_labels, result))
+    }
+
+    /// Resolves a query text through the same small set of handlers used
+    /// to *register* each half of a correlated-IN-subquery split (see
+    /// `handle_correlated_in_subquery_sql`) - SELECT DISTINCT, argMax,
+    /// then the ordinary classic pipeline (which already covers plain
+    /// GROUP BY aggregates and top-k internally). Not the full
+    /// `handle_query_sql` dispatch chain: only these three shapes are
+    /// ever registered for a correlated-subquery half (see
+    /// `get_streaming_aggregation_configs`'s dispatch order and
+    /// `normalize_bare_group_by_query`'s doc comment on the planner side),
+    /// so trying the rest would just be wasted work.
+    fn resolve_correlated_half(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        // `handle_query_sql` always runs this before its own dispatch cascade
+        // (see its `let query = self.rewrite_recognized_pattern(&query);`) -
+        // an ArgMax half needs the same treatment here, since `handle_arg_agg_sql`
+        // -> `try_execute_arg_agg_branch` parses its input directly with no
+        // table-name swap of its own; `rewrite_arg_agg_query` (called from
+        // within this cascade) is what points it at the derived-value table
+        // the planner actually registered the aggregation under. Skipping
+        // this made the ArgMax half silently fall through to the generic
+        // classic path below, which doesn't know ArgMax's "pack the arg
+        // value as an extra label" result shape - producing labels that
+        // don't contain the join column at all and making the caller's
+        // later `.position(|l| l == &m.join_col)` fail.
+        let query = self.rewrite_recognized_pattern(query);
+        let query = query.as_str();
+        if let Some(result) = self.handle_select_distinct_sql(query, time) {
+            return Some(result);
+        }
+        if let Some(result) = self.handle_arg_agg_sql(query, time) {
+            return Some(result);
+        }
+        let (context, post) = self.build_query_execution_context_sql_with_post_processing(
+            query.to_string(),
+            None,
+            time,
+        )?;
+        let (output_labels, result) = self.execute_context(context, false, false)?;
+        let result = post.apply(&output_labels, result);
+        Some((output_labels, result))
+    }
+
+    /// `<col> [NOT] IN (SELECT ...)` as a top-level WHERE/HAVING clause -
+    /// see `CorrelatedInSubqueryMatch`'s doc comment (q089/q129/q141/q160's
+    /// "outer query filtered by set membership in an independently-
+    /// summarizable inner query" shape). Both halves are read completely
+    /// independently through `resolve_correlated_half` - each was
+    /// registered as its own standalone precompute, with no relationship
+    /// to each other in the store - and joined here in memory: the
+    /// inner's own result rows become a membership set (keyed by whichever
+    /// label position matches the join column), and the outer's rows are
+    /// filtered by membership (or non-membership, for NOT IN).
+    fn handle_correlated_in_subquery_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_correlated_in_subquery_query(query)?;
+
+        let (inner_labels, inner_result) = self.resolve_correlated_half(&m.inner_query, time)?;
+        let inner_col_pos = inner_labels.labels.iter().position(|l| l == &m.join_col)?;
+        let QueryResult::Vector(inner_vector) = inner_result else {
+            warn!("correlated-IN-subquery handler: expected instant vector result (inner)");
+            return None;
+        };
+        let members: HashSet<String> = inner_vector
+            .values
+            .iter()
+            .filter_map(|e| e.labels.labels.get(inner_col_pos).cloned())
+            .collect();
+
+        let (outer_labels, outer_result) = self.resolve_correlated_half(&m.outer_query, time)?;
+        let outer_col_pos = outer_labels.labels.iter().position(|l| l == &m.join_col)?;
+        let QueryResult::Vector(outer_vector) = outer_result else {
+            warn!("correlated-IN-subquery handler: expected instant vector result (outer)");
+            return None;
+        };
+
+        let has_value = outer_vector.has_value;
+        let end_timestamp = outer_vector.timestamp;
+        let values: Vec<InstantVectorElement> = outer_vector
+            .values
+            .into_iter()
+            .filter(|element| {
+                let is_member = element
+                    .labels
+                    .labels
+                    .get(outer_col_pos)
+                    .is_some_and(|v| members.contains(v));
+                if m.negated {
+                    !is_member
+                } else {
+                    is_member
+                }
+            })
+            .collect();
+
+        let result = if has_value {
+            QueryResult::vector(values, end_timestamp)
+        } else {
+            QueryResult::vector_without_value(values, end_timestamp)
+        };
+
+        Some((outer_labels, result))
+    }
+
+    /// `SELECT <week_col>, count(*) AS <outer_alias> FROM (SELECT
+    /// toStartOfWeek(<time_col>) AS <week_col>, <prefix_col>,
+    /// uniqExact(<origin_col>) AS <cnt_alias> FROM ... GROUP BY <week_col>,
+    /// <prefix_col> HAVING <cnt_alias> > <n>) GROUP BY <week_col>` - see
+    /// `WeeklyMoasHistogramMatch`'s doc comment (q133's "how many prefixes
+    /// were MOAS'd each week" shape). Reads the registered SetAggregator
+    /// exactly like `handle_moas_sql` does (one exact origin-set per
+    /// (week, prefix) key), but tallies a histogram over `week_col`
+    /// instead of rendering each qualifying key's own origin list -
+    /// there's no per-prefix output here, only a per-week count of how
+    /// many prefixes passed the origins-count HAVING filter.
+    fn handle_weekly_moas_histogram_sql(
+        &self,
+        query: &str,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_weekly_moas_histogram_query(query)?;
+        let surrogate = build_weekly_moas_histogram_inner_surrogate(&m);
+
+        let schema = match &self.inference_config.read().unwrap().schema {
+            SchemaConfig::SQL(sql_schema) => sql_schema.clone(),
+            SchemaConfig::PromQL(_) => return None,
+            &SchemaConfig::ElasticQueryDSL(_) => return None,
+            SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
+        };
+
+        let statements = parser::parse_sql(&GenericDialect {}, surrogate.as_str()).ok()?;
+        let query_data = SQLPatternParser::new(&schema, time).parse_query(&statements)?;
+        let query_config = self.find_query_config_sql(&query_data)?;
+        let aggregation_id = query_config.aggregations.first()?.aggregation_id;
+
+        let end_timestamp = self.align_end_timestamp_sql(Self::convert_query_time_to_data_time(
+            query_data.time_info.get_start() + query_data.time_info.get_duration(),
+        ));
+        let duration_ms = (query_data.time_info.get_duration() * 1000.0).round() as u64;
+        let start_timestamp = end_timestamp.checked_sub(duration_ms)?;
+
+        let params = StoreQueryParams {
+            metric: query_data.metric.clone(),
+            aggregation_id,
+            start_timestamp,
+            end_timestamp,
+            is_exact_query: false,
+        };
+
+        let timestamped_map = self
+            .execute_store_query(&params)
+            .map_err(|e| {
+                warn!("weekly-MOAS-histogram handler: store query failed: {}", e);
+                e
+            })
+            .ok()?;
+
+        // Registration groups by [week_col, prefix_col] via
+        // KeyByLabelNames::new (alphabetically sorted), so the group key's
+        // own label positions must be resolved the same way rather than
+        // assumed - see try_execute_group_array_distinct_branch and
+        // handle_correlated_in_subquery_sql for the same "look up by name,
+        // not position" reasoning.
+        let grouping = KeyByLabelNames::new(vec![m.week_col.clone(), m.prefix_col.clone()]);
+        let week_pos = grouping.labels.iter().position(|l| l == &m.week_col)?;
+
+        let mut histogram: HashMap<String, f64> = HashMap::new();
+        for (group_key, timestamped_buckets) in timestamped_map {
+            let Some(group_key_values) = group_key else {
+                continue;
+            };
+            let Some(week_value) = group_key_values.get(week_pos) else {
+                continue;
+            };
+            let week_value = week_value.clone();
+
+            let mut origins: HashSet<String> = HashSet::new();
+            for (_bucket, precompute) in timestamped_buckets {
+                if let Some(keys) = precompute.get_keys() {
+                    for key in keys {
+                        if let Some(origin) = key.get(0) {
+                            if !origin.is_empty() {
+                                origins.insert(origin.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
+            let count = origins.len() as f64;
+            let passes = match m.having_op.as_str() {
+                ">" => count > m.having_threshold,
+                ">=" => count >= m.having_threshold,
+                "<" => count < m.having_threshold,
+                "<=" => count <= m.having_threshold,
+                "=" => count == m.having_threshold,
+                "!=" | "<>" => count != m.having_threshold,
+                _ => false,
+            };
+            if passes {
+                *histogram.entry(week_value).or_insert(0.0) += 1.0;
+            }
+        }
+
+        let values: Vec<InstantVectorElement> = histogram
+            .into_iter()
+            .map(|(week, tally)| {
+                InstantVectorElement::new(KeyByLabelValues::new_with_labels(vec![week]), tally)
+            })
+            .collect();
+
+        let output_labels = KeyByLabelNames::new(vec![m.week_col.clone()]);
+        let (order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        let post = SqlPostProcessing {
+            aggregation_alias: Some(m.outer_alias.clone()),
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(&output_labels, QueryResult::vector(values, end_timestamp));
+
+        Some((output_labels, result))
+    }
+
     /// Finds the query configuration for a bucketed countIf SQL query.
     ///
     /// This is parallel to `find_query_config_sql`: the classic SQL path matches
@@ -604,8 +2010,10 @@ impl SimpleEngine {
         let raw_start_timestamp = end_timestamp.checked_sub(duration_ms)?;
 
         // The precompute store keys tumbling windows by bucket_ms-aligned
-        // absolute timestamps (bucket_start_ts = floor(t / bucket_ms) * bucket_ms).
-        // raw_start_timestamp is only guaranteed aligned to
+        // absolute timestamps (bucket_start_ts = floor((t - offset) /
+        // bucket_ms) * bucket_ms + offset - see WindowManager::window_start_for,
+        // which this mirrors; offset is nonzero only for toStartOfWeek, see
+        // its doc comment). raw_start_timestamp is only guaranteed aligned to
         // data_ingestion_interval_ms via align_end_timestamp_sql above, which can
         // differ from bucket_ms. Without this, the read loop below probes
         // timestamps that never land on a real stored key and every sample
@@ -613,13 +2021,19 @@ impl SimpleEngine {
         let start_timestamp = if bucketed.bucket_ms == 0 {
             raw_start_timestamp
         } else {
-            (raw_start_timestamp / bucketed.bucket_ms) * bucketed.bucket_ms
+            let offset = bucketed.bucket_offset_ms;
+            ((raw_start_timestamp - offset) / bucketed.bucket_ms) * bucketed.bucket_ms + offset
         };
 
         let mut range_elements = Vec::new();
 
         for (idx, output) in bucketed.outputs.iter().enumerate() {
             let aggregation_id = query_config.aggregations[idx].aggregation_id;
+            let statistic = if output.cardinality_column.is_some() {
+                Statistic::Cardinality
+            } else {
+                Statistic::Count
+            };
 
             let params = StoreQueryParams {
                 metric: bucketed.metric.clone(),
@@ -648,7 +2062,7 @@ impl SimpleEngine {
                     let value = self
                         .query_precompute_for_statistic(
                             precompute.as_ref(),
-                            &Statistic::Count,
+                            &statistic,
                             &scalar_key,
                             &HashMap::new(),
                         )
@@ -680,8 +2094,56 @@ impl SimpleEngine {
             range_elements.push(element);
         }
 
+        // ORDER BY / LIMIT post-processing: every element in
+        // `range_elements` shares the same time-ordered sample sequence by
+        // construction (the loop above walks the same bucket timestamps
+        // for each output), so a single permutation - computed once
+        // against whichever output the ORDER BY names, or against the
+        // timestamps themselves for the bucket column - applies identically
+        // to every element and keeps them aligned by position.
+        if !range_elements.is_empty() {
+            let n = range_elements[0].samples.len();
+            let mut order: Vec<usize> = (0..n).collect();
+
+            if let Some(item) = bucketed.order_by.first() {
+                let out_idx = bucketed.outputs.iter().position(|o| o.alias == item.column);
+                let value_of = |i: usize| -> f64 {
+                    match out_idx {
+                        Some(idx) => range_elements[idx].samples[i].value,
+                        None => range_elements[0].samples[i].timestamp as f64,
+                    }
+                };
+                order.sort_by(|&a, &b| {
+                    let ord = value_of(a)
+                        .partial_cmp(&value_of(b))
+                        .unwrap_or(std::cmp::Ordering::Equal);
+                    if item.ascending {
+                        ord
+                    } else {
+                        ord.reverse()
+                    }
+                });
+            }
+
+            if let Some(limit) = bucketed.limit {
+                order.truncate(limit as usize);
+            }
+
+            let is_identity = order.len() == n && order.iter().enumerate().all(|(i, &o)| i == o);
+            if !is_identity {
+                for element in &mut range_elements {
+                    element.samples = order.iter().map(|&i| element.samples[i].clone()).collect();
+                }
+            }
+        }
+
         let output_labels = KeyByLabelNames::new(vec!["output".to_string()]);
-        Some((output_labels, QueryResult::matrix(range_elements)))
+        let result = if bucketed.bucket_is_date {
+            QueryResult::matrix_with_date_buckets(range_elements)
+        } else {
+            QueryResult::matrix(range_elements)
+        };
+        Some((output_labels, result))
     }
 
     /// Alias of a `<expr> AS <alias>` SELECT-list item, e.g.
@@ -690,6 +2152,158 @@ impl SimpleEngine {
         let lower = expr.to_lowercase();
         let as_idx = lower.rfind(" as ")?;
         Some(expr[as_idx + 4..].trim().to_string())
+    }
+
+    /// Serves a derived-ratio query (e.g. `countIf(op='W') / greatest(countIf(op='A'), 1)
+    /// AS ratio`, or `count(*) / 6.0 AS avg_per_hour`) by running its 1-2
+    /// underlying aggregates as independent single-aggregate surrogates -
+    /// same split/registration `handle_multi_aggregate_sql` uses - then
+    /// computing the ratio (and, if present, the `<alias>+<alias> <op> <n>`
+    /// HAVING) from their joined per-key results. A key present in one
+    /// surrogate's output but not the other's (e.g. a peer with
+    /// announcements but zero withdrawals) is treated as 0 on the missing
+    /// side, matching countIf's own "no matching rows -> 0" semantics.
+    fn handle_derived_ratio_sql(&self, query: &str, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+        let m = parse_derived_ratio_query(query)?;
+        let surrogates = build_derived_ratio_surrogates(&m);
+
+        let mut per_surrogate: Vec<(KeyByLabelNames, InstantVector)> = Vec::new();
+        for surrogate in &surrogates {
+            let Some((context, post)) = self.build_query_execution_context_sql_with_post_processing(
+                surrogate.clone(),
+                None,
+                time,
+            ) else {
+                warn!("derived-ratio handler: failed to build execution context for surrogate");
+                return None;
+            };
+            let Some((output_labels, result)) = self.execute_context(context, false, false) else {
+                warn!("derived-ratio handler: failed to execute context for surrogate");
+                return None;
+            };
+            let result = post.apply(&output_labels, result);
+            let QueryResult::Vector(vector) = result else {
+                warn!("derived-ratio handler: expected instant vector result");
+                return None;
+            };
+            per_surrogate.push((output_labels, vector));
+        }
+
+        // surrogates[0] is always the numerator (build_derived_ratio_surrogates'
+        // fixed order); surrogates[1], if present, is the denominator.
+        let (numerator_labels, numerator_vector) = &per_surrogate[0];
+        let end_timestamp = numerator_vector.timestamp;
+        let group_label_names = numerator_labels.labels.clone();
+
+        let numerator_map: HashMap<Vec<String>, f64> = numerator_vector
+            .values
+            .iter()
+            .map(|e| (e.labels.labels.clone(), e.value))
+            .collect();
+        let denominator_map: Option<HashMap<Vec<String>, f64>> = per_surrogate
+            .get(1)
+            .map(|(_, vector)| {
+                vector
+                    .values
+                    .iter()
+                    .map(|e| (e.labels.labels.clone(), e.value))
+                    .collect()
+            });
+
+        let mut all_keys: HashSet<Vec<String>> = numerator_map.keys().cloned().collect();
+        if let Some(dm) = &denominator_map {
+            all_keys.extend(dm.keys().cloned());
+        }
+
+        let mut output_label_names = group_label_names;
+        if m.numerator.exposed_alias.is_some() {
+            output_label_names.push(Self::alias_of(&surrogates[0]).unwrap_or_default());
+        }
+        if let RatioDenominator::Aggregate { component, .. } = &m.denominator {
+            if component.exposed_alias.is_some() {
+                output_label_names.push(Self::alias_of(&surrogates[1]).unwrap_or_default());
+            }
+        }
+
+        let mut values: Vec<InstantVectorElement> = Vec::new();
+        for key in all_keys {
+            let numerator_value = numerator_map.get(&key).copied().unwrap_or(0.0);
+            let denominator_raw = match &m.denominator {
+                RatioDenominator::Constant(_) => None,
+                RatioDenominator::Aggregate { .. } => Some(
+                    denominator_map
+                        .as_ref()
+                        .and_then(|dm| dm.get(&key))
+                        .copied()
+                        .unwrap_or(0.0),
+                ),
+            };
+
+            if let Some((op, threshold)) = &m.having_sum {
+                // Only reachable when the denominator is an exposed
+                // aggregate (see parse_derived_ratio_query), so
+                // denominator_raw is always Some here.
+                let sum = numerator_value + denominator_raw.unwrap_or(0.0);
+                let keep = match op.as_str() {
+                    ">" => sum > *threshold,
+                    ">=" => sum >= *threshold,
+                    "<" => sum < *threshold,
+                    "<=" => sum <= *threshold,
+                    "=" => sum == *threshold,
+                    "!=" | "<>" => sum != *threshold,
+                    _ => true,
+                };
+                if !keep {
+                    continue;
+                }
+            }
+
+            let denominator_value = match &m.denominator {
+                RatioDenominator::Constant(c) => *c,
+                RatioDenominator::Aggregate { floor, .. } => {
+                    let raw = denominator_raw.unwrap_or(0.0);
+                    floor.map_or(raw, |f| raw.max(f))
+                }
+            };
+            let mut ratio = if denominator_value == 0.0 {
+                0.0
+            } else {
+                (numerator_value * m.multiplier) / denominator_value
+            };
+            if let Some(decimals) = m.decimals {
+                let factor = 10f64.powi(decimals as i32);
+                ratio = (ratio * factor).round() / factor;
+            }
+
+            let mut label_values = key.clone();
+            if m.numerator.exposed_alias.is_some() {
+                label_values.push(numerator_value.to_string());
+            }
+            if let RatioDenominator::Aggregate { component, .. } = &m.denominator {
+                if component.exposed_alias.is_some() {
+                    label_values.push(denominator_raw.unwrap_or(0.0).to_string());
+                }
+            }
+            values.push(InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(label_values),
+                ratio,
+            ));
+        }
+
+        let output_labels = KeyByLabelNames {
+            labels: output_label_names,
+        };
+
+        let (order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        let post = SqlPostProcessing {
+            aggregation_alias: Some(m.ratio_alias.clone()),
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(&output_labels, QueryResult::vector(values, end_timestamp));
+
+        Some((output_labels, result))
     }
 
     /// Serves a multi-aggregate classic query (e.g. `SELECT k1, k2, count()
@@ -708,6 +2322,7 @@ impl SimpleEngine {
     fn handle_multi_aggregate_sql(
         &self,
         query: &str,
+        computed_group_by_alias: Option<&str>,
         time: f64,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
         let m = parse_multi_aggregate_query(query)?;
@@ -719,11 +2334,51 @@ impl SimpleEngine {
 
         let surrogates = build_multi_aggregate_surrogates(&m);
 
+        // At least one branch is non-numeric (ARGMAX/ARGMIN or
+        // GROUPARRAY(DISTINCT ...)) - the "last aggregate becomes the
+        // row's primary f64 value" design below has no numeric value to
+        // promote in that case, so route to the dedicated all-labels
+        // combiner instead. Existing all-numeric multi-aggregate queries
+        // are unaffected: this check is false for every one of them, and
+        // they keep taking the unchanged code path below.
+        if m.aggregate_exprs
+            .iter()
+            .any(|e| Self::is_arg_agg_expr(e) || Self::is_group_array_distinct_expr(e))
+        {
+            return self.handle_multi_aggregate_all_labels_sql(
+                &m,
+                &surrogates,
+                computed_group_by_alias,
+                time,
+            );
+        }
+
         let mut per_aggregate: Vec<(KeyByLabelNames, InstantVector)> = Vec::new();
         for surrogate in &surrogates {
-            let Some((context, post)) =
-                self.build_query_execution_context_sql_with_post_processing(surrogate.clone(), time)
-            else {
+            // avg(...) has no first-class Statistic (it's always [Sum, Count]
+            // under the hood - see try_execute_avg_branch's doc comment) and
+            // can't go through the ordinary single-aggregate execution path
+            // at all. Detect it here, per-branch, the same way ARGMAX/
+            // groupArray(DISTINCT ...) are special-cased in
+            // handle_multi_aggregate_all_labels_sql, so a query like
+            // `avg(x), count(*)` still gets its avg branch as one ordinary
+            // (labels, InstantVector) entry alongside the count branch.
+            if surrogate.to_lowercase().contains("avg(") {
+                let Some((output_labels, vector)) =
+                    self.try_execute_avg_branch(surrogate, computed_group_by_alias, time)
+                else {
+                    warn!("multi-aggregate handler: failed to compute avg branch for surrogate");
+                    return None;
+                };
+                per_aggregate.push((output_labels, vector));
+                continue;
+            }
+
+            let Some((context, post)) = self.build_query_execution_context_sql_with_post_processing(
+                surrogate.clone(),
+                computed_group_by_alias,
+                time,
+            ) else {
                 warn!("multi-aggregate handler: failed to build execution context for surrogate");
                 return None;
             };
@@ -739,32 +2394,58 @@ impl SimpleEngine {
             per_aggregate.push((output_labels, vector));
         }
 
-        let mut iter = per_aggregate.into_iter();
+        // The HTTP renderer (format_success_response in clickhouse_http.rs)
+        // always writes `output_labels` columns first and the
+        // InstantVectorElement's numeric `value` field last. To reproduce
+        // the original SELECT list's column order - group-by columns, then
+        // every aggregate expression in its original position - the LAST
+        // aggregate's value has to be the one that lands in `value`; every
+        // earlier aggregate becomes an ordinary label column instead,
+        // appended (in original order) right after the group-by columns.
+        // Putting `aggregate_exprs[0]` in `value` here previously rendered
+        // it *last* instead of first whenever there were 2+ extra aliases -
+        // a silent column-order swap caught by q094's countIf pair.
+        let last = per_aggregate.pop()?;
+        let (last_labels, last_vector) = last;
+        let end_timestamp = last_vector.timestamp;
+
         // The grouping-label *order* here comes from whichever surrogate's
         // own execution context produced it (KeyByLabelNames may reorder
-        // relative to the SELECT list), not from `m.group_by_cols` - the
-        // element values below are keyed by that same order, so the output
-        // label names must track it exactly or labels and values misalign.
-        let (first_labels, first_vector) = iter.next()?;
-        let end_timestamp = first_vector.timestamp;
+        // relative to the SELECT list), not from `m.group_by_cols` - every
+        // surrogate shares the same grouping structure, so any one of them
+        // (here, the first remaining, falling back to the popped last if
+        // there was only one surrogate to begin with) determines it.
+        let group_label_names = per_aggregate
+            .first()
+            .map(|(labels, _)| labels.labels.clone())
+            .unwrap_or_else(|| last_labels.labels.clone());
 
-        let extra_maps: Vec<HashMap<Vec<String>, f64>> = iter
+        let extra_maps: Vec<HashMap<Vec<String>, f64>> = per_aggregate
+            .iter()
             .map(|(_labels, vector)| {
                 vector
                     .values
-                    .into_iter()
-                    .map(|element| (element.labels.labels, element.value))
+                    .iter()
+                    .map(|element| (element.labels.labels.clone(), element.value))
                     .collect()
             })
             .collect();
 
-        let mut output_label_names = first_labels.labels.clone();
-        for expr in m.aggregate_exprs.iter().skip(1) {
+        let mut output_label_names = group_label_names;
+        for expr in m.aggregate_exprs.iter().take(m.aggregate_exprs.len() - 1) {
             output_label_names.push(Self::alias_of(expr).unwrap_or_else(|| expr.clone()));
         }
-        let output_labels = KeyByLabelNames::new(output_label_names);
+        // Deliberately not KeyByLabelNames::new(...): that constructor sorts
+        // alphabetically, but the values below are built in this exact
+        // (group-columns-then-extra-aliases) order, not alphabetical order -
+        // ORDER BY resolution (sort_and_truncate_instant_vector) looks a
+        // column up by *position* in this list and indexes into the values
+        // with that position, so the two must stay in lockstep.
+        let output_labels = KeyByLabelNames {
+            labels: output_label_names,
+        };
 
-        let values: Vec<InstantVectorElement> = first_vector
+        let mut values: Vec<InstantVectorElement> = last_vector
             .values
             .into_iter()
             .map(|element| {
@@ -777,20 +2458,273 @@ impl SimpleEngine {
             })
             .collect();
 
+        // Resolves one exposed alias's value for a single row - either the
+        // last aggregate (element.value) or one of the earlier ones
+        // (a label, by position in output_label_names). Shared by HAVING
+        // filtering and the order_by_sum derived sort key below; both need
+        // "look up any of this query's own aliases per row", which
+        // SqlPostProcessing's generic aggregation_alias/label resolution
+        // doesn't cover (it only knows about ONE alias, the primary value).
+        let last_alias = Self::alias_of(&m.aggregate_exprs[m.aggregate_exprs.len() - 1]);
+        let resolve_alias = |element: &InstantVectorElement, alias: &str| -> f64 {
+            if last_alias.as_deref() == Some(alias) {
+                element.value
+            } else {
+                output_labels
+                    .labels
+                    .iter()
+                    .position(|l| l == alias)
+                    .and_then(|pos| element.labels.labels.get(pos))
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .unwrap_or(0.0)
+            }
+        };
+
+        if !m.having.is_empty() {
+            values.retain(|element| {
+                m.having.iter().all(|(alias, op, threshold)| {
+                    let actual = resolve_alias(element, alias);
+                    match op.as_str() {
+                        ">" => actual > *threshold,
+                        ">=" => actual >= *threshold,
+                        "<" => actual < *threshold,
+                        "<=" => actual <= *threshold,
+                        "=" => actual == *threshold,
+                        "!=" | "<>" => actual != *threshold,
+                        _ => true,
+                    }
+                })
+            });
+        }
+
         warn!("multi-aggregate handler: produced {} rows", values.len());
 
-        Some((output_labels, QueryResult::vector(values, end_timestamp)))
+        let (mut order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        if let Some((alias1, alias2, descending)) = &m.order_by_sum {
+            values.sort_by(|a, b| {
+                let av = resolve_alias(a, alias1) + resolve_alias(a, alias2);
+                let bv = resolve_alias(b, alias1) + resolve_alias(b, alias2);
+                let ord = av.partial_cmp(&bv).unwrap_or(std::cmp::Ordering::Equal);
+                if *descending { ord.reverse() } else { ord }
+            });
+            // Already sorted above - SqlPostProcessing's generic order_by
+            // resolution can't express a summed-alias key, so don't hand it
+            // one; it still applies LIMIT below.
+            order_by.clear();
+        }
+        let post = SqlPostProcessing {
+            aggregation_alias: last_alias,
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(&output_labels, QueryResult::vector(values, end_timestamp));
+
+        Some((output_labels, result))
+    }
+
+    /// True when `expr` is an ARGMAX/ARGMIN aggregate expression - one of
+    /// two non-numeric multi-aggregate branch shapes (see
+    /// `handle_multi_aggregate_all_labels_sql`'s doc comment; the other is
+    /// `is_group_array_distinct_expr`).
+    fn is_arg_agg_expr(expr: &str) -> bool {
+        let upper = expr.to_uppercase();
+        upper.contains("ARGMAX(") || upper.contains("ARGMIN(")
+    }
+
+    /// True when `expr` is a `groupArray(DISTINCT ...)` aggregate
+    /// expression - the other non-numeric multi-aggregate branch shape
+    /// (see `is_arg_agg_expr`).
+    fn is_group_array_distinct_expr(expr: &str) -> bool {
+        let upper = expr.to_uppercase();
+        upper.contains("GROUPARRAY(") && upper.contains("DISTINCT")
+    }
+
+    /// Routed to from `handle_multi_aggregate_sql` when at least one
+    /// aggregate expression is non-numeric (ARGMAX/ARGMIN or
+    /// GROUPARRAY(DISTINCT ...)). Unlike the numeric path - which promotes
+    /// the last aggregate's f64 `value` and demotes every earlier one to a
+    /// label column - there is no numeric value left to promote once any
+    /// branch is string-valued, so EVERY branch's result becomes a
+    /// trailing label column instead, mirroring
+    /// `handle_select_distinct_sql`'s labels-only rendering
+    /// (`vector_without_value`/`has_value: false`). Numeric branches are
+    /// stringified via `.to_string()` so all columns line up as strings.
+    fn handle_multi_aggregate_all_labels_sql(
+        &self,
+        m: &MultiAggregateMatch,
+        surrogates: &[String],
+        computed_group_by_alias: Option<&str>,
+        time: f64,
+    ) -> Option<(KeyByLabelNames, QueryResult)> {
+        let mut group_label_names: Option<Vec<String>> = None;
+        let mut end_timestamp: u64 = 0;
+        // One HashMap<group-key, stringified-branch-value> per aggregate
+        // expression, in the same order as m.aggregate_exprs/surrogates.
+        let mut branch_maps: Vec<HashMap<Vec<String>, String>> = Vec::new();
+
+        for (expr, surrogate) in m.aggregate_exprs.iter().zip(surrogates.iter()) {
+            if Self::is_arg_agg_expr(expr) {
+                // try_execute_arg_agg_branch expects an already-rewritten
+                // query (FROM pointing at the derived arg table) - the
+                // standalone handle_arg_agg_sql gets that for free from
+                // handle_query_sql's top-level rewrite_recognized_pattern
+                // call before it ever sees the query, but a freshly built
+                // surrogate here has not been through that yet.
+                let rewritten = self.rewrite_recognized_pattern(surrogate);
+                let (arg_match, values, ts) =
+                    self.try_execute_arg_agg_branch(&rewritten, time)?;
+                if group_label_names.is_none() {
+                    group_label_names = Some(vec![arg_match.group_by_col.clone()]);
+                }
+                end_timestamp = end_timestamp.max(ts);
+                branch_maps.push(values);
+            } else if Self::is_group_array_distinct_expr(expr) {
+                // No FROM-clause rewrite needed first - unlike the arg-agg
+                // branch above, this mechanism registers directly against
+                // the query's own real table (see
+                // try_execute_group_array_distinct_branch's doc comment).
+                let (gad_match, values, ts) =
+                    self.try_execute_group_array_distinct_branch(surrogate, time)?;
+                if group_label_names.is_none() {
+                    group_label_names = Some(gad_match.group_by.clone().into_iter().collect());
+                }
+                end_timestamp = end_timestamp.max(ts);
+                branch_maps.push(values);
+            } else {
+                let (context, post) = self.build_query_execution_context_sql_with_post_processing(
+                    surrogate.clone(),
+                    computed_group_by_alias,
+                    time,
+                )?;
+                let (output_labels, result) = self.execute_context(context, false, false)?;
+                let result = post.apply(&output_labels, result);
+                let QueryResult::Vector(vector) = result else {
+                    warn!("multi-aggregate all-labels handler: expected instant vector result");
+                    return None;
+                };
+                if group_label_names.is_none() {
+                    group_label_names = Some(output_labels.labels.clone());
+                }
+                end_timestamp = end_timestamp.max(vector.timestamp);
+                let map: HashMap<Vec<String>, String> = vector
+                    .values
+                    .into_iter()
+                    .map(|element| (element.labels.labels.clone(), element.value.to_string()))
+                    .collect();
+                branch_maps.push(map);
+            }
+        }
+
+        let group_label_names = group_label_names?;
+
+        // Union of group keys across every branch, preserving first-seen
+        // order - a key one branch's own filter excluded still needs a row
+        // if any other branch produced it, matching the numeric path's
+        // `unwrap_or(0.0)` default-fill behavior instead of silently
+        // dropping the row.
+        let mut all_keys: Vec<Vec<String>> = Vec::new();
+        let mut seen: HashSet<Vec<String>> = HashSet::new();
+        for map in &branch_maps {
+            for key in map.keys() {
+                if seen.insert(key.clone()) {
+                    all_keys.push(key.clone());
+                }
+            }
+        }
+
+        let mut output_label_names = group_label_names;
+        for expr in &m.aggregate_exprs {
+            output_label_names.push(Self::alias_of(expr).unwrap_or_else(|| expr.clone()));
+        }
+        let output_labels = KeyByLabelNames {
+            labels: output_label_names,
+        };
+
+        let mut values: Vec<InstantVectorElement> = all_keys
+            .into_iter()
+            .map(|key| {
+                let mut label_values = key.clone();
+                for map in &branch_maps {
+                    label_values.push(map.get(&key).cloned().unwrap_or_default());
+                }
+                InstantVectorElement::new(KeyByLabelValues::new_with_labels(label_values), 0.0)
+            })
+            .collect();
+
+        // Same by-position alias lookup as the numeric path's resolve_alias,
+        // minus the "last aggregate is the live f64 value" special case -
+        // every alias here is a label column, so HAVING (always a numeric
+        // comparison) parses the label text back to f64.
+        let resolve_alias = |element: &InstantVectorElement, alias: &str| -> f64 {
+            output_labels
+                .labels
+                .iter()
+                .position(|l| l == alias)
+                .and_then(|pos| element.labels.labels.get(pos))
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(0.0)
+        };
+
+        if !m.having.is_empty() {
+            values.retain(|element| {
+                m.having.iter().all(|(alias, op, threshold)| {
+                    let actual = resolve_alias(element, alias);
+                    match op.as_str() {
+                        ">" => actual > *threshold,
+                        ">=" => actual >= *threshold,
+                        "<" => actual < *threshold,
+                        "<=" => actual <= *threshold,
+                        "=" => actual == *threshold,
+                        "!=" | "<>" => actual != *threshold,
+                        _ => true,
+                    }
+                })
+            });
+        }
+
+        let (order_by, limit) = parse_order_by_and_limit(&m.order_by_and_limit);
+        let post = SqlPostProcessing {
+            aggregation_alias: None,
+            order_by,
+            limit,
+            having: None,
+        };
+        let result = post.apply(
+            &output_labels,
+            QueryResult::vector_without_value(values, end_timestamp),
+        );
+
+        Some((output_labels, result))
     }
 
     /// Internal: parses + plans a SQL query and returns both the execution
     /// context (shared with PromQL/Elastic engines) and the SQL-only
     /// post-processing rules (ORDER BY / LIMIT / alias resolution).
+    /// `computed_group_by_alias`: set when the ORIGINAL query (before any
+    /// rewriting, all the way back at `handle_query_sql`'s entry) matched a
+    /// computed-GROUP-BY shape (e.g. `SELECT toDate(timestamp) AS day,
+    /// count(*) ... GROUP BY day`) - see `SQLSchema::with_extra_metadata_column`'s
+    /// doc comment for why this needs to widen schema validation below.
+    /// Callers must detect this on the RAW query text themselves and pass it
+    /// through: by the time any rewrite (including this function's own
+    /// `rewrite_recognized_pattern` call just below) has run once, the
+    /// computed expression is already gone - replaced by the bare alias -
+    /// so re-detecting the shape from an already-rewritten string (what an
+    /// earlier version of this fix tried, from inside this function) never
+    /// matches. `handle_query_sql` rewrites its own `query` before dispatching
+    /// to every handler, including the multi-aggregate path, which calls
+    /// this function once per sub-aggregate surrogate - so every caller of
+    /// this function only ever sees an already-rewritten string too, and the
+    /// detection genuinely has to happen at the top of the call chain, once,
+    /// on text none of them have touched yet.
     fn build_query_execution_context_sql_with_post_processing(
         &self,
         query: String,
+        computed_group_by_alias: Option<&str>,
         time: f64,
     ) -> Option<(QueryExecutionContext, SqlPostProcessing)> {
-        let query = Self::rewrite_recognized_pattern(&query);
+        let query = self.rewrite_recognized_pattern(&query);
 
         // Get SQL schema from inference config
         let schema = match &self.inference_config.read().unwrap().schema {
@@ -803,7 +2737,24 @@ impl SimpleEngine {
             SchemaConfig::ElasticSQL(sql_schema) => sql_schema.clone(),
         };
 
-        let statements = parser::parse_sql(&GenericDialect {}, query.as_str()).unwrap();
+        // Widen the schema copy used for THIS query's validation only, or
+        // `flatten_query_info` rejects the rewritten query with
+        // `InvalidAggregationLabel` despite it being fully supported.
+        let schema = match computed_group_by_alias {
+            Some(alias) => schema.with_extra_metadata_column(alias),
+            None => schema,
+        };
+
+        let statements = match parser::parse_sql(&GenericDialect {}, query.as_str()) {
+            Ok(statements) => statements,
+            Err(e) => {
+                debug!(
+                    "Could not parse query after rewrite_recognized_pattern: {} (query: {})",
+                    e, query
+                );
+                return None;
+            }
+        };
         let query_data = SQLPatternParser::new(&schema, time).parse_query(&statements);
 
         let query_data = match query_data {
@@ -974,7 +2925,11 @@ impl SimpleEngine {
             warn!(
                     "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
                 );
-            let requirements = self.build_query_requirements_sql(match_result, topk);
+            let requirements = self.build_query_requirements_sql(
+                match_result,
+                topk,
+                query_data.spatial_filter.as_deref(),
+            );
             self.streaming_config
                 .read()
                 .unwrap()
@@ -1084,6 +3039,7 @@ mod detect_topk_tests {
                 ascending: false,
             }],
             limit: Some(10),
+            having: None,
         };
         assert_eq!(
             detect_sql_topk(&qd),
@@ -1335,6 +3291,7 @@ mod sort_and_truncate_tests {
         let result = QueryResult::Vector(InstantVector {
             values: input.clone(),
             timestamp: 1234,
+            has_value: true,
         });
         let out = post.apply(&labels, result);
         let QueryResult::Vector(v) = out else {
@@ -1360,6 +3317,7 @@ mod sort_and_truncate_tests {
                 ascending: false,
             }],
             limit: Some(2),
+            having: None,
         };
         let labels = KeyByLabelNames::new(vec!["L".to_string()]);
         let input = vec![
@@ -1371,6 +3329,7 @@ mod sort_and_truncate_tests {
         let result = QueryResult::Vector(InstantVector {
             values: input,
             timestamp: 9999,
+            has_value: true,
         });
         let out = post.apply(&labels, result);
         let QueryResult::Vector(v) = out else {
@@ -1421,6 +3380,12 @@ mod topk_pipeline_tests {
 
     const AGG_ID: u64 = 101;
     const METRIC: &str = "netflow_table";
+    // AggregationConfig.metric is "{table_name}.{value_column}" for SQL
+    // configs (see aggregation_config.rs's from_yaml deserialization) - the
+    // capability-matching fixtures below must use this same combined form,
+    // not the bare table name, to match what build_query_requirements_sql
+    // constructs from a real query.
+    const CAPABILITY_METRIC: &str = "netflow_table.pkt_len";
     // '2025-10-01 00:00:10' (UTC) in seconds.
     const QUERY_TIME: f64 = 1_759_276_810.0;
 
@@ -1469,6 +3434,7 @@ mod topk_pipeline_tests {
             window_size_ms: 1000,
             slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: METRIC.to_string(),
@@ -1480,9 +3446,7 @@ mod topk_pipeline_tests {
 
         let mut agg_configs = HashMap::new();
         agg_configs.insert(AGG_ID, agg_config);
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs: agg_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(agg_configs));
 
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),
@@ -1557,6 +3521,7 @@ mod topk_pipeline_tests {
             window_size_ms: 2000,
             slide_interval_ms: 2000,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: METRIC.to_string(),
@@ -1568,9 +3533,7 @@ mod topk_pipeline_tests {
 
         let mut agg_configs = HashMap::new();
         agg_configs.insert(AGG_ID, agg_config);
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs: agg_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(agg_configs));
 
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),
@@ -1649,6 +3612,7 @@ mod topk_pipeline_tests {
             window_size_ms: 1000,
             slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: METRIC.to_string(),
@@ -1660,9 +3624,7 @@ mod topk_pipeline_tests {
 
         let mut agg_configs = HashMap::new();
         agg_configs.insert(AGG_ID, agg_config);
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs: agg_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(agg_configs));
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),
             CleanupPolicy::NoCleanup,
@@ -1711,9 +3673,10 @@ mod topk_pipeline_tests {
             window_size_ms: 1000,
             slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
-            metric: METRIC.to_string(),
+            metric: CAPABILITY_METRIC.to_string(),
             num_aggregates_to_retain: None,
             read_count_threshold: None,
             table_name: None,
@@ -1734,9 +3697,10 @@ mod topk_pipeline_tests {
             window_size_ms: 1000,
             slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
-            metric: METRIC.to_string(),
+            metric: CAPABILITY_METRIC.to_string(),
             num_aggregates_to_retain: None,
             read_count_threshold: None,
             table_name: None,
@@ -1753,9 +3717,7 @@ mod topk_pipeline_tests {
         }
         agg_configs.insert(KEY_AGG_ID, make_delta_set_key_agg(KEY_AGG_ID));
 
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs: agg_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(agg_configs));
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),
             CleanupPolicy::NoCleanup,
@@ -2080,6 +4042,7 @@ mod spatiotemporal_timestamp_alignment_tests {
             window_size_ms: 2000,
             slide_interval_ms: 2000,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: "cpu_usage".to_string(),
@@ -2091,9 +4054,7 @@ mod spatiotemporal_timestamp_alignment_tests {
 
         let mut agg_configs = HashMap::new();
         agg_configs.insert(AGG_ID, agg_config);
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs: agg_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(agg_configs));
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),
             CleanupPolicy::NoCleanup,

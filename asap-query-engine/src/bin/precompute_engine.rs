@@ -220,6 +220,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 timestamp_col: args.csv_timestamp_col,
                 computed_label_cols: std::collections::HashMap::new(),
                 stateful_transitions: Vec::new(),
+                derived_value_cols: Vec::new(),
                 start_ts_ms: args.csv_start_ts_ms,
                 ts_step_ms,
                 batch_size: args.csv_batch_size,

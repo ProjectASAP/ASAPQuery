@@ -212,6 +212,14 @@ impl QueryExecutionContext {
                     .unwrap_or(10);
                 Ok(InferOperation::TopK(k))
             }
+            // argMax/argMin never reach the DataFusion logical-plan path -
+            // they're served directly from MultipleArgAccumulator in
+            // simple_engine/sql.rs (a string result, which InferOperation's
+            // numeric-only model has no way to express).
+            Statistic::ArgMax | Statistic::ArgMin => Err(DataFusionError::Plan(
+                "argMax/argMin are not supported through the DataFusion execution path"
+                    .to_string(),
+            )),
         }
     }
 

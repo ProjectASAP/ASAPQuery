@@ -100,6 +100,14 @@ pub struct DecodedSample {
     pub labels: String,
     pub timestamp_ms: i64,
     pub value: f64,
+    /// Set only for a derived argMax/argMin stream (see
+    /// `DerivedValueKind::ArgMax`/`ArgMin` in asap_types): the raw string
+    /// value of the column being tracked (e.g. `operation`, `as_path`),
+    /// carried alongside `value` (which holds the row's own timestamp, the
+    /// comparison key) so the accumulator can remember which string
+    /// belonged to the extremal timestamp. `None` for every other sample -
+    /// the ordinary numeric aggregation path ignores this field entirely.
+    pub arg_value: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +134,7 @@ pub fn decode_prometheus_remote_write(
                 labels: labels_str.clone(),
                 timestamp_ms: s.timestamp,
                 value: s.value,
+                arg_value: None,
             });
         }
     }

@@ -152,6 +152,7 @@ fn make_kll_streaming_config() -> Arc<StreamingConfig> {
         10_000, // window size = 10s (matching quickstart range-duration/step)
         10_000, // tumbling
         WindowType::Tumbling,
+        0,
         "sensor_reading".to_string(),
         "sensor_reading".to_string(),
         None,

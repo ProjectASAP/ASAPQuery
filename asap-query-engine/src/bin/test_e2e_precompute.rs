@@ -621,6 +621,7 @@ fn make_sum_agg_config(
         window_size_ms,
         slide_interval_ms,
         window_type,
+        0,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
         None,

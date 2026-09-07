@@ -178,7 +178,9 @@ async fn process_query_request(
         }
     }
 
-    let local_engine_query = SimpleEngine::rewrite_recognized_pattern(&parsed_request.query);
+    let local_engine_query = state
+        .query_engine
+        .rewrite_recognized_pattern(&parsed_request.query);
     if local_engine_query != parsed_request.query {
         tracing::warn!(
             "HTTP pattern rewrite produced local SQL: {}",
@@ -197,9 +199,19 @@ async fn process_query_request(
         "About to call query_engine.handle_query with query='{}' and time={}",
         local_engine_query, parsed_request.time
     );
+    // Pass the ORIGINAL query, not local_engine_query, into handle_query.
+    // handle_query_sql already applies the same rewrite internally (and
+    // needs the pre-rewrite text itself, to detect a computed-GROUP-BY
+    // alias before its own rewrite consumes it - see
+    // build_query_execution_context_sql_with_post_processing's doc
+    // comment), so calling rewrite_recognized_pattern here a second time
+    // is a no-op on the already-rewritten text; passing the original
+    // through changes nothing about how the query executes. local_engine_query
+    // is still what gets logged and fed to the query tracker above -
+    // only the text actually handed to the engine changes here.
     match state
         .query_engine
-        .handle_query(local_engine_query.clone(), parsed_request.time)
+        .handle_query(parsed_request.query.clone(), parsed_request.time)
     {
         Some((query_output_labels, query_result)) => {
             let query_duration = query_start_time.elapsed();

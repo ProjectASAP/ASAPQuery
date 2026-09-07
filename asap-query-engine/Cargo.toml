@@ -58,8 +58,10 @@ tracing-appender = "0.2"
 figment = { version = "0.10", features = ["yaml"] }
 arc-swap = "1"
 csv = "1"
+bgpkit-parser = { version = "0.21", default-features = false, features = ["local"] }
 elastic_dsl_utilities.workspace = true
 asap_sketchlib.workspace = true
+libc = "0.2"
 
 # jemalloc global allocator — cuts malloc/free churn in the precompute engine
 # hot path (per-sample/per-window sketch + key allocations). Optional so the
@@ -82,6 +84,10 @@ path = "src/bin/bench_precompute_sketch.rs"
 [[bin]]
 name = "e2e_quickstart_resource_test"
 path = "src/bin/e2e_quickstart_resource_test.rs"
+
+[[bin]]
+name = "dashboard_eval"
+path = "src/bin/dashboard_eval.rs"
 
 [dev-dependencies]
 tempfile = "3.20.0"

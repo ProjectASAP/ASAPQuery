@@ -19,6 +19,11 @@ use query_engine_rust::precompute_engine::csv_ingest::{CsvFileIngestConfig, CsvF
 use query_engine_rust::precompute_engine::json_ingest::{
     JsonFileIngestConfig, JsonFileIngestSource, TimestampUnit,
 };
+use query_engine_rust::precompute_engine::mrt_directory_ingest::{
+    MrtBatchDirectoryIngestConfig, MrtBatchDirectoryIngestSource, MrtDirectoryIngestConfig,
+    MrtDirectoryIngestSource,
+};
+use query_engine_rust::precompute_engine::mrt_ingest::{MrtFileIngestConfig, MrtFileIngestSource};
 use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::InferenceConfig;
@@ -224,6 +229,7 @@ async fn main() -> Result<()> {
                 ts_step_ms,
                 batch_size,
                 stateful_transitions,
+                derived_value_cols,
             } => {
                 // ts_step_ms is only used for timestamp synthesis (when timestamp_col is absent).
                 // check_config ensures it is present in that case.
@@ -288,6 +294,26 @@ async fn main() -> Result<()> {
                     }
                 }
 
+                // Same merge as stateful_transitions above, for derived-value
+                // streams (e.g. `min(timestamp)`, `avg(med)`) the planner
+                // auto-detected.
+                let mut merged_derived_value_cols = derived_value_cols.clone();
+                let manual_derived_metric_names: std::collections::HashSet<&str> =
+                    derived_value_cols.iter().map(|d| d.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.derived_value_cols {
+                    if !manual_derived_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_derived_value_cols.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.derived_value_cols.is_empty() {
+                    info!(
+                        "{} derived-value stream(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.derived_value_cols.len(),
+                        merged_derived_value_cols.len()
+                    );
+                }
+
                 vec![Box::new(CsvFileIngestSource::new(CsvFileIngestConfig {
                     path: path.clone(),
                     metric_name: metric_name.clone(),
@@ -295,6 +321,7 @@ async fn main() -> Result<()> {
                     label_cols: merged_label_cols,
                     computed_label_cols: merged_computed_label_cols,
                     stateful_transitions: merged_stateful_transitions,
+                    derived_value_cols: merged_derived_value_cols,
                     timestamp_col: timestamp_col.clone(),
                     start_ts_ms: *start_ts_ms,
                     ts_step_ms: ts_step,
@@ -330,8 +357,242 @@ async fn main() -> Result<()> {
                     port: *port,
                 }))]
             }
+            IngestConfig::Mrt {
+                path,
+                metric_name,
+                collector,
+                computed_label_cols,
+                stateful_transitions,
+                derived_value_cols,
+                batch_size,
+            } => {
+                info!("MRT file ingest mode: {} (collector={})", path, collector);
+                // Same merge as the Csv arm above, for computed labels,
+                // stateful transitions, and derived-value streams the
+                // planner auto-detected. MRT has no label_cols merge to do -
+                // its physical label set is fixed by the field-mapping
+                // table, not user-configurable - but stateful_transitions is
+                // a derived-value-shaped computation like derived_value_cols
+                // below, not a label, so it still needs merging the same way.
+                let mut merged_computed_label_cols = computed_label_cols.clone();
+                for (label_name, cfg) in &streaming_config.computed_label_cols {
+                    merged_computed_label_cols
+                        .entry(label_name.clone())
+                        .or_insert_with(|| cfg.clone());
+                }
+                if !streaming_config.computed_label_cols.is_empty() {
+                    info!(
+                        "{} computed label(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.computed_label_cols.len(),
+                        merged_computed_label_cols.len()
+                    );
+                }
+
+                let mut merged_stateful_transitions = stateful_transitions.clone();
+                let manual_metric_names: std::collections::HashSet<&str> =
+                    stateful_transitions.iter().map(|t| t.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.stateful_transitions {
+                    if !manual_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_stateful_transitions.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.stateful_transitions.is_empty() {
+                    info!(
+                        "{} stateful transition(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.stateful_transitions.len(),
+                        merged_stateful_transitions.len()
+                    );
+                }
+
+                let mut merged_derived_value_cols = derived_value_cols.clone();
+                let manual_derived_metric_names: std::collections::HashSet<&str> =
+                    derived_value_cols.iter().map(|d| d.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.derived_value_cols {
+                    if !manual_derived_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_derived_value_cols.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.derived_value_cols.is_empty() {
+                    info!(
+                        "{} derived-value stream(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.derived_value_cols.len(),
+                        merged_derived_value_cols.len()
+                    );
+                }
+
+                vec![Box::new(MrtFileIngestSource::new(MrtFileIngestConfig {
+                    path: path.clone(),
+                    metric_name: metric_name.clone(),
+                    collector: collector.clone(),
+                    computed_label_cols: merged_computed_label_cols,
+                    stateful_transitions: merged_stateful_transitions,
+                    derived_value_cols: merged_derived_value_cols,
+                    batch_size: *batch_size,
+                }))]
+            }
+            IngestConfig::MrtDirectory {
+                dir_path,
+                metric_name,
+                collector,
+                computed_label_cols,
+                stateful_transitions,
+                derived_value_cols,
+                batch_size,
+                poll_interval_ms,
+            } => {
+                info!(
+                    "MRT directory ingest mode: {} (collector={}, poll_interval_ms={})",
+                    dir_path, collector, poll_interval_ms
+                );
+                // Same merge as the Mrt arm above.
+                let mut merged_computed_label_cols = computed_label_cols.clone();
+                for (label_name, cfg) in &streaming_config.computed_label_cols {
+                    merged_computed_label_cols
+                        .entry(label_name.clone())
+                        .or_insert_with(|| cfg.clone());
+                }
+                if !streaming_config.computed_label_cols.is_empty() {
+                    info!(
+                        "{} computed label(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.computed_label_cols.len(),
+                        merged_computed_label_cols.len()
+                    );
+                }
+
+                let mut merged_stateful_transitions = stateful_transitions.clone();
+                let manual_metric_names: std::collections::HashSet<&str> =
+                    stateful_transitions.iter().map(|t| t.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.stateful_transitions {
+                    if !manual_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_stateful_transitions.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.stateful_transitions.is_empty() {
+                    info!(
+                        "{} stateful transition(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.stateful_transitions.len(),
+                        merged_stateful_transitions.len()
+                    );
+                }
+
+                let mut merged_derived_value_cols = derived_value_cols.clone();
+                let manual_derived_metric_names: std::collections::HashSet<&str> =
+                    derived_value_cols.iter().map(|d| d.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.derived_value_cols {
+                    if !manual_derived_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_derived_value_cols.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.derived_value_cols.is_empty() {
+                    info!(
+                        "{} derived-value stream(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.derived_value_cols.len(),
+                        merged_derived_value_cols.len()
+                    );
+                }
+
+                vec![Box::new(MrtDirectoryIngestSource::new(
+                    MrtDirectoryIngestConfig {
+                        dir_path: dir_path.clone(),
+                        metric_name: metric_name.clone(),
+                        collector: collector.clone(),
+                        computed_label_cols: merged_computed_label_cols,
+                        stateful_transitions: merged_stateful_transitions,
+                        derived_value_cols: merged_derived_value_cols,
+                        batch_size: *batch_size,
+                        poll_interval_ms: *poll_interval_ms,
+                    },
+                ))]
+            }
+            IngestConfig::MrtBatchDirectory {
+                dir_path,
+                metric_name,
+                collector,
+                computed_label_cols,
+                stateful_transitions,
+                derived_value_cols,
+                batch_size,
+                concurrency,
+                pace_interval_ms,
+                max_files,
+            } => {
+                info!(
+                    "MRT batch directory ingest mode: {} (collector={}, concurrency={}, pace_interval_ms={:?}, max_files={:?})",
+                    dir_path, collector, concurrency, pace_interval_ms, max_files
+                );
+                // Same merge as the Mrt/MrtDirectory arms above.
+                let mut merged_computed_label_cols = computed_label_cols.clone();
+                for (label_name, cfg) in &streaming_config.computed_label_cols {
+                    merged_computed_label_cols
+                        .entry(label_name.clone())
+                        .or_insert_with(|| cfg.clone());
+                }
+                if !streaming_config.computed_label_cols.is_empty() {
+                    info!(
+                        "{} computed label(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.computed_label_cols.len(),
+                        merged_computed_label_cols.len()
+                    );
+                }
+
+                let mut merged_stateful_transitions = stateful_transitions.clone();
+                let manual_metric_names: std::collections::HashSet<&str> =
+                    stateful_transitions.iter().map(|t| t.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.stateful_transitions {
+                    if !manual_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_stateful_transitions.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.stateful_transitions.is_empty() {
+                    info!(
+                        "{} stateful transition(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.stateful_transitions.len(),
+                        merged_stateful_transitions.len()
+                    );
+                }
+
+                let mut merged_derived_value_cols = derived_value_cols.clone();
+                let manual_derived_metric_names: std::collections::HashSet<&str> =
+                    derived_value_cols.iter().map(|d| d.metric_name.as_str()).collect();
+                for auto_detected in &streaming_config.derived_value_cols {
+                    if !manual_derived_metric_names.contains(auto_detected.metric_name.as_str()) {
+                        merged_derived_value_cols.push(auto_detected.clone());
+                    }
+                }
+                if !streaming_config.derived_value_cols.is_empty() {
+                    info!(
+                        "{} derived-value stream(s) from streaming_config (planner-detected), \
+                         {} total after merging with engine config",
+                        streaming_config.derived_value_cols.len(),
+                        merged_derived_value_cols.len()
+                    );
+                }
+
+                vec![Box::new(MrtBatchDirectoryIngestSource::new(
+                    MrtBatchDirectoryIngestConfig {
+                        dir_path: dir_path.clone(),
+                        metric_name: metric_name.clone(),
+                        collector: collector.clone(),
+                        computed_label_cols: merged_computed_label_cols,
+                        stateful_transitions: merged_stateful_transitions,
+                        derived_value_cols: merged_derived_value_cols,
+                        batch_size: *batch_size,
+                        concurrency: *concurrency,
+                        pace_interval_ms: *pace_interval_ms,
+                        max_files: *max_files,
+                    },
+                ))]
+            }
             _ => unreachable!(
-                "check_config enforces precompute requires http_remote_write, csv, or json"
+                "check_config enforces precompute requires http_remote_write, csv, json, mrt, mrt_directory, or mrt_batch_directory"
             ),
         };
         let pe = PrecomputeEngine::new(

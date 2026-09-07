@@ -33,6 +33,7 @@ pub fn decode_victoriametrics_remote_write(
                 labels: labels_str.clone(),
                 timestamp_ms: s.timestamp,
                 value: s.value,
+                arg_value: None,
             });
         }
     }

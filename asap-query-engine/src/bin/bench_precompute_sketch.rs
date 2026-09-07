@@ -139,6 +139,7 @@ fn make_kll_streaming_config(
         window_size_ms,
         window_size_ms,
         WindowType::Tumbling,
+        0,
         "bench_metric".to_string(),
         "bench_metric".to_string(),
         None,

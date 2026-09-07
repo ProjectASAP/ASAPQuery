@@ -1324,6 +1324,7 @@ mod topk_pipeline_tests {
             window_size_ms: 1000,
             slide_interval_ms: 1000,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: METRIC.to_string(),
@@ -1335,9 +1336,7 @@ mod topk_pipeline_tests {
 
         let mut agg_configs = HashMap::new();
         agg_configs.insert(AGG_ID, agg_config);
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs: agg_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(agg_configs));
 
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),

@@ -1,6 +1,7 @@
 use asap_types::enums::QueryLanguage;
 use query_engine_rust::data_model::enums::{InputFormat, LockStrategy, StreamingEngine};
 use query_engine_rust::precompute_engine::computed_labels::ComputedLabelConfig;
+use query_engine_rust::precompute_engine::derived_value::DerivedValueConfig;
 use query_engine_rust::precompute_engine::stateful_transition::StatefulTransitionConfig;
 use std::collections::HashMap;
 
@@ -10,7 +11,10 @@ pub fn check_config(config: &EngineConfig) -> Result<(), String> {
         (
             IngestConfig::HttpRemoteWrite { .. }
             | IngestConfig::Csv { .. }
-            | IngestConfig::Json { .. },
+            | IngestConfig::Json { .. }
+            | IngestConfig::Mrt { .. }
+            | IngestConfig::MrtDirectory { .. }
+            | IngestConfig::MrtBatchDirectory { .. },
             StreamingEngine::Precompute,
         ) => {}
         (IngestConfig::Otlp { .. }, StreamingEngine::Arroyo) => {}
@@ -246,6 +250,8 @@ pub enum IngestConfig {
         computed_label_cols: HashMap<String, ComputedLabelConfig>,
         #[serde(default)]
         stateful_transitions: Vec<StatefulTransitionConfig>,
+        #[serde(default)]
+        derived_value_cols: Vec<DerivedValueConfig>,
         timestamp_col: Option<String>,
         #[serde(default)]
         start_ts_ms: i64,
@@ -271,6 +277,75 @@ pub enum IngestConfig {
         #[serde(default = "default_json_batch_size")]
         batch_size: usize,
     },
+    Mrt {
+        path: String,
+        metric_name: String,
+        collector: String,
+        #[serde(default)]
+        computed_label_cols: HashMap<String, ComputedLabelConfig>,
+        #[serde(default)]
+        stateful_transitions: Vec<StatefulTransitionConfig>,
+        #[serde(default)]
+        derived_value_cols: Vec<DerivedValueConfig>,
+        #[serde(default = "default_csv_batch_size")]
+        batch_size: usize,
+    },
+    /// Watches a directory of MRT files and ingests every one found there,
+    /// forever - new files that appear later (a live collector drop point)
+    /// are picked up on the next poll, and a folder of files that never
+    /// grows again just settles into idle no-op polls. Use this instead of
+    /// `Mrt` for anything beyond "ingest exactly one already-known file":
+    /// a live BGP feed landing periodic dumps in a directory, or a folder
+    /// of historical MRT files downloaded for offline analysis - both go
+    /// through the same precompute-amortized path this way.
+    MrtDirectory {
+        dir_path: String,
+        metric_name: String,
+        collector: String,
+        #[serde(default)]
+        computed_label_cols: HashMap<String, ComputedLabelConfig>,
+        #[serde(default)]
+        stateful_transitions: Vec<StatefulTransitionConfig>,
+        #[serde(default)]
+        derived_value_cols: Vec<DerivedValueConfig>,
+        #[serde(default = "default_csv_batch_size")]
+        batch_size: usize,
+        #[serde(default = "default_mrt_directory_poll_interval_ms")]
+        poll_interval_ms: u64,
+    },
+    /// Ingests every MRT file already present in a directory, either at
+    /// ceiling throughput (bounded by `concurrency`) or, when
+    /// `pace_interval_ms` is set, one file at a time at a controlled rate -
+    /// e.g. replaying RIPE RIS's real 5-minute-per-file publishing cadence
+    /// at an acceleration factor, rather than ingesting a historical backlog
+    /// as fast as possible. Unlike `MrtDirectory`, this signals real
+    /// completion (flush + shutdown) once every discovered file has been
+    /// ingested, instead of polling forever.
+    MrtBatchDirectory {
+        dir_path: String,
+        metric_name: String,
+        collector: String,
+        #[serde(default)]
+        computed_label_cols: HashMap<String, ComputedLabelConfig>,
+        #[serde(default)]
+        stateful_transitions: Vec<StatefulTransitionConfig>,
+        #[serde(default)]
+        derived_value_cols: Vec<DerivedValueConfig>,
+        #[serde(default = "default_csv_batch_size")]
+        batch_size: usize,
+        #[serde(default = "default_mrt_batch_directory_concurrency")]
+        concurrency: usize,
+        /// Milliseconds to sleep between files when set - ignores
+        /// `concurrency` and ingests strictly sequentially. Omit for
+        /// ceiling-throughput bounded-concurrency ingest.
+        #[serde(default)]
+        pace_interval_ms: Option<u64>,
+        /// If set, ingest only the first `max_files` files (sorted order),
+        /// then flush/shutdown as if that were the whole directory - a
+        /// deliberate, graceful early stop for time-boxed benchmark runs.
+        #[serde(default)]
+        max_files: Option<usize>,
+    },
 }
 
 impl Default for IngestConfig {
@@ -291,6 +366,14 @@ fn default_kafka_broker() -> String {
 
 fn default_csv_batch_size() -> usize {
     1000
+}
+
+fn default_mrt_directory_poll_interval_ms() -> u64 {
+    30_000
+}
+
+fn default_mrt_batch_directory_concurrency() -> usize {
+    16
 }
 
 fn default_otlp_grpc_port() -> u16 {
@@ -492,6 +575,36 @@ ingest:
   label_cols: ["OS", "RegionID"]
   timestamp_col: "EventTime"
   timestamp_unit: "seconds"
+output_dir: "./output"
+"#;
+        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
+        assert!(check_config(&config).is_ok());
+    }
+
+    #[test]
+    fn check_config_valid_precompute_mrt() {
+        let yaml = r#"
+streaming_engine: "precompute"
+ingest:
+  type: "mrt"
+  path: "updates.20240101.0000.bz2"
+  metric_name: "bgp_updates"
+  collector: "rrc00"
+output_dir: "./output"
+"#;
+        let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
+        assert!(check_config(&config).is_ok());
+    }
+
+    #[test]
+    fn check_config_valid_precompute_mrt_directory() {
+        let yaml = r#"
+streaming_engine: "precompute"
+ingest:
+  type: "mrt_directory"
+  dir_path: "./mrt_dumps"
+  metric_name: "bgp_updates"
+  collector: "rrc00"
 output_dir: "./output"
 "#;
         let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();

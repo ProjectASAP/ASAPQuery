@@ -391,8 +391,8 @@ impl SimpleEngine {
     }
 
     /// Creates a plan for querying the store based on aggregation configuration.
-    /// Also derives `do_merge`: true when the requested time range spans more
-    /// than one stored window, i.e. `range_ms > window_size_ms`.
+    /// Also derives `do_merge`: true when the (bucket-aligned) requested time
+    /// range spans more than one stored window.
     fn create_store_query_plan(
         &self,
         metric: &str,
@@ -412,8 +412,6 @@ impl SimpleEngine {
 
         let window_type = aggregation_config_for_value.window_type;
         let is_exact_query = window_type == WindowType::Sliding;
-        let range_ms = timestamps.end_timestamp - timestamps.start_timestamp;
-        let do_merge = range_ms > aggregation_config_for_value.window_size_ms;
 
         // Determine start/end for values query based on window type
         let (values_start, values_end) = if is_exact_query {
@@ -422,9 +420,33 @@ impl SimpleEngine {
                 timestamps.end_timestamp - aggregation_config_for_value.window_size_ms;
             (exact_start, timestamps.end_timestamp)
         } else {
-            // Tumbling window: range query
-            (timestamps.start_timestamp, timestamps.end_timestamp)
+            // Tumbling window: snap the requested range out to whole bucket
+            // boundaries before querying the store. Stored buckets are
+            // epoch-aligned (see window_manager::window_start_for) and
+            // range_query_into only returns buckets FULLY CONTAINED in
+            // [start, end) - a wall-clock-anchored request like "last N
+            // minutes from now" almost never lands on those boundaries, so
+            // an unaligned range silently matches zero buckets even though
+            // real data covers the window. Flooring start down and ceiling
+            // end up to the nearest bucket boundary guarantees every bucket
+            // overlapping the requested range is fully contained in the
+            // aligned range, at the cost of including a bit of data just
+            // outside the original edges.
+            let window_size_ms = aggregation_config_for_value.window_size_ms;
+            let offset_ms = aggregation_config_for_value.offset_ms;
+            let align_down = |ts: u64| -> u64 {
+                offset_ms + ((ts.saturating_sub(offset_ms)) / window_size_ms) * window_size_ms
+            };
+            let aligned_start = align_down(timestamps.start_timestamp);
+            let mut aligned_end = align_down(timestamps.end_timestamp);
+            if aligned_end < timestamps.end_timestamp {
+                aligned_end += window_size_ms;
+            }
+            (aligned_start, aligned_end)
         };
+
+        let range_ms = values_end - values_start;
+        let do_merge = range_ms > aggregation_config_for_value.window_size_ms;
 
         let values_query = StoreQueryParams {
             metric: metric.to_string(),
@@ -520,11 +542,20 @@ impl SimpleEngine {
     }
 
     /// Executes the full store query plan and returns merged results
+    ///
+    /// `treat_empty_as_valid` distinguishes "this aggregation was never
+    /// computed" from "this aggregation was computed and its answer is
+    /// zero/empty" - both look identical at the storage layer (no bucket
+    /// ever gets created for a key that never had a single matching row),
+    /// but only the latter should produce a normal result instead of an
+    /// error. The caller decides this from the query shape (grouped vs.
+    /// ungrouped) and statistic (see `execute_query_pipeline`).
     fn execute_and_merge_store_queries(
         &self,
         plan: &StoreQueryPlan,
         do_merge: bool,
         agg_info: &AggregationIdInfo,
+        treat_empty_as_valid: bool,
     ) -> Result<(MergedOutputsMap, Option<MergedOutputsMap>), String> {
         // Query and merge values
         let values_map = self.execute_store_query(&plan.values_query).map_err(|e| {
@@ -533,6 +564,14 @@ impl SimpleEngine {
         })?;
 
         if values_map.is_empty() {
+            if treat_empty_as_valid {
+                debug!(
+                    "No precomputed outputs for metric: {}, aggregation_id: {} - filter matched \
+                     zero rows; treating as a legitimate empty/zero result rather than an error",
+                    plan.values_query.metric, plan.values_query.aggregation_id
+                );
+                return Ok((HashMap::new(), None));
+            }
             return Err(format!(
                 "No precomputed outputs found for metric: {}, aggregation_id: {}",
                 plan.values_query.metric, plan.values_query.aggregation_id
@@ -655,21 +694,55 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<InstantVectorElement>, String> {
+        // An ungrouped Count/Sum/Cardinality/Increase/Rate query whose filter
+        // matches zero rows has a well-defined answer (0) - unlike Min/Max/
+        // Quantile/Topk/ArgMax/ArgMin, which have no meaningful value over an
+        // empty population. A grouped query needs no such treatment for any
+        // statistic: zero matching rows there correctly means zero output
+        // rows, not an error either way.
+        //
+        // "Grouped" must be read off `query_output_labels` (the columns the
+        // *query itself* asked to group by, parsed straight from the SQL/
+        // PromQL text) rather than `context.grouping_labels` (the *matched
+        // aggregation config's* internal grouping) - the two can disagree:
+        // a `GROUP BY peer_asn` query can still resolve to a value-side
+        // config whose own grouping_labels is empty (e.g. a self-keyed
+        // accumulator paired with a separate keys query), which would
+        // otherwise misclassify a real grouped query as ungrouped and
+        // synthesize a spurious single zero-value row instead of correctly
+        // returning zero rows.
+        let is_grouped = !context.metadata.query_output_labels.is_empty();
+        let zero_is_valid_answer = matches!(
+            context.metadata.statistic_to_compute,
+            Statistic::Count
+                | Statistic::Sum
+                | Statistic::Cardinality
+                | Statistic::Increase
+                | Statistic::Rate
+        );
+
         // Step 1: Execute the query plan (already created in context.store_plan)
         let (merged_values, merged_keys) = self.execute_and_merge_store_queries(
             &context.store_plan,
             context.do_merge,
             &context.agg_info,
+            is_grouped || zero_is_valid_answer,
         )?;
 
         // Step 2: Collect results
         let unformatted_results_start_time = Instant::now();
-        let unformatted_results = self.collect_all_results(
+        let mut unformatted_results = self.collect_all_results(
             &merged_values,
             merged_keys.as_ref(),
             &context.metadata.statistic_to_compute,
             &context.metadata.query_kwargs,
         )?;
+        // SQL's ungrouped COUNT(*)-style aggregates always return exactly one
+        // row, even over zero matching rows - synthesize that row here, since
+        // the store legitimately has no bucket to report it from.
+        if unformatted_results.is_empty() && !is_grouped && zero_is_valid_answer {
+            unformatted_results.insert(Some(KeyByLabelValues::new()), 0.0);
+        }
         debug!(
             "[LATENCY] Unformatted results collection: {:.2}ms",
             unformatted_results_start_time.elapsed().as_secs_f64() * 1000.0
@@ -915,22 +988,29 @@ impl SimpleEngine {
     /// logic, which had inconsistent error handling (silent empty vec, panic,
     /// and warn+return-None).
     fn parse_single_statistic(statistic_name: &str) -> Option<Statistic> {
-        let stats = statistic_name
-            .parse::<AggregationOperator>()
-            .map(|o| o.to_statistics())
-            .unwrap_or_else(|_| {
-                warn!("Unsupported statistic name: '{}'", statistic_name);
-                vec![]
-            });
-        if stats.len() != 1 {
-            warn!(
-                "Expected exactly one statistic for '{}', found {}",
-                statistic_name,
-                stats.len()
-            );
-            return None;
+        // ARGMAX/ARGMIN (and any other name that maps 1:1 onto a Statistic)
+        // aren't AggregationOperator variants at all - that enum only exists
+        // for names whose `to_statistics()` mapping is meaningful (e.g. "avg"
+        // legitimately produces more than one Statistic). Mirrors the same
+        // AggregationOperator-then-Statistic::from_str fallback promql_utilities'
+        // own statistic-extraction path already uses.
+        if let Ok(op) = statistic_name.parse::<AggregationOperator>() {
+            let stats = op.to_statistics();
+            if stats.len() != 1 {
+                warn!(
+                    "Expected exactly one statistic for '{}', found {}",
+                    statistic_name,
+                    stats.len()
+                );
+                return None;
+            }
+            return stats.into_iter().next();
         }
-        stats.into_iter().next()
+        if let Some(stat) = Statistic::from_str(statistic_name) {
+            return Some(stat);
+        }
+        warn!("Unsupported statistic name: '{}'", statistic_name);
+        None
     }
 
     fn get_aggregation_id_info(
@@ -1237,7 +1317,24 @@ impl SimpleEngine {
         let mut unformatted_results = HashMap::new();
 
         for (key, precompute) in merged_outputs {
-            if let Some(unwrapped_keys) = precompute.get_keys() {
+            // SetAggregator's `get_keys()` returns the counted *members*
+            // (e.g. every distinct prefix seen) - correct for SELECT
+            // DISTINCT/MOAS's own dedicated rendering, which lists those
+            // members as the result rows, but wrong for a numeric
+            // `Statistic::Cardinality` request (`uniqExact(...) GROUP BY
+            // ...`): that wants exactly one output row per outer/store key
+            // (e.g. one per day) holding the member *count*, not one row
+            // per member all showing the same total. Route this specific
+            // combination through the single-value branch below instead,
+            // using the outer key the store already partitioned by.
+            let is_keyed_cardinality_count = *statistic == Statistic::Cardinality
+                && precompute.get_accumulator_type() == AggregationType::SetAggregator;
+            let member_keys = if is_keyed_cardinality_count {
+                None
+            } else {
+                precompute.get_keys()
+            };
+            if let Some(unwrapped_keys) = member_keys {
                 for key_for_this_precompute in unwrapped_keys {
                     let value = self
                         .query_precompute_for_statistic(

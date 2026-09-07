@@ -44,6 +44,25 @@ pub trait AggregateCore: SerializableToSink + Send + Sync {
         key: &Option<KeyByLabelValues>,
         query_kwargs: &HashMap<String, String>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// Same as `query_statistic`, for a string-valued result - only argMax/
+    /// argMin (`MultipleArgAccumulator`) return one; every other accumulator
+    /// keeps this default, so no existing implementor needs to change.
+    /// Serve-time code for a normal numeric aggregate never calls this.
+    fn query_statistic_string(
+        &self,
+        statistic: Statistic,
+        key: &Option<KeyByLabelValues>,
+        query_kwargs: &HashMap<String, String>,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let _ = (key, query_kwargs);
+        Err(format!(
+            "{} does not support string-valued queries (statistic {:?})",
+            self.type_name(),
+            statistic
+        )
+        .into())
+    }
 }
 
 /// Trait for accumulators that support a single subpopulation

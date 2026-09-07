@@ -19,11 +19,46 @@ impl QueryResult {
     }
 
     pub fn vector(values: Vec<InstantVectorElement>, timestamp: u64) -> Self {
-        QueryResult::Vector(InstantVector { values, timestamp })
+        QueryResult::Vector(InstantVector {
+            values,
+            timestamp,
+            has_value: true,
+        })
+    }
+
+    /// A vector whose rows are pure label columns with no numeric aggregate
+    /// at all - e.g. `SELECT DISTINCT prefix`, where the entire output is
+    /// the set of distinct string values themselves. `InstantVectorElement`
+    /// always carries a `value: f64` for its constructor, but there's no
+    /// real number to put there; the response formatter (`format_success_response`
+    /// in `clickhouse_http.rs`) checks `has_value` and omits the value
+    /// column entirely rather than rendering a fabricated number that
+    /// wouldn't match ClickHouse's own one-column response.
+    pub fn vector_without_value(values: Vec<InstantVectorElement>, timestamp: u64) -> Self {
+        QueryResult::Vector(InstantVector {
+            values,
+            timestamp,
+            has_value: false,
+        })
     }
 
     pub fn matrix(values: Vec<RangeVectorElement>) -> Self {
-        QueryResult::Matrix(RangeVector { values })
+        QueryResult::Matrix(RangeVector {
+            values,
+            is_date_bucket: false,
+        })
+    }
+
+    /// A range vector whose sample timestamps should render as a bare
+    /// `YYYY-MM-DD` date rather than a full `YYYY-MM-DD HH:MM:SS` datetime -
+    /// for bucketed SQL queries where the bucket column came from
+    /// `toDate(...)` specifically, which ClickHouse renders as its `Date`
+    /// type. See `SQLBucketedCountIfQueryData::bucket_is_date`.
+    pub fn matrix_with_date_buckets(values: Vec<RangeVectorElement>) -> Self {
+        QueryResult::Matrix(RangeVector {
+            values,
+            is_date_bucket: true,
+        })
     }
 }
 
@@ -32,6 +67,18 @@ impl QueryResult {
 pub struct InstantVector {
     pub values: Vec<InstantVectorElement>,
     pub timestamp: u64,
+    /// False for a result with no numeric aggregate at all (every row is
+    /// pure label columns, e.g. `SELECT DISTINCT prefix`) - see
+    /// `QueryResult::vector_without_value`. `#[serde(default)]` so any
+    /// serialized `InstantVector` predating this field still deserializes,
+    /// defaulting to `true` (the value column is always rendered), which
+    /// matches every pre-existing caller's behavior.
+    #[serde(default = "default_has_value")]
+    pub has_value: bool,
+}
+
+fn default_has_value() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +97,12 @@ impl InstantVectorElement {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RangeVector {
     pub values: Vec<RangeVectorElement>,
+    /// See `QueryResult::matrix_with_date_buckets`. `#[serde(default)]` so
+    /// any serialized `RangeVector` predating this field still
+    /// deserializes, defaulting to `false` (full datetime rendering),
+    /// matching every pre-existing caller's behavior.
+    #[serde(default)]
+    pub is_date_bucket: bool,
 }
 
 /// Individual element in a range vector

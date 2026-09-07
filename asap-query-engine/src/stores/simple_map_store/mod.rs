@@ -172,6 +172,7 @@ mod tests {
             10_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             metric.to_string(),
             metric.to_string(),
             None,
