@@ -54,22 +54,56 @@ Ordered stateful derivation requires a contract audit: SQL window intent exists,
 
 ```mermaid
 flowchart TD
-    Q[BGP SQL workload and data scope] --> P[Planner canonical pre-ASAP DAG]
-    P --> R[Recognition and reusable replacement strategies]
-    R --> A[Legal post-ASAP alternatives]
-    A --> E[ASAPQuery capability and cost evaluation]
-    E --> S[Planner comparison and legal selection boundary]
-    S --> C[ASAPQuery commits and binds selected workload]
-    C --> I[Derivation and maintenance plan]
-    C --> X[Readout and residual execution plan]
-    I --> Store[Versioned maintained state]
-    Store --> X
+    subgraph Planner["ASAPPlanner boundary — reusable semantics and optimization"]
+        P[Canonical pre-ASAP DAG]
+        R[Reusable recognition and replacement strategies]
+        A[Legal post-ASAP alternatives]
+        S[Cost and accuracy comparison / legal selection]
+        P --> R --> A
+        A --> S
+    end
+
+    subgraph Query["ASAPQuery boundary — downstream application and execution"]
+        subgraph BGP["BGP-specific boundary — workload and runtime adapters"]
+            Q[BGP SQL workload / catalog / source and time scope]
+            D[BGP ingest and derivation adapters:<br/>MRT decoding, AS-path tokens and edges,<br/>route transitions and gaps]
+            Profile[BGP deployment profile:<br/>ordering, completeness, recurrence,<br/>accuracy and exact fallback policy]
+        end
+
+        subgraph Runtime["ASAPQuery runtime boundary — shared control and data plane"]
+            E[Provider capability and cost evaluation]
+            C[Commit selected DAG / compile and bind runtime plans]
+            I[Build and maintain selected summaries]
+            Store[Versioned maintained state]
+            X[Bound readout and exact residual execution]
+            O[Resource, cardinality and readiness observations]
+            C -->|Maintenance plan| I
+            C -->|Query plan| X
+            I --> Store --> X
+            I --> O
+            X --> O
+            O --> E
+        end
+
+        Profile -->|Deployment constraints| E
+        Profile -->|Readiness and fallback policy| X
+        D -->|Adapter capabilities| E
+        C -->|Selected derivation binding| D
+        D -->|Derived observations| I
+        Q -->|Incoming SQL| X
+    end
+
+    Raw[Raw BGP records] --> D
+    Q -->|Planning request| P
+    A -->|Implementation evaluation request| E
+    E -->|Feasibility and complete cost evidence| S
+    S -->|Selected post-ASAP semantics and provider identity| C
     X --> Result[Query results]
-    X --> F[Explicit ClickHouse fallback]
-    I --> O[Runtime observations]
-    X --> O
-    O --> E
+    X -->|Explicit exact fallback| F[ClickHouse]
+    F --> Result
 ```
+
+The nested boundaries describe responsibility, not separate services. BGP-specific workload registration, MRT decoding, AS-path interpretation, and route-state adapters belong to the ASAPQuery application. ASAPQuery's shared runtime owns binding, summary maintenance, storage, serving, and observations. ASAPPlanner sees the typed derivation semantics and provider evidence needed for optimization; it does not depend on BGP decoder or route-state implementation code. ClickHouse and raw BGP inputs are external to these ownership boundaries.
 
 Planner proposes and compares semantically legal alternatives. ASAPQuery's control plane commits an executable workload choice and retains its provider binding. The exact composition of the existing PlanSpace and lifecycle selection APIs is an integration decision, not a claim that one current API already returns the entire executable workload.
 
