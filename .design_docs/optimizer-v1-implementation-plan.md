@@ -322,7 +322,8 @@ cargo run -p asap_planner --bin asap-optimizer-cli -- \
   --dataset <path/to/series-inventory.csv> \
   --data-ingestion-interval-ms 60000 \
   [--rho 1.0] \
-  [--atomic-costs <path/to/atomic_costs.json>]
+  [--atomic-costs <path/to/atomic_costs.json> \
+   --atomic-cost-workload <path/to/workload-selector.json>]
 ```
 
 Takes the same `ControllerConfig` YAML format as `asap-planner --input_config`.
@@ -332,7 +333,11 @@ group count; no live Prometheus connection is needed. A `metrics:` hints block, 
 present, is checked against the dataset and mismatches fail loudly.
 Prints deployed streaming configs and query configs to stdout. `--rho` is the
 placeholder arrival rate (see TODOs below — not real yet). `--atomic-costs` is
-optional; omit it and ordinary unbenchmarked candidates use the flat stub, while
+optional; when supplied it requires `--atomic-cost-workload`, a JSON file
+containing the exact `profiles[].workload` value from that benchmark artifact.
+The loader validates the document schema and rejects a selector that matches
+zero or multiple profiles; it never mixes entries across workloads. Omit both
+flags and ordinary unbenchmarked candidates use the flat stub, while
 CMS-with-heap candidates warn and are dropped until a matching reference row is available.
 
 ### Running with real sketch-bench costs
@@ -352,13 +357,15 @@ CMS-with-heap candidates warn and are dropped until a matching reference row is 
 # See what each candidate would cost, before selection:
  cargo run -p asap_planner --bin candidate-gen-dump -- \
   --input_config workload.yaml --data-ingestion-interval-ms 60000 \
-  --atomic-costs path/to/atomic_costs.json
+  --atomic-costs path/to/atomic_costs.json \
+  --atomic-cost-workload path/to/workload-selector.json
 
 # Run the actual optimizer:
 cargo run -p asap_planner --bin asap-optimizer-cli -- \
   --input_config workload.yaml --data-ingestion-interval-ms 60000 \
   --dataset path/to/series-inventory.csv \
-  --atomic-costs path/to/atomic_costs.json
+  --atomic-costs path/to/atomic_costs.json \
+  --atomic-cost-workload path/to/workload-selector.json
 ```
 
 `candidate-gen-dump`'s output labels each resolved params row `[real]` or `[stub]`; candidates

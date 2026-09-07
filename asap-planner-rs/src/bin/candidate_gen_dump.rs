@@ -6,8 +6,8 @@ use std::path::PathBuf;
 
 use asap_planner::{
     optimizer::{
-        enumerate_candidates, extract_aqes, load_atomic_cost_table, resolve_atomic_costs,
-        AtomicCostTable, AtomicCosts, CandidateConfig, RQE,
+        enumerate_candidates, extract_aqes, load_optional_selected_atomic_cost_table,
+        resolve_atomic_costs, AtomicCostTable, AtomicCosts, CandidateConfig, RQE,
     },
     ControllerConfig,
 };
@@ -28,21 +28,26 @@ struct Args {
     #[arg(long = "data-ingestion-interval-ms")]
     scrape_interval_ms: u64,
 
-    /// Path to sketch-bench's exported atomic-cost table (see ASAPQuery#524).
+    /// Path to sketch-bench's versioned atomic-cost document.
     /// When given, each params row also prints its resolved AtomicCosts --
     /// real (from the table) or the flat stub (unbenchmarked family, or this
     /// exact param point missing from the table) -- labeled which.
     #[arg(long = "atomic-costs")]
     atomic_costs: Option<PathBuf>,
+
+    /// JSON `profiles[].workload` value selecting exactly one measured profile.
+    #[arg(long = "atomic-cost-workload", requires = "atomic_costs")]
+    atomic_cost_workload: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let atomic_cost_table = match &args.atomic_costs {
-        Some(path) => load_atomic_cost_table(path)?,
-        None => AtomicCostTable::default(),
-    };
+    let atomic_cost_table = load_optional_selected_atomic_cost_table(
+        args.atomic_costs.as_deref(),
+        args.atomic_cost_workload.as_deref(),
+    )?
+    .unwrap_or_default();
 
     let yaml_str = std::fs::read_to_string(&args.input_config)?;
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
