@@ -63,6 +63,7 @@ fn make_agg_config(
         60_000,               // window_size_ms
         60_000,               // slide_interval_ms
         WindowType::Tumbling, // window_type
+        0, // offset_ms
         "".to_string(),       // spatial_filter
         "cpu_usage".to_string(),
         num_aggregates_to_retain,

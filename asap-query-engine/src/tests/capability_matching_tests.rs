@@ -43,6 +43,7 @@ fn make_agg_config(
         window_size_ms,
         slide_interval_ms: window_size_ms,
         window_type,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric.to_string(),
@@ -64,9 +65,7 @@ fn engine_no_query_configs(
     for c in &agg_configs {
         agg_map.insert(c.aggregation_id, c.clone());
     }
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs: agg_map,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(agg_map));
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
         CleanupPolicy::NoCleanup,
@@ -117,9 +116,7 @@ fn engine_with_query_config(
     let agg_id = agg_config.aggregation_id;
     let mut agg_map = HashMap::new();
     agg_map.insert(agg_id, agg_config.clone());
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs: agg_map,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(agg_map));
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
         CleanupPolicy::NoCleanup,

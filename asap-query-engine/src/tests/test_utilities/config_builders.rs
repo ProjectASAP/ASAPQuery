@@ -100,6 +100,7 @@ impl TestConfigBuilder {
             window_size_ms,
             slide_interval_ms: window_size_ms,
             window_type,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -137,6 +138,7 @@ impl TestConfigBuilder {
             window_size_ms: self.scrape_interval_ms,
             slide_interval_ms: self.scrape_interval_ms,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -180,6 +182,7 @@ impl TestConfigBuilder {
             window_size_ms,
             slide_interval_ms: window_size_ms,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: self.metric.clone(),
@@ -209,9 +212,7 @@ impl TestConfigBuilder {
         };
 
         // Create StreamingConfig
-        let streaming_config = StreamingConfig {
-            aggregation_configs: self.streaming_configs,
-        };
+        let streaming_config = StreamingConfig::new(self.streaming_configs);
 
         (inference_config, Arc::new(streaming_config))
     }
@@ -250,9 +251,7 @@ impl TestConfigBuilder {
         };
 
         // Create StreamingConfig
-        let streaming_config = StreamingConfig {
-            aggregation_configs: self.streaming_configs,
-        };
+        let streaming_config = StreamingConfig::new(self.streaming_configs);
 
         (
             promql_inference_config,

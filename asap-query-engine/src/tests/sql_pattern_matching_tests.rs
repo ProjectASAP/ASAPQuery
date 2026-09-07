@@ -64,6 +64,7 @@ mod tests {
             window_size_ms,
             slide_interval_ms: window_size_ms,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
             spatial_filter: String::new(),
             spatial_filter_normalized: String::new(),
             metric: "cpu_usage".to_string(),
@@ -75,9 +76,7 @@ mod tests {
 
         let mut agg_configs = HashMap::new();
         agg_configs.insert(agg_id, agg_config);
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs: agg_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(agg_configs));
 
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),

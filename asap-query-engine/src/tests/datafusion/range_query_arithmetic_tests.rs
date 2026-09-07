@@ -62,6 +62,7 @@ mod tests {
                     window_size_ms: WINDOW_MS,
                     slide_interval_ms: WINDOW_MS,
                     window_type: WindowType::Tumbling,
+                    offset_ms: 0,
                     spatial_filter: String::new(),
                     spatial_filter_normalized: String::new(),
                     metric: metric.to_string(),
@@ -73,9 +74,7 @@ mod tests {
             );
         }
 
-        let streaming_config = Arc::new(StreamingConfig {
-            aggregation_configs,
-        });
+        let streaming_config = Arc::new(StreamingConfig::new(aggregation_configs));
 
         let store = Arc::new(SimpleMapStore::new(
             streaming_config.clone(),

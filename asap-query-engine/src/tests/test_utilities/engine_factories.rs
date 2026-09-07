@@ -83,6 +83,7 @@ pub fn create_engine_single_pop_with_aggregated(
         window_size_ms: 1000,
         slide_interval_ms: 1000,
         window_type: WindowType::Tumbling,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric.to_string(),
@@ -93,9 +94,7 @@ pub fn create_engine_single_pop_with_aggregated(
     };
     aggregation_configs.insert(1u64, agg_config);
 
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(aggregation_configs));
 
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
@@ -180,6 +179,7 @@ pub fn create_engine_dual_input(
         window_size_ms: 1000,
         slide_interval_ms: 1000,
         window_type: WindowType::Tumbling,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric.to_string(),
@@ -203,6 +203,7 @@ pub fn create_engine_dual_input(
         window_size_ms: 1000,
         slide_interval_ms: 1000,
         window_type: WindowType::Tumbling,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric.to_string(),
@@ -213,9 +214,7 @@ pub fn create_engine_dual_input(
     };
     aggregation_configs.insert(2u64, keys_agg_config);
 
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(aggregation_configs));
 
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
@@ -296,6 +295,7 @@ pub fn create_engine_two_metrics(
         window_size_ms: 1000,
         slide_interval_ms: 1000,
         window_type: WindowType::Tumbling,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric_a.to_string(),
@@ -318,6 +318,7 @@ pub fn create_engine_two_metrics(
         window_size_ms: 1000,
         slide_interval_ms: 1000,
         window_type: WindowType::Tumbling,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric_b.to_string(),
@@ -328,9 +329,7 @@ pub fn create_engine_two_metrics(
     };
     aggregation_configs.insert(2u64, agg_config_b);
 
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(aggregation_configs));
 
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
@@ -421,6 +420,7 @@ pub fn create_engine_three_metrics(
                 window_size_ms: 1000,
                 slide_interval_ms: 1000,
                 window_type: WindowType::Tumbling,
+                offset_ms: 0,
                 spatial_filter: String::new(),
                 spatial_filter_normalized: String::new(),
                 metric: metric.to_string(),
@@ -432,9 +432,7 @@ pub fn create_engine_three_metrics(
         );
     }
 
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(aggregation_configs));
 
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
@@ -502,6 +500,7 @@ pub fn create_engine_multi_timestamp(
         window_size_ms: 1000,
         slide_interval_ms: 1000,
         window_type: WindowType::Tumbling,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric.to_string(),
@@ -512,9 +511,7 @@ pub fn create_engine_multi_timestamp(
     };
     aggregation_configs.insert(1u64, agg_config);
 
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(aggregation_configs));
 
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
@@ -582,6 +579,7 @@ pub fn create_engine_multi_timestamp_with_window(
         window_size_ms,
         slide_interval_ms: 1000,
         window_type,
+        offset_ms: 0,
         spatial_filter: String::new(),
         spatial_filter_normalized: String::new(),
         metric: metric.to_string(),
@@ -592,9 +590,7 @@ pub fn create_engine_multi_timestamp_with_window(
     };
     aggregation_configs.insert(1u64, agg_config);
 
-    let streaming_config = Arc::new(StreamingConfig {
-        aggregation_configs,
-    });
+    let streaming_config = Arc::new(StreamingConfig::new(aggregation_configs));
 
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),

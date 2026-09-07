@@ -84,6 +84,7 @@ fn make_agg_config_full(
         window_size_ms,
         slide_interval_ms,
         window_type,
+        0,
         metric.to_string(),
         metric.to_string(),
         None,
