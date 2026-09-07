@@ -187,14 +187,24 @@ impl AggregateCore for SetAggregatorAccumulator {
     fn query_statistic(
         &self,
         statistic: promql_utilities::query_logics::enums::Statistic,
-        key: &Option<KeyByLabelValues>,
-        query_kwargs: &std::collections::HashMap<String, String>,
+        _key: &Option<KeyByLabelValues>,
+        _query_kwargs: &std::collections::HashMap<String, String>,
     ) -> Result<f64, Box<dyn std::error::Error + Send + Sync>> {
-        use crate::data_model::MultipleSubpopulationAggregate;
-        let key_val = key
-            .as_ref()
-            .ok_or("Key required for SetAggregatorAccumulator")?;
-        self.query(statistic, key_val, Some(query_kwargs))
+        // `does_precompute_operator_support_subpopulations` treats
+        // SetAggregator like HLL: one instance per key, externally
+        // partitioned by the store (not one structure internally
+        // multiplexing many keys) - so unlike the `MultipleSubpopulationAggregate`
+        // impl below (a stub - this type was only ever read through
+        // `get_keys()` before, by SELECT DISTINCT/MOAS's own "render the raw
+        // member list" rendering, which never calls this), a numeric query
+        // needs no key lookup at all: `self.added` already IS this one key's
+        // exact member set, and its size already IS this key's cardinality.
+        match statistic {
+            promql_utilities::query_logics::enums::Statistic::Cardinality => {
+                Ok(self.added.len() as f64)
+            }
+            other => Err(format!("Unsupported statistic in SetAggregatorAccumulator: {other:?}").into()),
+        }
     }
 }
 
