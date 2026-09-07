@@ -1,5 +1,9 @@
 # SQL Query-Shape Recognition and Maintenance — Design
 
+For the proposed migration of this BGP workload to ASAPPlanner, including ownership,
+IR gaps, implementation slices, and end-to-end acceptance criteria, see the
+[ASAPPlanner integration plan](ASAPPLANNER_INTEGRATION_PLAN.md).
+
 This document describes the `(ρ, τ, γ, eval, π)` decomposition the SQL path uses to decide
 which analyst queries can be answered from a continuously maintained summary instead of a
 full scan, what gets maintained for each recognized shape, and where that logic lives in the
