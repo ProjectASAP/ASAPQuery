@@ -8,3 +8,4 @@ preprocessed_configs/
 status
 uuid
 store/
+local_experiments/.venv/
