@@ -50,7 +50,15 @@ pub fn map_statistic_to_precompute_operator(
             Ok((AggregationType::MultipleIncrease, "".to_string()))
         }
         Statistic::Topk => Ok((AggregationType::CountMinSketchWithHeap, "topk".to_string())),
-        Statistic::Cardinality => Ok((AggregationType::HLL, "".to_string())),
+        Statistic::Cardinality => {
+            if treatment_type == QueryTreatmentType::Exact {
+                Ok((AggregationType::SetAggregator, "".to_string()))
+            } else {
+                Ok((AggregationType::HLL, "".to_string()))
+            }
+        }
+        Statistic::ArgMax => Ok((AggregationType::MultipleArg, "argmax".to_string())),
+        Statistic::ArgMin => Ok((AggregationType::MultipleArg, "argmin".to_string())),
     }
 }
 
@@ -73,6 +81,7 @@ pub fn does_precompute_operator_support_subpopulations(
         // Multi-key operators
         AggregationType::MultipleIncrease
         | AggregationType::MultipleMinMax
+        | AggregationType::MultipleArg
         | AggregationType::MultipleSum
         | AggregationType::HydraKLL => true,
 
@@ -82,7 +91,11 @@ pub fn does_precompute_operator_support_subpopulations(
         // CountMinSketchWithHeap is only supported for Topk — does not support subpopulations
         AggregationType::CountMinSketchWithHeap if matches!(statistic, Statistic::Topk) => false,
 
-        AggregationType::HLL => false,
+        // Same model as HLL: one set instance per key, kept in separate
+        // store buckets the store itself partitions by - not a single
+        // structure that internally multiplexes many keys - so the
+        // subpopulation label belongs in grouping_labels, same as HLL.
+        AggregationType::HLL | AggregationType::SetAggregator => false,
 
         // Default: not supported
         _ => panic!("Unexpected precompute operator: {}", precompute_operator),
@@ -169,6 +182,20 @@ mod tests {
             Statistic::Sum,
             AggregationType::CountMinSketch,
         ));
+
+        // SetAggregator (exact cardinality) must not panic - one set
+        // instance per key, externally partitioned by the store, same
+        // model as HLL below.
+        assert!(!does_precompute_operator_support_subpopulations(
+            Statistic::Cardinality,
+            AggregationType::SetAggregator,
+        ));
+
+        // Test HLL does not support subpopulations
+        assert!(!does_precompute_operator_support_subpopulations(
+            Statistic::Cardinality,
+            AggregationType::HLL,
+        ));
     }
 
     #[test]
@@ -179,6 +206,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, (AggregationType::HLL, "".to_string()));
+    }
+
+    #[test]
+    fn test_cardinality_exact_maps_to_set_aggregator() {
+        // `uniqExact(...)` must not silently downgrade to the approximate
+        // HLL sketch the Approximate branch above uses.
+        let result = map_statistic_to_precompute_operator(
+            Statistic::Cardinality,
+            QueryTreatmentType::Exact,
+        )
+        .unwrap();
+        assert_eq!(result, (AggregationType::SetAggregator, "".to_string()));
     }
 
     #[test]

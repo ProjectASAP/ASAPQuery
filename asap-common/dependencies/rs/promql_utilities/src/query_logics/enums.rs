@@ -30,6 +30,11 @@ pub enum Statistic {
     Max,
     Quantile,
     Topk,
+    /// `argMax(x, y)`: the value of `x` at the row where `y` (always this
+    /// session's derived-value comparison key) was maximal.
+    ArgMax,
+    /// `argMin(x, y)`: same, for the minimal `y`.
+    ArgMin,
 }
 
 impl std::fmt::Display for Statistic {
@@ -45,6 +50,8 @@ impl std::fmt::Display for Statistic {
             Statistic::Max => write!(f, "max"),
             Statistic::Quantile => write!(f, "quantile"),
             Statistic::Topk => write!(f, "topk"),
+            Statistic::ArgMax => write!(f, "argmax"),
+            Statistic::ArgMin => write!(f, "argmin"),
         }
     }
 }
@@ -79,6 +86,8 @@ impl Statistic {
             "max" => Some(Statistic::Max),
             "quantile" => Some(Statistic::Quantile),
             "topk" => Some(Statistic::Topk),
+            "argmax" => Some(Statistic::ArgMax),
+            "argmin" => Some(Statistic::ArgMin),
             _ => None,
         }
     }
@@ -282,6 +291,11 @@ pub enum AggregationType {
     MultipleSum,
     MultipleIncrease,
     MultipleMinMax,
+    /// argMax/argMin: remembers the value of one column at the row where
+    /// another column (always the comparison key) was extremal, per key.
+    /// One variant for both directions, disambiguated by sub_type
+    /// ("argmax"/"argmin"), mirroring MultipleMinMax's own min/max split.
+    MultipleArg,
     HydraKLL,
     CountMinSketch,
     CountMinSketchWithHeap,
@@ -304,6 +318,7 @@ impl AggregationType {
             AggregationType::MultipleSum => "MultipleSum",
             AggregationType::MultipleIncrease => "MultipleIncrease",
             AggregationType::MultipleMinMax => "MultipleMinMax",
+            AggregationType::MultipleArg => "MultipleArg",
             AggregationType::HydraKLL => "HydraKLL",
             AggregationType::CountMinSketch => "CountMinSketch",
             AggregationType::CountMinSketchWithHeap => "CountMinSketchWithHeap",
@@ -329,15 +344,30 @@ impl AggregationType {
         )
     }
 
-    /// Returns `true` if this type needs a paired key aggregation (SetAggregator / DeltaSetAggregator).
+    /// Returns `true` if this type needs a paired key aggregation (SetAggregator / DeltaSetAggregator)
+    /// to find out which keys exist.
+    ///
+    /// `CountMinSketch`/`CountMinSketchWithHeap` are probabilistic: `update_keyed`
+    /// only hashes the key into a fixed-size sketch (`CmsAccumulatorUpdater`,
+    /// `accumulator_factory.rs`) and never stores it, so nothing in the value
+    /// accumulator itself can answer "which keys were seen" - that's exactly what
+    /// the paired key aggregation is for.
+    ///
+    /// `MultipleSum`/`MultipleMinMax`/`MultipleIncrease` are NOT probabilistic -
+    /// each one keeps a real `HashMap<KeyByLabelValues, _>` per key
+    /// (`MultipleSumAccumulatorUpdater`, `MultipleMinMaxAccumulatorUpdater`,
+    /// `MultipleIncreaseAccumulatorUpdater`, same file), so they already
+    /// self-enumerate their own keys. Requiring a key agg for these types was
+    /// wrong: the planner never registers one for them (`build_agg_configs_for_statistics`,
+    /// asap-planner-rs/src/planner/agg_config.rs, only emits a companion
+    /// DeltaSetAggregator for `CountMinSketch`/`HydraKLL`), so any query landing on
+    /// one of these three types failed capability matching with "requires a key agg
+    /// ... but none found" UNLESS some unrelated query in the same batch happened to
+    /// register a CountMinSketch on the same metric as a side effect.
     pub fn is_multi_population_value_type(self) -> bool {
         matches!(
             self,
-            AggregationType::MultipleSum
-                | AggregationType::MultipleMinMax
-                | AggregationType::MultipleIncrease
-                | AggregationType::CountMinSketch
-                | AggregationType::CountMinSketchWithHeap
+            AggregationType::CountMinSketch | AggregationType::CountMinSketchWithHeap
         )
     }
 
@@ -369,6 +399,7 @@ impl FromStr for AggregationType {
             "MultipleSum" => Ok(AggregationType::MultipleSum),
             "MultipleIncrease" => Ok(AggregationType::MultipleIncrease),
             "MultipleMinMax" => Ok(AggregationType::MultipleMinMax),
+            "MultipleArg" => Ok(AggregationType::MultipleArg),
             "HydraKLL" => Ok(AggregationType::HydraKLL),
             "CountMinSketch" => Ok(AggregationType::CountMinSketch),
             "CountMinSketchWithHeap" => Ok(AggregationType::CountMinSketchWithHeap),

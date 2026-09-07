@@ -45,4 +45,22 @@ pub struct StatefulTransitionConfig {
     /// Usually this is the outer GROUP BY list.
     /// Empty means global aggregate.
     pub emit_labels: Vec<String>,
+
+    /// When set, this operator emits a NUMERIC derived value instead of a
+    /// boolean-triggered event: `dateDiff(<unit>, previous state_column,
+    /// current state_column)`, in this ClickHouse dateDiff unit name
+    /// ("second", "minute", ...). Lowers `dateDiff('second',
+    /// lagInFrame(timestamp) OVER (PARTITION BY ... ORDER BY timestamp),
+    /// timestamp) AS gap` - the "gap between consecutive rows" shape - the
+    /// same way the boolean mode above lowers `countIf(previous_x != x)`.
+    /// `predicate`/`previous_alias` are unused in this mode; every row with
+    /// a remembered previous value emits (subject to `min_gap`), rather
+    /// than only rows where a predicate holds.
+    pub gap_unit: Option<String>,
+
+    /// Only emit when `gap_unit` is set AND the computed gap is strictly
+    /// greater than this value (e.g. `Some(0.0)` folds a `WHERE gap > 0`
+    /// filter into ingest-time emission). `None` means always emit once a
+    /// previous value exists.
+    pub min_gap: Option<f64>,
 }

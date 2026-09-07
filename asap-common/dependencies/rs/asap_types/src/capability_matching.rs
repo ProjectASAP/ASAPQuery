@@ -18,7 +18,24 @@ use promql_utilities::query_logics::enums::AggregationType;
 /// Returns the aggregation types that can serve this statistic.
 pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
     match stat {
-        Statistic::Sum => &[AggregationType::Sum, AggregationType::MultipleSum],
+        // For Approximate treatment, map_statistic_to_precompute_operator
+        // (promql_utilities::query_logics::logics) registers BOTH Sum and
+        // Count as CountMinSketch - a Count-Min sketch generalizes from
+        // frequency counting to weighted sums when the per-update "value"
+        // isn't always 1, which is exactly how CmsAccumulatorUpdater::update_keyed
+        // treats it (accumulator_factory.rs) - distinguished only by
+        // aggregation_sub_type ("sum" vs "count", see required_sub_type
+        // below). AVG's Sum half was never listed as compatible with the
+        // CountMinSketch the planner actually registered for it, so it
+        // always failed capability matching with "no compatible aggregation
+        // found for statistic Sum" even when a perfectly good sum-flavored
+        // sketch existed. `AggregationType::Sum`/`MultipleSum` are Exact
+        // treatment's non-probabilistic equivalents, kept alongside it.
+        Statistic::Sum => &[
+            AggregationType::Sum,
+            AggregationType::MultipleSum,
+            AggregationType::CountMinSketch,
+        ],
         Statistic::Count => &[
             AggregationType::CountMinSketch,
             AggregationType::CountMinSketchWithHeap,
@@ -36,15 +53,31 @@ pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
             AggregationType::HLL,
         ],
         Statistic::Topk => &[AggregationType::CountMinSketchWithHeap],
+        Statistic::ArgMax | Statistic::ArgMin => &[AggregationType::MultipleArg],
     }
 }
 
 /// Returns the required aggregation_sub_type for this statistic, if any.
 /// `Min` requires `"min"`, `Max` requires `"max"`. All others are unconstrained.
+///
+/// `Sum` and `Count` now matter too: both can be served by a
+/// `CountMinSketch` (see `compatible_agg_types`'s doc comment), and the
+/// planner always tags which one a given sketch actually accumulates via
+/// `aggregation_sub_type` ("sum" or "count", from `Statistic::to_string()`
+/// in `map_statistic_to_precompute_operator`). Without this, a Count request
+/// could just as easily match a sum-flavored sketch (or vice versa) whenever
+/// both happen to be registered for the same metric/window - silently wrong
+/// numbers, not a clean rejection. `CountMinSketchWithHeap` (top-k) configs
+/// are always tagged `"topk"`, so this also correctly keeps a plain Count
+/// request from matching a top-k sketch it was never meant to read.
 pub fn required_sub_type(stat: Statistic) -> Option<&'static str> {
     match stat {
         Statistic::Min => Some("min"),
         Statistic::Max => Some("max"),
+        Statistic::ArgMax => Some("argmax"),
+        Statistic::ArgMin => Some("argmin"),
+        Statistic::Sum => Some("sum"),
+        Statistic::Count => Some("count"),
         _ => None,
     }
 }
@@ -76,11 +109,44 @@ pub fn window_compatible(config: &AggregationConfig, data_range_ms: u64) -> bool
     }
 }
 
-/// Label compatibility: strict exact match.
-/// TODO: relax to superset (config.grouping_labels ⊇ req.grouping_labels) for
+/// Label compatibility: strict exact match against the config's TOTAL label
+/// vocabulary (`grouping_labels ∪ aggregated_labels`), not `grouping_labels`
+/// alone - except for `Statistic::Topk`, where `aggregated_labels` is the
+/// sketch's own internal heavy-hitter key, not a result dimension, and must
+/// stay out of the comparison (see below).
+///
+/// `QueryRequirements` has no grouping/aggregated distinction - it just says
+/// "the result needs these dimensions" (`build_query_requirements_sql`
+/// populates it from the query's GROUP BY columns for every non-top-k
+/// statistic). But the planner's registration-time classifier stores a
+/// dimension under `aggregated_labels` instead of `grouping_labels` for
+/// keyed sketch types (CountMinSketch, CountMinSketchWithHeap, ...) - for a
+/// plain COUNT, the dimension is still a real result column, just stored in
+/// a different field. A query needing a plain `GROUP BY operation` COUNT was
+/// rejecting every registered CountMinSketch config for that exact reason:
+/// `config.grouping_labels` was always `[]` (the dimension lived in
+/// `aggregated_labels`), so it never equaled the requirement's non-empty
+/// `grouping_labels`, even for an otherwise perfect match.
+///
+/// Top-k is the one case where this union is wrong: for `Statistic::Topk`,
+/// `build_query_requirements_sql` deliberately leaves `req_labels` empty -
+/// the GROUP BY column is the `CountMinSketchWithHeap`'s own tracked
+/// heavy-hitter dimension (read out later via `enable_topk_limiting`), not a
+/// precompute partition key, so it must NOT be required to also appear in
+/// the requirement's `grouping_labels`. Folding `aggregated_labels` into the
+/// comparison for top-k made every top-k config's non-empty
+/// `aggregated_labels` fail to match the requirement's intentionally-empty
+/// `grouping_labels` - a real regression caught by rerunning q009/q010
+/// against real data after the first version of this fix.
+///
+/// TODO: relax to superset (config total labels ⊇ req.grouping_labels) for
 /// simple accumulators (Sum, MinMax, Increase).
-pub fn labels_compatible(config_labels: &KeyByLabelNames, req_labels: &KeyByLabelNames) -> bool {
-    config_labels == req_labels
+pub fn labels_compatible(config: &AggregationConfig, req_labels: &KeyByLabelNames, stat: Statistic) -> bool {
+    if stat == Statistic::Topk {
+        &config.grouping_labels == req_labels
+    } else {
+        &config.grouping_labels.union(&config.aggregated_labels) == req_labels
+    }
 }
 
 /// Spatial filter compatibility.
@@ -133,7 +199,20 @@ pub fn topk_weighting_compatible(
 /// Aggregation priority comparator: prefer larger `window_size_ms` (descending).
 /// This is a separate function so callers can swap the policy without touching matching logic.
 pub fn aggregation_priority(a: &AggregationConfig, b: &AggregationConfig) -> Ordering {
-    b.window_size_ms.cmp(&a.window_size_ms)
+    b.window_size_ms.cmp(&a.window_size_ms).then_with(|| {
+        // Tie-break deterministically rather than leaving it to HashMap
+        // iteration order (unspecified, and observed to vary run to run):
+        // prefer an exact, single-purpose type (e.g. `Sum`) over a shared
+        // probabilistic sketch (`CountMinSketch`, now compatible with both
+        // Sum and Count - see `compatible_agg_types`'s doc comment) when
+        // both are otherwise equally good candidates for the same
+        // statistic. A CountMinSketch-based Sum candidate can additionally
+        // require a paired key aggregation that a same-window exact Sum
+        // config never needed, so picking it over an available exact match
+        // could fail a query that should have succeeded.
+        let rank = |c: &AggregationConfig| c.aggregation_type == AggregationType::CountMinSketch;
+        rank(a).cmp(&rank(b))
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -180,9 +259,17 @@ pub fn find_compatible_aggregation(
             .filter(|c| {
                 let ok = c.metric == requirements.metric
                     && types.contains(&c.aggregation_type)
-                    && sub_type.is_none_or(|st| c.aggregation_sub_type == st)
+                    // An empty aggregation_sub_type is a wildcard: types like
+                    // `Sum`/`MultipleSum` exclusively serve one Statistic
+                    // already (via `compatible_agg_types`) and have never
+                    // needed to set a real sub_type to disambiguate anything
+                    // - only enforce the exact match against a config that
+                    // actually set one (CountMinSketch's "sum"/"count"/"topk").
+                    && sub_type.is_none_or(|st| {
+                        c.aggregation_sub_type.is_empty() || c.aggregation_sub_type == st
+                    })
                     && window_compatible(c, requirements.data_range_ms)
-                    && labels_compatible(&c.grouping_labels, &requirements.grouping_labels)
+                    && labels_compatible(c, &requirements.grouping_labels, stat)
                     && spatial_filter_compatible(
                         &c.spatial_filter_normalized,
                         &requirements.spatial_filter_normalized,
@@ -251,16 +338,37 @@ pub fn find_compatible_aggregation(
     // self-keyed case is expressed via the query_config path (a single
     // aggregation reference), while the capability-matching fallback resolves a
     // separate key aggregation just like any other multi-population value type.
+    //
+    // The key agg's `grouping_labels` must match `value_agg`'s exactly, same
+    // reasoning as the multi-statistic consistency check above: a single
+    // metric can have several SetAggregator/DeltaSetAggregator configs, each
+    // partitioned by a DIFFERENT store-level grouping key (one might roll up
+    // several unrelated dimensions - operation, peer_asn, prefix - into ONE
+    // shared key tracker with no partitioning at all, `grouping_labels: []`,
+    // while another might be partitioned specifically `by prefix` for a
+    // different query). Picking *any* key-agg-type config for the metric,
+    // as this used to, could pair a value agg with a key agg partitioned on
+    // a completely different dimension - `HashMap::values()` iteration order
+    // is unspecified, so which (if any) config happened to be compatible
+    // varied run to run. When they don't match, the key agg's OWN per-key
+    // enumeration comes from the wrong store partition (e.g. real prefix
+    // strings) and gets probed against a value sketch that was never fed
+    // those keys, failing at query time with "No value for key: ..." deep
+    // inside execution instead of a clean "no compatible aggregation" - the
+    // exact symptom that traced back here.
     let key_agg: &AggregationConfig = if is_multi_population_value_type(value_agg.aggregation_type)
     {
-        let ka = configs
-            .values()
-            .find(|c| c.metric == requirements.metric && is_key_agg_type(c.aggregation_type));
+        let ka = configs.values().find(|c| {
+            c.metric == requirements.metric
+                && is_key_agg_type(c.aggregation_type)
+                && c.grouping_labels == value_agg.grouping_labels
+        });
         if ka.is_none() {
             warn!(
                 metric = %requirements.metric,
                 value_agg_type = %value_agg.aggregation_type,
-                "capability matching: multi-population value agg requires a key agg (SetAggregator/DeltaSetAggregator) but none found",
+                value_agg_grouping_labels = ?value_agg.grouping_labels,
+                "capability matching: multi-population value agg requires a key agg (SetAggregator/DeltaSetAggregator) with matching grouping_labels but none found",
             );
         }
         ka?
@@ -322,6 +430,7 @@ mod tests {
             window_size_ms,
             slide_interval_ms: window_size_ms,
             window_type: window_type.parse::<WindowType>().unwrap_or_default(),
+            offset_ms: 0,
             spatial_filter: spatial_filter.to_string(),
             spatial_filter_normalized,
             metric: metric.to_string(),

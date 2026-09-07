@@ -23,6 +23,12 @@ pub struct AggregationConfig {
     pub window_size_ms: u64, // Window size in milliseconds (e.g., 900_000ms for 15m)
     pub slide_interval_ms: u64, // Slide/hop interval in milliseconds (e.g., 30_000ms)
     pub window_type: WindowType, // Tumbling or Sliding
+    /// Phase shift (ms) applied before epoch-aligning window boundaries -
+    /// see `IntermediateWindowConfig::offset_ms` (asap-planner-rs) for why
+    /// this exists. Zero for every ordinary window; defaults to 0 when
+    /// absent from a config predating this field.
+    #[serde(default)]
+    pub offset_ms: u64,
 
     pub spatial_filter: String,
     pub spatial_filter_normalized: String,
@@ -62,6 +68,7 @@ impl AggregationConfig {
         window_size_ms: u64,
         slide_interval_ms: u64,
         window_type: WindowType,
+        offset_ms: u64,
         spatial_filter: String,
         metric: String,
         num_aggregates_to_retain: Option<u64>,
@@ -85,6 +92,7 @@ impl AggregationConfig {
             window_size_ms,
             slide_interval_ms,
             window_type,
+            offset_ms,
             spatial_filter,
             spatial_filter_normalized,
             metric,
@@ -160,6 +168,8 @@ impl AggregationConfig {
             .and_then(|v| v.as_u64())
             .unwrap_or(window_size_ms);
 
+        let offset_ms = data.get("windowOffsetMs").and_then(|v| v.as_u64()).unwrap_or(0);
+
         let spatial_filter = data["spatialFilter"].as_str().unwrap_or("").to_string();
 
         let metric = data["metric"].as_str().ok_or("Missing metric")?.to_string();
@@ -189,6 +199,7 @@ impl AggregationConfig {
             window_size_ms,
             slide_interval_ms,
             window_type,
+            offset_ms,
             spatial_filter,
             metric,
             num_aggregates_to_retain,
@@ -284,6 +295,11 @@ impl AggregationConfig {
             .and_then(|v| v.as_u64())
             .unwrap_or(window_size_ms);
 
+        let offset_ms = aggregation_data
+            .get("windowOffsetMs")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
         let spatial_filter = aggregation_data["spatialFilter"]
             .as_str()
             .unwrap_or("")
@@ -335,6 +351,7 @@ impl AggregationConfig {
             window_size_ms,
             slide_interval_ms,
             window_type,
+            offset_ms,
             spatial_filter,
             metric,
             num_aggregates_to_retain,
@@ -355,6 +372,7 @@ impl SerializableToSink for AggregationConfig {
             "originalYaml": self.original_yaml,
             "windowSizeMs": self.window_size_ms,
             "slideIntervalMs": self.slide_interval_ms,
+            "windowOffsetMs": self.offset_ms,
             "windowType": self.window_type.to_string(),
             "spatialFilter": self.spatial_filter,
             "metric": self.metric,

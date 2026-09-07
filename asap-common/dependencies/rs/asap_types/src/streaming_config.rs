@@ -9,6 +9,7 @@ use std::ops::Index;
 use crate::aggregation_config::{AggregationConfig, AggregationIdInfo};
 use crate::capability_matching::find_compatible_aggregation as common_find_compatible;
 use crate::computed_label::ComputedLabelConfig;
+use crate::derived_value::DerivedValueConfig;
 use crate::enums::QueryLanguage;
 use crate::inference_config::{InferenceConfig, SchemaConfig};
 use crate::query_requirements::QueryRequirements;
@@ -30,6 +31,12 @@ pub struct StreamingConfig {
     /// an ordinary column.
     #[serde(default)]
     pub computed_label_cols: HashMap<String, ComputedLabelConfig>,
+    /// Derived-value ingest streams (e.g. `min(timestamp)`, `avg(med)`) the
+    /// planner detected while building this config - see
+    /// `DerivedValueConfig` for why these need their own stream instead of
+    /// reusing the table's main value column.
+    #[serde(default)]
+    pub derived_value_cols: Vec<DerivedValueConfig>,
 }
 
 impl StreamingConfig {
@@ -38,6 +45,7 @@ impl StreamingConfig {
             aggregation_configs,
             stateful_transitions: Vec::new(),
             computed_label_cols: HashMap::new(),
+            derived_value_cols: Vec::new(),
         }
     }
 
@@ -49,6 +57,7 @@ impl StreamingConfig {
             aggregation_configs,
             stateful_transitions,
             computed_label_cols: HashMap::new(),
+            derived_value_cols: Vec::new(),
         }
     }
 
@@ -61,6 +70,21 @@ impl StreamingConfig {
             aggregation_configs,
             stateful_transitions,
             computed_label_cols,
+            derived_value_cols: Vec::new(),
+        }
+    }
+
+    pub fn with_all_extras(
+        aggregation_configs: HashMap<u64, AggregationConfig>,
+        stateful_transitions: Vec<StatefulTransitionConfig>,
+        computed_label_cols: HashMap<String, ComputedLabelConfig>,
+        derived_value_cols: Vec<DerivedValueConfig>,
+    ) -> Self {
+        Self {
+            aggregation_configs,
+            stateful_transitions,
+            computed_label_cols,
+            derived_value_cols,
         }
     }
 
@@ -153,10 +177,17 @@ impl StreamingConfig {
             .transpose()?
             .unwrap_or_default();
 
-        Ok(Self::with_extras(
+        let derived_value_cols: Vec<DerivedValueConfig> = data
+            .get("derived_value_cols")
+            .map(|v| serde_yaml::from_value(v.clone()))
+            .transpose()?
+            .unwrap_or_default();
+
+        Ok(Self::with_all_extras(
             aggregation_configs,
             stateful_transitions,
             computed_label_cols,
+            derived_value_cols,
         ))
     }
 }

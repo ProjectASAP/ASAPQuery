@@ -7,6 +7,7 @@ pub mod promql_schema;
 pub mod query_config;
 pub mod computed_label;
 pub mod query_requirements;
+pub mod derived_value;
 pub mod stateful_transition;
 pub mod streaming_config;
 pub mod traits;
