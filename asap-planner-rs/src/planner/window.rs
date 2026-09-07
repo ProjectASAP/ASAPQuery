@@ -94,6 +94,16 @@ pub struct IntermediateWindowConfig {
     pub window_size_ms: u64,
     pub slide_interval_ms: u64,
     pub window_type: WindowType,
+    /// Phase shift (ms) applied before epoch-aligning window boundaries:
+    /// `window_start = floor((t - offset_ms) / slide_interval_ms) *
+    /// slide_interval_ms + offset_ms`. Zero for every ordinary window (plain
+    /// epoch alignment, unchanged behavior) - only nonzero for a bucket
+    /// function whose boundaries don't fall on a multiple of its own size
+    /// from the Unix epoch, e.g. `toStartOfWeek` (mode 0, Sunday-start):
+    /// 1970-01-01 was a Thursday, so a zero-offset 7-day tumbling window
+    /// would produce real-but-wrong (Thursday-aligned) buckets instead of
+    /// the Sundays ClickHouse's own `toStartOfWeek()` produces.
+    pub offset_ms: u64,
 }
 
 #[cfg(test)]

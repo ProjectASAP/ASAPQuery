@@ -196,6 +196,7 @@ fn build_config(
         w,
         slide_interval,
         window_type,
+        0, // offset_ms - the optimizer's candidate windows are never bucket-function-derived
         aqe.requirements.spatial_filter_normalized.clone(),
         aqe.requirements.metric.clone(),
         Some(n_windows),

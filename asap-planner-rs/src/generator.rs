@@ -35,6 +35,7 @@ pub(crate) const KEY_TABLES: &str = "tables";
 pub(crate) const KEY_TIME_COLUMN: &str = "time_column";
 pub(crate) const KEY_VALUE_COLUMN: &str = "value_column";
 pub(crate) const KEY_VALUE_COLUMNS: &str = "value_columns";
+pub(crate) const KEY_WINDOW_OFFSET_MS: &str = "windowOffsetMs";
 pub(crate) const KEY_WINDOW_SIZE_MS: &str = "windowSizeMs";
 pub(crate) const KEY_WINDOW_TYPE: &str = "windowType";
 
@@ -114,6 +115,10 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
     map.insert(
         YamlValue::String(KEY_WINDOW_SIZE_MS.to_string()),
         YamlValue::Number(cfg.window_size_ms.into()),
+    );
+    map.insert(
+        YamlValue::String(KEY_WINDOW_OFFSET_MS.to_string()),
+        YamlValue::Number(cfg.offset_ms.into()),
     );
     map.insert(
         YamlValue::String(KEY_WINDOW_TYPE.to_string()),

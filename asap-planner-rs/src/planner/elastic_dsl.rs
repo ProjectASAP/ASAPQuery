@@ -103,6 +103,7 @@ impl ElasticSingleQueryProcessor {
             window_size_ms,
             slide_interval_ms: window_size_ms,
             window_type: WindowType::Tumbling,
+            offset_ms: 0,
         };
 
         // Extract target field and group by information

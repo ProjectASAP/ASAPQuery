@@ -33,6 +33,7 @@ pub fn build_sketch_parameters(
         | AggregationType::Sum
         | AggregationType::MultipleIncrease
         | AggregationType::MultipleMinMax
+        | AggregationType::MultipleArg
         | AggregationType::MultipleSum
         | AggregationType::DeltaSetAggregator
         | AggregationType::SetAggregator => Ok(HashMap::new()),

@@ -24,6 +24,11 @@ pub fn sketch_properties(t: AggregationType) -> SketchProperties {
         AggregationType::MultipleSum => p(true, true, true),
         AggregationType::MultipleIncrease => p(true, false, true),
         AggregationType::MultipleMinMax => p(true, false, true),
+        // Same reasoning as MultipleMinMax: merging two argMax accumulators
+        // is just picking whichever has the larger timestamp per key, but
+        // there's no way to "subtract" a sample and recover the prior best
+        // without full history.
+        AggregationType::MultipleArg => p(true, false, true),
         AggregationType::HydraKLL => p(true, false, true),
         AggregationType::CountMinSketch => p(true, true, true),
         // ponytail: heap top-k lists don't compose across windows; CMS cells do but the
