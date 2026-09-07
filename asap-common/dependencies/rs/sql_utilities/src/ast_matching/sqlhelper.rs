@@ -84,6 +84,34 @@ impl SQLSchema {
             false
         }
     }
+
+    /// Returns a copy of this schema with `column` added to every table's
+    /// metadata columns.
+    ///
+    /// Used at query time for a computed-GROUP-BY alias (e.g. `SELECT
+    /// toDate(timestamp) AS day, count(*) ... GROUP BY day`): the bucketed-
+    /// countIf planner path (`get_bucketed_countif_streaming_aggregation_configs`,
+    /// asap-planner-rs/src/planner/sql.rs) treats a plain-COUNT bucket alias
+    /// as pure window sizing and never registers it as a metadata column -
+    /// intentionally, since the bucket dimension is handled by window/range
+    /// execution, not label matching, so registering an ingest-time
+    /// `ComputedLabelConfig` for it would be wasted (and riskier) work. But
+    /// the query-time rewrite (`rewrite_computed_group_by_query`) always
+    /// re-parses the query with the alias as an ordinary GROUP BY label, so
+    /// without this, `SQLPatternMatcher::flatten_query_info`'s schema check
+    /// rejects every such query with `InvalidAggregationLabel` even though
+    /// the query is fully supported. This mirrors the same augmented-schema
+    /// trick the planner already uses for its own local validation
+    /// (`get_computed_group_by_streaming_aggregation_configs`) - a schema
+    /// copy for one query's validation, not a persistent or ingest-time
+    /// change.
+    pub fn with_extra_metadata_column(&self, column: &str) -> Self {
+        let mut info = self.info.clone();
+        for cols in info.values_mut() {
+            cols.metadata_columns.insert(column.to_string());
+        }
+        Self { info }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +133,42 @@ pub struct SQLQueryData {
     pub order_by: Vec<OrderByItem>,
     /// `LIMIT N`. None when no LIMIT is present. Excluded from `matches_sql_pattern`.
     pub limit: Option<u64>,
+    /// `HAVING <aggregation_alias> <op> <literal>` - filters GROUP BY keys
+    /// by the aggregate's own computed value, not a raw column predicate.
+    /// `None` when no HAVING is present. Excluded from `matches_sql_pattern`,
+    /// same reasoning as `order_by`/`limit`: it's a post-aggregation,
+    /// serve-time filter, not part of which precompute the query needs.
+    pub having: Option<HavingFilter>,
+}
+
+/// `<op>` half of a parsed `HAVING <alias> <op> <literal>` clause.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HavingOp {
+    Eq,
+    Ne,
+    Lt,
+    Le,
+    Gt,
+    Ge,
+}
+
+impl HavingOp {
+    pub fn evaluate(self, actual: f64, threshold: f64) -> bool {
+        match self {
+            HavingOp::Eq => actual == threshold,
+            HavingOp::Ne => actual != threshold,
+            HavingOp::Lt => actual < threshold,
+            HavingOp::Le => actual <= threshold,
+            HavingOp::Gt => actual > threshold,
+            HavingOp::Ge => actual >= threshold,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HavingFilter {
+    pub op: HavingOp,
+    pub value: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -112,7 +176,12 @@ pub struct SQLBucketedCountIfOutput {
     pub alias: String,
     /// Extra per-output filter extracted from countIf(...).
     /// Example: operation = 'A'
+    /// Empty (unused) when `cardinality_column` is set.
     pub filter: String,
+    /// Some(column) when this output is `uniqExact(column)` - a distinct-value
+    /// count per bucket - rather than count(*)/countIf(...). `filter` is
+    /// unused (empty) in that case.
+    pub cardinality_column: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -121,26 +190,52 @@ pub struct SQLBucketedCountIfQueryData {
     pub time_info: TimeInfo,
     pub bucket_alias: String,
     pub bucket_ms: u64,
+    /// Phase shift (ms) applied before epoch-aligning bucket boundaries -
+    /// see `IntermediateWindowConfig::offset_ms`'s doc comment for why this
+    /// exists. Zero for every bucket function except `toStartOfWeek`
+    /// (mode 0, Sunday-start).
+    pub bucket_offset_ms: u64,
+    /// True when the bucket column came from `toDate(...)` specifically -
+    /// ClickHouse renders that as a bare `Date` (`YYYY-MM-DD`), unlike
+    /// every other supported bucket function (`toStartOfHour`,
+    /// `toStartOfInterval` with a day-granularity interval, ...), which all
+    /// render as `DateTime` (`YYYY-MM-DD HH:MM:SS`) even when the bucket
+    /// size happens to be a whole number of days. Not derivable from
+    /// `bucket_ms` alone - has to be tracked from the source function.
+    pub bucket_is_date: bool,
     /// WHERE predicates after removing the time predicate.
     /// Example: collector = 'rrc00'
     pub base_spatial_filter: Option<String>,
     pub outputs: Vec<SQLBucketedCountIfOutput>,
+    /// Either the bucket column (natural time order) or one output's alias
+    /// (`ORDER BY withdrawals DESC LIMIT 20` - "top N buckets by value").
+    /// Excluded from `matches_bucketed_pattern`, same reasoning as the
+    /// classic single-aggregate path's `order_by`/`limit`: sorting and
+    /// truncation are post-aggregation concerns applied at serve time, not
+    /// part of which precompute a query needs.
     pub order_by: Vec<OrderByItem>,
+    pub limit: Option<u64>,
 }
 
 impl SQLBucketedCountIfQueryData {
     /// Match reusable bucketed templates by structure, not by absolute timestamps.
     pub fn matches_bucketed_pattern(&self, template: &SQLBucketedCountIfQueryData) -> bool {
         self.metric == template.metric
+            && self.bucket_is_date == template.bucket_is_date
             && self.time_info.get_time_col_name() == template.time_info.get_time_col_name()
             && self.bucket_ms == template.bucket_ms
+            && self.bucket_offset_ms == template.bucket_offset_ms
             && self.base_spatial_filter == template.base_spatial_filter
             && self.outputs.len() == template.outputs.len()
             && self
                 .outputs
                 .iter()
                 .zip(template.outputs.iter())
-                .all(|(a, b)| a.alias == b.alias && a.filter == b.filter)
+                .all(|(a, b)| {
+                    a.alias == b.alias
+                        && a.filter == b.filter
+                        && a.cardinality_column == b.cardinality_column
+                })
     }
 }
 
@@ -247,12 +342,23 @@ impl SQLQueryData {
     /// Templates in inference_config use NOW()-relative timestamps; actual incoming
     /// queries use absolute timestamps. Only the duration is compared, not the
     /// absolute start time. All other fields (metric, aggregation, labels, time
-    /// column name) must match exactly.
+    /// column name, spatial filter) must match exactly.
+    ///
+    /// `spatial_filter` matters here the same way `base_spatial_filter` does
+    /// in `SQLBucketedCountIfQueryData::matches_bucketed_pattern`: two
+    /// surrogates that share every other field but filter on different
+    /// literal values (e.g. `communities = ''` vs `communities != ''`, from
+    /// splitting a multi-aggregate query's countIf pair) are genuinely
+    /// different precomputes, not the same one under different aliases.
+    /// Without this comparison, `find_query_config_sql` returns whichever
+    /// one was registered first for *every* incoming query with that shape,
+    /// silently serving one condition's count as if it were the other's.
     pub fn matches_sql_pattern(&self, template: &SQLQueryData) -> bool {
         self.metric == template.metric
             && self
                 .aggregation_info
                 .matches_pattern(&template.aggregation_info)
+            && self.spatial_filter == template.spatial_filter
             && self.labels == template.labels
             && self.time_info.matches_pattern(&template.time_info)
             && match (&self.subquery, &template.subquery) {

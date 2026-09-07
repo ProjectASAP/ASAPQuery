@@ -1,7 +1,7 @@
 use crate::sqlhelper::SQLSchema;
 use crate::sqlhelper::{
-    AggregationInfo, OrderByItem, SQLBucketedCountIfOutput, SQLBucketedCountIfQueryData,
-    SQLQueryData, TimeInfo,
+    AggregationInfo, HavingFilter, HavingOp, OrderByItem, SQLBucketedCountIfOutput,
+    SQLBucketedCountIfQueryData, SQLQueryData, TimeInfo,
 };
 use sqlparser::ast::*;
 use std::collections::HashSet;
@@ -113,9 +113,7 @@ impl SQLPatternParser {
         };
 
         let order_by_items = self.parse_order_by_items(query)?;
-        if query.limit_clause.is_some() {
-            return None;
-        }
+        let limit = self.parse_limit_value(query)?;
 
         let query = self.cte_to_subquery(query);
 
@@ -124,13 +122,14 @@ impl SQLPatternParser {
             _ => return None,
         };
 
-        self.parse_bucketed_countif_select(select, order_by_items)
+        self.parse_bucketed_countif_select(select, order_by_items, limit)
     }
 
     fn parse_bucketed_countif_select(
         &self,
         select: &Select,
         order_by_items: Vec<OrderByItem>,
+        limit: Option<u64>,
     ) -> Option<SQLBucketedCountIfQueryData> {
         let (metric, has_subquery) = self.get_metric(select)?;
         if has_subquery {
@@ -159,22 +158,16 @@ impl SQLPatternParser {
         let time_info = self.get_time_info(select, &metric)?;
         let base_spatial_filter = self.get_spatial_filter(select);
 
-        let (bucket_time_col, bucket_ms, bucket_alias) =
+        let (bucket_time_col, bucket_ms, bucket_alias, bucket_is_date, bucket_offset_ms) =
             self.parse_time_bucket_projection(&select.projection[0])?;
 
         if bucket_time_col != time_info.get_time_col_name() {
             return None;
         }
 
-        let group_bys = self.get_groupbys(select)?;
+        let group_bys = self.get_groupbys(select, false)?;
         if group_bys.len() != 1 || !group_bys.contains(&bucket_alias) {
             return None;
-        }
-
-        for item in &order_by_items {
-            if item.column != bucket_alias {
-                return None;
-            }
         }
 
         let mut outputs = Vec::new();
@@ -186,18 +179,72 @@ impl SQLPatternParser {
             return None;
         }
 
+        // ORDER BY is either the bucket column itself (natural time order -
+        // the only shape this handler originally supported) or exactly one
+        // output's alias (`ORDER BY withdrawals DESC LIMIT 20` - "top N
+        // buckets by value"). Anything else - multiple sort keys, a column
+        // that's neither - isn't a shape this handler knows how to serve.
+        if !order_by_items.is_empty() {
+            if order_by_items.len() != 1 {
+                return None;
+            }
+            let col = &order_by_items[0].column;
+            if *col != bucket_alias && !outputs.iter().any(|o| o.alias == *col) {
+                return None;
+            }
+        }
+
         Some(SQLBucketedCountIfQueryData {
             metric,
             time_info,
             bucket_alias,
             bucket_ms,
+            bucket_offset_ms,
+            bucket_is_date,
             base_spatial_filter,
             outputs,
             order_by: order_by_items,
+            limit,
         })
     }
 
-    fn parse_time_bucket_projection(&self, item: &SelectItem) -> Option<(String, u64, String)> {
+    /// Fixed-size time-bucket functions ClickHouse analysts write naturally
+    /// (as opposed to the normalized `toStartOfInterval(ts,
+    /// toIntervalMinute(n))` form this parser originally only accepted).
+    /// Each maps to an exact millisecond bucket size because 1970-01-01
+    /// 00:00:00 UTC is itself a valid minute/hour/day boundary - the same
+    /// plain epoch-modulo tumbling-window alignment already used
+    /// everywhere else in this codebase lines up with ClickHouse's own
+    /// bucket boundaries for all four with no special-casing needed.
+    /// `toStartOfWeek` needs a nonzero `offset_ms`: ClickHouse's week start
+    /// (mode 0, the default, and the only mode this parses - a query
+    /// writing an explicit mode argument isn't matched) is Sunday, but
+    /// 1970-01-01 was a Thursday, so naive epoch-modulo alignment would
+    /// produce real-but-wrong (Thursday-aligned) buckets. Shifting by 3
+    /// days - 1970-01-04, the first Sunday on or after the epoch (verified:
+    /// `date -u -d @259200` -> Sun Jan 4 1970) - fixes this permanently:
+    /// every subsequent 7-day boundary from a real Sunday is still a real
+    /// Sunday, since 7 days is a fixed span unaffected by leap years/DST in
+    /// UTC epoch arithmetic.
+    /// `(name, bucket_ms, is_date, offset_ms)` - `is_date` is true for
+    /// `toDate`/`toStartOfWeek`, which ClickHouse renders as a bare `Date`
+    /// (`YYYY-MM-DD`); every other bucket function here renders as
+    /// `DateTime` (`YYYY-MM-DD HH:MM:SS`) regardless of bucket size.
+    const FIXED_TIME_BUCKET_FUNCTIONS: &[(&str, u64, bool, u64)] = &[
+        ("tostartofminute", 60_000, false, 0),
+        ("tostartoffiveminutes", 300_000, false, 0),
+        ("tostartoftenminutes", 600_000, false, 0),
+        ("tostartoffifteenminutes", 900_000, false, 0),
+        ("tostartofhour", 3_600_000, false, 0),
+        ("todate", 86_400_000, true, 0),
+        ("tostartofweek", 604_800_000, true, 259_200_000),
+    ];
+
+    /// Returns `(time_col, bucket_ms, alias, is_date, offset_ms)`.
+    fn parse_time_bucket_projection(
+        &self,
+        item: &SelectItem,
+    ) -> Option<(String, u64, String, bool, u64)> {
         let (expr, alias) = match item {
             SelectItem::ExprWithAlias { expr, alias } => (expr, alias.value.clone()),
             _ => return None,
@@ -208,18 +255,31 @@ impl SQLPatternParser {
             _ => return None,
         };
 
-        if !func
-            .name
-            .to_string()
-            .eq_ignore_ascii_case("toStartOfInterval")
-        {
-            return None;
-        }
-
+        let name = func.name.to_string().to_lowercase();
         let args = match &func.args {
             FunctionArguments::List(args) => &args.args,
             _ => return None,
         };
+
+        if let Some(&(_, bucket_ms, is_date, offset_ms)) = Self::FIXED_TIME_BUCKET_FUNCTIONS
+            .iter()
+            .find(|(n, _, _, _)| *n == name)
+        {
+            if args.len() != 1 {
+                return None;
+            }
+            let time_col = match &args[0] {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                    ident.value.clone()
+                }
+                _ => return None,
+            };
+            return Some((time_col, bucket_ms, alias, is_date, offset_ms));
+        }
+
+        if name != "tostartofinterval" {
+            return None;
+        }
 
         if args.len() != 2 {
             return None;
@@ -232,37 +292,62 @@ impl SQLPatternParser {
             _ => return None,
         };
 
-        let interval_func = match &args[1] {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Function(f))) => f,
+        // toStartOfInterval always renders as DateTime, regardless of
+        // interval unit (verified against a real ClickHouse server:
+        // `toStartOfInterval(ts, INTERVAL 3 day)` is `DateTime('UTC')`,
+        // not `Date` - unlike toDate() above, it's never date-only).
+        //
+        // Two spellings appear across real analyst SQL: the function form
+        // `toIntervalMinute(n)` (the only one this parser originally
+        // accepted) and the SQL-literal form `INTERVAL n minute`.
+        let bucket_ms = match &args[1] {
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Function(interval_func))) => {
+                if !interval_func
+                    .name
+                    .to_string()
+                    .eq_ignore_ascii_case("toIntervalMinute")
+                {
+                    return None;
+                }
+                let interval_args = match &interval_func.args {
+                    FunctionArguments::List(args) => &args.args,
+                    _ => return None,
+                };
+                if interval_args.len() != 1 {
+                    return None;
+                }
+                let minutes = match &interval_args[0] {
+                    FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(ValueWithSpan {
+                        value: Value::Number(n, _),
+                        ..
+                    }))) => n.parse::<u64>().ok()?,
+                    _ => return None,
+                };
+                minutes * 60_000
+            }
+            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Interval(interval))) => {
+                let n: u64 = match interval.value.as_ref() {
+                    Expr::Value(ValueWithSpan {
+                        value: Value::Number(n, _),
+                        ..
+                    }) => n.parse().ok()?,
+                    _ => return None,
+                };
+                let unit_ms = match interval.leading_field {
+                    Some(DateTimeField::Second) => 1_000,
+                    Some(DateTimeField::Minute) => 60_000,
+                    Some(DateTimeField::Hour) => 3_600_000,
+                    Some(DateTimeField::Day) => 86_400_000,
+                    // Week/month/year don't have a fixed millisecond size
+                    // (calendar-dependent) - don't guess.
+                    _ => return None,
+                };
+                n * unit_ms
+            }
             _ => return None,
         };
 
-        if !interval_func
-            .name
-            .to_string()
-            .eq_ignore_ascii_case("toIntervalMinute")
-        {
-            return None;
-        }
-
-        let interval_args = match &interval_func.args {
-            FunctionArguments::List(args) => &args.args,
-            _ => return None,
-        };
-
-        if interval_args.len() != 1 {
-            return None;
-        }
-
-        let minutes = match &interval_args[0] {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(ValueWithSpan {
-                value: Value::Number(n, _),
-                ..
-            }))) => n.parse::<u64>().ok()?,
-            _ => return None,
-        };
-
-        Some((time_col, minutes * 60_000, alias))
+        Some((time_col, bucket_ms, alias, false, 0))
     }
 
     fn parse_countif_projection(&self, item: &SelectItem) -> Option<SQLBucketedCountIfOutput> {
@@ -276,27 +361,65 @@ impl SQLPatternParser {
             _ => return None,
         };
 
-        if !func.name.to_string().eq_ignore_ascii_case("countIf") {
-            return None;
-        }
-
+        let name = func.name.to_string();
         let args = match &func.args {
             FunctionArguments::List(args) => &args.args,
             _ => return None,
         };
 
-        if args.len() != 1 {
-            return None;
+        if name.eq_ignore_ascii_case("countIf") {
+            if args.len() != 1 {
+                return None;
+            }
+            let cond = match &args[0] {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr,
+                _ => return None,
+            };
+            let filter = self.parse_simple_equality_filter(cond)?;
+            return Some(SQLBucketedCountIfOutput {
+                alias,
+                filter,
+                cardinality_column: None,
+            });
         }
 
-        let cond = match &args[0] {
-            FunctionArg::Unnamed(FunctionArgExpr::Expr(expr)) => expr,
-            _ => return None,
-        };
+        // A plain `count(*)` output alongside (or instead of) countIf
+        // outputs - e.g. `toStartOfHour(ts) AS hour, count(*) AS cnt`, one
+        // bucketed value with no per-output condition. Represented as an
+        // empty filter, the same convention `sample_matches_spatial_filter`
+        // and `combine_spatial_filters` already use for "no extra
+        // predicate beyond the base spatial filter."
+        if name.eq_ignore_ascii_case("count")
+            && matches!(args.as_slice(), [FunctionArg::Unnamed(FunctionArgExpr::Wildcard)])
+        {
+            return Some(SQLBucketedCountIfOutput {
+                alias,
+                filter: String::new(),
+                cardinality_column: None,
+            });
+        }
 
-        let filter = self.parse_simple_equality_filter(cond)?;
+        // `uniqExact(col)` alongside (or instead of) countIf/count(*)
+        // outputs - e.g. `toDate(ts) AS day, uniqExact(prefix) AS
+        // distinct_prefixes`, a distinct-value count per bucket rather than
+        // a row count. Only a bare column is supported (a computed
+        // expression here would need its own value-derivation machinery,
+        // not built).
+        if name.eq_ignore_ascii_case("uniqExact") && args.len() == 1 {
+            let col = match &args[0] {
+                FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Identifier(ident))) => {
+                    ident.value.clone()
+                }
+                _ => return None,
+            };
+            return Some(SQLBucketedCountIfOutput {
+                alias,
+                filter: String::new(),
+                cardinality_column: Some(col),
+            });
+        }
 
-        Some(SQLBucketedCountIfOutput { alias, filter })
+        None
     }
 
     fn parse_simple_equality_filter(&self, expr: &Expr) -> Option<String> {
@@ -548,12 +671,56 @@ impl SQLPatternParser {
         }
     }
 
+    /// Parses `HAVING <aggregation_alias> <op> <literal>`. The left side
+    /// must be exactly the query's own aggregate alias (not a raw column,
+    /// not a different expression) - HAVING filters groups by the
+    /// aggregate's *computed* value, and the classic single-aggregate
+    /// model only ever materializes that one value per group, so any
+    /// other left-hand side isn't something the serve-time post-processing
+    /// step (which only has that one value to filter on) can evaluate.
+    fn parse_having_filter(expr: &Expr, aggregation_alias: Option<&str>) -> Option<HavingFilter> {
+        let Expr::BinaryOp { left, op, right } = expr else {
+            return None;
+        };
+        let alias = match left.as_ref() {
+            Expr::Identifier(ident) => ident.value.as_str(),
+            _ => return None,
+        };
+        if Some(alias) != aggregation_alias {
+            return None;
+        }
+        let value = match right.as_ref() {
+            Expr::Value(ValueWithSpan {
+                value: Value::Number(n, _),
+                ..
+            }) => n.parse::<f64>().ok()?,
+            _ => return None,
+        };
+        let having_op = match op {
+            BinaryOperator::Eq => HavingOp::Eq,
+            BinaryOperator::NotEq => HavingOp::Ne,
+            BinaryOperator::Lt => HavingOp::Lt,
+            BinaryOperator::LtEq => HavingOp::Le,
+            BinaryOperator::Gt => HavingOp::Gt,
+            BinaryOperator::GtEq => HavingOp::Ge,
+            _ => return None,
+        };
+        Some(HavingFilter {
+            op: having_op,
+            value,
+        })
+    }
+
     fn parse_select(&self, select: &Select) -> Option<SQLQueryData> {
         let (metric, has_subquery) = self.get_metric(select)?;
 
         let (aggregation, aggregation_alias) = self.get_aggregation(select)?;
 
-        let group_bys = self.get_groupbys(select)?;
+        // allow_empty=true: a scalar aggregate (`SELECT count(*) FROM ...`
+        // with no GROUP BY at all) is a valid single-group query - one
+        // global value, no partition key - not a rejected pattern. See
+        // get_groupbys' doc comment.
+        let group_bys = self.get_groupbys(select, true)?;
 
         if !self.select_identifiers_subset_of(select, &group_bys) {
             return None;
@@ -572,13 +739,27 @@ impl SQLPatternParser {
                 || !select.cluster_by.is_empty()
                 || !select.distribute_by.is_empty()
                 || !select.sort_by.is_empty()
-                || select.having.is_some()
                 || !select.named_window.is_empty()
                 || select.window_before_qualify
             {
                 println!("Unexpected SELECT fields present");
                 return None;
             }
+
+            // HAVING <aggregation_alias> <op> <literal> - filters GROUP BY
+            // keys by the aggregate's own computed value at serve time
+            // (see SqlPostProcessing::apply in the query engine). Anything
+            // else - HAVING on a raw column, a different expression, a
+            // second condition ANDed in - isn't a shape this parses;
+            // reject rather than silently ignore the filter.
+            let having = match &select.having {
+                None => None,
+                Some(expr) => {
+                    let filter =
+                        Self::parse_having_filter(expr, aggregation_alias.as_deref())?;
+                    Some(filter)
+                }
+            };
 
             Some(SQLQueryData {
                 aggregation_info: aggregation,
@@ -590,6 +771,7 @@ impl SQLPatternParser {
                 subquery: None,
                 order_by: Vec::new(),
                 limit: None,
+                having,
             })
         } else {
             // Parse subquery
@@ -598,7 +780,7 @@ impl SQLPatternParser {
                     SetExpr::Select(inner_select) => {
                         let (inner_aggregation, inner_alias) =
                             self.get_aggregation(inner_select)?;
-                        let inner_group_bys = self.get_groupbys(inner_select)?;
+                        let inner_group_bys = self.get_groupbys(inner_select, false)?;
                         if !self.select_identifiers_subset_of(inner_select, &inner_group_bys) {
                             return None;
                         }
@@ -616,6 +798,7 @@ impl SQLPatternParser {
                             subquery: None,
                             order_by: Vec::new(),
                             limit: None,
+                            having: None,
                         }))
                     }
                     _ => None,
@@ -633,6 +816,7 @@ impl SQLPatternParser {
                 subquery: Some(subquery),
                 order_by: Vec::new(),
                 limit: None,
+                having: None,
             })
         }
     }
@@ -1198,7 +1382,14 @@ impl SQLPatternParser {
     //     Some(time_value as f64 * multiplier)
     // }
 
-    fn get_groupbys(&self, select: &Select) -> Option<HashSet<String>> {
+    /// `allow_empty`: when true, a query with no `GROUP BY` clause at all
+    /// returns `Some(HashSet::new())` (a scalar aggregate - one global
+    /// value, no partition key) instead of `None`. Only the classic
+    /// single-aggregate top-level SELECT wants this; bucketed-countif
+    /// requires exactly one bucket-alias group and a nested subquery's own
+    /// GROUP BY is unrelated to this, so both keep the strict (reject empty)
+    /// behavior by passing `false`.
+    fn get_groupbys(&self, select: &Select, allow_empty: bool) -> Option<HashSet<String>> {
         match &select.group_by {
             GroupByExpr::Expressions(exprs, mods) => {
                 if !mods.is_empty() {
@@ -1216,7 +1407,7 @@ impl SQLPatternParser {
                     }
                 }
 
-                if group_bys.is_empty() {
+                if group_bys.is_empty() && !allow_empty {
                     None
                 } else {
                     Some(group_bys)

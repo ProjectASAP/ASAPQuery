@@ -1,4 +1,5 @@
 pub mod pattern_rewrites;
+pub mod spatial_filter;
 pub mod sqlhelper;
 pub mod sqlparser_test;
 pub mod sqlpattern_matcher;

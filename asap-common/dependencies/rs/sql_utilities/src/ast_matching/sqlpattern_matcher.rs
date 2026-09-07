@@ -64,6 +64,7 @@ impl SQLQuery {
             subquery: None,
             order_by: Vec::new(),
             limit: None,
+            having: None,
         };
 
         self.query_data.push(query_data);
@@ -108,6 +109,12 @@ impl SQLPatternMatcher {
         legal_aggregations.insert("QUANTILE");
         // COUNT(DISTINCT col) is normalised by the parser to the aggregationname "CARDINALITY"
         legal_aggregations.insert("CARDINALITY");
+        // argMax(x, y)/argMin(x, y) - already supported end-to-end (Statistic::ArgMax/ArgMin,
+        // AggregationType::MultipleArg, required_sub_type's "argmax"/"argmin" sub-types), but
+        // never added here, so every argMax/argMin query was rejected before reaching any of
+        // that support.
+        legal_aggregations.insert("ARGMAX");
+        legal_aggregations.insert("ARGMIN");
 
         Self {
             schema,
@@ -187,7 +194,15 @@ impl SQLPatternMatcher {
                 // which the schema lists under metadata_columns rather than
                 // value_columns. Accept either bucket for CARDINALITY; for all
                 // other aggregations keep the strict value_columns-only check.
-                let column_is_known = if query.aggregation_info.get_name() == "CARDINALITY" {
+                // `ARGMAX`/`ARGMIN` (e.g. `argMax(as_path, timestamp)`) are the
+                // same story: the returned column isn't being summed/averaged,
+                // just selected from the row with the max/min comparison key,
+                // so it's routinely a string metadata column (as_path, prefix,
+                // ...) rather than a numeric value column.
+                let column_is_known = if matches!(
+                    query.aggregation_info.get_name(),
+                    "CARDINALITY" | "ARGMAX" | "ARGMIN"
+                ) {
                     self.schema
                         .is_valid_value_column(&query.metric, value_column_name)
                         || self

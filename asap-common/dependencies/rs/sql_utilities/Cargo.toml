@@ -12,6 +12,7 @@ categories = ["parsing", "database", "development-tools"]
 chrono.workspace = true
 # These are sql_utilities-specific, keep pinned
 parse_datetime = "0.13.3"
+regex = "1"
 sqlparser = "0.59.0"
 
 [dev-dependencies]
