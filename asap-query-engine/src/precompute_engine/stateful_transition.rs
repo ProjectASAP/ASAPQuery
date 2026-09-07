@@ -24,7 +24,11 @@ impl StatefulTransitionOperator {
         }
     }
 
-    pub fn process_row(&mut self, row: &HashMap<String, String>) -> Option<String> {
+    /// Returns `(labels, value)` for the derived sample to emit, if any.
+    /// `value` is always `1.0` in boolean-predicate mode (every emitted
+    /// event just counts as one occurrence); in gap mode it's the computed
+    /// `dateDiff(...)` value itself.
+    pub fn process_row(&mut self, row: &HashMap<String, String>) -> Option<(String, f64)> {
         let key = PartitionKey(
             self.cfg
                 .partition_by
@@ -40,6 +44,17 @@ impl StatefulTransitionOperator {
 
         let prev = prev?;
 
+        if let Some(unit) = &self.cfg.gap_unit {
+            let gap = compute_date_diff(unit, &prev, &curr)?;
+            if let Some(min_gap) = self.cfg.min_gap {
+                if !(gap > min_gap) {
+                    return None;
+                }
+            }
+            let labels = build_label_string(&self.cfg.metric_name, &self.cfg.emit_labels, row);
+            return Some((labels, gap));
+        }
+
         if !eval_transition_predicate(
             &self.cfg.predicate,
             &self.cfg.previous_alias,
@@ -51,11 +66,36 @@ impl StatefulTransitionOperator {
             return None;
         }
 
-        Some(build_label_string(
-            &self.cfg.metric_name,
-            &self.cfg.emit_labels,
-            row,
+        Some((
+            build_label_string(&self.cfg.metric_name, &self.cfg.emit_labels, row),
+            1.0,
         ))
+    }
+}
+
+/// `dateDiff(unit, prev, curr)` for the "second"/"minute"/"hour"/"day"
+/// units - the only ones a real inter-arrival-time gap needs. Both `prev`
+/// and `curr` are ingest CSV timestamp strings ("%Y-%m-%d %H:%M:%S", UTC -
+/// same format/timezone convention as the rest of ingest, see
+/// computed_labels::parse_ingest_timestamp and spatial_filter's
+/// parse_utc_datetime_ms).
+fn compute_date_diff(unit: &str, prev: &str, curr: &str) -> Option<f64> {
+    use chrono::NaiveDateTime;
+    let prev_ms = NaiveDateTime::parse_from_str(prev, "%Y-%m-%d %H:%M:%S")
+        .ok()?
+        .and_utc()
+        .timestamp_millis();
+    let curr_ms = NaiveDateTime::parse_from_str(curr, "%Y-%m-%d %H:%M:%S")
+        .ok()?
+        .and_utc()
+        .timestamp_millis();
+    let diff_ms = (curr_ms - prev_ms) as f64;
+    match unit.to_lowercase().as_str() {
+        "second" => Some(diff_ms / 1_000.0),
+        "minute" => Some(diff_ms / 60_000.0),
+        "hour" => Some(diff_ms / 3_600_000.0),
+        "day" => Some(diff_ms / 86_400_000.0),
+        _ => None,
     }
 }
 
@@ -162,6 +202,8 @@ mod tests {
             previous_alias: "previous_path".to_string(),
             predicate: "previous_path != '' AND previous_path != as_path".to_string(),
             emit_labels: vec!["prefix".to_string()],
+            gap_unit: None,
+            min_gap: None,
         };
 
         let mut op = StatefulTransitionOperator::new(cfg);
@@ -178,7 +220,10 @@ mod tests {
         assert!(op.process_row(&row1).is_none());
         assert_eq!(
             op.process_row(&row2),
-            Some("__derived_q11_path_changes{prefix=\"1.2.3.0/24\"}".to_string())
+            Some((
+                "__derived_q11_path_changes{prefix=\"1.2.3.0/24\"}".to_string(),
+                1.0
+            ))
         );
     }
 }

@@ -183,6 +183,7 @@ impl IngestSource for JsonFileIngestSource {
                         labels,
                         timestamp_ms,
                         value,
+                        arg_value: None,
                     });
                     row_count += 1;
 

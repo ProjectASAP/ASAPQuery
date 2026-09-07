@@ -8,10 +8,9 @@ use crate::precompute_engine::series_router::WorkerMessage;
 use crate::precompute_engine::window_manager::WindowManager;
 use crate::precompute_operators::sum_accumulator::SumAccumulator;
 use asap_types::aggregation_config::AggregationConfig;
-use asap_types::enums::AggregationType;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
 use tracing::{debug, debug_span, info, warn};
 
@@ -349,7 +348,11 @@ impl Worker {
             // Creation path: requires a config, and allocates the interned key once.
             let config = Arc::clone(self.agg_configs.get(&agg_id)?);
             let gs = GroupState {
-                window_manager: WindowManager::new(config.window_size_ms, config.slide_interval_ms),
+                window_manager: WindowManager::new(
+                    config.window_size_ms,
+                    config.slide_interval_ms,
+                    config.offset_ms,
+                ),
                 config,
                 active_panes: BTreeMap::new(),
                 previous_watermark_ms: i64::MIN,
@@ -373,7 +376,7 @@ impl Worker {
         &mut self,
         agg_id: u64,
         group_key: &str,
-        samples: Vec<(String, i64, f64)>, // (series_key, timestamp_ms, value)
+        samples: Vec<(String, i64, f64, Option<String>)>, // (series_key, timestamp_ms, value, arg_value)
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let worker_id = self.id;
         let allowed_lateness_ms = self.allowed_lateness_ms;
@@ -396,7 +399,7 @@ impl Worker {
         // Find the max timestamp in this batch to advance the watermark
         let batch_max_ts = samples
             .iter()
-            .map(|(_, ts, _)| *ts)
+            .map(|(_, ts, _, _)| *ts)
             .max()
             .unwrap_or(i64::MIN);
         let previous_wm = state.previous_watermark_ms;
@@ -409,7 +412,7 @@ impl Worker {
         let mut emit_batch: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)> = Vec::new();
 
         // Route each sample to its pane
-        for (series_key, ts, val) in &samples {
+        for (series_key, ts, val, arg_value) in &samples {
             // Drop late samples
             if previous_wm != i64::MIN && *ts < previous_wm - allowed_lateness_ms {
                 debug!(
@@ -438,7 +441,7 @@ impl Worker {
                     }
                     LateDataPolicy::ForwardToStore => {
                         let mut updater = create_accumulator_updater(&state.config)?;
-                        apply_sample(&mut *updater, series_key, *val, *ts, &state.config);
+                        apply_sample(&mut *updater, series_key, *val, *ts, arg_value.as_deref(), &state.config);
                         let key = build_group_key_label_values(group_key);
                         let output = PrecomputedOutput::new(
                             window_start as u64,
@@ -471,7 +474,7 @@ impl Worker {
                 }
             };
 
-            apply_sample(&mut **updater, series_key, *val, *ts, &state.config);
+            apply_sample(&mut **updater, series_key, *val, *ts, arg_value.as_deref(), &state.config);
         }
 
         // Check for closed windows
@@ -871,6 +874,7 @@ fn apply_sample(
     series_key: &str,
     val: f64,
     ts: i64,
+    arg_value: Option<&str>,
     config: &AggregationConfig,
 ) {
     // Parse the series labels at most once and share them across value resolution
@@ -887,9 +891,9 @@ fn apply_sample(
     let value = resolve_sample_value(&labels, val, config);
     if keyed {
         let key = extract_aggregated_key_from_series(&labels, config);
-        updater.update_keyed(&key, value, ts);
+        updater.update_keyed_with_arg(&key, value, ts, arg_value);
     } else {
-        updater.update_single(value, ts);
+        updater.update_single_with_arg(value, ts, arg_value);
     }
 }
 
@@ -917,11 +921,19 @@ fn apply_sample(
 /// convention; cardinality only requires distinct inputs to map to distinct
 /// hashes, so the exact hash need not match the baseline engine.
 ///
-/// # Panics
-/// Panics if `value_column` names a label whose value is not numeric. Non-numeric
-/// distinct targets (e.g. `proto`) are not yet supported; this is a temporary
-/// guard until the path is refactored to return a `Result` (see follow-up for a
-/// byte/string hashing path).
+/// A non-numeric `value_column` (e.g. `operation`, which is 'A'/'W') is
+/// hashed to a stable numeric surrogate the same way HLL does, rather than
+/// panicking - a worker thread crashing here takes every other aggregation
+/// sharing that worker down with it (its channel closes, silently starving
+/// unrelated queries for the rest of the run), which is a far worse outcome
+/// than one query getting a placeholder value. For HLL/cardinality this
+/// surrogate is exactly what's needed (only distinctness matters). For an
+/// arg-style aggregation (argMax/argMin over a non-numeric column) it is
+/// not: the surrogate distinguishes values but can't be mapped back to the
+/// original string, so the reported result is a meaningless number rather
+/// than e.g. 'A'/'W'. That's a real, known gap - string-valued arg targets
+/// aren't supported yet - not a silent-corruption risk, since it's the
+/// query's own value that's wrong, not some other query's.
 fn resolve_sample_value(
     labels: &HashMap<&str, &str>,
     wire_val: f64,
@@ -937,14 +949,30 @@ fn resolve_sample_value(
 
     match raw.parse::<f64>() {
         Ok(v) => v,
-        Err(_) if config.aggregation_type == AggregationType::HLL => {
+        Err(_) => {
+            // Real non-numeric columns (as_path, operation, ...) hit this on
+            // every sample - logging per-sample would both flood the log and
+            // measurably slow ingest under real data volume. One warning per
+            // (column, aggregation type) is enough to surface the gap.
+            let dedup_key = format!("{col}:{:?}", config.aggregation_type);
+            let is_new = warned_non_numeric_value_columns()
+                .lock()
+                .unwrap()
+                .insert(dedup_key);
+            if is_new {
+                warn!(
+                    "value_column '{col}' has non-numeric label values for aggregation type {:?}; using a hashed surrogate (correct for HLL/cardinality, a placeholder for other types); further occurrences for this (column, aggregation type) are suppressed",
+                    config.aggregation_type
+                );
+            }
             stable_string_hash_as_exact_f64(raw)
         }
-        Err(_) => panic!(
-            "value_column '{col}' label value {raw:?} is not numeric for aggregation type {:?}",
-            config.aggregation_type
-        ),
     }
+}
+
+fn warned_non_numeric_value_columns() -> &'static Mutex<HashSet<String>> {
+    static CACHE: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 /// Convert a string distinct target into a deterministic numeric surrogate.
@@ -953,7 +981,7 @@ fn resolve_sample_value(
 /// HLL/cardinality, the scalar only needs to distinguish distinct values before
 /// the HLL hashes it. We use a stable FNV-1a hash and keep only 53 bits so the
 /// integer is represented exactly as f64.
-fn stable_string_hash_as_exact_f64(raw: &str) -> f64 {
+pub(crate) fn stable_string_hash_as_exact_f64(raw: &str) -> f64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
     const FNV_PRIME: u64 = 0x100000001b3;
     const F64_EXACT_INT_MASK: u64 = (1_u64 << 53) - 1;
@@ -1191,11 +1219,13 @@ mod tests {
                         "netflow_table{srcip=\"10\",dstip=\"100\",proto=\"TCP\"}".to_string(),
                         100,
                         1400.0,
+                        None,
                     ),
                     (
                         "netflow_table{srcip=\"10\",dstip=\"200\",proto=\"TCP\"}".to_string(),
                         200,
                         1400.0,
+                        None,
                     ),
                 ],
             )
@@ -1210,6 +1240,7 @@ mod tests {
                     "netflow_table{srcip=\"10\",dstip=\"300\",proto=\"TCP\"}".to_string(),
                     5000,
                     1400.0,
+                    None,
                 )],
             )
             .unwrap();
@@ -1297,6 +1328,7 @@ mod tests {
             window_size_ms,
             slide_interval_ms,
             window_type,
+            0, // offset_ms
             metric.to_string(),
             metric.to_string(),
             None,
@@ -1341,10 +1373,13 @@ mod tests {
     }
 
     /// Helper to make GroupSamples from simple (ts, val) pairs for a single series.
-    fn group_samples(series_key: &str, samples: Vec<(i64, f64)>) -> Vec<(String, i64, f64)> {
+    fn group_samples(
+        series_key: &str,
+        samples: Vec<(i64, f64)>,
+    ) -> Vec<(String, i64, f64, Option<String>)> {
         samples
             .into_iter()
-            .map(|(ts, val)| (series_key.to_string(), ts, val))
+            .map(|(ts, val)| (series_key.to_string(), ts, val, None))
             .collect()
     }
 
@@ -1481,8 +1516,8 @@ mod tests {
                 1,
                 "",
                 vec![
-                    ("cpu{host=\"A\"}".to_string(), 1000, 10.0),
-                    ("cpu{host=\"B\"}".to_string(), 2000, 20.0),
+                    ("cpu{host=\"A\"}".to_string(), 1000, 10.0, None),
+                    ("cpu{host=\"B\"}".to_string(), 2000, 20.0, None),
                 ],
             )
             .unwrap();
@@ -1625,16 +1660,19 @@ mod tests {
                         "latency{pattern=\"constant\",host=\"a\"}".to_string(),
                         1000,
                         10.0,
+                        None,
                     ),
                     (
                         "latency{pattern=\"constant\",host=\"b\"}".to_string(),
                         2000,
                         20.0,
+                        None,
                     ),
                     (
                         "latency{pattern=\"constant\",host=\"c\"}".to_string(),
                         3000,
                         30.0,
+                        None,
                     ),
                 ],
             )
@@ -1771,8 +1809,8 @@ mod tests {
                 3,
                 "",
                 vec![
-                    ("cpu{host=\"A\"}".to_string(), 1000, 10.0),
-                    ("cpu{host=\"B\"}".to_string(), 2000, 20.0),
+                    ("cpu{host=\"A\"}".to_string(), 1000, 10.0, None),
+                    ("cpu{host=\"B\"}".to_string(), 2000, 20.0, None),
                 ],
             )
             .unwrap();
@@ -1858,9 +1896,9 @@ mod tests {
                 5,
                 "",
                 vec![
-                    ("netflow_table{dstip=\"A\"}".to_string(), 1000, 100.0),
-                    ("netflow_table{dstip=\"A\"}".to_string(), 2000, 200.0),
-                    ("netflow_table{dstip=\"B\"}".to_string(), 3000, 50.0),
+                    ("netflow_table{dstip=\"A\"}".to_string(), 1000, 100.0, None),
+                    ("netflow_table{dstip=\"A\"}".to_string(), 2000, 200.0, None),
+                    ("netflow_table{dstip=\"B\"}".to_string(), 3000, 50.0, None),
                 ],
             )
             .unwrap();
@@ -2397,6 +2435,7 @@ aggregations:
             60,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "http_requests_total".to_string(),
             "http_requests_total".to_string(),
             Some(60),
@@ -2669,7 +2708,7 @@ aggregations:
         tx.send(WorkerMessage::GroupSamples {
             agg_id: 1,
             group_key: String::new(),
-            samples: vec![("cpu".to_string(), 1_000, 1.0)],
+            samples: vec![("cpu".to_string(), 1_000, 1.0, None)],
             ingest_received_at: std::time::Instant::now(),
         })
         .await
@@ -2686,7 +2725,7 @@ aggregations:
         tx.send(WorkerMessage::GroupSamples {
             agg_id: 1,
             group_key: String::new(),
-            samples: vec![("cpu".to_string(), 5_000, 2.0)],
+            samples: vec![("cpu".to_string(), 5_000, 2.0, None)],
             ingest_received_at: std::time::Instant::now(),
         })
         .await
@@ -2695,7 +2734,7 @@ aggregations:
         tx.send(WorkerMessage::GroupSamples {
             agg_id: 1,
             group_key: String::new(),
-            samples: vec![("cpu".to_string(), 10_000, 0.0)],
+            samples: vec![("cpu".to_string(), 10_000, 0.0, None)],
             ingest_received_at: std::time::Instant::now(),
         })
         .await
@@ -2809,7 +2848,7 @@ aggregations:
         tx.send(WorkerMessage::GroupSamples {
             agg_id: 1,
             group_key: String::new(),
-            samples: vec![("cpu".to_string(), base_ms, 7.0)],
+            samples: vec![("cpu".to_string(), base_ms, 7.0, None)],
             ingest_received_at: std::time::Instant::now(),
         })
         .await

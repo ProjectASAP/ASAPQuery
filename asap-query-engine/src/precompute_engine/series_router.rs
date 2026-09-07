@@ -24,10 +24,11 @@ pub enum WorkerMessage {
         /// Grouping label values joined by semicolons (e.g. "constant").
         /// Empty string if the aggregation has no grouping labels.
         group_key: String,
-        /// Each entry: (series_key, timestamp_ms, value).
+        /// Each entry: (series_key, timestamp_ms, value, arg_value).
         /// series_key is needed for keyed (MultipleSubpopulation) accumulators
-        /// to extract the aggregated-label key.
-        samples: Vec<(String, i64, f64)>,
+        /// to extract the aggregated-label key. arg_value is `Some` only for
+        /// an argMax/argMin derived stream - see `DecodedSample::arg_value`.
+        samples: Vec<(String, i64, f64, Option<String>)>,
         ingest_received_at: Instant,
     },
     /// Signal the worker to flush/check idle windows.

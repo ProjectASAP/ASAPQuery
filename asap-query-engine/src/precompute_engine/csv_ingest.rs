@@ -1,9 +1,11 @@
+use super::derived_value::DerivedValueConfig;
 use super::stateful_transition::{StatefulTransitionConfig, StatefulTransitionOperator};
 use crate::drivers::ingest::prometheus_remote_write::DecodedSample;
-use crate::precompute_engine::computed_labels::{
-    compute_label_values, should_skip_on_missing, ComputedLabelConfig,
-};
+use crate::precompute_engine::computed_labels::ComputedLabelConfig;
 use crate::precompute_engine::ingest_source::{route_decoded_samples, IngestContext, IngestSource};
+use crate::precompute_engine::row_expansion::{
+    expand_row_to_samples, DerivedValueSource, LabelSource, RowExpansionConfig,
+};
 use std::collections::HashMap;
 use std::time::Instant;
 use tracing::{info, warn};
@@ -17,6 +19,7 @@ pub struct CsvFileIngestConfig {
     /// Computed labels. Each key is the logical label name; the rule says how to compute it.
     pub computed_label_cols: HashMap<String, ComputedLabelConfig>,
     pub stateful_transitions: Vec<StatefulTransitionConfig>,
+    pub derived_value_cols: Vec<DerivedValueConfig>,
     /// If Some, parse this column as the timestamp.
     /// Accepts Unix milliseconds or ClickHouse DateTime strings like YYYY-MM-DD HH:MM:SS.
     /// If None, synthesize timestamps using start_ts_ms + row_index * ts_step_ms.
@@ -25,19 +28,6 @@ pub struct CsvFileIngestConfig {
     /// Required when timestamp_col is None.
     pub ts_step_ms: i64,
     pub batch_size: usize,
-}
-
-#[derive(Clone)]
-enum LabelSource {
-    Physical {
-        name: String,
-        idx: usize,
-    },
-    Computed {
-        name: String,
-        source_idx: usize,
-        rule: ComputedLabelConfig,
-    },
 }
 
 pub struct CsvFileIngestSource {
@@ -147,31 +137,23 @@ impl IngestSource for CsvFileIngestSource {
 
                 let mut label_sources: Vec<LabelSource> = Vec::new();
                 for col in &sorted_label_cols {
-                    if let Some(idx) = headers.iter().position(|h| h == col.as_str()) {
-                        label_sources.push(LabelSource::Physical {
-                            name: col.clone(),
-                            idx,
-                        });
+                    if headers.iter().any(|h| h == col.as_str()) {
+                        label_sources.push(LabelSource::Physical { name: col.clone() });
                         continue;
                     }
 
                     if let Some(rule) = config.computed_label_cols.get(col) {
-                        let source_idx = headers
-                            .iter()
-                            .position(|h| h == rule.source_col.as_str())
-                            .ok_or_else(|| {
-                                format!(
-                                    "source column '{}' for computed label '{}' not found in CSV",
-                                    rule.source_col, col
-                                )
-                            })
-                            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                                std::io::Error::other(e).into()
-                            })?;
+                        if !headers.iter().any(|h| h == rule.source_col.as_str()) {
+                            return Err(std::io::Error::other(format!(
+                                "source column '{}' for computed label '{}' not found in CSV",
+                                rule.source_col, col
+                            ))
+                            .into());
+                        }
 
                         label_sources.push(LabelSource::Computed {
                             name: col.clone(),
-                            source_idx,
+                            source_col: rule.source_col.clone(),
                             rule: rule.clone(),
                         });
                         continue;
@@ -193,6 +175,66 @@ impl IngestSource for CsvFileIngestSource {
                     .map(StatefulTransitionOperator::new)
                     .collect();
 
+                // Resolve each derived-value stream's source once, up front -
+                // see `DerivedValueSource`'s doc comment (row_expansion.rs)
+                // for what each variant means.
+                let derived_value_sources: Vec<(String, DerivedValueSource)> = config
+                    .derived_value_cols
+                    .iter()
+                    .map(|dv| -> Result<(String, DerivedValueSource), Box<dyn std::error::Error + Send + Sync>> {
+                        let is_timestamp = config
+                            .timestamp_col
+                            .as_deref()
+                            .is_some_and(|c| c == dv.source_column);
+                        let source = if matches!(
+                            dv.kind,
+                            asap_types::derived_value::DerivedValueKind::ArgMax
+                                | asap_types::derived_value::DerivedValueKind::ArgMin
+                        ) {
+                            if !headers.iter().any(|h| h == dv.source_column.as_str()) {
+                                return Err(std::io::Error::other(format!(
+                                    "source column '{}' for arg derived value '{}' not found in CSV",
+                                    dv.source_column, dv.metric_name
+                                ))
+                                .into());
+                            }
+                            DerivedValueSource::ArgColumn {
+                                source_col: dv.source_column.clone(),
+                            }
+                        } else if is_timestamp {
+                            DerivedValueSource::UseTimestamp
+                        } else if let Some(rule) = config.computed_label_cols.get(&dv.source_column) {
+                            if !headers.iter().any(|h| h == rule.source_col.as_str()) {
+                                return Err(std::io::Error::other(format!(
+                                    "source column '{}' for computed derived value '{}' not found in CSV",
+                                    rule.source_col, dv.metric_name
+                                ))
+                                .into());
+                            }
+                            DerivedValueSource::ComputedLabel {
+                                source_col: rule.source_col.clone(),
+                                rule: rule.clone(),
+                            }
+                        } else {
+                            if !headers.iter().any(|h| h == dv.source_column.as_str()) {
+                                return Err(std::io::Error::other(format!(
+                                    "source column '{}' for derived value stream '{}' not found in CSV",
+                                    dv.source_column, dv.metric_name
+                                ))
+                                .into());
+                            }
+                            DerivedValueSource::Column(dv.source_column.clone())
+                        };
+                        Ok((dv.metric_name.clone(), source))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let row_expansion_config = RowExpansionConfig {
+                    metric_name: config.metric_name.clone(),
+                    label_sources: label_sources.clone(),
+                    derived_value_sources: derived_value_sources.clone(),
+                };
+
                 for result in rdr.records() {
                     let record = result?;
 
@@ -203,84 +245,6 @@ impl IngestSource for CsvFileIngestSource {
                             (name.to_string(), record.get(idx).unwrap_or("").to_string())
                         })
                         .collect();
-
-                    let label_strings: Vec<String> = if label_sources.is_empty() {
-                        vec![config.metric_name.clone()]
-                    } else {
-                        let mut expanded: Vec<Vec<(String, String)>> = vec![Vec::new()];
-                        let mut skip_sample = false;
-
-                        for source in &label_sources {
-                            match source {
-                                LabelSource::Physical { name, idx } => {
-                                    let value = record.get(*idx).unwrap_or("").to_string();
-                                    for labels in &mut expanded {
-                                        labels.push((name.clone(), value.clone()));
-                                    }
-                                }
-
-                                LabelSource::Computed {
-                                    name,
-                                    source_idx,
-                                    rule,
-                                } => {
-                                    let raw_value = record.get(*source_idx).unwrap_or("");
-                                    let mut values = compute_label_values(rule, raw_value)
-                                        .map_err(|e| {
-                                            let err: Box<dyn std::error::Error + Send + Sync> =
-                                                std::io::Error::other(e).into();
-                                            err
-                                        })?;
-
-                                    if values.is_empty() {
-                                        if should_skip_on_missing(rule) {
-                                            skip_sample = true;
-                                            break;
-                                        }
-                                        values.push(String::new());
-                                    }
-
-                                    let mut next =
-                                        Vec::with_capacity(expanded.len() * values.len());
-                                    for labels in expanded.into_iter() {
-                                        for value in &values {
-                                            let mut labels2 = labels.clone();
-                                            labels2.push((name.clone(), value.clone()));
-                                            next.push(labels2);
-                                        }
-                                    }
-                                    expanded = next;
-                                }
-                            }
-                        }
-
-                        if skip_sample {
-                            row_count += 1;
-                            continue;
-                        }
-
-                        expanded
-                            .into_iter()
-                            .map(|pairs| {
-                                let mut s = String::with_capacity(64);
-                                s.push_str(&config.metric_name);
-                                s.push('{');
-
-                                for (i, (name, value)) in pairs.into_iter().enumerate() {
-                                    if i > 0 {
-                                        s.push(',');
-                                    }
-                                    s.push_str(&name);
-                                    s.push_str("=\"");
-                                    s.push_str(&value);
-                                    s.push('"');
-                                }
-
-                                s.push('}');
-                                s
-                            })
-                            .collect()
-                    };
 
                     let value: f64 = match value_idx {
                         Some(idx) => record
@@ -309,12 +273,27 @@ impl IngestSource for CsvFileIngestSource {
                         None => config.start_ts_ms + (row_count as i64) * config.ts_step_ms,
                     };
 
-                    for labels in label_strings {
-                        batch.push(DecodedSample {
-                            labels,
-                            timestamp_ms,
-                            value,
-                        });
+                    let row_samples = expand_row_to_samples(
+                        &row_expansion_config,
+                        &row_map,
+                        timestamp_ms,
+                        value,
+                    )
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                        std::io::Error::other(e).into()
+                    })?;
+
+                    // Empty only when a required computed label was missing
+                    // from this row (`on_missing: skip_sample`) - matches the
+                    // original behavior of skipping the whole row, including
+                    // stateful-transition processing below.
+                    if row_samples.is_empty() && !label_sources.is_empty() {
+                        row_count += 1;
+                        continue;
+                    }
+
+                    for sample in row_samples {
+                        batch.push(sample);
 
                         if batch.len() >= config.batch_size {
                             let send_batch = std::mem::replace(
@@ -328,11 +307,12 @@ impl IngestSource for CsvFileIngestSource {
                     }
 
                     for op in &mut stateful_ops {
-                        if let Some(labels) = op.process_row(&row_map) {
+                        if let Some((labels, value)) = op.process_row(&row_map) {
                             batch.push(DecodedSample {
                                 labels,
                                 timestamp_ms,
-                                value: 1.0,
+                                value,
+                                arg_value: None,
                             });
 
                             if batch.len() >= config.batch_size {

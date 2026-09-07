@@ -8,14 +8,22 @@ pub struct WindowManager {
     window_size_ms: i64,
     /// Slide interval in milliseconds (== window_size_ms for tumbling windows).
     slide_interval_ms: i64,
+    /// Phase shift (ms) applied before epoch-aligning window boundaries.
+    /// Zero for every ordinary window - only nonzero for a bucket function
+    /// whose boundaries don't fall on a multiple of its own size from the
+    /// Unix epoch, e.g. `toStartOfWeek` (mode 0, Sunday-start; 1970-01-01
+    /// was a Thursday). See `IntermediateWindowConfig::offset_ms`
+    /// (asap-planner-rs) for the full reasoning.
+    offset_ms: i64,
 }
 
 impl WindowManager {
     /// Create a new WindowManager.
     ///
-    /// `window_size_ms` and `slide_interval_ms` come straight from `AggregationConfig`,
-    /// which is ms-typed already — no conversion needed here.
-    pub fn new(window_size_ms: u64, slide_interval_ms: u64) -> Self {
+    /// `window_size_ms`, `slide_interval_ms`, and `offset_ms` come straight
+    /// from `AggregationConfig`, which is ms-typed already — no conversion
+    /// needed here.
+    pub fn new(window_size_ms: u64, slide_interval_ms: u64, offset_ms: u64) -> Self {
         let window_size_ms = window_size_ms as i64;
         let slide_interval_ms = match slide_interval_ms {
             0 => window_size_ms, // tumbling window
@@ -24,6 +32,7 @@ impl WindowManager {
         Self {
             window_size_ms,
             slide_interval_ms,
+            offset_ms: offset_ms as i64,
         }
     }
 
@@ -32,11 +41,12 @@ impl WindowManager {
     }
 
     /// Compute the window start for a given timestamp.
-    /// Windows are aligned to epoch (multiples of slide_interval_ms).
+    /// Windows are aligned to `offset_ms` (multiples of slide_interval_ms,
+    /// shifted by offset_ms - epoch alignment when offset_ms is 0).
     pub fn window_start_for(&self, timestamp_ms: i64) -> i64 {
         // Floor-divide to the nearest slide interval boundary
-        let n = timestamp_ms.div_euclid(self.slide_interval_ms);
-        n * self.slide_interval_ms
+        let n = (timestamp_ms - self.offset_ms).div_euclid(self.slide_interval_ms);
+        n * self.slide_interval_ms + self.offset_ms
     }
 
     /// Return window starts whose windows are now closed, given that the
@@ -122,7 +132,7 @@ mod tests {
     #[test]
     fn test_tumbling_window_start() {
         // 60-second (60000ms) tumbling windows
-        let wm = WindowManager::new(60_000, 0);
+        let wm = WindowManager::new(60_000, 0, 0);
 
         assert_eq!(wm.window_start_for(0), 0);
         assert_eq!(wm.window_start_for(59_999), 0);
@@ -133,7 +143,7 @@ mod tests {
 
     #[test]
     fn test_no_closed_windows_on_first_sample() {
-        let wm = WindowManager::new(60_000, 0);
+        let wm = WindowManager::new(60_000, 0, 0);
         let closed = wm.closed_windows(i64::MIN, 30_000);
         assert!(closed.is_empty());
     }
@@ -141,7 +151,7 @@ mod tests {
     #[test]
     fn test_tumbling_window_close() {
         // 60s tumbling windows
-        let wm = WindowManager::new(60_000, 0);
+        let wm = WindowManager::new(60_000, 0, 0);
 
         // Watermark advances from 30_000 to 70_000
         // Window [0, 60_000) closes when wm >= 60_000
@@ -152,7 +162,7 @@ mod tests {
     #[test]
     fn test_multiple_window_closes() {
         // 10s (10000ms) tumbling windows
-        let wm = WindowManager::new(10_000, 0);
+        let wm = WindowManager::new(10_000, 0, 0);
 
         // Watermark jumps from 5_000 to 35_000 — closes windows 0, 10_000, 20_000
         let closed = wm.closed_windows(5_000, 35_000);
@@ -161,14 +171,14 @@ mod tests {
 
     #[test]
     fn test_no_close_when_watermark_stagnant() {
-        let wm = WindowManager::new(60_000, 0);
+        let wm = WindowManager::new(60_000, 0, 0);
         let closed = wm.closed_windows(30_000, 30_000);
         assert!(closed.is_empty());
     }
 
     #[test]
     fn test_window_bounds() {
-        let wm = WindowManager::new(60_000, 0);
+        let wm = WindowManager::new(60_000, 0, 0);
         assert_eq!(wm.window_bounds(0), (0, 60_000));
         assert_eq!(wm.window_bounds(60_000), (60_000, 120_000));
     }
@@ -176,7 +186,7 @@ mod tests {
     #[test]
     fn test_sliding_window() {
         // 30s window, 10s slide
-        let wm = WindowManager::new(30_000, 10_000);
+        let wm = WindowManager::new(30_000, 10_000, 0);
 
         assert_eq!(wm.window_start_for(0), 0);
         assert_eq!(wm.window_start_for(9_999), 0);
@@ -191,7 +201,7 @@ mod tests {
     #[test]
     fn test_window_starts_containing_tumbling() {
         // 60s tumbling windows — each sample belongs to exactly one window
-        let wm = WindowManager::new(60_000, 0);
+        let wm = WindowManager::new(60_000, 0, 0);
         let mut starts = wm.window_starts_containing(15_000);
         starts.sort();
         assert_eq!(starts, vec![0]);
@@ -204,7 +214,7 @@ mod tests {
     #[test]
     fn test_window_starts_containing_sliding() {
         // 30s window, 10s slide — each sample belongs to 3 windows
-        let wm = WindowManager::new(30_000, 10_000);
+        let wm = WindowManager::new(30_000, 10_000, 0);
 
         // t=15_000 belongs to [0, 30_000), [10_000, 40_000)
         // and [-10_000, 20_000) which starts negative — still returned
@@ -223,7 +233,7 @@ mod tests {
     #[test]
     fn test_pane_start_for_equals_window_start_for() {
         // Pane start and window start use the same slide-aligned grid
-        let wm = WindowManager::new(30_000, 10_000);
+        let wm = WindowManager::new(30_000, 10_000, 0);
         for ts in [0, 5_000, 9_999, 10_000, 15_000, 25_000, 30_000] {
             assert_eq!(wm.pane_start_for(ts), wm.window_start_for(ts));
         }
@@ -232,7 +242,7 @@ mod tests {
     #[test]
     fn test_panes_for_window_sliding() {
         // 30s window, 10s slide → 3 panes per window
-        let wm = WindowManager::new(30_000, 10_000);
+        let wm = WindowManager::new(30_000, 10_000, 0);
 
         assert_eq!(wm.panes_for_window(0), vec![0, 10_000, 20_000]);
         assert_eq!(wm.panes_for_window(10_000), vec![10_000, 20_000, 30_000]);
@@ -242,7 +252,7 @@ mod tests {
     #[test]
     fn test_panes_for_window_tumbling_degeneration() {
         // 60s tumbling window → 1 pane per window (no merges needed)
-        let wm = WindowManager::new(60_000, 0);
+        let wm = WindowManager::new(60_000, 0, 0);
 
         assert_eq!(wm.panes_for_window(0), vec![0]);
         assert_eq!(wm.panes_for_window(60_000), vec![60_000]);
@@ -250,30 +260,30 @@ mod tests {
 
     #[test]
     fn test_slide_interval_ms_accessor() {
-        let wm_tumbling = WindowManager::new(60_000, 0);
+        let wm_tumbling = WindowManager::new(60_000, 0, 0);
         assert_eq!(wm_tumbling.slide_interval_ms(), 60_000);
 
-        let wm_sliding = WindowManager::new(30_000, 10_000);
+        let wm_sliding = WindowManager::new(30_000, 10_000, 0);
         assert_eq!(wm_sliding.slide_interval_ms(), 10_000);
     }
 
     #[test]
     fn test_panes_for_window_count() {
         // W = window_size / slide_interval
-        let wm = WindowManager::new(30_000, 10_000);
+        let wm = WindowManager::new(30_000, 10_000, 0);
         assert_eq!(wm.panes_for_window(0).len(), 3); // 30/10 = 3
 
-        let wm2 = WindowManager::new(50_000, 10_000);
+        let wm2 = WindowManager::new(50_000, 10_000, 0);
         assert_eq!(wm2.panes_for_window(0).len(), 5); // 50/10 = 5
 
-        let wm3 = WindowManager::new(60_000, 0);
+        let wm3 = WindowManager::new(60_000, 0, 0);
         assert_eq!(wm3.panes_for_window(0).len(), 1); // tumbling = 1
     }
 
     #[test]
     fn test_consecutive_windows_share_panes() {
         // 30s window, 10s slide — consecutive windows share W-1 = 2 panes
-        let wm = WindowManager::new(30_000, 10_000);
+        let wm = WindowManager::new(30_000, 10_000, 0);
 
         let panes_a = wm.panes_for_window(0); // [0, 10_000, 20_000]
         let panes_b = wm.panes_for_window(10_000); // [10_000, 20_000, 30_000]
@@ -285,5 +295,32 @@ mod tests {
             .copied()
             .collect();
         assert_eq!(shared, vec![10_000, 20_000]);
+    }
+
+    #[test]
+    fn test_offset_aligns_weekly_windows_to_real_sundays() {
+        // toStartOfWeek's actual offset (see FIXED_TIME_BUCKET_FUNCTIONS in
+        // sqlpattern_parser.rs) - verified against a real ClickHouse
+        // toStartOfWeek() would produce, not just internal consistency:
+        // 1970-01-04 00:00:00 UTC (259_200_000 ms) is a real Sunday, and
+        // every other bucket boundary is exactly N*7-days away from it, so
+        // it's a Sunday too, permanently, since a week is a fixed span.
+        const WEEK_MS: u64 = 604_800_000;
+        const SUNDAY_OFFSET_MS: u64 = 259_200_000;
+        let wm = WindowManager::new(WEEK_MS, WEEK_MS, SUNDAY_OFFSET_MS);
+
+        // 2024-01-15 12:00:00 UTC is a Monday; its week should start on
+        // 2024-01-14 00:00:00 UTC (Sunday) - 1_705_190_400_000 ms.
+        let monday_ts = 1_705_320_000_000; // 2024-01-15 12:00:00 UTC
+        assert_eq!(wm.window_start_for(monday_ts), 1_705_190_400_000);
+
+        // Sunday itself (2024-01-14 00:00:00 UTC) is already a boundary -
+        // querying exactly at midnight must return that same instant, not
+        // the previous week.
+        assert_eq!(wm.window_start_for(1_705_190_400_000), 1_705_190_400_000);
+
+        // Saturday night, one second before the boundary, must fall in the
+        // PREVIOUS week (2024-01-07, one week earlier).
+        assert_eq!(wm.window_start_for(1_705_190_399_000), 1_705_190_400_000 - WEEK_MS as i64);
     }
 }

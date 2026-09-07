@@ -2,8 +2,9 @@ use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measur
 use crate::precompute_operators::{
     CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
     DeltaSetAggregatorAccumulator, HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator,
-    MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
-    MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator, DEFAULT_HLL_PRECISION,
+    MinMaxAccumulator, MultipleArgAccumulator, MultipleIncreaseAccumulator,
+    MultipleMinMaxAccumulator, MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator,
+    DEFAULT_HLL_PRECISION,
 };
 use asap_types::aggregation_config::AggregationConfig;
 
@@ -45,6 +46,31 @@ pub trait AccumulatorUpdater: Send {
 
     /// Feed a keyed (key, value, timestamp_ms) triple — for MultipleSubpopulation types.
     fn update_keyed(&mut self, key: &KeyByLabelValues, value: f64, timestamp_ms: i64);
+
+    /// Same as `update_single`, plus an optional string payload - `Some`
+    /// only for an argMax/argMin derived stream (see
+    /// `DecodedSample::arg_value`). Default ignores it and delegates to
+    /// `update_single`, so every existing updater keeps its exact current
+    /// behavior with no changes; only `MultipleArgAccumulatorUpdater`
+    /// overrides this (via `update_keyed_with_arg` - argMax/argMin is
+    /// always keyed in practice, see `MultipleArg`'s own doc comment).
+    fn update_single_with_arg(&mut self, value: f64, timestamp_ms: i64, arg_value: Option<&str>) {
+        let _ = arg_value;
+        self.update_single(value, timestamp_ms);
+    }
+
+    /// Same as `update_keyed`, plus an optional string payload - see
+    /// `update_single_with_arg`.
+    fn update_keyed_with_arg(
+        &mut self,
+        key: &KeyByLabelValues,
+        value: f64,
+        timestamp_ms: i64,
+        arg_value: Option<&str>,
+    ) {
+        let _ = arg_value;
+        self.update_keyed(key, value, timestamp_ms);
+    }
 
     /// Extract the final accumulator as a boxed `AggregateCore`.
     fn take_accumulator(&mut self) -> Box<dyn AggregateCore>;
@@ -448,6 +474,91 @@ impl AccumulatorUpdater for MultipleMinMaxAccumulatorUpdater {
     fn memory_usage_bytes(&self) -> usize {
         std::mem::size_of::<MultipleMinMaxAccumulator>()
             + self.acc.values.len() * (std::mem::size_of::<KeyByLabelValues>() + 8)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MultipleArgAccumulatorUpdater
+// ---------------------------------------------------------------------------
+
+pub struct MultipleArgAccumulatorUpdater {
+    acc: MultipleArgAccumulator,
+    is_argmax: bool,
+}
+
+impl MultipleArgAccumulatorUpdater {
+    pub fn new(is_argmax: bool) -> Self {
+        Self {
+            acc: if is_argmax {
+                MultipleArgAccumulator::new_argmax()
+            } else {
+                MultipleArgAccumulator::new_argmin()
+            },
+            is_argmax,
+        }
+    }
+}
+
+impl AccumulatorUpdater for MultipleArgAccumulatorUpdater {
+    fn update_single(&mut self, _value: f64, _timestamp_ms: i64) {
+        debug_assert!(
+            false,
+            "update_single called on keyed updater; use update_keyed"
+        );
+    }
+
+    fn update_keyed(&mut self, _key: &KeyByLabelValues, _value: f64, _timestamp_ms: i64) {
+        debug_assert!(
+            false,
+            "update_keyed called on MultipleArgAccumulatorUpdater without an arg_value; \
+             use update_keyed_with_arg"
+        );
+    }
+
+    fn update_keyed_with_arg(
+        &mut self,
+        key: &KeyByLabelValues,
+        value: f64,
+        _timestamp_ms: i64,
+        arg_value: Option<&str>,
+    ) {
+        let Some(arg_value) = arg_value else {
+            // A sample with no arg_value reached an argMax/argMin
+            // accumulator - the derived-value ingest stream this
+            // accumulator is always registered against (see
+            // DerivedValueKind::ArgMax/ArgMin) should never produce one,
+            // but silently keeping the accumulator's prior state is safer
+            // than a bogus update with an empty string.
+            tracing::warn!(
+                "MultipleArgAccumulatorUpdater received a sample with no arg_value; skipping"
+            );
+            return;
+        };
+        self.acc.update(key.clone(), value, arg_value.to_string());
+    }
+
+    impl_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc = if self.is_argmax {
+            MultipleArgAccumulator::new_argmax()
+        } else {
+            MultipleArgAccumulator::new_argmin()
+        };
+    }
+
+    fn is_keyed(&self) -> bool {
+        true
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        std::mem::size_of::<MultipleArgAccumulator>()
+            + self
+                .acc
+                .values
+                .iter()
+                .map(|(_, (_, s))| std::mem::size_of::<KeyByLabelValues>() + 8 + s.len())
+                .sum::<usize>()
     }
 }
 
@@ -963,6 +1074,9 @@ pub fn create_accumulator_updater(
         AggregationType::MultipleMinMax => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(
             sub_type.eq_ignore_ascii_case("max"),
         ))),
+        AggregationType::MultipleArg => Ok(Box::new(MultipleArgAccumulatorUpdater::new(
+            sub_type.eq_ignore_ascii_case("argmax"),
+        ))),
         AggregationType::Sum => Ok(Box::new(SumAccumulatorUpdater::new())),
         AggregationType::MinMax => Ok(Box::new(MinMaxAccumulatorUpdater::new(
             sub_type.eq_ignore_ascii_case("max"),
@@ -1096,6 +1210,7 @@ mod tests {
                 60_000,
                 0,
                 WindowType::Tumbling,
+                0, // offset_ms
                 "m".to_string(),
                 "m".to_string(),
                 None,
@@ -1176,6 +1291,7 @@ mod tests {
                     60,
                     0,
                     WindowType::Tumbling,
+                    0, // offset_ms
                     "m".to_string(),
                     "m".to_string(),
                     None,
@@ -1217,6 +1333,7 @@ mod tests {
             60_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "m".to_string(),
             "m".to_string(),
             None,
@@ -1272,6 +1389,7 @@ mod tests {
             60_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "m".to_string(),
             "m".to_string(),
             None,
@@ -1305,6 +1423,7 @@ mod tests {
             60_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "m".to_string(),
             "m".to_string(),
             None,
@@ -1339,6 +1458,7 @@ mod tests {
             60_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "m".to_string(),
             "m".to_string(),
             None,
@@ -1377,6 +1497,7 @@ mod tests {
             60_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "m".to_string(),
             "m".to_string(),
             None,
@@ -1408,6 +1529,7 @@ mod tests {
             60_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "m".to_string(),
             "m".to_string(),
             None,
@@ -1439,6 +1561,7 @@ mod tests {
             60_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "m".to_string(),
             "m".to_string(),
             None,
@@ -1475,6 +1598,7 @@ mod tests {
             15_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "fake_metric".to_string(),
             "fake_metric".to_string(),
             None,
@@ -1529,6 +1653,7 @@ mod tests {
             1_000,
             0,
             WindowType::Tumbling,
+            0, // offset_ms
             "netflow_table".to_string(),
             "netflow_table".to_string(),
             None,
