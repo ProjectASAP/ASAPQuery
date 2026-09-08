@@ -84,14 +84,18 @@ fn compile_spatial_filter(config: &AggregationConfig) -> Result<Vec<Matcher>, St
     }
 
     let filter = config.spatial_filter.trim();
-    if !filter.starts_with('{') || !filter.ends_with('}') {
-        return Err(format!(
-            "aggregation_id {} has invalid spatialFilter {:?}: expected a PromQL label selector body",
-            config.aggregation_id, config.spatial_filter
-        ));
-    }
-
-    let selector = format!("{}{}", config.metric, filter);
+    let selector_body = if filter.starts_with('{') || filter.ends_with('}') {
+        if !filter.starts_with('{') || !filter.ends_with('}') {
+            return Err(format!(
+                "aggregation_id {} has invalid spatialFilter {:?}: unmatched selector braces",
+                config.aggregation_id, config.spatial_filter
+            ));
+        }
+        filter.to_string()
+    } else {
+        format!("{{{filter}}}")
+    };
+    let selector = format!("{}{}", config.metric, selector_body);
     let Expr::VectorSelector(vector_selector) = parse(&selector).map_err(|error| {
         format!(
             "aggregation_id {} has invalid spatialFilter {:?}: {error}",
@@ -105,7 +109,14 @@ fn compile_spatial_filter(config: &AggregationConfig) -> Result<Vec<Matcher>, St
         ));
     };
 
-    let matchers = vector_selector.matchers.matchers;
+    let matchers = vector_selector.matchers;
+    if !matchers.or_matchers.is_empty() {
+        return Err(format!(
+            "aggregation_id {} spatialFilter must not use selector-level or",
+            config.aggregation_id
+        ));
+    }
+    let matchers = matchers.matchers;
     if matchers.iter().any(|matcher| matcher.name == "__name__") {
         return Err(format!(
             "aggregation_id {} spatialFilter must not match __name__; use metric instead",
@@ -348,9 +359,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn equality_spatial_filter_routes_only_equal_label_values() {
+    async fn planner_style_spatial_filter_routes_only_equal_label_values() {
         let samples = routed_samples(
-            r#"{job="api"}"#,
+            r#"job="api""#,
             vec![
                 sample("cpu_usage{job=\"api\"}", 1_000, 1.0),
                 sample("cpu_usage{job=\"worker\"}", 2_000, 2.0),
@@ -501,5 +512,10 @@ mod tests {
             r#"{__name__="other_metric"}"#,
         )]);
         assert!(metric_matcher.is_err());
+
+        let selector_or = RoutingConfigSet::from_aggregation_configs(vec![aggregation_config(
+            r#"{job="api" or job="worker"}"#,
+        )]);
+        assert!(selector_or.is_err());
     }
 }
