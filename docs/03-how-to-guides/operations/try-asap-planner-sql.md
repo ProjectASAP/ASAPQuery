@@ -71,7 +71,7 @@ asap-planner --query-language sql \
 ```
 
 - `--data-ingestion-interval` is the expected data ingestion cadence in seconds (required for SQL mode).
-- `--streaming_engine` just needs a valid value (`precompute`, `arroyo`, or `flink`) — none are actually started.
+- `--streaming_engine` just needs a valid value (`precompute`) — nothing is actually started.
 - `-v` logs which queries were skipped and why.
 
 ## 4. Read the result

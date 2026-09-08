@@ -51,39 +51,6 @@ impl MultipleSumAccumulator {
         Ok(Self { sums })
     }
 
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let precompute: HashMap<String, f64> = rmp_serde::from_slice(buffer).map_err(|e| {
-            format!("Failed to deserialize MultipleSumAccumulator from MessagePack: {e}")
-        })?;
-
-        let mut sums = HashMap::new();
-        for (key_str, sum) in precompute {
-            let key_values: Vec<String> = key_str.split(';').map(|s| s.to_string()).collect();
-            let key = KeyByLabelValues::new_with_labels(key_values);
-            sums.insert(key, sum);
-        }
-
-        Ok(Self { sums })
-    }
-
-    /// Serialize to Arroyo-compatible format (MessagePack HashMap<String, f64>)
-    pub fn serialize_to_bytes_arroyo(&self) -> Vec<u8> {
-        use serde::Serialize;
-        let per_key_storage: HashMap<String, f64> = self
-            .sums
-            .iter()
-            .map(|(key, &sum)| (key.labels.join(";"), sum))
-            .collect();
-
-        let mut buf = Vec::new();
-        per_key_storage
-            .serialize(&mut rmp_serde::Serializer::new(&mut buf))
-            .expect("Failed to serialize MultipleSumAccumulator to MessagePack");
-        buf
-    }
-
     pub fn deserialize_from_bytes(buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
         let mut offset = 0;
 

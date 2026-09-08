@@ -21,7 +21,7 @@ pub trait Store: Send + Sync {
         precompute: Box<dyn AggregateCore>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
-    /// Insert multiple precomputed outputs in a batch (for Kafka consumer)
+    /// Insert multiple precomputed outputs in a batch
     fn insert_precomputed_output_batch(
         &self,
         outputs: Vec<(PrecomputedOutput, Box<dyn AggregateCore>)>,

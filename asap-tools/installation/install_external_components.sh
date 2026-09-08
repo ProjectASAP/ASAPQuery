@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# PREDEFINED_COMPONENTS=("benchmarks" "exporters" "flink" "grafana" "kafka" "prometheus" "prometheus_kafka_adapter" "asprof")
-PREDEFINED_COMPONENTS=("benchmarks" "exporters" "flink" "grafana" "kafka" "prometheus" "asprof" "arroyo")
+PREDEFINED_COMPONENTS=("benchmarks" "exporters" "grafana" "prometheus" "asprof")
 
 if [ "$#" -lt 2 ]; then
     echo "Usage: $0 <install_dir> <component1> [<component2> ...]"

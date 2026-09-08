@@ -4,11 +4,9 @@ Miscellaneous service classes for smaller services.
 
 import os
 import random
-import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
-import constants
 from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
@@ -406,81 +404,3 @@ class ControllerService(BaseService):
     def _stop_bare_metal(self) -> None:
         # Controller typically runs to completion, no explicit stop needed for bare metal
         pass
-
-
-class DumbKafkaConsumerService(BaseService):
-    """Service for managing simple Kafka consumer."""
-
-    def __init__(self, provider: InfrastructureProvider, node_offset: int):
-        """
-        Initialize Dumb Kafka Consumer service.
-
-        Args:
-            provider: Infrastructure provider for node communication and management
-            node_offset: Starting node index offset
-        """
-        super().__init__(provider)
-        self.node_offset = node_offset
-
-    def start(self, experiment_output_dir: str, **kwargs) -> None:
-        """
-        Start the dumb Kafka consumer.
-
-        Args:
-            experiment_output_dir: Directory for experiment output
-            **kwargs: Additional configuration
-        """
-        cmd = "python3 -u dumb_kafka_consumer.py --kafka_topic {} --output_file {} > /dev/null 2>&1 &".format(
-            constants.FLINK_OUTPUT_TOPIC,
-            os.path.join(experiment_output_dir, "dumb_kafka_consumer_output.json"),
-        )
-        cmd_dir = os.path.join(
-            self.provider.get_home_dir(), "code", "asap-tools", "experiments"
-        )
-        self.provider.execute_command(
-            node_idx=self.node_offset,
-            cmd=cmd,
-            cmd_dir=cmd_dir,
-            nohup=True,
-            popen=False,
-            ignore_errors=False,
-        )
-
-    def stop(self, **kwargs) -> None:
-        """
-        Stop the dumb Kafka consumer.
-
-        Args:
-            **kwargs: Additional configuration (currently unused)
-        """
-        cmd = "pkill -f dumb_kafka_consumer.py"
-        self.provider.execute_command(
-            node_idx=self.node_offset,
-            cmd=cmd,
-            cmd_dir=None,
-            nohup=False,
-            popen=False,
-            ignore_errors=True,
-        )
-
-    def is_healthy(self) -> bool:
-        """
-        Check if consumer is healthy.
-
-        Returns:
-            True if consumer process is running
-        """
-        try:
-            cmd = "pgrep -f dumb_kafka_consumer.py"
-            result = self.provider.execute_command(
-                node_idx=self.node_offset,
-                cmd=cmd,
-                cmd_dir=None,
-                nohup=False,
-                popen=False,
-                ignore_errors=True,
-            )
-            assert isinstance(result, subprocess.CompletedProcess)
-            return result.stdout.strip() != ""
-        except Exception:
-            return False

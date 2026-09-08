@@ -4,8 +4,6 @@ This guide covers running the ASAP stack manually with Prometheus for developmen
 
 ## Prerequisites
 
-- Kafka installed
-- Arroyo built at `~/code/arroyo/target/release/arroyo`
 - asap-query-engine built at `~/code/asap-query-engine/target/release/query_engine_rust`
 - asap-tools/data-sources/prometheus-exporters built (fake_exporter_rust)
 - Prometheus installed and accessible
@@ -14,9 +12,6 @@ This guide covers running the ASAP stack manually with Prometheus for developmen
 
 ```
 ~/code/
-├── asap-summary-ingest/     # Pipeline configuration scripts
-│   ├── config.yaml         # Arroyo cluster config
-│   └── run_arroyosketch.py # Creates sources, sinks, and pipelines
 ├── asap-query-engine/      # Query interception layer
 ├── asap-tools/data-sources/prometheus-exporters/  # Data generators
 │   └── fake_exporter/
@@ -44,7 +39,7 @@ queries:
   query: quantile by (label_0) (0.99, fake_metric)
 ```
 
-**streaming_config.yaml** - Defines streaming aggregations for Arroyo:
+**streaming_config.yaml** - Defines streaming aggregations for the precompute engine:
 ```yaml
 aggregations:
 - aggregationId: 1
@@ -117,27 +112,9 @@ curl 'http://localhost:9090/api/v1/query?query=fake_metric'
 
 ## ASAP Mode
 
-ASAP mode adds Arroyo (streaming aggregation) and QueryEngineRust (query interception) to accelerate queries using sketches.
+ASAP mode runs QueryEngineRust's precompute engine, which receives Prometheus remote write directly and builds sketches in-process (no separate streaming cluster or message broker).
 
-### 1. Start Kafka
-
-```bash
-cd ~/kafka
-./bin/kafka-server-start.sh ./config/kraft/server.properties
-```
-
-Wait for Kafka to be ready, then create topics:
-```bash
-./bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
-    --topic sketch_topic --partitions 1 --replication-factor 1 \
-    --config max.message.bytes=20971520
-
-# Only needed if using Kafka ingestion (--source_type kafka):
-./bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
-    --topic raw_data_topic --partitions 1 --replication-factor 1
-```
-
-### 2. Start Data Exporter
+### 1. Start Data Exporter
 
 Same as baseline - exporter just exposes `/metrics`:
 
@@ -149,81 +126,39 @@ cd ~/code/asap-tools/data-sources/prometheus-exporters/fake_exporter/fake_export
     --port 8000
 ```
 
-### 3. Start Arroyo Cluster
+### 2. Start QueryEngineRust
 
-```bash
-cd ~/code/arroyo
-./target/release/arroyo --config ~/code/asap-summary-ingest/config.yaml cluster
+Write `engine_config.yaml` (see `asap-query-engine/examples/engine_config.yaml` for the full schema):
+
+```yaml
+output_dir: "./output"
+log_level: "INFO"
+data_ingestion_interval_ms: 1000
+streaming_engine: "precompute"
+http_server:
+  port: 8088
+backend:
+  type: "prometheus"
+  server: "http://localhost:9090"
+store:
+  lock_strategy: "per-key"
+ingest:
+  type: "http_remote_write"
+  port: 9001
+inference_config: "/path/to/inference_config.yaml"
+streaming_config: "/path/to/streaming_config.yaml"
 ```
-
-Arroyo API runs at `http://localhost:5115`. Verify with:
-```bash
-curl http://localhost:5115/api/v1/pipelines
-```
-
-### 4. Configure ArroyoSketch Pipeline
-
-Run `run_arroyosketch.py` to create Arroyo sources, sinks, and pipeline:
-
-```bash
-cd ~/code/asap-summary-ingest
-python run_arroyosketch.py \
-    --source_type prometheus_remote_write \
-    --prometheus_bind_ip 0.0.0.0 \
-    --prometheus_base_port 9001 \
-    --prometheus_path /write \
-    --parallelism 1 \
-    --output_format json \
-    --pipeline_name my_pipeline \
-    --config_file_path /path/to/streaming_config.yaml \
-    --output_kafka_topic sketch_topic \
-    --output_dir ./outputs
-```
-
-For Kafka-based ingestion instead of remote_write:
-```bash
-python run_arroyosketch.py \
-    --source_type kafka \
-    --kafka_input_format json \
-    --input_kafka_topic raw_data_topic \
-    --output_format json \
-    --pipeline_name my_pipeline \
-    --config_file_path /path/to/streaming_config.yaml \
-    --output_kafka_topic sketch_topic \
-    --output_dir ./outputs \
-    --parallelism 1
-```
-
-The script outputs the pipeline ID. Verify the pipeline is running:
-```bash
-curl http://localhost:5115/api/v1/pipelines
-```
-
-### 5. Start QueryEngineRust
 
 ```bash
 cd ~/code/asap-query-engine
-./target/release/query_engine_rust \
-    --kafka-topic sketch_topic \
-    --input-format json \
-    --config /path/to/inference_config.yaml \
-    --streaming-config /path/to/streaming_config.yaml \
-    --prometheus-scrape-interval 1 \
-    --prometheus-server http://localhost:9090 \
-    --http-port 8088 \
-    --delete-existing-db \
-    --log-level info \
-    --output-dir ./output \
-    --streaming-engine arroyo \
-    --query-language PROMQL \
-    --lock-strategy per-key
+./target/release/query_engine_rust --config-file engine_config.yaml
 ```
 
-QueryEngine now listens on port 8088 and intercepts PromQL queries.
+QueryEngine now listens on port 8088 for PromQL queries and on port 9001 for Prometheus remote write.
 
-### 6. Start Prometheus with Remote Write
+### 3. Start Prometheus with Remote Write
 
-Prometheus scrapes the exporter and pushes data to Arroyo via `remote_write`. Create `prometheus-asap.yml`:
+Prometheus scrapes the exporter and pushes data directly to QueryEngine via `remote_write`. Create `prometheus-asap.yml`:
 
 ```yaml
 global:
@@ -235,10 +170,10 @@ scrape_configs:
       - targets: ['localhost:8000']
 
 remote_write:
-  - url: "http://localhost:9001/write"
+  - url: "http://localhost:9001/api/v1/write"
 ```
 
-The `remote_write` URL must match the Arroyo source endpoint (prometheus_base_port + prometheus_path from step 4).
+The `remote_write` URL must match `ingest.port` from step 2.
 
 Start Prometheus:
 ```bash
@@ -247,7 +182,7 @@ prometheus --config.file=prometheus-asap.yml --storage.tsdb.path=./data
 
 Prometheus also serves as fallback for queries that can't be answered from sketches.
 
-### 7. Query via QueryEngine
+### 4. Query via QueryEngine
 
 Direct queries to QueryEngineRust instead of Prometheus:
 

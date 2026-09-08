@@ -9,15 +9,12 @@ import constants
 import experiment_utils
 from experiment_utils import sync, config
 from experiment_utils.services import (
-    KafkaService,
     ExporterServiceFactory,
     SystemExportersService,
     create_prometheus_service,
     PrometheusService,
     DockerPrometheusService,
     DockerVictoriaMetricsService,
-    ArroyoService,
-    ArroyoThroughputMonitor,
     PrometheusThroughputMonitor,
     PrometheusHealthMonitor,
     ControllerService,
@@ -29,7 +26,6 @@ OmegaConf.register_new_resolver(
     "local_experiment_dir", lambda: constants.LOCAL_EXPERIMENT_DIR
 )
 
-KAFKA_NUM_TRIES = 5
 CONTROLLER_LOCAL_OUTPUT_DIR = None
 CONTROLLER_REMOTE_OUTPUT_DIR = None
 
@@ -126,17 +122,7 @@ def main(cfg: DictConfig):
         use_container=args.use_container_fake_exporter,
     )
 
-    # Initialize V2-specific services (always initialize to allow cleanup from previous runs)
-    arroyo_throughput_monitor = None
-    arroyosketch_pipeline_id = None
-
-    print("Initializing services (including V2 services for cleanup)...")
-    kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
-    arroyo_service = ArroyoService(
-        provider,
-        use_container=args.use_container_arroyo,
-        node_offset=args.node_offset,
-    )
+    print("Initializing services...")
     controller_service = ControllerService(
         provider,
         use_container=args.use_container_controller,
@@ -158,8 +144,6 @@ def main(cfg: DictConfig):
     prometheus_service.stop()
     exporter_service.stop()
     prometheus_service.reset()
-    kafka_service.stop()
-    arroyo_service.stop()
     controller_service.stop()
     # Create local and remote experiment directories
     experiment_output_dir = os.path.join(experiment_root_output_dir, experiment_mode)
@@ -272,7 +256,7 @@ def main(cfg: DictConfig):
         prometheus_service.start(experiment_output_dir)
 
     if is_v2:
-        print("Starting V2 infrastructure (Controller, Kafka, Arroyo)...")
+        print("Starting V2 infrastructure (Controller)...")
 
         controller_input_config = os.path.join(
             experiment_root_output_dir,
@@ -311,42 +295,6 @@ def main(cfg: DictConfig):
             node_offset=args.node_offset,
         )
 
-        # Start Kafka
-        if args.streaming_engine != "precompute":
-            kafka_service.start()
-            kafka_service.wait_until_ready()
-            kafka_service.delete_topics()
-            kafka_service.create_topics()
-
-        # Start Arroyo
-        if args.streaming_engine != "precompute":
-            arroyo_service.stop()
-            time.sleep(10)
-            arroyo_service.start(
-                experiment_output_dir=experiment_output_dir,
-                remote_write_base_port=args.remote_write_base_port,
-                parallelism=args.parallelism,
-            )
-
-    # Start V2-specific: Run ArroyoSketch pipeline
-    if is_v2 and args.streaming_engine != "precompute":
-        print("Starting ArroyoSketch pipeline...")
-        arroyosketch_pipeline_id = arroyo_service.run_arroyosketch(
-            experiment_name=args.experiment_name,
-            experiment_output_dir=experiment_output_dir,
-            flink_input_format=args.flink_input_format,
-            flink_output_format=args.flink_output_format,
-            controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
-            remote_write_ip=args.remote_write_ip,
-            remote_write_base_port=args.remote_write_base_port,
-            remote_write_path=args.remote_write_path,
-            parallelism=args.parallelism,
-            use_kafka_ingest=args.use_kafka_ingest,
-            enable_optimized_remote_write=cfg.streaming.remote_write.enable_optimized_source,
-            avoid_long_ssh=constants.AVOID_RUN_ARROYOSKETCH_LONG_SSH,
-        )
-        print(f"ArroyoSketch pipeline ID: {arroyosketch_pipeline_id}")
-
     # Start monitoring services
     print("Starting monitoring services...")
 
@@ -364,18 +312,6 @@ def main(cfg: DictConfig):
     )
     prometheus_health_monitor.start(experiment_output_dir=experiment_output_dir)
 
-    # Start Arroyo throughput monitoring if V2
-    if is_v2 and arroyosketch_pipeline_id:
-        print("Starting Arroyo throughput monitoring...")
-        arroyo_throughput_monitor = ArroyoThroughputMonitor(
-            provider,
-            node_offset=args.node_offset,
-        )
-        arroyo_throughput_monitor.start(
-            pipeline_id=arroyosketch_pipeline_id,
-            experiment_output_dir=experiment_output_dir,
-        )
-
     # Start resource cost monitoring via remote_monitor.py
     print("Starting resource cost monitoring (CPU/memory)...")
     start_resource_monitoring(
@@ -384,7 +320,6 @@ def main(cfg: DictConfig):
         experiment_output_dir,
         local_experiment_dir,
         experiment_duration,
-        is_v2,
         args.streaming_engine,
     )
 
@@ -407,21 +342,11 @@ def main(cfg: DictConfig):
     prometheus_throughput_monitor.stop()
     prometheus_health_monitor.stop()
 
-    if is_v2 and arroyo_throughput_monitor:
-        arroyo_throughput_monitor.stop()
-
     # Note: remote_monitor.py will stop automatically after the timed duration
 
     # Stop V2-specific services
     if is_v2:
         print("Stopping V2 services...")
-        if args.streaming_engine != "precompute":
-            if arroyosketch_pipeline_id:
-                arroyo_service.stop_arroyosketch(arroyosketch_pipeline_id)
-            arroyo_service.stop()
-        if args.streaming_engine != "precompute":
-            kafka_service.delete_topics()
-            kafka_service.stop()
         controller_service.stop()
 
     # Stop core services
@@ -455,7 +380,6 @@ def start_resource_monitoring(
     experiment_output_dir: str,
     local_experiment_dir: str,
     duration: int,
-    is_v2: bool,
     streaming_engine: str,
 ):
     """
@@ -467,15 +391,11 @@ def start_resource_monitoring(
         experiment_output_dir: Remote output directory for monitoring data
         local_experiment_dir: Local experiment directory
         duration: Duration to run monitoring in seconds
-        is_v2: Whether this is V2 (includes Arroyo monitoring)
     """
     import yaml
 
     # Determine keywords for process/container monitoring
     keywords = ["prometheus"]  # Will match prometheus container or process
-
-    if is_v2:
-        keywords.append("arroyo")  # Will match arroyo worker containers/processes
 
     # Create minimal config file locally (remote_monitor.py needs this)
     local_monitor_config_dir = os.path.join(

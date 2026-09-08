@@ -10,18 +10,11 @@ CLOUDLAB_QUERY_LOG_FILE = "/scratch/sketch_db_for_prometheus/prometheus/queries.
 
 LOCAL_EXPERIMENT_DIR = os.path.join(os.path.dirname(ROOT_DIR), "experiment_outputs")
 
-FLINK_INPUT_TOPIC = "flink_input"
-FLINK_OUTPUT_TOPIC = "flink_output"
-KAFKA_BROKER = "localhost:9092"
-
 QUERY_ENGINE_RS_PROCESS_KEYWORD = "query_engine_rust"
 QUERY_ENGINE_RS_BINARY_NAME = "query_engine_rust"
 QUERY_ENGINE_RS_FP_BINARY_NAME = "query_engine_rust_fp"
 QUERY_ENGINE_RS_CONTAINER_NAME = "sketchdb-queryengine-rust"
 
-ARROYO_IMAGE = "ghcr.io/projectasap/asap-arroyo:v0.1.0"
-
-ARROYO_THROUGHPUT_POLLING_INTERVAL = 1
 PROMETHEUS_THROUGHPUT_POLLING_INTERVAL = 5
 PROMETHEUS_HEALTH_POLLING_INTERVAL = 5
 
@@ -34,7 +27,6 @@ BASELINE_SKETCH_EXPERIMENT_NAME = "baseline_sketch"
 BASELINE_MV_EXPERIMENT_NAME = "baseline_mv"
 BASELINE_MV_SKETCH_EXPERIMENT_NAME = "baseline_mv_sketch"
 AVOID_REMOTE_MONITOR_LONG_SSH = True
-AVOID_RUN_ARROYOSKETCH_LONG_SSH = True
 
 # remote_monitor.py process lifecycle timing (start/exit polling)
 REMOTE_MONITOR_START_TIMEOUT_SECONDS = 30

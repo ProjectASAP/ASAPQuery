@@ -12,7 +12,7 @@ This document provides a comprehensive overview of ASAP's architecture, data flo
 
 ## High-Level Architecture
 
-ASAP consists of six main components working together to accelerate Prometheus queries:
+ASAP consists of four main components working together to accelerate Prometheus queries:
 
 ```mermaid
 graph TB
@@ -26,28 +26,20 @@ graph TB
     end
 
     subgraph "ASAP Components"
-        A[Arroyo Streaming]
-        K[Kafka]
         Q[QueryEngine]
         C[Controller]
-        AS[ArroyoSketch]
     end
 
     E -->|metrics| P
-    P -->|remote_write| A
-    A -->|sketches| K
-    K -->|consume| Q
+    P -->|remote_write| Q
     G -->|PromQL| Q
     Q -->|results| G
     Q -.->|fallback| P
 
-    C -->|streaming_config.yaml| AS
-    AS -->|create pipelines| A
+    C -->|streaming_config.yaml + inference_config.yaml| Q
 
-    style A fill:#e1f5ff
     style Q fill:#e1f5ff
     style C fill:#fff4e1
-    style AS fill:#fff4e1
 ```
 
 ## Data Flows
@@ -62,16 +54,12 @@ How metrics flow from exporters to sketches:
 sequenceDiagram
     participant E as Exporters
     participant P as Prometheus
-    participant A as Arroyo
-    participant K as Kafka
     participant Q as QueryEngine
 
     E->>P: Expose metrics
     P->>P: Scrape metrics
-    P->>A: Remote write (HTTP)
-    A->>A: Build sketches (SQL pipeline)
-    A->>K: Produce sketches
-    K->>Q: Consume sketches
+    P->>Q: Remote write (HTTP)
+    Q->>Q: Build sketches (precompute engine)
     Q->>Q: Store in SimpleMapStore
 ```
 
@@ -79,18 +67,13 @@ sequenceDiagram
 
 1. **Exporters** expose metrics on HTTP endpoints (e.g., `:9100/metrics`)
 2. **Prometheus** scrapes metrics at a specified time interval (e.g. every 10s)
-3. **Prometheus** sends metrics to **Arroyo** via remote write API
-4. **Arroyo** receives raw metrics via custom connector (`prometheus_remote_write_optimized`)
-5. **Arroyo** executes SQL pipelines that build sketches in real-time (configured by **ArroyoSketch**)
-6. **Arroyo** produces sketches to **Kafka** output topic
-7. **QueryEngine** consumes sketches from **Kafka**
-8. **QueryEngine** stores sketches in **SimpleMapStore** (in-memory)
+3. **Prometheus** sends metrics to **QueryEngine** via remote write API
+4. **QueryEngine**'s precompute engine builds sketches in real-time (configured by **Controller**)
+5. **QueryEngine** stores sketches in **SimpleMapStore** (in-memory)
 
 **Data format transformations:**
 - **Exporter → Prometheus**: Prometheus exposition format (text)
-- **Prometheus → Arroyo**: Prometheus remote write protobuf
-- **Arroyo → Kafka**: Serialized sketches (custom format)
-- **Kafka → QueryEngine**: Deserialize to custom sketch objects
+- **Prometheus → QueryEngine**: Prometheus remote write protobuf
 
 ### Query Path
 
@@ -146,15 +129,11 @@ graph LR
     U[User] -->|edit| CC[controller-config.yaml]
     CC --> C[Controller]
     C -->|analyze queries| C
-    C -->|streaming_config.yaml| AS[ArroyoSketch]
-    C -->|inference_config.yaml| Q[QueryEngine]
-    AS -->|generate SQL| AS
-    AS -->|Arroyo API| A[Arroyo]
-    A -->|running pipelines| A
+    C -->|streaming_config.yaml + inference_config.yaml| Q[QueryEngine]
+    Q -->|running precompute engine| Q
 
     style CC fill:#fff
     style C fill:#fff4e1
-    style AS fill:#fff4e1
 ```
 
 **Step-by-step:**
@@ -166,36 +145,24 @@ graph LR
 2. **Controller** analyzes the query workload:
    - Determines which sketch algorithms to use (DDSketch, KLL, etc.)
    - Computes sketch parameters (size, accuracy)
-   - Generates `streaming_config.yaml` for Arroyo
-   - Generates `inference_config.yaml` for QueryEngine
+   - Generates `streaming_config.yaml` and `inference_config.yaml` for QueryEngine
 
-3. **ArroyoSketch** reads `streaming_config.yaml`:
-   - Renders SQL templates using Jinja2
-   - Creates Arroyo pipelines via REST API
-   - Configures sketch UDFs with parameters
-
-4. **QueryEngine** reads `inference_config.yaml`:
-   - Knows which sketches to expect from Kafka
-   - Configures deserialization logic
+3. **QueryEngine** reads `streaming_config.yaml` and `inference_config.yaml`:
+   - Configures the precompute engine's sketch-building for incoming remote write samples
    - Sets up query routing
 
 ## Component Overview
 
 | Component | Purpose | Technology | Location |
 |-----------|---------|------------|----------|
-| **asap-query-engine** | Answers PromQL queries using sketches | Rust | `asap-query-engine/` |
-| **Arroyo** | Stream processing for building sketches | Rust (forked) | [github.com/ProjectASAP/arroyo](https://github.com/ProjectASAP/arroyo) |
-| **asap-summary-ingest** | Configures Arroyo pipelines from config | Python | `asap-summary-ingest/` |
+| **asap-query-engine** | Receives Prometheus remote write, builds sketches (precompute engine), and answers PromQL queries using them | Rust | `asap-query-engine/` |
 | **asap-planner-rs** | Auto-determines sketch parameters | Rust | `asap-planner-rs/` |
-| **Kafka** | Message broker for sketch distribution | Apache Kafka | (external) |
 | **Prometheus** | Time-series database (existing) | Go | (external) |
 | **Exporters** | Generate synthetic metrics for testing | Rust/Python | `asap-tools/data-sources/prometheus-exporters/` |
 | **asap-tools** | Experimental harness that uses Cloudlab | Python | `asap-tools/` |
 
 **Links to detailed documentation:**
 - [QueryEngineRust](../02-components/query-engine.md)
-- [Arroyo](../02-components/arroyo.md)
-- [ArroyoSketch](../02-components/arroyosketch.md)
 - [Controller](../02-components/controller.md)
 - [Exporters](../02-components/exporters.md)
 - [Utilities](../02-components/utilities.md)
@@ -222,20 +189,18 @@ graph LR
 ## Technology Stack
 
 ### Core Languages
-- **Rust** - asap-query-engine, Arroyo, some exporters
+- **Rust** - asap-query-engine, asap-planner-rs, some exporters
   - Tokio for async runtime
   - Axum for HTTP server
   - Serde for serialization
   - DataSketches (dsrs) for sketch algorithms
 
-- **Python** - asap-summary-ingest, experiment framework
+- **Python** - experiment framework
   - PyYAML for config parsing
-  - Jinja2 for SQL templates
   - Requests for HTTP clients
   - Hydra for experiment config composition
 
 ### Infrastructure
-- **Apache Kafka** - Message broker (KRaft mode, no Zookeeper)
 - **Prometheus** - Time-series database
 - **Grafana** - Visualization (unchanged from user's existing setup)
 
@@ -258,11 +223,6 @@ ASAPQuery/
 │   │   ├── precompute_operators/  # Sketch operators
 │   │   └── tests/            # Integration tests
 │   └── docs/                 # QueryEngine dev docs
-│
-├── asap-summary-ingest/       # Pipeline configurator
-│   ├── run_arroyosketch.py   # Main script
-│   ├── templates/            # Jinja2 SQL templates
-│   └── utils/                # Arroyo API client
 │
 ├── asap-planner-rs/          # Auto-configuration service
 │   ├── main_controller.py    # Entry point

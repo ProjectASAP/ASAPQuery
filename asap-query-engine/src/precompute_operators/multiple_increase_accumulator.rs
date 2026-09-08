@@ -2,13 +2,12 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, QueryBounds, SerializableToSink, SingleSubpopulationAggregate,
 };
-use crate::precompute_operators::{CounterResetEvent, IncreaseAccumulator};
+use crate::precompute_operators::IncreaseAccumulator;
 use asap_types::traits::SerializationError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
-use crate::data_model::Measurement;
 use promql_utilities::query_logics::enums::Statistic;
 
 /// Accumulator that maintains separate increase accumulators for multiple keys
@@ -16,18 +15,6 @@ use promql_utilities::query_logics::enums::Statistic;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultipleIncreaseAccumulator {
     pub increases: HashMap<KeyByLabelValues, IncreaseAccumulator>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MeasurementData {
-    starting_measurement: f64,
-    starting_timestamp: i64,
-    last_seen_measurement: f64,
-    last_seen_timestamp: i64,
-    sample_count: u64,
-    counter_reset_adjustment: f64,
-    counter_reset_events: Vec<CounterResetEvent>,
 }
 
 impl MultipleIncreaseAccumulator {
@@ -102,48 +89,6 @@ impl MultipleIncreaseAccumulator {
         Ok(accumulator)
     }
 
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let precompute: HashMap<String, MeasurementData> =
-            rmp_serde::from_slice(buffer).map_err(|e| {
-                format!("Failed to deserialize MultipleIncreaseAccumulator from MessagePack: {e}")
-            })?;
-
-        let mut accumulator = Self::new();
-        for (key_str, values) in precompute {
-            // Parse semicolon-separated key values
-            let key_values: Vec<String> = key_str.split(';').map(|s| s.to_string()).collect();
-            // let mut labels = std::collections::BTreeMap::new();
-            // for (i, value) in key_values.into_iter().enumerate() {
-            //     labels.insert(format!("label_{i}"), value);
-            // }
-            let key_obj = KeyByLabelValues::new_with_labels(key_values);
-
-            let starting_measurement = Measurement::new(values.starting_measurement);
-            let starting_timestamp = values.starting_timestamp;
-            let last_seen_measurement = Measurement::new(values.last_seen_measurement);
-            let last_seen_timestamp = values.last_seen_timestamp;
-            if values.sample_count == 0 {
-                return Err("Sample count must be positive".into());
-            }
-
-            let mut increase_accumulator = IncreaseAccumulator::new(
-                starting_measurement,
-                starting_timestamp,
-                last_seen_measurement,
-                last_seen_timestamp,
-            );
-            increase_accumulator.sample_count = values.sample_count;
-            increase_accumulator.counter_reset_adjustment = values.counter_reset_adjustment;
-            increase_accumulator.counter_reset_events = values.counter_reset_events;
-
-            accumulator.increases.insert(key_obj, increase_accumulator);
-        }
-
-        Ok(accumulator)
-    }
-
     fn merge_increase(
         increases: &mut HashMap<KeyByLabelValues, IncreaseAccumulator>,
         key: KeyByLabelValues,
@@ -161,36 +106,6 @@ impl MultipleIncreaseAccumulator {
             }
             Err(error) => Err(error),
         }
-    }
-
-    /// Serialize to Arroyo-compatible format (MessagePack HashMap<String, MeasurementData>)
-    /// Matches the Arroyo multipleincrease_ UDF format
-    pub fn serialize_to_bytes_arroyo(&self) -> Vec<u8> {
-        use serde::Serialize;
-        let mut per_key_storage: HashMap<String, MeasurementData> = HashMap::new();
-
-        for (key, increase_acc) in &self.increases {
-            // Keys are semicolon-separated label values
-            let key_str = key.labels.join(";");
-            per_key_storage.insert(
-                key_str,
-                MeasurementData {
-                    starting_measurement: increase_acc.starting_measurement.value,
-                    starting_timestamp: increase_acc.starting_timestamp,
-                    last_seen_measurement: increase_acc.last_seen_measurement.value,
-                    last_seen_timestamp: increase_acc.last_seen_timestamp,
-                    sample_count: increase_acc.sample_count,
-                    counter_reset_adjustment: increase_acc.counter_reset_adjustment,
-                    counter_reset_events: increase_acc.counter_reset_events.clone(),
-                },
-            );
-        }
-
-        let mut buf = Vec::new();
-        per_key_storage
-            .serialize(&mut rmp_serde::Serializer::new(&mut buf))
-            .expect("Failed to serialize MultipleIncreaseAccumulator to MessagePack");
-        buf
     }
 }
 
@@ -518,15 +433,6 @@ mod tests {
         assert_eq!(deserialized_acc_bytes.starting_measurement.value, 10.0);
         assert_eq!(deserialized_acc_bytes.last_seen_measurement.value, 25.0);
         assert_eq!(deserialized_acc_bytes.sample_count, 2);
-
-        let arroyo_round_trip = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
-            &acc.serialize_to_bytes_arroyo(),
-        )
-        .unwrap();
-        assert_eq!(
-            arroyo_round_trip.increases.get(&key).unwrap().sample_count,
-            2
-        );
     }
 
     #[test]
@@ -607,35 +513,6 @@ mod tests {
     }
 
     #[test]
-    fn test_arroyo_deserialization_supports_reset_aware_payloads() {
-        let key = KeyByLabelValues::new_with_labels(vec!["web".to_string()]);
-        let mut payload = HashMap::new();
-        payload.insert(
-            "web".to_string(),
-            MeasurementData {
-                starting_measurement: 100.0,
-                starting_timestamp: 0,
-                last_seen_measurement: 60.0,
-                last_seen_timestamp: 3_000,
-                sample_count: 4,
-                counter_reset_adjustment: 150.0,
-                counter_reset_events: vec![CounterResetEvent {
-                    timestamp: 2_000,
-                    adjustment: 150.0,
-                }],
-            },
-        );
-        let reset_aware = MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(
-            &rmp_serde::to_vec(&payload).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(
-            reset_aware.query(Statistic::Increase, &key, None).unwrap(),
-            110.0
-        );
-    }
-
-    #[test]
     fn test_multiple_increase_accumulator_get_keys() {
         let mut acc = MultipleIncreaseAccumulator::new();
 
@@ -691,58 +568,4 @@ mod tests {
             110.0
         );
     }
-
-    // #[test]
-    // fn test_multiple_increase_accumulator_arroyo_deserialization() {
-    //     // Create test data in Arroyo MessagePack format
-    //     // Format: {key: [starting_value, starting_timestamp, last_seen_value, last_seen_timestamp]}
-    //     let mut test_data = std::collections::HashMap::new();
-    //     test_data.insert("web;service".to_string(), vec![10.0, 1000.0, 25.0, 2000.0]);
-    //     test_data.insert("api;service".to_string(), vec![5.0, 1500.0, 15.0, 2500.0]);
-
-    //     // Serialize to MessagePack
-    //     let arroyo_buffer = rmp_serde::to_vec(&test_data).unwrap();
-
-    //     // Test Arroyo deserialization
-    //     let deserialized_acc =
-    //         MultipleIncreaseAccumulator::deserialize_from_bytes_arroyo(&arroyo_buffer).unwrap();
-
-    //     // Verify the deserialized accumulator has the correct data
-    //     assert_eq!(deserialized_acc.increases.len(), 2);
-
-    //     // Check first key (web;service)
-    //     let keys: Vec<_> = deserialized_acc.increases.keys().collect();
-    //     let key1 = keys
-    //         .iter()
-    //         .find(|k| k.labels.get("label_0").is_some_and(|v| v == "web"))
-    //         .unwrap();
-
-    //     let increase1 = deserialized_acc.increases.get(key1).unwrap();
-    //     assert_eq!(increase1.starting_measurement.value, 10.0);
-    //     assert_eq!(increase1.starting_timestamp, 1000);
-    //     assert_eq!(increase1.last_seen_measurement.value, 25.0);
-    //     assert_eq!(increase1.last_seen_timestamp, 2000);
-
-    //     // Check second key (api;service)
-    //     let key2 = keys
-    //         .iter()
-    //         .find(|k| k.labels.get("label_0").is_some_and(|v| v == "api"))
-    //         .unwrap();
-
-    //     let increase2 = deserialized_acc.increases.get(key2).unwrap();
-    //     assert_eq!(increase2.starting_measurement.value, 5.0);
-    //     assert_eq!(increase2.starting_timestamp, 1500);
-    //     assert_eq!(increase2.last_seen_measurement.value, 15.0);
-    //     assert_eq!(increase2.last_seen_timestamp, 2500);
-
-    //     // Test querying
-    //     assert_eq!(
-    //         deserialized_acc.query(Statistic::Increase, key1).unwrap(),
-    //         15.0
-    //     ); // 25.0 - 10.0
-    //     assert_eq!(
-    //         deserialized_acc.query(Statistic::Increase, key2).unwrap(),
-    //         10.0
-    //     ); // 15.0 - 5.0
-    // }
 }

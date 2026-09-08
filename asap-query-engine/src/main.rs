@@ -23,10 +23,9 @@ use query_engine_rust::precompute_engine::PrecomputeWorkerDiagnostics;
 use query_engine_rust::utils::file_io::{read_inference_config, read_streaming_config};
 use query_engine_rust::InferenceConfig;
 use query_engine_rust::{
-    HttpIngestConfig, HttpIngestSource, HttpServer, HttpServerConfig, IngestSource, KafkaConsumer,
-    KafkaConsumerConfig, OtlpReceiver, OtlpReceiverConfig, PrecomputeEngine,
-    PrecomputeEngineConfig, PrecomputeEngineHandle, Result, SimpleEngine, SimpleMapStore,
-    StoreOutputSink,
+    HttpIngestConfig, HttpIngestSource, HttpServer, HttpServerConfig, IngestSource, OtlpReceiver,
+    OtlpReceiverConfig, PrecomputeEngine, PrecomputeEngineConfig, PrecomputeEngineHandle, Result,
+    SimpleEngine, SimpleMapStore, StoreOutputSink,
 };
 
 #[derive(Parser, Debug)]
@@ -121,57 +120,6 @@ async fn main() -> Result<()> {
         query_language,
     ));
 
-    // Kafka consumer — only when streaming_engine=arroyo and ingest.type=kafka.
-    let kafka_handle = if config.streaming_engine == StreamingEngine::Arroyo {
-        match &config.ingest {
-            IngestConfig::Kafka {
-                broker,
-                topic,
-                input_format,
-                decompress_json,
-            } => {
-                let kafka_config = KafkaConsumerConfig {
-                    broker: broker.clone(),
-                    topic: topic.clone(),
-                    group_id: "query-engine-rust".to_string(),
-                    auto_offset_reset: "beginning".to_string(),
-                    input_format: input_format.clone(),
-                    decompress_json: *decompress_json,
-                    batch_size: 1000,
-                    poll_timeout_ms: 1000,
-                    streaming_engine: config.streaming_engine.clone(),
-                    dump_precomputes: config.precompute_engine.dump_precomputes,
-                    dump_output_dir: if config.precompute_engine.dump_precomputes {
-                        Some(config.output_dir.clone())
-                    } else {
-                        None
-                    },
-                };
-                match KafkaConsumer::new(kafka_config, store.clone(), streaming_config.clone()) {
-                    Ok(mut consumer) => {
-                        info!("Starting Kafka consumer for topic: {}", topic);
-                        Some(tokio::spawn(async move {
-                            if let Err(e) = consumer.run().await {
-                                error!("Kafka consumer error: {}", e);
-                            }
-                        }))
-                    }
-                    Err(e) => {
-                        error!("Failed to create Kafka consumer: {}", e);
-                        info!("Continuing without Kafka consumer");
-                        None
-                    }
-                }
-            }
-            // OTLP uses its own receiver started below; kafka_handle is not needed.
-            IngestConfig::Otlp { .. } => None,
-            _ => unreachable!("check_config enforces arroyo requires kafka"),
-        }
-    } else {
-        info!("Using precompute engine as streaming backend — skipping Kafka consumer");
-        None
-    };
-
     // OTLP receiver — only when ingest.type=otlp.
     let otel_handle = if let IngestConfig::Otlp {
         grpc_port,
@@ -195,11 +143,13 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Precompute engine — driven by streaming_engine=precompute.
-    // check_config() already enforces the ingest source is compatible (http_remote_write or csv).
+    // Precompute engine — runs for every ingest source except OTLP, which is
+    // handled entirely by its own receiver above.
     let mut pe_engine_handle: Option<PrecomputeEngineHandle> = None;
 
-    let _precompute_runtime = if config.streaming_engine == StreamingEngine::Precompute {
+    let _precompute_runtime = if config.streaming_engine == StreamingEngine::Precompute
+        && !matches!(config.ingest, IngestConfig::Otlp { .. })
+    {
         let precompute_config = PrecomputeEngineConfig {
             num_workers: config.precompute_engine.num_workers,
             allowed_lateness_ms: config.precompute_engine.allowed_lateness_ms,
@@ -272,9 +222,7 @@ async fn main() -> Result<()> {
                     port: *port,
                 }))]
             }
-            _ => unreachable!(
-                "check_config enforces precompute requires http_remote_write, csv, or json"
-            ),
+            IngestConfig::Otlp { .. } => unreachable!("excluded by the condition above"),
         };
         let pe = PrecomputeEngine::new(
             precompute_config,
@@ -458,12 +406,6 @@ async fn main() -> Result<()> {
     }
 
     // Cleanup - gracefully shutdown background tasks
-    if let Some(handle) = kafka_handle {
-        info!("Shutting down Kafka consumer...");
-        handle.abort();
-        let _ = handle.await;
-    }
-
     if let Some(handle) = otel_handle {
         info!("Shutting down OTLP receiver...");
         handle.abort();

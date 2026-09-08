@@ -15,15 +15,10 @@ from omegaconf import DictConfig, OmegaConf
 import constants
 from experiment_utils import config
 from experiment_utils.services import (
-    KafkaService,
-    FlinkService,
     QueryEngineRustService,
     ExporterServiceFactory,
-    PrometheusKafkaAdapterService,
-    ArroyoService,
     DeathstarService,
     ControllerService,
-    DumbKafkaConsumerService,
     PrometheusClientService,
     RemoteMonitorService,
     AvalancheExporterService,
@@ -31,8 +26,6 @@ from experiment_utils.services import (
     SystemExportersService,
     GrafanaService,
 )
-
-KAFKA_NUM_TRIES = 5
 
 # Register custom resolver for LOCAL_EXPERIMENT_DIR before Hydra processes config
 OmegaConf.register_new_resolver(
@@ -61,9 +54,6 @@ def main(cfg: DictConfig):
     print(f"Provider: {type(provider).__name__}")
     print(f"Nodes: {num_nodes_in_experiment}")
 
-    kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
-    flink_service = FlinkService(provider, args.node_offset)
-
     query_engine_service_container = QueryEngineRustService(
         provider, use_container=True, node_offset=args.node_offset
     )
@@ -75,16 +65,6 @@ def main(cfg: DictConfig):
     prometheus_service = create_prometheus_service(
         cfg, provider, num_nodes_in_experiment, args.node_offset
     )
-    prometheus_kafka_adapter_service = PrometheusKafkaAdapterService(
-        provider, args.node_offset
-    )
-
-    arroyo_service_container = ArroyoService(
-        provider, use_container=True, node_offset=args.node_offset
-    )
-    arroyo_service_native = ArroyoService(
-        provider, use_container=False, node_offset=args.node_offset
-    )
 
     deathstar_service = DeathstarService(provider, args)
 
@@ -94,8 +74,6 @@ def main(cfg: DictConfig):
     controller_service_native = ControllerService(
         provider, use_container=False, node_offset=args.node_offset
     )
-
-    dumb_consumer_service = DumbKafkaConsumerService(provider, args.node_offset)
 
     prometheus_client_service_container = PrometheusClientService(
         provider, use_container=True, node_offset=args.node_offset
@@ -134,8 +112,6 @@ def main(cfg: DictConfig):
         ("Remote Monitor", remote_monitor_service),
         ("Query Engine (container)", query_engine_service_container),
         ("Query Engine (native)", query_engine_service_native),
-        ("Kafka", kafka_service),
-        ("Prometheus-Kafka Adapter", prometheus_kafka_adapter_service),
         ("System Exporters", system_exporters_service),
         ("Prometheus", prometheus_service),
         ("Fake Exporter Rust (container)", fake_exporter_service_rust),
@@ -144,7 +120,6 @@ def main(cfg: DictConfig):
         ("Fake Exporter Python (native)", fake_exporter_service_python_native),
         ("Avalanche", avalanche_service),
         ("Deathstar", deathstar_service),
-        ("Dumb Consumer", dumb_consumer_service),
         ("Controller (container)", controller_service_container),
         ("Controller (native)", controller_service_native),
         ("Grafana", grafana_service),
@@ -156,60 +131,6 @@ def main(cfg: DictConfig):
             service.stop()
         except Exception as e:
             print(f"Error in stopping {service_name}: {e}")
-
-    # Stop all Flink jobs
-    print("Stopping all Flink jobs")
-    try:
-        flink_service.stop_all_jobs()
-    except Exception as e:
-        print(f"Error in stopping Flink jobs: {e}")
-
-    # Stop all Arroyo jobs (both container and native)
-    print("Stopping all Arroyo jobs (container)")
-    try:
-        arroyo_service_container.stop_all_jobs()
-    except Exception as e:
-        print(f"Error in stopping Arroyo jobs (container): {e}")
-
-    print("Stopping all Arroyo jobs (native)")
-    try:
-        arroyo_service_native.stop_all_jobs()
-    except Exception as e:
-        print(f"Error in stopping Arroyo jobs (native): {e}")
-
-    # Stop all Java processes (for local Flink)
-    print("Stopping all Flink Java processes")
-    try:
-        flink_service.stop_all_java_processes()
-    except Exception as e:
-        print(f"Error in stopping Flink Java processes: {e}")
-
-    # Delete Kafka topics
-    print("Deleting Kafka topics")
-    try:
-        kafka_service.delete_topics()
-    except Exception as e:
-        print(f"Error in deleting Kafka topics: {e}")
-
-    # Stop Arroyo services
-    print("Stopping Arroyo service (container)")
-    try:
-        arroyo_service_container.stop()
-    except Exception as e:
-        print(f"Error in stopping Arroyo service (container): {e}")
-
-    print("Stopping Arroyo service (native)")
-    try:
-        arroyo_service_native.stop()
-    except Exception as e:
-        print(f"Error in stopping Arroyo service (native): {e}")
-
-    # Stop Flink service
-    print("Stopping Flink service")
-    try:
-        flink_service.stop()
-    except Exception as e:
-        print(f"Error in stopping Flink service: {e}")
 
     # Reset Prometheus
     print("Resetting Prometheus")
