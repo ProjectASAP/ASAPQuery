@@ -285,6 +285,7 @@ impl SingleQueryProcessor {
             &requirements.statistics,
             treatment_type,
             &subpopulation_labels,
+            requirements.topk_by_labels.as_ref(),
             &rollup,
             &window_cfg,
             &metric,

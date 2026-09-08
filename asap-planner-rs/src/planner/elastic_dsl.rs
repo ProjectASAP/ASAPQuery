@@ -153,6 +153,9 @@ impl ElasticSingleQueryProcessor {
             &statistics,
             treatment_type,
             &spatial_output,
+            // Elasticsearch DSL has no topk by/without-style bucketing clause
+            // -- always a single global ranking.
+            None,
             &rollup,
             &window_cfg,
             &target_field,

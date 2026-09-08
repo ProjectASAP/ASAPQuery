@@ -346,6 +346,7 @@ mod tests {
                 grouping_labels: KeyByLabelNames::empty(),
                 spatial_filter_normalized: String::new(),
                 topk_count_events: None,
+                topk_by_labels: None,
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: 1.0 / 60.0,

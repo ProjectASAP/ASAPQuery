@@ -507,6 +507,7 @@ mod tests {
             grouping_labels: KeyByLabelNames::new(grouping.iter().map(|s| s.to_string()).collect()),
             spatial_filter_normalized: normalize_spatial_filter(spatial_filter),
             topk_count_events: None,
+            topk_by_labels: None,
         }
     }
 
