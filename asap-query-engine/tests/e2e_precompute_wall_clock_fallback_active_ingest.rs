@@ -60,7 +60,7 @@ fn netflow_agg_config(metric: &str, window_size_ms: u64) -> AggregationConfig {
         window_size_ms,
         0,
         WindowType::Tumbling,
-        metric.to_string(),
+        String::new(),
         metric.to_string(),
         None,
         None,
