@@ -1050,7 +1050,7 @@ fn spatial_count_topk_heap() {
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "count"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
     assert!(out.all_tumbling_window_sizes_eq(1_000));
@@ -1069,11 +1069,6 @@ fn spatial_count_topk_heap() {
         out.aggregation_parameter("CountMinSketchWithHeap", "heapsize")
             .and_then(|v| v.as_u64()),
         Some(40)
-    );
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
-            .and_then(|v| v.as_bool()),
-        Some(true)
     );
 }
 
@@ -1091,7 +1086,7 @@ fn spatial_sum_topk_heap() {
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "sum"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
     assert!(out.all_tumbling_window_sizes_eq(1_000));
@@ -1110,11 +1105,6 @@ fn spatial_sum_topk_heap() {
         out.aggregation_parameter("CountMinSketchWithHeap", "heapsize")
             .and_then(|v| v.as_u64()),
         Some(40)
-    );
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
-            .and_then(|v| v.as_bool()),
-        Some(false)
     );
 }
 
@@ -1137,7 +1127,7 @@ fn spatiotemporal_count_topk_heap() {
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "count"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
     assert!(out.all_tumbling_window_sizes_eq(2_000));
@@ -1148,11 +1138,6 @@ fn spatiotemporal_count_topk_heap() {
     assert_eq!(
         out.aggregation_labels("CountMinSketchWithHeap", "aggregated"),
         vec!["srcip".to_string()]
-    );
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
-            .and_then(|v| v.as_bool()),
-        Some(true)
     );
 }
 

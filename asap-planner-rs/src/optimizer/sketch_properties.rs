@@ -33,10 +33,6 @@ pub fn sketch_properties(t: AggregationType) -> SketchProperties {
             p(true, false, false)
         }
         AggregationType::HLL => p(true, false, false),
-        // Legacy wrapper types: properties unknown; treat conservatively.
-        AggregationType::SingleSubpopulation | AggregationType::MultipleSubpopulation => {
-            p(false, false, false)
-        }
     }
 }
 

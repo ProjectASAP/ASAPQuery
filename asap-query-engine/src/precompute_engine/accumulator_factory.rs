@@ -6,6 +6,7 @@ use crate::precompute_operators::{
     MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator,
 };
 use asap_types::aggregation_config::AggregationConfig;
+use asap_types::aggregation_mode::{AggregationMode, CountMode, MinMaxMode};
 
 /// Generate the boilerplate `AccumulatorUpdater` extraction methods
 /// (`take_accumulator`/`snapshot_accumulator` clone, `into_accumulator` moves)
@@ -40,7 +41,7 @@ macro_rules! impl_accumulator_methods {
 /// This provides a uniform interface over all accumulator types so that the
 /// worker loop doesn't need to know which concrete type it's dealing with.
 pub trait AccumulatorUpdater: Send {
-    /// Feed a single (value, timestamp_ms) pair — for SingleSubpopulation types.
+    /// Feed a single (value, timestamp_ms) pair — for single-population (non-keyed) types.
     fn update_single(&mut self, value: f64, timestamp_ms: i64);
 
     /// Feed a keyed (key, value, timestamp_ms) triple — for keyed aggregation types.
@@ -796,8 +797,7 @@ impl AccumulatorUpdater for HydraKllAccumulatorUpdater {
 pub fn config_is_keyed(config: &AggregationConfig) -> bool {
     matches!(
         config.aggregation_type,
-        AggregationType::MultipleSubpopulation
-            | AggregationType::MultipleSum
+        AggregationType::MultipleSum
             | AggregationType::MultipleIncrease
             | AggregationType::MultipleMinMax
             | AggregationType::CountMinSketch
@@ -842,31 +842,23 @@ fn cms_params(config: &AggregationConfig) -> Result<(usize, usize), String> {
     Ok((row_num, col_num))
 }
 
-/// Resolve the weighting semantics for aggregation types that dispatch SUM vs
-/// COUNT via `aggregation_sub_type` (plain CountMinSketch, MultipleSum).
-///
-/// Do not silently default malformed configs: the wrong weighting produces
-/// plausible but incorrect results.
-fn sum_or_count_events_for_sub_type(agg_type_name: &str, sub_type: &str) -> Result<bool, String> {
-    if sub_type.eq_ignore_ascii_case("count") {
-        Ok(true)
-    } else if sub_type.eq_ignore_ascii_case("sum") {
-        Ok(false)
-    } else {
-        Err(format!(
-            "{agg_type_name} requires aggregation_sub_type 'sum' or 'count', got '{sub_type}'"
-        ))
+/// Resolve the SUM/COUNT weighting for a validated CMS-family config (plain
+/// `CountMinSketch`, `MultipleSum`, `CountMinSketchWithHeap`) as the
+/// `count_events` flag the accumulator constructors take: `true` weights each
+/// sample by 1 (COUNT), `false` by its value (SUM).
+fn count_events(config: &AggregationConfig) -> bool {
+    match config.mode() {
+        Ok(AggregationMode::SumOrCount(mode)) => mode == CountMode::Count,
+        _ => unreachable!("caller already validated config.mode()"),
     }
 }
 
-/// Validate the aggregation subtype for a heap-backed Count-Min Sketch.
-fn validate_cms_with_heap_sub_type(sub_type: &str) -> Result<(), String> {
-    if sub_type.eq_ignore_ascii_case("topk") {
-        Ok(())
-    } else {
-        Err(format!(
-            "CountMinSketchWithHeap requires aggregation_sub_type 'topk', got '{sub_type}'"
-        ))
+/// Resolve the MinMax-family direction (plain `MinMax`, `MultipleMinMax`) from
+/// a validated config's `aggregation_sub_type`.
+fn is_max(config: &AggregationConfig) -> bool {
+    match config.mode() {
+        Ok(AggregationMode::MinOrMax(mode)) => mode == MinMaxMode::Max,
+        _ => unreachable!("caller already validated config.mode()"),
     }
 }
 
@@ -901,15 +893,6 @@ fn cms_heap_params(config: &AggregationConfig) -> Result<(usize, usize, usize), 
     Ok((row_num, col_num, heap_size))
 }
 
-/// Whether a validated CountMinSketchWithHeap config counts events (weight 1
-/// per observation) rather than summing the sample value.
-fn cms_count_events(config: &AggregationConfig) -> Result<bool, String> {
-    config.validate().map_err(|error| error.to_string())?;
-    Ok(config.parameters["count_events"]
-        .as_bool()
-        .expect("validation guarantees a boolean count_events parameter"))
-}
-
 /// Extract the HLL `precision` parameter from a config.
 fn hll_precision_param(config: &AggregationConfig) -> u32 {
     config.parameters["precision"]
@@ -930,73 +913,38 @@ pub fn create_accumulator_updater(
     config: &AggregationConfig,
 ) -> Result<Box<dyn AccumulatorUpdater>, String> {
     config.validate().map_err(|error| error.to_string())?;
-    let sub_type = config.aggregation_sub_type.as_str();
 
     match config.aggregation_type {
-        AggregationType::SingleSubpopulation => match sub_type {
-            "Sum" | "sum" => Ok(Box::new(SumAccumulatorUpdater::new())),
-            "Min" | "min" => Ok(Box::new(MinMaxAccumulatorUpdater::new(false))),
-            "Max" | "max" => Ok(Box::new(MinMaxAccumulatorUpdater::new(true))),
-            "Increase" | "increase" => Ok(Box::new(IncreaseAccumulatorUpdater::new())),
-            "DatasketchesKLL" | "datasketches_kll" | "KLL" | "kll" => {
-                Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
-            }
-            other => Err(format!("Unknown SingleSubpopulation sub_type '{other}'")),
-        },
-        AggregationType::MultipleSubpopulation => match sub_type {
-            "Sum" | "sum" => Ok(Box::new(MultipleSumAccumulatorUpdater::new(false))),
-            "Min" | "min" => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(false))),
-            "Max" | "max" => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(true))),
-            "Increase" | "increase" => Ok(Box::new(MultipleIncreaseAccumulatorUpdater::new())),
-            "CountMinSketch" | "count_min_sketch" | "CMS" | "cms" => {
-                let (row_num, col_num) = cms_params(config)?;
-                Ok(Box::new(CmsAccumulatorUpdater::new(
-                    row_num, col_num, false,
-                )))
-            }
-            "HydraKLL" | "hydra_kll" => {
-                let (row_num, col_num, k) = hydra_kll_params(config)?;
-                Ok(Box::new(HydraKllAccumulatorUpdater::new(
-                    row_num, col_num, k,
-                )))
-            }
-            other => Err(format!("Unknown MultipleSubpopulation sub_type '{other}'")),
-        },
         AggregationType::DatasketchesKLL => {
             Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
         }
-        AggregationType::MultipleSum => {
-            let count_events = sum_or_count_events_for_sub_type("MultipleSum", sub_type)?;
-            Ok(Box::new(MultipleSumAccumulatorUpdater::new(count_events)))
-        }
+        AggregationType::MultipleSum => Ok(Box::new(MultipleSumAccumulatorUpdater::new(
+            count_events(config),
+        ))),
         AggregationType::MultipleIncrease => {
             Ok(Box::new(MultipleIncreaseAccumulatorUpdater::new()))
         }
         AggregationType::MultipleMinMax => Ok(Box::new(MultipleMinMaxAccumulatorUpdater::new(
-            sub_type.eq_ignore_ascii_case("max"),
+            is_max(config),
         ))),
         AggregationType::Sum => Ok(Box::new(SumAccumulatorUpdater::new())),
-        AggregationType::MinMax => Ok(Box::new(MinMaxAccumulatorUpdater::new(
-            sub_type.eq_ignore_ascii_case("max"),
-        ))),
+        AggregationType::MinMax => Ok(Box::new(MinMaxAccumulatorUpdater::new(is_max(config)))),
         AggregationType::Increase => Ok(Box::new(IncreaseAccumulatorUpdater::new())),
         AggregationType::CountMinSketch => {
             let (row_num, col_num) = cms_params(config)?;
-            let count_events = sum_or_count_events_for_sub_type("CountMinSketch", sub_type)?;
             Ok(Box::new(CmsAccumulatorUpdater::new(
                 row_num,
                 col_num,
-                count_events,
+                count_events(config),
             )))
         }
         AggregationType::CountMinSketchWithHeap => {
-            validate_cms_with_heap_sub_type(sub_type)?;
             let (row_num, col_num, heap_size) = cms_heap_params(config)?;
             Ok(Box::new(CmsWithHeapAccumulatorUpdater::new(
                 row_num,
                 col_num,
                 heap_size,
-                cms_count_events(config)?,
+                count_events(config),
             )))
         }
         AggregationType::HydraKLL => {
@@ -1116,10 +1064,6 @@ mod tests {
         };
 
         // Non-keyed types
-        assert!(!config_is_keyed(&make_config(
-            AggregationType::SingleSubpopulation,
-            "Sum"
-        )));
         assert!(!config_is_keyed(&make_config(AggregationType::Sum, "")));
         assert!(!config_is_keyed(&make_config(
             AggregationType::DatasketchesKLL,
@@ -1131,10 +1075,6 @@ mod tests {
         )));
 
         // Keyed types
-        assert!(config_is_keyed(&make_config(
-            AggregationType::MultipleSubpopulation,
-            "Sum"
-        )));
         assert!(config_is_keyed(&make_config(
             AggregationType::MultipleSum,
             "sum"
@@ -1153,21 +1093,14 @@ mod tests {
         )));
         assert!(config_is_keyed(&make_config(AggregationType::HydraKLL, "")));
 
-        // Verify agreement with updater.is_keyed() for types that need no sketch params.
-        for (agg_type, sub_type) in &[
-            (AggregationType::SingleSubpopulation, "Sum"),
-            (AggregationType::MultipleSubpopulation, "Sum"),
-            (AggregationType::MultipleSum, "sum"),
-        ] {
-            let config = make_config(*agg_type, sub_type);
-            let updater = create_accumulator_updater(&config).unwrap();
-            assert_eq!(
-                config_is_keyed(&config),
-                updater.is_keyed(),
-                "config_is_keyed disagrees with updater.is_keyed() for type={:?}",
-                agg_type
-            );
-        }
+        // Verify agreement with updater.is_keyed() for a type that needs no sketch params.
+        let config = make_config(AggregationType::MultipleSum, "sum");
+        let updater = create_accumulator_updater(&config).unwrap();
+        assert_eq!(
+            config_is_keyed(&config),
+            updater.is_keyed(),
+            "config_is_keyed disagrees with updater.is_keyed() for MultipleSum",
+        );
 
         // Sketch types require params — build configs with the required parameters.
         let make_config_with_params =
@@ -1376,14 +1309,14 @@ mod tests {
 
     #[test]
     fn test_kll_k_param_capital_k() {
-        // SingleSubpopulation/KLL with capital "K" param should use it (not default to 200)
+        // Capital "K" param should be used (not defaulted to 200)
         use std::collections::HashMap;
         let mut params = HashMap::new();
         params.insert("K".to_string(), serde_json::Value::from(50_u64));
         let config = AggregationConfig::new(
             1,
-            AggregationType::SingleSubpopulation,
-            "DatasketchesKLL".to_string(),
+            AggregationType::DatasketchesKLL,
+            "".to_string(),
             params,
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
@@ -1734,17 +1667,17 @@ mod tests {
         p.insert("depth".to_string(), serde_json::json!(3_u64));
         p.insert("width".to_string(), serde_json::json!(1024_u64));
         p.insert("heapsize".to_string(), serde_json::json!(32_u64));
-        p.insert("count_events".to_string(), serde_json::json!(true));
         p
     }
 
     fn cms_heap_config(
+        sub_type: &str,
         parameters: std::collections::HashMap<String, serde_json::Value>,
     ) -> AggregationConfig {
         AggregationConfig::new(
             101,
             AggregationType::CountMinSketchWithHeap,
-            "topk".to_string(),
+            sub_type.to_string(),
             parameters,
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
@@ -1788,46 +1721,33 @@ mod tests {
 
     #[test]
     fn test_cms_with_heap_rejects_empty_subtype() {
-        let mut config = cms_heap_config(cms_heap_params_required());
-        config.aggregation_sub_type.clear();
+        let config = cms_heap_config("", cms_heap_params_required());
 
         let err = match create_accumulator_updater(&config) {
             Ok(_) => panic!("empty CountMinSketchWithHeap subtype must fail"),
+            Err(err) => err,
+        };
+        assert!(err.contains("sum") && err.contains("count"));
+    }
+
+    #[test]
+    fn test_cms_with_heap_rejects_unknown_subtype() {
+        // "topk" was the old (pre-#670) subtype value; it no longer carries
+        // the SUM/COUNT weighting the factory now requires.
+        let config = cms_heap_config("topk", cms_heap_params_required());
+
+        let err = match create_accumulator_updater(&config) {
+            Ok(_) => panic!("unknown CountMinSketchWithHeap subtype must fail"),
             Err(err) => err,
         };
         assert!(err.contains("topk"));
     }
 
     #[test]
-    fn test_cms_with_heap_rejects_unknown_subtype() {
-        let mut config = cms_heap_config(cms_heap_params_required());
-        config.aggregation_sub_type = "count".to_string();
-
-        let err = match create_accumulator_updater(&config) {
-            Ok(_) => panic!("unknown CountMinSketchWithHeap subtype must fail"),
-            Err(err) => err,
-        };
-        assert!(err.contains("count"));
-    }
-
-    #[test]
-    fn test_cms_with_heap_rejects_non_boolean_count_events() {
-        let mut parameters = cms_heap_params_required();
-        parameters.insert("count_events".to_string(), serde_json::json!("true"));
-        let config = cms_heap_config(parameters);
-
-        let err = match create_accumulator_updater(&config) {
-            Ok(_) => panic!("non-boolean count_events must fail"),
-            Err(err) => err,
-        };
-        assert!(err.contains("count_events") && err.contains("boolean"));
-    }
-
-    #[test]
     fn test_cms_with_heap_factory_routes_to_heap_accumulator_and_is_keyed() {
         // CountMinSketchWithHeap must build a CmsWithHeapAccumulatorUpdater whose
         // accumulator exposes the heap (get_keys), NOT a plain CMS (no heap).
-        let config = cms_heap_config(cms_heap_params_required());
+        let config = cms_heap_config("count", cms_heap_params_required());
         let updater = create_accumulator_updater(&config).unwrap();
         assert!(updater.is_keyed(), "CMS-with-heap top-k is keyed by srcip");
 
@@ -1845,9 +1765,9 @@ mod tests {
 
     #[test]
     fn test_cms_with_heap_count_events_uses_unit_weight() {
-        // count_events=true → each observation contributes weight 1, so
+        // sub_type "count" → each observation contributes weight 1, so
         // the per-key estimate is the EVENT COUNT, not the sum of sample values.
-        let config = cms_heap_config(cms_heap_params_required());
+        let config = cms_heap_config("count", cms_heap_params_required());
         let mut updater = create_accumulator_updater(&config).unwrap();
 
         let key = KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]);
@@ -1863,16 +1783,14 @@ mod tests {
         assert_eq!(
             cms.query_key(&key),
             5.0,
-            "count_events should count events (5), not sum values (5000)"
+            "sub_type 'count' should count events (5), not sum values (5000)"
         );
     }
 
     #[test]
     fn test_cms_with_heap_count_events_false_sums_values() {
-        // count_events=false → weight is the sample value, giving SUM semantics.
-        let mut params = cms_heap_params_required();
-        params.insert("count_events".to_string(), serde_json::json!(false));
-        let config = cms_heap_config(params);
+        // sub_type "sum" → weight is the sample value, giving SUM semantics.
+        let config = cms_heap_config("sum", cms_heap_params_required());
         let mut updater = create_accumulator_updater(&config).unwrap();
 
         let key = KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]);
@@ -1888,33 +1806,19 @@ mod tests {
     }
 
     #[test]
-    fn test_cms_with_heap_factory_rejects_missing_count_events() {
-        let mut params = std::collections::HashMap::new();
-        params.insert("depth".to_string(), serde_json::json!(4));
-        params.insert("width".to_string(), serde_json::json!(2048));
-        params.insert("heapsize".to_string(), serde_json::json!(40));
-        let config = cms_heap_config(params);
-        let error = create_accumulator_updater(&config)
-            .err()
-            .expect("missing count_events must be rejected");
-        assert!(error.contains("aggregation 101"));
-        assert!(error.contains("count_events"));
-    }
-
-    #[test]
     fn test_cms_heap_params_reads_depth_width_heapsize() {
         let mut params = cms_heap_params_required();
         params.insert("depth".to_string(), serde_json::json!(4));
         params.insert("width".to_string(), serde_json::json!(2048));
         params.insert("heapsize".to_string(), serde_json::json!(40));
-        let config = cms_heap_config(params);
+        let config = cms_heap_config("count", params);
 
         assert_eq!(cms_heap_params(&config).unwrap(), (4, 2048, 40));
     }
 
     #[test]
     fn test_cms_with_heap_reset_clears_state() {
-        let config = cms_heap_config(cms_heap_params_required());
+        let config = cms_heap_config("count", cms_heap_params_required());
         let mut updater = create_accumulator_updater(&config).unwrap();
         let key = KeyByLabelValues::new_with_labels(vec!["k".to_string()]);
         for _ in 0..10 {
@@ -1989,22 +1893,5 @@ mod tests {
                 "reset must clear {aggregation_type:?} keys"
             );
         }
-    }
-
-    #[test]
-    fn test_factory_rejects_unknown_subpopulation_sub_type() {
-        let mut config = key_aggregation_config(AggregationType::SingleSubpopulation);
-        config.aggregation_sub_type = "not-an-aggregation".to_string();
-        let err = create_accumulator_updater(&config)
-            .err()
-            .expect("unknown subpopulation subtype must not default to Sum");
-        assert!(err.contains("Unknown SingleSubpopulation sub_type"));
-
-        let mut config = key_aggregation_config(AggregationType::MultipleSubpopulation);
-        config.aggregation_sub_type = "not-an-aggregation".to_string();
-        let err = create_accumulator_updater(&config)
-            .err()
-            .expect("unknown subpopulation subtype must not default to MultipleSum");
-        assert!(err.contains("Unknown MultipleSubpopulation sub_type"));
     }
 }
