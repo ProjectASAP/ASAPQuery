@@ -322,6 +322,15 @@ therefore does not by itself replay the same calibration data. Even the
 same-data consistency experiment needs either exporter source-time bounds or
 a materialized pre-sliced copy of that interval.
 
+2026-09-09 temporary same-data shortcut: materialized
+`asap-tools/experiments/datasets/cost_optimizer_validation/google_task_usage_262_3m_agg0/part-00262-of-00500.csv.gz`
+from that exact interval, retaining rows with missing/zero `aggregation_type`
+to match the exporter’s `_0` convention. It has 20,051 rows, 6,481 machines,
+and 10,379 distinct `(job_id, task_index, machine_id)` source series. Its
+adjacent README records the predicate and SHA-256. This enables the first E2E
+consistency run without changing the exporter; native source-time/filter
+configuration remains the follow-up architectural work.
+
 ## #3: What feasibility evidence constrains optimization?
 
 Blocked by: #1, #2
