@@ -122,6 +122,7 @@ fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
             qg.queries.iter().map(|q| RQE {
                 query_string: q.clone(),
                 t_repeat_ms: qg.repetition_delay_ms,
+                max_mean_rank_error: qg.controller_options.max_mean_rank_error,
             })
         })
         .collect()

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use tracing::debug;
 
-use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
+use super::atomic_costs::{resolve_atomic_costs, satisfies_max_mean_rank_error, AtomicCostTable};
 use super::candidate_gen::enumerate_candidates_with_label_group_count;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
 use super::dataset::ProfileKey;
@@ -53,11 +53,21 @@ pub fn greedy_assign(
                 // no sketch_type/params for the table to key on.
                 let costs = match &c.config {
                     None => AtomicCosts::default(),
-                    Some(cfg) => resolve_atomic_costs(
-                        atomic_cost_table,
-                        cfg.aggregation_type,
-                        &cfg.parameters,
-                    )?,
+                    Some(cfg) => {
+                        if !satisfies_max_mean_rank_error(
+                            atomic_cost_table,
+                            cfg.aggregation_type,
+                            &cfg.parameters,
+                            aqe.max_mean_rank_error,
+                        ) {
+                            return None;
+                        }
+                        resolve_atomic_costs(
+                            atomic_cost_table,
+                            cfg.aggregation_type,
+                            &cfg.parameters,
+                        )?
+                    }
                 };
                 let cost = total_cost_rate(&aqe, &c, arrival_rate_hz, &costs, weights);
                 Some((c, costs, cost))
@@ -124,6 +134,7 @@ mod tests {
             query_frequency_hz: freq_hz,
             min_t_repeat_ms: min_t,
             t_repeat_gcd_ms: min_t,
+            max_mean_rank_error: None,
         }
     }
 
@@ -180,6 +191,7 @@ mod tests {
             query_frequency_hz: 1.0 / 60.0,
             min_t_repeat_ms: 60_000,
             t_repeat_gcd_ms: 60_000,
+            max_mean_rank_error: None,
         };
         let solution = greedy_assign(
             vec![aqe.clone()],
@@ -246,5 +258,40 @@ mod tests {
                 .aggregation_type,
             AggregationType::CountMinSketchWithHeap
         );
+    }
+
+    #[test]
+    fn rank_error_limit_rejects_cheaper_kll_candidate() {
+        fn kll(k: u64, mean_rank_err: f64) -> AtomicCostEntry {
+            AtomicCostEntry {
+                sketch: "kll-percall".into(),
+                sketch_config: serde_json::json!({
+                    "algorithm": "kll-percall", "params": { "k": k }
+                }),
+                mem_bytes_per_instance: 1.0,
+                insert_cpu_secs: 0.0,
+                merge_cpu_secs: 0.0,
+                query_cpu_secs: k as f64 * 1e-9,
+                query_accuracy: std::collections::BTreeMap::from([(
+                    "mean_rank_err".into(),
+                    mean_rank_err,
+                )]),
+            }
+        }
+
+        let mut aqe = make_aqe(Statistic::Quantile, 60_000, 60_000, 1.0);
+        aqe.max_mean_rank_error = Some(0.02);
+        let solution = greedy_assign(
+            vec![aqe.clone()],
+            60_000,
+            1.0,
+            &vec![kll(200, 0.03), kll(500, 0.01)],
+            &CostWeights::default(),
+            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
+        );
+
+        let config = solution.deployed_configs().values().next().unwrap();
+        assert_eq!(config.aggregation_type, AggregationType::DatasketchesKLL);
+        assert_eq!(config.parameters["K"], serde_json::Value::from(500));
     }
 }

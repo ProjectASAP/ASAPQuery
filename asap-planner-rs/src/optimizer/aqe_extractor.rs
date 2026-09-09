@@ -17,6 +17,7 @@ use super::solution::AQE;
 pub struct RQE {
     pub query_string: String,
     pub t_repeat_ms: u64,
+    pub max_mean_rank_error: Option<f64>,
 }
 
 /// Stable deduplication key for an AQE.
@@ -31,6 +32,15 @@ struct AQEKey {
     grouping_labels: KeyByLabelNames,
     spatial_filter_normalized: String,
     topk_count_events: Option<bool>,
+}
+
+struct AQEAccumulator {
+    requirements: QueryRequirements,
+    query_strings: Vec<String>,
+    query_frequency_hz: f64,
+    min_t_repeat_ms: u64,
+    t_repeat_gcd_ms: u64,
+    max_mean_rank_error: Option<f64>,
 }
 
 impl AQEKey {
@@ -66,7 +76,7 @@ pub fn extract_aqes(
     scrape_interval_ms: u64,
 ) -> Vec<AQE> {
     // (key) -> (requirements, query_strings, sum_freq, min_t, gcd_t)
-    let mut acc: HashMap<AQEKey, (QueryRequirements, Vec<String>, f64, u64, u64)> = HashMap::new();
+    let mut acc: HashMap<AQEKey, AQEAccumulator> = HashMap::new();
 
     for rqe in rqes {
         if rqe.t_repeat_ms == 0 {
@@ -84,21 +94,33 @@ pub fn extract_aqes(
             match extract_requirements(&leaf, metric_schema, scrape_interval_ms) {
                 Some(req) => {
                     let key = AQEKey::from_requirements(&req);
-                    let entry = acc
-                        .entry(key)
-                        .or_insert_with(|| (req, Vec::new(), 0.0, u64::MAX, 0));
-                    if !entry.1.contains(&leaf) {
-                        entry.1.push(leaf);
+                    let entry = acc.entry(key).or_insert_with(|| AQEAccumulator {
+                        requirements: req,
+                        query_strings: Vec::new(),
+                        query_frequency_hz: 0.0,
+                        min_t_repeat_ms: u64::MAX,
+                        t_repeat_gcd_ms: 0,
+                        max_mean_rank_error: rqe.max_mean_rank_error,
+                    });
+                    if !entry.query_strings.contains(&leaf) {
+                        entry.query_strings.push(leaf);
                     }
                     // query_frequency_hz must stay in Hz (queries per real second)
                     // regardless of t_repeat_ms's internal unit — 1000.0 / ms, not 1.0 / ms.
-                    entry.2 += 1000.0 / rqe.t_repeat_ms as f64;
-                    entry.3 = entry.3.min(rqe.t_repeat_ms);
-                    entry.4 = if entry.4 == 0 {
+                    entry.query_frequency_hz += 1000.0 / rqe.t_repeat_ms as f64;
+                    entry.min_t_repeat_ms = entry.min_t_repeat_ms.min(rqe.t_repeat_ms);
+                    entry.t_repeat_gcd_ms = if entry.t_repeat_gcd_ms == 0 {
                         rqe.t_repeat_ms
                     } else {
-                        gcd(entry.4, rqe.t_repeat_ms)
+                        gcd(entry.t_repeat_gcd_ms, rqe.t_repeat_ms)
                     };
+                    entry.max_mean_rank_error =
+                        match (entry.max_mean_rank_error, rqe.max_mean_rank_error) {
+                            (Some(a), Some(b)) => Some(a.min(b)),
+                            (Some(a), None) => Some(a),
+                            (None, Some(b)) => Some(b),
+                            (None, None) => None,
+                        };
                 }
                 None => {
                     warn!(
@@ -111,21 +133,14 @@ pub fn extract_aqes(
     }
 
     acc.into_values()
-        .map(
-            |(
-                requirements,
-                query_strings,
-                query_frequency_hz,
-                min_t_repeat_ms,
-                t_repeat_gcd_ms,
-            )| AQE {
-                requirements,
-                query_strings,
-                query_frequency_hz,
-                min_t_repeat_ms,
-                t_repeat_gcd_ms,
-            },
-        )
+        .map(|accumulator| AQE {
+            requirements: accumulator.requirements,
+            query_strings: accumulator.query_strings,
+            query_frequency_hz: accumulator.query_frequency_hz,
+            min_t_repeat_ms: accumulator.min_t_repeat_ms,
+            t_repeat_gcd_ms: accumulator.t_repeat_gcd_ms,
+            max_mean_rank_error: accumulator.max_mean_rank_error,
+        })
         .collect()
 }
 
@@ -199,6 +214,7 @@ mod tests {
         RQE {
             query_string: query.to_string(),
             t_repeat_ms: t_ms,
+            max_mean_rank_error: None,
         }
     }
 
@@ -244,6 +260,19 @@ mod tests {
         assert_eq!(aqes[0].min_t_repeat_ms, 30_000);
         assert_eq!(aqes[0].t_repeat_gcd_ms, 30_000); // gcd(60_000, 30_000) = 30_000
         assert_eq!(aqes[0].query_strings.len(), 1); // same string, deduplicated
+    }
+
+    #[test]
+    fn deduplicated_aqe_keeps_the_strictest_rank_error_limit() {
+        let mut loose = rqe("quantile_over_time(0.99, metric[5m])", 60_000);
+        loose.max_mean_rank_error = Some(0.02);
+        let mut strict = rqe("quantile_over_time(0.99, metric[5m])", 30_000);
+        strict.max_mean_rank_error = Some(0.01);
+
+        let aqes = extract_aqes(&[loose, strict], &empty_schema(), 15_000);
+
+        assert_eq!(aqes.len(), 1);
+        assert_eq!(aqes[0].max_mean_rank_error, Some(0.01));
     }
 
     #[test]

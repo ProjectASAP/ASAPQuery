@@ -264,6 +264,32 @@ pub fn resolve_atomic_costs(
         })
 }
 
+/// Whether a benchmarked KLL candidate satisfies a requested maximum mean rank
+/// error. Missing accuracy is infeasible: a constrained plan must not silently
+/// substitute an unmeasured quality value.
+pub fn satisfies_max_mean_rank_error(
+    table: &AtomicCostTable,
+    agg_type: AggregationType,
+    params: &HashMap<String, Value>,
+    max_mean_rank_error: Option<f64>,
+) -> bool {
+    let Some(limit) = max_mean_rank_error else {
+        return true;
+    };
+    if agg_type != AggregationType::DatasketchesKLL {
+        return true;
+    }
+    let Some((sketch, sketch_params)) = sketch_bench_key(agg_type, params) else {
+        return false;
+    };
+    let expected_config = serde_json::json!({ "algorithm": sketch, "params": sketch_params });
+    table
+        .iter()
+        .find(|entry| entry.sketch == sketch && entry.sketch_config == expected_config)
+        .and_then(|entry| entry.query_accuracy.get("mean_rank_err"))
+        .is_some_and(|error| error.is_finite() && *error <= limit)
+}
+
 /// Temporary cost model for the runtime CMS-with-heap implementation.
 ///
 /// sketch-bench currently measures a fixed top-k=32 wrapper, while the

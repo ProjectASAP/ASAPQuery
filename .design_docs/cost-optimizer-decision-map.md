@@ -113,6 +113,99 @@ key size) belong in the benchmark profile.
 For the first vertical slice, scope this decision to one KLL
 `quantile_over_time` workload. Do not define the full cross-dataset matrix yet.
 
+2026-09-07 next prerequisite: the current Google benchmark workload groups
+KLL input by `machine_id`, whereas ordinary PromQL `quantile_over_time` is
+evaluated per input time series. The raw Google task-usage identity also
+contains `job_id` and `task_index`; the planner's KLL model is marked
+non-subpopulation-aware and currently scales by query grouping count. Before a
+KLL sweep, choose and implement the computational unit consistently in the
+benchmark, series inventory, and planner: (a) one sketch per complete source
+series (the recommended standard-PromQL interpretation), (b) an explicitly
+defined pooled/global ASAP operation, or (c) an explicitly defined per-machine
+operation. Do not treat a per-machine benchmark as evidence for a per-series
+query without this alignment.
+
+2026-09-08 scope decision: for the first optimizer experiment, treat every
+spatial filter as having selectivity 1.0. Thus each candidate uses the metric's
+full arrival rate for ingest costing; no selectivity estimator is needed yet.
+Filters can still be retained syntactically for query/config identity, but do
+not reduce estimated arrival rate or instance count in this slice. A later
+extension can estimate selectivity from the series/sample inventory and use
+`arrival_rate_hz * selectivity` for the affected configuration.
+
+2026-09-07 current-state evidence: the 2011 Google OTLP mapper exports
+`google_cluster_2011_cpu_rate` and identifies an uncapped series by the full
+attribute tuple `(zone, rack, host, service, task)`. `zone` and `rack` are
+deterministic functions of `machine_id`; `host` is `machine_id`, `service` is
+`job_id`, and `task` is `task_index`, so the independent source identity is
+effectively `(machine_id, job_id, task_index)`. With a positive cardinality
+cap, all three are instead projected to a common hashed cell. The current
+sketch-bench Google workload is grouped only by `machine_id`, `cpu_rate`, and
+a fixed three-minute window. The current planner loads an inventory of full
+label tuples, but `SeriesDataset::profile` returns `1` for no query grouping
+labels and otherwise returns the number of distinct requested groups. That
+count is copied into every candidate; KLL is non-subpopulation-aware, so it
+multiplies KLL memory and query/merge CPU by this count. Crucially, the
+canonical `build_query_requirements_promql` helper assigns **all metric-schema
+labels** to an OnlyTemporal query such as `quantile_over_time`; it therefore
+does count one KLL per exported series when the inventory/schema are complete.
+The `1` case applies to a query whose result has an empty grouping (for example
+a spatial aggregate with no `by (...)`), not to a plain temporal quantile.
+
+2026-09-08 correction: prior notes incorrectly claimed that a plain
+`quantile_over_time` creates empty `QueryRequirements.grouping_labels` and
+therefore one KLL. In ASAPQuery-only scope this is false:
+`asap_types::build_query_requirements_promql` detects the absence of a spatial
+aggregation and preserves all labels from `PromQLSchema`. Collector behavior
+is out of scope for this research loop. The remaining issue is only scenario
+alignment: the current sketch-bench profile is per machine, whereas a planner
+inventory/schema may describe per-series machine/job/task KLLs. Use matching
+synthetic metric projections and benchmark `group_columns` for each study.
+
+2026-09-08 reduced TODO after correction: no ASAPQuery partition-key model is
+needed for the initial standard temporal-KLL slice. Select one synthetic metric
+scenario; make its ASAPQuery schema and unique-series inventory match it;
+benchmark the identical raw grouping in sketch-bench; export/select that
+profile; and run the optimizer. The remaining planner work is profile plumbing
+already implemented on `feat/profiled-atomic-cost-loader` plus a small
+reproducible experiment fixture. Filter selectivity remains fixed at 1.0.
+
+2026-09-08 implementation split: a first measured-cost KLL run requires no
+additional ASAPQuery optimizer algorithm change after the profiled-cost-loader
+branch lands. It needs experiment infrastructure only: a scenario-matching
+series inventory and workload YAML in ASAPQuery, an external Google KLL sweep
+and atomic-cost export in sketch-bench, plus a selector and reproducible runner.
+One subsequent, meaningful ASAPQuery code slice remains for a constrained
+optimizer: `ControllerOptions.accuracy_sla` is parsed but not propagated to an
+AQE or compared with the selected entry's `query_accuracy["mean_rank_err"]`.
+Its semantics must be fixed explicitly (recommended: maximum acceptable mean
+rank error, e.g. 0.02) before adding that feasibility filter. Existing
+untracked `asap-tools/experiments/datasets/quantile_demo` artifacts are user
+work and are out of scope for this experiment.
+
+2026-09-08 implemented KLL feasibility slice: `controller_options` now accepts
+optional `max_mean_rank_error` (a fraction: `0.02` is 2%). The AQE extractor
+propagates it and uses the smallest limit when identical AQEs are deduplicated.
+The greedy optimizer rejects a `DatasketchesKLL` candidate unless its selected
+atomic-cost row contains finite `query_accuracy.mean_rank_err` at or below the
+limit; EXACT remains feasible. Focused optimizer tests cover strictest-limit
+deduplication and selection of a more expensive KLL configuration when the
+cheaper one exceeds the 2% bound.
+
+2026-09-07 design refinement: a benchmark need not expose every raw trace
+column. A paper experiment may define a **synthetic metric scenario** as a
+chosen label projection of a trace (for example, a machine-only metric or a
+full machine/job/task metric), provided the projection is recorded and used
+consistently. The scenario, not the raw CSV alone, must bind (1) the mapper's
+exported metric name and retained labels, (2) the unique-series inventory fed
+to the planner, (3) the sketch-bench `group_columns` that identify physical
+sketch instances, and (4) the selected atomic-cost workload profile. For the
+first ungrouped standard-PromQL KLL temporal quantile, #3 is the number of
+exported source series; for an intentionally pooled or per-machine synthetic
+metric it is the corresponding scenario-defined instance count. This makes
+controlled label-projection experiments credible instead of accidental schema
+drift.
+
 ## #2: What is the minimum credible empirical planning loop?
 
 Blocked by: #1

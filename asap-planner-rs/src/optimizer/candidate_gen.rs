@@ -351,6 +351,7 @@ mod tests {
             query_frequency_hz: 1.0 / 60.0,
             min_t_repeat_ms: min_t,
             t_repeat_gcd_ms: min_t,
+            max_mean_rank_error: None,
         }
     }
 

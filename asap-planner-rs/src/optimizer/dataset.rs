@@ -558,6 +558,7 @@ mod tests {
             query_frequency_hz: 1.0,
             min_t_repeat_ms: 1,
             t_repeat_gcd_ms: 1,
+            max_mean_rank_error: None,
         };
 
         assert!(matches!(

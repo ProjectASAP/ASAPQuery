@@ -34,6 +34,10 @@ pub struct AQE {
     /// every GCD ms align harmonically with all dashboard refresh cycles,
     /// ensuring every dashboard can always be served a fresh result on-cycle.
     pub t_repeat_gcd_ms: u64,
+
+    /// Optional KLL feasibility constraint propagated from all query groups
+    /// contributing to this AQE. Smaller means stricter.
+    pub max_mean_rank_error: Option<f64>,
 }
 
 /// How an AQE is answered from its assigned streaming config.
