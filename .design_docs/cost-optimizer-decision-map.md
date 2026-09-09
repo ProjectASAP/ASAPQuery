@@ -285,8 +285,35 @@ PromQL workload and series inventory?
 
 ### Answer
 
-Open. The existing offline `asap-optimizer-cli` is the intended harness after
-the document-loader/profile-selection gap is closed.
+The existing offline `asap-optimizer-cli` is the selection harness; the
+Hydra-based `asap-tools/experiments/experiment_run_e2e.py` is sufficient as
+the execution harness. It already materializes a controller input from
+`experiment_params`, passes `windowing` and `sketch_parameters` overrides,
+and preserves its resolved Hydra config and controller/client output. It does
+*not* read an atomic-cost profile or invoke the offline optimizer, so the
+validation protocol must run the optimizer offline to choose/cost candidates,
+then run the selected K values in E2E via `sketch_parameters.DatasketchesKLL.K`.
+
+Provisional validation experiment (not yet run): test whether the profile
+predicts the relative end-to-end cost of `K=200` versus `K=500`, not yet an
+exact-versus-approximate win. Use one Google `task_usage` part and one
+`quantile_over_time(0.99, google_mean_cpu_usage_rate_0[3m])` workload, with
+one-minute tumbling sketches so the query merges three windows. Train the
+profile on a declared source-time training interval; use a disjoint source-time
+holdout interval for E2E replay. Execute both forced K values in randomized
+or alternating repeated trials. Compare the optimizer's predicted ordering
+with observed query-engine CPU rate and steady-state memory; also report query
+latency and accuracy against the Prometheus baseline as secondary outcomes.
+
+Before running, close the scenario-alignment gaps: the runtime Google exporter
+exposes `job_id`, `task_index`, and `machine_id`, and metric suffix `_0`
+filters `aggregation_type=0`. The sketch-bench workload/profile must use the
+same complete series key and filter, not the current machine-only unfiltered
+profile. The E2E exporter currently selects a part but exposes no source-time
+window control in its Hydra configuration; add that filter (preferred), or
+explicitly pre-slice the input, before calling the replay a temporal holdout.
+Record the replay speed/arrival rate as well. Without those alignments, E2E
+would be a useful smoke test but not validation of the measured profile.
 
 ## #3: What feasibility evidence constrains optimization?
 
@@ -301,6 +328,11 @@ measured rather than assumed?
 
 ### Answer
 
-Open. `sketch-bench` already retains capability-specific `query_accuracy`, but
-the ASAPQuery greedy optimizer does not use it; arrival rate (`rho`) and exact
-query cost are currently placeholders.
+`sketch-bench` retains capability-specific `query_accuracy`, and the greedy
+optimizer now enforces `query_accuracy.mean_rank_err` for KLL when
+`max_mean_rank_error` is supplied. Arrival rate (`rho`) and exact-query cost
+remain placeholders for an end-to-end comparison. After the K-versus-K
+holdout, measure the actual raw/exact query path for the same scenario and
+replace the temporary diagnostic exact baseline; then test whether the
+optimizer selects exact or approximate according to observed cost under the
+same accuracy limit.
