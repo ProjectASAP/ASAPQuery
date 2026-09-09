@@ -1,339 +1,301 @@
 # BGP workload integration with ASAPPlanner
 
-Status: proposed engineering integration plan. No integration work is claimed complete by this document.
+Status: proposed engineering plan. No integration work is claimed complete by this document.
 
-Audience: ASAPQuery and ASAPPlanner developers and architecture reviewers.
+Audience: BGP preprocessing, ASAPPlanner, ASAPQuery, and architecture reviewers.
 
-## 1. Objective and scope
+## 1. Decision
 
-Integrate the BGP SQL workloads on `sql-normalizer-pattern-recognition` with ASAPPlanner while retaining ASAPQuery as the query engine and maintenance runtime. The selected post-ASAP workload DAG is the authoritative semantic plan. ASAPQuery compiles that decision into ingestion, state-maintenance, storage, and query-execution plans.
+The BGP MVP uses a fixed preprocessing boundary. Raw MRT/BGP records are converted into stable relational tables before ASAP planning and summary maintenance. Queries submitted to ASAP target those preprocessed tables and use ordinary physical columns.
 
-The integration must preserve the branch's query recognition and result semantics, expose reusable optimization opportunities to Planner, and demonstrate execution correctness and actual sharing. Parsing a query, recognizing a shape, or displaying a DAG does not establish that a workload can be accelerated correctly.
+ASAPPlanner does **not**:
 
-The initial scope is one ASAPQuery deployment with an exact ClickHouse comparison/fallback path. Distributed placement, a repository rename, and integration with DQC's executors are not prerequisites. DQC contributes shared requirements and potentially reusable Planner strategies; it is a separate downstream application.
+- parse or execute BGP-specific string/array expressions such as `splitByChar`, `arrayJoin`, `arrayZip`, or `arraySlice`;
+- model AS-path parsing, path expansion, route-state transitions, or inter-arrival gaps;
+- produce a transformation plan or configure the preprocessing pipeline; or
+- know how a preprocessed column was derived from an MRT record.
 
-This document owns the BGP migration and cross-repository delivery plan. Planner's shared IR, provider, and cost contracts remain documented in ASAPPlanner. Implemented changes should update those documents and link back here rather than create duplicate contract definitions.
+ASAPQuery does not independently recover those transformations from the original SQL. It consumes Planner's generic maintenance/readout plan and maintains counters, sketches, sets, and exact aggregates over the already-preprocessed stream.
 
-## 2. Inspected baseline and references
+ClickHouse retains the raw and preprocessed data and is the exact comparison/fallback engine. ASAPCollector integration is explicitly outside the MVP.
 
-The findings below are based on source inspection, not a fresh test or benchmark run. Pin these revisions for the initial audit; refresh the matrix explicitly as either repository advances.
+This replaces the earlier proposal in this document, which made derivation (`tau`) part of the Planner-to-ASAPQuery contract.
 
-| Source | Inspected revision / status | Relevance |
-| --- | --- | --- |
-| [ASAPQuery recognition branch](https://github.com/ProjectASAP/ASAPQuery/tree/1cd9a00ffaee1a3ca0ad7a751fd5c78181ec9895) | `1cd9a00ffaee1a3ca0ad7a751fd5c78181ec9895` | Recognition, registration, derivation, maintenance, and SQL serving baseline |
-| [ASAPPlanner main](https://github.com/ProjectASAP/ASAPPlanner/tree/d0701dd4d4f0acb267b004c42ba30b2c9547ff7c) | `d0701dd4d4f0acb267b004c42ba30b2c9547ff7c` | IR, strategies, corpus, lifecycle/provider integration, and viewer baseline |
-| [ASAPQuery-backend PR #512](https://github.com/ProjectASAP/ASAPQuery-backend/pull/512) | Open at inspection; head `45dd2e103b2e4886c765d781929b308ce4bb5fd8` | Proposed authoritative semantic DAG and derived physical-plan boundary |
-| [DQC integration proposal](https://github.com/ProjectASAP/asap-fusion/blob/9d2ef48ca57a509248c7d6b694d534546b85a58f/docs/design/system/asapplanner-integration.md) | User-specified revision | Shared optimization, engine execution, materialization, and feedback responsibilities |
-| [Planner PR #353](https://github.com/ProjectASAP/ASAPPlanner/pull/353) | Open at inspection | Physical-plan result/buffer cache evidence; not complete lifecycle cache integration |
-| [Planner PR #339](https://github.com/ProjectASAP/ASAPPlanner/pull/339) | Merged at inspection | Analytical cost and benefit annotations in DAG viewer |
-
-Primary implementation references:
-
-- [SQL shape recognition design](SQL_SHAPE_RECOGNITION_DESIGN.md) and [capability matching design](CAPABILITY_MATCHING_DESIGN.md).
-- [Shared pattern library](../asap-common/dependencies/rs/sql_utilities/src/ast_matching/pattern_rewrites.rs), [spatial predicate recognizers](../asap-common/dependencies/rs/sql_utilities/src/ast_matching/spatial_filter.rs), and [SQL registration generator](../asap-planner-rs/src/sql/generator.rs).
-- [SQL serving](../asap-query-engine/src/engines/simple_engine/sql.rs), [computed labels](../asap-query-engine/src/precompute_engine/computed_labels.rs), [transition configuration](../asap-common/dependencies/rs/asap_types/src/stateful_transition.rs), and [transition runtime](../asap-query-engine/src/precompute_engine/stateful_transition.rs).
-- Planner [pre-ASAP IR](https://github.com/ProjectASAP/ASAPPlanner/blob/d0701dd4d4f0acb267b004c42ba30b2c9547ff7c/crates/types/src/pre_asap/query_expr.rs), [post-ASAP IR](https://github.com/ProjectASAP/ASAPPlanner/blob/d0701dd4d4f0acb267b004c42ba30b2c9547ff7c/crates/types/src/post_asap/expr.rs), [strategy inventory](https://github.com/ProjectASAP/ASAPPlanner/blob/d0701dd4d4f0acb267b004c42ba30b2c9547ff7c/crates/asap-aware-mapping/src/lib.rs), and [downstream boundary](https://github.com/ProjectASAP/ASAPPlanner/blob/d0701dd4d4f0acb267b004c42ba30b2c9547ff7c/docs/design_docs/asapplanner-downstream-boundary.md).
-- Planner [BGP corpus test](https://github.com/ProjectASAP/ASAPPlanner/blob/d0701dd4d4f0acb267b004c42ba30b2c9547ff7c/crates/frontend-sql/tests/bgp_jan2024_workload/bgp_jan2024_workload.rs) and [DAG viewer](https://github.com/ProjectASAP/ASAPPlanner/blob/d0701dd4d4f0acb267b004c42ba30b2c9547ff7c/tools/dag-viewer/README.md).
-
-### 2.1 Existing functionality
-
-- Planner already contains the 200-query BGP workload. Its fixture matches this branch's workload except for a trailing newline. The inspected test pins 151 lowered queries, 34 planning errors, seven not-implemented outcomes, six unsupported-feature outcomes, and two other errors. These are frontend expectations, not runtime coverage.
-- Planner already has canonical CSE, shared-subtree alternatives, rollup, AVG decomposition, summary-family alternatives, and Hydra grouping. Lifecycle and provider-evidence machinery also exists.
-- Pre-ASAP already represents projection, filtering, aggregation, joins, sorting, limits, and SQL window functions. A frontend or runtime gap does not automatically require a new IR node.
-- Post-ASAP supports summary construction, merging, readout, selected summary operations, and a binary operation form. `KeepPreAsap` embeds an original query subtree; it is not a general exact relational operator accepting summary-node children.
-- ASAPQuery recognizes and executes many complex shapes through shared recognizers, surrogate queries, generated configuration, and specialized serving branches. These are migration inputs and comparison baselines.
-- Although the recognition design describes an AST-level pattern library, parts of `pattern_rewrites.rs` use string matching and extraction. Porting those helpers unchanged would not by itself establish semantic equivalence.
-
-### 2.2 Confirmed gaps versus audits
-
-Confirmed representation gaps in the inspected Planner baseline are explicit relational fanout and general exact relational composition over summary outputs. SQL function/indexing/interval/subquery coverage also has known corpus failures.
-
-Ordered stateful derivation requires a contract audit: SQL window intent exists, but mapping it to incremental per-partition state must preserve ordering, frame, filtering, and initialization semantics. Multi-state fusion, complete residual support, workload selection, and runtime bindings require executable audits before claiming support or choosing their final API shape.
-
-## 3. Target architecture and ownership
+## 2. Target architecture
 
 ```mermaid
-flowchart TD
-    subgraph Planner["ASAPPlanner boundary — reusable semantics and optimization"]
-        P[Canonical pre-ASAP DAG]
-        R[Reusable recognition and replacement strategies]
-        A[Legal post-ASAP alternatives]
-        S[Cost and accuracy comparison / legal selection]
-        P --> R --> A
-        A --> S
+flowchart LR
+    MRT[Public MRT/BGP stream]
+
+    subgraph Prep[Fixed BGP preprocessing boundary]
+        Decode[MRT decode and schema normalization]
+        Derive[Derive ordinary columns<br/>origin ASN, path length, prefix length]
+        Expand[Produce ordinary event tables<br/>path hops and AS edges]
+        Stateful[Produce stateful event columns/tables<br/>route transitions and arrival gaps]
+        Decode --> Derive
+        Derive --> Expand
+        Derive --> Stateful
     end
 
-    subgraph Query["ASAPQuery boundary — downstream application and execution"]
-        subgraph BGP["BGP-specific boundary — workload and runtime adapters"]
-            Q[BGP SQL workload / catalog / source and time scope]
-            D[BGP ingest and derivation adapters:<br/>MRT decoding, AS-path tokens and edges,<br/>route transitions and gaps]
-            Profile[BGP deployment profile:<br/>ordering, completeness, recurrence,<br/>accuracy and exact fallback policy]
-        end
-
-        subgraph Runtime["ASAPQuery runtime boundary — shared control and data plane"]
-            E[Provider capability and cost evaluation]
-            C[Commit selected DAG / compile and bind runtime plans]
-            I[Build and maintain selected summaries]
-            Store[Versioned maintained state]
-            X[Bound readout and exact residual execution]
-            O[Resource, cardinality and readiness observations]
-            C -->|Maintenance plan| I
-            C -->|Query plan| X
-            I --> Store --> X
-            I --> O
-            X --> O
-            O --> E
-        end
-
-        Profile -->|Deployment constraints| E
-        Profile -->|Readiness and fallback policy| X
-        D -->|Adapter capabilities| E
-        C -->|Selected derivation binding| D
-        D -->|Derived observations| I
-        Q -->|Incoming SQL| X
+    subgraph Data[Relational data boundary]
+        Enriched[bgp_updates_enriched]
+        Hops[bgp_path_hops]
+        Edges[bgp_path_edges]
+        Events[bgp_route_events]
+        CH[(ClickHouse raw + preprocessed tables)]
     end
 
-    Raw[Raw BGP records] --> D
-    Q -->|Planning request| P
-    A -->|Implementation evaluation request| E
-    E -->|Feasibility and complete cost evidence| S
-    S -->|Selected post-ASAP semantics and provider identity| C
-    X --> Result[Query results]
-    X -->|Explicit exact fallback| F[ClickHouse]
-    F --> Result
+    subgraph Planner[ASAPPlanner]
+        SQL[Generic SQL parser and lowering]
+        Rho[Generic query-shape recognition]
+        Select[Summary/share/cost selection]
+        Plan[Generic maintenance and readout plan]
+        SQL --> Rho --> Select --> Plan
+    end
+
+    subgraph Runtime[ASAPQuery]
+        Register[Validate and register plan]
+        Maintain[Maintain counter/sketch/set/aggregate]
+        Store[(Windowed summary state)]
+        Read[Readout and generic residual operators]
+        Register --> Maintain --> Store --> Read
+    end
+
+    MRT --> Decode
+    Derive --> Enriched
+    Expand --> Hops
+    Expand --> Edges
+    Stateful --> Events
+    Enriched --> CH
+    Hops --> CH
+    Edges --> CH
+    Events --> CH
+
+    Query[SQL over preprocessed schema] --> SQL
+    Plan --> Register
+    Enriched --> Maintain
+    Hops --> Maintain
+    Edges --> Maintain
+    Events --> Maintain
+    Query --> Read
+    Read --> Result[Query result]
+    Read -. unsupported, unavailable, or incomplete .-> CH
+    CH -. exact result .-> Result
 ```
 
-The nested boundaries describe responsibility, not separate services. BGP-specific workload registration, MRT decoding, AS-path interpretation, and route-state adapters belong to the ASAPQuery application. ASAPQuery's shared runtime owns binding, summary maintenance, storage, serving, and observations. ASAPPlanner sees the typed derivation semantics and provider evidence needed for optimization; it does not depend on BGP decoder or route-state implementation code. ClickHouse and raw BGP inputs are external to these ownership boundaries.
+The boxes are responsibility boundaries, not necessarily separate deployed services. The MVP preprocessor may be a standalone process or a fixed ClickHouse/streaming pipeline. Its implementation and deployment mechanism are not encoded in Planner IR.
 
-Planner proposes and compares semantically legal alternatives. ASAPQuery's control plane commits an executable workload choice and retains its provider binding. The exact composition of the existing PlanSpace and lifecycle selection APIs is an integration decision, not a claim that one current API already returns the entire executable workload.
+## 3. Component responsibilities
 
-| Concern | ASAPPlanner | ASAPQuery |
+| Component | Owns | Does not own |
 | --- | --- | --- |
-| Query meaning | Canonical SQL semantics, equivalence, schemas, grouping, logical time scope | SQL endpoint, BGP catalog and source registration |
-| Recognition and optimization | Reusable derivation/summary/residual rewrites and legality | Supported runtime implementations and capability evidence |
-| State choices | Summary family/parameters, logical lifecycle, legal sharing and realization alternatives | State structures, encoding, retention layout, tasks, and recovery |
-| Selection | Compare legal alternatives using scoped capability, cost, and accuracy evidence | Commit feasible deployment choice; bind concrete implementation |
-| Identity | Logical producers, dependencies, query roots | Provider binding, aggregation IDs, materializations, active generation |
-| Execution | Selected semantic contract | Ingestion, maintenance, scheduling, readout, exact residuals, fallback |
-| Feedback | Consume comparable evidence for future planning | Measure cardinality, resource use, coverage, readiness, and failures |
+| BGP preprocessor | MRT decoding; schema normalization; AS-path parsing; derived values; hop/edge fanout; ordered transition/gap computation; publication of stable relational tables | Query-shape recognition, summary selection, query serving |
+| Preprocessed schema/catalog | Names, types, nullability, event-time column, table semantics, versioning, and data-quality contract | Transformation planning |
+| ASAPPlanner SQL frontend | Generic SQL parsing/lowering over registered physical tables and columns | BGP string/array functions and MRT semantics |
+| ASAPPlanner optimizer | Generic `rho`: filters, grouping, aggregates, top-k, distinct count, sharing, windows, lifecycle, cost, and legal residuals | Producing or placing BGP transformations |
+| ASAPQuery | Plan validation/registration; streaming summary maintenance; windowed storage; generic readout and residual execution; readiness checks | Parsing raw AS paths or deciding preprocessing work |
+| ClickHouse | Raw/preprocessed storage, exact differential oracle, and explicit fallback | ASAP summary selection |
+| ASAPCollector | Possible future host/transport for preprocessing or summaries | MVP delivery |
 
-Concrete storage handles, task IDs, connections, and placement remain downstream. The selected provider alternative identity accompanies the decision as binding/provenance metadata; it does not require embedding executor configuration in logical IR.
+The critical API is the preprocessed schema plus the generic Planner/runtime plan contract. There is no transformation-plan API between Planner and the preprocessor.
 
-### 3.1 Mapping the recognition decomposition
+## 4. Preprocessing contract
 
-| Stage | Shared semantic representation | Runtime realization |
+The MVP must publish a versioned catalog whose columns have stable semantics. A proposed minimum is:
+
+| Table | Important columns | Purpose |
 | --- | --- | --- |
-| `ρ(Q) -> (Q', π)` | Original query root, legal maintainable subexpression, explicit residual dependencies | Recognize/canonicalize incoming requests and locate validated installed bindings |
-| `τ`: projection | Typed expressions for origin extraction, time bucketing, computed values | Computed-label/value implementation |
-| `τ`: fanout | Relational expansion with output schema, ordering where relevant, and multiplicity | Token explosion and adjacent-edge emission |
-| `τ`: stateful comparison | Ordered partition/window semantics and a validated incremental realization | Previous-value or previous-time state per partition |
-| `γ`: maintenance | Selected exact/sketch state, grouping, update semantics, logical windows and lifecycle | Build, update, merge, retain, and recover state |
-| `eval` | Typed summary readout | Bound state lookup, merge, and estimate/exact extraction |
-| `π`: residual | Exact projection, filter, ranking, ratio, window, aggregation, or membership join over readouts | Supported ASAPQuery operators or a bound exact-engine subgraph |
+| `bgp_updates_enriched` | `timestamp`, `collector`, `peer_ip`, `peer_asn`, `prefix`, `operation`, `origin_asn`, `path_length`, `prefix_length`, `community_count` | One normalized row per BGP update, including commonly derived scalar values |
+| `bgp_path_hops` | update identity/time/filter columns, `asn`, `hop_position` | One row per AS-path hop |
+| `bgp_path_edges` | update identity/time/filter columns, `src_asn`, `dst_asn`, `edge_position` | One row per directed adjacent AS pair |
+| `bgp_route_events` | route/peer identity, event time, `origin_changed`, `path_changed`, `interarrival_gap_seconds` | Precomputed ordered/stateful events |
 
-The DAG must retain the source-to-derived-stream relationship. Registering an opaque derived table alone would conceal derivation cost and semantics from optimization and sharing checks.
+Before implementation, pin the following semantics:
 
-Predicate enforceability is a candidate eligibility condition. Every predicate removed from query-time execution must be preserved by the derivation or ingest filter. Unsupported predicates require an exact alternative or explicit fallback, not partial filtering.
+1. Stable update identity and deduplication/replay behavior.
+2. Event-time ordering, tie handling, late data, and watermark policy.
+3. AS-set/confederation/malformed-path tokenization and empty values.
+4. Occurrence versus distinct semantics for hop and edge tables.
+5. Transition partition keys, initialization, withdrawal behavior, and continuity across MRT files/restarts.
+6. Timestamp timezone/unit and interval inclusivity.
+7. Schema version and compatibility behavior.
 
-## 4. Workload coverage and semantic requirements
+Preprocessing may materialize more columns/tables later, but adding one does not require a new Planner operator. It requires catalog registration and ordinary SQL fixtures.
 
-Create a machine-readable matrix keyed by original corpus query ID and additional branch regression IDs. Record source revision, SQL, catalog, time scope, accuracy target, recognized shape, required operators, lowering outcome, candidate outcome, provider outcome, runtime outcome, fallback reason, and fixture reference. Retain the aggregate tally as a regression signal, but add per-query expectations for the integration subset.
+## 5. Query contract
 
-| Workload family | Planner direction | Required checks |
-| --- | --- | --- |
-| Counts, sums, distinct counts, quantiles | Existing aggregate/summary alternatives | Aggregate arguments, null behavior, exact versus approximate contract |
-| Origin selection and computed grouping | Typed projection plus aggregate | Tokenization, malformed/empty paths, casts, aliases, and output types |
-| ASN/community frequency and adjacent edges | Explicit expansion before aggregation | Repeated tokens, occurrence versus distinct semantics, edge direction, empty expansion |
-| Path changes and inter-arrival gaps | Window intent with legal stateful realization | Partition, event order, frame, offset/default, initialization, and time scope |
-| Multi-aggregate rows, ratios, percentages | Compatible state fusion and exact residual projection | Shared population, denominator, empty groups, and division semantics |
-| HAVING, two-stage histograms, running totals | Exact operators consuming readouts | Threshold behavior, missing buckets, frame semantics, aggregate-of-aggregate legality |
-| Bucketed top-N | Exact partitioned sort/limit initially | Complete candidate population, tie behavior, bucket scope |
-| MOAS and membership queries | Exact distinct/set state and exact residual join initially | Membership is not cardinality; set/list output cannot be reconstructed from a count sketch |
-| Raw history and unsupported shapes | Exact execution alternative | No forced summary conversion; explicit reason and correct result schema |
-
-Corpus query titles are not semantic specifications. For example, q024/q025 request changed-row detail, whereas the branch's count-oriented lag-transition recognizer expects an outer aggregate. They must not be treated as the same supported shape simply because both mention path changes.
-
-### 4.1 Stateful correctness gate
-
-The inspected runtime stores the last value per partition and updates it in `process_row` arrival order. Before selecting this implementation for ordered SQL, establish or enforce:
-
-1. Event-time ordering, deterministic ties where required, and behavior for late data.
-2. Exact partition keys from the query; do not substitute a conventional BGP route key.
-3. Whether filtering happens before or after the window function.
-4. Whether the first row uses a predecessor within the SQL window, earlier retained history, or a SQL default.
-5. Frame and lag-offset compatibility; only supported forms are eligible.
-6. State continuity across input files, restart, replay, and duplicate input.
-7. A bounded-state/retention policy that preserves the selected semantics.
-
-Begin with a declared ordered-input profile. Other profiles remain unavailable until their implementation and evidence satisfy the same contract. Adding a last-value map does not prove generic SQL-window support.
-
-Event-log aggregation and current routing-state maintenance are different workloads. A withdrawal counts as an event in one and may remove a route in the other; do not infer negative summary updates from the operation field without the query's semantics.
-
-### 4.2 Time and accuracy gate
-
-Check logical start/end inclusivity, bucket alignment, timezone, complete retained coverage, and state generation. Equal window durations alone do not prove coverage equivalence. Shape compatibility must be followed by runtime readiness validation.
-
-Start with exact state. Approximate extensions must declare the error quantity and guarantee scope. Numeric count error does not establish correct `HAVING` membership, MOAS detection, or top-N identities. Ratios require a denominator policy and propagated guarantees; shared state does not imply independent errors. Observed error is feedback, not a certified bound.
-
-## 5. ASAPPlanner implementation slices
-
-The IDs below are proposed tracking IDs, not existing GitHub issues. Open issues for confirmed shared gaps after refreshing the baseline, link them here, and deliver PRs with the indicated acceptance behavior. Owners are repository roles; individual assignment is a team decision.
-
-| ID / priority | Change and likely location | Dependencies | Acceptance |
-| --- | --- | --- | --- |
-| P1 / P0 | Corpus matrix and focused integration fixtures in `crates/frontend-sql/tests` and `crates/integration-tests` | None | Every initial query has explicit lowering/recognition/feasibility/execution outcomes; unsupported cases remain visible |
-| P2 / P0 | Exact relational composition over post-ASAP inputs in `crates/types/src/post_asap` and mapping/export code; begin with projection, reduction, sort, limit | P1 fixtures | Summary outputs feed typed residual operators; shared children and all query roots survive traversal and serialization |
-| P3 / P0 | ASAPQuery provider conformance through existing physical-alternative/lifecycle interfaces | P1; coordinate with A1/A2 | Reject unsupported whole alternatives; retain complete candidate evidence and stable binding identity; demonstrate how workload and lifecycle selection compose |
-| P4 / P1 | ClickHouse frontend coverage in `crates/sql-function-catalog` and `crates/frontend-sql` | P1 | Close individually tracked function, indexing, interval, and subquery gaps with semantic fixtures; no support claim based solely on stub registration |
-| P5 / P1 | Generic relational expansion in pre/post IR, schema derivation, binding, CSE, mapping, and export | P1, relevant P4 coverage | Preserve fanout multiplicity and output identity; provider executes token/edge fixtures correctly |
-| P6 / P1 | Ordered stateful realization and legality checks using existing SQL-window intent where sufficient | P1, P3, A3 | Pass the stateful correctness gate; reject incompatible ordering/frame/history profiles |
-| P7 / P1 | Extend state fusion, decomposition, and sharing rules in `crates/asap-aware-mapping` | P2, P3 | Initial multi-query example shares one producer; grouping, filters, windows, nulls, and guarantees constrain reuse |
-| P8 / P1 | Complete BGP cost evidence integration; extend shared model only for facts existing interfaces cannot express | P3, A5 | Rank complete alternatives on the same horizon; include derivation/state/residual work and count shared work once |
-| P9 / P2 | Remaining residual operators and advanced rules: exact joins/windows, nested aggregation, membership, and approximate guarantees | P2, P4, P7 | Each new family has positive/negative legality fixtures and exact or declared approximate result validation |
-| P10 / P1–P2 | Corpus-to-viewer and runtime report linkage in devtools and `tools/dag-viewer` | Initial P1/P2; runtime evidence from A5 | Show complete selected graph, roots, shared consumers, rejection reasons, cost provenance, and observed producer reuse |
-
-### 5.1 Reuse existing strategies deliberately
-
-- Use canonical CSE and `SharedSubtreeStrategy` for equivalent inputs and producers. Canonical identity must include derivation semantics, not generated metric names.
-- Extend existing rollup for compatible grouping levels. Fine-to-coarse distinct counts cannot generally be added because an item can occur in several fine groups.
-- Reuse AVG decomposition, preserving the count of non-null aggregate inputs and empty-input behavior.
-- Add compatible multi-state aggregate fusion where current rules cannot represent it; do not assume a single `SummaryAgg` already supports arbitrary fused state.
-- Reuse summary-family and grouping alternatives only when the provider supports build, update, merge, and readout under the requested lifecycle.
-- Begin ranking queries with exact counts and exact sorting. A heavy-hitter sketch is an alternative requiring its own result contract, not an unconditional implementation of `ORDER BY count DESC LIMIT N`.
-
-Avoid BGP-named operators when general projection, expansion, ordered partition state, and relational residuals express the requirement. Keep BGP parsing implementations downstream while making the semantics needed for legality and costing visible.
-
-## 6. ASAPQuery implementation slices
-
-| ID | Change | Dependencies | Acceptance |
-| --- | --- | --- | --- |
-| A1 | Workload adapter: SQL, catalog, source identity, data/time scope, recurrence, accuracy, and horizon to Planner | P1 | Original query IDs and result roots survive planning; parameterized windows retain their meaning |
-| A2 | Capability/provider adapter for derivation, summaries, exact residuals, sharing, and lifecycle | P3 | Capability checks cover the whole executable alternative; unsupported operations return structured reasons |
-| A3 | Physical compiler/binder from selected semantics to ingest, maintenance, storage, and serving projections | P2, A1, A2 | One binding maps logical producer to state/configuration/generation; projections agree on schema, windows, and parameters |
-| A4 | DAG execution and activation: schedule shared producers, execute residuals, validate readiness, and fall back | A3 | Producers are maintained once per selected scope; every root returns; failed activation preserves the prior active configuration |
-| A5 | Measurement and feedback keyed by semantic producer, provider alternative, and generation | A3/A4 | Comparable measured resource/cardinality reports feed future cost evidence; unknown or stale data cannot justify selection |
-| A6 | Migrate recognition/serving paths by shape family and retire duplicate semantic selection | Per-family parity through A4 | Incoming queries execute validated installed bindings; unsupported or newly encountered semantic choices return to planning or exact fallback |
-
-Existing recognizers and specialized serving branches remain comparison baselines during migration. Share canonical recognition semantics between workload registration and incoming queries. Do not let one path choose a new summary family, grouping, logical window, or lifecycle independently of the committed plan.
-
-For ad-hoc SQL, distinguish locating an already installed compatible binding from choosing a new plan. Legal reuse may serve an existing state only after semantic, accuracy, generation, and coverage checks. If a new choice is needed, request planning or use the configured exact route.
-
-An exact engine may execute a supported residual subgraph. Its binding must consume the selected intermediate data and preserve shared producer boundaries; regenerating a raw-source query independently for every root would defeat the selected plan.
-
-## 7. Capability, cost, and feedback contract
-
-Reuse existing interfaces before adding new public abstractions. The BGP adapter must provide, directly or through existing structures, the following information:
-
-| Evidence | Required content |
-| --- | --- |
-| Comparison scope | Source and snapshot/stream identity, filters, derivation semantics, event-time scope, recurrence, horizon, exact/approximate objective |
-| Capabilities | Supported expression/expansion/window semantics; state family/parameters; build/update/merge/readout; residual operators; retained sharing; ordering and recovery profile |
-| Cardinality | Input rows/rate, filtered rows, token and edge fanout, emitted transitions/gaps, groups, distinct items, active state partitions, residual row counts |
-| Resource costs | Bootstrap/decode/filter/derive CPU; update CPU; previous-value and summary memory; retained windows; source reads; materialization writes/reads; merge and residual work; spill if applicable |
-| Provenance | Model/calibration version, evidence generation, provider alternative identity, selected semantic producer, scope and units |
-| Runtime state | Coverage/watermark, completeness, active generation, compatible state schema, failures and fallback reason |
-
-Compare raw recomputation, prepared state, and continuous maintenance only where supported. Over a common horizon, account for bootstrap, arrivals and fanout, retained state, repeated reads, residual work, and shared producers once. Include expected fallback work if the deployment model assumes fallback during warm-up or unavailable coverage.
-
-PR #353 is related cache work, not a prerequisite for the first exact milestone. Its inspected description limits it to physical-plan cache evidence and leaves the summary-maintenance lifecycle adapter on a no-cache estimator. Use an explicit no-cache baseline until compatible cache evidence is available for both alternatives. Do not reuse physical-plan cache discounts in lifecycle comparisons without integrating their scope and provenance.
-
-Report measured CPU time and bytes separately from analytical operation counts. Do not label an estimate as measured or infer runtime savings from fewer DAG nodes. Missing evidence remains unavailable rather than zero.
-
-## 8. First end-to-end milestone
-
-Use three synthetic integration queries over the same closed source interval and filter. These supplement the corpus and deliberately avoid fanout and stateful ordering in the first milestone.
+ASAP accepts normalized SQL over the preprocessed schema. For example:
 
 ```sql
--- Q1: exact update counts per prefix
-SELECT prefix, COUNT(*) AS n
+SELECT origin_asn, COUNT(*) AS announcements
+FROM bgp.bgp_updates_enriched
+WHERE collector = 'rrc00' AND operation = 'A'
+  AND timestamp >= '2024-01-12 00:00:00'
+  AND timestamp <  '2024-01-13 00:00:00'
+GROUP BY origin_asn
+ORDER BY announcements DESC
+LIMIT 20;
+```
+
+ASAP is not required to accept the equivalent raw expression:
+
+```sql
+SELECT splitByChar(' ', as_path)[-1] AS origin_asn, COUNT(*)
 FROM bgp.bgp_updates
-WHERE collector = 'rrc00'
-  AND timestamp >= '2024-01-08 00:00:00'
-  AND timestamp <  '2024-01-08 01:00:00'
+GROUP BY origin_asn;
+```
+
+Likewise, hop and edge queries target `bgp_path_hops` and `bgp_path_edges`; transition and gap queries target `bgp_route_events`. If an application exposes the original BGPQueryBench SQL, that application must rewrite it before submission to ASAP or send it directly to ClickHouse. Such a rewriter is outside ASAPPlanner and ASAPQuery for this MVP.
+
+## 6. Required generic Planner capability
+
+Preprocessing removes BGP-specific expression support, but it does not remove the need for generic query planning.
+
+| Shape | Planner/runtime direction |
+| --- | --- |
+| Filtered scalar/grouped count and sum | Exact mergeable accumulator; approximate frequency alternative when requested |
+| `ORDER BY count DESC LIMIT k` | Exact sort/limit first; heap-bearing sketch only under an explicit approximate contract |
+| `COUNT(DISTINCT col)` / `uniq` normalized upstream | Exact set or supported cardinality sketch |
+| Multiple aggregates with the same population | Independent/fused state with typed per-key readout |
+| AVG | Sum plus non-null count and read-time division |
+| HAVING | Exact residual over maintained values; approximation requires a threshold-membership guarantee |
+| Ratios and percentages | Maintain operands and apply typed read-time arithmetic |
+| Two-stage histogram/running total/top-N per bucket | Generic exact residual operators over summary readouts |
+| Set-membership queries | Exact member-producing state and residual semi/anti join, not cardinality-only state |
+| Time windows | Bucket alignment, merge, complete coverage, watermark/readiness, and retention semantics |
+| Unsupported shapes | Explicit ClickHouse fallback; never silently approximate or return empty/zero |
+
+Avoid BGP-named Planner rules. A count grouped by `origin_asn`, `asn`, or `(src_asn, dst_asn)` is the same generic grouped-count shape as any other physical columns.
+
+## 7. Implementation plan
+
+### Phase 0 — freeze the boundary
+
+- Agree on the versioned preprocessed schema and sample rows.
+- Decide whether users submit only normalized SQL or a separate application rewrites original benchmark SQL.
+- Record exact ClickHouse equivalents for every MVP query.
+- Pin one deterministic MRT fixture and its expected enriched/hop/edge/event rows.
+
+Exit gate: Planner and ASAPQuery fixtures contain no BGP-specific string/array/stateful expression.
+
+### Phase 1 — generic exact vertical slice
+
+Implement three queries over `bgp_updates_enriched`, sharing one exact per-prefix count producer:
+
+```sql
+SELECT prefix, COUNT(*) AS n
+FROM bgp.bgp_updates_enriched
+WHERE collector = 'rrc00' AND timestamp >= :t0 AND timestamp < :t1
 GROUP BY prefix;
 
--- Q2: top prefixes; prefix provides a deterministic tie-break
 SELECT prefix, COUNT(*) AS n
-FROM bgp.bgp_updates
-WHERE collector = 'rrc00'
-  AND timestamp >= '2024-01-08 00:00:00'
-  AND timestamp <  '2024-01-08 01:00:00'
+FROM bgp.bgp_updates_enriched
+WHERE collector = 'rrc00' AND timestamp >= :t0 AND timestamp < :t1
 GROUP BY prefix
 ORDER BY n DESC, prefix ASC
 LIMIT 20;
 
--- Q3: percentage of all updates in the selected population
 SELECT prefix, n, 100.0 * n / SUM(n) OVER () AS pct
 FROM (
   SELECT prefix, COUNT(*) AS n
-  FROM bgp.bgp_updates
-  WHERE collector = 'rrc00'
-    AND timestamp >= '2024-01-08 00:00:00'
-    AND timestamp <  '2024-01-08 01:00:00'
+  FROM bgp.bgp_updates_enriched
+  WHERE collector = 'rrc00' AND timestamp >= :t0 AND timestamp < :t1
   GROUP BY prefix
 );
 ```
 
-The desired alternative has one maintained exact count producer. Q3 may be represented by an exact window over the readout or a legal total-reduction plus projection/join decomposition. Its lowering and post-ASAP representation are milestone work, not assumed existing support.
-
 ```mermaid
 flowchart LR
-    A[Filtered updates] --> B[Shared exact counts per prefix]
-    B --> C[Read counts]
-    C --> Q1[Q1 counts]
-    C --> D[Sort and limit]
-    D --> Q2[Q2 top 20]
-    C --> E[Sum all counts]
-    C --> F[Compute percentages]
-    E --> F
-    F --> Q3[Q3 percentages]
+    S[Preprocessed update stream] --> F[Generic filter]
+    F --> C[One maintained exact count<br/>grouped by prefix]
+    C --> Q1[Counts]
+    C --> Sort[Exact sort + limit]
+    Sort --> Q2[Top 20]
+    C --> Total[Exact total]
+    C --> Ratio[Percentage projection]
+    Total --> Ratio --> Q3[Percentages]
 ```
 
 Acceptance:
 
-- Exact counts and selected top rows match ClickHouse; percentage comparison follows the agreed numeric type/rounding policy.
-- All three query roots remain visible with stable producer references after compilation and activation.
-- Runtime instrumentation verifies one maintained count producer per compatible source/window/generation, reused across roots and repeated requests.
-- Equal-count ties, empty input, time-boundary rows, missing coverage, and failed activation have explicit tests.
-- A workload profile with complete cost evidence can select the shared alternative; a profile where maintenance is not worthwhile can retain exact recomputation.
-- Viewer output and runtime observations refer to the same selected plan. Graph identity alone is not evidence that a producer executed once.
+- Results match ClickHouse for normal, empty, tied-count, and boundary-timestamp fixtures.
+- Runtime evidence shows one compatible producer, not three independently maintained copies.
+- Missing coverage, stale state, and failed activation trigger explicit failure/fallback.
+- Planner IR and runtime plan contain no derived-column transformation.
 
-Then add one token-fanout workload, one transition/gap workload with ordered input, and advanced residual families. Each is a separate acceptance gate.
+### Phase 2 — scalar-derived columns and fanout tables
 
-## 9. Delivery order and validation
+- Add origin-AS/path-length queries over `bgp_updates_enriched`.
+- Add hop-frequency queries over `bgp_path_hops`.
+- Add edge-frequency queries over `bgp_path_edges`.
+- Validate occurrence multiplicity and filters against ClickHouse.
 
-| Stage | Delivery | Exit gate |
-| --- | --- | --- |
-| 0. Freeze audit | P1; refresh revision/gap matrix and agree on boundary questions | Per-query scope and confirmed issues are recorded |
-| 1. Exact vertical slice | Initial P2/P3/P7, A1–A4, initial P10 | Three-query milestone has result parity, preserved bindings, actual sharing, and explicit fallback |
-| 2. Cost-based execution choice | P8 and A5; expand lifecycle coverage | Complete comparable evidence selects feasible alternatives and attributes observed work |
-| 3. BGP derivation | Relevant P4, P5, P6 and A3 extensions | Fanout and ordered-state gates pass, including negative cases |
-| 4. Broader workload semantics | P9 and remaining frontend/fusion work | Each supported family has execution and accuracy evidence |
-| 5. Consolidate | A6 and full P10 reporting | Migrated families have one authoritative semantic selection path; remaining unsupported scope is explicit |
+No Planner or ASAPQuery string/array execution is introduced in this phase.
 
-Use three levels of validation:
+### Phase 3 — distinct and multi-aggregate families
 
-1. Planner conformance: lowering, schemas, legal/illegal rewrites, sharing identity, candidate feasibility, and complete cost comparison.
-2. Cross-boundary conformance: selected semantics survive serialization/binding, unsupported nodes are rejected, and all execution projections agree.
-3. Runtime differential tests: a deterministic BGP fixture executes through ingestion, maintenance, serving, and exact ClickHouse comparison; measure producer execution/update counts and coverage.
+- Add exact distinct/member state and then capability-backed HLL/Theta/KMV alternatives.
+- Add multi-aggregate, AVG, HAVING, ratio, and percentage readouts.
+- Reject plans when the runtime cannot build, merge, or read the selected family; never substitute another accumulator.
 
-Keep negative cases for unsupported predicates, incompatible filters/windows, reordered events, incomplete state, stale evidence, and unsupported sketch operations. Prefer focused fixtures with known answers over asserting only that a pipeline returns successfully.
+### Phase 4 — preprocessed stateful events
 
-Extend the existing DAG viewer instead of building a separate BGP viewer. Add corpus selection, per-query outcome/rejection detail, shared-consumer counts, logical-to-runtime producer references, and estimated/measured cost provenance. The viewer's complete pre/post graphs and analytical annotations already provide the foundation.
+- Add transition and inter-arrival-gap queries over `bgp_route_events`.
+- Differentially validate preprocessor output across MRT file boundaries, restart/replay, late input, and ties.
+- Keep SQL window-function parsing and incremental LAG realization outside Planner/ASAPQuery MVP scope.
 
-## 10. Interface decisions to converge with the Planner team
+### Phase 5 — broader generic composition and costing
 
-Resolve the following with small executable examples and record the outcome in the owning repository's contract documentation:
+- Add two-stage histograms, bucketed top-N, running totals, and exact membership joins.
+- Compare exact recomputation, exact continuous maintenance, and legal approximate alternatives over the same horizon.
+- Feed measured update/readout/state/cardinality evidence to Planner without exposing preprocessing implementation details.
 
-| Decision | Proposed starting point | Why it must be explicit |
-| --- | --- | --- |
-| Exact post-ASAP composition | Add typed exact operators accepting post-ASAP children, beginning with the milestone subset | DQC and BGP both require residuals over shared summary outputs |
-| Expansion representation | Generic relational expansion with typed expressions and multiplicity | Enables legality, cardinality, CSE, and costing without BGP executor code in Planner |
-| Ordered state realization | Preserve SQL window intent and admit only capability-backed incremental rewrites | Arrival-order previous-value state is not universally equivalent to SQL order/frame semantics |
-| Selection and commitment | Compose existing workload alternatives and lifecycle/provider selection; downstream commits the legal feasible choice | Avoid duplicate optimization and an implied nonexistent all-in-one API |
-| Binding identity | Logical identity in DAG; concrete implementation and generation in downstream binding metadata | Reconcile provider selection provenance with deployment-independent IR |
-| Ad-hoc requests | Validate reuse of installed plans; new semantic choices re-enter planning or fall back | Preserve useful capability matching without independent serving-time optimization |
-| Approximate residuals | Exact first; add explicit guarantees per advanced family | Count error alone cannot certify membership, threshold, or ranking results |
-| Corpus ownership | Planner owns semantic fixtures; ASAPQuery owns executable BGP/runtime fixtures, linked by stable query IDs | Keep frontend coverage distinct from end-to-end workload support |
+## 8. Repository work split
 
-This plan is ready to break into linked repository issues after the baseline refresh. Implementation completion requires the exit gates above; documentation agreement, frontend lowering, and a rendered DAG are intermediate evidence only.
+### ASAPPlanner
+
+- Register the preprocessed catalog and add normalized BGP SQL fixtures.
+- Reuse/extend generic aggregate, sharing, residual, window, lifecycle, and cost rules.
+- Preserve all query roots and selected producer identity across serialization.
+- Keep raw BGP string/array/fanout/stateful functions out of the required frontend scope.
+
+### ASAPQuery
+
+- Accept and validate Planner's generic plan.
+- Bind supported exact/sketch/set accumulators and generic residual operators.
+- Maintain state over preprocessed input tables with coverage/readiness checks.
+- Serve normalized SQL and route unsupported/unavailable queries to ClickHouse.
+- Emit runtime evidence keyed by plan, producer, materialization, and generation.
+
+### BGP preprocessing
+
+- Implement and validate the fixed schema contract independently of Planner.
+- Publish preprocessed rows both to ClickHouse and the ASAPQuery ingest path.
+- Own all raw BGP derivation, fanout, ordering, and state continuity behavior.
+
+### Future ASAPCollector integration
+
+ASAPCollector may later host preprocessing, transport preprocessed observations, or produce summaries. That must preserve the same schema and maintenance contracts. It is not a dependency or acceptance criterion for this MVP.
+
+## 9. Validation and reporting
+
+Use three layers of evidence:
+
+1. Preprocessor differential tests: raw MRT fixture to expected preprocessed rows/tables.
+2. Planner conformance: normalized SQL lowering, legal/illegal generic rewrites, sharing identity, candidate feasibility, and serialization.
+3. Runtime differential tests: preprocessed stream through summary maintenance/readout compared with exact ClickHouse results.
+
+Maintain a machine-readable matrix keyed by query ID with normalized SQL, source table/schema version, time scope, accuracy target, Planner outcome, runtime outcome, and fallback reason. Report parsing/lowering separately from acceleration and executed correctness.
+
+The DAG viewer should show the generic query and summary DAG, all roots, shared consumers, rejection reasons, and estimated/measured evidence. It should not display or imply a Planner-produced BGP transformation DAG.
+
+## 10. Non-goals
+
+- Supporting the original BGPQueryBench string/array/window SQL directly in ASAP.
+- Generating, optimizing, or dynamically deploying preprocessing transformations from Planner.
+- Modeling MRT or AS-path semantics in Planner IR.
+- Replacing ClickHouse as raw storage and exact fallback.
+- ASAPCollector integration in the MVP.
+- Claiming all 22 taxonomy families are accelerated because preprocessing can represent their inputs.
+
+The MVP is complete when normalized queries over the fixed preprocessed schema are planned with generic ASAP rules, maintained and served by ASAPQuery, and differentially validated against ClickHouse, with unsupported cases falling back explicitly.
