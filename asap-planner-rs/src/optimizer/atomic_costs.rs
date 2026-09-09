@@ -219,8 +219,9 @@ fn sketch_bench_key(
 ///
 /// - `agg_type` outside the benchmarked families (see [`sketch_bench_key`]):
 ///   `Some(AtomicCosts::default())` — the flat stub, unchanged from before
-///   this table existed. Logged, since it's silently wrong for anything
-///   sketch-bench could plausibly measure later.
+///   this table existed. `HydraKLL` is the exception: once a nonempty
+///   empirical table is supplied it is dropped, rather than being allowed to
+///   beat measured KLL alternatives with an unmeasured stub.
 ///   TODO(#524): remove this fallback once every family the optimizer can
 ///   select has a real sketch-bench entry; costing should end up 100%
 ///   empirical, with nothing left reading `AtomicCosts::default()`.
@@ -240,6 +241,13 @@ pub fn resolve_atomic_costs(
 ) -> Option<AtomicCosts> {
     if agg_type == AggregationType::CountMinSketchWithHeap {
         return resolve_cms_heap_costs(table, params, &CmsHeapCostAssumptions::default());
+    }
+
+    if agg_type == AggregationType::HydraKLL && !table.is_empty() {
+        tracing::warn!(
+            "no sketch-bench atomic-cost data for HydraKLL; dropping it while using empirical costs"
+        );
+        return None;
     }
 
     let Some((sketch, sketch_params)) = sketch_bench_key(agg_type, params) else {
@@ -276,6 +284,9 @@ pub fn satisfies_max_mean_rank_error(
     let Some(limit) = max_mean_rank_error else {
         return true;
     };
+    if agg_type == AggregationType::HydraKLL {
+        return false;
+    }
     if agg_type != AggregationType::DatasketchesKLL {
         return true;
     }
@@ -682,6 +693,18 @@ mod tests {
             costs.mem_bytes_per_instance,
             AtomicCosts::default().mem_bytes_per_instance
         );
+    }
+
+    #[test]
+    fn hydra_kll_drops_when_an_empirical_profile_is_present() {
+        let table = vec![cms_entry(3, 1024)];
+        assert!(resolve_atomic_costs(&table, AggregationType::HydraKLL, &HashMap::new()).is_none());
+        assert!(!satisfies_max_mean_rank_error(
+            &table,
+            AggregationType::HydraKLL,
+            &HashMap::new(),
+            Some(0.02),
+        ));
     }
 
     #[test]

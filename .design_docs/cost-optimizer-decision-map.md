@@ -192,6 +192,64 @@ limit; EXACT remains feasible. Focused optimizer tests cover strictest-limit
 deduplication and selection of a more expensive KLL configuration when the
 cheaper one exceeds the 2% bound.
 
+2026-09-09 proposed first experiment (discussion, do not run yet): fixed
+Google-2011 task-usage CPU trace slice, one synthetic per-machine metric
+(`host <- machine_id`), one 3-minute `quantile_over_time(0.99, metric[3m])`
+query, selectivity 1.0, and KLL `k in {200,500}`. sketch-bench must measure
+insert, merge, per-call quantile, memory, and mean rank error for exactly that
+raw grouping/window; ASAPQuery consumes that one selected profile, the matching
+unique-host inventory, a measured arrival rate (`records_loaded / 180s`), and
+the query repetition rate. Plumbing passes only if both K values resolve as
+real costs and the plan is reproducible. The paper-facing decision test should
+evaluate a predeclared sweep of rank-error limits: each KLL candidate is
+eligible iff its measured error is at most the limit, and the selected plan
+must equal the minimum predicted cost among eligible candidates. A separate
+hold-out/replay measurement is required before claiming that the atomic model
+predicts real end-to-end plan cost; do not call the first slice that validation.
+
+2026-09-09 agreed provisional control for Experiment 1: temporarily set
+ASAPQuery's `EXACT_QUERY_CPU_SECS` to a documented high value on the experiment
+branch to force the optimizer to compare feasible KLL candidates, then restore
+its original `1e-3` value after the experiment. Do not claim an
+exact-vs-approximate result while this forced baseline is active. The
+runner/output must label it `forced_exact_baseline`; replacing it with a
+measured raw-query baseline is required for a later end-to-end comparison.
+
+2026-09-09 Experiment 1 run (artifacts retained in
+`sketch-bench/output/cost_optimizer_experiments/google_task_usage_cpu_per_machine/2026-09-09/`):
+the fixed Google task-usage CPU slice loaded 20,051 rows from the declared
+three-minute window and produced 6,481 distinct `machine_id` values. The
+scenario exports one synthetic metric `google_task_cpu_rate` with `host <-
+machine_id`; its headered unique-series inventory, workload YAML, selector,
+raw JSONL passes, flattened records, cost document, planner YAMLs, and planner
+logs are all retained there. The profile has two real KLL entries:
+
+| K | mean rank error | memory / instance | selected under forced exact=100 |
+|---|---:|---:|---|
+| 200 | 0.00128963 (0.129%) | 6,400 B | limits 0.005, 0.01, 0.02, 0.05 |
+| 500 | 0.00063105 (0.063%) | 16,000 B | exploratory limit 0.001 |
+
+The four predeclared limits are all looser than K=200's measured error, so
+they correctly select K=200. The 0.001 result is explicitly exploratory (it
+was chosen after observing the measurements) and verifies the intended
+feasibility switch: K=200 is rejected and K=500 is selected. Exact was forced
+to 100 CPU-seconds/query only for those diagnostic runs and restored to
+`1e-3`; a smaller forced value of 1.0 left EXACT cheaper because the KLL plan
+holds 6,481 instances, and that run is also retained. None of these results is
+an exact-vs-approximate claim.
+
+The run exposed two plumbing findings. First, the sketch-bench flattener keeps
+the *first* shared timing field, while `scripts/export_atomic_costs.sh` says
+accuracy should run first because it assumes the last field wins. The preserved
+accuracy-first `atomic_costs.json` therefore has zero profiles (one-sample
+accuracy wall-time versus five throughput/CPU samples); the cost-first rerun
+`atomic_costs_cost_first.json` reduces successfully to one profile/two entries.
+The export script should be corrected before this is made a reusable runner.
+Second, an empirical profile previously allowed unmeasured HydraKLL candidates
+to use a flat stub and win. ASAPQuery now drops HydraKLL when a nonempty
+empirical table is present, and treats it as infeasible under a rank-error
+limit; focused regression tests cover both cases.
+
 2026-09-07 design refinement: a benchmark need not expose every raw trace
 column. A paper experiment may define a **synthetic metric scenario** as a
 chosen label projection of a trace (for example, a machine-only metric or a
