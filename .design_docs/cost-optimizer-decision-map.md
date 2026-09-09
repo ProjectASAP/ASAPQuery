@@ -247,7 +247,8 @@ fields have strict primary-pass ownership—accuracy contributes only query
 accuracy, throughput contributes cost timing/resources, and latency contributes
 only insert latency. Only representable `(operation, pass)` pairs are accepted;
 unknown/contradictory primary fields, query/merge/prepare latency, and other
-unrepresentable pairs fail loudly rather than being silently dropped.
+unrepresentable pairs fail loudly rather than being silently dropped. A
+representable pass must also contain its required primary result field.
 Reflattening the
 same preserved accuracy-first raw report now yields
 `atomic_costs_strict_accuracy_first.json` with one profile/two entries, so the
