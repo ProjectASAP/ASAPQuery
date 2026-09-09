@@ -315,6 +315,13 @@ explicitly pre-slice the input, before calling the replay a temporal holdout.
 Record the replay speed/arrival rate as well. Without those alignments, E2E
 would be a useful smoke test but not validation of the measured profile.
 
+2026-09-09 source-file check: Google `task_usage/part-00262-of-00500.csv.gz`
+spans 5,265 source seconds (about 87.75 minutes), while the first profile used
+only 180 seconds. Selecting `part_index: 262` in `experiment_run_e2e.py`
+therefore does not by itself replay the same calibration data. Even the
+same-data consistency experiment needs either exporter source-time bounds or
+a materialized pre-sliced copy of that interval.
+
 ## #3: What feasibility evidence constrains optimization?
 
 Blocked by: #1, #2
