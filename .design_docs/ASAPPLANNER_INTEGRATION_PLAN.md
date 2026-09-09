@@ -2,11 +2,22 @@
 
 Status: proposed engineering plan. No integration work is claimed complete by this document.
 
-Audience: BGP preprocessing, ASAPPlanner, ASAPQuery, and architecture reviewers.
+Audience: ASAPAdapters, BGP preprocessing, ASAPPlanner, ASAPQuery, and architecture reviewers.
 
 ## 1. Decision
 
-The BGP MVP uses a fixed preprocessing boundary. Raw MRT/BGP records are converted into stable relational tables before ASAP planning and summary maintenance. Queries submitted to ASAP target those preprocessed tables and use ordinary physical columns.
+The BGP MVP uses a fixed preprocessing boundary implemented as a BGP adapter in
+[ASAPAdapters](https://github.com/ProjectASAP/ASAPAdapters). The adapter has two coordinated
+halves:
+
+- a **data adapter** converts raw MRT/BGP records into stable relational tables before ASAP
+  planning and summary maintenance; and
+- a **query adapter** rewrites the corresponding original BGP SQL to target those tables and
+  replaces known complex CTEs, macros, and subqueries with registered UDF calls.
+
+The rewritten queries submitted to ASAP use ordinary physical columns and a small, versioned UDF
+surface. Those UDFs are an adapter boundary: the MVP may expand them to normalized SQL, while a
+later Planner integration may map the same functions directly to ASAP primitives.
 
 ASAPPlanner does **not**:
 
@@ -27,7 +38,8 @@ This replaces the earlier proposal in this document, which made derivation (`tau
 flowchart LR
     MRT[Public MRT/BGP stream]
 
-    subgraph Prep[Fixed BGP preprocessing boundary]
+    subgraph Adapters[ASAPAdapters: BGP adapter]
+      subgraph Prep[Data preprocessing]
         Decode[MRT decode and schema normalization]
         Derive[Derive ordinary columns<br/>origin ASN, path length, prefix length]
         Expand[Produce ordinary event tables<br/>path hops and AS edges]
@@ -35,6 +47,12 @@ flowchart LR
         Decode --> Derive
         Derive --> Expand
         Derive --> Stateful
+      end
+      subgraph QueryPrep[Query preprocessing]
+        Rewrite[Parse and rewrite source SQL]
+        UDF[Replace known CTE/macro/subquery<br/>patterns with versioned UDFs]
+        Rewrite --> UDF
+      end
     end
 
     subgraph Data[Relational data boundary]
@@ -71,7 +89,9 @@ flowchart LR
     Edges --> CH
     Events --> CH
 
-    Query[SQL over preprocessed schema] --> SQL
+    OriginalQuery[Original BGP SQL] --> Rewrite
+    UDF --> Query[Normalized SQL over<br/>preprocessed schema]
+    Query --> SQL
     Plan --> Register
     Enriched --> Maintain
     Hops --> Maintain
@@ -83,13 +103,18 @@ flowchart LR
     CH -. exact result .-> Result
 ```
 
-The boxes are responsibility boundaries, not necessarily separate deployed services. The MVP preprocessor may be a standalone process or a fixed ClickHouse/streaming pipeline. Its implementation and deployment mechanism are not encoded in Planner IR.
+The boxes are responsibility boundaries, not necessarily separate deployed services. The BGP data
+adapter may be a standalone process or a fixed ClickHouse/streaming pipeline, and the query adapter
+may run offline when preparing a workload or inline before planning. Their implementation and
+deployment mechanisms are not encoded in Planner IR.
 
 ## 3. Component responsibilities
 
 | Component | Owns | Does not own |
 | --- | --- | --- |
-| BGP preprocessor | MRT decoding; schema normalization; AS-path parsing; derived values; hop/edge fanout; ordered transition/gap computation; publication of stable relational tables | Query-shape recognition, summary selection, query serving |
+| ASAPAdapters BGP data adapter | MRT decoding; schema normalization and cleaning; AS-path parsing; derived values; hop/edge fanout; ordered transition/gap computation; publication of stable relational tables | Query-shape recognition, summary selection, query serving |
+| ASAPAdapters BGP query adapter | Source-to-target table/column rewrites; CTE/macro/subquery recognition; replacement with versioned UDFs; rewrite diagnostics and fallback classification | Summary selection, silently changing query semantics, executing unsupported rewrites |
+| Adapter UDF catalog | Stable function names, typed signatures, semantic version, reference SQL implementation, and future ASAP-primitive mapping metadata | Choosing physical summaries |
 | Preprocessed schema/catalog | Names, types, nullability, event-time column, table semantics, versioning, and data-quality contract | Transformation planning |
 | ASAPPlanner SQL frontend | Generic SQL parsing/lowering over registered physical tables and columns | BGP string/array functions and MRT semantics |
 | ASAPPlanner optimizer | Generic `rho`: filters, grouping, aggregates, top-k, distinct count, sharing, windows, lifecycle, cost, and legal residuals | Producing or placing BGP transformations |
@@ -97,7 +122,9 @@ The boxes are responsibility boundaries, not necessarily separate deployed servi
 | ClickHouse | Raw/preprocessed storage, exact differential oracle, and explicit fallback | ASAP summary selection |
 | ASAPCollector | Possible future host/transport for preprocessing or summaries | MVP delivery |
 
-The critical API is the preprocessed schema plus the generic Planner/runtime plan contract. There is no transformation-plan API between Planner and the preprocessor.
+The critical API is a versioned **adapter contract** pairing the preprocessed schema with its query
+rewrite rules and UDF catalog, plus the generic Planner/runtime plan contract. There is no
+transformation-plan API between Planner and the data adapter.
 
 ## 4. Preprocessing contract
 
@@ -145,7 +172,35 @@ FROM bgp.bgp_updates
 GROUP BY origin_asn;
 ```
 
-Likewise, hop and edge queries target `bgp_path_hops` and `bgp_path_edges`; transition and gap queries target `bgp_route_events`. If an application exposes the original BGPQueryBench SQL, that application must rewrite it before submission to ASAP or send it directly to ClickHouse. Such a rewriter is outside ASAPPlanner and ASAPQuery for this MVP.
+Likewise, hop and edge queries target `bgp_path_hops` and `bgp_path_edges`; transition and gap
+queries target `bgp_route_events`. The ASAPAdapters BGP query adapter rewrites the original
+BGPQueryBench SQL before submission. It must operate on a parsed SQL AST, preserve parameters and
+aliases, be idempotent, and either produce a semantically equivalent query or return an explicit
+unsupported reason so the original query can be sent to ClickHouse.
+
+In particular, replace the workload's hairy AS-edge extraction subquery—the nested
+`splitByChar`/`arraySlice`/`arrayZip`/`arrayJoin` expression—with a named, versioned UDF such as
+`asap_bgp_path_edges(as_path)`. The query adapter can then lower that table-valued call to
+`bgp_path_edges` for the preprocessed schema:
+
+```sql
+-- Adapter-facing normalized form
+SELECT edge.src_asn, edge.dst_asn, COUNT(*) AS n
+FROM bgp.bgp_updates AS u
+CROSS JOIN asap_bgp_path_edges(u.as_path) AS edge
+GROUP BY edge.src_asn, edge.dst_asn;
+
+-- Data-adapted form submitted for the MVP
+SELECT src_asn, dst_asn, COUNT(*) AS n
+FROM bgp.bgp_path_edges
+GROUP BY src_asn, dst_asn;
+```
+
+The function contract must define malformed/empty paths, AS sets and confederations, duplicate
+hops, output ordering, and null behavior. Keep the function name and signature stable so a later
+Planner rule can map it to one or more ASAP primitives without changing user queries. Apply the
+same pattern only where semantics are pinned—for example scalar `asap_bgp_origin_asn(as_path)`—and
+do not hide arbitrary unsupported SQL behind opaque UDFs.
 
 ## 6. Required generic Planner capability
 
@@ -171,12 +226,29 @@ Avoid BGP-named Planner rules. A count grouped by `origin_asn`, `asn`, or `(src_
 
 ### Phase 0 — freeze the boundary
 
+- Define the BGP adapter manifest in ASAPAdapters, pairing input schema, output schema version,
+  data transforms, query rewrite rules, and UDF signatures.
 - Agree on the versioned preprocessed schema and sample rows.
-- Decide whether users submit only normalized SQL or a separate application rewrites original benchmark SQL.
+- Inventory every BGPQueryBench data expression and query construct as `materialize`, `rewrite to
+  column/table`, `replace with UDF`, `pass through`, or `unsupported/fallback`.
+- Pin the hairy AS-edge subquery's semantics and replace it with the versioned
+  `asap_bgp_path_edges` UDF boundary.
 - Record exact ClickHouse equivalents for every MVP query.
 - Pin one deterministic MRT fixture and its expected enriched/hop/edge/event rows.
 
-Exit gate: Planner and ASAPQuery fixtures contain no BGP-specific string/array/stateful expression.
+Exit gate: the BGP data and query adapters pass golden tests; every MVP query has a deterministic
+rewrite or explicit fallback reason; Planner and ASAPQuery fixtures contain no raw BGP-specific
+string/array/stateful expression.
+
+### Phase 0a — implement the BGP adapter in ASAPAdapters
+
+- Implement batch/stream entry points for the data adapter and publish the four versioned tables.
+- Implement AST-based query preprocessing with table/column rewrites, UDF replacement, rewrite
+  diagnostics, and idempotence tests.
+- Ship the UDF catalog and reference ClickHouse definitions/expansions beside the adapter.
+- Add a paired golden corpus: raw records to preprocessed rows and original SQL to rewritten SQL.
+- Expose a CLI/library interface that accepts an adapter name and contract version; do not couple
+  ASAPQuery or ASAPPlanner to BGP implementation modules.
 
 ### Phase 1 — generic exact vertical slice
 
@@ -267,11 +339,16 @@ No Planner or ASAPQuery string/array execution is introduced in this phase.
 - Serve normalized SQL and route unsupported/unavailable queries to ClickHouse.
 - Emit runtime evidence keyed by plan, producer, materialization, and generation.
 
-### BGP preprocessing
+### ASAPAdapters
 
-- Implement and validate the fixed schema contract independently of Planner.
+- Implement the BGP data and query adapters and validate their paired, versioned contract
+  independently of Planner.
 - Publish preprocessed rows both to ClickHouse and the ASAPQuery ingest path.
 - Own all raw BGP derivation, fanout, ordering, and state continuity behavior.
+- Rewrite original BGP queries to the preprocessed schema; replace the hairy AS-edge subquery and
+  other approved constructs with stable UDFs; report unsupported rewrites explicitly.
+- Maintain reference UDF implementations plus mapping metadata for future lowering to ASAP
+  primitives.
 
 ### Future ASAPCollector integration
 
@@ -279,11 +356,13 @@ ASAPCollector may later host preprocessing, transport preprocessed observations,
 
 ## 9. Validation and reporting
 
-Use three layers of evidence:
+Use four layers of evidence:
 
-1. Preprocessor differential tests: raw MRT fixture to expected preprocessed rows/tables.
-2. Planner conformance: normalized SQL lowering, legal/illegal generic rewrites, sharing identity, candidate feasibility, and serialization.
-3. Runtime differential tests: preprocessed stream through summary maintenance/readout compared with exact ClickHouse results.
+1. Data-adapter differential tests: raw MRT fixture to expected preprocessed rows/tables.
+2. Query-adapter golden and metamorphic tests: original SQL to expected normalized SQL, rewrite
+   idempotence, and original-versus-rewritten ClickHouse results.
+3. Planner conformance: normalized SQL lowering, legal/illegal generic rewrites, sharing identity, candidate feasibility, and serialization.
+4. Runtime differential tests: preprocessed stream through summary maintenance/readout compared with exact ClickHouse results.
 
 Maintain a machine-readable matrix keyed by query ID with normalized SQL, source table/schema version, time scope, accuracy target, Planner outcome, runtime outcome, and fallback reason. Report parsing/lowering separately from acceleration and executed correctness.
 
@@ -291,7 +370,8 @@ The DAG viewer should show the generic query and summary DAG, all roots, shared 
 
 ## 10. Non-goals
 
-- Supporting the original BGPQueryBench string/array/window SQL directly in ASAP.
+- Supporting the original BGPQueryBench string/array/window SQL directly in ASAPPlanner or
+  ASAPQuery (ASAPAdapters performs the supported preprocessing).
 - Generating, optimizing, or dynamically deploying preprocessing transformations from Planner.
 - Modeling MRT or AS-path semantics in Planner IR.
 - Replacing ClickHouse as raw storage and exact fallback.
