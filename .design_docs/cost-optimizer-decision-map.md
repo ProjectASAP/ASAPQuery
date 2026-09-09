@@ -243,10 +243,12 @@ both carried incidental timing metadata, and the old generic flattener kept
 the first one it encountered. The preserved accuracy-first `atomic_costs.json`
 therefore initially had zero profiles (one-sample accuracy wall-time versus
 five throughput/CPU samples). This is now fixed in sketch-bench: flattened
-fields have strict primary-pass ownership—accuracy contributes only accuracy,
-throughput contributes cost timing/resources, and latency contributes latency.
-Unknown/contradictory primary fields fail loudly; merge latency also fails
-loudly because `MergedRecord` has no field to represent it. Reflattening the
+fields have strict primary-pass ownership—accuracy contributes only query
+accuracy, throughput contributes cost timing/resources, and latency contributes
+only insert latency. Only representable `(operation, pass)` pairs are accepted;
+unknown/contradictory primary fields, query/merge/prepare latency, and other
+unrepresentable pairs fail loudly rather than being silently dropped.
+Reflattening the
 same preserved accuracy-first raw report now yields
 `atomic_costs_strict_accuracy_first.json` with one profile/two entries, so the
 export order is no longer a correctness condition. Second, an empirical profile
