@@ -1,5 +1,13 @@
 # SQL Query-Shape Recognition and Maintenance — Design
 
+This document describes the current prototype branch. Its `tau` derivation and
+BGP-specific recognition remain useful implementation and correctness references,
+but they are not part of the proposed ASAPPlanner integration boundary. The MVP
+instead consumes a fixed preprocessed schema; ASAPPlanner neither plans those
+transformations nor parses their source expressions. See the
+[ASAPPlanner integration plan](ASAPPLANNER_INTEGRATION_PLAN.md) for the target
+ownership, delivery stages, and acceptance criteria.
+
 This document describes the `(ρ, τ, γ, eval, π)` decomposition the SQL path uses to decide
 which analyst queries can be answered from a continuously maintained summary instead of a
 full scan, what gets maintained for each recognized shape, and where that logic lives in the
