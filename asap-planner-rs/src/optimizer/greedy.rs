@@ -225,6 +225,7 @@ mod tests {
             insert_cpu_secs: 0.0,
             merge_cpu_secs: 0.0,
             query_cpu_secs: 0.0,
+            query_accuracy: std::collections::BTreeMap::new(),
         }];
         let aqe = make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0);
         let solution = greedy_assign(

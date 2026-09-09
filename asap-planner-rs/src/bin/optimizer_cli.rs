@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use asap_planner::optimizer::{
-    load_atomic_cost_table, run_greedy_pipeline, AtomicCostTable, SeriesDataset,
+    load_optional_selected_atomic_cost_table, run_greedy_pipeline, AtomicCostTable, SeriesDataset,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -35,13 +35,20 @@ struct Args {
     #[arg(long = "rho", default_value = "1.0", value_parser = parse_positive_finite)]
     rho: f64,
 
-    /// Path to the atomic-cost table sketch-bench's `atomic-costs` subcommand
-    /// exports (see ASAPQuery#524, sketch-bench#30). Omitted: every
+    /// Path to the versioned atomic-cost document sketch-bench's `atomic-costs`
+    /// subcommand exports. Requires --atomic-cost-workload to select exactly
+    /// one measured workload profile. Omitted: every
     /// benchmarked-family candidate (CMS/HLL/KLL) is dropped, since there is
     /// no data to cost it at — only trivial accumulators and EXACT remain
     /// selectable.
     #[arg(long = "atomic-costs")]
     atomic_costs: Option<PathBuf>,
+
+    /// JSON `profiles[].workload` value copied from the sketch-bench atomic-cost
+    /// document. This makes the empirical workload profile explicit and avoids
+    /// mixing costs from different traces or time windows.
+    #[arg(long = "atomic-cost-workload", requires = "atomic_costs")]
+    atomic_cost_workload: Option<PathBuf>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -70,8 +77,11 @@ fn main() -> anyhow::Result<()> {
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
     let dataset = SeriesDataset::from_path(&args.dataset)?;
 
-    let atomic_cost_table = match &args.atomic_costs {
-        Some(path) => load_atomic_cost_table(path)?,
+    let atomic_cost_table = match load_optional_selected_atomic_cost_table(
+        args.atomic_costs.as_deref(),
+        args.atomic_cost_workload.as_deref(),
+    )? {
+        Some(table) => table,
         None => {
             tracing::warn!(
                 "no --atomic-costs supplied; CMS/HLL/KLL candidates will never be selected"

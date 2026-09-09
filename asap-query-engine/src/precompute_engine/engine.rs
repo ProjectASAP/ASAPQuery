@@ -1,7 +1,7 @@
 use crate::data_model::{AggregationType, StreamingConfig};
 use crate::precompute_engine::accumulator_factory::create_accumulator_updater;
 use crate::precompute_engine::config::PrecomputeEngineConfig;
-use crate::precompute_engine::ingest_source::{IngestContext, IngestSource};
+use crate::precompute_engine::ingest_source::{IngestContext, IngestSource, RoutingConfigSet};
 use crate::precompute_engine::output_sink::OutputSink;
 use crate::precompute_engine::series_router::{SeriesRouter, WorkerMessage};
 use crate::precompute_engine::worker::{Worker, WorkerRuntimeConfig};
@@ -22,31 +22,36 @@ pub struct PrecomputeWorkerDiagnostics {
 /// A cloneable handle for applying runtime config updates to a running engine.
 ///
 /// Obtained via `PrecomputeEngine::handle()` before calling `run()`.
-/// Calling `update_streaming_config` swaps the ingest handler's agg_configs
+/// Calling `update_streaming_config` swaps the ingest handler's routing configs
 /// atomically (lock-free via ArcSwap) and broadcasts the new map to all workers.
 pub struct PrecomputeEngineHandle {
     router: SeriesRouter,
-    ingest_agg_configs: Arc<ArcSwap<Vec<Arc<AggregationConfig>>>>,
+    ingest_routing_configs: Arc<ArcSwap<RoutingConfigSet>>,
 }
 
 impl PrecomputeEngineHandle {
     /// Apply a new streaming config to the running engine.
     ///
-    /// Updates the ingest handler's agg_configs via a lock-free ArcSwap store,
+    /// Updates the ingest handler's routing configs via a lock-free ArcSwap store,
     /// then broadcasts the new config map to all workers via their message channels.
     pub async fn update_streaming_config(
         &self,
         config: &StreamingConfig,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let agg_configs_map: HashMap<u64, Arc<AggregationConfig>> = config
-            .get_all_aggregation_configs()
+        let routing_configs = RoutingConfigSet::from_streaming_config(config)
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+        let agg_configs_map: HashMap<u64, Arc<AggregationConfig>> = routing_configs
+            .configs()
             .iter()
-            .map(|(&id, cfg)| (id, Arc::new(cfg.clone())))
+            .map(|routing_config| {
+                (
+                    routing_config.config.aggregation_id,
+                    routing_config.config.clone(),
+                )
+            })
             .collect();
-        let agg_configs_vec: Vec<Arc<AggregationConfig>> =
-            agg_configs_map.values().cloned().collect();
 
-        self.ingest_agg_configs.store(Arc::new(agg_configs_vec));
+        self.ingest_routing_configs.store(Arc::new(routing_configs));
         self.router
             .broadcast_update_agg_configs(agg_configs_map)
             .await?;
@@ -73,8 +78,8 @@ pub struct PrecomputeEngine {
     /// Channels created at construction so handle() can be extracted before run().
     senders: Vec<mpsc::Sender<WorkerMessage>>,
     receivers: Option<Vec<mpsc::Receiver<WorkerMessage>>>,
-    /// Shared ingest agg_configs, swappable at runtime.
-    ingest_agg_configs: Arc<ArcSwap<Vec<Arc<AggregationConfig>>>>,
+    /// Shared ingest routing configs, swappable at runtime.
+    ingest_routing_configs: Arc<ArcSwap<RoutingConfigSet>>,
     /// Test-support wall-clock override, applied to every spawned worker.
     /// See `with_now_ms_fn`. `None` in production — each worker keeps its
     /// default `SystemTime::now`-backed clock.
@@ -108,12 +113,7 @@ impl PrecomputeEngine {
             receivers.push(rx);
         }
 
-        let agg_configs_vec: Vec<Arc<AggregationConfig>> = streaming_config
-            .get_all_aggregation_configs()
-            .values()
-            .map(|cfg| Arc::new(cfg.clone()))
-            .collect();
-        let ingest_agg_configs = Arc::new(ArcSwap::from_pointee(agg_configs_vec));
+        let ingest_routing_configs = Arc::new(ArcSwap::from_pointee(RoutingConfigSet::empty()));
 
         Self {
             config,
@@ -123,7 +123,7 @@ impl PrecomputeEngine {
             sources,
             senders,
             receivers: Some(receivers),
-            ingest_agg_configs,
+            ingest_routing_configs,
             now_ms_fn: None,
         }
     }
@@ -148,7 +148,7 @@ impl PrecomputeEngine {
     pub fn handle(&self) -> PrecomputeEngineHandle {
         PrecomputeEngineHandle {
             router: SeriesRouter::new(self.senders.clone()),
-            ingest_agg_configs: self.ingest_agg_configs.clone(),
+            ingest_routing_configs: self.ingest_routing_configs.clone(),
         }
     }
 
@@ -156,6 +156,9 @@ impl PrecomputeEngine {
     /// ingest sources, then blocks until shutdown.
     pub async fn run(mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         validate_startup_aggregation_configs(&self.streaming_config)?;
+        let routing_configs = RoutingConfigSet::from_streaming_config(&self.streaming_config)
+            .map_err(|error| -> Box<dyn std::error::Error + Send + Sync> { error.into() })?;
+        self.ingest_routing_configs.store(Arc::new(routing_configs));
 
         let num_workers = self.config.num_workers;
 
@@ -212,7 +215,7 @@ impl PrecomputeEngine {
         // handle.update_streaming_config() is immediately visible to every source.
         let ctx = IngestContext {
             router: router.clone(),
-            agg_configs: self.ingest_agg_configs.clone(),
+            routing_configs: self.ingest_routing_configs.clone(),
             pass_raw_samples: self.config.pass_raw_samples,
         };
 
@@ -320,6 +323,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_rejects_invalid_spatial_filter_before_starting_workers() {
+        let config = AggregationConfig::new(
+            1,
+            AggregationType::Sum,
+            "Sum".to_string(),
+            HashMap::new(),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            1_000,
+            1_000,
+            WindowType::Tumbling,
+            r#"{job=}"#.to_string(),
+            "requests_total".to_string(),
+            None,
+            None,
+            None,
+            None,
+        );
+        let engine = PrecomputeEngine::new(
+            PrecomputeEngineConfig::default(),
+            Arc::new(StreamingConfig::new(HashMap::from([(1, config)]))),
+            Arc::new(NoopOutputSink::new()),
+            vec![Box::new(ShutdownSource)],
+        );
+
+        let error = engine
+            .run()
+            .await
+            .expect_err("invalid spatial filter must reject startup");
+        assert!(error.to_string().contains("invalid spatialFilter"));
+    }
+
+    #[tokio::test]
     async fn run_rejects_invalid_cms_subtype_before_starting_workers() {
         let mut parameters = HashMap::new();
         parameters.insert("depth".to_string(), json!(3_u64));
@@ -338,7 +376,7 @@ mod tests {
             1_000,
             1_000,
             WindowType::Tumbling,
-            "requests_total".to_string(),
+            String::new(),
             "requests_total".to_string(),
             None,
             None,
@@ -381,7 +419,7 @@ mod tests {
             1_000,
             1_000,
             WindowType::Tumbling,
-            "requests_total".to_string(),
+            String::new(),
             "requests_total".to_string(),
             None,
             None,
@@ -428,7 +466,7 @@ mod tests {
             1_000,
             1_000,
             WindowType::Tumbling,
-            "requests_total".to_string(),
+            String::new(),
             "requests_total".to_string(),
             None,
             None,
@@ -472,7 +510,7 @@ mod tests {
                 1_000,
                 1_000,
                 WindowType::Tumbling,
-                "requests_total".to_string(),
+                String::new(),
                 "requests_total".to_string(),
                 None,
                 None,
