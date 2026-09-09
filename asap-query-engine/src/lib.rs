@@ -35,10 +35,7 @@ pub use stores::{SimpleMapStore, Store, StoreResult};
 
 pub use engines::{InstantVector, QueryResult, SimpleEngine};
 
-pub use drivers::{
-    HttpServer, HttpServerConfig, KafkaConsumer, KafkaConsumerConfig, OtlpReceiver,
-    OtlpReceiverConfig,
-};
+pub use drivers::{HttpServer, HttpServerConfig, OtlpReceiver, OtlpReceiverConfig};
 
 pub use precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 pub use precompute_engine::output_sink::StoreOutputSink;

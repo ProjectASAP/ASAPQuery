@@ -3,7 +3,8 @@ use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
 use promql_utilities::query_logics::logics::promql_topk_count_events;
 use promql_utilities::query_logics::parsing::{
-    get_metric_and_spatial_filter, get_spatial_aggregation_output_labels, get_statistics_to_compute,
+    get_metric_and_spatial_filter, get_spatial_aggregation_output_labels,
+    get_statistics_to_compute, get_topk_by_labels,
 };
 use tracing::warn;
 
@@ -37,6 +38,15 @@ pub struct QueryRequirements {
     /// (`Some(false)`); over `count_over_time` it is count-weighted
     /// (`Some(true)`). `None` is only valid for non-top-k requirements.
     pub topk_count_events: Option<bool>,
+    /// For `Statistic::Topk` requirements with an explicit `by`/`without`
+    /// modifier, the labels used to bucket the input for independent
+    /// per-bucket ranking (see `get_topk_by_labels`) -- e.g. `Some(["job"])`
+    /// for `topk by (job) (k, x)`. `None` for a bare `topk(k, x)` (single
+    /// global ranking) and for every non-topk requirement. Deliberately
+    /// separate from `grouping_labels`, which for topk always reports the
+    /// *output* label set (all labels, unaffected by any modifier) rather
+    /// than the bucketing labels (#714).
+    pub topk_by_labels: Option<KeyByLabelNames>,
 }
 
 /// Build `QueryRequirements` from an already-pattern-matched PromQL query.
@@ -84,6 +94,8 @@ pub fn build_query_requirements_promql(
         .cloned()
         .unwrap_or_else(KeyByLabelNames::empty);
 
+    let topk_by_labels = get_topk_by_labels(match_result, &all_labels);
+
     let grouping_labels = if has_aggregation {
         // OnlySpatial and (collapsable, see #508) OneTemporalOneSpatial encode
         // their output labels in the AST's `by (...)` / `without (...)` clause.
@@ -102,5 +114,6 @@ pub fn build_query_requirements_promql(
         grouping_labels,
         spatial_filter_normalized: normalize_spatial_filter(&spatial_filter),
         topk_count_events,
+        topk_by_labels,
     })
 }

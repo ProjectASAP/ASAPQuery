@@ -74,36 +74,6 @@ python experiment_run_e2e.py \
   --cfg job
 ```
 
-## Service Issues
-
-### Issue: Kafka message size limit exceeded
-
-**Symptoms:**
-- Errors about message size exceeding limits
-- Failed to send large precomputes over Kafka
-- Messages like "RecordTooLargeException" or "MessageSizeTooLargeException"
-
-**Solutions:**
-
-Kafka has three places where message size limits need to be configured (see [PR #154](https://github.com/ProjectASAP/asap-internal/pull/154)):
-
-1. **Kafka broker configuration** (`asap-tools/installation/kafka/install.sh`):
-   - Set `message.max.bytes` to desired limit (e.g., `20971520` for 20MB)
-   - Set `replica.fetch.max.bytes` to the same limit
-
-2. **Kafka topic configuration** (`asap-tools/experiments/experiment_utils/services/kafka.py`):
-   - Update `max.message.bytes` in the topic creation command
-
-3. **Arroyo connection profile** (`asap-summary-ingest/templates/json/connection_profile.j2`):
-   - Add connection properties with `message.max.bytes` and `batch.size`
-
-**Example values:**
-- 4MB: `4194304`
-- 20MB: `20971520` (default, sufficient for large precomputes like 3x65536 CountMinSketch)
-- 100MB: `104857600`
-
-After making changes, redeploy Kafka and restart affected services.
-
 ## Debugging Strategies
 
 ### Strategy 1: Enable Maximum Logging and keep infrastructure running after experiment

@@ -138,7 +138,10 @@ mod tests {
     use crate::aggregation_config::AggregationConfigError;
 
     #[test]
-    fn rejects_heap_config_without_count_events() {
+    fn rejects_heap_config_with_invalid_sub_type() {
+        // Heap-CMS weighting is carried by aggregation_sub_type ('sum'/'count')
+        // rather than a separate count_events parameter; the old 'topk' value
+        // is no longer accepted (#670).
         let yaml: Value = serde_yaml::from_str(
             r#"
 aggregations:
@@ -163,27 +166,30 @@ aggregations:
         .unwrap();
 
         let error = StreamingConfig::from_yaml_data(&yaml, None)
-            .expect_err("heap config without count_events must be rejected");
+            .expect_err("heap config with an unrecognized sub_type must be rejected");
 
         assert!(matches!(
             error.downcast_ref::<AggregationConfigError>(),
-            Some(AggregationConfigError::MissingCountEvents { aggregation_id: 1 })
+            Some(AggregationConfigError::InvalidSubType {
+                aggregation_id: 1,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn rejects_heap_config_with_non_boolean_count_events() {
-        let yaml: Value = serde_yaml::from_str(
-            r#"
+    fn accepts_heap_config_with_sum_or_count_sub_type() {
+        for sub_type in ["sum", "count"] {
+            let yaml: Value = serde_yaml::from_str(&format!(
+                r#"
 aggregations:
   - aggregationId: 1
     aggregationType: CountMinSketchWithHeap
-    aggregationSubType: topk
+    aggregationSubType: {sub_type}
     parameters:
       depth: 3
       width: 1024
       heapsize: 20
-      count_events: "false"
     labels:
       grouping: []
       aggregated: [instance]
@@ -193,51 +199,13 @@ aggregations:
     slideIntervalMs: 15000
     windowType: tumbling
     spatialFilter: ''
-"#,
-        )
-        .unwrap();
+"#
+            ))
+            .unwrap();
 
-        let error = StreamingConfig::from_yaml_data(&yaml, None)
-            .expect_err("heap config with non-boolean count_events must be rejected");
-
-        assert!(error.to_string().contains("aggregation 1"));
-        assert!(error.to_string().contains("count_events"));
-        assert!(error.to_string().contains("boolean"));
-    }
-
-    #[test]
-    fn rejects_count_events_on_non_heap_config() {
-        let yaml: Value = serde_yaml::from_str(
-            r#"
-aggregations:
-  - aggregationId: 1
-    aggregationType: CountMinSketch
-    aggregationSubType: sum
-    parameters:
-      depth: 3
-      width: 1024
-      count_events: false
-    labels:
-      grouping: []
-      aggregated: [instance]
-      rollup: []
-    metric: http_requests_total
-    windowSizeMs: 15000
-    slideIntervalMs: 15000
-    windowType: tumbling
-    spatialFilter: ''
-"#,
-        )
-        .unwrap();
-
-        let error = StreamingConfig::from_yaml_data(&yaml, None)
-            .expect_err("count_events on a non-heap aggregation must be rejected");
-
-        assert!(error.to_string().contains("aggregation 1"));
-        assert!(error.to_string().contains("count_events"));
-        assert!(error
-            .to_string()
-            .contains("only valid for CountMinSketchWithHeap"));
+            StreamingConfig::from_yaml_data(&yaml, None)
+                .unwrap_or_else(|e| panic!("sub_type '{sub_type}' should be accepted: {e}"));
+        }
     }
 
     fn hll_yaml(parameters_yaml: &str) -> Value {
@@ -383,7 +351,7 @@ aggregations:
 
         assert!(matches!(
             error.downcast_ref::<AggregationConfigError>(),
-            Some(AggregationConfigError::InvalidMinMaxSubType {
+            Some(AggregationConfigError::InvalidSubType {
                 aggregation_id: 1,
                 ..
             })

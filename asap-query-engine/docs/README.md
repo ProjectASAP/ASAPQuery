@@ -47,7 +47,7 @@ QueryEngineRust is organized into clear, extensible layers:
                  │
         ┌────────┴────────┐
         │ Ingest Drivers  │
-        │  - Kafka, etc.  │
+        │  - HTTP, etc.   │
         └─────────────────┘
 ```
 
@@ -55,7 +55,7 @@ QueryEngineRust is organized into clear, extensible layers:
 
 ```
 src/drivers/
-├── ingest/           # Data ingestion (Kafka, etc.)
+├── ingest/           # Data ingestion (HTTP remote write, OTLP, etc.)
 ├── query/
 │   ├── adapters/     # Protocol adapters (Prometheus HTTP, etc.)
 │   ├── fallback/     # Fallback backends (Prometheus, ClickHouse, etc.)

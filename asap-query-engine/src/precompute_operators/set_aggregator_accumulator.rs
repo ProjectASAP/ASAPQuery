@@ -2,7 +2,6 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::{message_pack_format::MessagePackCodec, SetAggregator};
 use asap_types::traits::SerializationError;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -88,30 +87,6 @@ impl SetAggregatorAccumulator {
         }
 
         Ok(Self { added })
-    }
-
-    pub fn deserialize_from_bytes_arroyo(
-        buffer: &[u8],
-    ) -> Result<Self, Box<dyn std::error::Error>> {
-        let sa = SetAggregator::from_msgpack(buffer)
-            .map_err(|e| -> Box<dyn std::error::Error> { e.to_string().into() })?;
-        let added = sa
-            .values
-            .into_iter()
-            .map(|s| KeyByLabelValues::from_semicolon_str(&s))
-            .collect();
-        Ok(Self { added })
-    }
-
-    /// Serialize to Arroyo-compatible format (MessagePack StringSet).
-    /// Delegates to sketch-core's canonical wire format.
-    pub fn serialize_to_bytes_arroyo(&self) -> Vec<u8> {
-        let mut sa = SetAggregator::new();
-        for key in &self.added {
-            sa.update(&key.to_semicolon_str());
-        }
-        sa.to_msgpack()
-            .expect("Failed to serialize SetAggregator to MessagePack")
     }
 }
 
@@ -331,35 +306,5 @@ mod tests {
             Box::new(SetAggregatorAccumulator::new());
         let keys = multi_trait_obj.get_keys().unwrap();
         assert_eq!(keys.len(), 0);
-    }
-
-    #[test]
-    fn test_arroyo_roundtrip() {
-        // Verify serialize_to_bytes_arroyo / deserialize_from_bytes_arroyo round-trip.
-        // Both now delegate to sketch-core's SetAggregator which uses the same
-        // StringSet { values: HashSet<String> } format as Arroyo's setaggregator_ UDF.
-        let mut acc = SetAggregatorAccumulator::new();
-        acc.add_key(KeyByLabelValues::new_with_labels(vec![
-            "web".to_string(),
-            "prod".to_string(),
-        ]));
-        acc.add_key(KeyByLabelValues::new_with_labels(vec!["api".to_string()]));
-
-        let bytes = acc.serialize_to_bytes_arroyo();
-        let deserialized = SetAggregatorAccumulator::deserialize_from_bytes_arroyo(&bytes).expect(
-            "deserialize_from_bytes_arroyo failed — format mismatch with serialize_to_bytes_arroyo",
-        );
-
-        assert_eq!(
-            deserialized.added.len(),
-            acc.added.len(),
-            "roundtrip changed the number of keys"
-        );
-        for key in &acc.added {
-            assert!(
-                deserialized.added.contains(key),
-                "key {key:?} missing after arroyo roundtrip"
-            );
-        }
     }
 }

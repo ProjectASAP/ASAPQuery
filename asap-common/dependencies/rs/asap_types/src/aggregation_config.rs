@@ -3,6 +3,7 @@ use serde_json::Value;
 use serde_yaml;
 use std::collections::HashMap;
 
+use crate::aggregation_mode::AggregationMode;
 use crate::enums::{QueryLanguage, WindowType};
 use crate::traits::SerializableToSink;
 use crate::utils::normalize_spatial_filter;
@@ -16,20 +17,11 @@ pub const HLL_MAX_PRECISION: u32 = 18;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AggregationConfigError {
-    #[error(
-        "aggregation {aggregation_id} (CountMinSketchWithHeap) missing required parameter 'count_events'"
-    )]
-    MissingCountEvents { aggregation_id: u64 },
-    #[error(
-        "aggregation {aggregation_id} (CountMinSketchWithHeap) parameter 'count_events' must be a boolean, got {value}"
-    )]
-    InvalidCountEventsType { aggregation_id: u64, value: Value },
-    #[error(
-        "aggregation {aggregation_id} ({aggregation_type}) parameter 'count_events' is only valid for CountMinSketchWithHeap"
-    )]
-    MisplacedCountEvents {
+    #[error("aggregation {aggregation_id} ({aggregation_type}): {reason}")]
+    InvalidSubType {
         aggregation_id: u64,
         aggregation_type: AggregationType,
+        reason: String,
     },
     #[error("aggregation {aggregation_id} (HLL) missing required parameter 'precision'")]
     MissingPrecision { aggregation_id: u64 },
@@ -47,14 +39,6 @@ pub enum AggregationConfigError {
     MisplacedPrecision {
         aggregation_id: u64,
         aggregation_type: AggregationType,
-    },
-    #[error(
-        "aggregation {aggregation_id} ({aggregation_type}) aggregation_sub_type must be 'min' or 'max', got '{sub_type}'"
-    )]
-    InvalidMinMaxSubType {
-        aggregation_id: u64,
-        aggregation_type: AggregationType,
-        sub_type: String,
     },
 }
 
@@ -99,34 +83,22 @@ pub struct AggregationIdInfo {
 
 impl AggregationConfig {
     pub fn validate(&self) -> Result<(), AggregationConfigError> {
-        self.validate_count_events()?;
+        self.mode().map(|_| ())?;
         self.validate_hll_precision()?;
-        self.validate_minmax_subtype()?;
         Ok(())
     }
 
-    fn validate_count_events(&self) -> Result<(), AggregationConfigError> {
-        if self.aggregation_type == AggregationType::CountMinSketchWithHeap {
-            match self.parameters.get("count_events") {
-                None => Err(AggregationConfigError::MissingCountEvents {
-                    aggregation_id: self.aggregation_id,
-                }),
-                Some(value) if !value.is_boolean() => {
-                    Err(AggregationConfigError::InvalidCountEventsType {
-                        aggregation_id: self.aggregation_id,
-                        value: value.clone(),
-                    })
-                }
-                Some(_) => Ok(()),
-            }
-        } else if self.parameters.contains_key("count_events") {
-            Err(AggregationConfigError::MisplacedCountEvents {
+    /// The typed meaning of `aggregation_sub_type` for this config's
+    /// `aggregation_type`. The single seam factories, planners, and capability
+    /// matching all dispatch through instead of re-parsing the raw string (#670).
+    pub fn mode(&self) -> Result<AggregationMode, AggregationConfigError> {
+        AggregationMode::parse(self.aggregation_type, &self.aggregation_sub_type).map_err(
+            |reason| AggregationConfigError::InvalidSubType {
                 aggregation_id: self.aggregation_id,
                 aggregation_type: self.aggregation_type,
-            })
-        } else {
-            Ok(())
-        }
+                reason,
+            },
+        )
     }
 
     fn validate_hll_precision(&self) -> Result<(), AggregationConfigError> {
@@ -159,27 +131,6 @@ impl AggregationConfig {
             })
         } else {
             Ok(())
-        }
-    }
-
-    fn validate_minmax_subtype(&self) -> Result<(), AggregationConfigError> {
-        let is_minmax = matches!(
-            self.aggregation_type,
-            AggregationType::MinMax | AggregationType::MultipleMinMax
-        );
-        if !is_minmax {
-            return Ok(());
-        }
-        if self.aggregation_sub_type.eq_ignore_ascii_case("min")
-            || self.aggregation_sub_type.eq_ignore_ascii_case("max")
-        {
-            Ok(())
-        } else {
-            Err(AggregationConfigError::InvalidMinMaxSubType {
-                aggregation_id: self.aggregation_id,
-                aggregation_type: self.aggregation_type,
-                sub_type: self.aggregation_sub_type.clone(),
-            })
         }
     }
 

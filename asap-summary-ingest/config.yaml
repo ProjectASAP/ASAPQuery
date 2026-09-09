@@ -1,2 +1,0 @@
-compiler:
-    use-local-udf-crate: true

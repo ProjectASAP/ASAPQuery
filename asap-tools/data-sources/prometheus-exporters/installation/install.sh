@@ -28,11 +28,4 @@ echo "Building Fake Exporter Rust..."
     ./install.sh
 )
 
-# Build fake kafka exporter
-echo "Building Fake Kafka Exporter..."
-(
-    cd "$PROMETHEUS_EXPORTERS_DIR/fake_kafka_exporter/installation"
-    ./install.sh
-)
-
 echo "All PrometheusExporters Docker images built successfully!"

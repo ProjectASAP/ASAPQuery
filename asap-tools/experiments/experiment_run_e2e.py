@@ -9,19 +9,13 @@ import constants
 import experiment_utils
 from experiment_utils import sync, config
 from experiment_utils.services import (
-    KafkaService,
-    FlinkService,
     QueryEngineRustService,
     resolve_backend_config,
     ExporterServiceFactory,
-    PrometheusKafkaAdapterService,
-    ArroyoService,
-    ArroyoThroughputMonitor,
     PrometheusThroughputMonitor,
     PrometheusHealthMonitor,
     DeathstarService,
     ControllerService,
-    DumbKafkaConsumerService,
     PrometheusClientService,
     RemoteMonitorService,
     AvalancheExporterService,
@@ -34,13 +28,10 @@ from experiment_utils.services import (
 )
 from experiment_utils.services.misc import DiscoveryBackend
 
-COMPRESS_JSON = True
-
 CONTROLLER_LOCAL_OUTPUT_DIR = None
 CONTROLLER_REMOTE_OUTPUT_DIR = None
 
 REMOTE_PROCESS_POLLING_INTERVAL = 10
-KAFKA_NUM_TRIES = 5
 
 # Register custom resolver for LOCAL_EXPERIMENT_DIR before Hydra processes config
 OmegaConf.register_new_resolver(
@@ -127,18 +118,10 @@ def main(cfg: DictConfig):
     if exporter_config is None:
         raise ValueError("Invalid exporter config: {}".format(rejection_reason))
 
-    flinksketch_job_id = None
-    flinksketch_popen = None
-    flink_pids = None
-    arroyo_pids = None
-    arroyosketch_pipeline_id = None
-    arroyo_throughput_monitor = None
     prometheus_throughput_monitor = None
     prometheus_health_monitor = None
 
     # Initialize services
-    kafka_service = KafkaService(provider, args.node_offset, num_tries=KAFKA_NUM_TRIES)
-    flink_service = FlinkService(provider, args.node_offset)
     query_engine_service = QueryEngineRustService(
         provider,
         use_container=args.use_container_query_engine,
@@ -148,21 +131,12 @@ def main(cfg: DictConfig):
     prometheus_service = create_prometheus_service(
         cfg, provider, args.num_nodes, args.node_offset
     )
-    prometheus_kafka_adapter_service = PrometheusKafkaAdapterService(
-        provider, args.node_offset
-    )
-    arroyo_service = ArroyoService(
-        provider,
-        use_container=args.use_container_arroyo,
-        node_offset=args.node_offset,
-    )
     deathstar_service = DeathstarService(provider, args)
     controller_service = ControllerService(
         provider,
         use_container=args.use_container_controller,
         node_offset=args.node_offset,
     )
-    dumb_consumer_service = DumbKafkaConsumerService(provider, args.node_offset)
     prometheus_client_service = PrometheusClientService(
         provider,
         use_container=args.use_container_prometheus_client,
@@ -243,40 +217,12 @@ def main(cfg: DictConfig):
             f"{experiment_mode}_controller_input.yaml",
         )
 
-        if (
-            experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
-            and args.streaming_engine == "flink"
-            and not args.do_local_flink
-        ):
-            flink_service.start()
-
-        if args.do_local_flink:
-            flink_service.stop()
-
-        if (
-            experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME
-            and args.streaming_engine == "arroyo"
-        ):
-            arroyo_service.stop()
-            time.sleep(10)
-            arroyo_service.start(
-                experiment_output_dir=experiment_output_dir,
-                remote_write_base_port=args.remote_write_base_port,
-                parallelism=args.parallelism,
-            )
-
         prometheus_client_service.stop()
         remote_monitor_service.stop(
             execution_mode="timed" if skip_querying else "prometheus_client",
             experiment_output_dir=experiment_output_dir,
         )
-        flink_service.stop_all_jobs()
-        arroyo_service.stop_all_jobs()
-        if args.do_local_flink:
-            flink_service.stop_all_java_processes()
         query_engine_service.stop()
-        kafka_service.stop()
-        prometheus_kafka_adapter_service.stop()
         system_exporters_service.stop()
         prometheus_service.stop()
         exporter_service.stop()
@@ -384,11 +330,6 @@ def main(cfg: DictConfig):
                 CONTROLLER_LOCAL_OUTPUT_DIR,
                 node_offset=args.node_offset,
             )
-            if args.streaming_engine != "precompute":
-                kafka_service.start()
-                kafka_service.wait_until_ready()
-                kafka_service.delete_topics()
-                kafka_service.create_topics()
 
         if (
             config.check_exporter_and_queries_exist(
@@ -436,106 +377,43 @@ def main(cfg: DictConfig):
             deathstar_service.start()
 
         if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
-            if args.use_kafka_ingest:
-                prometheus_kafka_adapter_service.start(
-                    flink_input_format=args.flink_input_format
-                )
-            if args.streaming_engine == "flink":
-                flinksketch_job_id, flinksketch_popen = flink_service.run_flinksketch(
-                    experiment_output_dir=experiment_output_dir,
-                    flink_input_format=args.flink_input_format,
-                    flink_output_format=args.flink_output_format,
-                    enable_object_reuse=args.enable_object_reuse,
-                    do_local_flink=args.do_local_flink,
-                    controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
-                    compress_json=COMPRESS_JSON,
-                )
-
-                if args.profile_flink or args.do_local_flink:
-                    while flink_pids is None:
-                        flink_pids = flink_service.get_flink_pids(args.do_local_flink)
-                        print(
-                            "Waiting for Flink pids to be available. Sleeping for 10 seconds"
-                        )
-                        time.sleep(5)
-            elif args.streaming_engine == "arroyo":
-                arroyosketch_pipeline_id = arroyo_service.run_arroyosketch(
-                    experiment_name=args.experiment_name,
-                    experiment_output_dir=experiment_output_dir,
-                    flink_input_format=args.flink_input_format,
-                    flink_output_format=args.flink_output_format,
-                    controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
-                    remote_write_ip=args.remote_write_ip,
-                    remote_write_base_port=args.remote_write_base_port,
-                    remote_write_path=args.remote_write_path,
-                    parallelism=args.parallelism,
-                    use_kafka_ingest=args.use_kafka_ingest,
-                    enable_optimized_remote_write=cfg.streaming.remote_write.enable_optimized_source,
-                    avoid_long_ssh=constants.AVOID_RUN_ARROYOSKETCH_LONG_SSH,
-                )
-                print("ArroyoSketch pipeline ID: {}".format(arroyosketch_pipeline_id))
-
-                if args.profile_arroyo:
-                    while arroyo_pids is None:
-                        arroyo_pids = arroyo_service.get_arroyo_pids()
-                        print(
-                            "Waiting for Arroyo pids to be available. Sleeping for 5 seconds"
-                        )
-                        time.sleep(5)
-
-                # Start throughput monitoring if enabled
-                if args.throughput_arroyo:
-                    arroyo_throughput_monitor = ArroyoThroughputMonitor(
-                        provider,
-                        node_offset=args.node_offset,
-                    )
-                    arroyo_throughput_monitor.start(
-                        pipeline_id=arroyosketch_pipeline_id,
-                        experiment_output_dir=experiment_output_dir,
-                    )
-            elif args.streaming_engine not in ("precompute",):
+            if args.streaming_engine != "precompute":
                 raise ValueError(
-                    "Invalid streaming engine: {}. Supported engines are 'flink', 'arroyo', and 'precompute'".format(
+                    "Invalid streaming engine: {}. Only 'precompute' is supported.".format(
                         args.streaming_engine
                     )
                 )
 
-            # in case we want to run query engine manually
-            if not cfg.flow.replace_query_engine_with_dumb_consumer:
-                # Get http port from query engine service
-                http_port = query_engine_service.get_http_port()
+            http_port = query_engine_service.get_http_port()
 
-                backend_config = resolve_backend_config(
-                    args.backend,
-                    prometheus_service,
-                    provider,
-                    args.node_offset,
-                    args.forward_unsupported_queries,
-                )
+            backend_config = resolve_backend_config(
+                args.backend,
+                prometheus_service,
+                provider,
+                args.node_offset,
+                args.forward_unsupported_queries,
+            )
 
-                query_engine_service.start(
-                    experiment_output_dir=experiment_output_dir,
-                    local_experiment_dir=local_experiment_dir,
-                    flink_output_format=args.flink_output_format,
-                    data_ingestion_interval_ms=data_ingestion_interval_ms,
-                    log_level=args.log_level,
-                    profile_query_engine=args.profile_query_engine,
-                    manual=args.manual_query_engine,
-                    streaming_engine=args.streaming_engine,
-                    controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
-                    compress_json=COMPRESS_JSON,
-                    dump_precomputes=args.dump_precomputes,
-                    lock_strategy=args.lock_strategy,
-                    backend_config=backend_config,
-                    http_port=http_port,
-                    remote_write_port=args.remote_write_base_port,
-                )
-                # For precompute mode the query engine IS the Prometheus remote-write
-                # target (port remote_write_base_port). Prometheus is already running
-                # and retrying writes against that port, so block until the query
-                # engine's HTTP server is accepting connections before proceeding.
-                if args.streaming_engine == "precompute":
-                    query_engine_service.wait_until_ready()
+            query_engine_service.start(
+                experiment_output_dir=experiment_output_dir,
+                local_experiment_dir=local_experiment_dir,
+                data_ingestion_interval_ms=data_ingestion_interval_ms,
+                log_level=args.log_level,
+                profile_query_engine=args.profile_query_engine,
+                manual=args.manual_query_engine,
+                streaming_engine=args.streaming_engine,
+                controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
+                lock_strategy=args.lock_strategy,
+                backend_config=backend_config,
+                http_port=http_port,
+                remote_write_port=args.remote_write_base_port,
+            )
+            # For precompute mode the query engine IS the Prometheus remote-write
+            # target (port remote_write_base_port). Prometheus is already running
+            # and retrying writes against that port, so block until the query
+            # engine's HTTP server is accepting connections before proceeding.
+            if args.streaming_engine == "precompute":
+                query_engine_service.wait_until_ready()
 
         # Start system exporters (node_exporter, blackbox_exporter, cadvisor)
         system_exporters_service.start(cfg.experiment_params)
@@ -613,9 +491,6 @@ def main(cfg: DictConfig):
         else:
             print("Skipping steady_state_wait in skip_querying mode")
 
-        if cfg.flow.replace_query_engine_with_dumb_consumer:
-            dumb_consumer_service.start(experiment_output_dir=experiment_output_dir)
-
         # TODO: rename this function and remote_monitor.py
         # run_remote_monitor(
         remote_monitor_service.start(
@@ -624,15 +499,9 @@ def main(cfg: DictConfig):
             experiment_mode,
             args.profile_query_engine,
             args.profile_prometheus_time,
-            args.profile_flink,
-            flink_pids,
-            args.profile_arroyo,
-            arroyo_pids,
             args.manual_remote_monitor,
-            args.do_local_flink,
             args.streaming_engine,
             query_engine_service,
-            arroyo_service,
             controller_remote_output_dir=CONTROLLER_REMOTE_OUTPUT_DIR,
             use_container_prometheus_client=args.use_container_prometheus_client,
             prometheus_client_parallel=args.prometheus_client_parallel,
@@ -652,9 +521,6 @@ def main(cfg: DictConfig):
                 experiment_output_dir=experiment_output_dir,
             )
 
-        if cfg.flow.replace_query_engine_with_dumb_consumer:
-            dumb_consumer_service.stop()
-
         # Containerized Prometheus service mounts a volume on the remote experiment directory
         # Bare-metal Prometheus stores data locally, so we need to copy it back
         if (
@@ -667,21 +533,6 @@ def main(cfg: DictConfig):
         if not args.no_teardown:
             if experiment_mode == constants.SKETCHDB_EXPERIMENT_NAME:
                 query_engine_service.stop()
-                if args.streaming_engine == "flink":
-                    flink_service.stop_flinksketch(
-                        job_id=flinksketch_job_id,
-                        popen=flinksketch_popen,
-                        flink_pids=flink_pids,
-                        do_local_flink=args.do_local_flink,
-                    )
-                elif args.streaming_engine == "arroyo":
-                    # Stop throughput monitoring if it was started
-                    if args.throughput_arroyo:
-                        if arroyo_throughput_monitor is None:
-                            raise RuntimeError(
-                                "Throughput monitoring was enabled but monitor is None"
-                            )
-                        arroyo_throughput_monitor.stop()
 
                 # Stop Prometheus throughput monitoring if it was started
                 if args.throughput_prometheus:
@@ -698,18 +549,6 @@ def main(cfg: DictConfig):
                             "Prometheus health check monitoring was enabled but monitor is None"
                         )
                     prometheus_health_monitor.stop()
-
-                if args.streaming_engine == "arroyo":
-                    assert (
-                        arroyosketch_pipeline_id is not None
-                    ), "ArroyoSketch pipeline ID is None"
-                    arroyo_service.stop_arroyosketch(arroyosketch_pipeline_id)
-                    arroyo_service.stop()
-                if args.use_kafka_ingest:
-                    prometheus_kafka_adapter_service.stop()
-                if args.streaming_engine != "precompute":
-                    kafka_service.delete_topics()
-                    kafka_service.stop()
 
             system_exporters_service.stop()
             prometheus_service.stop()

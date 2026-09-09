@@ -1,4 +1,5 @@
 pub mod aggregation_config;
+pub mod aggregation_mode;
 pub mod aggregation_reference;
 pub mod capability_matching;
 pub mod enums;

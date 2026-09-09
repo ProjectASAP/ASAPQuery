@@ -25,7 +25,7 @@ class LocalProvider(InfrastructureProvider):
 
         Args:
             home_dir: Local directory mirroring CloudLab's deployment layout
-                      (prometheus/, code/arroyo/..., experiment_outputs/, etc.)
+                      (prometheus/, code/asap-query-engine/..., experiment_outputs/, etc.)
         """
         self.home_dir = home_dir
 

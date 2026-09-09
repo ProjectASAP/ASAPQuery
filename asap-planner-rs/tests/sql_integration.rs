@@ -6,7 +6,7 @@ use tempfile::NamedTempFile;
 
 fn sql_opts() -> SQLRuntimeOptions {
     SQLRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         // Fixed evaluation time so NOW()-relative timestamps are deterministic.
         query_evaluation_time: Some(1_000_000.0),
         data_ingestion_interval_ms: 15_000,
@@ -654,7 +654,7 @@ aggregate_cleanup:
 
 fn sql_opts_1s_ingest() -> SQLRuntimeOptions {
     SQLRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         query_evaluation_time: Some(1_000_000.0),
         data_ingestion_interval_ms: 1_000,
     }
@@ -1050,7 +1050,7 @@ fn spatial_count_topk_heap() {
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "count"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
     assert!(out.all_tumbling_window_sizes_eq(1_000));
@@ -1069,11 +1069,6 @@ fn spatial_count_topk_heap() {
         out.aggregation_parameter("CountMinSketchWithHeap", "heapsize")
             .and_then(|v| v.as_u64()),
         Some(40)
-    );
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
-            .and_then(|v| v.as_bool()),
-        Some(true)
     );
 }
 
@@ -1091,7 +1086,7 @@ fn spatial_sum_topk_heap() {
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "sum"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
     assert!(out.all_tumbling_window_sizes_eq(1_000));
@@ -1110,11 +1105,6 @@ fn spatial_sum_topk_heap() {
         out.aggregation_parameter("CountMinSketchWithHeap", "heapsize")
             .and_then(|v| v.as_u64()),
         Some(40)
-    );
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
-            .and_then(|v| v.as_bool()),
-        Some(false)
     );
 }
 
@@ -1137,7 +1127,7 @@ fn spatiotemporal_count_topk_heap() {
     assert_eq!(out.streaming_aggregation_count(), 1);
     assert_eq!(out.inference_query_count(), 1);
     assert!(out.has_aggregation_type("CountMinSketchWithHeap"));
-    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "topk"));
+    assert!(out.has_aggregation_type_and_sub_type("CountMinSketchWithHeap", "count"));
     assert!(!out.has_aggregation_type("DeltaSetAggregator"));
     assert!(!out.has_aggregation_type("CountMinSketch"));
     assert!(out.all_tumbling_window_sizes_eq(2_000));
@@ -1148,11 +1138,6 @@ fn spatiotemporal_count_topk_heap() {
     assert_eq!(
         out.aggregation_labels("CountMinSketchWithHeap", "aggregated"),
         vec!["srcip".to_string()]
-    );
-    assert_eq!(
-        out.aggregation_parameter("CountMinSketchWithHeap", "count_events")
-            .and_then(|v| v.as_bool()),
-        Some(true)
     );
 }
 
@@ -1200,7 +1185,7 @@ fn sub_second_data_ingestion_interval_ms() {
              WHERE time BETWEEN DATEADD(s, -2, NOW()) AND NOW() \
              GROUP BY srcip";
     let opts = SQLRuntimeOptions {
-        streaming_engine: StreamingEngine::Arroyo,
+        streaming_engine: StreamingEngine::Precompute,
         query_evaluation_time: Some(1_000_000.0),
         data_ingestion_interval_ms: 500,
     };
