@@ -238,14 +238,19 @@ to 100 CPU-seconds/query only for those diagnostic runs and restored to
 holds 6,481 instances, and that run is also retained. None of these results is
 an exact-vs-approximate claim.
 
-The run exposed two plumbing findings. First, the sketch-bench flattener keeps
-the *first* shared timing field, while `scripts/export_atomic_costs.sh` says
-accuracy should run first because it assumes the last field wins. The preserved
-accuracy-first `atomic_costs.json` therefore has zero profiles (one-sample
-accuracy wall-time versus five throughput/CPU samples); the cost-first rerun
-`atomic_costs_cost_first.json` reduces successfully to one profile/two entries.
-The export script should be corrected before this is made a reusable runner.
-Second, an empirical profile previously allowed unmeasured HydraKLL candidates
+The run exposed two plumbing findings. First, accuracy and throughput records
+both carried incidental timing metadata, and the old generic flattener kept
+the first one it encountered. The preserved accuracy-first `atomic_costs.json`
+therefore initially had zero profiles (one-sample accuracy wall-time versus
+five throughput/CPU samples). This is now fixed in sketch-bench: flattened
+fields have strict primary-pass ownership—accuracy contributes only accuracy,
+throughput contributes cost timing/resources, and latency contributes latency.
+Unknown/contradictory primary fields fail loudly; merge latency also fails
+loudly because `MergedRecord` has no field to represent it. Reflattening the
+same preserved accuracy-first raw report now yields
+`atomic_costs_strict_accuracy_first.json` with one profile/two entries, so the
+export order is no longer a correctness condition. Second, an empirical profile
+previously allowed unmeasured HydraKLL candidates
 to use a flat stub and win. ASAPQuery now drops HydraKLL when a nonempty
 empirical table is present, and treats it as infeasible under a rank-error
 limit; focused regression tests cover both cases.
