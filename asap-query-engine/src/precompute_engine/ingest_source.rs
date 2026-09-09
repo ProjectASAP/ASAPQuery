@@ -277,7 +277,7 @@ mod tests {
     fn aggregation_config(spatial_filter: &str) -> AggregationConfig {
         AggregationConfig::new(
             7,
-            AggregationType::SingleSubpopulation,
+            AggregationType::Sum,
             "Sum".to_string(),
             HashMap::new(),
             KeyByLabelNames::new(vec![]),

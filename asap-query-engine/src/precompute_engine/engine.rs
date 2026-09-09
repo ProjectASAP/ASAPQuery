@@ -326,7 +326,7 @@ mod tests {
     async fn run_rejects_invalid_spatial_filter_before_starting_workers() {
         let config = AggregationConfig::new(
             1,
-            AggregationType::SingleSubpopulation,
+            AggregationType::Sum,
             "Sum".to_string(),
             HashMap::new(),
             promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
