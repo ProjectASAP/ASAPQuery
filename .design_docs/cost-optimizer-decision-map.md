@@ -392,6 +392,11 @@ The 2% eligibility claim remains supported by the paired sketch-bench profiles
 must retain the matched-key rule and report unmatched baseline rows rather than
 silently treating them as zero error.
 
+The reducer is `asap-tools/experiments/analyze_cost_optimizer_validation.py`.
+It has been run over both retained directories and wrote
+`experiment_outputs/cost_optimizer_validation_1x_summary.json`; it is the
+reproducible source for the figures above.
+
 ## #3: What feasibility evidence constrains optimization?
 
 Blocked by: #1, #2
