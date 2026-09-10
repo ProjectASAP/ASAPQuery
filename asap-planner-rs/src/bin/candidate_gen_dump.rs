@@ -35,9 +35,10 @@ struct Args {
     #[arg(long = "atomic-costs")]
     atomic_costs: Option<PathBuf>,
 
-    /// JSON `profiles[].workload` value selecting exactly one measured profile.
-    #[arg(long = "atomic-cost-workload", requires = "atomic_costs")]
-    atomic_cost_workload: Option<PathBuf>,
+    /// JSON object containing the selected profile's `workload` and `scenario`
+    /// values, selecting exactly one measured profile.
+    #[arg(long = "atomic-cost-profile", requires = "atomic_costs")]
+    atomic_cost_profile: Option<PathBuf>,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -45,7 +46,7 @@ fn main() -> anyhow::Result<()> {
 
     let atomic_cost_table = load_optional_selected_atomic_cost_table(
         args.atomic_costs.as_deref(),
-        args.atomic_cost_workload.as_deref(),
+        args.atomic_cost_profile.as_deref(),
     )?
     .unwrap_or_default();
 

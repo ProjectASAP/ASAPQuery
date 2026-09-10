@@ -444,6 +444,15 @@ the dataset identity that a future `AtomicCostProfile` must cite. Thus an
 container: `scenario spec -> wrangled CSV + ScenarioManifest -> sketch-bench
 -> AtomicCostDocument`.
 
+2026-09-10 profile-provenance implementation: `AtomicCostDocument` schema v2
+adds a required profile-level `scenario` identity: the canonical wrangled CSV
+payload hash, exported metric, grouping labels, and original source-time
+range. `approxbench atomic-costs` now requires the wrangler's scenario
+manifest and rejects malformed provenance. ASAPQuery's `--atomic-cost-profile`
+selector must contain both `workload` and `scenario`; a workload-only match is
+not eligible. This is the first enforced end-to-end guard against using a
+benchmark profile measured on a different derived dataset.
+
 2026-09-10 cost-model correction to make before claiming a calibrated
 objective: expose a resource vector rather than immediately collapsing values
 into one scalar: resident state memory (bytes), ingest CPU rate (CPU-s/s),

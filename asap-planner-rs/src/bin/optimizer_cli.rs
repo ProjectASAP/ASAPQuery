@@ -36,7 +36,7 @@ struct Args {
     rho: f64,
 
     /// Path to the versioned atomic-cost document sketch-bench's `atomic-costs`
-    /// subcommand exports. Requires --atomic-cost-workload to select exactly
+    /// subcommand exports. Requires --atomic-cost-profile to select exactly
     /// one measured workload profile. Omitted: every
     /// benchmarked-family candidate (CMS/HLL/KLL) is dropped, since there is
     /// no data to cost it at — only trivial accumulators and EXACT remain
@@ -44,11 +44,10 @@ struct Args {
     #[arg(long = "atomic-costs")]
     atomic_costs: Option<PathBuf>,
 
-    /// JSON `profiles[].workload` value copied from the sketch-bench atomic-cost
-    /// document. This makes the empirical workload profile explicit and avoids
-    /// mixing costs from different traces or time windows.
-    #[arg(long = "atomic-cost-workload", requires = "atomic_costs")]
-    atomic_cost_workload: Option<PathBuf>,
+    /// JSON object containing the selected profile's `workload` and `scenario`
+    /// values. This prevents use of costs measured on a different wrangled CSV.
+    #[arg(long = "atomic-cost-profile", requires = "atomic_costs")]
+    atomic_cost_profile: Option<PathBuf>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -79,7 +78,7 @@ fn main() -> anyhow::Result<()> {
 
     let atomic_cost_table = match load_optional_selected_atomic_cost_table(
         args.atomic_costs.as_deref(),
-        args.atomic_cost_workload.as_deref(),
+        args.atomic_cost_profile.as_deref(),
     )? {
         Some(table) => table,
         None => {

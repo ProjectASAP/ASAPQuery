@@ -22,24 +22,44 @@ use super::constants::{
 use super::cost_model::AtomicCosts;
 
 const CMS_HEAP_BENCHMARK: &str = "cms-heap-topk-regularpath-vector2d";
-pub const ATOMIC_COST_SCHEMA_VERSION: u32 = 1;
+pub const ATOMIC_COST_SCHEMA_VERSION: u32 = 2;
 
 /// Versioned atomic-cost document emitted by `approxbench atomic-costs`.
 ///
 /// A profile is deliberately selected before candidate resolution: costs from
 /// different input workloads must never be mixed by a flat lookup.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AtomicCostDocument {
     pub schema_version: u32,
     pub profiles: Vec<AtomicCostProfile>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AtomicCostProfile {
     pub workload: WorkloadDescription,
+    pub scenario: ScenarioIdentity,
     pub entries: Vec<AtomicCostEntry>,
+}
+
+/// Immutable identity of the wrangled CSV that sketch-bench measured.
+/// This must match exactly before the optimizer is allowed to use a profile.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioIdentity {
+    pub payload_sha256: String,
+    pub exported_metric: String,
+    pub grouping_labels: Vec<String>,
+    pub source_time_range_us: [i64; 2],
+}
+
+/// Exact profile identity selected for an optimizer run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AtomicCostProfileSelector {
+    pub workload: WorkloadDescription,
+    pub scenario: ScenarioIdentity,
 }
 
 /// The provenance of the input data on which atomic costs were measured.
@@ -72,7 +92,7 @@ pub struct ExternalWorkload {
     pub timestamp_unit: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AtomicCostEntry {
     pub sketch: String,
@@ -86,19 +106,19 @@ pub struct AtomicCostEntry {
 
 pub type AtomicCostTable = Vec<AtomicCostEntry>;
 
-/// Parse a standalone JSON workload selector. The selector is the exact
-/// `profiles[].workload` value copied from the benchmark artifact, making the
-/// selected empirical input explicit in an offline planning run.
-pub fn load_workload_selector(path: &Path) -> anyhow::Result<WorkloadDescription> {
+/// Parse a standalone JSON profile selector. The selector is the exact
+/// `profiles[]` identity copied from the benchmark artifact, making both the
+/// workload and the wrangled input explicit in an offline planning run.
+pub fn load_profile_selector(path: &Path) -> anyhow::Result<AtomicCostProfileSelector> {
     let raw = std::fs::read_to_string(path).map_err(|e| {
         anyhow::anyhow!(
-            "reading atomic-cost workload selector {}: {e}",
+            "reading atomic-cost profile selector {}: {e}",
             path.display()
         )
     })?;
     serde_json::from_str(&raw).map_err(|e| {
         anyhow::anyhow!(
-            "parsing atomic-cost workload selector {}: {e}",
+            "parsing atomic-cost profile selector {}: {e}",
             path.display()
         )
     })
@@ -108,7 +128,7 @@ pub fn load_workload_selector(path: &Path) -> anyhow::Result<WorkloadDescription
 /// from exactly one requested workload profile.
 pub fn load_atomic_cost_table(
     path: &Path,
-    workload: &WorkloadDescription,
+    selector: &AtomicCostProfileSelector,
 ) -> anyhow::Result<AtomicCostTable> {
     let raw = std::fs::read_to_string(path)
         .map_err(|e| anyhow::anyhow!("reading atomic-cost table {}: {e}", path.display()))?;
@@ -127,20 +147,22 @@ pub fn load_atomic_cost_table(
     let matches: Vec<_> = document
         .profiles
         .iter()
-        .filter(|profile| profile.workload == *workload)
+        .filter(|profile| {
+            profile.workload == selector.workload && profile.scenario == selector.scenario
+        })
         .collect();
     match matches.as_slice() {
         [profile] => Ok(profile.entries.clone()),
         [] => anyhow::bail!(
-            "no atomic-cost profile in {} matches workload selector {}",
+            "no atomic-cost profile in {} matches profile selector {}",
             path.display(),
-            serde_json::to_string(workload).unwrap_or_else(|_| "<unserializable>".into())
+            serde_json::to_string(selector).unwrap_or_else(|_| "<unserializable>".into())
         ),
         _ => anyhow::bail!(
-            "{} atomic-cost profiles in {} match workload selector {}; expected exactly one",
+            "{} atomic-cost profiles in {} match profile selector {}; expected exactly one",
             matches.len(),
             path.display(),
-            serde_json::to_string(workload).unwrap_or_else(|_| "<unserializable>".into())
+            serde_json::to_string(selector).unwrap_or_else(|_| "<unserializable>".into())
         ),
     }
 }
@@ -152,8 +174,8 @@ pub fn load_selected_atomic_cost_table(
     document_path: &Path,
     selector_path: &Path,
 ) -> anyhow::Result<AtomicCostTable> {
-    let workload = load_workload_selector(selector_path)?;
-    load_atomic_cost_table(document_path, &workload)
+    let selector = load_profile_selector(selector_path)?;
+    load_atomic_cost_table(document_path, &selector)
 }
 
 /// Resolve the optional atomic-cost CLI inputs as one unit. A document without
@@ -168,10 +190,10 @@ pub fn load_optional_selected_atomic_cost_table(
             load_selected_atomic_cost_table(document_path, selector_path).map(Some)
         }
         (Some(_), None) => anyhow::bail!(
-            "--atomic-cost-workload is required with --atomic-costs; \
-             it must contain the selected profiles[].workload JSON value"
+            "--atomic-cost-profile is required with --atomic-costs; \
+             it must contain the selected profiles[] workload and scenario JSON value"
         ),
-        (None, Some(_)) => anyhow::bail!("--atomic-cost-workload requires --atomic-costs"),
+        (None, Some(_)) => anyhow::bail!("--atomic-cost-profile requires --atomic-costs"),
         (None, None) => Ok(None),
     }
 }
@@ -487,34 +509,40 @@ fn valid_cost_entry(entry: &AtomicCostEntry) -> bool {
 mod tests {
     use super::*;
 
+    fn scenario(payload_sha256: &str) -> ScenarioIdentity {
+        ScenarioIdentity {
+            payload_sha256: payload_sha256.into(),
+            exported_metric: "google_mean_cpu_usage_rate_0".into(),
+            grouping_labels: vec!["job_id".into(), "task_index".into(), "machine_id".into()],
+            source_time_range_us: [1_313_535_000_000, 1_313_715_000_000],
+        }
+    }
+
     #[test]
     fn loader_selects_only_the_requested_external_profile() {
-        let requested = WorkloadDescription::External(ExternalWorkload {
-            source: "google".into(),
-            dataset: "google/task_usage.csv.gz".into(),
-            mode: "grouped".into(),
-            key_columns: vec![],
-            group_columns: vec!["machine_id".into()],
-            variate: None,
-            value_column: "cpu_rate".into(),
-            window_start_ns: 10,
-            window_end_ns: 20,
-            records_loaded: 100,
-            source_timestamp_unit: "microseconds".into(),
-            timestamp_unit: "nanoseconds".into(),
-        });
-        let other = WorkloadDescription::External(ExternalWorkload {
-            window_end_ns: 30,
-            ..match requested.clone() {
-                WorkloadDescription::External(workload) => workload,
-                WorkloadDescription::Synthetic { .. } => unreachable!(),
-            }
-        });
+        let requested = AtomicCostProfileSelector {
+            workload: WorkloadDescription::External(ExternalWorkload {
+                source: "google".into(),
+                dataset: "google/task_usage.csv.gz".into(),
+                mode: "grouped".into(),
+                key_columns: vec![],
+                group_columns: vec!["machine_id".into()],
+                variate: None,
+                value_column: "cpu_rate".into(),
+                window_start_ns: 10,
+                window_end_ns: 20,
+                records_loaded: 100,
+                source_timestamp_unit: "microseconds".into(),
+                timestamp_unit: "nanoseconds".into(),
+            }),
+            scenario: scenario("a"),
+        };
+        let other_scenario = scenario("b");
         let document = serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "profiles": [
-                {"workload": other, "entries": []},
-                {"workload": requested, "entries": [{
+                {"workload": requested.workload, "scenario": other_scenario, "entries": []},
+                {"workload": requested.workload, "scenario": requested.scenario, "entries": [{
                     "sketch": "kll-percall",
                     "sketch_config": {"algorithm": "kll-percall", "params": {"k": 200}},
                     "mem_bytes_per_instance": 6400.0,
@@ -536,52 +564,56 @@ mod tests {
 
     #[test]
     fn loader_rejects_an_ambiguous_or_incompatible_document() {
-        let workload = WorkloadDescription::Synthetic {
-            description: serde_json::json!({"name": "one"}),
+        let selector = AtomicCostProfileSelector {
+            workload: WorkloadDescription::Synthetic {
+                description: serde_json::json!({"name": "one"}),
+            },
+            scenario: scenario("a"),
         };
         let file = tempfile::NamedTempFile::new().unwrap();
 
         std::fs::write(
             file.path(),
             serde_json::json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "profiles": []
             })
             .to_string(),
         )
         .unwrap();
-        let err = load_atomic_cost_table(file.path(), &workload).unwrap_err();
-        assert!(err.to_string().contains("schema_version 2"));
-        assert!(err.to_string().contains("supports 1"));
+        let err = load_atomic_cost_table(file.path(), &selector).unwrap_err();
+        assert!(err.to_string().contains("schema_version 3"));
+        assert!(err.to_string().contains("supports 2"));
 
         std::fs::write(
             file.path(),
             serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "profiles": [
-                    {"workload": workload, "entries": []},
-                    {"workload": workload, "entries": []}
+                    {"workload": selector.workload, "scenario": selector.scenario, "entries": []},
+                    {"workload": selector.workload, "scenario": selector.scenario, "entries": []}
                 ]
             })
             .to_string(),
         )
         .unwrap();
-        let err = load_atomic_cost_table(file.path(), &workload).unwrap_err();
+        let err = load_atomic_cost_table(file.path(), &selector).unwrap_err();
         assert!(err.to_string().contains("2 atomic-cost profiles"));
 
         std::fs::write(
             file.path(),
             serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "profiles": [{
                     "workload": {"synthetic": {"description": {"name": "other"}}},
+                    "scenario": selector.scenario,
                     "entries": []
                 }]
             })
             .to_string(),
         )
         .unwrap();
-        let err = load_atomic_cost_table(file.path(), &workload).unwrap_err();
+        let err = load_atomic_cost_table(file.path(), &selector).unwrap_err();
         assert!(err.to_string().contains("no atomic-cost profile"));
     }
 
@@ -598,7 +630,7 @@ mod tests {
             load_optional_selected_atomic_cost_table(Some(document.path()), None).unwrap_err();
         assert!(err
             .to_string()
-            .contains("--atomic-cost-workload is required"));
+            .contains("--atomic-cost-profile is required"));
     }
 
     fn cms_entry(depth: i64, width: i64) -> AtomicCostEntry {
