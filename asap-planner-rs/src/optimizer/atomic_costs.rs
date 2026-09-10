@@ -39,7 +39,24 @@ pub struct AtomicCostDocument {
 #[serde(deny_unknown_fields)]
 pub struct AtomicCostProfile {
     pub workload: WorkloadDescription,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shape: Option<DataShape>,
     pub entries: Vec<AtomicCostEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DataShape {
+    pub cardinality: u64,
+    pub zipf_exponent: Option<f64>,
+    pub benchmark_events: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShapeMatchPolicy {
+    pub minimum_benchmark_events: u64,
+    pub max_log2_cardinality_distance: f64,
+    pub max_zipf_distance: f64,
 }
 
 /// The provenance of the input data on which atomic costs were measured.
@@ -143,6 +160,72 @@ pub fn load_atomic_cost_table(
             serde_json::to_string(workload).unwrap_or_else(|_| "<unserializable>".into())
         ),
     }
+}
+
+/// Load the nearest compatible benchmark profile. Distribution families never
+/// interpolate; benchmark event count is a sufficiency gate rather than a
+/// distance axis once enough data has been measured.
+pub fn load_nearest_atomic_cost_table(
+    path: &Path,
+    observed: DataShape,
+    policy: ShapeMatchPolicy,
+) -> anyhow::Result<AtomicCostTable> {
+    if observed.cardinality == 0
+        || policy.minimum_benchmark_events == 0
+        || !policy.max_log2_cardinality_distance.is_finite()
+        || policy.max_log2_cardinality_distance <= 0.0
+        || !policy.max_zipf_distance.is_finite()
+        || policy.max_zipf_distance <= 0.0
+    {
+        anyhow::bail!("invalid shape matching request");
+    }
+    let raw = std::fs::read_to_string(path).map_err(|error| {
+        anyhow::anyhow!("reading atomic-cost table {}: {error}", path.display())
+    })?;
+    let document: AtomicCostDocument = serde_json::from_str(&raw).map_err(|error| {
+        anyhow::anyhow!("parsing atomic-cost document {}: {error}", path.display())
+    })?;
+    if document.schema_version != ATOMIC_COST_SCHEMA_VERSION {
+        anyhow::bail!(
+            "unsupported atomic-cost schema_version {}",
+            document.schema_version
+        );
+    }
+    document
+        .profiles
+        .iter()
+        .filter_map(|profile| Some((profile, shape_distance(observed, profile.shape?, policy)?)))
+        .filter(|(_, distance)| *distance <= 1.0)
+        .min_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map(|(profile, _)| profile.entries.clone())
+        .ok_or_else(|| anyhow::anyhow!("no benchmark profile is within the observed-shape bounds"))
+}
+
+fn shape_distance(
+    observed: DataShape,
+    candidate: DataShape,
+    policy: ShapeMatchPolicy,
+) -> Option<f64> {
+    if candidate.cardinality == 0
+        || candidate.benchmark_events < policy.minimum_benchmark_events
+        || candidate.zipf_exponent.is_some() != observed.zipf_exponent.is_some()
+    {
+        return None;
+    }
+    let cardinality =
+        ((candidate.cardinality as f64).log2() - (observed.cardinality as f64).log2()).abs()
+            / policy.max_log2_cardinality_distance;
+    let zipf = match (candidate.zipf_exponent, observed.zipf_exponent) {
+        (None, None) => 0.0,
+        (Some(candidate), Some(observed)) => {
+            if !candidate.is_finite() || !observed.is_finite() {
+                return None;
+            }
+            (candidate - observed).abs() / policy.max_zipf_distance
+        }
+        _ => return None,
+    };
+    Some(cardinality.max(zipf))
 }
 
 /// Load the selector artifact and return the corresponding empirical table.
@@ -753,5 +836,60 @@ mod tests {
             resolve_atomic_costs(&kll_table, AggregationType::DatasketchesKLL, &kll_params)
                 .is_some()
         );
+    }
+
+    #[test]
+    fn nearest_profile_uses_shape_not_cheapest_distant_scenario() {
+        let document = serde_json::json!({
+            "schema_version": ATOMIC_COST_SCHEMA_VERSION,
+            "profiles": [
+                {"workload":{"synthetic":{"description":{}}},
+                 "shape":{"cardinality":1000,"zipf_exponent":1.2,"benchmark_events":100000},
+                 "entries":[cms_entry(3, 512)]},
+                {"workload":{"synthetic":{"description":{}}},
+                 "shape":{"cardinality":1000000,"zipf_exponent":1.2,"benchmark_events":100000},
+                 "entries":[cms_entry(3, 256)]}
+            ]
+        });
+        let path = std::env::temp_dir().join(format!("atomic-shape-{}.json", std::process::id()));
+        std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let selected = load_nearest_atomic_cost_table(
+            &path,
+            DataShape {
+                cardinality: 1200,
+                zipf_exponent: Some(1.1),
+                benchmark_events: 10_000,
+            },
+            ShapeMatchPolicy {
+                minimum_benchmark_events: 10_000,
+                max_log2_cardinality_distance: 4.0,
+                max_zipf_distance: 0.5,
+            },
+        )
+        .unwrap();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(selected[0].sketch_config["params"]["cols"], 512);
+    }
+
+    #[test]
+    fn nearest_profile_rejects_uniform_zipf_mismatch() {
+        assert!(shape_distance(
+            DataShape {
+                cardinality: 1000,
+                zipf_exponent: None,
+                benchmark_events: 1
+            },
+            DataShape {
+                cardinality: 1000,
+                zipf_exponent: Some(1.0),
+                benchmark_events: 10000
+            },
+            ShapeMatchPolicy {
+                minimum_benchmark_events: 1000,
+                max_log2_cardinality_distance: 1.0,
+                max_zipf_distance: 0.5
+            },
+        )
+        .is_none());
     }
 }
