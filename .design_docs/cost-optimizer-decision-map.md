@@ -397,6 +397,20 @@ It has been run over both retained directories and wrote
 `experiment_outputs/cost_optimizer_validation_1x_summary.json`; it is the
 reproducible source for the figures above.
 
+2026-09-09 optimizer-to-E2E wiring assessment: no new bridge is required for
+this single-AQE KLL validation. `experiment_run_e2e.py` already forwards its
+global `sketch_parameters` and `windowing` Hydra objects into the controller
+input; overriding `DatasketchesKLL.K`, the window size, and the slide exactly
+recreates this selected KLL deployment. The offline CLI is nevertheless not
+general E2E wiring: it prints a human-readable `OptimizerSolution`, while E2E
+then invokes the ordinary controller generator. A multi-AQE optimizer result
+may contain distinct K values/window geometries and AQE-to-aggregation
+assignments, none representable by those global overrides. The next genuine
+product/plumbing milestone is a machine-readable deployment artifact from the
+optimizer plus a controller/E2E input mode that consumes it. Do this only after
+the paper's single-AQE evidence is stable; it is not a prerequisite for the
+current controlled experiment.
+
 ## #3: What feasibility evidence constrains optimization?
 
 Blocked by: #1, #2
