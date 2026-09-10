@@ -61,7 +61,7 @@ fn main() -> anyhow::Result<()> {
                 query_string: q.clone(),
                 t_repeat_ms: qg.repetition_delay_ms,
                 max_mean_rank_error: (qg.controller_options.accuracy_sla > 0.0)
-                    .then(|| 1.0 - qg.controller_options.accuracy_sla),
+                    .then_some(1.0 - qg.controller_options.accuracy_sla),
                 max_atomic_query_cpu_secs: (qg.controller_options.latency_sla > 0.0)
                     .then_some(qg.controller_options.latency_sla),
             })
