@@ -453,6 +453,18 @@ selector must contain both `workload` and `scenario`; a workload-only match is
 not eligible. This is the first enforced end-to-end guard against using a
 benchmark profile measured on a different derived dataset.
 
+2026-09-10 first provenance-gated run: regenerated the preserved Google KLL
+grid as a schema-v2 document using the non-rebased calibration scenario
+manifest. Its canonical payload hash is
+`e6a533c06cab344c775b9b49b3672a2b976acbb4242fb05533ff0414b992a50e`;
+the manifest payload exactly matches the CSV that was benchmarked. The
+optimizer accepted the paired document and profile selector, then selected
+EXACT for the 3-minute `quantile_over_time` workload under `accuracy_sla=0.98`
+and `latency_sla=1`: with `N_G=10,379`, the CPU-only fanout estimate makes the
+measured KLL query cost higher than the current exact-query constant. This is
+an observed model result, not an error or a reason to restore the temporary
+forced-exact-cost override.
+
 2026-09-10 cost-model correction to make before claiming a calibrated
 objective: expose a resource vector rather than immediately collapsing values
 into one scalar: resident state memory (bytes), ingest CPU rate (CPU-s/s),
