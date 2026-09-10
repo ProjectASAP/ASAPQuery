@@ -411,6 +411,89 @@ optimizer plus a controller/E2E input mode that consumes it. Do this only after
 the paper's single-AQE evidence is stable; it is not a prerequisite for the
 current controlled experiment.
 
+2026-09-10 generalization decisions: retain `aggregation_type=0` and assume
+no spatial filters/selectivity for the present study. Add synthetic metric
+projections and additional query workloads; different cardinality projections
+are desirable but not a required first expansion. Evaluate disjoint trace
+intervals, but do not frame the immediate objective as prediction on unseen
+data. Replace the exporter’s temporary replay-clock treatment with native time
+range logic. Use the optimizer for broad scenario/query/SLA sweeps, reserving
+E2E for a small number of selected-plan evidence runs rather than repeating
+every optimizer simulation.
+
+2026-09-10 proposed architecture: introduce a dataset-wrangler module whose
+single scenario specification materializes an exporter-ready dataset, complete
+series inventory, and immutable manifest. The same manifest is passed to
+sketch-bench and E2E, preventing label/time/filter drift. The benchmark export
+is an `AtomicCostDocument` containing one `AtomicCostProfile` per exact
+wrangled workload and measurement environment; each `AtomicCostEntry` is one
+sketch/configuration’s insert, merge, query, memory, and accuracy observation.
+Time range belongs in the profile/workload identity, not in a free-standing
+entry. The optimizer should consume selected profiles plus an explicit backend
+exact-cost profile and emit a machine-readable deployment plan, which E2E can
+deploy without manually translating K/window overrides.
+
+2026-09-10 cost-model correction to make before claiming a calibrated
+objective: expose a resource vector rather than immediately collapsing values
+into one scalar: resident state memory (bytes), ingest CPU rate (CPU-s/s),
+query CPU rate (CPU-s/s), and optional query working-memory constraint. Only
+combine these with declared unit-bearing weights (for example, $/(byte-s) and
+$/CPU-s), or state a multi-objective/constraint policy. Do not charge temporary
+query memory as a per-query scalar without a measured lifetime. Keep KLL mean
+rank error as the sole eligibility constraint for now. Measure the actual raw
+Prometheus/exact query path rather than use a forced exact constant.
+
+2026-09-10 policy decision: minimize actual deployment cost subject to the
+mean-rank-error SLA and a latency SLA. For the stated 16-vCPU, 21-GB instance
+at $0.638/hour, one provisioned instance costs $459.36 per 30-day month. Do
+not manufacture a per-workload dollar saving from lower CPU/RAM use when two
+plans both fit on one fixed-price node: their standalone provisioned price is
+identical. Instead estimate aggregate workload CPU demand and resident memory,
+compute required instances as the maximum of the CPU- and memory-capacity
+ceilings, and price that integer capacity. Savings arise when a lower-resource
+plan permits more workload packing or one fewer instance. The latency SLA
+requires a separately defined end-to-end latency estimate/measurement; atomic
+CPU time alone is not a latency prediction.
+
+2026-09-10 first cost-model scope refinement: use CPU seconds only; defer
+deployment-price/memory policy. For an unfiltered query, approximate query
+read fanout by `N_G`, the number of distinct grouping-label tuples (not the
+cardinality of individual labels unless there is exactly one grouping label).
+For KLL, one grouping tuple has one KLL and `F=N_G`. For a CMS grouped by
+`label_0` whose key is `(label_1,label_2)`, one CMS exists per `label_0`
+value and `F=N_G=cardinality(label_0)`; key labels affect the measured CMS
+profile/accuracy but do not multiply the number of CMS instances. Define
+request CPU/latency conservatively as `F * (query_cpu + (windows_read-1) *
+merge_cpu)` and optimize total CPU rate `ingest_cpu_rate + Σ frequency *
+request_cpu`, subject to error and this atomic-CPU latency SLA. The current
+planner violates this intended CMS rule: its `subpopulation_aware` branch
+uses the hardcoded `SUBPOPULATION_COUNT=1`. Replace that placeholder with
+explicit grouping-state count and query-fanout fields before adding CMS
+experiments.
+
+2026-09-10 terminology decision: `N_G` is the cardinality of the **distinct
+tuples** formed by the labels that partition/deploy sketches, calculated from
+the wrangled series inventory. It is not the product of individual label
+cardinalities and does not include key labels. A true global partition has
+`N_G=1`; an ordinary temporal query whose planner preserves all source labels
+uses the cardinality of the full exported-series tuple. Retire
+`subpopulation_aware` from the public cost-model vocabulary unless the runtime
+actually uses a distinct physical multi-group container model. Deployment
+price is deferred. Do not use a burstable CPU-credit instance such as t2.nano
+as the reference for a CPU-seconds/latency model: its sustained CPU capacity
+is not represented by its one nominal vCPU.
+
+2026-09-10 implementation: `accuracy_sla` and `latency_sla` are now the sole
+public optimizer feasibility inputs. The optimizer derives KLL's internal
+mean-rank-error limit as `1 - accuracy_sla`, and derives an optional maximum
+whole-request atomic CPU limit from positive `latency_sla`. Candidate request
+CPU is rejected when it exceeds that limit. CPU-only selection is enabled by
+zeroing the legacy memory weights. CMS now scales query work by its explicit
+grouping-state count rather than the old hardcoded-one `subpopulation_aware`
+branch; ingest CPU remains based on total input arrival rate and therefore
+does not multiply by grouping count. Focused tests cover public-SLA conversion,
+KLL accuracy conversion, and CMS query scaling.
+
 ## #3: What feasibility evidence constrains optimization?
 
 Blocked by: #1, #2

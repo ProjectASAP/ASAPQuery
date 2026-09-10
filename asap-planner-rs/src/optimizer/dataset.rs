@@ -19,6 +19,12 @@ const METRIC_COLUMN: &str = "metric";
 
 #[derive(Debug, Error)]
 pub enum DatasetError {
+    #[error("controller_options.accuracy_sla must be finite and within [0, 1], got {0}")]
+    InvalidAccuracySla(f64),
+    #[error("controller_options.latency_sla must be finite and non-negative, got {0}")]
+    InvalidLatencySla(f64),
+    #[error("no feasible optimizer candidate for metric '{0}' under the declared SLAs")]
+    NoFeasibleCandidate(String),
     #[error("failed to open dataset '{path}': {source}")]
     Open {
         path: std::path::PathBuf,
@@ -559,6 +565,7 @@ mod tests {
             min_t_repeat_ms: 1,
             t_repeat_gcd_ms: 1,
             max_mean_rank_error: None,
+            max_atomic_query_cpu_secs: None,
         };
 
         assert!(matches!(

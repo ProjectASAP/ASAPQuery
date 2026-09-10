@@ -2,9 +2,12 @@ use std::collections::HashMap;
 
 use tracing::debug;
 
-use super::atomic_costs::{resolve_atomic_costs, satisfies_max_mean_rank_error, AtomicCostTable};
+use super::atomic_costs::{resolve_atomic_costs, satisfies_accuracy_sla, AtomicCostTable};
 use super::candidate_gen::enumerate_candidates_with_label_group_count;
-use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
+use super::cost_model::{
+    atomic_query_cpu_secs, ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights,
+};
+use super::dataset::DatasetError;
 use super::dataset::ProfileKey;
 use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 
@@ -29,7 +32,7 @@ pub fn greedy_assign(
     atomic_cost_table: &AtomicCostTable,
     weights: &CostWeights,
     label_group_counts: &HashMap<ProfileKey, u64>,
-) -> OptimizerSolution {
+) -> Result<OptimizerSolution, DatasetError> {
     let mut solution = OptimizerSolution::empty();
 
     for aqe in aqes {
@@ -54,11 +57,11 @@ pub fn greedy_assign(
                 let costs = match &c.config {
                     None => AtomicCosts::default(),
                     Some(cfg) => {
-                        if !satisfies_max_mean_rank_error(
+                        if !satisfies_accuracy_sla(
                             atomic_cost_table,
                             cfg.aggregation_type,
                             &cfg.parameters,
-                            aqe.max_mean_rank_error,
+                            aqe.max_mean_rank_error.map(|error| 1.0 - error),
                         ) {
                             return None;
                         }
@@ -70,15 +73,19 @@ pub fn greedy_assign(
                     }
                 };
                 let cost = total_cost_rate(&aqe, &c, arrival_rate_hz, &costs, weights);
+                let request_cpu_secs = atomic_query_cpu_secs(&c, &costs);
+                if aqe
+                    .max_atomic_query_cpu_secs
+                    .is_some_and(|limit| !limit.is_finite() || request_cpu_secs > limit)
+                {
+                    return None;
+                }
                 Some((c, costs, cost))
             })
             // total_cmp (not partial_cmp().unwrap()) so a stray NaN cost can't panic.
             .min_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
             .map(|(c, costs, _)| (c, costs))
-            .expect(
-                "enumerate_candidates always returns at least the EXACT fallback, \
-                 which always resolves (flat stub, no table lookup)",
-            );
+            .ok_or_else(|| DatasetError::NoFeasibleCandidate(aqe.requirements.metric.clone()))?;
 
         let ingest = ingest_cost(&best, arrival_rate_hz, &costs, weights);
         let query_rate = aqe.query_frequency_hz * query_cost(&aqe, &best, &costs, weights);
@@ -106,7 +113,7 @@ pub fn greedy_assign(
         });
     }
 
-    solution
+    Ok(solution)
 }
 
 #[cfg(test)]
@@ -135,6 +142,7 @@ mod tests {
             min_t_repeat_ms: min_t,
             t_repeat_gcd_ms: min_t,
             max_mean_rank_error: None,
+            max_atomic_query_cpu_secs: None,
         }
     }
 
@@ -164,7 +172,8 @@ mod tests {
                     1,
                 ),
             ]),
-        );
+        )
+        .unwrap();
 
         let mut seen_ids: StdHashMap<u64, ()> = StdHashMap::new();
         for id in solution.deployed_configs().keys() {
@@ -192,6 +201,7 @@ mod tests {
             min_t_repeat_ms: 60_000,
             t_repeat_gcd_ms: 60_000,
             max_mean_rank_error: None,
+            max_atomic_query_cpu_secs: None,
         };
         let solution = greedy_assign(
             vec![aqe.clone()],
@@ -200,7 +210,8 @@ mod tests {
             &AtomicCostTable::default(),
             &CostWeights::default(),
             &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
-        );
+        )
+        .unwrap();
         assert_eq!(solution.num_exact_fallback(), 1);
         assert!(solution.deployed_configs().is_empty());
     }
@@ -217,7 +228,8 @@ mod tests {
             &AtomicCostTable::default(),
             &CostWeights::default(),
             &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
-        );
+        )
+        .unwrap();
 
         assert_eq!(solution.num_exact_fallback(), 1);
         assert!(solution.deployed_configs().is_empty());
@@ -245,7 +257,8 @@ mod tests {
             &table,
             &CostWeights::default(),
             &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
-        );
+        )
+        .unwrap();
 
         assert_eq!(solution.num_exact_fallback(), 0);
         assert_eq!(solution.deployed_configs().len(), 1);
@@ -288,10 +301,26 @@ mod tests {
             &vec![kll(200, 0.03), kll(500, 0.01)],
             &CostWeights::default(),
             &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
-        );
+        )
+        .unwrap();
 
         let config = solution.deployed_configs().values().next().unwrap();
         assert_eq!(config.aggregation_type, AggregationType::DatasketchesKLL);
         assert_eq!(config.parameters["K"], serde_json::Value::from(500));
+    }
+
+    #[test]
+    fn infeasible_atomic_cpu_sla_returns_an_error() {
+        let mut aqe = make_aqe(Statistic::Min, 60_000, 60_000, 1.0);
+        aqe.max_atomic_query_cpu_secs = Some(0.0);
+        let result = greedy_assign(
+            vec![aqe.clone()],
+            60_000,
+            1.0,
+            &AtomicCostTable::default(),
+            &CostWeights::default(),
+            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
+        );
+        assert!(matches!(result, Err(DatasetError::NoFeasibleCandidate(_))));
     }
 }

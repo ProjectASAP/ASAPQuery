@@ -36,9 +36,9 @@ pub const EXACT_QUERY_CPU_SECS: f64 = 1e-3;
 // magnitude cheaper per unit than CPU-time (e.g. ~$5/GB-month vs
 // ~$0.04/vCPU-hour is roughly a 1e6 ratio), so memory weights are scaled
 // down accordingly rather than left equal to CPU weights.
-pub const INGEST_MEM_WEIGHT: f64 = 1e-9;
+pub const INGEST_MEM_WEIGHT: f64 = 0.0;
 pub const INGEST_CPU_WEIGHT: f64 = 1.0;
-pub const QUERY_MEM_WEIGHT: f64 = 1e-9;
+pub const QUERY_MEM_WEIGHT: f64 = 0.0;
 pub const QUERY_CPU_WEIGHT: f64 = 1.0;
 
 /// Subpopulation count: 1 if subpopulation_aware else the distinct label-group

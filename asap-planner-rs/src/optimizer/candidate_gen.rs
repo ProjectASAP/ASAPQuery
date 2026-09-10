@@ -352,6 +352,7 @@ mod tests {
             min_t_repeat_ms: min_t,
             t_repeat_gcd_ms: min_t,
             max_mean_rank_error: None,
+            max_atomic_query_cpu_secs: None,
         }
     }
 

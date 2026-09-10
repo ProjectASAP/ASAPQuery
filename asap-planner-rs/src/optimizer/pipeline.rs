@@ -85,6 +85,19 @@ pub fn run_greedy_pipeline(
     atomic_cost_table: &AtomicCostTable,
 ) -> Result<(StreamingConfig, InferenceConfig), super::dataset::DatasetError> {
     dataset.validate_metric_hints(config.metrics.as_deref())?;
+    for group in &config.query_groups {
+        let options = &group.controller_options;
+        if !options.accuracy_sla.is_finite() || !(0.0..=1.0).contains(&options.accuracy_sla) {
+            return Err(super::dataset::DatasetError::InvalidAccuracySla(
+                options.accuracy_sla,
+            ));
+        }
+        if !options.latency_sla.is_finite() || options.latency_sla < 0.0 {
+            return Err(super::dataset::DatasetError::InvalidLatencySla(
+                options.latency_sla,
+            ));
+        }
+    }
     let schema = dataset.schema();
     let rqes = config_to_rqes(config);
     let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms);
@@ -107,7 +120,7 @@ pub fn run_greedy_pipeline(
         atomic_cost_table,
         &CostWeights::default(),
         &label_group_counts,
-    );
+    )?;
 
     Ok(finish_pipeline(solution, "greedy"))
 }
@@ -122,7 +135,10 @@ fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
             qg.queries.iter().map(|q| RQE {
                 query_string: q.clone(),
                 t_repeat_ms: qg.repetition_delay_ms,
-                max_mean_rank_error: qg.controller_options.max_mean_rank_error,
+                max_mean_rank_error: (qg.controller_options.accuracy_sla > 0.0)
+                    .then(|| 1.0 - qg.controller_options.accuracy_sla),
+                max_atomic_query_cpu_secs: (qg.controller_options.latency_sla > 0.0)
+                    .then_some(qg.controller_options.latency_sla),
             })
         })
         .collect()
@@ -211,5 +227,16 @@ mod tests {
         assert_eq!(rqes.len(), 2);
         assert_eq!(rqes[0].t_repeat_ms, 60_000);
         assert_eq!(rqes[1].t_repeat_ms, 30_000);
+    }
+
+    #[test]
+    fn config_to_rqes_maps_public_slas_to_atomic_constraints() {
+        let mut config = make_config(&[("quantile_over_time(0.99, metric[5m])", 60_000)]);
+        config.query_groups[0].controller_options.accuracy_sla = 0.98;
+        config.query_groups[0].controller_options.latency_sla = 0.001;
+
+        let rqes = config_to_rqes(&config);
+        assert!((rqes[0].max_mean_rank_error.unwrap() - 0.02).abs() < f64::EPSILON);
+        assert_eq!(rqes[0].max_atomic_query_cpu_secs, Some(0.001));
     }
 }

@@ -1,11 +1,10 @@
 use asap_types::enums::WindowType;
-use promql_utilities::query_logics::enums::AggregationType;
 
 use super::candidate_gen::CandidateConfig;
 use super::constants::{
     EXACT_QUERY_CPU_SECS, INGEST_CPU_WEIGHT, INGEST_MEM_WEIGHT, INSERT_CPU_SECS,
     MEM_BYTES_PER_INSTANCE, MERGE_CPU_SECS, QUERY_CPU_SECS, QUERY_CPU_WEIGHT, QUERY_MEM_WEIGHT,
-    SUBPOPULATION_COUNT, SUBTRACT_CPU_SECS,
+    SUBTRACT_CPU_SECS,
 };
 use super::sketch_properties::sketch_properties;
 use super::solution::{QueryMethod, AQE};
@@ -76,7 +75,7 @@ pub fn ingest_cost(
         return 0.0; // EXACT: no streaming config deployed.
     };
 
-    let subpopulation_count = effective_subpopulation_count(candidate, agg_config.aggregation_type);
+    let subpopulation_count = effective_subpopulation_count(candidate);
 
     // Defensive floor: slide_interval_ms is a plain u64 on a widely-shared struct;
     // guard against div-by-zero producing `inf` and poisoning cost comparisons.
@@ -109,7 +108,7 @@ pub fn query_cost(
     };
 
     // Subpopulation count; see ingest_cost comment.
-    let subpopulation_count = effective_subpopulation_count(candidate, agg_config.aggregation_type);
+    let subpopulation_count = effective_subpopulation_count(candidate);
     let props = sketch_properties(agg_config.aggregation_type);
 
     let (cpu, mem) = match &candidate.query_method {
@@ -142,19 +141,32 @@ pub fn query_cost(
     weights.query_cpu * cpu + weights.query_mem * mem
 }
 
-fn effective_subpopulation_count(
-    candidate: &CandidateConfig,
-    aggregation_type: AggregationType,
-) -> f64 {
-    if sketch_properties(aggregation_type).subpopulation_aware {
-        SUBPOPULATION_COUNT
-    } else {
-        assert!(
-            candidate.label_group_count > 0,
-            "non-subpopulation-aware candidates require a positive label_group_count"
-        );
-        candidate.label_group_count as f64
+/// Unweighted CPU seconds required for one complete request.
+pub fn atomic_query_cpu_secs(candidate: &CandidateConfig, costs: &AtomicCosts) -> f64 {
+    let Some(_) = &candidate.config else {
+        return costs.exact_query_cpu_secs;
+    };
+    let groups = effective_subpopulation_count(candidate);
+    match &candidate.query_method {
+        QueryMethod::Direct => groups * costs.query_cpu_secs,
+        QueryMethod::Merge { num_windows } => {
+            groups
+                * (((*num_windows).saturating_sub(1) as f64) * costs.merge_cpu_secs
+                    + costs.query_cpu_secs)
+        }
+        QueryMethod::Subtract => {
+            groups * (costs.merge_cpu_secs + costs.subtract_cpu_secs + costs.query_cpu_secs)
+        }
+        QueryMethod::Exact => unreachable!("Exact query_method must not have a config"),
     }
+}
+
+fn effective_subpopulation_count(candidate: &CandidateConfig) -> f64 {
+    assert!(
+        candidate.label_group_count > 0,
+        "candidates require a positive label_group_count"
+    );
+    candidate.label_group_count as f64
 }
 
 /// Total cost rate contributed by assigning AQE `aqe` (with frequency
@@ -194,6 +206,7 @@ mod tests {
             min_t_repeat_ms: min_t,
             t_repeat_gcd_ms: min_t,
             max_mean_rank_error: None,
+            max_atomic_query_cpu_secs: None,
         }
     }
 
@@ -296,16 +309,11 @@ mod tests {
             ..candidate
         };
         let costs = AtomicCosts::default();
-        let weights = CostWeights {
-            ingest_mem: 1.0,
-            ingest_cpu: 0.0,
-            query_mem: 1.0,
-            query_cpu: 0.0,
-        };
+        let weights = CostWeights::default();
 
         assert_eq!(
             ingest_cost(&five_groups, 1.0, &costs, &weights),
-            5.0 * ingest_cost(&one_group, 1.0, &costs, &weights)
+            ingest_cost(&one_group, 1.0, &costs, &weights)
         );
         assert_eq!(
             query_cost(&a, &five_groups, &costs, &weights),
@@ -314,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn subpopulation_aware_cost_ignores_label_group_count() {
+    fn cms_cost_scales_with_grouping_state_count() {
         let a = make_aqe(Statistic::Sum, 300_000, 300_000);
         let candidate = enumerate_candidates(&a, 60_000)
             .into_iter()
@@ -336,12 +344,12 @@ mod tests {
         let weights = CostWeights::default();
 
         assert_eq!(
-            ingest_cost(&one_group, 1.0, &costs, &weights),
-            ingest_cost(&five_groups, 1.0, &costs, &weights)
+            ingest_cost(&five_groups, 1.0, &costs, &weights),
+            ingest_cost(&one_group, 1.0, &costs, &weights)
         );
         assert_eq!(
-            query_cost(&a, &one_group, &costs, &weights),
-            query_cost(&a, &five_groups, &costs, &weights)
+            query_cost(&a, &five_groups, &costs, &weights),
+            5.0 * query_cost(&a, &one_group, &costs, &weights)
         );
     }
 }

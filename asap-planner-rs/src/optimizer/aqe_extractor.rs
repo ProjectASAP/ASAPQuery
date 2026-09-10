@@ -18,6 +18,7 @@ pub struct RQE {
     pub query_string: String,
     pub t_repeat_ms: u64,
     pub max_mean_rank_error: Option<f64>,
+    pub max_atomic_query_cpu_secs: Option<f64>,
 }
 
 /// Stable deduplication key for an AQE.
@@ -41,6 +42,7 @@ struct AQEAccumulator {
     min_t_repeat_ms: u64,
     t_repeat_gcd_ms: u64,
     max_mean_rank_error: Option<f64>,
+    max_atomic_query_cpu_secs: Option<f64>,
 }
 
 impl AQEKey {
@@ -101,6 +103,7 @@ pub fn extract_aqes(
                         min_t_repeat_ms: u64::MAX,
                         t_repeat_gcd_ms: 0,
                         max_mean_rank_error: rqe.max_mean_rank_error,
+                        max_atomic_query_cpu_secs: rqe.max_atomic_query_cpu_secs,
                     });
                     if !entry.query_strings.contains(&leaf) {
                         entry.query_strings.push(leaf);
@@ -121,6 +124,15 @@ pub fn extract_aqes(
                             (None, Some(b)) => Some(b),
                             (None, None) => None,
                         };
+                    entry.max_atomic_query_cpu_secs = match (
+                        entry.max_atomic_query_cpu_secs,
+                        rqe.max_atomic_query_cpu_secs,
+                    ) {
+                        (Some(a), Some(b)) => Some(a.min(b)),
+                        (Some(a), None) => Some(a),
+                        (None, Some(b)) => Some(b),
+                        (None, None) => None,
+                    };
                 }
                 None => {
                     warn!(
@@ -140,6 +152,7 @@ pub fn extract_aqes(
             min_t_repeat_ms: accumulator.min_t_repeat_ms,
             t_repeat_gcd_ms: accumulator.t_repeat_gcd_ms,
             max_mean_rank_error: accumulator.max_mean_rank_error,
+            max_atomic_query_cpu_secs: accumulator.max_atomic_query_cpu_secs,
         })
         .collect()
 }
@@ -215,6 +228,7 @@ mod tests {
             query_string: query.to_string(),
             t_repeat_ms: t_ms,
             max_mean_rank_error: None,
+            max_atomic_query_cpu_secs: None,
         }
     }
 

@@ -272,18 +272,21 @@ pub fn resolve_atomic_costs(
         })
 }
 
-/// Whether a benchmarked KLL candidate satisfies a requested maximum mean rank
-/// error. Missing accuracy is infeasible: a constrained plan must not silently
-/// substitute an unmeasured quality value.
-pub fn satisfies_max_mean_rank_error(
+/// Whether a benchmarked KLL candidate satisfies a requested minimum accuracy.
+/// Accuracy is defined as `1 - mean_rank_err`. Missing or invalid measurements
+/// are infeasible when the query declares an accuracy SLA.
+pub fn satisfies_accuracy_sla(
     table: &AtomicCostTable,
     agg_type: AggregationType,
     params: &HashMap<String, Value>,
-    max_mean_rank_error: Option<f64>,
+    min_accuracy_sla: Option<f64>,
 ) -> bool {
-    let Some(limit) = max_mean_rank_error else {
+    let Some(min_accuracy) = min_accuracy_sla else {
         return true;
     };
+    if !min_accuracy.is_finite() || !(0.0..=1.0).contains(&min_accuracy) {
+        return false;
+    }
     if agg_type == AggregationType::HydraKLL {
         return false;
     }
@@ -298,7 +301,9 @@ pub fn satisfies_max_mean_rank_error(
         .iter()
         .find(|entry| entry.sketch == sketch && entry.sketch_config == expected_config)
         .and_then(|entry| entry.query_accuracy.get("mean_rank_err"))
-        .is_some_and(|error| error.is_finite() && *error <= limit)
+        .is_some_and(|error| {
+            error.is_finite() && (0.0..=1.0).contains(error) && 1.0 - error >= min_accuracy
+        })
 }
 
 /// Temporary cost model for the runtime CMS-with-heap implementation.
@@ -699,11 +704,41 @@ mod tests {
     fn hydra_kll_drops_when_an_empirical_profile_is_present() {
         let table = vec![cms_entry(3, 1024)];
         assert!(resolve_atomic_costs(&table, AggregationType::HydraKLL, &HashMap::new()).is_none());
-        assert!(!satisfies_max_mean_rank_error(
+        assert!(!satisfies_accuracy_sla(
             &table,
             AggregationType::HydraKLL,
             &HashMap::new(),
-            Some(0.02),
+            Some(0.98),
+        ));
+    }
+
+    #[test]
+    fn kll_accuracy_sla_is_one_minus_mean_rank_error() {
+        let table = vec![AtomicCostEntry {
+            sketch: "kll-percall".into(),
+            sketch_config: serde_json::json!({
+                "algorithm": "kll-percall",
+                "params": { "k": 200 }
+            }),
+            mem_bytes_per_instance: 6400.0,
+            insert_cpu_secs: 1.0e-8,
+            merge_cpu_secs: 1.0e-6,
+            query_cpu_secs: 1.0e-6,
+            query_accuracy: BTreeMap::from([("mean_rank_err".into(), 0.015)]),
+        }];
+        let params = HashMap::from([("K".to_string(), Value::from(200u64))]);
+
+        assert!(satisfies_accuracy_sla(
+            &table,
+            AggregationType::DatasketchesKLL,
+            &params,
+            Some(0.98),
+        ));
+        assert!(!satisfies_accuracy_sla(
+            &table,
+            AggregationType::DatasketchesKLL,
+            &params,
+            Some(0.99),
         ));
     }
 

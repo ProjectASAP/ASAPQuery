@@ -38,6 +38,8 @@ pub struct AQE {
     /// Optional KLL feasibility constraint propagated from all query groups
     /// contributing to this AQE. Smaller means stricter.
     pub max_mean_rank_error: Option<f64>,
+    /// Maximum atomic CPU seconds allowed to answer one request.
+    pub max_atomic_query_cpu_secs: Option<f64>,
 }
 
 /// How an AQE is answered from its assigned streaming config.

@@ -80,11 +80,8 @@ pub struct QueryGroup {
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ControllerOptions {
     pub accuracy_sla: f64,
+    /// Maximum atomic CPU seconds allowed to answer one request.
     pub latency_sla: f64,
-    /// KLL-specific feasibility constraint: the selected benchmark entry's
-    /// `mean_rank_err` must not exceed this fraction (0.02 = 2%).
-    #[serde(default)]
-    pub max_mean_rank_error: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
