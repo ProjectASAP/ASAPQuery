@@ -54,12 +54,16 @@ class DatasetWranglerTest(unittest.TestCase):
             self.assertEqual(manifest["records_loaded"], 1)
             self.assertEqual(manifest["grouping_state_count"], 1)
             persisted = json.loads((output / "scenario_manifest.json").read_text())
-            self.assertEqual(persisted["output_payload_sha256"], manifest["output_payload_sha256"])
+            self.assertEqual(
+                persisted["output_payload_sha256"], manifest["output_payload_sha256"]
+            )
 
     def test_rejects_duplicate_exported_samples(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)
-            self.write_source(directory, [task_usage_row(100, 110), task_usage_row(100, 111)])
+            self.write_source(
+                directory, [task_usage_row(100, 110), task_usage_row(100, 111)]
+            )
 
             with self.assertRaisesRegex(ValueError, "duplicate exported sample"):
                 WRANGLER.materialize(self.spec(), directory, directory / "output")

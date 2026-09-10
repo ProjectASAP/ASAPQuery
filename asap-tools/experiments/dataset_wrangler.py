@@ -41,7 +41,9 @@ def materialize(spec, spec_directory, output_directory):
     start_us, end_us = spec["source_time_range_us"]
     labels = spec["grouping_labels"]
     if labels != ["job_id", "task_index", "machine_id"]:
-        raise ValueError("Google v1 supports exactly job_id, task_index, machine_id grouping")
+        raise ValueError(
+            "Google v1 supports exactly job_id, task_index, machine_id grouping"
+        )
 
     output_directory.mkdir(parents=True, exist_ok=True)
     output_data = output_directory / source.name
@@ -60,7 +62,9 @@ def materialize(spec, spec_directory, output_directory):
                 raise ValueError(f"malformed source row with {len(row)} columns")
             row_start, row_end = int(row[START_TIME]), int(row[END_TIME])
             aggregation_type = row[AGGREGATION_TYPE] or "0"
-            if not (row_start >= start_us and row_end <= end_us and aggregation_type == "0"):
+            if not (
+                row_start >= start_us and row_end <= end_us and aggregation_type == "0"
+            ):
                 continue
             group = (row[JOB_ID], row[TASK_INDEX], row[MACHINE_ID])
             sample_key = (row_start, group)
