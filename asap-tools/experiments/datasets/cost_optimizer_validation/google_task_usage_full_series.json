@@ -1,0 +1,7 @@
+{
+  "source_file": "../../../../../../benchmarks/metrics_observability/data/google-cluster-data/ClusterData2011/clusterdata-2011-2/task_usage/part-00262-of-00500.csv.gz",
+  "source_time_range_us": [1313535000000, 1313715000000],
+  "exported_metric": "google_mean_cpu_usage_rate_0",
+  "grouping_labels": ["job_id", "task_index", "machine_id"],
+  "rebase_to_offset": true
+}

@@ -433,6 +433,17 @@ entry. The optimizer should consume selected profiles plus an explicit backend
 exact-cost profile and emit a machine-readable deployment plan, which E2E can
 deploy without manually translating K/window overrides.
 
+2026-09-10 implementation update: the first executable wrangler materializes
+the Google task-usage validation scenario, applies the source interval and
+`aggregation_type = 0` rule, validates duplicate exported samples, rebases the
+replay timestamps, and writes the derived CSV, series inventory, and scenario
+manifest. The manifest records both the compressed artifact hash and the
+canonical decompressed-payload hash. The payload hash, not gzip metadata, is
+the dataset identity that a future `AtomicCostProfile` must cite. Thus an
+`AtomicCostDocument` remains a collection of measurements, not a dataset
+container: `scenario spec -> wrangled CSV + ScenarioManifest -> sketch-bench
+-> AtomicCostDocument`.
+
 2026-09-10 cost-model correction to make before claiming a calibrated
 objective: expose a resource vector rather than immediately collapsing values
 into one scalar: resident state memory (bytes), ingest CPU rate (CPU-s/s),
