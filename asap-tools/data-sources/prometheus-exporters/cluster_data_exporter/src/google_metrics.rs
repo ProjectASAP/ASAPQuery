@@ -22,7 +22,10 @@ const CSV_MAX_PART_NO: u16 = 500;
 
 const MICRO_SECONDS_PER_SECOND: u64 = 1_000_000;
 const T_OFFSET_SECS: u64 = 600;
-const DILATION_FACTOR: u64 = 10; // Factor for scaling time stamps relative to when they are exported
+// Replay the materialized validation trace at its original rate. The source
+// interval is only three minutes; dilating it would turn the E2E smoke test
+// into a 30-minute run without changing its data or query semantics.
+const DILATION_FACTOR: u64 = 1;
 
 /// Each line of the csv file is serialized into the following struct.
 /// The ordering of the struct fields MUST match the order that fields

@@ -1,0 +1,57 @@
+# @package experiment_params
+#
+# Same-data integration validation for the cost-based KLL planner.
+#
+# The source is the materialized 3-minute, aggregation_type=0 subset described
+# in datasets/cost_optimizer_validation/.../README.md.  The runner's cluster
+# exporter runs on node_offset + 1, so place that directory on node1 when the
+# standard CloudLab invocation uses node_offset=0.
+
+experiment:
+  - mode: sketchdb
+    server: sketchdb
+  - mode: baseline
+    server: prometheus
+
+monitoring:
+  tool: prometheus
+  deployment_mode: bare_metal
+
+servers:
+  - name: prometheus
+    url: http://localhost:9090
+  - name: sketchdb
+    url: http://localhost:8088
+
+exporters:
+  only_start_if_queries_exist: true
+  exporter_list:
+    cluster_data_exporter:
+      provider: google
+      port: 40000
+      metrics: mean-cpu-usage-rate
+      parts_mode: part-index
+      part_index: 262
+      scrape_timeout: 1s
+
+query_groups:
+  - id: 1
+    queries:
+      - quantile_over_time(0.99, google_mean_cpu_usage_rate_0[3m])
+    repetition_delay_ms: 1000
+    client_options:
+      repetitions: 10
+      query_time_offset: 10
+      # Wait for the complete 3m PromQL lookback before issuing measurement
+      # queries. The validation replay uses the trace's original 1x rate.
+      starting_delay: 190
+    controller_options:
+      accuracy_sla: 0.98
+      latency_sla: 1
+
+metrics:
+  - metric: google_mean_cpu_usage_rate_0
+    # instance/job are Prometheus scrape labels; the remaining labels are
+    # emitted by the Google exporter and identify a physical source series.
+    labels: [instance, job, job_id, task_index, machine_id]
+    exporter: cluster_data_exporter

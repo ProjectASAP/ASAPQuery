@@ -331,6 +331,67 @@ adjacent README records the predicate and SHA-256. This enables the first E2E
 consistency run without changing the exporter; native source-time/filter
 configuration remains the follow-up architectural work.
 
+2026-09-09 CloudLab execution preparation: copied that exact derived file to
+`node1` (the cluster-data-exporter host) at
+`/scratch/sketch_db_for_prometheus/experiment_inputs/cost_optimizer_validation/google_task_usage_262_3m_agg0/`.
+The remote SHA-256 is `13dd00844558627365848f5252d9f86fe9c302afe875ae2fd702016b4acdf70f`,
+matching the local README. The runner's `num_nodes=1` denotes one worker plus
+the node-0 coordinator; its cluster-data exporter requires exactly this one
+worker and runs on `node_offset + 1` (node1). Do not set `num_nodes=2`: the
+service fails fast. The dedicated local Hydra scenario is
+`cost_optimizer_validation_google`; it runs the 3-minute temporal quantile
+with one-minute tumbling sketches and preserves K as a CLI override.
+
+2026-09-09 aligned atomic-cost profile: reran the KLL `k={200,500}` accuracy
+and cost passes serially over the derived file with
+`group_columns=[job_id, task_index, machine_id]`. The valid raw, flattened,
+and document artifacts are in
+`sketch-bench/output/cost_optimizer_experiments/google_task_usage_full_series/2026-09-09/final_serial/`.
+The document has one profile/two entries and no skips. The earlier
+`strict_rebuild/` artifacts are intentionally retained: they demonstrate that
+the strict reducer rejected a duplicate entry caused by an overlapping local
+benchmark invocation, rather than accepting ambiguous measurements.
+
+2026-09-09 E2E implementation and outcome: the temporary replay input was
+also rebased (both Google timestamp columns) to the exporter's fixed 600-second
+epoch. The rebased copy has the same 20,051 values/labels and SHA-256
+`744ce369e5dd638b800cc5eb202e8140a34166b3a8e301d583041ee640268d5e`; without
+rebasing, its original 2011 timestamps would make the fixed-offset exporter
+wait about fifteen days. The dedicated local `experiment_run_e2e.py` scenario
+uses the full source-series labels `[instance, job, job_id, task_index,
+machine_id]`, an 18-second sliding window and 1-second slide (the offline
+optimizer's chosen K=200 geometry), and the runtime exporter at 1x rather than
+the former 10x dilation. After CloudLab Docker access was enabled on both
+nodes, the local runner completed both K=200 and K=500 runs in approximately
+200 seconds each (190-second replay/warmup plus ten query repetitions), in
+both SketchDB and Prometheus-baseline modes. The controller-resolved streaming
+configs explicitly record K=200 and K=500 respectively. Raw client results,
+latencies, resolved configs, controller logs, and monitor output are retained
+under `experiment_outputs/cost_optimizer_validation_k{200,500}_1x_20260909/`.
+Earlier retry directories are retained as failed preflight evidence (first
+node1 Docker access, then node0 controller Docker access); the interrupted
+10x run was superseded by the 1x runs.
+
+2026-09-09 first E2E reduction (same-data consistency, not holdout): SketchDB
+completed ten queries in each run. Mean client latency was 169.25 ms for K=200
+and 170.61 ms for K=500; their independent Prometheus baseline runs averaged
+114.54 ms and 112.12 ms. Query-engine monitor peak RSS was 2,754,297,856 B
+(2.57 GiB) for K=200 versus 6,360,596,480 B (5.92 GiB) for K=500; mean sampled
+query-engine CPU was 18.50% versus 23.43%. Thus this short run is consistent
+with the predicted direction that K=200 is the cheaper feasible option in
+memory/CPU, while latency is too close and too sparsely sampled to support a
+latency-ordering claim. Each SketchDB result had a baseline result with the
+same repetition and label set; baseline produced 251 (K=200) and 288 (K=500)
+additional rows because the independently timed replays advanced through the
+source stream at slightly different rates. On the matched rows the median and
+95th-percentile absolute value differences were zero for both K values
+(maximum 0.0091102). This is only a replay/result-path smoke check: values
+from independently timed query executions do not establish KLL rank error.
+The 2% eligibility claim remains supported by the paired sketch-bench profiles
+(mean rank errors: K=200 0.158583%, K=500 0.07025%). A reproducible reduction
+must retain the matched-key rule and report unmatched baseline rows rather than
+silently treating them as zero error.
+
 ## #3: What feasibility evidence constrains optimization?
 
 Blocked by: #1, #2
