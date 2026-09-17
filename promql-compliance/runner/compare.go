@@ -72,7 +72,7 @@ func CompareQuery(ctx context.Context, reference, test QueryAPI, query QueryCase
 		}
 		referenceRange, _, referenceRangeErr = reference.QueryRange(ctx, query.Expr, rng)
 		testRange, _, testRangeErr = test.QueryRange(ctx, query.Expr, rng)
-		rangeOutcome := responseComparison(referenceRange, testRange, referenceRangeErr, testRangeErr, effective, query.ExpectError)
+		rangeOutcome := responseComparison(referenceRange, testRange, referenceRangeErr, testRangeErr, effective)
 		report.Range = &rangeOutcome
 		report.Passed = report.Passed && rangeOutcome.Passed
 	}
@@ -81,7 +81,7 @@ func CompareQuery(ctx context.Context, reference, test QueryAPI, query QueryCase
 	for index, instantTime := range instantTimes {
 		referenceInstant, _, referenceErr := reference.Query(ctx, query.Expr, instantTime)
 		testInstant, _, testErr := test.Query(ctx, query.Expr, instantTime)
-		outcome := responseComparison(referenceInstant, testInstant, referenceErr, testErr, effective, query.ExpectError)
+		outcome := responseComparison(referenceInstant, testInstant, referenceErr, testErr, effective)
 		report.Instant = append(report.Instant, InstantComparison{
 			OffsetSeconds: query.InstantOffsetsSeconds[index],
 			Time:          instantTime,
@@ -89,7 +89,7 @@ func CompareQuery(ctx context.Context, reference, test QueryAPI, query QueryCase
 		})
 		report.Passed = report.Passed && outcome.Passed
 
-		if query.Range == nil || referenceRangeErr != nil || testRangeErr != nil || referenceErr != nil || testErr != nil || query.ExpectError {
+		if query.Range == nil || referenceRangeErr != nil || testRangeErr != nil || referenceErr != nil || testErr != nil {
 			continue
 		}
 		referenceParity := parityComparison(referenceRange, referenceInstant, instantTime, effective)
@@ -124,17 +124,13 @@ func (q QueryCase) RangeAt(base time.Time) (clientv1.Range, error) {
 	}, nil
 }
 
-func responseComparison(reference, test model.Value, referenceErr, testErr error, tolerance ComparisonPolicy, expectError bool) ComparisonOutcome {
+func responseComparison(reference, test model.Value, referenceErr, testErr error, tolerance ComparisonPolicy) ComparisonOutcome {
 	outcome := ComparisonOutcome{}
 	if referenceErr != nil {
 		outcome.ReferenceError = referenceErr.Error()
 	}
 	if testErr != nil {
 		outcome.TestError = testErr.Error()
-	}
-	if expectError {
-		outcome.Passed = referenceErr != nil && testErr != nil
-		return outcome
 	}
 	if referenceErr != nil || testErr != nil {
 		outcome.Passed = false

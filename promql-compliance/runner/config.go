@@ -24,7 +24,6 @@ type QueryCase struct {
 	InstantOffsetsSeconds []float64         `yaml:"instant_offsets_seconds" json:"instantOffsetsSeconds"`
 	Range                 *RangeSpec        `yaml:"range" json:"range"`
 	Comparison            *ComparisonPolicy `yaml:"comparison" json:"comparison"`
-	ExpectError           bool              `yaml:"expect_error" json:"expectError"`
 }
 
 type RangeSpec struct {

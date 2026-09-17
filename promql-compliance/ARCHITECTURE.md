@@ -88,10 +88,8 @@ For each query, the runner can perform four related checks:
 - Reference parity: Prometheus range-at-t versus Prometheus instant-at-t.
 - Test parity: ASAPQuery range-at-t versus ASAPQuery instant-at-t.
 
-The report passes only if every configured comparison passes. An unexpected
-HTTP/query error from either target fails the comparison, even if both targets
-fail. The exception is a query explicitly marked `expect_error: true`, where
-both targets must return an error.
+The report passes only if every configured comparison passes. An HTTP/query
+error from either target fails the comparison, even if both targets fail.
 
 Equal successful empty results are still equal results; use a dataset and
 probe query that should contain samples when testing ingestion readiness.
