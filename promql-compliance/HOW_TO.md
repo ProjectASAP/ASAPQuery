@@ -146,27 +146,6 @@ queries:
 If tolerance is omitted, values are compared exactly. A tolerance should be
 small and justified; a broad tolerance can hide a correctness bug.
 
-## Test expected failures
-
-Use this only when the query is deliberately expected to fail on both
-targets:
-
-```yaml
-- name: intentionally-unsupported
-  expr: unsupported_expression
-  instant_offsets_seconds: [600]
-  expect_error: true
-```
-
-For ordinary queries, an error from either target makes the comparison fail.
-Two matching errors do not accidentally pass. With `expect_error: true`, both
-targets must return errors; a success from either target fails the comparison.
-
-This also makes the suite useful for finding unsupported ASAPQuery queries:
-leave `expect_error` unset for a query that Prometheus supports. A Prometheus
-success paired with an ASAPQuery error produces `passed: false` and records the
-ASAPQuery error in `testError`.
-
 ## Run with DEBUG logging
 
 The default Compose stack uses `INFO`. Temporarily change the query engine

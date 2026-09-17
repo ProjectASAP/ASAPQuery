@@ -12,22 +12,13 @@ import (
 
 func TestCompareQueryRejectsUnexpectedSharedErrors(t *testing.T) {
 	err := errors.New("query failed")
-	outcome := responseComparison(nil, nil, err, err, ComparisonPolicy{}, false)
+	outcome := responseComparison(nil, nil, err, err, ComparisonPolicy{})
 
 	if outcome.Passed {
 		t.Fatal("comparison passed even though both targets failed unexpectedly")
 	}
 	if outcome.ReferenceError != err.Error() || outcome.TestError != err.Error() {
 		t.Fatalf("errors = %#v, want both target errors recorded", outcome)
-	}
-}
-
-func TestCompareQueryAcceptsSharedExpectedErrors(t *testing.T) {
-	err := errors.New("query failed")
-	outcome := responseComparison(nil, nil, err, err, ComparisonPolicy{}, true)
-
-	if !outcome.Passed {
-		t.Fatal("comparison rejected matching expected errors")
 	}
 }
 
