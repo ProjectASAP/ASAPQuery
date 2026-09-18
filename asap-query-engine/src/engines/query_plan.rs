@@ -201,3 +201,84 @@ impl QueryPlan {
         lines.join("\n")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data_model::AggregationIdInfo;
+    use crate::engines::simple_engine::{QueryExecutionContext, QueryMetadata, StoreQueryPlan};
+    use promql_utilities::data_model::KeyByLabelNames;
+    use promql_utilities::query_logics::enums::AggregationType;
+    use std::collections::HashMap;
+
+    fn context() -> RangeQueryExecutionContext {
+        RangeQueryExecutionContext {
+            base: QueryExecutionContext {
+                metric: "requests".into(),
+                metadata: QueryMetadata {
+                    query_output_labels: KeyByLabelNames::empty(),
+                    statistic_to_compute: Statistic::Sum,
+                    query_kwargs: HashMap::new(),
+                    keep_metric_name: false,
+                },
+                store_plan: StoreQueryPlan {
+                    values_query: StoreQueryParams {
+                        metric: "requests".into(),
+                        aggregation_id: 7,
+                        start_timestamp: 0,
+                        end_timestamp: 1_000,
+                    },
+                    keys_query: None,
+                },
+                agg_info: AggregationIdInfo {
+                    aggregation_id_for_key: 7,
+                    aggregation_id_for_value: 7,
+                    aggregation_type_for_key: AggregationType::Sum,
+                    aggregation_type_for_value: AggregationType::Sum,
+                },
+                value_window_type: WindowType::Tumbling,
+                do_merge: false,
+                spatial_filter: String::new(),
+                query_time: 1_000,
+                grouping_labels: KeyByLabelNames::empty(),
+                aggregated_labels: KeyByLabelNames::empty(),
+            },
+            output_timestamps: vec![1_000],
+            query_range_ms: 1_000,
+            buckets_per_step: 1,
+            lookback_bucket_count: 1,
+            tumbling_window_ms: 1_000,
+            window_type: WindowType::Tumbling,
+            window_size_ms: 1_000,
+            keys_window_type: None,
+            keys_window_size_ms: None,
+            keys_lookback_ms: None,
+            keys_tumbling_window_ms: None,
+        }
+    }
+
+    #[test]
+    fn separate_key_branch_fans_into_key_resolution() {
+        let mut context = context();
+        context.base.store_plan.keys_query = Some(StoreQueryParams {
+            metric: "requests".into(),
+            aggregation_id: 8,
+            start_timestamp: 0,
+            end_timestamp: 1_000,
+        });
+        context.keys_window_type = Some(WindowType::Sliding);
+
+        let explanation = QueryPlan::compile_range(
+            &context,
+            PlanOptions {
+                limit_topk: false,
+                format_output: false,
+            },
+        )
+        .explain();
+
+        assert!(explanation.contains("n4 ResolveKeys(values=n1, keys=n3)"));
+        assert!(explanation.contains("n2 StoreRead(SlidingExactCover, requests#8"));
+        assert!(explanation.ends_with("root: n5"));
+    }
+}
