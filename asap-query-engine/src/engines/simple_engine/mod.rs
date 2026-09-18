@@ -6,6 +6,7 @@ use crate::data_model::{
     AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
     StreamingConfig,
 };
+use crate::engines::query_plan::{PlanOptions, QueryPlan};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{plan_exact_cover, SlidingWindowSpec};
 // use crate::stores::promsketch_store::{
@@ -1186,6 +1187,15 @@ impl SimpleEngine {
                     context.metric
                 )
             })?;
+
+        let plan = QueryPlan::compile_range(
+            &range_context,
+            PlanOptions {
+                limit_topk: enable_topk_limiting,
+                format_output: enable_topk_formatting,
+            },
+        );
+        debug!(plan = %plan.explain(), "Compiled native query plan");
 
         let range_results = self.execute_range_query_pipeline(
             &range_context,
