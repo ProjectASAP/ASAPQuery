@@ -1914,7 +1914,7 @@ impl SimpleEngine {
                 limit_topk: enable_topk_limiting,
                 format_output: enable_topk_formatting,
             },
-        );
+        )?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
         self.execute_range_query_pipeline(context, enable_topk_limiting, enable_topk_formatting)
     }

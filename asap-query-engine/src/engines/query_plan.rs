@@ -61,7 +61,7 @@ impl QueryPlan {
     pub(crate) fn compile_range(
         context: &RangeQueryExecutionContext,
         options: PlanOptions,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let mut nodes = Vec::new();
         let values_read = Self::push_read(
             &mut nodes,
@@ -111,7 +111,9 @@ impl QueryPlan {
                 .query_kwargs
                 .get("k")
                 .cloned()
-                .unwrap_or_else(|| "<missing>".to_string());
+                .ok_or_else(|| "Topk query is missing required `k` parameter".to_string())?;
+            k.parse::<usize>()
+                .map_err(|_| "Topk query has an invalid `k` parameter".to_string())?;
             root = Self::push(&mut nodes, QueryPlanNode::LimitTopK { input: root, k });
         }
         if options.format_output {
@@ -123,7 +125,7 @@ impl QueryPlan {
                 },
             );
         }
-        Self { nodes, root }
+        Ok(Self { nodes, root })
     }
 
     fn push(nodes: &mut Vec<QueryPlanNode>, node: QueryPlanNode) -> NodeId {
@@ -187,9 +189,11 @@ impl QueryPlan {
                     values.0,
                     keys.map(|id| format!("n{}", id.0)).unwrap_or_else(|| "self".to_string())
                 ),
-                QueryPlanNode::Estimate { input, statistic, query_kwargs } => format!(
-                    "n{index} Estimate(n{}, {statistic}, {query_kwargs:?})", input.0
-                ),
+                QueryPlanNode::Estimate { input, statistic, query_kwargs } => {
+                    let mut kwargs: Vec<_> = query_kwargs.iter().collect();
+                    kwargs.sort_unstable_by_key(|(key, _)| *key);
+                    format!("n{index} Estimate(n{}, {statistic}, {kwargs:?})", input.0)
+                },
                 QueryPlanNode::LimitTopK { input, k } => format!("n{index} LimitTopK(n{}, k={k})", input.0),
                 QueryPlanNode::Format { input, include_metric_name } => format!(
                     "n{index} Format(n{}, include_metric_name={include_metric_name})", input.0
@@ -275,6 +279,7 @@ mod tests {
                 format_output: false,
             },
         )
+        .unwrap()
         .explain();
 
         assert!(explanation.contains("n4 ResolveKeys(values=n1, keys=n3)"));
@@ -294,6 +299,7 @@ mod tests {
                 format_output: false,
             },
         )
+        .unwrap()
         .explain();
 
         assert!(explanation.contains("outputs=[1000, 2000, 3000]"));
@@ -317,10 +323,28 @@ mod tests {
                 format_output: true,
             },
         )
+        .unwrap()
         .explain();
 
         assert!(explanation.contains("LimitTopK(n3, k=3)"));
         assert!(explanation.contains("Format(n4, include_metric_name=true)"));
         assert!(explanation.ends_with("root: n5"));
+    }
+
+    #[test]
+    fn rejects_topk_without_a_limit() {
+        let mut context = context();
+        context.base.metadata.statistic_to_compute = Statistic::Topk;
+
+        let error = QueryPlan::compile_range(
+            &context,
+            PlanOptions {
+                limit_topk: true,
+                format_output: false,
+            },
+        )
+        .expect_err("topk plan without k must fail loudly");
+
+        assert_eq!(error, "Topk query is missing required `k` parameter");
     }
 }
