@@ -8,6 +8,7 @@ Nodes are connected by `n<id>` inputs:
 - `StoreRead` fetches one aggregation over its requested timestamp bounds.
 - `ComposeWindows` turns stored buckets into one aggregate per output timestamp.
 - `ResolveKeys` combines a value branch with an optional separate keys branch.
+  Without a keys branch, the value accumulator supplies its own keys.
 - `Estimate` queries the accumulator statistic with its parameters.
 - `LimitTopK` and `Format` are presentation nodes.
 
