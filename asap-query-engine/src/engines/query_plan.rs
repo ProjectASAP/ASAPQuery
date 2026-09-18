@@ -281,4 +281,46 @@ mod tests {
         assert!(explanation.contains("n2 StoreRead(SlidingExactCover, requests#8"));
         assert!(explanation.ends_with("root: n5"));
     }
+
+    #[test]
+    fn range_plan_keeps_every_output_timestamp() {
+        let mut context = context();
+        context.output_timestamps = vec![1_000, 2_000, 3_000];
+
+        let explanation = QueryPlan::compile_range(
+            &context,
+            PlanOptions {
+                limit_topk: false,
+                format_output: false,
+            },
+        )
+        .explain();
+
+        assert!(explanation.contains("outputs=[1000, 2000, 3000]"));
+    }
+
+    #[test]
+    fn topk_formatting_is_the_plan_root() {
+        let mut context = context();
+        context.base.metadata.statistic_to_compute = Statistic::Topk;
+        context
+            .base
+            .metadata
+            .query_kwargs
+            .insert("k".to_string(), "3".to_string());
+        context.base.metadata.keep_metric_name = true;
+
+        let explanation = QueryPlan::compile_range(
+            &context,
+            PlanOptions {
+                limit_topk: true,
+                format_output: true,
+            },
+        )
+        .explain();
+
+        assert!(explanation.contains("LimitTopK(n3, k=3)"));
+        assert!(explanation.contains("Format(n4, include_metric_name=true)"));
+        assert!(explanation.ends_with("root: n5"));
+    }
 }
