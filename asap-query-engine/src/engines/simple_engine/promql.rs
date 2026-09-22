@@ -742,7 +742,9 @@ impl SimpleEngine {
             // Binary arms need Topk limiting, but must remain in the
             // unformatted intermediate label representation until after the
             // arithmetic operation.
-            let results = self.execute_range_query_pipeline(&ctx, true, false).ok()?;
+            let results = self
+                .execute_observed_range_query_pipeline(&ctx, true, false)
+                .ok()?;
             let combined: Vec<RangeVectorElement> = results
                 .into_iter()
                 .map(|mut elem| {
@@ -772,10 +774,10 @@ impl SimpleEngine {
         }
         // Binary arms need Topk limiting, but not final presentation formatting.
         let lhs_results = self
-            .execute_range_query_pipeline(&lhs_ctx, true, false)
+            .execute_observed_range_query_pipeline(&lhs_ctx, true, false)
             .ok()?;
         let rhs_results = self
-            .execute_range_query_pipeline(&rhs_ctx, true, false)
+            .execute_observed_range_query_pipeline(&rhs_ctx, true, false)
             .ok()?;
 
         // Build lookup: label_key -> {timestamp -> value} for rhs
@@ -1342,7 +1344,7 @@ impl SimpleEngine {
         // instant's handle_query_promql -- both flags are no-ops unless this
         // query's statistic is Topk.
         let results: Vec<RangeVectorElement> = self
-            .execute_range_query_pipeline(&context, true, true)
+            .execute_observed_range_query_pipeline(&context, true, true)
             .map_err(|e| {
                 warn!("Range query execution failed: {}", e);
                 e

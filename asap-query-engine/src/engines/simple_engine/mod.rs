@@ -8,6 +8,7 @@ use crate::data_model::{
     AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
     StreamingConfig,
 };
+use crate::engines::query_plan::{PlanOptions, QueryPlan};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{plan_exact_cover, SlidingWindowSpec};
 // use crate::stores::promsketch_store::{
@@ -1338,7 +1339,7 @@ impl SimpleEngine {
                 )
             })?;
 
-        let range_results = self.execute_range_query_pipeline(
+        let range_results = self.execute_observed_range_query_pipeline(
             &range_context,
             enable_topk_limiting,
             enable_topk_formatting,
@@ -2066,6 +2067,23 @@ impl SimpleEngine {
     /// (#581 stage E.3), before insertion into the final result map.
     /// Formatting (metric-name label prefix) is a separate, smaller pass
     /// afterward, once per group rather than once per timestep.
+    fn execute_observed_range_query_pipeline(
+        &self,
+        context: &RangeQueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
+        let plan = QueryPlan::compile_range(
+            context,
+            PlanOptions {
+                limit_topk: enable_topk_limiting,
+                format_output: enable_topk_formatting,
+            },
+        )?;
+        debug!(plan = %plan.explain(), "Compiled native query plan");
+        self.execute_range_query_pipeline(context, enable_topk_limiting, enable_topk_formatting)
+    }
+
     fn execute_range_query_pipeline(
         &self,
         context: &RangeQueryExecutionContext,
