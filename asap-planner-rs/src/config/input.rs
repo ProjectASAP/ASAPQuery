@@ -13,8 +13,8 @@ pub struct ControllerConfig {
     pub windowing: Option<WindowingConfig>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
     pub aggregate_cleanup: Option<AggregateCleanupConfig>,
-    /// Optional hint: per-metric label sets used as a fallback when Prometheus
-    /// returns no series for a metric. Prometheus-inferred labels take priority.
+    /// Optional authoritative per-metric label sets. Prometheus discovery fills
+    /// only metrics that have no hint.
     #[serde(default)]
     pub metrics: Option<Vec<MetricDefinition>>,
     /// Current streaming config, passed as context for repeated reconfiguration.

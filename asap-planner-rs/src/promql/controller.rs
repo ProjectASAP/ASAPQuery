@@ -1,8 +1,5 @@
-use std::path::Path;
-use tracing::debug;
-
 use asap_types::PromQLSchema;
-use promql_utilities::data_model::KeyByLabelNames;
+use std::path::Path;
 
 use super::generator;
 use crate::config::input::ControllerConfig;
@@ -26,10 +23,10 @@ impl Controller {
         }
     }
 
-    /// Build a `Controller` from a config file, fetching metric labels from Prometheus.
+    /// Build a `Controller` from a config file, using metric hints before Prometheus discovery.
     ///
     /// `prometheus_url` is queried via `GET /api/v1/series?match[]=<metric>` for each metric
-    /// name found in the config's PromQL queries.
+    /// name found in the config's PromQL queries that has no `metrics` hint.
     pub fn from_file(
         path: &Path,
         opts: RuntimeOptions,
@@ -48,23 +45,18 @@ impl Controller {
             .iter()
             .flat_map(|qg| qg.queries.clone())
             .collect();
-        let mut schema =
-            prometheus_client::build_schema_from_prometheus(prometheus_url, &all_queries)?;
-        // For any metric that Prometheus had no series for, fall back to the
-        // `metrics` hint in the config file (if present).
-        if let Some(metric_hints) = &config.metrics {
-            for hint in metric_hints {
-                if !schema.config.contains_key(&hint.metric) {
-                    debug!(
-                        "Prometheus had no series for '{}'; falling back to config-file hint with labels {:?}",
-                        hint.metric, hint.labels
-                    );
-                    schema = schema.add_metric(
-                        hint.metric.clone(),
-                        KeyByLabelNames::new(hint.labels.clone()),
-                    );
-                }
-            }
+        let mut schema = config.schema_from_hints();
+        let metric_names = prometheus_client::extract_metric_names(&all_queries);
+        let missing_metric_names = metric_names
+            .into_iter()
+            .filter(|metric_name| !schema.config.contains_key(metric_name))
+            .collect();
+        let discovered_schema = prometheus_client::build_schema_from_metric_names(
+            prometheus_url,
+            &missing_metric_names,
+        )?;
+        for (metric_name, labels) in discovered_schema.config {
+            schema = schema.add_metric(metric_name, labels);
         }
         Ok(Self {
             config,
