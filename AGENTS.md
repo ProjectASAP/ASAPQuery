@@ -1,3 +1,8 @@
+# Code comments
+
+Keep code comments succinct. The goal of code comments is to help readability by explaining the current code and/or giving some intuitive reasoning.
+This can use an example. Code comments should not include git history, or issue numbers or historical facts.
+
 # Process conventions
 
 - **Keep PRs small and single-purpose.** Split a PR that mixes multiple

@@ -125,7 +125,7 @@ def get_query_lookback(query: str) -> int:
 
 
 # ============================================================================
-# QUERY BUILDING BLOCKS (B1-B6)
+# QUERY BUILDING BLOCKS (B1-B10)
 # Each function generates a random query of that type
 # ============================================================================
 
@@ -198,6 +198,50 @@ def generate_b6_query() -> str:
     return f"{outer_agg} by ({label}) ({inner_agg}({metric}[{time_range}]))"
 
 
+def generate_b7_query() -> str:
+    """B7: sum by or count by applied to rate.
+
+    Example: sum by (label_0) (rate(fake_metric_total[15m]))
+    """
+    aggregation = random.choice(["sum", "count"])
+    label = get_aggregation_label()
+    time_range = get_time_range()
+    metric = get_metric_name()
+    return f"{aggregation} by ({label}) (rate({metric}[{time_range}]))"
+
+
+def generate_b8_query() -> str:
+    """B8: topk over sum by aggregation, with k in {1, 3, 5}.
+
+    Example: topk(3, sum by (label_0) (fake_metric_total))
+    """
+    k = random.choice([1, 3, 5])
+    label = get_aggregation_label()
+    metric = get_metric_name()
+    return f"topk({k}, sum by ({label}) ({metric}))"
+
+
+def generate_b9_query() -> str:
+    """B9: topk over count by aggregation, with k in {1, 3, 5}.
+
+    Example: topk(3, count by (label_0) (fake_metric_total))
+    """
+    k = random.choice([1, 3, 5])
+    label = get_aggregation_label()
+    metric = get_metric_name()
+    return f"topk({k}, count by ({label}) ({metric}))"
+
+
+def generate_b10_query() -> str:
+    """B10: max_over_time query.
+
+    Example: max_over_time(fake_metric_total[15m])
+    """
+    time_range = get_time_range()
+    metric = get_metric_name()
+    return f"max_over_time({metric}[{time_range}])"
+
+
 # Map block IDs to generator functions
 BLOCK_GENERATORS = {
     1: generate_b1_query,
@@ -206,6 +250,10 @@ BLOCK_GENERATORS = {
     4: generate_b4_query,
     5: generate_b5_query,
     6: generate_b6_query,
+    7: generate_b7_query,
+    8: generate_b8_query,
+    9: generate_b9_query,
+    10: generate_b10_query,
 }
 
 
@@ -604,6 +652,10 @@ Building Blocks:
   B4: sum_over_time / count_over_time
   B5: rate / increase
   B6: sum by () (sum_over_time / count_over_time)
+  B7: sum by / count by (rate)
+  B8: topk(1|3|5, sum by ())
+  B9: topk(1|3|5, count by ())
+  B10: max_over_time
         """,
     )
 
