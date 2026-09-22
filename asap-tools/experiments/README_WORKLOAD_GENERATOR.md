@@ -16,6 +16,10 @@ The `generate_workload.py` script creates experiment configs by randomly composi
 | **B4** | sum/count_over_time | `sum_over_time(fake_metric_total[15m])` |
 | **B5** | rate/increase | `rate(fake_metric_total[15m])` |
 | **B6** | nested aggregation | `sum by (label_0) (sum_over_time(fake_metric_total[15m]))` |
+| **B7** | aggregate rate | `sum by (label_0) (rate(fake_metric_total[15m]))` or `count by (label_0) (rate(fake_metric_total[15m]))` |
+| **B8** | topk over sum | `topk(1, sum by (label_0) (fake_metric_total))`, with `k` of 1, 3, or 5 |
+| **B9** | topk over count | `topk(1, count by (label_0) (fake_metric_total))`, with `k` of 1, 3, or 5 |
+| **B10** | max_over_time | `max_over_time(fake_metric_total[15m])` |
 
 Each block randomly selects parameters:
 - **Quantiles**: 0.5, 0.7, 0.8, 0.9, 0.95, 0.99
