@@ -1,6 +1,8 @@
 use asap_planner::{Controller, ControllerError, PromQLSchema, RuntimeOptions, StreamingEngine};
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::AggregationType;
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::Path;
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -26,6 +28,29 @@ fn http_requests_schema() -> PromQLSchema {
             "status".to_string(),
         ]),
     )
+}
+
+fn single_request_prometheus_server(
+    status: &str,
+    body: &str,
+) -> (String, std::thread::JoinHandle<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let status = status.to_string();
+    let body = body.to_string();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 4096];
+        let bytes_read = stream.read(&mut request).unwrap();
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        String::from_utf8_lossy(&request[..bytes_read]).into_owned()
+    });
+    (url, server)
 }
 
 #[test]
@@ -804,6 +829,129 @@ metrics:
 "#;
     let result = Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts());
     assert!(result.is_ok());
+}
+
+#[test]
+fn hinted_metric_skips_prometheus_schema_discovery() {
+    let config = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        config.path(),
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[5m])"
+    repetition_delay_ms: 300000
+metrics:
+  - metric: "http_requests_total"
+    labels: ["instance"]
+"#,
+    )
+    .unwrap();
+
+    let unused_listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let unused_port = unused_listener.local_addr().unwrap().port();
+    drop(unused_listener);
+
+    // The port has no listener. A successful construction proves the hinted
+    // metric did not attempt URL-based discovery.
+    let controller = Controller::from_file(
+        config.path(),
+        default_opts(),
+        &format!("http://127.0.0.1:{unused_port}"),
+    )
+    .unwrap();
+
+    assert_eq!(controller.generate().unwrap().inference_query_count(), 1);
+}
+
+#[test]
+fn unhinted_metric_discovers_schema_from_prometheus() {
+    let config = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        config.path(),
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[5m])"
+    repetition_delay_ms: 300000
+"#,
+    )
+    .unwrap();
+
+    let (url, server) = single_request_prometheus_server(
+        "200 OK",
+        r#"{"status":"success","data":[{"__name__":"http_requests_total","instance":"one"}]}"#,
+    );
+
+    let controller = Controller::from_file(config.path(), default_opts(), &url).unwrap();
+
+    assert_eq!(controller.generate().unwrap().inference_query_count(), 1);
+    assert!(server
+        .join()
+        .unwrap()
+        .starts_with("GET /api/v1/series?match%5B%5D=http_requests_total"));
+}
+
+#[test]
+fn hints_remain_authoritative_while_unhinted_metrics_are_discovered() {
+    let config = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        config.path(),
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "sum by (hint_label) (hinted_metric)"
+      - "rate(unhinted_metric[5m])"
+    repetition_delay_ms: 300000
+metrics:
+  - metric: "hinted_metric"
+    labels: ["hint_label"]
+"#,
+    )
+    .unwrap();
+    let (url, server) = single_request_prometheus_server(
+        "200 OK",
+        r#"{"status":"success","data":[{"__name__":"unhinted_metric","instance":"one"}]}"#,
+    );
+
+    let controller = Controller::from_file(config.path(), default_opts(), &url).unwrap();
+
+    assert_eq!(controller.generate().unwrap().inference_query_count(), 2);
+    assert!(server
+        .join()
+        .unwrap()
+        .starts_with("GET /api/v1/series?match%5B%5D=unhinted_metric"));
+}
+
+#[test]
+fn unhinted_metric_propagates_prometheus_discovery_error() {
+    let config = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(
+        config.path(),
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "rate(http_requests_total[5m])"
+    repetition_delay_ms: 300000
+"#,
+    )
+    .unwrap();
+    let (url, server) = single_request_prometheus_server(
+        "422 Unprocessable Entity",
+        r#"{"status":"error","error":"too many series"}"#,
+    );
+
+    let result = Controller::from_file(config.path(), default_opts(), &url);
+
+    assert!(matches!(result, Err(ControllerError::PrometheusClient(_))));
+    assert!(server
+        .join()
+        .unwrap()
+        .starts_with("GET /api/v1/series?match%5B%5D=http_requests_total"));
 }
 
 // --- Overlapping window tests ---

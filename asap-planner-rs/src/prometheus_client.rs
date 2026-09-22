@@ -165,10 +165,18 @@ pub fn build_schema_from_prometheus(
     queries: &[String],
 ) -> Result<PromQLSchema, ControllerError> {
     let metric_names = extract_metric_names(queries);
+    build_schema_from_metric_names(prometheus_url, &metric_names)
+}
+
+/// Build a `PromQLSchema` by querying Prometheus for the supplied metric names.
+pub(crate) fn build_schema_from_metric_names(
+    prometheus_url: &str,
+    metric_names: &HashSet<String>,
+) -> Result<PromQLSchema, ControllerError> {
     debug!("Inferred metric names from queries: {:?}", metric_names);
     let mut schema = PromQLSchema::new();
 
-    for metric_name in &metric_names {
+    for metric_name in metric_names {
         match fetch_labels_for_metric(prometheus_url, metric_name)? {
             Some(labels) => {
                 debug!("Inferred labels for metric '{}': {:?}", metric_name, labels);
