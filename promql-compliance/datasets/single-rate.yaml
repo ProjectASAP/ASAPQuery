@@ -25,3 +25,28 @@ series:
       - {offset_seconds: 1080, value: 1080}
       - {offset_seconds: 1140, value: 1140}
       - {offset_seconds: 1200, value: 1200}
+  - metric: http_requests_total
+    labels:
+      host: b
+    samples:
+      - {offset_seconds: 0, value: 1000}
+      - {offset_seconds: 60, value: 1120}
+      - {offset_seconds: 120, value: 1240}
+      - {offset_seconds: 180, value: 1360}
+      - {offset_seconds: 240, value: 1480}
+      - {offset_seconds: 300, value: 1600}
+      - {offset_seconds: 360, value: 1720}
+      - {offset_seconds: 420, value: 1840}
+      - {offset_seconds: 480, value: 1960}
+      - {offset_seconds: 540, value: 2080}
+      - {offset_seconds: 600, value: 2200}
+      - {offset_seconds: 660, value: 2320}
+      - {offset_seconds: 720, value: 2440}
+      - {offset_seconds: 780, value: 2560}
+      - {offset_seconds: 840, value: 2680}
+      - {offset_seconds: 900, value: 2800}
+      - {offset_seconds: 960, value: 2920}
+      - {offset_seconds: 1020, value: 3040}
+      - {offset_seconds: 1080, value: 3160}
+      - {offset_seconds: 1140, value: 3280}
+      - {offset_seconds: 1200, value: 3400}

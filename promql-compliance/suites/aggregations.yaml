@@ -20,51 +20,6 @@ queries:
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
 
-  - name: quantile-over-time-0.1
-    expr: "quantile_over_time(0.1, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.2
-    expr: "quantile_over_time(0.2, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.3
-    expr: "quantile_over_time(0.3, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.4
-    expr: "quantile_over_time(0.4, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.5
-    expr: "quantile_over_time(0.5, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.6
-    expr: "quantile_over_time(0.6, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.7
-    expr: "quantile_over_time(0.7, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.8
-    expr: "quantile_over_time(0.8, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.9
-    expr: "quantile_over_time(0.9, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.95
-    expr: "quantile_over_time(0.95, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-over-time-0.99
-    expr: "quantile_over_time(0.99, data[5m])"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-
   - name: sum-over-time
     expr: "sum_over_time(data[5m])"
     instant_offsets_seconds: *evaluation_offsets
@@ -90,6 +45,27 @@ queries:
     range: *evaluation_range
   - name: topk-10-bare
     expr: "topk(10, data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: topk-3-bare-by-job
+    expr: "topk by (job) (3, data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: topk-3-bare-by-job-instance
+    expr: "topk by (job, instance) (3, data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+
+  - name: topk-3-rate
+    expr: "topk(3, rate(data[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: topk-3-rate-by-job
+    expr: "topk by (job) (3, rate(data[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: topk-3-rate-by-job-instance
+    expr: "topk by (job, instance) (3, rate(data[5m]))"
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
 
@@ -193,75 +169,6 @@ queries:
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
 
-  - name: quantile-0.1
-    expr: "quantile(0.1, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.2
-    expr: "quantile(0.2, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.3
-    expr: "quantile(0.3, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.4
-    expr: "quantile(0.4, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.5
-    expr: "quantile(0.5, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.6
-    expr: "quantile(0.6, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.7
-    expr: "quantile(0.7, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.8
-    expr: "quantile(0.8, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.9
-    expr: "quantile(0.9, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.95
-    expr: "quantile(0.95, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.99
-    expr: "quantile(0.99, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.5-by-job
-    expr: "quantile by (job) (0.5, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.95-by-job
-    expr: "quantile by (job) (0.95, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.99-by-job
-    expr: "quantile by (job) (0.99, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.5-by-job-instance
-    expr: "quantile by (job, instance) (0.5, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.95-by-job-instance
-    expr: "quantile by (job, instance) (0.95, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-  - name: quantile-0.99-by-job-instance
-    expr: "quantile by (job, instance) (0.99, data)"
-    instant_offsets_seconds: *evaluation_offsets
-    range: *evaluation_range
-
   - name: sum
     expr: "sum(data)"
     instant_offsets_seconds: *evaluation_offsets
@@ -284,5 +191,22 @@ queries:
     range: *evaluation_range
   - name: count-by-job-instance
     expr: "count by (job, instance) (data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+
+  - name: sum-by-job-rate
+    expr: "sum by (job) (rate(data[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: sum-by-job-instance-rate
+    expr: "sum by (job, instance) (rate(data[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: sum-by-job-sum-over-time
+    expr: "sum by (job) (sum_over_time(data[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: sum-by-job-instance-sum-over-time
+    expr: "sum by (job, instance) (sum_over_time(data[5m]))"
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range

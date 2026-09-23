@@ -32,8 +32,8 @@ The command exits with status 1 if any comparison fails.
 
 ```bash
 go run ./cmd/differential-runner \
-  --dataset ../datasets/sparse-checkout.yaml \
-  --suite ../suites/temporal.yaml \
+  --dataset ../datasets/aggregations.yaml \
+  --suite ../suites/aggregations.yaml \
   --compose-file ../docker-compose.yml
 ```
 
