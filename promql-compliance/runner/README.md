@@ -22,7 +22,7 @@ Run against already-running targets:
 
 ```bash
 go run ./cmd/differential-runner \
-  --dataset ../datasets/sparse-checkout.yaml \
+  --dataset ../datasets/single-rate.yaml \
   --suite ../suites/temporal.yaml \
   --reference-url http://localhost:9090 \
   --test-url http://localhost:8088 \
