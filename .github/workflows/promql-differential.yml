@@ -55,7 +55,7 @@ jobs:
 
       - name: Run live PromQL differential suite
         working-directory: promql-compliance/runner
-        run: make run-all
+        run: make run-for-ci
 
       - name: Upload differential report and service logs
         if: always()
