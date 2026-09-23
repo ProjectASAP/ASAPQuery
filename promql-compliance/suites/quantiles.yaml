@@ -38,6 +38,10 @@ queries:
     expr: "quantile_over_time(0.7, quantile_dense[5m])"
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
+  - name: quantile-over-time-0.75
+    expr: "quantile_over_time(0.75, quantile_dense[5m])"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
   - name: quantile-over-time-0.8
     expr: "quantile_over_time(0.8, quantile_dense[5m])"
     instant_offsets_seconds: *evaluation_offsets
@@ -88,6 +92,10 @@ queries:
     expr: "quantile(0.7, quantile_wide)"
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
+  - name: quantile-0.75
+    expr: "quantile(0.75, quantile_wide)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
   - name: quantile-0.8
     expr: "quantile(0.8, quantile_wide)"
     instant_offsets_seconds: *evaluation_offsets
@@ -108,6 +116,10 @@ queries:
     expr: "quantile by (job) (0.5, quantile_wide)"
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
+  - name: quantile-0.75-by-job
+    expr: "quantile by (job) (0.75, quantile_wide)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
   - name: quantile-0.9-by-job
     expr: "quantile by (job) (0.9, quantile_wide)"
     instant_offsets_seconds: *evaluation_offsets
@@ -122,6 +134,10 @@ queries:
     range: *evaluation_range
   - name: quantile-0.5-by-job-instance
     expr: "quantile by (job, instance) (0.5, quantile_wide)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: quantile-0.75-by-job-instance
+    expr: "quantile by (job, instance) (0.75, quantile_wide)"
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
   - name: quantile-0.9-by-job-instance

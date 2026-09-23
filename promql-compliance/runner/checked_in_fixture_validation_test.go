@@ -11,6 +11,7 @@ func TestCheckedInFixturesAndSuites(t *testing.T) {
 	pairs := []struct{ dataset, suite string }{
 		{"../datasets/aggregations.yaml", "../suites/aggregations.yaml"},
 		{"../datasets/quantiles.yaml", "../suites/quantiles.yaml"},
+		{"../datasets/olly-bench.yaml", "../suites/olly-bench.yaml"},
 	}
 	parser := promqlparser.NewParser(promqlparser.Options{})
 	for _, pair := range pairs {

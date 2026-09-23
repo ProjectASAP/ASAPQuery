@@ -91,14 +91,22 @@ make run \
   SUITE=../suites/aggregations.yaml
 ```
 
-The PromQL differential CI workflow runs the checked-in pairs listed in the
-runner Makefile's `CASES` variable. Adding a YAML file does not automatically
-add it to CI; add a case there when adding a new dataset/suite pair.
+The PromQL differential CI workflow runs `make run-for-ci`, which covers the
+pairs in the runner Makefile's `CI_CASES` variable. Pairs that are expected to
+fail, such as `olly-bench` (planner coverage tracking), go in `NON_CI_CASES`.
+Adding a YAML file does not automatically add it to either list; add a case
+there when adding a new dataset/suite pair.
 
-To run all checked-in pairs locally and write one report per pair:
+To run every checked-in pair locally and write one report per pair:
 
 ```bash
 make run-all
+```
+
+To run only the CI pairs:
+
+```bash
+make run-for-ci
 ```
 
 Reports are written to `/tmp/asapquery-differential-reports` by default. Set

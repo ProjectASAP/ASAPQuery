@@ -1,0 +1,120 @@
+name: olly-bench
+comparison_defaults:
+  value_tolerance:
+    relative: 0.01
+    absolute: 0.000001
+
+# olly-bench handwritten_v2 queries, tracked in #738. Most are not yet
+# supported by the planner, so this suite runs under `make run-all` but not
+# `make run-for-ci`.
+#
+# Query structure matches the originals; durations are shrunk to fit the
+# fixture: [1h]/[60m]/[6h]/[12h]/[24h] -> [5m], offsets -> 5m, [6h:] -> [10m:].
+# Names carry the original line number. Duplicate lines 17 (= 2) and
+# 22 (= 14) are omitted. sort_desc order is not checked: the comparator
+# sorts series before comparing.
+queries:
+  # First query is the runner's readiness probe, so it must be supported.
+  - name: olly-09-sum-memory
+    expr: "sum(backend_process_resident_memory_bytes)"
+    instant_offsets_seconds: &evaluation_offsets [900, 1200]
+    range: &evaluation_range
+      start_offset_seconds: 900
+      end_offset_seconds: 1200
+      step_seconds: 60
+  - name: olly-01-sort-desc-5xx-ratio-by-job
+    expr: "sort_desc(sum by (job) (increase(backend_http_5xx_total[5m])) / sum by (job) (increase(backend_http_requests_total[5m])))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-02-topk-5xx-ratio-by-job
+    expr: "topk(1, sum by (job) (increase(backend_http_5xx_total[5m])) / sum by (job) (increase(backend_http_requests_total[5m])))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-03-payment-5xx-ratio
+    expr: "sum(increase(payment_service_http_5xx_total[5m])) / sum(increase(payment_service_http_requests_total[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-04-payment-5xx-ratio-offset
+    expr: "sum(increase(payment_service_http_5xx_total[5m] offset 5m)) / sum(increase(payment_service_http_requests_total[5m] offset 5m))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-05-max-over-time-cache-lag
+    expr: "max_over_time(cache_refresh_lag_seconds[5m])"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-06-max-over-time-user-cache-lag
+    expr: "max_over_time(user_service_cache_refresh_lag_seconds[5m])"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-07-bare-selector
+    expr: "user_service_cache_refresh_lag_seconds"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-08-sum-rate-cpu
+    expr: "sum(rate(backend_process_cpu_seconds_total[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-10-subquery-max-sum-memory
+    expr: "max_over_time((sum(backend_process_resident_memory_bytes))[10m:])"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-11-topk-sum-rate-cpu-by-job
+    expr: "topk(2, sum by (job) (rate(backend_process_cpu_seconds_total[5m])))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-12-topk-sum-memory-by-job
+    expr: "topk(2, sum by (job) (backend_process_resident_memory_bytes))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-13-subquery-max-sum-rate-cpu
+    expr: "max_over_time((sum(rate(backend_process_cpu_seconds_total[5m])))[10m:])"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-14-sum-rate-requests
+    expr: "sum(rate(backend_http_requests_total[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-15-sum-rate-requests-by-job
+    expr: "sum by (job) (rate(backend_http_requests_total[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-16-backend-5xx-ratio
+    expr: "sum(increase(backend_http_5xx_total[5m])) / sum(increase(backend_http_requests_total[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-18-5xx-by-job-gt-zero
+    expr: "sum by (job) (increase(backend_http_5xx_total[5m])) > 0"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-19-sum-rate-order-requests
+    expr: "sum(rate(order_service_http_requests_total[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-20-sum-rate-order-requests-offset
+    expr: "sum(rate(order_service_http_requests_total[5m] offset 5m))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-21-histogram-quantile-0.95
+    expr: "histogram_quantile(0.95, sum by (le) (rate(order_service_http_request_duration_seconds_bucket[5m])))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-23-topk-max-over-time-backlog
+    expr: "topk(2, max_over_time(backend_retry_backlog_depth[5m]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-24-subquery-max-order-5xx-ratio
+    expr: "max_over_time((sum(rate(order_service_http_5xx_total[5m])) / sum(rate(order_service_http_requests_total[5m])))[10m:])"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-25-topk-5xx-share-scalar
+    expr: "topk(1, sum by (job) (increase(backend_http_5xx_total[5m])) / scalar(sum(increase(backend_http_5xx_total[5m]))))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-26-topk-sum-rate-cpu-by-job
+    expr: "topk(1, sum by (job) (rate(backend_process_cpu_seconds_total[5m])))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: olly-27-subquery-topk-avg-memory-by-job
+    expr: "topk(3, avg_over_time((sum by (job) (backend_process_resident_memory_bytes))[10m:]))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range

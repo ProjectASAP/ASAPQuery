@@ -1,13 +1,17 @@
-.PHONY: test run run-all
+.PHONY: test run run-all run-for-ci run-cases
 
 DATASET ?= ../datasets/single-rate.yaml
 SUITE ?= ../suites/temporal.yaml
 REPORT_DIR ?= /tmp/asapquery-differential-reports
 
-CASES := \
+CI_CASES := \
 	single-rate-temporal:../datasets/single-rate.yaml:../suites/temporal.yaml \
 	aggregations:../datasets/aggregations.yaml:../suites/aggregations.yaml \
 	quantiles:../datasets/quantiles.yaml:../suites/quantiles.yaml
+
+# Tracks planner coverage (#738); most queries are expected to fail.
+NON_CI_CASES := \
+	olly-bench:../datasets/olly-bench.yaml:../suites/olly-bench.yaml
 
 test:
 	go test ./...
@@ -19,6 +23,12 @@ run:
 		--compose-file ../docker-compose.yml
 
 run-all:
+	@$(MAKE) --no-print-directory run-cases CASES="$(CI_CASES) $(NON_CI_CASES)"
+
+run-for-ci:
+	@$(MAKE) --no-print-directory run-cases CASES="$(CI_CASES)"
+
+run-cases:
 	@set -eu; \
 	mkdir -p "$(REPORT_DIR)"; \
 	result=0; \
