@@ -2,7 +2,7 @@
 """
 Script to plot data scale vs cost and latency across multiple experiments.
 X-axis: Data scale (metrics/sec) in log scale
-Y-axes: Left = Cost (CPU %), Right = Latency (ms)
+Y-axes: Left = Cost (CPU %), Right = Latency (s)
 """
 
 import argparse

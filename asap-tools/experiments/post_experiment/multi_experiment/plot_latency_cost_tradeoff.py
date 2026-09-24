@@ -259,7 +259,7 @@ def plot_latency_cost_tradeoff(
         ),
     )
 
-    ax.set_xlabel(f"Latency ({latency_metric}) [ms]")
+    ax.set_xlabel(f"Latency ({latency_metric}) [s]")
     ax.set_ylabel(f"{args.cpu_type.capitalize()} CPU Cost ({cost_metric}) [%]")
     ax.set_title("Latency-Cost Tradeoff: Prometheus vs ASAPOlly")
     ax.legend()
@@ -322,10 +322,10 @@ def main(args):
                 exact_cost, est_cost = exact_total, est_total
             data_points[exp_name] = (exact_lat, exact_cost, est_lat, est_cost)
             print(
-                f"  Prometheus: latency={exact_lat:.2f}ms, {args.cpu_type}_cpu={exact_cost:.2f}%"
+                f"  Prometheus: latency={exact_lat:.2f}s, {args.cpu_type}_cpu={exact_cost:.2f}%"
             )
             print(
-                f"  TurboProm: latency={est_lat:.2f}ms, {args.cpu_type}_cpu={est_cost:.2f}%"
+                f"  TurboProm: latency={est_lat:.2f}s, {args.cpu_type}_cpu={est_cost:.2f}%"
             )
         except Exception as e:
             print(f"  Failed to process {exp_name}: {e}")
