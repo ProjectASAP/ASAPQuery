@@ -151,8 +151,8 @@ class DataProcessor:
     def process_for_plotting(
         self,
         experiment_data: List[Dict[str, Any]],
-        individual_queries: bool = False,
-        show_benefit: bool = False,
+        individual_queries: bool,
+        show_benefit: bool,
     ) -> pd.DataFrame:
         """Process experiment data into format suitable for plotting."""
         plot_data = []

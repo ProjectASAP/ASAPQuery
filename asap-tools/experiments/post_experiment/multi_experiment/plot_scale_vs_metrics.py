@@ -119,7 +119,7 @@ def _compare_costs(experiment_name, experiment_mode):
     )
 
 
-def get_latency_p95(experiment_name, experiment_mode="baseline"):
+def get_latency_p95(experiment_name, experiment_mode):
     """p95 latency pooled over all queries (baseline = exact, sketchdb = estimate)."""
     data = _run_json(
         "compare_latencies.py",
@@ -138,7 +138,7 @@ def get_latency_p95(experiment_name, experiment_mode="baseline"):
     return data["results"]["-1"][side]["p95"]
 
 
-def get_cost_p95(experiment_name, experiment_mode="baseline"):
+def get_cost_p95(experiment_name, experiment_mode):
     """p95 of total CPU % (sum over all monitored processes: ingest + query)."""
     data = _compare_costs(experiment_name, experiment_mode)
     if data is None:
@@ -148,7 +148,7 @@ def get_cost_p95(experiment_name, experiment_mode="baseline"):
     ]["p95"]
 
 
-def get_query_cost_95(experiment_name, experiment_mode="baseline"):
+def get_query_cost_95(experiment_name, experiment_mode):
     """p95 of query CPU % (see compare_costs.calculate_query_cpu)."""
     data = _compare_costs(experiment_name, experiment_mode)
     if data is None:
@@ -156,7 +156,7 @@ def get_query_cost_95(experiment_name, experiment_mode="baseline"):
     return data["query_cpu"][experiment_mode]["p95"]
 
 
-def get_query_cost_sum(experiment_name, experiment_mode="baseline"):
+def get_query_cost_sum(experiment_name, experiment_mode):
     """Sum of query CPU % over the run; depends on run length."""
     data = _compare_costs(experiment_name, experiment_mode)
     if data is None:
@@ -164,7 +164,7 @@ def get_query_cost_sum(experiment_name, experiment_mode="baseline"):
     return data["query_cpu"][experiment_mode]["sum"]
 
 
-def cost_label_for(use_query_cost_sum=False, use_query_cost_95=False):
+def cost_label_for(use_query_cost_sum, use_query_cost_95):
     if use_query_cost_sum:
         return "Query CPU sum (%)"
     if use_query_cost_95:

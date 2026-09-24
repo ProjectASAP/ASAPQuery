@@ -36,8 +36,8 @@ def print_benefits_summary(
     data_scales,
     latency_benefits,
     cost_benefits,
-    use_query_cost_sum=False,
-    use_query_cost_95=False,
+    use_query_cost_sum,
+    use_query_cost_95,
 ):
     """Print summary of the benefits data."""
     if use_query_cost_sum:
@@ -90,10 +90,10 @@ def plot_scale_vs_benefits(
     data_scales,
     latency_benefits,
     cost_benefits,
+    use_query_cost_sum,
+    use_query_cost_95,
     save_file=None,
     show=False,
-    use_query_cost_sum=False,
-    use_query_cost_95=False,
 ):
     """
     Plot data scale vs benefits (prometheus/sketchdb ratios).

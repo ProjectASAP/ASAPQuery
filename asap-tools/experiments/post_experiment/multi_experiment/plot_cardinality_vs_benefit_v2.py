@@ -163,16 +163,15 @@ def load_experiment_config(exp_dir: str) -> Dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def extract_experiment_data(
-    exp_name: str, metric: str = "p95", verify_scale: bool = True
-) -> Optional[Dict[str, Any]]:
+def extract_experiment_data(exp_name: str, metric: str) -> Optional[Dict[str, Any]]:
     """
     Extract data from a single experiment.
+
+    Warns if the data scale doesn't match the expected 2^card_exp.
 
     Args:
         exp_name: Experiment name
         metric: Latency metric to use (median, p95, p99, mean)
-        verify_scale: If True, verify data scale matches expected 2^card_exp
 
     Returns:
         dict with experiment data or None if extraction fails
@@ -197,7 +196,7 @@ def extract_experiment_data(
         actual_scale = calculate_data_scale_from_config(config)
         expected_scale = 2 ** metadata["card_exp"]
 
-        if verify_scale and actual_scale != expected_scale:
+        if actual_scale != expected_scale:
             print(
                 f"Warning: {exp_name} has scale {actual_scale} but expected {expected_scale}"
             )
@@ -278,17 +277,17 @@ def extract_experiment_data(
 
 
 def extract_cost_benefit_data(
-    exp_name: str, metric: str = "p95", verify_scale: bool = True, total: bool = False
+    exp_name: str, metric: str, total: bool
 ) -> Optional[Dict[str, Any]]:
     """
     Extract cost benefit data from a single experiment.
 
-    Runs compare_costs.py and reads the baseline/sketchdb CPU ratio.
+    Runs compare_costs.py and reads the baseline/sketchdb CPU ratio. Warns if
+    the data scale doesn't match the expected 2^card_exp.
 
     Args:
         exp_name: Experiment name
         metric: CPU metric to use (median, p95, p99, sum, max)
-        verify_scale: If True, verify data scale matches expected 2^card_exp
         total: Use total CPU (all processes) instead of query CPU
 
     Returns:
@@ -307,16 +306,13 @@ def extract_cost_benefit_data(
         return None
 
     try:
-        # Verify scale if requested
-        actual_scale = None
-        if verify_scale:
-            config = load_experiment_config(exp_dir)
-            actual_scale = calculate_data_scale_from_config(config)
-            expected_scale = 2 ** metadata["card_exp"]
-            if actual_scale != expected_scale:
-                print(
-                    f"Warning: {exp_name} has scale {actual_scale} but expected {expected_scale}"
-                )
+        config = load_experiment_config(exp_dir)
+        actual_scale = calculate_data_scale_from_config(config)
+        expected_scale = 2 ** metadata["card_exp"]
+        if actual_scale != expected_scale:
+            print(
+                f"Warning: {exp_name} has scale {actual_scale} but expected {expected_scale}"
+            )
 
         # Run compare_costs.py
         script_dir = os.path.join(
@@ -372,10 +368,10 @@ def extract_cost_benefit_data(
 
 def extract_experiments_from_patterns(
     patterns: List[str],
-    metric: str = "p95",
-    cardinalities: Optional[List[int]] = None,
-    benefit_type: str = "latency",
-    query_types: Optional[List[str]] = None,
+    metric: str,
+    cardinalities: Optional[List[int]],
+    benefit_type: str,
+    query_types: Optional[List[str]],
 ) -> pd.DataFrame:
     """
     Extract data from experiments matching glob patterns.
@@ -438,9 +434,7 @@ def extract_experiments_from_patterns(
     return df
 
 
-def create_plot(
-    df: pd.DataFrame, metric: str = "p95", benefit_type: str = "latency"
-) -> "ggplot":
+def create_plot(df: pd.DataFrame, metric: str, benefit_type: str) -> "ggplot":
     """
     Create benefit vs lookback plot with log2(T/15) x-axis.
 
@@ -531,9 +525,7 @@ def create_plot(
     return p
 
 
-def print_summary_table(
-    df: pd.DataFrame, metric: str = "p95", benefit_type: str = "latency"
-):
+def print_summary_table(df: pd.DataFrame, metric: str, benefit_type: str):
     """Print summary table of experiment data."""
     # Dynamic header based on benefit type
     if benefit_type == "latency":

@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class ThroughputAnalyzer:
     """Analyzes throughput from prometheus metrics."""
 
-    def __init__(self, window_duration: int = 30, num_windows: int = 10):
+    def __init__(self, window_duration: int, num_windows: int):
         """
         Initialize the throughput analyzer.
 
@@ -45,27 +45,26 @@ class ThroughputAnalyzer:
             raise
 
     def extract_timeseries(
-        self,
-        data: Dict,
-        metric_name: str,
-        label_filter: Optional[Dict[str, str]] = None,
+        self, data: Dict, metric_name: str
     ) -> List[Tuple[float, float]]:
         """
         Extract timeseries data from prometheus metrics.
 
+        For prometheus_tsdb_head_samples_appended_total, only float samples
+        (label type="float") are counted.
+
         Args:
             data: Loaded prometheus metrics data
             metric_name: Name of the metric to extract
-            label_filter: Dict of label key-value pairs to filter on (e.g., {"type": "float"})
 
         Returns:
             List of (timestamp_seconds, value) tuples, sorted by timestamp
         """
-        if (
-            label_filter is None
-            and metric_name == "prometheus_tsdb_head_samples_appended_total"
-        ):
-            label_filter = {"type": "float"}  # Default to float type only
+        label_filter: Optional[Dict[str, str]] = (
+            {"type": "float"}
+            if metric_name == "prometheus_tsdb_head_samples_appended_total"
+            else None
+        )
 
         timeseries = []
         collection_start = datetime.fromisoformat(data["collection_start"])
@@ -103,15 +102,15 @@ class ThroughputAnalyzer:
     def calculate_rates(
         self,
         timeseries: List[Tuple[float, float]],
-        window_duration: Optional[int] = None,
+        window_duration: Optional[int],
     ) -> List[Tuple[float, float]]:
         """
         Calculate rate (samples/sec) between measurements.
 
         Args:
             timeseries: List of (timestamp, cumulative_value) tuples
-            window_duration: If provided, only calculate rates for pairs separated by
-                           approximately this duration (in seconds)
+            window_duration: If None, rates between consecutive points; otherwise
+                           only pairs separated by approximately this duration (in seconds)
 
         Returns:
             List of (timestamp, rate) tuples where timestamp is the end of the interval
@@ -166,21 +165,17 @@ class ThroughputAnalyzer:
 
         return rates
 
-    def calculate_stable_throughput(
-        self, rates: List[Tuple[float, float]], num_windows: Optional[int] = None
-    ) -> float:
+    def calculate_stable_throughput(self, rates: List[Tuple[float, float]]) -> float:
         """
-        Calculate stable throughput by averaging the last N rate measurements.
+        Calculate stable throughput by averaging the last self.num_windows rates.
 
         Args:
             rates: List of (timestamp, rate) tuples
-            num_windows: Number of last measurements to average (defaults to self.num_windows)
 
         Returns:
             Average rate over the last num_windows measurements
         """
-        if num_windows is None:
-            num_windows = self.num_windows
+        num_windows = self.num_windows
 
         if len(rates) < num_windows:
             logger.warning(
@@ -234,9 +229,7 @@ class ThroughputAnalyzer:
             )
 
             # Calculate stable throughput
-            stable_throughput = self.calculate_stable_throughput(
-                windowed_rates, num_windows=self.num_windows
-            )
+            stable_throughput = self.calculate_stable_throughput(windowed_rates)
 
             results[metric] = {
                 "file": str(file_path),
