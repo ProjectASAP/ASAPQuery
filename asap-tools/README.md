@@ -115,7 +115,7 @@ experiments:
 With this config, 2 experiments are run independently. In the first experiment, `asap-tools/queriers/prometheus-client` only sends queries to ASAP. After this experiment finishes, the infra is torn down. Then the second experiment is set up and `asap-tools/queriers/prometheus-client` sends queries only to Prometheus directly. In the second experiment (i.e. when `mode=prometheus`), none of ASAP's components are set up (apart from `asap-tools/queriers/prometheus-client`).
 
 Post-experiment analysis:
-- Use `compare_costs.py` and `compare_latencies.py` from `$REPO_DIR/asap-tools/experiments/post_experiments/`.
+- Use `compare_costs.py` and `compare_latencies.py` from `$REPO_DIR/asap-tools/experiments/post_experiment/single_experiment/`.
 - `run_compare_latencies.sh` is an easy wrapper around `compare_latencies.py`
 
 ### Comparing query accuracy for ASAP vs Prometheus
@@ -130,7 +130,7 @@ experiments:
 With this config, only one experiment is run. In the same experiment, `PrometheusClient` sends a query to ASAP and then immediately after that, sends a query to Prometheus too.
 
 Post-experiment analysis:
-- Use `calculate_fidelity.py` from `$REPO_DIR/asap-tools/experiments/post_experiments/`.
+- Use `calculate_fidelity.py` from `$REPO_DIR/asap-tools/experiments/post_experiment/single_experiment/`.
 - `run_calculate_fidelity.sh` is an easy wrapper around `calculate_fidelity.py`
 
 ### Debugging with Verbose Logging

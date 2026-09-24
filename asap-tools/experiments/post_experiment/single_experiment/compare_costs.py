@@ -8,7 +8,9 @@ import matplotlib.pyplot as plt
 from typing import List
 from collections import defaultdict
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 import constants  # noqa: E402
 
 RESOURCES = ["cpu_percent", "memory_info"]
@@ -56,9 +58,7 @@ def measure_prometheus_ingest_cost(ingest_only_experiment_name: str) -> float:
     )
 
 
-def calculate_query_cpu(
-    monitor_info, experiment_mode, ingest_baseline_cpu_percent=None
-):
+def calculate_query_cpu(monitor_info, experiment_mode, ingest_baseline_cpu_percent):
     """
     Calculate Query CPU timeseries for the given experiment mode.
 
