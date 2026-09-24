@@ -36,6 +36,8 @@ REMOTE_MONITOR_EXIT_POLL_INTERVAL_SECONDS = 2
 INGEST_MONITOR_SHUTDOWN_POLL_INTERVAL_SECONDS = 0.5
 PROCESS_MONITOR_STOP_TIMEOUT_SECONDS = 30
 PROCESS_MONITOR_JOIN_TIMEOUT_SECONDS = 10
+# monitor_output.json: set on a seed pid's entry when it exited mid-run; value is its sample count.
+PROCESS_MONITOR_EXITED_AT_SAMPLE_KEY = "exited_at_sample"
 
 PROMETHEUS_CONFIG_DIR = "prometheus_config"
 PROMETHEUS_CONFIG_FILE = "prometheus.yml"
