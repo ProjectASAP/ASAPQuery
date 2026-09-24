@@ -452,16 +452,6 @@ def create_plot(
     Returns:
         plotnine ggplot object
     """
-    # inf (zero sketchdb cost) can't be placed on the axis and would make the
-    # tick loop below unbounded.
-    finite = np.isfinite(df["benefit_ratio"])
-    if not finite.all():
-        print(
-            "Warning: dropping non-finite benefit ratios from plot: "
-            f"{df.loc[~finite, 'experiment_name'].tolist()}"
-        )
-        df = df[finite]
-
     # Create labels for legend
     card_exps = sorted(df["card_exp"].unique())
     color_labels = [f"2^{exp}" for exp in card_exps]
