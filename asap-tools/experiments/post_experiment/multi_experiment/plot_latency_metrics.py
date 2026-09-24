@@ -31,13 +31,17 @@ from plotnine import (
 )
 
 # Add parent directories to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 import constants  # noqa: E402
-from post_experiment.results_loader import (  # noqa: E402
+from post_experiment.lib.results_loader import (  # noqa: E402
     load_latencies_only,
     get_server_name_for_mode,
 )
-from post_experiment.compare_latencies import calculate_latency_stats  # noqa: E402
+from post_experiment.single_experiment.compare_latencies import (  # noqa: E402
+    calculate_latency_stats,
+)
 
 
 class DataExtractor:

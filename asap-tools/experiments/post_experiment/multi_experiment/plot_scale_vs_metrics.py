@@ -15,7 +15,10 @@ import yaml
 import matplotlib.pyplot as plt
 import numpy as np
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+POST_EXPERIMENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SINGLE_EXPERIMENT_DIR = os.path.join(POST_EXPERIMENT_DIR, "single_experiment")
+
+sys.path.append(os.path.dirname(POST_EXPERIMENT_DIR))
 import constants  # noqa: E402
 
 # Configuration
@@ -83,17 +86,18 @@ def calculate_data_scale(experiment_name):
         return None
 
 
-def get_latency_p95(experiment_name):
+def get_latency_p95(experiment_name, experiment_mode="baseline"):
     """
     Get p95 latency by running ./run_compare_latencies.sh
 
     Args:
         experiment_name: Name of the experiment
+        experiment_mode: Experiment mode (baseline or sketchdb)
 
     Returns:
         p95 latency value (exact), or None if failed
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = SINGLE_EXPERIMENT_DIR
     script_path = os.path.join(script_dir, "run_compare_latencies.sh")
 
     try:
@@ -105,20 +109,28 @@ def get_latency_p95(experiment_name):
             cwd=script_dir,
         )
 
-        # Parse output to extract p95 from exact
-        # Looking for: exact: {'median': X, 'p95': Y, ...}
+        # Parse output to extract p95 from the appropriate line based on experiment mode
+        # For baseline: look for "exact:" line
+        # For sketchdb: look for "estimate:" line
         output = result.stdout + result.stderr
 
-        # Find the "exact:" line
-        exact_match = re.search(r"exact:\s*\{([^}]+)\}", output)
-        if exact_match:
-            exact_dict_str = exact_match.group(1)
+        # Map experiment mode to the line to search for
+        search_key = "exact" if experiment_mode == "baseline" else "estimate"
+
+        # Find the line with the appropriate key
+        pattern = rf"{search_key}:\s*\{{([^}}]+)\}}"
+        match = re.search(pattern, output)
+
+        if match:
+            dict_str = match.group(1)
             # Extract p95 value
-            p95_match = re.search(r"'p95':\s*([\d.]+)", exact_dict_str)
+            p95_match = re.search(r"'p95':\s*([\d.]+)", dict_str)
             if p95_match:
                 return float(p95_match.group(1))
 
-        print(f"Warning: Could not parse p95 latency from output for {experiment_name}")
+        print(
+            f"Warning: Could not parse p95 latency from output for {experiment_name} in {experiment_mode} mode"
+        )
         return None
 
     except subprocess.CalledProcessError as e:
@@ -129,17 +141,18 @@ def get_latency_p95(experiment_name):
         return None
 
 
-def get_cost_p95(experiment_name):
+def get_cost_p95(experiment_name, experiment_mode="baseline"):
     """
     Get p95 CPU cost by running compare_costs.py
 
     Args:
         experiment_name: Name of the experiment
+        experiment_mode: Experiment mode (baseline or sketchdb)
 
     Returns:
         p95 CPU percentage, or None if failed
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = SINGLE_EXPERIMENT_DIR
     compare_costs_path = os.path.join(script_dir, "compare_costs.py")
 
     try:
@@ -150,7 +163,7 @@ def get_cost_p95(experiment_name):
                 "--experiment_name",
                 experiment_name,
                 "--experiment_mode",
-                "baseline",
+                experiment_mode,
                 "--print",
             ],
             capture_output=True,
@@ -159,18 +172,17 @@ def get_cost_p95(experiment_name):
             cwd=script_dir,
         )
 
-        # Parse output to extract p95 CPU from "prometheus prometheus.yml cpu_percent p95"
-        # or "prometheus prometheus cpu_percent p95"
+        # Parse output to extract p95 CPU from "{experiment_mode} {experiment_mode}.yml cpu_percent p95"
+        # or "{experiment_mode} {experiment_mode} cpu_percent p95"
         output = result.stdout + result.stderr
 
         # Look for lines matching the pattern
+        pattern = (
+            rf"{experiment_mode}\s+{experiment_mode}.*cpu_percent\s+p95\s+([\d.]+)"
+        )
         for line in output.split("\n"):
-            if re.search(
-                r"prometheus\s+prometheus.*cpu_percent\s+p95\s+([\d.]+)", line
-            ):
-                match = re.search(
-                    r"prometheus\s+prometheus.*cpu_percent\s+p95\s+([\d.]+)", line
-                )
+            if re.search(pattern, line):
+                match = re.search(pattern, line)
                 if match:
                     return float(match.group(1))
 
@@ -187,17 +199,18 @@ def get_cost_p95(experiment_name):
         return None
 
 
-def get_query_cost_95(experiment_name):
+def get_query_cost_95(experiment_name, experiment_mode="baseline"):
     """
     Get query CPU cost p95 by running compare_costs.py
 
     Args:
         experiment_name: Name of the experiment
+        experiment_mode: Experiment mode (baseline or sketchdb)
 
     Returns:
         Query CPU cost p95 percentage, or None if failed
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = SINGLE_EXPERIMENT_DIR
     compare_costs_path = os.path.join(script_dir, "compare_costs.py")
 
     try:
@@ -208,7 +221,7 @@ def get_query_cost_95(experiment_name):
                 "--experiment_name",
                 experiment_name,
                 "--experiment_mode",
-                "baseline",
+                experiment_mode,
                 "--print",
             ],
             capture_output=True,
@@ -219,26 +232,26 @@ def get_query_cost_95(experiment_name):
 
         # Parse output to extract query CPU sum from "Query CPU Statistics" section
         # Looking for pattern like:
-        # prometheus:
+        # {experiment_mode}:
         #   p95: 1122837.55%
         output = result.stdout + result.stderr
 
         # Look for the Query CPU Statistics section
         in_query_section = False
-        in_prometheus_subsection = False
+        in_experiment_mode_subsection = False
         for line in output.split("\n"):
             if "Query CPU Statistics" in line:
                 in_query_section = True
                 continue
 
             if in_query_section:
-                # Check if we're in the prometheus subsection
-                if line.strip().startswith("prometheus:"):
-                    in_prometheus_subsection = True
+                # Check if we're in the experiment_mode subsection
+                if line.strip().startswith(f"{experiment_mode}:"):
+                    in_experiment_mode_subsection = True
                     continue
 
-                # If we're in prometheus subsection, look for sum
-                if in_prometheus_subsection:
+                # If we're in experiment_mode subsection, look for sum
+                if in_experiment_mode_subsection:
                     match = re.search(r"p95:\s+([\d.]+)%", line)
                     if match:
                         return float(match.group(1))
@@ -261,17 +274,18 @@ def get_query_cost_95(experiment_name):
         return None
 
 
-def get_query_cost_sum(experiment_name):
+def get_query_cost_sum(experiment_name, experiment_mode="baseline"):
     """
     Get query CPU cost sum by running compare_costs.py
 
     Args:
         experiment_name: Name of the experiment
+        experiment_mode: Experiment mode (baseline or sketchdb)
 
     Returns:
         Query CPU cost sum percentage, or None if failed
     """
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    script_dir = SINGLE_EXPERIMENT_DIR
     compare_costs_path = os.path.join(script_dir, "compare_costs.py")
 
     try:
@@ -282,7 +296,7 @@ def get_query_cost_sum(experiment_name):
                 "--experiment_name",
                 experiment_name,
                 "--experiment_mode",
-                "baseline",
+                experiment_mode,
                 "--print",
             ],
             capture_output=True,
@@ -293,26 +307,26 @@ def get_query_cost_sum(experiment_name):
 
         # Parse output to extract query CPU sum from "Query CPU Statistics" section
         # Looking for pattern like:
-        # prometheus:
+        # {experiment_mode}:
         #   sum: 1122837.55%
         output = result.stdout + result.stderr
 
         # Look for the Query CPU Statistics section
         in_query_section = False
-        in_prometheus_subsection = False
+        in_experiment_mode_subsection = False
         for line in output.split("\n"):
             if "Query CPU Statistics" in line:
                 in_query_section = True
                 continue
 
             if in_query_section:
-                # Check if we're in the prometheus subsection
-                if line.strip().startswith("prometheus:"):
-                    in_prometheus_subsection = True
+                # Check if we're in the experiment_mode subsection
+                if line.strip().startswith(f"{experiment_mode}:"):
+                    in_experiment_mode_subsection = True
                     continue
 
-                # If we're in prometheus subsection, look for sum
-                if in_prometheus_subsection:
+                # If we're in experiment_mode subsection, look for sum
+                if in_experiment_mode_subsection:
                     match = re.search(r"sum:\s+([\d.]+)%", line)
                     if match:
                         return float(match.group(1))
@@ -539,6 +553,13 @@ Examples:
         action="store_true",
         help="Use query CPU cost p95 instead of p95 CPU cost",
     )
+    parser.add_argument(
+        "--experiment_mode",
+        type=str,
+        choices=["baseline", "sketchdb"],
+        default="baseline",
+        help="Experiment mode (baseline or sketchdb)",
+    )
 
     args = parser.parse_args()
 
@@ -566,22 +587,22 @@ Examples:
             print(f"  Data scale: {scale:.2e} metrics/sec")
 
         # Get latency p95
-        latency = get_latency_p95(exp_name)
+        latency = get_latency_p95(exp_name, args.experiment_mode)
         latencies.append(latency)
         if latency is not None:
             print(f"  Latency p95: {latency:.4f} seconds")
 
         # Get cost (either p95 or query cost sum based on flag)
         if args.use_query_cost_sum:
-            cost = get_query_cost_sum(exp_name)
+            cost = get_query_cost_sum(exp_name, args.experiment_mode)
             if cost is not None:
                 print(f"  Query cost sum: {cost:.2f} CPU %")
         elif args.use_query_cost_95:
-            cost = get_query_cost_95(exp_name)
+            cost = get_query_cost_95(exp_name, args.experiment_mode)
             if cost is not None:
                 print(f"  Query cost p95: {cost:.2f} CPU %")
         else:
-            cost = get_cost_p95(exp_name)
+            cost = get_cost_p95(exp_name, args.experiment_mode)
             if cost is not None:
                 print(f"  Cost p95: {cost:.2f} CPU %")
         costs.append(cost)

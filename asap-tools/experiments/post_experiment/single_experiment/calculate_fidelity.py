@@ -9,7 +9,9 @@ from typing import List
 # from promql_utilities.query_results.classes import QueryResult, QueryResultAcrossTime
 
 # TODO: make this more robust
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 import constants  # noqa: E402
 
 
@@ -173,7 +175,10 @@ def main(args):
     exact_results = None
     estimate_results = None
 
-    from results_loader import load_results, get_server_name_for_mode
+    from post_experiment.lib.results_loader import (
+        load_results,
+        get_server_name_for_mode,
+    )
 
     exact_results = load_results(
         os.path.join(

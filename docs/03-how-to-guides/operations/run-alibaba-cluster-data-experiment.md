@@ -190,7 +190,7 @@ Because Google has separate baseline and sketchdb modes, the latency wrapper
 can be used after the run:
 
 ```bash
-cd /home/milind/Desktop/cmu/research/sketch_db_for_prometheus/code/ASAPQuery/asap-tools/experiments/post_experiment
+cd /home/milind/Desktop/cmu/research/sketch_db_for_prometheus/code/ASAPQuery/asap-tools/experiments/post_experiment/single_experiment
 PYTHONPATH=/home/milind/Desktop/cmu/research/sketch_db_for_prometheus/code/ASAPQuery/asap-common/dependencies/py/promql_utilities \
 ./run_compare_latencies.sh google_cluster_data_offset18
 
@@ -294,7 +294,7 @@ modes. The Alibaba example has one `sketchdb` mode with both Prometheus and
 SketchDB servers, so compare those servers directly:
 
 ```bash
-cd /home/milind/Desktop/cmu/research/sketch_db_for_prometheus/code/ASAPQuery/asap-tools/experiments/post_experiment
+cd /home/milind/Desktop/cmu/research/sketch_db_for_prometheus/code/ASAPQuery/asap-tools/experiments/post_experiment/single_experiment
 
 PYTHONPATH=/home/milind/Desktop/cmu/research/sketch_db_for_prometheus/code/ASAPQuery/asap-common/dependencies/py/promql_utilities \
 python3 compare_latencies.py \
