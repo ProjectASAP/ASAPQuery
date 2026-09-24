@@ -19,6 +19,7 @@ The script plots:
 import os
 import sys
 import re
+import json
 import glob
 import yaml
 import argparse
@@ -277,17 +278,18 @@ def extract_experiment_data(
 
 
 def extract_cost_benefit_data(
-    exp_name: str, metric: str = "p95", verify_scale: bool = True
+    exp_name: str, metric: str = "p95", verify_scale: bool = True, total: bool = False
 ) -> Optional[Dict[str, Any]]:
     """
     Extract cost benefit data from a single experiment.
 
-    Runs compare_costs.py and parses Query CPU Benefit output.
+    Runs compare_costs.py and reads the baseline/sketchdb CPU ratio.
 
     Args:
         exp_name: Experiment name
         metric: CPU metric to use (median, p95, p99, sum, max)
         verify_scale: If True, verify data scale matches expected 2^card_exp
+        total: Use total CPU (all processes) instead of query CPU
 
     Returns:
         dict with experiment data or None if extraction fails
@@ -331,6 +333,7 @@ def extract_cost_benefit_data(
                 exp_name,
                 "--all_experiment_modes",
                 "--print",
+                "--machine-readable",
             ],
             capture_output=True,
             text=True,
@@ -338,23 +341,15 @@ def extract_cost_benefit_data(
             cwd=script_dir,
         )
 
-        # Parse output for Query CPU Benefit section
-        output = result.stdout + result.stderr
+        costs = json.loads(result.stdout)
         cpu_stat = METRIC_TO_CPU_STAT.get(metric, "p95")
-
-        # Look for pattern: "  <stat>: <value>x" in Query CPU Benefit section
-        # Handle both numeric values and "inf"
-        pattern = rf"Query CPU Benefit.*?^\s+{cpu_stat}:\s+([\d.]+|inf)x"
-        match = re.search(pattern, output, re.MULTILINE | re.DOTALL)
-
-        if not match:
-            print(
-                f"Warning: Could not find Query CPU Benefit '{cpu_stat}' for {exp_name}"
-            )
+        benefits = (
+            costs["benefit"]["cpu_percent"] if total else costs["query_cpu_benefit"]
+        )
+        benefit_ratio = benefits[cpu_stat]
+        if np.isnan(benefit_ratio):  # 0/0: both modes had zero cost
+            print(f"Warning: {cpu_stat} CPU benefit is NaN for {exp_name}")
             return None
-
-        value_str = match.group(1)
-        benefit_ratio = float(value_str) if value_str != "inf" else float("inf")
 
         return {
             "experiment_name": exp_name,
@@ -389,7 +384,7 @@ def extract_experiments_from_patterns(
         patterns: List of glob patterns for experiment names
         metric: Metric to use (latency or CPU stat depending on benefit_type)
         cardinalities: Optional list of cardinality exponents to include
-        benefit_type: Type of benefit to extract ('latency' or 'cost')
+        benefit_type: 'latency', 'cost' (query CPU) or 'total_cost' (total CPU)
         query_types: Optional list of query types to include (e.g., ['qot'])
 
     Returns:
@@ -413,8 +408,10 @@ def extract_experiments_from_patterns(
     for exp_name in sorted(exp_names):
         if benefit_type == "latency":
             exp_data = extract_experiment_data(exp_name, metric=metric)
-        elif benefit_type == "cost":
-            exp_data = extract_cost_benefit_data(exp_name, metric=metric)
+        elif benefit_type in ("cost", "total_cost"):
+            exp_data = extract_cost_benefit_data(
+                exp_name, metric=metric, total=benefit_type == "total_cost"
+            )
         else:
             raise ValueError(f"Unknown benefit_type: {benefit_type}")
 
@@ -489,11 +486,11 @@ def create_plot(
     y_breaks = sorted(list(set(y_breaks)))  # Remove duplicates and sort
 
     # Dynamic Y-axis label based on benefit type
-    y_label = (
-        "Query Latency Benefit"
-        if benefit_type == "latency"
-        else "Query Cost Benefit (CPU)"
-    )
+    y_label = {
+        "latency": "Query Latency Benefit",
+        "cost": "Query CPU Benefit",
+        "total_cost": "Total CPU Benefit",
+    }[benefit_type]
 
     p = (
         ggplot(
@@ -543,7 +540,8 @@ def print_summary_table(
         header = f"Latency Benefit Analysis Summary ({metric.upper()} metric)"
     else:
         cpu_stat = METRIC_TO_CPU_STAT.get(metric, metric)
-        header = f"Cost Benefit Analysis Summary (CPU {cpu_stat.upper()})"
+        cpu_kind = "Total" if benefit_type == "total_cost" else "Query"
+        header = f"{cpu_kind} CPU Benefit Analysis Summary ({cpu_stat.upper()})"
 
     print("\n" + "=" * 100)
     print(header)
@@ -634,8 +632,11 @@ Examples:
         "--benefit-type",
         type=str,
         default="latency",
-        choices=["latency", "cost"],
-        help="Type of benefit to plot: latency or cost (CPU) (default: latency)",
+        choices=["latency", "cost", "total_cost"],
+        help=(
+            "Type of benefit to plot: latency, cost (query CPU) or total_cost "
+            "(total CPU across all processes) (default: latency)"
+        ),
     )
     parser.add_argument(
         "--cardinalities",
@@ -669,7 +670,7 @@ Examples:
         parser.error("Must specify at least one of --print or --plot")
 
     # Validate metric compatibility with benefit type
-    if args.benefit_type == "cost" and args.metric == "mean":
+    if args.benefit_type != "latency" and args.metric == "mean":
         parser.error(
             "'mean' metric is not available for cost benefit. Use median, p95, p99, sum, or max"
         )

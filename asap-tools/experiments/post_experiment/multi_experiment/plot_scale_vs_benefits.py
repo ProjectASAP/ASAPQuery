@@ -47,8 +47,8 @@ def print_benefits_summary(
         cost_label = "Query Cost P95 Benefit (ratio)"
         cost_json_key = "query_cost_p95_benefit_ratio"
     else:
-        cost_label = "Cost P95 Benefit (ratio)"
-        cost_json_key = "cost_p95_benefit_ratio"
+        cost_label = "Total CPU P95 Benefit (ratio)"
+        cost_json_key = "total_cpu_p95_benefit_ratio"
 
     print("\nBenefits Summary (Prometheus / SketchDB):")
     print("=" * 110)
@@ -137,14 +137,14 @@ def plot_scale_vs_benefits(
 
     # Determine cost label based on type
     if use_query_cost_sum:
-        cost_ylabel = "Query Cost Benefit (ratio)"
-        cost_legend = "Query Cost Benefit"
+        cost_ylabel = "Query CPU Sum Benefit (ratio)"
+        cost_legend = "Query CPU Sum Benefit"
     elif use_query_cost_95:
-        cost_ylabel = "Query Cost P95 Benefit (ratio)"
-        cost_legend = "Query Cost P95 Benefit"
+        cost_ylabel = "Query CPU P95 Benefit (ratio)"
+        cost_legend = "Query CPU P95 Benefit"
     else:
-        cost_ylabel = "Cost P95 Benefit (ratio)"
-        cost_legend = "Cost P95 Benefit"
+        cost_ylabel = "Total CPU P95 Benefit (ratio)"
+        cost_legend = "Total CPU P95 Benefit"
 
     # Plot cost benefit on left y-axis
     color_cost = "#1f77b4"
@@ -280,12 +280,12 @@ Examples:
     parser.add_argument(
         "--use-query-cost-sum",
         action="store_true",
-        help="Use query CPU cost sum instead of p95 CPU cost",
+        help="Use query CPU sum instead of total CPU p95",
     )
     parser.add_argument(
         "--use-query-cost-95",
         action="store_true",
-        help="Use query CPU cost p95 instead of p95 CPU cost",
+        help="Use query CPU p95 instead of total CPU p95",
     )
 
     args = parser.parse_args()
@@ -341,7 +341,7 @@ Examples:
         else:
             cost_prometheus = get_cost_p95(exp_name, "baseline")
             cost_sketchdb = get_cost_p95(exp_name, "sketchdb")
-            cost_type = "Cost p95"
+            cost_type = "Total CPU p95"
 
         if cost_prometheus is not None and cost_sketchdb is not None:
             cost_benefit = cost_prometheus / cost_sketchdb

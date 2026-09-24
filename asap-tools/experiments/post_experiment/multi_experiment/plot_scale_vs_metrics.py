@@ -8,7 +8,6 @@ Y-axes: Left = Cost (CPU %), Right = Latency (ms)
 import argparse
 import os
 import sys
-import re
 import json
 import subprocess
 import yaml
@@ -86,278 +85,96 @@ def calculate_data_scale(experiment_name):
         return None
 
 
-def get_latency_p95(experiment_name, experiment_mode="baseline"):
+def _run_json(script, args):
+    """Run a single_experiment script with --machine-readable and parse its JSON.
+
+    Returns None if the script fails (e.g. missing experiment); a missing JSON
+    key raises instead, so a schema change can't silently drop data.
     """
-    Get p95 latency by running ./run_compare_latencies.sh
-
-    Args:
-        experiment_name: Name of the experiment
-        experiment_mode: Experiment mode (baseline or sketchdb)
-
-    Returns:
-        p95 latency value (exact), or None if failed
-    """
-    script_dir = SINGLE_EXPERIMENT_DIR
-    script_path = os.path.join(script_dir, "run_compare_latencies.sh")
-
     try:
         result = subprocess.run(
-            [script_path, experiment_name],
+            ["python3", os.path.join(SINGLE_EXPERIMENT_DIR, script)]
+            + args
+            + ["--machine-readable"],
             capture_output=True,
             text=True,
             check=True,
-            cwd=script_dir,
         )
-
-        # Parse output to extract p95 from the appropriate line based on experiment mode
-        # For baseline: look for "exact:" line
-        # For sketchdb: look for "estimate:" line
-        output = result.stdout + result.stderr
-
-        # Map experiment mode to the line to search for
-        search_key = "exact" if experiment_mode == "baseline" else "estimate"
-
-        # Find the line with the appropriate key
-        pattern = rf"{search_key}:\s*\{{([^}}]+)\}}"
-        match = re.search(pattern, output)
-
-        if match:
-            dict_str = match.group(1)
-            # Extract p95 value
-            p95_match = re.search(r"'p95':\s*([\d.]+)", dict_str)
-            if p95_match:
-                return float(p95_match.group(1))
-
-        print(
-            f"Warning: Could not parse p95 latency from output for {experiment_name} in {experiment_mode} mode"
-        )
-        return None
-
     except subprocess.CalledProcessError as e:
-        print(f"Error running latency comparison for {experiment_name}: {e}")
+        print(f"Error running {script} {args}: {e.stderr.strip()[-300:]}")
         return None
-    except Exception as e:
-        print(f"Error getting latency for {experiment_name}: {e}")
+    return json.loads(result.stdout)
+
+
+def _compare_costs(experiment_name, experiment_mode):
+    return _run_json(
+        "compare_costs.py",
+        [
+            "--experiment_name",
+            experiment_name,
+            "--experiment_mode",
+            experiment_mode,
+            "--print",
+        ],
+    )
+
+
+def get_latency_p95(experiment_name, experiment_mode="baseline"):
+    """p95 latency pooled over all queries (baseline = exact, sketchdb = estimate)."""
+    data = _run_json(
+        "compare_latencies.py",
+        [
+            "--experiment_name",
+            experiment_name,
+            "--exact_experiment_mode",
+            "baseline",
+            "--estimate_experiment_mode",
+            "sketchdb",
+        ],
+    )
+    if data is None:
         return None
+    side = "exact" if experiment_mode == "baseline" else "estimate"
+    return data["results"]["-1"][side]["p95"]
 
 
 def get_cost_p95(experiment_name, experiment_mode="baseline"):
-    """
-    Get p95 CPU cost by running compare_costs.py
-
-    Args:
-        experiment_name: Name of the experiment
-        experiment_mode: Experiment mode (baseline or sketchdb)
-
-    Returns:
-        p95 CPU percentage, or None if failed
-    """
-    script_dir = SINGLE_EXPERIMENT_DIR
-    compare_costs_path = os.path.join(script_dir, "compare_costs.py")
-
-    try:
-        result = subprocess.run(
-            [
-                "python3",
-                compare_costs_path,
-                "--experiment_name",
-                experiment_name,
-                "--experiment_mode",
-                experiment_mode,
-                "--print",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=script_dir,
-        )
-
-        # Parse output to extract p95 CPU from "{experiment_mode} {experiment_mode}.yml cpu_percent p95"
-        # or "{experiment_mode} {experiment_mode} cpu_percent p95"
-        output = result.stdout + result.stderr
-
-        # Look for lines matching the pattern
-        pattern = (
-            rf"{experiment_mode}\s+{experiment_mode}.*cpu_percent\s+p95\s+([\d.]+)"
-        )
-        for line in output.split("\n"):
-            if re.search(pattern, line):
-                match = re.search(pattern, line)
-                if match:
-                    return float(match.group(1))
-
-        print(
-            f"Warning: Could not parse p95 CPU cost from output for {experiment_name}"
-        )
+    """p95 of total CPU % (sum over all monitored processes: ingest + query)."""
+    data = _compare_costs(experiment_name, experiment_mode)
+    if data is None:
         return None
-
-    except subprocess.CalledProcessError as e:
-        print(f"Error running cost comparison for {experiment_name}: {e}")
-        return None
-    except Exception as e:
-        print(f"Error getting cost for {experiment_name}: {e}")
-        return None
+    return data["experiment_modes"][experiment_mode]["processes"]["all_all"][
+        "cpu_percent"
+    ]["p95"]
 
 
 def get_query_cost_95(experiment_name, experiment_mode="baseline"):
-    """
-    Get query CPU cost p95 by running compare_costs.py
-
-    Args:
-        experiment_name: Name of the experiment
-        experiment_mode: Experiment mode (baseline or sketchdb)
-
-    Returns:
-        Query CPU cost p95 percentage, or None if failed
-    """
-    script_dir = SINGLE_EXPERIMENT_DIR
-    compare_costs_path = os.path.join(script_dir, "compare_costs.py")
-
-    try:
-        result = subprocess.run(
-            [
-                "python3",
-                compare_costs_path,
-                "--experiment_name",
-                experiment_name,
-                "--experiment_mode",
-                experiment_mode,
-                "--print",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=script_dir,
-        )
-
-        # Parse output to extract query CPU sum from "Query CPU Statistics" section
-        # Looking for pattern like:
-        # {experiment_mode}:
-        #   p95: 1122837.55%
-        output = result.stdout + result.stderr
-
-        # Look for the Query CPU Statistics section
-        in_query_section = False
-        in_experiment_mode_subsection = False
-        for line in output.split("\n"):
-            if "Query CPU Statistics" in line:
-                in_query_section = True
-                continue
-
-            if in_query_section:
-                # Check if we're in the experiment_mode subsection
-                if line.strip().startswith(f"{experiment_mode}:"):
-                    in_experiment_mode_subsection = True
-                    continue
-
-                # If we're in experiment_mode subsection, look for sum
-                if in_experiment_mode_subsection:
-                    match = re.search(r"p95:\s+([\d.]+)%", line)
-                    if match:
-                        return float(match.group(1))
-                    # If we hit another section, stop
-                    if line.strip() and not line.strip().startswith(
-                        ("sum:", "max:", "median:", "p95:", "p99:")
-                    ):
-                        break
-
-        print(
-            f"Warning: Could not parse query CPU cost sum from output for {experiment_name}"
-        )
+    """p95 of query CPU % (see compare_costs.calculate_query_cpu)."""
+    data = _compare_costs(experiment_name, experiment_mode)
+    if data is None:
         return None
-
-    except subprocess.CalledProcessError as e:
-        print(f"Error running cost comparison for {experiment_name}: {e}")
-        return None
-    except Exception as e:
-        print(f"Error getting query cost sum for {experiment_name}: {e}")
-        return None
+    return data["query_cpu"][experiment_mode]["p95"]
 
 
 def get_query_cost_sum(experiment_name, experiment_mode="baseline"):
-    """
-    Get query CPU cost sum by running compare_costs.py
-
-    Args:
-        experiment_name: Name of the experiment
-        experiment_mode: Experiment mode (baseline or sketchdb)
-
-    Returns:
-        Query CPU cost sum percentage, or None if failed
-    """
-    script_dir = SINGLE_EXPERIMENT_DIR
-    compare_costs_path = os.path.join(script_dir, "compare_costs.py")
-
-    try:
-        result = subprocess.run(
-            [
-                "python3",
-                compare_costs_path,
-                "--experiment_name",
-                experiment_name,
-                "--experiment_mode",
-                experiment_mode,
-                "--print",
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-            cwd=script_dir,
-        )
-
-        # Parse output to extract query CPU sum from "Query CPU Statistics" section
-        # Looking for pattern like:
-        # {experiment_mode}:
-        #   sum: 1122837.55%
-        output = result.stdout + result.stderr
-
-        # Look for the Query CPU Statistics section
-        in_query_section = False
-        in_experiment_mode_subsection = False
-        for line in output.split("\n"):
-            if "Query CPU Statistics" in line:
-                in_query_section = True
-                continue
-
-            if in_query_section:
-                # Check if we're in the experiment_mode subsection
-                if line.strip().startswith(f"{experiment_mode}:"):
-                    in_experiment_mode_subsection = True
-                    continue
-
-                # If we're in experiment_mode subsection, look for sum
-                if in_experiment_mode_subsection:
-                    match = re.search(r"sum:\s+([\d.]+)%", line)
-                    if match:
-                        return float(match.group(1))
-                    # If we hit another section, stop
-                    if line.strip() and not line.strip().startswith(
-                        ("sum:", "max:", "median:", "p95:", "p99:")
-                    ):
-                        break
-
-        print(
-            f"Warning: Could not parse query CPU cost sum from output for {experiment_name}"
-        )
+    """Sum of query CPU % over the run; depends on run length."""
+    data = _compare_costs(experiment_name, experiment_mode)
+    if data is None:
         return None
-
-    except subprocess.CalledProcessError as e:
-        print(f"Error running cost comparison for {experiment_name}: {e}")
-        return None
-    except Exception as e:
-        print(f"Error getting query cost sum for {experiment_name}: {e}")
-        return None
+    return data["query_cpu"][experiment_mode]["sum"]
 
 
-def print_data_summary(
-    experiments, data_scales, latencies, costs, use_query_cost_sum=False
-):
+def cost_label_for(use_query_cost_sum=False, use_query_cost_95=False):
+    if use_query_cost_sum:
+        return "Query CPU sum (%)"
+    if use_query_cost_95:
+        return "Query CPU p95 (%)"
+    return "Total CPU p95 (%)"
+
+
+def print_data_summary(experiments, data_scales, latencies, costs, cost_label):
     """Print summary of the data."""
-    cost_label = "Query Cost Sum (CPU %)" if use_query_cost_sum else "Cost P95 (CPU %)"
-    cost_json_key = (
-        "query_cost_sum_cpu_percent" if use_query_cost_sum else "cost_p95_cpu_percent"
-    )
-
+    cost_json_key = cost_label
     print("\nData Summary:")
     print("=" * 100)
     print(
@@ -394,9 +211,9 @@ def plot_scale_vs_metrics(
     data_scales,
     latencies,
     costs,
+    cost_label,
     save_file=None,
     show=False,
-    use_query_cost_sum=False,
 ):
     """
     Plot data scale vs cost and latency.
@@ -405,10 +222,10 @@ def plot_scale_vs_metrics(
         experiments: List of experiment names
         data_scales: List of data scale values (metrics/sec)
         latencies: List of p95 latency values (seconds)
-        costs: List of CPU cost values (% - either p95 or query sum)
+        costs: List of CPU cost values (%)
+        cost_label: Axis label naming the cost definition (see cost_label_for)
         save_file: Filename to save the plot (if None, doesn't save)
         show: Whether to display the plot
-        use_query_cost_sum: Whether cost values represent query cost sum instead of p95
 
     Returns:
         matplotlib figure object
@@ -438,11 +255,7 @@ def plot_scale_vs_metrics(
     # Create the plot with two y-axes
     fig, ax1 = plt.subplots(figsize=(12, 6))
 
-    # Determine cost label based on type
-    cost_ylabel = (
-        "Query Cost (CPU %, sum)" if use_query_cost_sum else "p95 CPU usage (%)"
-    )
-    cost_legend = "Query Cost (CPU %)" if use_query_cost_sum else "p95 CPU Usage (%)"
+    cost_ylabel = cost_legend = cost_label
 
     # Plot cost on left y-axis
     color_cost = "#1f77b4"
@@ -546,12 +359,12 @@ Examples:
     parser.add_argument(
         "--use-query-cost-sum",
         action="store_true",
-        help="Use query CPU cost sum instead of p95 CPU cost",
+        help="Use query CPU sum instead of total CPU p95",
     )
     parser.add_argument(
         "--use-query-cost-95",
         action="store_true",
-        help="Use query CPU cost p95 instead of p95 CPU cost",
+        help="Use query CPU p95 instead of total CPU p95",
     )
     parser.add_argument(
         "--experiment_mode",
@@ -562,6 +375,7 @@ Examples:
     )
 
     args = parser.parse_args()
+    cost_label = cost_label_for(args.use_query_cost_sum, args.use_query_cost_95)
 
     # Validate arguments
     if args.plot and not (args.save or args.show):
@@ -592,30 +406,19 @@ Examples:
         if latency is not None:
             print(f"  Latency p95: {latency:.4f} seconds")
 
-        # Get cost (either p95 or query cost sum based on flag)
         if args.use_query_cost_sum:
             cost = get_query_cost_sum(exp_name, args.experiment_mode)
-            if cost is not None:
-                print(f"  Query cost sum: {cost:.2f} CPU %")
         elif args.use_query_cost_95:
             cost = get_query_cost_95(exp_name, args.experiment_mode)
-            if cost is not None:
-                print(f"  Query cost p95: {cost:.2f} CPU %")
         else:
             cost = get_cost_p95(exp_name, args.experiment_mode)
-            if cost is not None:
-                print(f"  Cost p95: {cost:.2f} CPU %")
+        if cost is not None:
+            print(f"  {cost_label}: {cost:.2f}")
         costs.append(cost)
 
     # Print summary if requested
     if args.print:
-        print_data_summary(
-            EXPERIMENT_NAMES,
-            data_scales,
-            latencies,
-            costs,
-            use_query_cost_sum=args.use_query_cost_sum,
-        )
+        print_data_summary(EXPERIMENT_NAMES, data_scales, latencies, costs, cost_label)
 
     # Generate plot if requested
     if args.plot:
@@ -624,9 +427,9 @@ Examples:
             data_scales=data_scales,
             latencies=latencies,
             costs=costs,
+            cost_label=cost_label,
             save_file=args.save,
             show=args.show,
-            use_query_cost_sum=args.use_query_cost_sum,
         )
 
     return 0
