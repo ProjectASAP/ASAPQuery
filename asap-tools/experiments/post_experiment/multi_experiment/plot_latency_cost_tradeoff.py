@@ -71,39 +71,29 @@ def extract_metrics(
     cost_metric: str,
     exact_mode: str,
     estimate_mode: str,
-) -> Tuple[float, float, float, float, float, float]:
+    cpu_type: str,
+) -> Tuple[float, float, float, float]:
     """Extract latency and cost metrics for both modes.
 
+    cpu_type "query" uses query-attributed CPU; "total" uses CPU summed over
+    all monitored processes ("all" pseudo-process in compare_costs.py).
+
     Returns:
-        (exact_latency, exact_cost, estimate_latency, estimate_cost,
-         exact_total_cpu, estimate_total_cpu)
+        (exact_latency, exact_cost, estimate_latency, estimate_cost)
     """
-    # Get cost data
     cost_data = run_compare_costs(experiment_name)
 
-    if "query_cpu" not in cost_data:
-        raise ValueError(f"No query_cpu data found for {experiment_name}")
+    def cpu(mode):
+        if cpu_type == "total":
+            return cost_data["experiment_modes"][mode]["processes"]["all_all"][
+                "cpu_percent"
+            ][cost_metric]
+        if mode not in cost_data.get("query_cpu", {}):
+            raise ValueError(f"No query_cpu data for mode {mode} in {experiment_name}")
+        return cost_data["query_cpu"][mode][cost_metric]
 
-    if exact_mode not in cost_data["query_cpu"]:
-        raise ValueError(
-            f"Mode {exact_mode} not found in query_cpu data for {experiment_name}"
-        )
-    if estimate_mode not in cost_data["query_cpu"]:
-        raise ValueError(
-            f"Mode {estimate_mode} not found in query_cpu data for {experiment_name}"
-        )
-
-    exact_cost = cost_data["query_cpu"][exact_mode][cost_metric]
-    estimate_cost = cost_data["query_cpu"][estimate_mode][cost_metric]
-
-    # Total CPU across all monitored processes ("all" pseudo-process in compare_costs.py)
-    def total_cpu(mode):
-        return cost_data["experiment_modes"][mode]["processes"]["all_all"][
-            "cpu_percent"
-        ][cost_metric]
-
-    exact_total_cpu = total_cpu(exact_mode)
-    estimate_total_cpu = total_cpu(estimate_mode)
+    exact_cost = cpu(exact_mode)
+    estimate_cost = cpu(estimate_mode)
 
     # Get latency data
     latency_data = run_compare_latencies(experiment_name, exact_mode, estimate_mode)
@@ -118,14 +108,7 @@ def extract_metrics(
     exact_latency = latency_data["results"]["-1"]["exact"][latency_metric]
     estimate_latency = latency_data["results"]["-1"]["estimate"][latency_metric]
 
-    return (
-        exact_latency,
-        exact_cost,
-        estimate_latency,
-        estimate_cost,
-        exact_total_cpu,
-        estimate_total_cpu,
-    )
+    return exact_latency, exact_cost, estimate_latency, estimate_cost
 
 
 def plot_latency_cost_tradeoff(
@@ -304,22 +287,14 @@ def main(args):
     for exp_name in experiment_names:
         try:
             print(f"\nProcessing experiment: {exp_name}")
-            (
-                exact_lat,
-                exact_cost,
-                est_lat,
-                est_cost,
-                exact_total,
-                est_total,
-            ) = extract_metrics(
+            exact_lat, exact_cost, est_lat, est_cost = extract_metrics(
                 exp_name,
                 args.latency_metric,
                 args.cost_metric,
                 args.exact_mode,
                 args.estimate_mode,
+                args.cpu_type,
             )
-            if args.cpu_type == "total":
-                exact_cost, est_cost = exact_total, est_total
             data_points[exp_name] = (exact_lat, exact_cost, est_lat, est_cost)
             print(
                 f"  Prometheus: latency={exact_lat:.2f}s, {args.cpu_type}_cpu={exact_cost:.2f}%"
@@ -364,7 +339,7 @@ if __name__ == "__main__":
         "--cost_metric",
         type=str,
         default="p99",
-        choices=["median", "mean", "p95", "p99", "sum"],
+        choices=["median", "max", "p95", "p99", "sum"],
         help="Cost metric to use (default: p99)",
     )
     parser.add_argument(

@@ -148,20 +148,26 @@ def get_cost_p95(experiment_name, experiment_mode="baseline"):
     ]["p95"]
 
 
-def get_query_cost_95(experiment_name, experiment_mode="baseline"):
-    """p95 of query CPU % (see compare_costs.calculate_query_cpu)."""
+def _query_cpu(experiment_name, experiment_mode, stat):
     data = _compare_costs(experiment_name, experiment_mode)
     if data is None:
         return None
-    return data["query_cpu"][experiment_mode]["p95"]
+    # compare_costs omits query_cpu when it can't attribute CPU (e.g. no
+    # prometheus process in baseline).
+    if experiment_mode not in data.get("query_cpu", {}):
+        print(f"Warning: no query CPU for {experiment_name} ({experiment_mode})")
+        return None
+    return data["query_cpu"][experiment_mode][stat]
+
+
+def get_query_cost_95(experiment_name, experiment_mode="baseline"):
+    """p95 of query CPU % (see compare_costs.calculate_query_cpu)."""
+    return _query_cpu(experiment_name, experiment_mode, "p95")
 
 
 def get_query_cost_sum(experiment_name, experiment_mode="baseline"):
     """Sum of query CPU % over the run; depends on run length."""
-    data = _compare_costs(experiment_name, experiment_mode)
-    if data is None:
-        return None
-    return data["query_cpu"][experiment_mode]["sum"]
+    return _query_cpu(experiment_name, experiment_mode, "sum")
 
 
 def cost_label_for(use_query_cost_sum=False, use_query_cost_95=False):
