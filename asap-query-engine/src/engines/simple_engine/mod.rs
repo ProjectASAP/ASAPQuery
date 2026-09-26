@@ -2206,6 +2206,22 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        let reads = self.read_range_query_inputs(context)?;
+        self.execute_range_query_from_reads(
+            context,
+            enable_topk_limiting,
+            enable_topk_formatting,
+            reads,
+        )
+    }
+
+    fn execute_range_query_from_reads(
+        &self,
+        context: &RangeQueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
+        reads: RangeQueryReads,
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         use crate::engines::query_result::RangeVectorElement;
         use crate::engines::window_merger::create_window_merger;
 
@@ -2232,7 +2248,7 @@ impl SimpleEngine {
         let RangeQueryReads {
             values: all_data,
             keys: keys_raw_data,
-        } = self.read_range_query_inputs(context)?;
+        } = reads;
         let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
