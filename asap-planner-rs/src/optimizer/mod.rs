@@ -12,9 +12,10 @@ pub mod translator;
 
 pub use aqe_extractor::{extract_aqes, RQE};
 pub use atomic_costs::{
-    load_atomic_cost_table, load_optional_selected_atomic_cost_table,
-    load_selected_atomic_cost_table, resolve_atomic_costs, AtomicCostEntry, AtomicCostTable,
-    ExternalWorkload, WorkloadDescription,
+    load_atomic_cost_table, load_nearest_atomic_cost_table,
+    load_optional_selected_atomic_cost_table, load_selected_atomic_cost_table,
+    resolve_atomic_costs, AtomicCostEntry, AtomicCostTable, DataShape, ExternalWorkload,
+    ShapeMatchPolicy, WorkloadDescription,
 };
 pub use candidate_gen::{
     enumerate_candidates, enumerate_candidates_with_label_group_count, CandidateConfig,

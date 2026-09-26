@@ -7,7 +7,8 @@
 use std::path::PathBuf;
 
 use asap_planner::optimizer::{
-    load_optional_selected_atomic_cost_table, run_greedy_pipeline, AtomicCostTable, SeriesDataset,
+    load_nearest_atomic_cost_table, load_optional_selected_atomic_cost_table, run_greedy_pipeline,
+    AtomicCostTable, DataShape, SeriesDataset, ShapeMatchPolicy,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -50,6 +51,21 @@ struct Args {
     #[arg(long = "atomic-cost-workload", requires = "atomic_costs")]
     atomic_cost_workload: Option<PathBuf>,
 
+    /// JSON DataShape observed by ASAPQuery-backend. Selects the nearest safe
+    /// benchmark profile instead of requiring descriptor equality.
+    #[arg(
+        long = "atomic-cost-observed-shape",
+        requires = "atomic_costs",
+        conflicts_with = "atomic_cost_workload"
+    )]
+    atomic_cost_observed_shape: Option<PathBuf>,
+    #[arg(long, default_value_t = 100_000)]
+    minimum_benchmark_events: u64,
+    #[arg(long, default_value_t = 1.0)]
+    max_log2_cardinality_distance: f64,
+    #[arg(long, default_value_t = 0.2)]
+    max_zipf_distance: f64,
+
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 }
@@ -77,10 +93,26 @@ fn main() -> anyhow::Result<()> {
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
     let dataset = SeriesDataset::from_path(&args.dataset)?;
 
-    let atomic_cost_table = match load_optional_selected_atomic_cost_table(
-        args.atomic_costs.as_deref(),
-        args.atomic_cost_workload.as_deref(),
-    )? {
+    let selected = if let Some(shape_path) = args.atomic_cost_observed_shape.as_deref() {
+        let observed: DataShape = serde_json::from_str(&std::fs::read_to_string(shape_path)?)?;
+        Some(load_nearest_atomic_cost_table(
+            args.atomic_costs
+                .as_deref()
+                .expect("clap requires --atomic-costs"),
+            observed,
+            ShapeMatchPolicy {
+                minimum_benchmark_events: args.minimum_benchmark_events,
+                max_log2_cardinality_distance: args.max_log2_cardinality_distance,
+                max_zipf_distance: args.max_zipf_distance,
+            },
+        )?)
+    } else {
+        load_optional_selected_atomic_cost_table(
+            args.atomic_costs.as_deref(),
+            args.atomic_cost_workload.as_deref(),
+        )?
+    };
+    let atomic_cost_table = match selected {
         Some(table) => table,
         None => {
             tracing::warn!(
