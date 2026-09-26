@@ -125,7 +125,33 @@ impl QueryPlan {
                 },
             );
         }
-        Ok(Self { nodes, root })
+        let plan = Self { nodes, root };
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    /// Rejects plans whose node dependencies cannot be executed safely.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.nodes.is_empty() {
+            return Err("Query plan has no nodes".to_string());
+        }
+        if self.root.0 != self.nodes.len() - 1 {
+            return Err(format!(
+                "Query plan root n{} does not include every node",
+                self.root.0
+            ));
+        }
+        for (index, node) in self.nodes.iter().enumerate() {
+            for input in node.inputs() {
+                if input.0 >= index {
+                    return Err(format!(
+                        "Query plan node n{index} references unavailable input n{}",
+                        input.0
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn push(nodes: &mut Vec<QueryPlanNode>, node: QueryPlanNode) -> NodeId {
@@ -203,6 +229,24 @@ impl QueryPlan {
         }
         lines.push(format!("root: n{}", self.root.0));
         lines.join("\n")
+    }
+}
+
+impl QueryPlanNode {
+    fn inputs(&self) -> Vec<NodeId> {
+        match self {
+            Self::StoreRead { .. } => Vec::new(),
+            Self::ComposeWindows { input, .. }
+            | Self::Estimate { input, .. }
+            | Self::LimitTopK { input, .. }
+            | Self::Format { input, .. } => vec![*input],
+            Self::ResolveKeys { values, keys } => {
+                keys.iter().copied().fold(vec![*values], |mut inputs, key| {
+                    inputs.push(key);
+                    inputs
+                })
+            }
+        }
     }
 }
 
@@ -346,5 +390,22 @@ mod tests {
         .expect_err("topk plan without k must fail loudly");
 
         assert_eq!(error, "Topk query is missing required `k` parameter");
+    }
+
+    #[test]
+    fn rejects_a_node_that_references_a_later_node() {
+        let plan = QueryPlan {
+            nodes: vec![QueryPlanNode::Estimate {
+                input: NodeId(1),
+                statistic: Statistic::Sum,
+                query_kwargs: HashMap::new(),
+            }],
+            root: NodeId(0),
+        };
+
+        assert_eq!(
+            plan.validate().expect_err("invalid plan must fail loudly"),
+            "Query plan node n0 references unavailable input n1"
+        );
     }
 }
