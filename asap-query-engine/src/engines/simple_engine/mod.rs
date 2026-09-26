@@ -1717,6 +1717,17 @@ impl SimpleEngine {
         }
     }
 
+    pub fn try_handle_query(
+        &self,
+        query: String,
+        time: f64,
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
+        match self.query_language {
+            QueryLanguage::promql => self.try_handle_query_promql(query, time),
+            _ => Ok(self.handle_query(query, time)),
+        }
+    }
+
     /// Merge precomputed outputs (extracts buckets from timestamped data)
     #[allow(dead_code)]
     fn merge_precomputed_outputs(

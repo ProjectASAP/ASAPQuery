@@ -207,7 +207,7 @@ async fn process_query_request(
     );
     match state
         .query_engine
-        .handle_query(parsed_request.query.clone(), parsed_request.time)
+        .try_handle_query(parsed_request.query.clone(), parsed_request.time)
     {
         Ok(Some((query_output_labels, query_result))) => {
             let query_duration = query_start_time.elapsed();
