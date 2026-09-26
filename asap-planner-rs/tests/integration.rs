@@ -488,6 +488,73 @@ fn topk_produces_count_min_sketch_with_heap() {
 }
 
 #[test]
+fn topk_query_emits_an_explicit_empty_query_time_pipeline() {
+    let query = "topk(3, sum_over_time(http_requests_total[5m]))";
+    let controller = Controller::from_yaml_with_schema(
+        &format!(
+            r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: 60000
+"#
+        ),
+        http_requests_schema(),
+        default_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let inference: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_inference_yaml_string().unwrap()).unwrap();
+    let planned_query = &inference["queries"][0];
+
+    assert_eq!(planned_query["query"].as_str(), Some(query));
+    assert_eq!(planned_query["planned_subquery"].as_str(), Some(query));
+    assert_eq!(
+        planned_query["query_time_aggregations"].as_sequence(),
+        Some(&vec![]),
+        "a fully planned query has no query-time aggregation pipeline"
+    );
+}
+
+#[test]
+fn nested_topk_uses_the_inner_sum_as_its_planned_subquery() {
+    let query = "topk(3, sum by (job) (http_requests_total))";
+    let anchor = "sum by (job) (http_requests_total)";
+    let controller = Controller::from_yaml_with_schema(
+        &format!(
+            r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: 60000
+"#
+        ),
+        http_requests_schema(),
+        default_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let inference: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_inference_yaml_string().unwrap()).unwrap();
+    let planned_query = &inference["queries"][0];
+
+    assert_eq!(planned_query["planned_subquery"].as_str(), Some(anchor));
+    assert_eq!(
+        planned_query["query_time_aggregations"][0]["operator"].as_str(),
+        Some("topk")
+    );
+    assert_eq!(
+        planned_query["query_time_aggregations"][0]["parameter"].as_u64(),
+        Some(3)
+    );
+}
+
+#[test]
 fn topk_over_sum_over_time_produces_value_weighted_heap() {
     // https://github.com/ProjectASAP/asap-internal/issues/699 — topk wrapping
     // a temporal aggregation must still be planned, not silently omitted.

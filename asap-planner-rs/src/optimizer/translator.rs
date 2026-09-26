@@ -38,9 +38,10 @@ fn build_inference_config(solution: &OptimizerSolution) -> InferenceConfig {
         let agg_ref = AggregationReference::new(aggregation_id, Some(retain));
 
         for query_string in &assignment.aqe.query_strings {
-            inference
-                .query_configs
-                .push(QueryConfig::new(query_string.clone()).add_aggregation(agg_ref.clone()));
+            inference.query_configs.push(
+                QueryConfig::with_plan(query_string.clone(), query_string.clone(), vec![])
+                    .add_aggregation(agg_ref.clone()),
+            );
         }
     }
 

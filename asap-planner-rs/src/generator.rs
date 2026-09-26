@@ -25,8 +25,10 @@ pub(crate) const KEY_METRICS: &str = "metrics";
 pub(crate) const KEY_NAME: &str = "name";
 pub(crate) const KEY_NUM_AGG_TO_RETAIN: &str = "num_aggregates_to_retain";
 pub(crate) const KEY_PARAMETERS: &str = "parameters";
+pub(crate) const KEY_PLANNED_SUBQUERY: &str = "planned_subquery";
 pub(crate) const KEY_QUERIES: &str = "queries";
 pub(crate) const KEY_QUERY: &str = "query";
+pub(crate) const KEY_QUERY_TIME_AGGREGATIONS: &str = "query_time_aggregations";
 pub(crate) const KEY_READ_COUNT_THRESHOLD: &str = "read_count_threshold";
 pub(crate) const KEY_SLIDE_INTERVAL_MS: &str = "slideIntervalMs";
 pub(crate) const KEY_SPATIAL_FILTER: &str = "spatialFilter";
@@ -169,6 +171,14 @@ pub fn build_queries_yaml(
             q_map.insert(
                 YamlValue::String(KEY_QUERY.to_string()),
                 YamlValue::String(query_str.clone()),
+            );
+            q_map.insert(
+                YamlValue::String(KEY_PLANNED_SUBQUERY.to_string()),
+                YamlValue::String(query_str.clone()),
+            );
+            q_map.insert(
+                YamlValue::String(KEY_QUERY_TIME_AGGREGATIONS.to_string()),
+                YamlValue::Sequence(Vec::new()),
             );
             YamlValue::Mapping(q_map)
         })
