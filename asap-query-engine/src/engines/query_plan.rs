@@ -42,6 +42,7 @@ pub(crate) enum QueryPlanNode {
     Format {
         input: NodeId,
         include_metric_name: bool,
+        metric: String,
     },
 }
 
@@ -134,6 +135,7 @@ impl QueryPlan {
                 QueryPlanNode::Format {
                     input: root,
                     include_metric_name: context.base.metadata.keep_metric_name,
+                    metric: context.base.metric.clone(),
                 },
             );
         }
@@ -250,8 +252,8 @@ impl QueryPlan {
                     format!("n{index} Estimate(n{}, {statistic}, {kwargs:?})", input.0)
                 },
                 QueryPlanNode::LimitTopK { input, k } => format!("n{index} LimitTopK(n{}, k={k})", input.0),
-                QueryPlanNode::Format { input, include_metric_name } => format!(
-                    "n{index} Format(n{}, include_metric_name={include_metric_name})", input.0
+                QueryPlanNode::Format { input, include_metric_name, metric } => format!(
+                    "n{index} Format(n{}, include_metric_name={include_metric_name}) metric={metric}", input.0
                 ),
             };
             lines.push(line);

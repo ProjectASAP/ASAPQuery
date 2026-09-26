@@ -177,17 +177,30 @@ struct RangeQueryReads {
     keys: Option<TimestampedBucketsMap>,
 }
 
+type BucketMap = HashMap<u64, Vec<Arc<dyn AggregateCore>>>;
+
+#[derive(Clone)]
+struct ComposedRangeRead {
+    groups: HashMap<Option<KeyByLabelValues>, BucketMap>,
+}
+
+#[derive(Clone)]
+struct ResolvedRangeReads {
+    values: ComposedRangeRead,
+    keys: Option<ComposedRangeRead>,
+}
+
 #[derive(Clone)]
 enum NativePlanOutput {
     Read(TimestampedBucketsMap),
-    Resolved(RangeQueryReads),
+    Composed(ComposedRangeRead),
+    Resolved(ResolvedRangeReads),
     Results(Vec<crate::engines::query_result::RangeVectorElement>),
 }
 
 struct NativePlanRuntime<'a> {
     engine: &'a SimpleEngine,
     context: &'a RangeQueryExecutionContext,
-    options: PlanOptions,
     reads: std::cell::RefCell<Option<RangeQueryReads>>,
 }
 
@@ -233,41 +246,53 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                 }
             }
             QueryPlanNode::ComposeWindows { .. } => match inputs {
-                [NativePlanOutput::Read(data)] => Ok(NativePlanOutput::Read(data.clone())),
+                [NativePlanOutput::Read(data)] => Ok(NativePlanOutput::Composed(
+                    self.engine.compose_range_read(data),
+                )),
                 _ => Err("ComposeWindows expected store data".into()),
             },
             QueryPlanNode::ResolveKeys { keys, .. } => match (inputs, keys) {
-                ([NativePlanOutput::Read(values)], None) => {
-                    Ok(NativePlanOutput::Resolved(RangeQueryReads {
+                ([NativePlanOutput::Composed(values)], None) => {
+                    Ok(NativePlanOutput::Resolved(ResolvedRangeReads {
                         values: values.clone(),
                         keys: None,
                     }))
                 }
-                ([NativePlanOutput::Read(values), NativePlanOutput::Read(keys)], Some(_)) => {
-                    Ok(NativePlanOutput::Resolved(RangeQueryReads {
-                        values: values.clone(),
-                        keys: Some(keys.clone()),
-                    }))
-                }
+                (
+                    [NativePlanOutput::Composed(values), NativePlanOutput::Composed(keys)],
+                    Some(_),
+                ) => Ok(NativePlanOutput::Resolved(ResolvedRangeReads {
+                    values: values.clone(),
+                    keys: Some(keys.clone()),
+                })),
                 _ => Err("ResolveKeys received incompatible inputs".into()),
             },
             QueryPlanNode::Estimate { .. } => match inputs {
                 [NativePlanOutput::Resolved(reads)] => self
                     .engine
-                    .execute_range_query_from_reads(
-                        self.context,
-                        self.options.limit_topk,
-                        self.options.format_output,
-                        reads.clone(),
-                    )
+                    .estimate_range_query(self.context, reads.clone())
                     .map_err(|error| error.to_string())
                     .map(NativePlanOutput::Results),
                 _ => Err("Estimate expected resolved reads".into()),
             },
-            QueryPlanNode::LimitTopK { .. } | QueryPlanNode::Format { .. } => match inputs {
-                [NativePlanOutput::Results(results)] => {
-                    Ok(NativePlanOutput::Results(results.clone()))
-                }
+            QueryPlanNode::LimitTopK { k, .. } => match inputs {
+                [NativePlanOutput::Results(results)] => self
+                    .engine
+                    .limit_range_topk(results, k)
+                    .map_err(QueryExecutionError::Native)
+                    .map_err(|error| error.to_string())
+                    .map(NativePlanOutput::Results),
+                _ => Err("LimitTopK expected estimates".into()),
+            },
+            QueryPlanNode::Format {
+                include_metric_name,
+                metric,
+                ..
+            } => match inputs {
+                [NativePlanOutput::Results(results)] => Ok(NativePlanOutput::Results(
+                    self.engine
+                        .format_range_results(results, *include_metric_name, metric),
+                )),
                 _ => Err("result node expected estimates".into()),
             },
         }
@@ -1425,6 +1450,66 @@ impl SimpleEngine {
         key.labels.insert(0, metric.to_string());
     }
 
+    fn limit_range_topk(
+        &self,
+        results: &[crate::engines::query_result::RangeVectorElement],
+        k: &str,
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
+        use crate::engines::query_result::RangeVectorElement;
+
+        let k = Self::parse_topk_limit(&HashMap::from([("k".to_string(), k.to_string())]))?;
+        let mut retained: HashMap<KeyByLabelValues, Vec<u64>> = HashMap::new();
+        let mut candidates: HashMap<u64, Vec<(&KeyByLabelValues, f64)>> = HashMap::new();
+        for result in results {
+            for sample in &result.samples {
+                candidates
+                    .entry(sample.timestamp)
+                    .or_default()
+                    .push((&result.labels, sample.value));
+            }
+        }
+        for candidates in candidates.values_mut() {
+            candidates
+                .sort_by(|a, b| Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels));
+            for (labels, _) in candidates.iter().take(k) {
+                retained.entry((*labels).clone()).or_default();
+            }
+        }
+        for (timestamp, candidates) in candidates {
+            for (labels, _) in candidates.into_iter().take(k) {
+                retained.entry(labels.clone()).or_default().push(timestamp);
+            }
+        }
+        Ok(results
+            .iter()
+            .filter_map(|result| {
+                let timestamps = retained.get(&result.labels)?;
+                let mut limited = RangeVectorElement::new(result.labels.clone());
+                for sample in &result.samples {
+                    if timestamps.contains(&sample.timestamp) {
+                        limited.add_sample(sample.timestamp, sample.value);
+                    }
+                }
+                (!limited.samples.is_empty()).then_some(limited)
+            })
+            .collect())
+    }
+
+    fn format_range_results(
+        &self,
+        results: &[crate::engines::query_result::RangeVectorElement],
+        include_metric_name: bool,
+        metric: &str,
+    ) -> Vec<crate::engines::query_result::RangeVectorElement> {
+        let mut results = results.to_vec();
+        if include_metric_name {
+            for result in &mut results {
+                Self::prepend_metric_name(metric, &mut result.labels);
+            }
+        }
+        results
+    }
+
     /// Executes the complete query pipeline: plan, execute, collect, and format.
     ///
     /// The two top-k flags are deliberately separate because the two engines
@@ -2084,14 +2169,24 @@ impl SimpleEngine {
     /// be merged, not just the last one collected here. Used identically by
     /// `execute_range_query_pipeline` for both the value side and (#583)
     /// the keys side.
-    fn build_bucket_map(
-        buckets: &[crate::stores::TimestampedBucket],
-    ) -> HashMap<u64, Vec<&dyn AggregateCore>> {
-        let mut bucket_map: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
+    fn build_bucket_map(buckets: &[crate::stores::TimestampedBucket]) -> BucketMap {
+        let mut bucket_map: BucketMap = HashMap::new();
         for ((start, _), bucket) in buckets {
-            bucket_map.entry(*start).or_default().push(bucket.as_ref());
+            bucket_map
+                .entry(*start)
+                .or_default()
+                .push(Arc::clone(bucket));
         }
         bucket_map
+    }
+
+    fn compose_range_read(&self, data: &TimestampedBucketsMap) -> ComposedRangeRead {
+        ComposedRangeRead {
+            groups: data
+                .iter()
+                .map(|(key, buckets)| (key.clone(), Self::build_bucket_map(buckets)))
+                .collect(),
+        }
     }
 
     /// Collects every bucket in `bucket_map` whose start falls in
@@ -2110,7 +2205,7 @@ impl SimpleEngine {
     /// path MUST use `collect_bucket_map_entries_before` instead, never this
     /// (#581 stage E.4 review; see that function's doc for why).
     fn sum_window(
-        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        bucket_map: &BucketMap,
         window_start: u64,
         window_end: u64,
         step_increment: u64,
@@ -2182,10 +2277,10 @@ impl SimpleEngine {
     /// inherited from the store's own sort, same as it always was for
     /// `sum_window` (#581 stage E.4 review).
     fn collect_bucket_map_entries_before(
-        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        bucket_map: &BucketMap,
         before: u64,
     ) -> Vec<Box<dyn AggregateCore>> {
-        let mut entries: Vec<(u64, &&dyn AggregateCore)> = bucket_map
+        let mut entries: Vec<(u64, &Arc<dyn AggregateCore>)> = bucket_map
             .iter()
             .filter(|(&t, _)| t < before)
             .flat_map(|(&t, buckets)| buckets.iter().map(move |b| (t, b)))
@@ -2207,7 +2302,7 @@ impl SimpleEngine {
     /// that path must call `collect_bucket_map_entries_before` directly
     /// instead (see its doc comment).
     fn window_buckets_for_step(
-        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        bucket_map: &BucketMap,
         window_start: u64,
         window_end: u64,
         step_increment: u64,
@@ -2253,10 +2348,6 @@ impl SimpleEngine {
         let runtime = NativePlanRuntime {
             engine: self,
             context,
-            options: PlanOptions {
-                limit_topk: enable_topk_limiting,
-                format_output: enable_topk_formatting,
-            },
             reads: std::cell::RefCell::new(None),
         };
         match plan.execute(&runtime).map_err(QueryExecutionError::Native)? {
@@ -2323,12 +2414,10 @@ impl SimpleEngine {
         Ok(RangeQueryReads { values, keys })
     }
 
-    fn execute_range_query_from_reads(
+    fn estimate_range_query(
         &self,
         context: &RangeQueryExecutionContext,
-        enable_topk_limiting: bool,
-        enable_topk_formatting: bool,
-        reads: RangeQueryReads,
+        reads: ResolvedRangeReads,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         use crate::engines::query_result::RangeVectorElement;
         use crate::engines::window_merger::create_window_merger;
@@ -2353,8 +2442,8 @@ impl SimpleEngine {
             }
         }
 
-        let RangeQueryReads {
-            values: all_data,
+        let ResolvedRangeReads {
+            values: ComposedRangeRead { groups: all_data },
             keys: keys_raw_data,
         } = reads;
         let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
@@ -2430,12 +2519,12 @@ impl SimpleEngine {
         // bucket_map field below and the step-major `groups` binding
         // further down (#581 stage E.4 review: previously duplicated as the
         // raw type at the PerStep site instead of using this alias).
-        type GroupBucketMap<'a> = HashMap<u64, Vec<&'a dyn AggregateCore>>;
+        type GroupBucketMap = BucketMap;
 
-        enum KeysSource<'a> {
+        enum KeysSource {
             Fixed(Option<KeyByLabelValues>),
             PerStep {
-                bucket_map: GroupBucketMap<'a>,
+                bucket_map: GroupBucketMap,
                 lookback_ms: u64,
                 tumbling_window_ms: u64,
                 stored_window_size_ms: u64,
@@ -2450,8 +2539,7 @@ impl SimpleEngine {
         // of failing the whole range query (#583; previously
         // `.ok_or_else(...)?` here hard-failed everything for one missing
         // group). See #582 review for collect_results_separate_keys parity.
-        let groups: Vec<(&Vec<crate::stores::TimestampedBucket>, KeysSource)> = match &keys_raw_data
-        {
+        let groups: Vec<(GroupBucketMap, KeysSource)> = match &keys_raw_data {
             Some(keys_map) => {
                 // keys_raw_data is Some, so context.keys_lookback_ms /
                 // context.keys_tumbling_window_ms are guaranteed Some too
@@ -2467,13 +2555,14 @@ impl SimpleEngine {
                 let keys_window_size_ms =
                     keys_window_size_ms.expect("keys_raw_data implies keys_window_size_ms is Some");
                 keys_map
+                    .groups
                     .iter()
                     .filter_map(
-                        |(group_key, raw_keys_buckets)| match all_data.get(group_key) {
-                            Some(timestamped_buckets) => Some((
-                                timestamped_buckets,
+                        |(group_key, key_bucket_map)| match all_data.get(group_key) {
+                            Some(value_bucket_map) => Some((
+                                value_bucket_map.clone(),
                                 KeysSource::PerStep {
-                                    bucket_map: Self::build_bucket_map(raw_keys_buckets),
+                                    bucket_map: key_bucket_map.clone(),
                                     lookback_ms: keys_lookback_ms,
                                     tumbling_window_ms: keys_tumbling_window_ms,
                                     stored_window_size_ms: keys_window_size_ms,
@@ -2501,7 +2590,9 @@ impl SimpleEngine {
             // this list.
             None => all_data
                 .iter()
-                .map(|(group_key, buckets)| (buckets, KeysSource::Fixed(group_key.clone())))
+                .map(|(group_key, bucket_map)| {
+                    (bucket_map.clone(), KeysSource::Fixed(group_key.clone()))
+                })
                 .collect(),
         };
 
@@ -2522,37 +2613,21 @@ impl SimpleEngine {
         // timestamp's candidates needs every group's bucket_map available at
         // that timestamp, so they can't be built lazily one group at a time
         // anymore.
-        let groups: Vec<(GroupBucketMap, KeysSource)> = groups
-            .into_iter()
-            .map(|(timestamped_buckets, keys_source)| {
-                let bucket_map = Self::build_bucket_map(timestamped_buckets);
-                debug!(
-                    "Group with {} start-timestamps ({} keys start-timestamps)",
-                    bucket_map.len(),
-                    match &keys_source {
-                        KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
-                        KeysSource::Fixed(_) => 0,
-                    }
-                );
-                (bucket_map, keys_source)
-            })
-            .collect();
+        for (bucket_map, keys_source) in &groups {
+            debug!(
+                "Group with {} start-timestamps ({} keys start-timestamps)",
+                bucket_map.len(),
+                match keys_source {
+                    KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
+                    KeysSource::Fixed(_) => 0,
+                }
+            );
+        }
 
         // Top-k's k, parsed once rather than per timestamp. Some only when
         // this is actually a topk query with limiting requested -- gates
         // both the per-step sort/truncate below and nothing else, so a
         // non-topk query pays zero cost for this.
-        let topk_k: Option<usize> = if enable_topk_limiting
-            && context.base.metadata.statistic_to_compute == Statistic::Topk
-        {
-            Some(
-                Self::parse_topk_limit(&context.base.metadata.query_kwargs)
-                    .map_err(QueryExecutionError::Native)?,
-            )
-        } else {
-            None
-        };
-
         let row_label_order = Self::topk_row_label_order(
             &context.base.metadata,
             &context.base.grouping_labels,
@@ -2775,7 +2850,7 @@ impl SimpleEngine {
                 // single-population groups let the value accumulator's own
                 // get_keys() take priority once merged, falling back to
                 // fallback_key otherwise. Same resolver the instant path uses.
-                let mut group_results: Vec<(KeyByLabelValues, f64)> = self
+                let group_results: Vec<(KeyByLabelValues, f64)> = self
                     .resolve_and_query_group(
                         Some(merged.as_ref()),
                         keys_precompute.as_deref(),
@@ -2800,13 +2875,6 @@ impl SimpleEngine {
                 // against each other, not against other jobs' candidates.
                 // Tie-broken by label for determinism (HashMap iteration
                 // order isn't stable across runs).
-                if let Some(k) = topk_k {
-                    group_results.sort_by(|a, b| {
-                        Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels)
-                    });
-                    group_results.truncate(k);
-                }
-
                 step_results.extend(group_results);
             }
 
@@ -2823,15 +2891,6 @@ impl SimpleEngine {
         // not once per timestep -- a separate pass over the final results,
         // after every timestamp's ranking above has already decided which
         // groups/samples survive.
-        if enable_topk_formatting
-            && context.base.metadata.statistic_to_compute == Statistic::Topk
-            && context.base.metadata.keep_metric_name
-        {
-            for elem in results.values_mut() {
-                Self::prepend_metric_name(&context.base.metric, &mut elem.labels);
-            }
-        }
-
         Ok(results.into_values().collect())
     }
 }
