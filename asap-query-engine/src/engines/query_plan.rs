@@ -286,6 +286,7 @@ mod tests {
     use crate::engines::simple_engine::{QueryExecutionContext, QueryMetadata, StoreQueryPlan};
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::AggregationType;
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     fn context() -> RangeQueryExecutionContext {
@@ -436,5 +437,50 @@ mod tests {
             plan.validate().expect_err("invalid plan must fail loudly"),
             "Query plan node n0 references unavailable input n1"
         );
+    }
+
+    struct RecordingRuntime(RefCell<Vec<usize>>);
+
+    impl QueryPlanRuntime for RecordingRuntime {
+        type Output = usize;
+        type Error = std::convert::Infallible;
+
+        fn execute_node(
+            &self,
+            id: NodeId,
+            _node: &QueryPlanNode,
+            inputs: &[Self::Output],
+        ) -> Result<Self::Output, Self::Error> {
+            self.0.borrow_mut().push(id.0);
+            Ok(1 + inputs.iter().sum::<usize>())
+        }
+    }
+
+    #[test]
+    fn executes_nodes_once_in_dependency_order() {
+        let plan = QueryPlan {
+            nodes: vec![
+                QueryPlanNode::StoreRead {
+                    query: StoreQueryParams {
+                        metric: "requests".into(),
+                        aggregation_id: 7,
+                        start_timestamp: 0,
+                        end_timestamp: 1,
+                    },
+                    strategy: StoreReadStrategy::WindowGrid,
+                },
+                QueryPlanNode::ComposeWindows {
+                    input: NodeId(0),
+                    output_timestamps: vec![1],
+                    lookback_ms: 1,
+                    window_size_ms: 1,
+                    bucket_step_ms: 1,
+                },
+            ],
+            root: NodeId(1),
+        };
+        let runtime = RecordingRuntime(RefCell::new(Vec::new()));
+        assert_eq!(plan.execute(&runtime).unwrap(), 2);
+        assert_eq!(*runtime.0.borrow(), vec![0, 1]);
     }
 }
