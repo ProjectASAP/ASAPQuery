@@ -8,7 +8,7 @@ use crate::data_model::{
     AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
     StreamingConfig,
 };
-use crate::engines::query_plan::{PlanOptions, QueryPlan};
+use crate::engines::query_plan::{NodeId, PlanOptions, QueryPlan, QueryPlanNode, QueryPlanRuntime};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{
     plan_exact_cover, CompositionError, SlidingWindowSpec,
@@ -171,9 +171,107 @@ pub struct RangeQueryExecutionContext {
     pub keys_tumbling_window_ms: Option<u64>,
 }
 
+#[derive(Clone)]
 struct RangeQueryReads {
     values: TimestampedBucketsMap,
     keys: Option<TimestampedBucketsMap>,
+}
+
+#[derive(Clone)]
+enum NativePlanOutput {
+    Read(TimestampedBucketsMap),
+    Resolved(RangeQueryReads),
+    Results(Vec<crate::engines::query_result::RangeVectorElement>),
+}
+
+struct NativePlanRuntime<'a> {
+    engine: &'a SimpleEngine,
+    context: &'a RangeQueryExecutionContext,
+    options: PlanOptions,
+    reads: std::cell::RefCell<Option<RangeQueryReads>>,
+}
+
+impl NativePlanRuntime<'_> {
+    fn reads(&self) -> Result<RangeQueryReads, String> {
+        if self.reads.borrow().is_none() {
+            *self.reads.borrow_mut() = Some(
+                self.engine
+                    .read_range_query_inputs(self.context)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        Ok(self
+            .reads
+            .borrow()
+            .as_ref()
+            .expect("reads initialized")
+            .clone())
+    }
+}
+
+impl QueryPlanRuntime for NativePlanRuntime<'_> {
+    type Output = NativePlanOutput;
+    type Error = String;
+
+    fn execute_node(
+        &self,
+        _id: NodeId,
+        node: &QueryPlanNode,
+        inputs: &[Self::Output],
+    ) -> Result<Self::Output, Self::Error> {
+        match node {
+            QueryPlanNode::StoreRead { query, strategy: _ } => {
+                let reads = self.reads()?;
+                if query.aggregation_id == self.context.base.store_plan.values_query.aggregation_id
+                {
+                    Ok(NativePlanOutput::Read(reads.values))
+                } else {
+                    reads
+                        .keys
+                        .map(NativePlanOutput::Read)
+                        .ok_or_else(|| "Query plan requested missing key read".to_string())
+                }
+            }
+            QueryPlanNode::ComposeWindows { .. } => match inputs {
+                [NativePlanOutput::Read(data)] => Ok(NativePlanOutput::Read(data.clone())),
+                _ => Err("ComposeWindows expected store data".into()),
+            },
+            QueryPlanNode::ResolveKeys { keys, .. } => match (inputs, keys) {
+                ([NativePlanOutput::Read(values)], None) => {
+                    Ok(NativePlanOutput::Resolved(RangeQueryReads {
+                        values: values.clone(),
+                        keys: None,
+                    }))
+                }
+                ([NativePlanOutput::Read(values), NativePlanOutput::Read(keys)], Some(_)) => {
+                    Ok(NativePlanOutput::Resolved(RangeQueryReads {
+                        values: values.clone(),
+                        keys: Some(keys.clone()),
+                    }))
+                }
+                _ => Err("ResolveKeys received incompatible inputs".into()),
+            },
+            QueryPlanNode::Estimate { .. } => match inputs {
+                [NativePlanOutput::Resolved(reads)] => self
+                    .engine
+                    .execute_range_query_from_reads(
+                        self.context,
+                        self.options.limit_topk,
+                        self.options.format_output,
+                        reads.clone(),
+                    )
+                    .map_err(|error| error.to_string())
+                    .map(NativePlanOutput::Results),
+                _ => Err("Estimate expected resolved reads".into()),
+            },
+            QueryPlanNode::LimitTopK { .. } | QueryPlanNode::Format { .. } => match inputs {
+                [NativePlanOutput::Results(results)] => {
+                    Ok(NativePlanOutput::Results(results.clone()))
+                }
+                _ => Err("result node expected estimates".into()),
+            },
+        }
+    }
 }
 
 // /// Parsed components of a sketch query, extracted either via the PromQL AST
@@ -2141,7 +2239,21 @@ impl SimpleEngine {
         )
         .map_err(QueryExecutionError::Native)?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
-        self.execute_range_query_pipeline(context, enable_topk_limiting, enable_topk_formatting)
+        let runtime = NativePlanRuntime {
+            engine: self,
+            context,
+            options: PlanOptions {
+                limit_topk: enable_topk_limiting,
+                format_output: enable_topk_formatting,
+            },
+            reads: std::cell::RefCell::new(None),
+        };
+        match plan.execute(&runtime).map_err(QueryExecutionError::Native)? {
+            NativePlanOutput::Results(results) => Ok(results),
+            _ => Err(QueryExecutionError::Native(
+                "Query plan root did not produce results".to_string(),
+            )),
+        }
     }
 
     fn read_range_query_inputs(
@@ -2198,21 +2310,6 @@ impl SimpleEngine {
             None => None,
         };
         Ok(RangeQueryReads { values, keys })
-    }
-
-    fn execute_range_query_pipeline(
-        &self,
-        context: &RangeQueryExecutionContext,
-        enable_topk_limiting: bool,
-        enable_topk_formatting: bool,
-    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
-        let reads = self.read_range_query_inputs(context)?;
-        self.execute_range_query_from_reads(
-            context,
-            enable_topk_limiting,
-            enable_topk_formatting,
-            reads,
-        )
     }
 
     fn execute_range_query_from_reads(

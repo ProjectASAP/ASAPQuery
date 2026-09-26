@@ -57,6 +57,18 @@ pub(crate) struct PlanOptions {
     pub format_output: bool,
 }
 
+pub(crate) trait QueryPlanRuntime {
+    type Output: Clone;
+    type Error: std::fmt::Display;
+
+    fn execute_node(
+        &self,
+        id: NodeId,
+        node: &QueryPlanNode,
+        inputs: &[Self::Output],
+    ) -> Result<Self::Output, Self::Error>;
+}
+
 impl QueryPlan {
     pub(crate) fn compile_range(
         context: &RangeQueryExecutionContext,
@@ -152,6 +164,23 @@ impl QueryPlan {
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn execute<R: QueryPlanRuntime>(&self, runtime: &R) -> Result<R::Output, String> {
+        self.validate()?;
+        let mut outputs: Vec<R::Output> = Vec::with_capacity(self.nodes.len());
+        for (index, node) in self.nodes.iter().enumerate() {
+            let inputs = node
+                .inputs()
+                .into_iter()
+                .map(|input| outputs[input.0].clone())
+                .collect::<Vec<_>>();
+            let output = runtime
+                .execute_node(NodeId(index), node, &inputs)
+                .map_err(|error| format!("Query plan node n{index} failed: {error}"))?;
+            outputs.push(output);
+        }
+        Ok(outputs[self.root.0].clone())
     }
 
     fn push(nodes: &mut Vec<QueryPlanNode>, node: QueryPlanNode) -> NodeId {
