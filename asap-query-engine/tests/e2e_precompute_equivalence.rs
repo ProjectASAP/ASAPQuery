@@ -155,7 +155,7 @@ fn engine_config() -> PrecomputeEngineConfig {
     }
 }
 
-struct PromqlPrecomputeFixture<'a> {
+struct NativeDagScenario<'a> {
     port: u16,
     metric: &'a str,
     query: &'a str,
@@ -166,8 +166,8 @@ struct PromqlPrecomputeFixture<'a> {
     base_interval_ms: u64,
 }
 
-impl PromqlPrecomputeFixture<'_> {
-    async fn run(self) -> QueryResult {
+impl NativeDagScenario<'_> {
+    async fn build_engine(self) -> (SimpleEngine, String) {
         let aggregation_ids: Vec<u64> = self
             .aggregation_configs
             .iter()
@@ -233,10 +233,16 @@ impl PromqlPrecomputeFixture<'_> {
             QueryLanguage::promql,
         );
 
+        (query_engine, self.query.to_string())
+    }
+
+    async fn run(self) -> QueryResult {
+        let evaluation_time_seconds = self.evaluation_time_seconds;
+        let (query_engine, query) = self.build_engine().await;
         query_engine
-            .handle_query_promql(self.query.to_string(), self.evaluation_time_seconds)
+            .handle_query_promql(query.clone(), evaluation_time_seconds)
             .expect("native query execution should not fail")
-            .unwrap_or_else(|| panic!("precomputed query should succeed: {}", self.query))
+            .unwrap_or_else(|| panic!("precomputed query should succeed: {query}"))
             .1
     }
 }
@@ -362,7 +368,7 @@ async fn e2e_promql_sum_uses_open_closed_evaluation_window() {
     .into_iter()
     .map(|(timestamp_ms, value)| make_timeseries(metric, vec![], timestamp_ms, value))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,
@@ -380,6 +386,64 @@ async fn e2e_promql_sum_uses_open_closed_evaluation_window() {
 
     assert_eq!(vector.values.len(), 1);
     assert_eq!(vector.values[0].value, 5.0);
+}
+
+/// A native leaf must give the same value at the end of a range query as an
+/// instant query at that timestamp. This is the baseline that the DAG
+/// executor must preserve during the cutover.
+#[tokio::test]
+async fn e2e_native_leaf_range_matches_instant_at_range_end() {
+    let port = 19408u16;
+    let agg_id = 8u64;
+    let window_size_ms = 1_000u64;
+    let metric = "dag_requests";
+    let query = "sum(dag_requests)";
+    let scenario = NativeDagScenario {
+        port,
+        metric,
+        query,
+        aggregation_configs: vec![make_agg_config(
+            agg_id,
+            metric,
+            AggregationType::Sum,
+            "",
+            window_size_ms,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries(metric, vec![], 1_000, 100.0),
+            make_timeseries(metric, vec![], 1_500, 2.0),
+            make_timeseries(metric, vec![], 2_000, 3.0),
+            make_timeseries(metric, vec![], 3_500, 0.0),
+        ],
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: window_size_ms,
+    };
+
+    let (engine, query) = scenario.build_engine().await;
+    let (_, instant) = engine
+        .handle_query_promql(query.clone(), 2.0)
+        .expect("instant native query should succeed");
+    let (_, range) = engine
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("range native query should succeed");
+
+    let QueryResult::Vector(instant) = instant else {
+        panic!("expected instant vector result");
+    };
+    let QueryResult::Matrix(range) = range else {
+        panic!("expected range vector result");
+    };
+    assert_eq!(instant.values.len(), 1);
+    assert_eq!(range.values.len(), 1);
+    let final_sample = range.values[0]
+        .samples
+        .last()
+        .expect("range result should contain the end timestamp");
+    assert_eq!(final_sample.timestamp, 2_000);
+    assert_eq!(final_sample.value, instant.values[0].value);
 }
 
 /// The #698 boundary contract applies independently to a query's value and
@@ -430,7 +494,7 @@ async fn e2e_promql_count_uses_open_closed_value_and_key_windows() {
     .into_iter()
     .map(|(timestamp_ms, host)| make_timeseries(metric, vec![("host", host)], timestamp_ms, 1.0))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,
@@ -498,7 +562,7 @@ async fn e2e_quantile_over_time_uses_open_closed_evaluation_window() {
     .into_iter()
     .map(|(timestamp_ms, value)| make_timeseries(metric, vec![], timestamp_ms, value))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,
@@ -550,7 +614,7 @@ async fn e2e_sliding_query_uses_open_closed_boundaries_without_double_counting()
     .into_iter()
     .map(|(timestamp_ms, value)| make_timeseries(metric, vec![], timestamp_ms, value))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,
