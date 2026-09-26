@@ -171,6 +171,11 @@ pub struct RangeQueryExecutionContext {
     pub keys_tumbling_window_ms: Option<u64>,
 }
 
+struct RangeQueryReads {
+    values: TimestampedBucketsMap,
+    keys: Option<TimestampedBucketsMap>,
+}
+
 // /// Parsed components of a sketch query, extracted either via the PromQL AST
 // /// parser (for standard functions) or via regex (for custom functions like
 // /// `entropy_over_time` that the promql-parser crate doesn't recognize).
@@ -2139,6 +2144,62 @@ impl SimpleEngine {
         self.execute_range_query_pipeline(context, enable_topk_limiting, enable_topk_formatting)
     }
 
+    fn read_range_query_inputs(
+        &self,
+        context: &RangeQueryExecutionContext,
+    ) -> Result<RangeQueryReads, QueryExecutionError> {
+        let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
+        let values = if context.window_type == WindowType::Sliding {
+            self.execute_sliding_cover_query(
+                &context.base.store_plan.values_query,
+                &context.output_timestamps,
+                lookback_ms,
+                context.window_size_ms,
+                context.tumbling_window_ms,
+            )
+            .map_err(QueryExecutionError::Native)?
+        } else {
+            self.execute_store_query(&context.base.store_plan.values_query)
+                .map_err(QueryExecutionError::Native)?
+        };
+        if values.is_empty() {
+            return Err(QueryExecutionError::NoLocalData(format!(
+                "No data found for metric: {}",
+                context.base.metric
+            )));
+        }
+        debug!(
+            "Range query: fetched {} keys, {} total buckets",
+            values.len(),
+            values.values().map(|buckets| buckets.len()).sum::<usize>()
+        );
+
+        let keys = match &context.base.store_plan.keys_query {
+            Some(query) if context.keys_window_type == Some(WindowType::Sliding) => Some(
+                self.execute_sliding_cover_query(
+                    query,
+                    &context.output_timestamps,
+                    context
+                        .keys_lookback_ms
+                        .ok_or("Sliding keys query is missing its lookback")?,
+                    context
+                        .keys_window_size_ms
+                        .ok_or("Sliding keys query is missing its window size")?,
+                    context
+                        .keys_tumbling_window_ms
+                        .ok_or("Sliding keys query is missing its slide interval")?,
+                )
+                .map_err(QueryExecutionError::Native)?,
+            ),
+            Some(query) => Some(
+                self.execute_store_query(query)
+                    .map_err(QueryExecutionError::Native)?,
+            ),
+            None => None,
+        };
+        Ok(RangeQueryReads { values, keys })
+    }
+
     fn execute_range_query_pipeline(
         &self,
         context: &RangeQueryExecutionContext,
@@ -2168,74 +2229,11 @@ impl SimpleEngine {
             }
         }
 
+        let RangeQueryReads {
+            values: all_data,
+            keys: keys_raw_data,
+        } = self.read_range_query_inputs(context)?;
         let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
-
-        // Step 1: Fetch all data needed for the entire range. Sliding
-        // aggregates are already full, overlapping windows in the store, so
-        // request only the W-spaced exact cover for each output timestamp.
-        let all_data = if context.window_type == WindowType::Sliding {
-            self.execute_sliding_cover_query(
-                &context.base.store_plan.values_query,
-                &context.output_timestamps,
-                lookback_ms,
-                context.window_size_ms,
-                context.tumbling_window_ms,
-            )?
-        } else {
-            self.execute_store_query(&context.base.store_plan.values_query)
-                .map_err(QueryExecutionError::Native)?
-        };
-
-        if all_data.is_empty() {
-            return Err(QueryExecutionError::NoLocalData(format!(
-                "No data found for metric: {}",
-                context.base.metric
-            )));
-        }
-
-        debug!(
-            "Range query: fetched {} keys, {} total buckets",
-            all_data.len(),
-            all_data.values().map(|v| v.len()).sum::<usize>()
-        );
-
-        // #583: fetch keys raw (no merge). Unlike keys, values have always
-        // been fetched raw here and merged per-step below (see the loop);
-        // keys used to go through fetch_and_merge_keys, which collapses
-        // every fetched bucket into ONE snapshot before this function ever
-        // sees it. That collapse is the bug: once buckets are merged
-        // together there's no way to ask what the key set looked like at
-        // any specific earlier timestamp. Fetching raw and merging per-step,
-        // mirroring the values loop, is the fix.
-        let keys_raw_data: Option<TimestampedBucketsMap> = match &context.base.store_plan.keys_query
-        {
-            Some(keys_query) if context.keys_window_type == Some(WindowType::Sliding) => {
-                Some(self.execute_sliding_cover_query(
-                    keys_query,
-                    &context.output_timestamps,
-                    context.keys_lookback_ms.ok_or_else(|| {
-                        QueryExecutionError::Native(
-                            "Sliding keys query is missing its lookback".to_string(),
-                        )
-                    })?,
-                    context.keys_window_size_ms.ok_or_else(|| {
-                        QueryExecutionError::Native(
-                            "Sliding keys query is missing its window size".to_string(),
-                        )
-                    })?,
-                    context.keys_tumbling_window_ms.ok_or_else(|| {
-                        QueryExecutionError::Native(
-                            "Sliding keys query is missing its slide interval".to_string(),
-                        )
-                    })?,
-                )?)
-            }
-            Some(keys_query) => Some(
-                self.execute_store_query(keys_query)
-                    .map_err(QueryExecutionError::Native)?,
-            ),
-            None => None,
-        };
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
