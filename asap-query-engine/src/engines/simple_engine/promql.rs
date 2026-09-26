@@ -1108,7 +1108,7 @@ impl SimpleEngine {
                 "Binary arithmetic query handling took: {:.2}ms",
                 total_query_duration.as_secs_f64() * 1000.0
             );
-            return result;
+            return Ok(result);
         }
 
         let Some(context) = self.build_query_execution_context_from_parsed(&ast, &query, time)
