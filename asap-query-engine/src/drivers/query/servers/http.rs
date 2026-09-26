@@ -544,7 +544,7 @@ async fn process_range_query_request(
         parsed_request.query, parsed_request.start, parsed_request.end, parsed_request.step
     );
 
-    match state.query_engine.handle_range_query_promql(
+    match state.query_engine.try_handle_range_query_promql(
         parsed_request.query.clone(),
         parsed_request.start,
         parsed_request.end,

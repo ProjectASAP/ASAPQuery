@@ -1371,7 +1371,7 @@ impl SimpleEngine {
                 "Binary arithmetic range query handling took: {:.2}ms",
                 total_duration.as_secs_f64() * 1000.0
             );
-            return result;
+            return Ok(result);
         }
 
         let Some(context) =
