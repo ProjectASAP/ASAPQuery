@@ -4,6 +4,13 @@ comparison_defaults:
     relative: 0
     absolute: 0.000001
 queries:
+  - name: off-grid-rate-capability-fallback
+    expr: rate(http_requests_total[5m])
+    instant_offsets_seconds: [315, 630, 900]
+    range:
+      start_offset_seconds: 315
+      end_offset_seconds: 900
+      step_seconds: 45
   - name: sum-over-time
     expr: sum_over_time(http_requests_total[5m])
     instant_offsets_seconds: [300, 600, 1200]
