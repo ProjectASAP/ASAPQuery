@@ -37,7 +37,7 @@ queries:
   # A non-grid counter range is expected to take the capability fallback.
   - name: off-grid-rate-capability-fallback
     expr: rate(http_requests_total[5m])
-    instant_offsets_seconds: [315, 615, 915]
+    instant_offsets_seconds: [315, 630, 900]
     range:
       start_offset_seconds: 315
       end_offset_seconds: 915
