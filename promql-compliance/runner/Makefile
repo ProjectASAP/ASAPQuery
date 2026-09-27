@@ -6,6 +6,8 @@ REPORT_DIR ?= /tmp/asapquery-differential-reports
 
 CI_CASES := \
 	single-rate-temporal:../datasets/single-rate.yaml:../suites/temporal.yaml \
+	single-rate-off-grid-rate:../datasets/single-rate.yaml:../suites/off-grid-rate.yaml \
+	sparse-checkout-temporal:../datasets/sparse-checkout.yaml:../suites/temporal.yaml \
 	aggregations:../datasets/aggregations.yaml:../suites/aggregations.yaml \
 	quantiles:../datasets/quantiles.yaml:../suites/quantiles.yaml
 
