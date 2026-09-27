@@ -65,6 +65,13 @@ pub enum QueryExecutionError {
     Native(String),
 }
 
+#[cfg(feature = "native_query_legacy_test_support")]
+#[derive(Clone, Copy)]
+pub enum NativeRangeExecutionMode {
+    Dag,
+    Legacy,
+}
+
 /// Parameters for a single store query
 #[derive(Debug, Clone)]
 pub struct StoreQueryParams {
@@ -323,6 +330,8 @@ pub struct SimpleEngine {
     data_ingestion_interval_ms: u64,
     controller_patterns: Vec<PromQLPattern>,
     query_language: QueryLanguage,
+    #[cfg(feature = "native_query_legacy_test_support")]
+    native_range_execution_mode: NativeRangeExecutionMode,
 }
 
 impl SimpleEngine {
@@ -496,7 +505,18 @@ impl SimpleEngine {
             data_ingestion_interval_ms,
             controller_patterns,
             query_language,
+            #[cfg(feature = "native_query_legacy_test_support")]
+            native_range_execution_mode: NativeRangeExecutionMode::Dag,
         }
+    }
+
+    #[cfg(feature = "native_query_legacy_test_support")]
+    pub fn with_native_range_execution_mode_for_test(
+        mut self,
+        mode: NativeRangeExecutionMode,
+    ) -> Self {
+        self.native_range_execution_mode = mode;
+        self
     }
 
     /// Replace the inference config at runtime. Called by the applier task after
@@ -2336,6 +2356,17 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        #[cfg(feature = "native_query_legacy_test_support")]
+        if matches!(
+            self.native_range_execution_mode,
+            NativeRangeExecutionMode::Legacy
+        ) {
+            return self.execute_legacy_range_query_pipeline(
+                context,
+                enable_topk_limiting,
+                enable_topk_formatting,
+            );
+        }
         let plan = QueryPlan::compile_range(
             context,
             PlanOptions {
@@ -2356,6 +2387,44 @@ impl SimpleEngine {
                 "Query plan root did not produce results".to_string(),
             )),
         }
+    }
+
+    #[cfg(feature = "native_query_legacy_test_support")]
+    fn execute_legacy_range_query_pipeline(
+        &self,
+        context: &RangeQueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        let reads = self.read_range_query_inputs(context)?;
+        let mut results = self.estimate_range_query(
+            context,
+            ResolvedRangeReads {
+                values: self.compose_range_read(&reads.values),
+                keys: reads
+                    .keys
+                    .as_ref()
+                    .map(|keys| self.compose_range_read(keys)),
+            },
+        )?;
+        if enable_topk_limiting && context.base.metadata.statistic_to_compute == Statistic::Topk {
+            let k = context
+                .base
+                .metadata
+                .query_kwargs
+                .get("k")
+                .ok_or_else(|| {
+                    QueryExecutionError::Native("Topk query is missing required `k` parameter".into())
+                })?;
+            results = self
+                .limit_range_topk(&results, k)
+                .map_err(QueryExecutionError::Native)?;
+        }
+        Ok(self.format_range_results(
+            &results,
+            enable_topk_formatting && context.base.metadata.keep_metric_name,
+            &context.base.metric,
+        ))
     }
 
     fn read_range_query_inputs(
