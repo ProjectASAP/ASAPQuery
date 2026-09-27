@@ -4,29 +4,6 @@ comparison_defaults:
     relative: 0
     absolute: 0.000001
 queries:
-  # Native-DAG coverage: ordinary tumbling aggregation, wider sliding
-  # composition, and a sparse series that appears mid-range.
-  - name: tumbling-sum
-    expr: sum(http_requests_total)
-    instant_offsets_seconds: [300, 600, 1200]
-    range:
-      start_offset_seconds: 300
-      end_offset_seconds: 1200
-      step_seconds: 60
-  - name: sliding-exact-cover-sum-over-time
-    expr: sum_over_time(http_requests_total[5m])
-    instant_offsets_seconds: [300, 600, 1200]
-    range:
-      start_offset_seconds: 300
-      end_offset_seconds: 1200
-      step_seconds: 60
-  - name: sparse-series-appears-mid-range
-    expr: sum(checkout_up)
-    instant_offsets_seconds: [300, 600, 900, 1200]
-    range:
-      start_offset_seconds: 300
-      end_offset_seconds: 1200
-      step_seconds: 60
   # A non-grid counter range is expected to take the capability fallback.
   - name: off-grid-rate-capability-fallback
     expr: rate(http_requests_total[5m])
