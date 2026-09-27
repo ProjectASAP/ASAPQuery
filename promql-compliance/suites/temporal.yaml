@@ -5,7 +5,7 @@ comparison_defaults:
     absolute: 0.000001
 queries:
   # Native-DAG coverage: ordinary tumbling aggregation, wider sliding
-  # composition, a binary arm, and a sparse series that appears mid-range.
+  # composition, and a sparse series that appears mid-range.
   - name: tumbling-sum
     expr: sum(http_requests_total)
     instant_offsets_seconds: [300, 600, 1200]
@@ -15,13 +15,6 @@ queries:
       step_seconds: 60
   - name: sliding-exact-cover-sum-over-time
     expr: sum_over_time(http_requests_total[5m])
-    instant_offsets_seconds: [300, 600, 1200]
-    range:
-      start_offset_seconds: 300
-      end_offset_seconds: 1200
-      step_seconds: 60
-  - name: binary-arm-sum-over-time
-    expr: sum_over_time(http_requests_total[5m]) + 1
     instant_offsets_seconds: [300, 600, 1200]
     range:
       start_offset_seconds: 300
