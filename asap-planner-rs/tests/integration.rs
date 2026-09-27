@@ -593,6 +593,81 @@ query_groups:
 }
 
 #[test]
+fn nested_aggregation_operators_emit_query_time_stages() {
+    let cases = [
+        ("sum by (job) (sum by (job) (http_requests_total))", "sum"),
+        (
+            "count by (job) (sum by (job) (http_requests_total))",
+            "count",
+        ),
+        ("avg by (job) (sum by (job) (http_requests_total))", "avg"),
+        ("min by (job) (sum by (job) (http_requests_total))", "min"),
+        ("max by (job) (sum by (job) (http_requests_total))", "max"),
+        (
+            "quantile by (job) (0.5, sum by (job) (http_requests_total))",
+            "quantile",
+        ),
+        (
+            "topk by (job) (3, sum by (job) (http_requests_total))",
+            "topk",
+        ),
+    ];
+
+    for (query, operator) in cases {
+        let controller = Controller::from_yaml_with_schema(
+            &format!(
+                r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: 60000
+"#
+            ),
+            http_requests_schema(),
+            default_opts(),
+        )
+        .unwrap();
+
+        let output = controller.generate().unwrap();
+        let inference: serde_yaml::Value =
+            serde_yaml::from_str(&output.to_inference_yaml_string().unwrap()).unwrap();
+        let stage = &inference["queries"][0]["query_time_aggregations"][0];
+
+        assert_eq!(stage["operator"].as_str(), Some(operator));
+        assert_eq!(stage["grouping"]["mode"].as_str(), Some("by"));
+        assert_eq!(stage["grouping"]["labels"].as_sequence().unwrap()[0], "job");
+    }
+}
+
+#[test]
+fn nested_aggregation_without_grouping_is_preserved() {
+    let query = "max without (instance) (sum by (job) (http_requests_total))";
+    let controller = Controller::from_yaml_with_schema(
+        &format!(
+            r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: 60000
+"#
+        ),
+        http_requests_schema(),
+        default_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let inference: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_inference_yaml_string().unwrap()).unwrap();
+    let grouping = &inference["queries"][0]["query_time_aggregations"][0]["grouping"];
+
+    assert_eq!(grouping["mode"].as_str(), Some("without"));
+    assert_eq!(grouping["labels"].as_sequence().unwrap()[0], "instance");
+}
+
+#[test]
 fn topk_over_sum_over_time_produces_value_weighted_heap() {
     // https://github.com/ProjectASAP/asap-internal/issues/699 — topk wrapping
     // a temporal aggregation must still be planned, not silently omitted.
