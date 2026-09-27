@@ -305,6 +305,9 @@ impl InferenceConfig {
                 let config =
                     QueryConfig::with_plan(query, planned_subquery, query_time_aggregations)
                         .with_aggregations(aggregations);
+                config
+                    .validate_execution_plan()
+                    .map_err(|error| anyhow::anyhow!("Invalid query execution plan: {error}"))?;
                 configs.push(config);
             }
             configs
@@ -338,5 +341,53 @@ queries:
             .expect_err("query plans must name their planned subquery");
 
         assert!(error.to_string().contains("planned_subquery"));
+    }
+
+    #[test]
+    fn rejects_a_query_without_a_query_time_pipeline() {
+        let data: Value = serde_yaml::from_str(
+            r#"
+cleanup_policy:
+  name: no_cleanup
+metrics: {}
+queries:
+  - query: "sum(metric)"
+    planned_subquery: "sum(metric)"
+    aggregations: []
+"#,
+        )
+        .unwrap();
+
+        let error = InferenceConfig::from_yaml_data(&data, QueryLanguage::promql)
+            .expect_err("query plans must declare their query-time pipeline");
+
+        assert!(error.to_string().contains("query_time_aggregations"));
+    }
+
+    #[test]
+    fn rejects_an_invalid_query_time_aggregation() {
+        let data: Value = serde_yaml::from_str(
+            r#"
+cleanup_policy:
+  name: no_cleanup
+metrics: {}
+queries:
+  - query: "quantile(1.5, sum(metric))"
+    planned_subquery: "sum(metric)"
+    query_time_aggregations:
+      - operator: quantile
+        grouping:
+          mode: all
+          labels: []
+        parameter: 1.5
+    aggregations: []
+"#,
+        )
+        .unwrap();
+
+        let error = InferenceConfig::from_yaml_data(&data, QueryLanguage::promql)
+            .expect_err("invalid pipeline parameters must fail during config loading");
+
+        assert!(error.to_string().contains("quantile"));
     }
 }
