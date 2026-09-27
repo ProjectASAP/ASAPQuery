@@ -61,3 +61,21 @@ func TestCheckedInOffGridRateSuite(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckedInNativeDagSuites(t *testing.T) {
+	parser := promqlparser.NewParser(promqlparser.Options{})
+	for _, path := range []string{
+		"../suites/native-dag-aggregations.yaml",
+		"../suites/native-dag-sparse.yaml",
+	} {
+		suite, err := LoadSuiteFile(path)
+		if err != nil {
+			t.Fatalf("LoadSuiteFile(%q): %v", path, err)
+		}
+		for _, query := range suite.Queries {
+			if _, err := parser.ParseExpr(query.Expr); err != nil {
+				t.Fatalf("parse %q: %v", query.Expr, err)
+			}
+		}
+	}
+}
