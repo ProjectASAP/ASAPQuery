@@ -492,6 +492,50 @@ async fn e2e_native_dag_range_matches_legacy_range() {
     );
 }
 
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_sparse_range_dag_matches_legacy_range() {
+    let scenario = NativeDagScenario {
+        port: 19411,
+        metric: "sparse_dag_differential",
+        query: "sum(sparse_dag_differential)",
+        aggregation_configs: vec![make_agg_config(
+            10,
+            "sparse_dag_differential",
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries("sparse_dag_differential", vec![], 1_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 2_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 8_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 9_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 12_000, 0.0),
+        ],
+        evaluation_time_seconds: 9.0,
+        base_interval_ms: 1_000,
+    };
+    let mut legacy_scenario = scenario.clone();
+    legacy_scenario.port = 19412;
+    let (dag, query) = scenario.build_engine().await;
+    let (legacy, _) = legacy_scenario.build_engine().await;
+    let dag = dag
+        .try_handle_range_query_promql(query.clone(), 1.0, 9.0, 1.0)
+        .expect("DAG execution should not fail");
+    let legacy = legacy
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .try_handle_range_query_promql(query, 1.0, 9.0, 1.0)
+        .expect("legacy execution should not fail");
+    assert_eq!(
+        serde_json::to_value(dag).unwrap(),
+        serde_json::to_value(legacy).unwrap()
+    );
+}
+
 /// The #698 boundary contract applies independently to a query's value and
 /// key precomputes. An endpoint series can only appear when both sides assign
 /// its sample to the window ending at the evaluation timestamp.
