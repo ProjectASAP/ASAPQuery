@@ -34,6 +34,8 @@ pub use precompute_operators::{
 pub use stores::{SimpleMapStore, Store, StoreResult};
 
 pub use engines::{InstantVector, QueryExecutionError, QueryResult, SimpleEngine};
+#[cfg(feature = "native_query_legacy_test_support")]
+pub use engines::NativeRangeExecutionMode;
 
 pub use drivers::{HttpServer, HttpServerConfig, OtlpReceiver, OtlpReceiverConfig};
 

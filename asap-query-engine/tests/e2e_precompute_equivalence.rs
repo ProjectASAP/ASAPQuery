@@ -23,6 +23,8 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::CapturingOutputSink;
 use query_engine_rust::precompute_engine::{HttpIngestConfig, HttpIngestSource, PrecomputeEngine};
+#[cfg(feature = "native_query_legacy_test_support")]
+use query_engine_rust::NativeRangeExecutionMode;
 use query_engine_rust::{QueryResult, SimpleEngine, SimpleMapStore, Store};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -155,6 +157,7 @@ fn engine_config() -> PrecomputeEngineConfig {
     }
 }
 
+#[derive(Clone)]
 struct NativeDagScenario<'a> {
     port: u16,
     metric: &'a str,
@@ -444,6 +447,49 @@ async fn e2e_native_leaf_range_matches_instant_at_range_end() {
         .expect("range result should contain the end timestamp");
     assert_eq!(final_sample.timestamp, 2_000);
     assert_eq!(final_sample.value, instant.values[0].value);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_native_dag_range_matches_legacy_range() {
+    let scenario = NativeDagScenario {
+        port: 19409,
+        metric: "dag_differential_requests",
+        query: "sum_over_time(dag_differential_requests[2s])",
+        aggregation_configs: vec![make_agg_config(
+            9,
+            "dag_differential_requests",
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries("dag_differential_requests", vec![], 1_000, 1.0),
+            make_timeseries("dag_differential_requests", vec![], 2_000, 2.0),
+            make_timeseries("dag_differential_requests", vec![], 3_000, 3.0),
+            make_timeseries("dag_differential_requests", vec![], 5_000, 0.0),
+        ],
+        evaluation_time_seconds: 3.0,
+        base_interval_ms: 1_000,
+    };
+    let mut legacy_scenario = scenario.clone();
+    legacy_scenario.port = 19410;
+    let (dag, query) = scenario.build_engine().await;
+    let (legacy, _) = legacy_scenario.build_engine().await;
+    let dag = dag
+        .try_handle_range_query_promql(query.clone(), 2.0, 3.0, 1.0)
+        .expect("DAG execution should not fail");
+    let legacy = legacy
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .try_handle_range_query_promql(query, 2.0, 3.0, 1.0)
+        .expect("legacy execution should not fail");
+    assert_eq!(
+        serde_json::to_value(dag).unwrap(),
+        serde_json::to_value(legacy).unwrap()
+    );
 }
 
 /// The #698 boundary contract applies independently to a query's value and
