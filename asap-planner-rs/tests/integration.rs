@@ -555,6 +555,44 @@ query_groups:
 }
 
 #[test]
+fn nested_aggregations_are_emitted_from_inner_to_outer() {
+    let query = "max by (job) (topk(3, sum by (job) (http_requests_total)))";
+    let anchor = "sum by (job) (http_requests_total)";
+    let controller = Controller::from_yaml_with_schema(
+        &format!(
+            r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: 60000
+"#
+        ),
+        http_requests_schema(),
+        default_opts(),
+    )
+    .unwrap();
+
+    let output = controller.generate().unwrap();
+    let inference: serde_yaml::Value =
+        serde_yaml::from_str(&output.to_inference_yaml_string().unwrap()).unwrap();
+    let planned_query = &inference["queries"][0];
+    let pipeline = planned_query["query_time_aggregations"]
+        .as_sequence()
+        .unwrap();
+
+    assert_eq!(planned_query["planned_subquery"].as_str(), Some(anchor));
+    assert_eq!(pipeline.len(), 2);
+    assert_eq!(pipeline[0]["operator"].as_str(), Some("topk"));
+    assert_eq!(pipeline[1]["operator"].as_str(), Some("max"));
+    assert_eq!(pipeline[1]["grouping"]["mode"].as_str(), Some("by"));
+    assert_eq!(
+        pipeline[1]["grouping"]["labels"].as_sequence().unwrap()[0],
+        "job"
+    );
+}
+
+#[test]
 fn topk_over_sum_over_time_produces_value_weighted_heap() {
     // https://github.com/ProjectASAP/asap-internal/issues/699 — topk wrapping
     // a temporal aggregation must still be planned, not silently omitted.

@@ -87,14 +87,20 @@ queries:
   - aggregation_id: 1
     num_aggregates_to_retain: 6
   query: quantile_over_time(0.5, fake_metric_total[1m])
+  planned_subquery: quantile_over_time(0.5, fake_metric_total[1m])
+  query_time_aggregations: []
 - aggregations:
   - aggregation_id: 1
     num_aggregates_to_retain: 6
   query: quantile_over_time(0.95, fake_metric_total[1m])
+  planned_subquery: quantile_over_time(0.95, fake_metric_total[1m])
+  query_time_aggregations: []
 - aggregations:
   - aggregation_id: 1
     num_aggregates_to_retain: 6
   query: quantile_over_time(0.99, fake_metric_total[1m])
+  planned_subquery: quantile_over_time(0.99, fake_metric_total[1m])
+  query_time_aggregations: []
         "#;
 
         let mut inference_temp_file = NamedTempFile::new().unwrap();
@@ -159,14 +165,20 @@ queries:
   - aggregation_id: 1
     num_aggregates_to_retain: 6
   query: quantile_over_time(0.5, fake_metric_total[1m])
+  planned_subquery: quantile_over_time(0.5, fake_metric_total[1m])
+  query_time_aggregations: []
 - aggregations:
   - aggregation_id: 1
     num_aggregates_to_retain: 6
   query: quantile_over_time(0.95, fake_metric_total[1m])
+  planned_subquery: quantile_over_time(0.95, fake_metric_total[1m])
+  query_time_aggregations: []
 - aggregations:
   - aggregation_id: 1
     num_aggregates_to_retain: 6
   query: quantile_over_time(0.99, fake_metric_total[1m])
+  planned_subquery: quantile_over_time(0.99, fake_metric_total[1m])
+  query_time_aggregations: []
         "#;
 
         let mut temp_file = NamedTempFile::new().unwrap();

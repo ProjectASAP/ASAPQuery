@@ -4,6 +4,7 @@ use serde_yaml::Value as YamlValue;
 use std::collections::HashMap;
 
 use asap_types::enums::CleanupPolicy;
+use asap_types::query_config::QueryTimeAggregation;
 use promql_utilities::data_model::KeyByLabelNames;
 
 use crate::planner::agg_config::IntermediateAggConfig;
@@ -39,6 +40,24 @@ pub(crate) const KEY_VALUE_COLUMN: &str = "value_column";
 pub(crate) const KEY_VALUE_COLUMNS: &str = "value_columns";
 pub(crate) const KEY_WINDOW_SIZE_MS: &str = "windowSizeMs";
 pub(crate) const KEY_WINDOW_TYPE: &str = "windowType";
+
+/// The physical query anchor and query-time work for one configured query.
+#[derive(Debug, Clone)]
+pub struct QueryPlanEntry {
+    pub aggregation_keys: Vec<(String, Option<u64>)>,
+    pub planned_subquery: String,
+    pub query_time_aggregations: Vec<QueryTimeAggregation>,
+}
+
+impl QueryPlanEntry {
+    pub fn fully_planned(query: String, aggregation_keys: Vec<(String, Option<u64>)>) -> Self {
+        Self {
+            aggregation_keys,
+            planned_subquery: query,
+            query_time_aggregations: Vec::new(),
+        }
+    }
+}
 
 pub fn key_by_labels_to_yaml(labels: &KeyByLabelNames) -> YamlValue {
     YamlValue::Sequence(
@@ -127,13 +146,14 @@ pub fn build_aggregation_entry(id: u32, cfg: &IntermediateAggConfig) -> YamlValu
 
 pub fn build_queries_yaml(
     cleanup_policy: CleanupPolicy,
-    query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
+    query_plan_map: &IndexMap<String, QueryPlanEntry>,
     id_map: &HashMap<String, u32>,
 ) -> Vec<YamlValue> {
-    query_keys_map
+    query_plan_map
         .iter()
-        .map(|(query_str, keys)| {
-            let aggregations: Vec<YamlValue> = keys
+        .map(|(query_str, plan)| {
+            let aggregations: Vec<YamlValue> = plan
+                .aggregation_keys
                 .iter()
                 .map(|(key, cleanup_param)| {
                     let agg_id = id_map[key];
@@ -174,11 +194,12 @@ pub fn build_queries_yaml(
             );
             q_map.insert(
                 YamlValue::String(KEY_PLANNED_SUBQUERY.to_string()),
-                YamlValue::String(query_str.clone()),
+                YamlValue::String(plan.planned_subquery.clone()),
             );
             q_map.insert(
                 YamlValue::String(KEY_QUERY_TIME_AGGREGATIONS.to_string()),
-                YamlValue::Sequence(Vec::new()),
+                serde_yaml::to_value(&plan.query_time_aggregations)
+                    .expect("query-time aggregation pipeline should serialize to YAML"),
             );
             YamlValue::Mapping(q_map)
         })
