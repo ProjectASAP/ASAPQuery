@@ -496,36 +496,63 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
     };
     let (engine, _) = scenario.build_engine().await;
     let operators = [
-        ("sum", QueryTimeAggregationOperator::Sum, None),
-        ("count", QueryTimeAggregationOperator::Count, None),
-        ("avg", QueryTimeAggregationOperator::Avg, None),
-        ("min", QueryTimeAggregationOperator::Min, None),
-        ("max", QueryTimeAggregationOperator::Max, None),
+        (
+            "sum",
+            QueryTimeAggregationOperator::Sum,
+            None,
+            vec![(vec![], 14.0)],
+        ),
+        (
+            "count",
+            QueryTimeAggregationOperator::Count,
+            None,
+            vec![(vec![], 2.0)],
+        ),
+        (
+            "avg",
+            QueryTimeAggregationOperator::Avg,
+            None,
+            vec![(vec![], 7.0)],
+        ),
+        (
+            "min",
+            QueryTimeAggregationOperator::Min,
+            None,
+            vec![(vec![], 5.0)],
+        ),
+        (
+            "max",
+            QueryTimeAggregationOperator::Max,
+            None,
+            vec![(vec![], 9.0)],
+        ),
         (
             "quantile",
             QueryTimeAggregationOperator::Quantile,
             Some(QueryTimeAggregationParameter::Float(0.75)),
+            vec![(vec![], 8.0)],
         ),
         (
             "topk",
             QueryTimeAggregationOperator::Topk,
             Some(QueryTimeAggregationParameter::Integer(3)),
+            vec![(vec!["api"], 5.0), (vec!["worker"], 9.0)],
         ),
     ];
 
-    for (name, operator, parameter) in &operators {
+    for (name, operator, parameter, expected) in operators {
         let stage = QueryTimeAggregation {
-            operator: operator.clone(),
+            operator,
             grouping: QueryTimeGrouping {
-                mode: QueryTimeGroupingMode::By,
-                labels: vec!["job".to_string()],
+                mode: QueryTimeGroupingMode::All,
+                labels: Vec::new(),
             },
-            parameter: parameter.clone(),
+            parameter,
         };
-        let query = match *name {
-            "quantile" => format!("quantile by (job) (0.75, {anchor})"),
-            "topk" => format!("topk by (job) (3, {anchor})"),
-            _ => format!("{name} by (job) ({anchor})"),
+        let query = match name {
+            "quantile" => format!("quantile(0.75, {anchor})"),
+            "topk" => format!("topk(3, {anchor})"),
+            _ => format!("{name}({anchor})"),
         };
         engine.update_inference_config(InferenceConfig {
             schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
@@ -543,16 +570,41 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
             .add_aggregation(AggregationReference::new(18, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
         });
-        assert!(
-            engine.handle_query_promql(query.clone(), 1.0).is_some(),
-            "instant {name}"
-        );
-        assert!(
-            engine
-                .handle_range_query_promql(query, 1.0, 2.0, 1.0)
-                .is_some(),
-            "range {name}"
-        );
+        let (_, instant) = engine
+            .handle_query_promql(query.clone(), 1.0)
+            .unwrap_or_else(|| panic!("instant {name}"));
+        let QueryResult::Vector(instant) = instant else {
+            panic!("instant {name} should return a vector");
+        };
+        let instant_values: Vec<(Vec<String>, f64)> = instant
+            .values
+            .into_iter()
+            .map(|value| (value.labels.labels, value.value))
+            .collect();
+        let expected: Vec<(Vec<String>, f64)> = expected
+            .into_iter()
+            .map(|(labels, value)| (labels.into_iter().map(str::to_string).collect(), value))
+            .collect();
+        assert_eq!(instant_values, expected, "instant {name}");
+
+        let (_, range) = engine
+            .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+            .unwrap_or_else(|| panic!("range {name}"));
+        let QueryResult::Matrix(range) = range else {
+            panic!("range {name} should return a matrix");
+        };
+        let range_values: Vec<(Vec<String>, f64)> = range
+            .values
+            .into_iter()
+            .map(|value| {
+                let sample = value
+                    .samples
+                    .last()
+                    .expect("range result should have a final sample");
+                (value.labels.labels, sample.value)
+            })
+            .collect();
+        assert_eq!(range_values, expected, "range {name}");
     }
 }
 
