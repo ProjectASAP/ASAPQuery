@@ -16,6 +16,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use asap_types::query_config::QueryTimeAggregation;
 use query_engine_rust::data_model::{
     AggregationReference, InferenceConfig, PromQLSchema, QueryConfig, SchemaConfig, StreamingConfig,
 };
@@ -260,6 +261,16 @@ struct NativeDagScenario<'a> {
 
 impl NativeDagScenario<'_> {
     async fn build_engine(self) -> (SimpleEngine, String) {
+        let planned_subquery = self.query.to_string();
+        self.build_engine_with_plan(&planned_subquery, Vec::new())
+            .await
+    }
+
+    async fn build_engine_with_plan(
+        self,
+        planned_subquery: &str,
+        query_time_aggregations: Vec<QueryTimeAggregation>,
+    ) -> (SimpleEngine, String) {
         let aggregation_ids: Vec<u64> = self
             .aggregation_configs
             .iter()
@@ -305,7 +316,11 @@ impl NativeDagScenario<'_> {
         }
 
         let query_config = aggregation_ids.into_iter().fold(
-            QueryConfig::new(self.query.to_string()),
+            QueryConfig::with_plan(
+                self.query.to_string(),
+                planned_subquery.to_string(),
+                query_time_aggregations,
+            ),
             |config, aggregation_id| {
                 config.add_aggregation(AggregationReference::new(aggregation_id, None))
             },
@@ -360,6 +375,74 @@ fn assert_range_results_match(
         serde_json::to_value(Some(dag)).unwrap(),
         serde_json::to_value(Some(legacy)).unwrap()
     );
+}
+
+#[tokio::test]
+async fn e2e_nested_topk_executes_after_its_planned_sum_anchor() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeAggregationParameter, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_topk_requests";
+    let anchor = "sum by (job) (nested_topk_requests)";
+    let scenario = NativeDagScenario {
+        port: 19417,
+        metric,
+        query: "topk(1, sum by (job) (nested_topk_requests))",
+        aggregation_configs: vec![make_agg_config(
+            17,
+            metric,
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec!["job"],
+        )],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples: vec![
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 1_000, 2.0),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "b")], 1_000, 3.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "c")],
+                1_000,
+                9.0,
+            ),
+            make_timeseries(metric, vec![], 3_000, 0.0),
+        ],
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+
+    let (engine, query) = scenario
+        .build_engine_with_plan(
+            anchor,
+            vec![QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Topk,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::All,
+                    labels: Vec::new(),
+                },
+                parameter: Some(QueryTimeAggregationParameter::Integer(1)),
+            }],
+        )
+        .await;
+    let (_, result) = engine
+        .handle_query_promql(query, 1.0)
+        .expect("nested query should execute through the planned anchor");
+    let QueryResult::Vector(vector) = result else {
+        panic!("instant query should return a vector");
+    };
+
+    assert_eq!(vector.values.len(), 1);
+    assert_eq!(
+        vector.values[0].labels.labels,
+        vec!["worker"],
+        "nested topk result: {:?}",
+        vector.values
+    );
+    assert_eq!(vector.values[0].value, 9.0);
 }
 
 #[tokio::test]
