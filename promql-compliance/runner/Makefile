@@ -3,6 +3,9 @@
 DATASET ?= ../datasets/single-rate.yaml
 SUITE ?= ../suites/temporal.yaml
 REPORT_DIR ?= /tmp/asapquery-differential-reports
+RUN_ID ?= $(shell date +%s%N)
+COMPOSE_PROJECT ?= asapquery-differential-$(RUN_ID)
+BASE_TIME_MS ?= $(shell date +%s%3N)
 
 CI_CASES := \
 	single-rate-temporal:../datasets/single-rate.yaml:../suites/temporal.yaml \
@@ -24,7 +27,9 @@ run:
 	go run ./cmd/differential-runner \
 		--dataset $(DATASET) \
 		--suite $(SUITE) \
-		--compose-file ../docker-compose.yml
+		--compose-file ../docker-compose.yml \
+		--compose-project $(COMPOSE_PROJECT) \
+		--base-time-ms $(BASE_TIME_MS)
 
 run-all:
 	@$(MAKE) --no-print-directory run-cases CASES="$(CI_CASES) $(NON_CI_CASES)"
@@ -36,16 +41,24 @@ run-cases:
 	@set -eu; \
 	mkdir -p "$(REPORT_DIR)"; \
 	result=0; \
+	run_id="$$(date +%s%N)"; \
+	base_time_ms="$$(date +%s%3N)"; \
+	case_index=0; \
 	for test_case in $(CASES); do \
 		name="$${test_case%%:*}"; \
 		rest="$${test_case#*:}"; \
 		dataset="$${rest%%:*}"; \
 		suite="$${rest#*:}"; \
+		project="asapquery-differential-$$name-$$run_id"; \
+		case_base_time_ms="$$((base_time_ms + case_index * 60000))"; \
+		case_index="$$((case_index + 1))"; \
 		echo "Running $$name ($$dataset, $$suite)"; \
 		if ! go run ./cmd/differential-runner \
 			--dataset "$$dataset" \
 			--suite "$$suite" \
 			--compose-file ../docker-compose.yml \
+			--compose-project "$$project" \
+			--base-time-ms "$$case_base_time_ms" \
 			--output "$(REPORT_DIR)/$$name.json"; then \
 			echo "FAILED: $$name" >&2; \
 			result=1; \
