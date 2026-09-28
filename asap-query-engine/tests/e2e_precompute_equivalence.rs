@@ -629,8 +629,8 @@ async fn e2e_self_keyed_topk_dag_matches_legacy_range() {
         aggregation_configs: vec![config],
         schema_labels: vec!["host".to_string()],
         samples: vec![
-            make_timeseries(metric, vec![("host", "a")], 1_000, 1.0),
-            make_timeseries(metric, vec![("host", "b")], 1_000, 2.0),
+            make_timeseries(metric, vec![("host", "a")], 1_000, 3.0),
+            make_timeseries(metric, vec![("host", "b")], 1_000, 3.0),
             make_timeseries(metric, vec![("host", "c")], 1_000, 3.0),
             make_timeseries(metric, vec![], 3_000, 0.0),
         ],
