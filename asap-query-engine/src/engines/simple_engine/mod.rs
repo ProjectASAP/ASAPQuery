@@ -71,6 +71,7 @@ pub enum NativeRangeExecutionMode {
     Dag,
     Legacy,
     MalformedPlan,
+    FailingStore,
 }
 
 /// Parameters for a single store query
@@ -2374,6 +2375,13 @@ impl SimpleEngine {
             NativeRangeExecutionMode::MalformedPlan
         ) {
             return Err("test-only malformed native query plan".to_string());
+        }
+        #[cfg(feature = "native_query_legacy_test_support")]
+        if matches!(
+            self.native_range_execution_mode,
+            NativeRangeExecutionMode::FailingStore
+        ) {
+            return Err("test-only native store failure".to_string());
         }
         let plan = QueryPlan::compile_range(
             context,
