@@ -654,6 +654,41 @@ async fn e2e_self_keyed_topk_dag_matches_legacy_range() {
     );
 }
 
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_malformed_native_plan_returns_local_error() {
+    let metric = "dag_requests";
+    let (engine, query) = NativeDagScenario {
+        port: 19417,
+        metric,
+        query: "sum(dag_requests)",
+        aggregation_configs: vec![make_agg_config(
+            14,
+            metric,
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries(metric, vec![], 1_000, 100.0),
+            make_timeseries(metric, vec![], 1_500, 2.0),
+            make_timeseries(metric, vec![], 2_000, 3.0),
+            make_timeseries(metric, vec![], 3_500, 0.0),
+        ],
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: 1_000,
+    }
+    .build_engine()
+    .await;
+    assert!(engine
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::MalformedPlan)
+        .try_handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .is_err());
+}
+
 /// The #698 boundary contract applies independently to a query's value and
 /// key precomputes. An endpoint series can only appear when both sides assign
 /// its sample to the window ending at the evaluation timestamp.

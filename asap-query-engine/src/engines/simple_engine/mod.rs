@@ -70,6 +70,7 @@ pub enum QueryExecutionError {
 pub enum NativeRangeExecutionMode {
     Dag,
     Legacy,
+    MalformedPlan,
 }
 
 /// Parameters for a single store query
@@ -2366,6 +2367,13 @@ impl SimpleEngine {
                 enable_topk_limiting,
                 enable_topk_formatting,
             );
+        }
+        #[cfg(feature = "native_query_legacy_test_support")]
+        if matches!(
+            self.native_range_execution_mode,
+            NativeRangeExecutionMode::MalformedPlan
+        ) {
+            return Err("test-only malformed native query plan".to_string());
         }
         let plan = QueryPlan::compile_range(
             context,
