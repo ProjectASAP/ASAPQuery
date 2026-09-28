@@ -10,6 +10,7 @@ use super::{
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
+use crate::engines::query_time_aggregation::{apply_instant_pipeline, apply_range_pipeline};
 use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
@@ -278,11 +279,12 @@ impl SimpleEngine {
         &self,
         arm_ast: &promql_parser::parser::Expr,
         query_config: &QueryConfig,
+        planned_subquery: &str,
         time: f64,
     ) -> Option<QueryExecutionContext> {
         let query_time = Self::convert_query_time_to_data_time(time);
 
-        let match_result = self.find_matching_controller_pattern(arm_ast, &query_config.query)?;
+        let match_result = self.find_matching_controller_pattern(arm_ast, planned_subquery)?;
 
         let agg_info = self
             .get_aggregation_id_info(query_config)
@@ -293,7 +295,7 @@ impl SimpleEngine {
             .ok()?;
 
         self.build_promql_execution_context_tail(
-            &query_config.query,
+            planned_subquery,
             &match_result,
             query_time,
             agg_info,
@@ -435,7 +437,12 @@ impl SimpleEngine {
             Expr::Paren(paren) => self.resolve_arm_leaf_context(&paren.expr, time),
             other => {
                 let config = self.find_query_config_promql_structural(other)?;
-                let ctx = self.build_query_execution_context_from_ast(other, &config, time)?;
+                let ctx = self.build_query_execution_context_from_ast(
+                    other,
+                    &config,
+                    &config.planned_subquery,
+                    time,
+                )?;
                 let label_names =
                     binary_matching_label_names(ctx.metadata.query_output_labels.labels.clone());
                 Some((ctx, label_names))
@@ -1111,6 +1118,45 @@ impl SimpleEngine {
             return result;
         }
 
+        if let Some(config) = self.find_query_config(&query) {
+            if !config.query_time_aggregations.is_empty() {
+                let anchor_ast = match promql_parser::parser::parse(&config.planned_subquery) {
+                    Ok(ast) => ast,
+                    Err(error) => {
+                        warn!(
+                            query = %query,
+                            planned_subquery = %config.planned_subquery,
+                            "configured query-time aggregation anchor does not parse: {error}"
+                        );
+                        return Ok(None);
+                    }
+                };
+                let Some(context) = self.build_query_execution_context_from_ast(
+                    &anchor_ast,
+                    &config,
+                    &config.planned_subquery,
+                    time,
+                ) else {
+                    return Ok(None);
+                };
+                let (anchor_labels, anchor_result) =
+                    self.execute_context_result(context, false, false)?;
+                let QueryResult::Vector(anchor_values) = anchor_result else {
+                    return Ok(None);
+                };
+                let (labels, values) = apply_instant_pipeline(
+                    anchor_labels,
+                    anchor_values.values,
+                    &config.query_time_aggregations,
+                )
+                .map_err(QueryExecutionError::Native)?;
+                return Ok(Some((
+                    labels,
+                    QueryResult::vector(values, Self::convert_query_time_to_data_time(time)),
+                )));
+            }
+        }
+
         let Some(context) = self.build_query_execution_context_from_parsed(&ast, &query, time)
         else {
             return Ok(None);
@@ -1372,6 +1418,44 @@ impl SimpleEngine {
                 total_duration.as_secs_f64() * 1000.0
             );
             return result;
+        }
+
+        if let Some(config) = self.find_query_config(&query) {
+            if !config.query_time_aggregations.is_empty() {
+                let anchor_ast = match promql_parser::parser::parse(&config.planned_subquery) {
+                    Ok(ast) => ast,
+                    Err(error) => {
+                        warn!(
+                            query = %query,
+                            planned_subquery = %config.planned_subquery,
+                            "configured query-time aggregation anchor does not parse: {error}"
+                        );
+                        return Ok(None);
+                    }
+                };
+                let Some(anchor_context) = self.build_query_execution_context_from_ast(
+                    &anchor_ast,
+                    &config,
+                    &config.planned_subquery,
+                    end,
+                ) else {
+                    return Ok(None);
+                };
+                let Some(context) = self.finish_range_context(anchor_context, start, end, step)
+                else {
+                    return Ok(None);
+                };
+                let anchor_results = self
+                    .execute_observed_range_query_pipeline(&context, false, false)
+                    .map_err(QueryExecutionError::Native)?;
+                let (labels, results) = apply_range_pipeline(
+                    context.base.metadata.query_output_labels,
+                    anchor_results,
+                    &config.query_time_aggregations,
+                )
+                .map_err(QueryExecutionError::Native)?;
+                return Ok(Some((labels, QueryResult::matrix(results))));
+            }
         }
 
         let Some(context) =

@@ -1,6 +1,7 @@
 pub(crate) mod merge_utils;
 pub(crate) mod query_plan;
 pub mod query_result;
+pub(crate) mod query_time_aggregation;
 pub mod simple_engine;
 pub(crate) mod sliding_window_composition;
 pub mod window_merger;
