@@ -5,7 +5,7 @@ SUITE ?= ../suites/temporal.yaml
 REPORT_DIR ?= /tmp/asapquery-differential-reports
 RUN_ID ?= $(shell date +%s%N)
 COMPOSE_PROJECT ?= asapquery-differential-$(RUN_ID)
-BASE_TIME_MS ?= $(shell date +%s%3N)
+BASE_TIME_MS ?= $(shell now_ms=$$(date +%s%3N); echo $$((now_ms / 300000 * 300000 - 1800000)))
 
 CI_CASES := \
 	single-rate-temporal:../datasets/single-rate.yaml:../suites/temporal.yaml \
@@ -42,7 +42,8 @@ run-cases:
 	mkdir -p "$(REPORT_DIR)"; \
 	result=0; \
 	run_id="$$(date +%s%N)"; \
-	base_time_ms="$$(date +%s%3N)"; \
+	now_ms="$$(date +%s%3N)"; \
+	base_time_ms="$$((now_ms / 300000 * 300000 - 1800000))"; \
 	case_index=0; \
 	for test_case in $(CASES); do \
 		name="$${test_case%%:*}"; \
