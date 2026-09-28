@@ -66,6 +66,7 @@ func TestCheckedInNativeDagSuites(t *testing.T) {
 	parser := promqlparser.NewParser(promqlparser.Options{})
 	for _, path := range []string{
 		"../suites/native-dag-aggregations.yaml",
+		"../suites/nested-aggregations.yaml",
 	} {
 		suite, err := LoadSuiteFile(path)
 		if err != nil {

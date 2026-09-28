@@ -1,0 +1,373 @@
+name: nested-aggregations
+comparison_defaults:
+  value_tolerance:
+    relative: 0.01
+    absolute: 0.000001
+
+# Prometheus is the reference for each instant and range result. Every query
+# starts from a planner-supported anchor and leaves one or two aggregation
+# stages for ASAPQuery's query-time pipeline.
+queries:
+  - name: one-stage-sum
+    expr: "sum by (job) (sum by (job, instance) (data))"
+    instant_offsets_seconds: &evaluation_offsets [300, 600, 900, 1200]
+    range: &evaluation_range
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
+  - name: one-stage-count
+    expr: "count by (job) (sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: one-stage-avg
+    expr: "avg by (job) (sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: one-stage-min
+    expr: "min by (job) (sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: one-stage-max
+    expr: "max by (job) (sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: one-stage-topk-3
+    expr: "topk by (job) (3, sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: one-stage-quantile-0-5
+    expr: "quantile by (job) (0.5, sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: one-stage-quantile-0-75
+    expr: "quantile by (job) (0.75, sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: one-stage-quantile-0-9
+    expr: "quantile by (job) (0.9, sum by (job, instance) (data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-sum
+    expr: "sum by (job) (sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-count
+    expr: "count by (job) (sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-avg
+    expr: "avg by (job) (sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-min
+    expr: "min by (job) (sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-max
+    expr: "max by (job) (sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-topk-3
+    expr: "topk by (job) (3, sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-quantile-0-5
+    expr: "quantile by (job) (0.5, sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-quantile-0-75
+    expr: "quantile by (job) (0.75, sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-sum-then-quantile-0-9
+    expr: "quantile by (job) (0.9, sum by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-sum
+    expr: "sum by (job) (count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-count
+    expr: "count by (job) (count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-avg
+    expr: "avg by (job) (count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-min
+    expr: "min by (job) (count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-max
+    expr: "max by (job) (count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-topk-3
+    expr: "topk by (job) (3, count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-quantile-0-5
+    expr: "quantile by (job) (0.5, count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-quantile-0-75
+    expr: "quantile by (job) (0.75, count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-count-then-quantile-0-9
+    expr: "quantile by (job) (0.9, count by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-sum
+    expr: "sum by (job) (avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-count
+    expr: "count by (job) (avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-avg
+    expr: "avg by (job) (avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-min
+    expr: "min by (job) (avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-max
+    expr: "max by (job) (avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-topk-3
+    expr: "topk by (job) (3, avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-quantile-0-5
+    expr: "quantile by (job) (0.5, avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-quantile-0-75
+    expr: "quantile by (job) (0.75, avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-avg-then-quantile-0-9
+    expr: "quantile by (job) (0.9, avg by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-sum
+    expr: "sum by (job) (min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-count
+    expr: "count by (job) (min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-avg
+    expr: "avg by (job) (min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-min
+    expr: "min by (job) (min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-max
+    expr: "max by (job) (min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-topk-3
+    expr: "topk by (job) (3, min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-quantile-0-5
+    expr: "quantile by (job) (0.5, min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-quantile-0-75
+    expr: "quantile by (job) (0.75, min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-min-then-quantile-0-9
+    expr: "quantile by (job) (0.9, min by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-sum
+    expr: "sum by (job) (max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-count
+    expr: "count by (job) (max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-avg
+    expr: "avg by (job) (max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-min
+    expr: "min by (job) (max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-max
+    expr: "max by (job) (max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-topk-3
+    expr: "topk by (job) (3, max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-quantile-0-5
+    expr: "quantile by (job) (0.5, max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-quantile-0-75
+    expr: "quantile by (job) (0.75, max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-max-then-quantile-0-9
+    expr: "quantile by (job) (0.9, max by (job) (sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-sum
+    expr: "sum by (job) (topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-count
+    expr: "count by (job) (topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-avg
+    expr: "avg by (job) (topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-min
+    expr: "min by (job) (topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-max
+    expr: "max by (job) (topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-topk-3
+    expr: "topk by (job) (3, topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-quantile-0-5
+    expr: "quantile by (job) (0.5, topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-quantile-0-75
+    expr: "quantile by (job) (0.75, topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-topk-3-then-quantile-0-9
+    expr: "quantile by (job) (0.9, topk by (job) (3, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-sum
+    expr: "sum by (job) (quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-count
+    expr: "count by (job) (quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-avg
+    expr: "avg by (job) (quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-min
+    expr: "min by (job) (quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-max
+    expr: "max by (job) (quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-topk-3
+    expr: "topk by (job) (3, quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-quantile-0-5
+    expr: "quantile by (job) (0.5, quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-quantile-0-75
+    expr: "quantile by (job) (0.75, quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-5-then-quantile-0-9
+    expr: "quantile by (job) (0.9, quantile by (job) (0.5, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-sum
+    expr: "sum by (job) (quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-count
+    expr: "count by (job) (quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-avg
+    expr: "avg by (job) (quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-min
+    expr: "min by (job) (quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-max
+    expr: "max by (job) (quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-topk-3
+    expr: "topk by (job) (3, quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-quantile-0-5
+    expr: "quantile by (job) (0.5, quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-quantile-0-75
+    expr: "quantile by (job) (0.75, quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-75-then-quantile-0-9
+    expr: "quantile by (job) (0.9, quantile by (job) (0.75, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-sum
+    expr: "sum by (job) (quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-count
+    expr: "count by (job) (quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-avg
+    expr: "avg by (job) (quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-min
+    expr: "min by (job) (quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-max
+    expr: "max by (job) (quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-topk-3
+    expr: "topk by (job) (3, quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-quantile-0-5
+    expr: "quantile by (job) (0.5, quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-quantile-0-75
+    expr: "quantile by (job) (0.75, quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+  - name: two-stage-quantile-0-9-then-quantile-0-9
+    expr: "quantile by (job) (0.9, quantile by (job) (0.9, sum by (job, instance) (data)))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
