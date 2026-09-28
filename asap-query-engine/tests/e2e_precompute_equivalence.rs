@@ -452,6 +452,111 @@ async fn e2e_nested_topk_executes_after_its_planned_sum_anchor() {
 }
 
 #[tokio::test]
+async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeAggregationParameter, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_operator_matrix";
+    let anchor = "sum by (job) (nested_operator_matrix)";
+    let scenario = NativeDagScenario {
+        port: 19418,
+        metric,
+        query: anchor,
+        aggregation_configs: vec![make_agg_config(
+            18,
+            metric,
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec!["job"],
+        )],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples: vec![
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 1_000, 2.0),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "b")], 1_000, 3.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "c")],
+                1_000,
+                9.0,
+            ),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 3_000, 0.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "c")],
+                3_000,
+                0.0,
+            ),
+        ],
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, _) = scenario.build_engine().await;
+    let operators = [
+        ("sum", QueryTimeAggregationOperator::Sum, None),
+        ("count", QueryTimeAggregationOperator::Count, None),
+        ("avg", QueryTimeAggregationOperator::Avg, None),
+        ("min", QueryTimeAggregationOperator::Min, None),
+        ("max", QueryTimeAggregationOperator::Max, None),
+        (
+            "quantile",
+            QueryTimeAggregationOperator::Quantile,
+            Some(QueryTimeAggregationParameter::Float(0.75)),
+        ),
+        (
+            "topk",
+            QueryTimeAggregationOperator::Topk,
+            Some(QueryTimeAggregationParameter::Integer(3)),
+        ),
+    ];
+
+    for (name, operator, parameter) in &operators {
+        let stage = QueryTimeAggregation {
+            operator: operator.clone(),
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::By,
+                labels: vec!["job".to_string()],
+            },
+            parameter: parameter.clone(),
+        };
+        let query = match *name {
+            "quantile" => format!("quantile by (job) (0.75, {anchor})"),
+            "topk" => format!("topk by (job) (3, {anchor})"),
+            _ => format!("{name} by (job) ({anchor})"),
+        };
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                metric.to_string(),
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+                    "instance".to_string(),
+                    "job".to_string(),
+                ]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                query.clone(),
+                anchor.to_string(),
+                vec![stage],
+            )
+            .add_aggregation(AggregationReference::new(18, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+        assert!(
+            engine.handle_query_promql(query.clone(), 1.0).is_some(),
+            "instant {name}"
+        );
+        assert!(
+            engine
+                .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+                .is_some(),
+            "range {name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn e2e_sliding_precompute_outputs_compose_a_wider_query() {
     let port = 19402u16;
     let agg_id = 3u64;
