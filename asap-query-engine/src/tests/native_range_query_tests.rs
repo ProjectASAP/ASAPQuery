@@ -37,6 +37,8 @@ mod tests {
     use crate::stores::Store;
     use crate::tests::test_utilities::engine_factories::create_engine_multi_timestamp_with_window;
     use crate::AggregateCore;
+    #[cfg(feature = "native_query_legacy_test_support")]
+    use crate::NativeRangeExecutionMode;
     use promql_utilities::data_model::KeyByLabelNames;
     use std::collections::HashMap;
     use std::sync::Arc;
@@ -281,6 +283,61 @@ mod tests {
             promql_query,
             WINDOW_MS,
             WINDOW_MS,
+        )
+    }
+
+    fn create_oscillating_delta_set_engine() -> SimpleEngine {
+        let value_data: TimeSeriesData = (1..=5)
+            .map(|i| {
+                (
+                    i * 1000,
+                    None,
+                    Box::new(CountMinSketchAccumulator::new(2, 3)) as Box<dyn AggregateCore>,
+                )
+            })
+            .collect();
+
+        let mut keys_add = DeltaSetAggregatorAccumulator::new();
+        keys_add.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let mut keys_remove = DeltaSetAggregatorAccumulator::new();
+        keys_remove.remove_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let keys_data: TimeSeriesData = vec![
+            (
+                1000,
+                None,
+                Box::new(keys_add.clone()) as Box<dyn AggregateCore>,
+            ),
+            (
+                2000,
+                None,
+                Box::new(keys_remove.clone()) as Box<dyn AggregateCore>,
+            ),
+            (
+                3000,
+                None,
+                Box::new(keys_add.clone()) as Box<dyn AggregateCore>,
+            ),
+            (
+                4000,
+                None,
+                Box::new(keys_remove.clone()) as Box<dyn AggregateCore>,
+            ),
+            (5000, None, Box::new(keys_add) as Box<dyn AggregateCore>),
+        ];
+
+        create_range_engine_dual_input(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::DeltaSetAggregator,
+            vec![],
+            vec!["host", "event"],
+            value_data,
+            keys_data,
+            "count(event_frequency) by (host, event)",
         )
     }
 
@@ -1437,58 +1494,7 @@ mod tests {
         // delta is an add) and reuses it for every step — so it would wrongly
         // show host-a present at every step, including the two "removed"
         // windows (t=2000, t=4000).
-        let value_data: TimeSeriesData = (1..=5)
-            .map(|i| {
-                (
-                    i * 1000,
-                    None,
-                    Box::new(CountMinSketchAccumulator::new(2, 3)) as Box<dyn AggregateCore>,
-                )
-            })
-            .collect();
-
-        let mut keys_add = DeltaSetAggregatorAccumulator::new();
-        keys_add.add_key(KeyByLabelValues {
-            labels: vec!["host-a".to_string(), "evt-1".to_string()],
-        });
-        let mut keys_remove = DeltaSetAggregatorAccumulator::new();
-        keys_remove.remove_key(KeyByLabelValues {
-            labels: vec!["host-a".to_string(), "evt-1".to_string()],
-        });
-        let keys_data: TimeSeriesData = vec![
-            (
-                1000,
-                None,
-                Box::new(keys_add.clone()) as Box<dyn AggregateCore>,
-            ),
-            (
-                2000,
-                None,
-                Box::new(keys_remove.clone()) as Box<dyn AggregateCore>,
-            ),
-            (
-                3000,
-                None,
-                Box::new(keys_add.clone()) as Box<dyn AggregateCore>,
-            ),
-            (
-                4000,
-                None,
-                Box::new(keys_remove.clone()) as Box<dyn AggregateCore>,
-            ),
-            (5000, None, Box::new(keys_add) as Box<dyn AggregateCore>),
-        ];
-
-        let engine = create_range_engine_dual_input(
-            "event_frequency",
-            AggregationType::CountMinSketch,
-            AggregationType::DeltaSetAggregator,
-            vec![],
-            vec!["host", "event"],
-            value_data,
-            keys_data,
-            "count(event_frequency) by (host, event)",
-        );
+        let engine = create_oscillating_delta_set_engine();
 
         let query = "count(event_frequency) by (host, event)";
         let result = engine
@@ -1515,6 +1521,25 @@ mod tests {
             mismatches.is_empty(),
             "host-a's net membership diverged from the per-step expectation (deltas \
              replayed only up to each step's own end) at: {mismatches:?}"
+        );
+    }
+
+    #[cfg(feature = "native_query_legacy_test_support")]
+    #[test]
+    fn range_query_delta_set_replay_dag_matches_legacy() {
+        let query = "count(event_frequency) by (host, event)";
+        let dag = create_oscillating_delta_set_engine()
+            .try_handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
+            .expect("DAG execution failed");
+        let legacy = create_oscillating_delta_set_engine()
+            .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+            .try_handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
+            .expect("legacy execution failed");
+
+        assert_eq!(
+            serde_json::to_value(dag).expect("DAG result should serialize"),
+            serde_json::to_value(legacy).expect("legacy result should serialize"),
+            "DAG execution must preserve DeltaSet replay semantics"
         );
     }
 
