@@ -3,6 +3,7 @@
 use crate::engines::simple_engine::{RangeQueryExecutionContext, StoreQueryParams};
 use asap_types::enums::WindowType;
 use promql_utilities::query_logics::enums::Statistic;
+use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NodeId(usize);
@@ -177,11 +178,23 @@ impl QueryPlan {
                 .into_iter()
                 .map(|input| outputs[input.0].clone())
                 .collect::<Vec<_>>();
+            debug!(
+                node_id = index,
+                node_kind = node.kind(),
+                input_count = inputs.len(),
+                "Executing native query plan node"
+            );
             let output = runtime
                 .execute_node(NodeId(index), node, &inputs)
                 .map_err(|error| format!("Query plan node n{index} failed: {error}"))?;
+            debug!(
+                node_id = index,
+                node_kind = node.kind(),
+                "Completed native query plan node"
+            );
             outputs.push(output);
         }
+        debug!(root_node_id = self.root.0, "Completed native query plan");
         Ok(outputs[self.root.0].clone())
     }
 
@@ -264,6 +277,17 @@ impl QueryPlan {
 }
 
 impl QueryPlanNode {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::StoreRead { .. } => "StoreRead",
+            Self::ComposeWindows { .. } => "ComposeWindows",
+            Self::ResolveKeys { .. } => "ResolveKeys",
+            Self::Estimate { .. } => "Estimate",
+            Self::LimitTopK { .. } => "LimitTopK",
+            Self::Format { .. } => "Format",
+        }
+    }
+
     fn inputs(&self) -> Vec<NodeId> {
         match self {
             Self::StoreRead { .. } => Vec::new(),
