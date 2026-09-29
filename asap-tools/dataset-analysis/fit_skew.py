@@ -64,6 +64,8 @@ VALUE_SUM_COL = "value_sum"
 KEY_WEIGHTS = {"count", "value"}
 QUERY_KINDS = {"keys", "values"}
 
+# Enough digits to keep row counts exact.
+SUMMARY_FLOAT_FORMAT = "%.10g"
 SUMMARY_COLUMNS = [
     "dataset",
     "query_id",
@@ -71,8 +73,14 @@ SUMMARY_COLUMNS = [
     "kind",
     "weight",
     "window_len_s",
-    "K",
-    "rows",
+    "K_total",
+    "rows_total",
+    "K_win_min",
+    "K_win_median",
+    "K_win_max",
+    "rows_win_min",
+    "rows_win_median",
+    "rows_win_max",
     "n_windows",
     "lower",
     "mle",
@@ -396,6 +404,17 @@ def window_bounds(
     return min(candidates), max(candidates), len(windows)
 
 
+def spread(prefix: str, per_window: Sequence[float]) -> Dict[str, float]:
+    """{prefix}_min, _median and _max over per-window values."""
+    if not len(per_window):
+        return {}
+    return {
+        f"{prefix}_min": float(np.min(per_window)),
+        f"{prefix}_median": float(np.median(per_window)),
+        f"{prefix}_max": float(np.max(per_window)),
+    }
+
+
 def coarsen_keys(agg: pd.DataFrame, factor: int, group_by: List[str]) -> pd.DataFrame:
     """Merge every `factor` consecutive finest windows of a key aggregate."""
     frame = agg.reset_index()
@@ -561,6 +580,11 @@ def summarize_keys(
     out = []
     for window_len in window_lengths:
         coarse = coarsen_keys(agg, window_len // window_lengths[0], q["group_by"])
+        by_window = coarse.groupby(level=WINDOW_COL)[COUNT_COL]
+        window_stats = {
+            **spread("K_win", by_window.size().tolist()),
+            **spread("rows_win", by_window.sum().tolist()),
+        }
         for weight, col in columns.items():
             estimates = []
             for _, window in coarse.groupby(level=WINDOW_COL):
@@ -577,8 +601,9 @@ def summarize_keys(
                     "kind": "keys",
                     "weight": weight,
                     "window_len_s": window_len,
-                    "K": len(keys),
-                    "rows": rows,
+                    "K_total": len(keys),
+                    "rows_total": rows,
+                    **window_stats,
                     "n_windows": n_windows,
                     "lower": lower,
                     "mle": pooled[weight],
@@ -617,8 +642,10 @@ def summarize_values(
     mle_sample = subsample(all_values)
     jobs = [(mle_sample, True)]
     job_window_lens = [0]
+    window_rows: Dict[int, List[int]] = {}
     for window_len in window_lengths:
         coarse = coarsen_values(finest, window_len // window_lengths[0])
+        window_rows[window_len] = [len(x) for x in coarse.values()]
         for x in coarse.values():
             if len(x) >= min_rows:
                 jobs.append((subsample(x), False))
@@ -646,7 +673,8 @@ def summarize_values(
                 "kind": "values",
                 "weight": "",
                 "window_len_s": window_len,
-                "rows": acc["n_finite"],
+                "rows_total": acc["n_finite"],
+                **spread("rows_win", window_rows[window_len]),
                 "n_windows": n_windows,
                 "lower": lower,
                 "mle": mle_fit["alpha"],
@@ -774,8 +802,8 @@ def summarize_boom_series(
         "promql": q["promql"],
         "kind": "values",
         "weight": "",
-        "K": len(shifted),
-        "rows": finite,
+        "K_total": len(shifted),
+        "rows_total": finite,
         "dropped_frac": 1.0 - np.sum(shifted > 0) / finite,
         "tail_class": max(sorted(set(classes)), key=classes.count) if classes else "",
         "ok_frac": len(chosen) / len(classes) if classes else np.nan,
@@ -900,7 +928,7 @@ def main() -> None:
             rows.extend(analyze_dataset(cfg, args.data_root, pool, args, plot_dir))
     args.summary.parent.mkdir(parents=True, exist_ok=True)
     summary = pd.DataFrame(rows).reindex(columns=SUMMARY_COLUMNS)
-    summary.to_csv(args.summary, index=False, float_format="%.6g")
+    summary.to_csv(args.summary, index=False, float_format=SUMMARY_FLOAT_FORMAT)
     log.info(
         "wrote %s (%d rows) in %.0fs", args.summary, len(rows), time.time() - start
     )

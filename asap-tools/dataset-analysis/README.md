@@ -121,8 +121,12 @@ Citations:
 
 One row per (query, kind, weight, window length). The sketch-bench saturation study reads
 `dataset, query_id, kind, weight, window_len_s, lower, mle, upper` to pick the θ and α
-range it sweeps. For value rows it should use only rows whose `tail_class` is
-not `light`: a light tail decays at least exponentially, so its α is just the
+range it sweeps. It takes the stream size per sketch window N from
+`rows_win_*` and the key cardinality per window K from `K_win_*`, comparing
+them at the sketch window x (the row whose `window_len_s` is x) and at the query
+lookback S (the row whose `window_len_s` is S, or `*_total` for the whole
+sample). `K_total` and `rows_total` are the same on every window length. For
+value rows it should use only rows whose `tail_class` is not `light`: a light tail decays at least exponentially, so its α is just the
 slope of whatever sliver of the tail the fit picked and does not describe a
 power-law regime.
 
@@ -132,8 +136,10 @@ power-law regime.
 | `kind` | `keys` (θ) or `values` (α) |
 | `weight` | `count` or `value` for key rows, empty for value rows |
 | `window_len_s` | window length the bounds were computed at (empty for BOOM) |
-| `K` | distinct keys with positive weight (BOOM: variates) |
-| `rows` | rows with non-null keys (values: finite values) |
+| `K_total` | distinct keys with positive weight over the whole sample (BOOM: variates) |
+| `rows_total` | rows with non-null keys over the whole sample (values: finite values) |
+| `K_win_min`, `K_win_median`, `K_win_max` | key rows: distinct keys per window at this `window_len_s` |
+| `rows_win_min`, `rows_win_median`, `rows_win_max` | rows per window at this `window_len_s` (value rows: positive values per window; empty for BOOM) |
 | `n_windows` | windows used for the bounds (BOOM: variate-chunk fits) |
 | `lower`, `mle`, `upper` | θ or α as defined above |
 | `top1_share`, `theta_ls` | key rows: share of the largest key, negated log-log least-squares slope |

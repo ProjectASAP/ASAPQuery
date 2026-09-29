@@ -197,7 +197,7 @@ class WindowBoundsTest(unittest.TestCase):
         self.assertAlmostEqual(row["lower"], 0.8, delta=ZIPF_TOLERANCE)
         self.assertAlmostEqual(row["upper"], 1.2, delta=ZIPF_TOLERANCE)
         self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
-        self.assertEqual(row["K"], ZIPF_K)
+        self.assertEqual(row["K_total"], ZIPF_K)
         self.assertEqual(row["window_len_s"], 60)
 
     def test_summarize_keys_window_lengths(self):
@@ -214,6 +214,32 @@ class WindowBoundsTest(unittest.TestCase):
         self.assertLess(coarse["upper"], fine["upper"])
         for row in (fine, coarse):
             self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
+
+    def test_per_window_stats(self):
+        # Finest windows 0..3 with 3, 1, 2, 2 keys; key "a" appears in all.
+        frame = pd.DataFrame(
+            {
+                fit_skew.WINDOW_COL: [0, 0, 0, 1, 2, 2, 3, 3],
+                "k": ["a", "b", "c", "a", "a", "b", "a", "d"],
+                fit_skew.COUNT_COL: [5, 1, 1, 7, 2, 2, 1, 9],
+            }
+        )
+        agg = fit_skew.merge_key_parts([frame], ["k"])
+        fine, coarse = fit_skew.summarize_keys(
+            "test", COUNT_QUERY, agg, [60, 120], 1, 2, None
+        )
+        self.assertEqual((fine["K_total"], fine["rows_total"]), (4, 28))
+        self.assertEqual(
+            (fine["K_win_min"], fine["K_win_median"], fine["K_win_max"]), (1, 2, 3)
+        )
+        self.assertEqual(
+            (fine["rows_win_min"], fine["rows_win_median"], fine["rows_win_max"]),
+            (4, 7, 10),
+        )
+        # Merged windows {0,1} and {2,3}: keys {a,b,c} and {a,b,d}, rows 14 and 14.
+        self.assertEqual((coarse["K_win_min"], coarse["K_win_max"]), (3, 3))
+        self.assertEqual((coarse["rows_win_min"], coarse["rows_win_max"]), (14, 14))
+        self.assertEqual(coarse["K_total"], fine["K_total"])
 
     def test_coarsen_values(self):
         windows = {0: np.array([1.0]), 1: np.array([2.0]), 2: np.array([3.0])}
@@ -234,6 +260,8 @@ class WindowBoundsTest(unittest.TestCase):
             rows = fit_skew.summarize_values("test", q, acc, [60, 240], pool, 1, None)
         self.assertEqual([r["window_len_s"] for r in rows], [60, 240])
         self.assertEqual([r["n_windows"] for r in rows], [4, 1])
+        self.assertEqual([r["rows_win_median"] for r in rows], [1000, 4000])
+        self.assertNotIn("K_win_median", rows[0])
         for row in rows:
             self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
 
