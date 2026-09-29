@@ -11,7 +11,9 @@ from typing import List, Optional, Dict
 from promql_utilities.query_results.classes import LatencyResultAcrossTime
 
 # TODO: make this more robust
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 import constants  # noqa: E402
 
 
@@ -128,7 +130,10 @@ def print_percentile_data(
 def main(args):
     experiment_dir = os.path.join(constants.LOCAL_EXPERIMENT_DIR, args.experiment_name)
 
-    from results_loader import load_latencies_only, get_server_name_for_mode
+    from post_experiment.lib.results_loader import (
+        load_latencies_only,
+        get_server_name_for_mode,
+    )
 
     if not args.exact_experiment_server_name:
         args.exact_experiment_server_name = get_server_name_for_mode(

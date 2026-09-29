@@ -31,13 +31,17 @@ from plotnine import (
 )
 
 # Add parent directories to path for imports
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 import constants  # noqa: E402
-from post_experiment.results_loader import (  # noqa: E402
+from post_experiment.lib.results_loader import (  # noqa: E402
     load_latencies_only,
     get_server_name_for_mode,
 )
-from post_experiment.compare_latencies import calculate_latency_stats  # noqa: E402
+from post_experiment.single_experiment.compare_latencies import (  # noqa: E402
+    calculate_latency_stats,
+)
 
 
 class DataExtractor:
@@ -147,8 +151,8 @@ class DataProcessor:
     def process_for_plotting(
         self,
         experiment_data: List[Dict[str, Any]],
-        individual_queries: bool = False,
-        show_benefit: bool = False,
+        individual_queries: bool,
+        show_benefit: bool,
     ) -> pd.DataFrame:
         """Process experiment data into format suitable for plotting."""
         plot_data = []

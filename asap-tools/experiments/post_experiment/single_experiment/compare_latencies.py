@@ -10,7 +10,9 @@ from typing import List, Optional, Dict, Any
 from promql_utilities.query_results.classes import LatencyResultAcrossTime
 
 # TODO: make this more robust
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+)
 import constants  # noqa: E402
 
 
@@ -156,7 +158,10 @@ def main(args):
     exact_results: Optional[Dict[int, LatencyResultAcrossTime]] = None
     estimate_results: Optional[Dict[int, LatencyResultAcrossTime]] = None
 
-    from results_loader import load_latencies_only, get_server_name_for_mode
+    from post_experiment.lib.results_loader import (
+        load_latencies_only,
+        get_server_name_for_mode,
+    )
     import logging
 
     # Suppress debug logging in machine-readable mode

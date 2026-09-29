@@ -12,4 +12,4 @@ EXP_NAME=$1
 EXP_MODE=$2
 PER_QUERY_FLAG=$3
 
-python3 $THIS_DIR/analyze_latencies.py --experiment_name $EXP_NAME --experiment_mode $EXP_MODE ${PER_QUERY_FLAG}
+python3 "$THIS_DIR"/analyze_latencies.py --experiment_name "$EXP_NAME" --experiment_mode "$EXP_MODE" ${PER_QUERY_FLAG:+"$PER_QUERY_FLAG"}
