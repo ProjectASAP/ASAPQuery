@@ -860,6 +860,65 @@ async fn e2e_quantile_over_time_uses_open_closed_evaluation_window() {
     assert_eq!(vector.values[0].value, 4.0);
 }
 
+/// Regression: grouped quantiles retain their grouping labels. The native DAG
+/// must not prepend the metric name; only PromQL topk has that output shape.
+#[tokio::test]
+async fn e2e_grouped_quantile_preserves_output_label_shape() {
+    let port = 19416u16;
+    let metric = "grouped_latency";
+    let query = "quantile by (job) (0.99, grouped_latency)";
+    let mut config = make_agg_config(
+        16,
+        metric,
+        AggregationType::DatasketchesKLL,
+        "",
+        1_000,
+        0,
+        vec!["job"],
+    );
+    config.parameters.insert("K".to_string(), json!(200_u64));
+    let samples = [("frontend", 100.0), ("backend", 200.0)]
+        .into_iter()
+        .flat_map(|(job, value)| {
+            [
+                make_timeseries(metric, vec![("job", job)], 1_500, value),
+                make_timeseries(metric, vec![("job", job)], 3_500, 0.0),
+            ]
+        })
+        .collect();
+    let (engine, query) = NativeDagScenario {
+        port,
+        metric,
+        query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["job".to_string()],
+        samples,
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: 1_000,
+    }
+    .build_engine()
+    .await;
+
+    let (output_labels, result) = engine
+        .try_handle_query_promql(query, 2.0)
+        .expect("grouped quantile should execute")
+        .expect("grouped quantile should match configured inference");
+    assert_eq!(output_labels.labels, vec!["job"]);
+    let QueryResult::Vector(vector) = result else {
+        panic!("expected instant vector result");
+    };
+    let mut returned_labels: Vec<_> = vector
+        .values
+        .into_iter()
+        .map(|element| element.labels.labels)
+        .collect();
+    returned_labels.sort();
+    assert_eq!(
+        returned_labels,
+        vec![vec!["backend".to_string()], vec!["frontend".to_string()]]
+    );
+}
+
 /// Sliding precomputes keep their existing exact-cover composition while
 /// samples on every slide boundary move to the pane ending at that boundary.
 /// The shared 6s boundary must be counted once, not once per stored window.

@@ -135,7 +135,9 @@ impl QueryPlan {
                 &mut nodes,
                 QueryPlanNode::Format {
                     input: root,
-                    include_metric_name: context.base.metadata.keep_metric_name,
+                    include_metric_name: context.base.metadata.statistic_to_compute
+                        == Statistic::Topk
+                        && context.base.metadata.keep_metric_name,
                     metric: context.base.metric.clone(),
                 },
             );
