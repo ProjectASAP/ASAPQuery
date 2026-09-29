@@ -150,6 +150,11 @@ def validate_window_lengths(lengths: Sequence[int], where: str) -> None:
 def validate_config(cfg: Dict[str, Any]) -> None:
     if "window_lengths_s" in cfg:
         validate_window_lengths(cfg["window_lengths_s"], cfg["dataset"])
+    for name, table in cfg["tables"].items():
+        if "window_lengths_s" in table:
+            validate_window_lengths(
+                table["window_lengths_s"], f"{cfg['dataset']}/{name}"
+            )
     for q in cfg["queries"]:
         where = f"{cfg['dataset']}/{q['id']}"
         table = cfg["tables"].get(q["table"])
@@ -303,14 +308,13 @@ def add_values(acc: Dict[str, Any], windows: np.ndarray, values: np.ndarray) -> 
 
 def aggregate_file(task: Tuple[Any, ...]) -> Dict[str, Any]:
     """Per-window key aggregates and positive values for one file."""
-    data_root, table, path, queries, window_len_s, max_time_secs, max_rows = task
+    data_root, table, path, queries, window_len_s, joins, max_rows = task
     time_col = table["time_column"]
     value_cols = {q["value"] for q in queries if q.get("value")}
     join_cols = [c for j in table.get("joins", []) for c in j["columns"]]
     needed = {time_col} | value_cols
     needed |= {c for q in queries for c in q["group_by"] if c not in join_cols}
     needed |= {c for j in table.get("joins", []) for c in j["keys"]}
-    joins = [(j, load_join(data_root, table, j)) for j in table.get("joins", [])]
 
     key_parts: Dict[Tuple[str, str], List[pd.DataFrame]] = {}
     values: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -330,8 +334,6 @@ def aggregate_file(task: Tuple[Any, ...]) -> Dict[str, Any]:
         rows_read += len(frame)
         secs = frame[time_col] * table["time_unit_secs"]
         keep = secs.notna()
-        if max_time_secs is not None:
-            keep &= secs < max_time_secs
         frame = frame[keep].copy()
         frame[WINDOW_COL] = np.floor(secs[keep] / window_len_s).astype(np.int64)
         for join, lookup in joins:
@@ -695,14 +697,17 @@ def analyze_table(
     args: argparse.Namespace,
     plot_dir: Optional[Path],
 ) -> List[Dict[str, Any]]:
+    window_lengths = table.get("window_lengths_s") or cfg["window_lengths_s"]
+    # Load each join once here rather than in every file task.
+    joins = [(j, load_join(data_root, table, j)) for j in table.get("joins", [])]
     tasks = [
         (
             data_root,
             table,
             path,
             queries,
-            cfg["window_lengths_s"][0],
-            cfg.get("max_time_secs"),
+            window_lengths[0],
+            joins,
             args.max_rows,
         )
         for path in expand_files(data_root, table["files"])
@@ -726,7 +731,7 @@ def analyze_table(
                     cfg["dataset"],
                     q,
                     agg,
-                    cfg["window_lengths_s"],
+                    window_lengths,
                     args.min_window_rows,
                     args.min_window_keys,
                     plot_dir,
@@ -743,7 +748,7 @@ def analyze_table(
                     cfg["dataset"],
                     q,
                     acc,
-                    cfg["window_lengths_s"],
+                    window_lengths,
                     pool,
                     args.min_window_rows,
                     plot_dir,

@@ -1,17 +1,18 @@
-# Google ClusterData 2011-2, shard 0 of task_usage joined with task attributes.
+# Google ClusterData 2011-2: task_usage parts 0-119 (about 7 days) joined with
+# task and job attributes.
 dataset: google_2011
 # Bounds are computed at each window length; the first is the finest.
-window_lengths_s: [300, 900, 3600]
+window_lengths_s: [300, 900, 3600, 21600, 86400, 604800]
 tables:
   task_usage:
     format: google_csv
     schema: google-2011/schema.csv
-    files: [google-2011/task_usage/part-00000-of-00500.csv.gz]
+    files: ["google-2011/task_usage/part-*-of-00500.csv.gz"]
     time_column: start_time
     time_unit_secs: 1.0e-6
     # Each join keeps the last event per key (sorted by sort_by) and left-joins it.
     joins:
-      - files: [google-2011/task_events/part-00000-of-00500.csv.gz]
+      - files: ["google-2011/task_events/part-*-of-00500.csv.gz"]
         keys: [job_id, task_index]
         sort_by: time
         columns: [user, priority, scheduling_class]

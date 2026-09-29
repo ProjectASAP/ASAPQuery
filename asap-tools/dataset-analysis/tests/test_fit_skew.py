@@ -380,6 +380,14 @@ class ValidateConfigTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     fit_skew.validate_window_lengths(lengths, "d")
 
+    def test_table_window_lengths(self):
+        cfg = copy.deepcopy(VALID_CONFIG)
+        cfg["tables"]["t"]["window_lengths_s"] = [60, 86400]
+        fit_skew.validate_config(cfg)
+        cfg["tables"]["t"]["window_lengths_s"] = [60, 90]
+        with self.assertRaises(ValueError):
+            fit_skew.validate_config(cfg)
+
     def test_value_weight_needs_value(self):
         cfg = copy.deepcopy(VALID_CONFIG)
         del cfg["queries"][0]["value"]

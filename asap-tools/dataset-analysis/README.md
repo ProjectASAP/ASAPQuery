@@ -20,7 +20,7 @@ Two tasks:
 
 ```bash
 pip install -r requirements.txt
-./fetch_data.sh /path/to/trace-data        # ~5 GB; re-run to resume
+./fetch_data.sh /path/to/trace-data        # ~63 GB; re-run to resume
 python fit_skew.py --data-root /path/to/trace-data
 ```
 
@@ -36,8 +36,8 @@ This writes `results/skew_summary.csv` (committed) and plots to `out/`
 - `--workers N`: process pool size (default: all cores). Files and fits run
   in parallel.
 
-A full run over the fetched data takes about 5 minutes with 48 workers on a
-56-core machine (peak RSS of the main process about 3.6 GB). Alibaba archives are streamed with `tarfile`, not extracted.
+A full run over the fetched data takes about 1.6 hours with 24 workers on a
+56-core machine (peak RSS of the main process about 49 GB). Alibaba archives are streamed with `tarfile`, not extracted.
 
 Tests: `python -m unittest discover -s tests -p 'test_*.py'`.
 
@@ -45,8 +45,9 @@ Tests: `python -m unittest discover -s tests -p 'test_*.py'`.
 
 | Dataset | Files | Tables | Window lengths |
 |---|---|---|---|
-| Google ClusterData 2011-2 | `task_usage` and `task_events` part 0 of 500, all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5, 15, 60 min |
-| Alibaba microservices v2022 | `NodeMetricsUpdate_0`, `MSMetricsUpdate_0`, `CallGraph_0..9`, `MCRRTUpdate_0..9` (first 30 minutes) | `MSRTMCR`, `CallGraph`, `MSMetrics`, `NodeMetrics` | 1, 5, 30 min |
+| Google ClusterData 2011-2 | `task_usage` and `task_events` parts 0..119 of 500 (about 7 days), all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5 min, 15 min, 1 h, 6 h, 1 day, 7 days |
+| Alibaba microservices v2022 | `CallGraph_0..119`, `MCRRTUpdate_0..119` (first 6 hours) | `CallGraph`, `MSRTMCR` | 1 min, 5 min, 30 min, 1 h, 6 h |
+| | `MSMetricsUpdate_0..47`, `NodeMetricsUpdate_0..1` (first day) | `MSMetrics`, `NodeMetrics` | 1 min, 5 min, 30 min, 1 h, 6 h, 1 day |
 | Datadog BOOM | `dataset_taxonomy.json` and 20 multivariate series | per-series `target` | 20 equal chunks per series |
 
 Citations:
@@ -170,15 +171,18 @@ rank-frequency with the lower/mle/upper θ lines, one per window length) and
   `p`, ...) are medians over the same variates; all are empty if every
   variate is light.
 - **Google join rule**: `task_usage` rows get `user`, `priority` and
-  `scheduling_class` from the last non-null `task_events` value for the same
-  `(job_id, task_index)`, and `logical_job_name` from the last non-null
+  `scheduling_class` from the last non-null value for the same
+  `(job_id, task_index)` over all 120 fetched `task_events` parts, and `logical_job_name` from the last non-null
   `job_events` value for the same `job_id` (both ordered by event time).
 - **Small counts bias θ upward**: θ is fitted to the *sorted observed*
   counts, so the long tail of keys seen once or twice is flatter than the
   true law and the order statistics exaggerate the head. Windows with few
   rows per key (short windows, high-cardinality keys) are most affected, which
   widens `upper`.
-- Alibaba tables are clipped to the first 30 minutes (`max_time_secs`), the
-  span of the 10 CallGraph / MCRRTUpdate shards. CallGraph has malformed rows
+- Each table covers its full downloaded span, so the longest window length
+  of a table is one window over the whole sample. A table's
+  `window_lengths_s` overrides the dataset's. MSMetrics and NodeMetrics
+  sample every 60 s, so a 1-minute window holds one sample per instance or
+  node. CallGraph has malformed rows
   (extra fields), which are skipped and counted in the log, and `rt` values
   of `None`, which are read as missing.

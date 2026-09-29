@@ -1,35 +1,36 @@
-# Alibaba cluster-trace-microservices-v2022, first 30 minutes.
+# Alibaba cluster-trace-microservices-v2022: first 6 hours of CallGraph and
+# MCRRTUpdate, first day of MSMetricsUpdate and NodeMetricsUpdate.
 dataset: alibaba_v2022
-# Bounds are computed at each window length; the first is the finest.
-window_lengths_s: [60, 300, 1800]
-# NodeMetricsUpdate_0 covers 12 hours; clip every table to the 30 minutes
-# covered by the CallGraph and MCRRTUpdate shards.
-max_time_secs: 1800
+# Bounds are computed at each window length; the first is the finest. Tables
+# without window_lengths_s use this one.
+window_lengths_s: [60, 300, 1800, 3600, 21600]
 tables:
   MSRTMCR:
     format: alibaba_tar
-    files: ["alibaba-v2022/MCRRTUpdate_[0-9].tar.gz"]
+    files: ["alibaba-v2022/MCRRTUpdate_*.tar.gz"]
     time_column: timestamp
     time_unit_secs: 1.0e-3
     label_columns: [msname, msinstanceid, nodeid]
     value_columns: [providerrpc_rt, providerrpc_mcr]
   CallGraph:
     format: alibaba_tar
-    files: ["alibaba-v2022/CallGraph_[0-9].tar.gz"]
+    files: ["alibaba-v2022/CallGraph_*.tar.gz"]
     time_column: timestamp
     time_unit_secs: 1.0e-3
     label_columns: [traceid, service, rpc_id, rpctype, um, uminstanceid, interface, dm, dminstanceid]
     value_columns: [rt]
   MSMetrics:
     format: alibaba_tar
-    files: [alibaba-v2022/MSMetricsUpdate_0.tar.gz]
+    files: ["alibaba-v2022/MSMetricsUpdate_*.tar.gz"]
+    window_lengths_s: [60, 300, 1800, 3600, 21600, 86400]
     time_column: timestamp
     time_unit_secs: 1.0e-3
     label_columns: [msname, msinstanceid, nodeid]
     value_columns: [cpu_utilization, memory_utilization]
   NodeMetrics:
     format: alibaba_tar
-    files: [alibaba-v2022/NodeMetricsUpdate_0.tar.gz]
+    files: ["alibaba-v2022/NodeMetricsUpdate_*.tar.gz"]
+    window_lengths_s: [60, 300, 1800, 3600, 21600, 86400]
     time_column: timestamp
     time_unit_secs: 1.0e-3
     label_columns: [nodeid]

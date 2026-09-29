@@ -13,9 +13,15 @@ GOOGLE_URL=https://storage.googleapis.com/clusterdata-2011-2
 ALIBABA_URL=https://aliopentrace.oss-cn-beijing.aliyuncs.com/v2022MicroservicesTraces
 BOOM_URL=https://huggingface.co/datasets/Datadog/BOOM/resolve/main
 
+# task_usage parts cover about 1.4 hours each; 120 parts = about 7 days.
+# task_events uses the same parts; job_events is read in full for job names.
+GOOGLE_TASK_PARTS=120
 GOOGLE_JOB_EVENT_PARTS=500
-# CallGraph and MCRRTUpdate shards each cover 3 minutes; 10 shards = 30 minutes.
-ALIBABA_RPC_SHARDS=10
+# CallGraph and MCRRTUpdate shards cover 3 minutes each: 120 shards = 6 hours.
+ALIBABA_RPC_SHARDS=120
+# MSMetricsUpdate shards cover 30 minutes, NodeMetricsUpdate 12 hours: 1 day.
+ALIBABA_MS_SHARDS=48
+ALIBABA_NODE_SHARDS=2
 
 BOOM_SERIES=(
     ds-2187-H ds-2394-D ds-1135-5T ds-1833-D ds-2806-D
@@ -43,15 +49,22 @@ google_part() {
 
 G=$DATA_ROOT/google-2011
 fetch "$GOOGLE_URL/schema.csv" "$G/schema.csv"
-fetch "$GOOGLE_URL/task_usage/$(google_part 0)" "$G/task_usage/$(google_part 0)"
-fetch "$GOOGLE_URL/task_events/$(google_part 0)" "$G/task_events/$(google_part 0)"
+for ((i = 0; i < GOOGLE_TASK_PARTS; i++)); do
+    for t in task_usage task_events; do
+        fetch "$GOOGLE_URL/$t/$(google_part "$i")" "$G/$t/$(google_part "$i")"
+    done
+done
 for ((i = 0; i < GOOGLE_JOB_EVENT_PARTS; i++)); do
     fetch "$GOOGLE_URL/job_events/$(google_part "$i")" "$G/job_events/$(google_part "$i")"
 done
 
 A=$DATA_ROOT/alibaba-v2022
-fetch "$ALIBABA_URL/NodeMetricsUpdate/NodeMetricsUpdate_0.tar.gz" "$A/NodeMetricsUpdate_0.tar.gz"
-fetch "$ALIBABA_URL/MSMetricsUpdate/MSMetricsUpdate_0.tar.gz" "$A/MSMetricsUpdate_0.tar.gz"
+for ((i = 0; i < ALIBABA_NODE_SHARDS; i++)); do
+    fetch "$ALIBABA_URL/NodeMetricsUpdate/NodeMetricsUpdate_$i.tar.gz" "$A/NodeMetricsUpdate_$i.tar.gz"
+done
+for ((i = 0; i < ALIBABA_MS_SHARDS; i++)); do
+    fetch "$ALIBABA_URL/MSMetricsUpdate/MSMetricsUpdate_$i.tar.gz" "$A/MSMetricsUpdate_$i.tar.gz"
+done
 for ((i = 0; i < ALIBABA_RPC_SHARDS; i++)); do
     fetch "$ALIBABA_URL/CallGraph/CallGraph_$i.tar.gz" "$A/CallGraph_$i.tar.gz"
     fetch "$ALIBABA_URL/MCRRTUpdate/MCRRTUpdate_$i.tar.gz" "$A/MCRRTUpdate_$i.tar.gz"
