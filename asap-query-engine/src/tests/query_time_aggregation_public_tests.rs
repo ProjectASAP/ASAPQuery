@@ -289,6 +289,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn query_time_topk_breaks_ties_by_full_label_set() {
+        let engine = create_engine_single_pop(
+            METRIC,
+            AggregationType::Sum,
+            vec!["instance", "job", "region"],
+            vec![
+                (
+                    Some(vec!["a".to_string(), "api".to_string(), "east".to_string()]),
+                    Box::new(SumAccumulator::with_sum(7.0)),
+                ),
+                (
+                    Some(vec!["b".to_string(), "api".to_string(), "east".to_string()]),
+                    Box::new(SumAccumulator::with_sum(7.0)),
+                ),
+            ],
+            ANCHOR,
+        );
+        let topk = stage(
+            QueryTimeAggregationOperator::Topk,
+            QueryTimeGroupingMode::All,
+            &[],
+            Some(QueryTimeAggregationParameter::Integer(1)),
+        );
+
+        assert_eq!(
+            execute(&engine, format!("topk(1, {ANCHOR})"), topk),
+            expected(vec![(vec!["a", "api", "east"], 7.0)])
+        );
+    }
+
     fn expected(values: Vec<(Vec<&str>, f64)>) -> Vec<(Vec<String>, f64)> {
         values
             .into_iter()
