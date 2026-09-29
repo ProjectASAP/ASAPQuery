@@ -1,6 +1,7 @@
 # Google ClusterData 2011-2, shard 0 of task_usage joined with task attributes.
 dataset: google_2011
-window_secs: 300
+# Bounds are computed at each window length; the first is the finest.
+window_lengths_s: [300, 900, 3600]
 tables:
   task_usage:
     format: google_csv

@@ -5,6 +5,7 @@ import io
 import tarfile
 import tempfile
 import unittest
+from multiprocessing.pool import ThreadPool
 from pathlib import Path
 
 import numpy as np
@@ -15,7 +16,7 @@ import fit_skew
 ZIPF_K = 1000
 ZIPF_SAMPLES = 2_000_000
 ZIPF_TOLERANCE = 0.05
-PARETO_SAMPLES = fit_skew.MAX_FIT_SAMPLES
+PARETO_SAMPLES = 20_000
 PARETO_REL_TOLERANCE = 0.05
 
 
@@ -65,13 +66,52 @@ class PowerLawFitTest(unittest.TestCase):
                     fit["alpha"], alpha, delta=PARETO_REL_TOLERANCE * alpha
                 )
                 self.assertTrue(fit["power_law_ok"])
+                self.assertEqual(fit["best_alt"], "")
                 tail = np.sum(x >= fit["xmin"])
                 self.assertGreaterEqual(tail, fit_skew.MIN_TAIL_SAMPLES)
 
-    def test_power_law_ok_rule(self):
-        self.assertTrue(fit_skew.power_law_ok([(1.0, 0.01), (-1.0, 0.5)]))
-        self.assertFalse(fit_skew.power_law_ok([(1.0, 0.01), (-1.0, 0.05)]))
-        self.assertTrue(fit_skew.power_law_ok([]))
+    def test_best_alternative(self):
+        best = fit_skew.best_alternative
+        # Not significant, or the power law wins: no better alternative.
+        self.assertEqual(
+            best({"lognormal": (-1.0, 0.5), "exponential": (3.0, 0.01)}), ""
+        )
+        self.assertEqual(best({}), "")
+        self.assertEqual(
+            best({"lognormal": (-1.0, 0.05), "exponential": (3.0, 0.01)}), "lognormal"
+        )
+        # Both significantly better: the most negative R wins.
+        self.assertEqual(
+            best({"lognormal": (-1.0, 0.01), "exponential": (-5.0, 0.01)}),
+            "exponential",
+        )
+
+    def test_losing_fit_still_reports_alpha(self):
+        # A pure lognormal loses to the lognormal alternative over the body.
+        x = np.random.default_rng(8).lognormal(0.0, 0.5, PARETO_SAMPLES)
+        fit = fit_skew.fit_power_law(x, compare=True)
+        self.assertTrue(np.isfinite(fit["alpha"]))
+        self.assertEqual(fit["power_law_ok"], fit["best_alt"] == "")
+
+    def test_xmin_grid(self):
+        x = np.sort(np.random.default_rng(9).pareto(1.5, PARETO_SAMPLES) + 1.0)
+        grid = fit_skew.xmin_candidates(x)
+        self.assertLessEqual(len(grid), fit_skew.XMIN_GRID_SIZE)
+        self.assertGreaterEqual(grid[0], np.quantile(x, 0.5))
+        self.assertGreaterEqual(np.sum(x >= grid[-1]), fit_skew.MIN_TAIL_SAMPLES)
+        fit = fit_skew.fit_power_law(x, compare=False)
+        self.assertIn(fit["xmin"], grid)
+
+    def test_xmin_grid_small_sample(self):
+        rng = np.random.default_rng(10)
+        # 300 values: p99.9 leaves one value, so the grid stops at 100 tail values.
+        x = np.sort(rng.pareto(1.5, 300) + 1.0)
+        grid = fit_skew.xmin_candidates(x)
+        self.assertGreaterEqual(np.sum(x >= grid[-1]), fit_skew.MIN_TAIL_SAMPLES)
+        # 150 values: 100 tail values would reach below the median, so no fit.
+        x = np.sort(rng.pareto(1.5, 150) + 1.0)
+        self.assertEqual(len(fit_skew.xmin_candidates(x)), 0)
+        self.assertTrue(np.isnan(fit_skew.fit_power_law(x, compare=True)["alpha"]))
 
     def test_too_few_samples_is_nan(self):
         fit = fit_skew.fit_power_law(
@@ -81,35 +121,54 @@ class PowerLawFitTest(unittest.TestCase):
         self.assertNotIn("power_law_ok", fit)
 
 
+def key_window_frames(thetas, rng):
+    """Finest-window key count frames, one Zipf window per theta."""
+    frames = [
+        pd.DataFrame(
+            {
+                fit_skew.WINDOW_COL: window,
+                "k": np.arange(ZIPF_K).astype(str).astype(object),
+                fit_skew.COUNT_COL: zipf_counts(theta, rng),
+            }
+        )
+        for window, theta in enumerate(thetas)
+    ]
+    return frames
+
+
+COUNT_QUERY = {
+    "id": "q",
+    "promql": "count by (k) (x)",
+    "group_by": ["k"],
+    "weights": ["count"],
+}
+
+
 class WindowBoundsTest(unittest.TestCase):
     def test_min_max_count(self):
-        self.assertEqual(fit_skew.window_bounds([1.1, 0.7, 1.4]), (0.7, 1.4, 3))
+        self.assertEqual(fit_skew.window_bounds([1.1, 0.7, 1.4], 1.0), (0.7, 1.4, 3))
+
+    def test_pooled_extends_bounds(self):
+        # The pooled fit need not lie between the window fits; it widens them.
+        self.assertEqual(fit_skew.window_bounds([1.1, 1.2], 1.5), (1.1, 1.5, 2))
+        self.assertEqual(fit_skew.window_bounds([1.1, 1.2], 0.9), (0.9, 1.2, 2))
 
     def test_nan_windows_skipped(self):
         self.assertEqual(
-            fit_skew.window_bounds([np.nan, 0.9, np.nan, 1.2]), (0.9, 1.2, 2)
+            fit_skew.window_bounds([np.nan, 0.9, np.nan, 1.2], 1.0), (0.9, 1.2, 2)
         )
 
-    def test_no_windows(self):
+    def test_no_windows_uses_pooled(self):
         for estimates in ([], [np.nan]):
-            lower, upper, n = fit_skew.window_bounds(estimates)
-            self.assertTrue(np.isnan(lower) and np.isnan(upper))
-            self.assertEqual(n, 0)
+            self.assertEqual(fit_skew.window_bounds(estimates, 1.3), (1.3, 1.3, 0))
+
+    def test_nothing_finite(self):
+        lower, upper, n = fit_skew.window_bounds([np.nan], np.nan)
+        self.assertTrue(np.isnan(lower) and np.isnan(upper))
+        self.assertEqual(n, 0)
 
     def test_summarize_keys_skips_small_windows(self):
-        rng = np.random.default_rng(5)
-        frames = []
-        for window, theta in ((0, 0.8), (1, 1.2)):
-            counts = zipf_counts(theta, rng)
-            frames.append(
-                pd.DataFrame(
-                    {
-                        fit_skew.WINDOW_COL: window,
-                        "k": np.arange(ZIPF_K).astype(str).astype(object),
-                        fit_skew.COUNT_COL: counts,
-                    }
-                )
-            )
+        frames = key_window_frames((0.8, 1.2), np.random.default_rng(5))
         # Window 2 has too few keys to be fitted.
         frames.append(
             pd.DataFrame(
@@ -117,14 +176,108 @@ class WindowBoundsTest(unittest.TestCase):
             )
         )
         agg = fit_skew.merge_key_parts(frames, ["k"])
-        q = {"id": "q", "promql": "count by (k) (x)", "group_by": ["k"]}
-        q["weights"] = ["count"]
-        (row,) = fit_skew.summarize_keys("test", q, agg, 1, 10, None)
+        (row,) = fit_skew.summarize_keys("test", COUNT_QUERY, agg, [60], 1, 10, None)
         self.assertEqual(row["n_windows"], 2)
         self.assertAlmostEqual(row["lower"], 0.8, delta=ZIPF_TOLERANCE)
         self.assertAlmostEqual(row["upper"], 1.2, delta=ZIPF_TOLERANCE)
         self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
         self.assertEqual(row["K"], ZIPF_K)
+        self.assertEqual(row["window_len_s"], 60)
+
+    def test_summarize_keys_window_lengths(self):
+        frames = key_window_frames((0.8, 1.2, 0.8, 1.2), np.random.default_rng(6))
+        agg = fit_skew.merge_key_parts(frames, ["k"])
+        fine, coarse = fit_skew.summarize_keys(
+            "test", COUNT_QUERY, agg, [60, 120], 1, 2, None
+        )
+        self.assertEqual((fine["window_len_s"], coarse["window_len_s"]), (60, 120))
+        self.assertEqual((fine["n_windows"], coarse["n_windows"]), (4, 2))
+        self.assertEqual(fine["mle"], coarse["mle"])
+        # Merging a 0.8 and a 1.2 window gives something in between.
+        self.assertGreater(coarse["lower"], fine["lower"])
+        self.assertLess(coarse["upper"], fine["upper"])
+        for row in (fine, coarse):
+            self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
+
+    def test_coarsen_values(self):
+        windows = {0: np.array([1.0]), 1: np.array([2.0]), 2: np.array([3.0])}
+        coarse = fit_skew.coarsen_values(windows, 2)
+        self.assertEqual(sorted(coarse), [0, 1])
+        np.testing.assert_array_equal(coarse[0], [1.0, 2.0])
+        np.testing.assert_array_equal(coarse[1], [3.0])
+
+    def test_summarize_values_window_lengths(self):
+        rng = np.random.default_rng(7)
+        acc = {
+            "n_finite": 4000,
+            "windows": {w: [rng.pareto(1.5, 1000) + 1.0] for w in range(4)},
+        }
+        q = {"id": "v", "promql": "quantile(0.99, x)", "value": "x"}
+        # One thread: redirect_stdout in fit_power_law is process-wide.
+        with ThreadPool(1) as pool:
+            rows = fit_skew.summarize_values("test", q, acc, [60, 240], pool, 1, None)
+        self.assertEqual([r["window_len_s"] for r in rows], [60, 240])
+        self.assertEqual([r["n_windows"] for r in rows], [4, 1])
+        for row in rows:
+            self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
+
+
+def boom_inputs(oks):
+    """Fake per-variate full fits (alpha = index + 2) with the given flags."""
+    shifted = np.ones((len(oks), 10))
+    jobs = [(np.ones(10), True) for _ in oks]
+    fits = [
+        {
+            "alpha": v + 2.0,
+            "xmin": 1.0,
+            "ks_d": 0.01,
+            "tail_frac": 0.1,
+            "R_lognormal": 1.0 if ok else -3.0,
+            "p_lognormal": 0.5 if ok else 0.01,
+            "R_exponential": 2.0,
+            "p_exponential": 0.01,
+            "best_alt": "" if ok else "lognormal",
+            "power_law_ok": ok,
+        }
+        for v, ok in enumerate(oks)
+    ]
+    return shifted, jobs, list(range(len(oks))), fits
+
+
+class BoomSummaryTest(unittest.TestCase):
+    def summarize(self, oks):
+        q = {"id": "t", "promql": "quantile(0.99, target)"}
+        return fit_skew.summarize_boom_series("boom", q, "s", *boom_inputs(oks), None)
+
+    def test_alpha_over_passing_variates(self):
+        row = self.summarize([True, False, True, True])
+        self.assertEqual(row["ok_frac"], 0.75)
+        self.assertTrue(row["power_law_ok"])
+        self.assertEqual(row["best_alt"], "")
+        # Passing variates 0, 2, 3 have alpha 2, 4, 5.
+        self.assertEqual(row["mle"], 4.0)
+        self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
+        self.assertEqual(row["R_lognormal"], 1.0)
+
+    def test_mostly_failing_series_has_no_alpha(self):
+        row = self.summarize([True, False, False, False])
+        self.assertEqual(row["ok_frac"], 0.25)
+        self.assertFalse(row["power_law_ok"])
+        self.assertEqual(row["best_alt"], "lognormal")
+        self.assertNotIn("mle", row)
+        self.assertNotIn("lower", row)
+        # Diagnostics come from the failing variates, consistent with the flag.
+        self.assertEqual(row["R_lognormal"], -3.0)
+
+    def test_no_compared_variates(self):
+        q = {"id": "t", "promql": "quantile(0.99, target)"}
+        shifted, jobs, owners, _ = boom_inputs([True])
+        fits = [{"alpha": np.nan, "xmin": np.nan, "ks_d": np.nan}]
+        row = fit_skew.summarize_boom_series(
+            "boom", q, "s", shifted, jobs, owners, fits, None
+        )
+        self.assertFalse(row["power_law_ok"])
+        self.assertTrue(np.isnan(row["ok_frac"]))
 
 
 VALID_CONFIG = {
@@ -166,6 +319,13 @@ class ValidateConfigTest(unittest.TestCase):
                 cfg["queries"][0][field] = value
                 with self.assertRaises(ValueError):
                     fit_skew.validate_config(cfg)
+
+    def test_window_lengths(self):
+        fit_skew.validate_window_lengths([60, 300, 1800], "d")
+        for lengths in ([], [300, 60], [60, 60], [60, 90]):
+            with self.subTest(lengths=lengths):
+                with self.assertRaises(ValueError):
+                    fit_skew.validate_window_lengths(lengths, "d")
 
     def test_value_weight_needs_value(self):
         cfg = copy.deepcopy(VALID_CONFIG)

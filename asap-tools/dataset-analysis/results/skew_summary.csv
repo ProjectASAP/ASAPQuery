@@ -1,60 +1,138 @@
-dataset,query_id,promql,kind,weight,K,rows,n_windows,lower,mle,upper,top1_share,theta_ls,dropped_frac,xmin,ks_d,tail_frac,R_lognormal,p_lognormal,R_exponential,p_exponential,power_law_ok
-alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,count,26077,90315535,30,1.34145,1.53568,1.90045,0.551844,1.35882,,,,,,,,,
-alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,value,17911,90315535,30,1.02886,1.11054,1.30697,0.18365,3.6235,,,,,,,,,
-alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,count,30776,90315535,30,1.06962,1.1256,1.22637,0.0299395,0.671771,,,,,,,,,
-alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,value,28319,90315535,30,0.629764,0.760365,0.985563,0.0103042,0.905303,,,,,,,,,
-alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,count,26077,90315535,30,1.34145,1.53568,1.90045,0.551844,1.35882,,,,,,,,,
-alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,value,17879,90315535,30,1.55788,2.06565,2.86274,0.883125,2.23262,,,,,,,,,
-alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",values,,,90315535,30,4.99239,8.88803,25.2897,,,0.0733479,102.743,0.0829702,0.3652,0.0583085,0.915929,336.406,0.00272157,True
-alibaba_v2022,calls_by_rpctype,count by (rpctype) (rt),keys,count,6,127635817,30,1.25893,1.3204,1.38466,0.426987,2.23811,,,,,,,,,
-alibaba_v2022,calls_by_service,count by (service) (rt),keys,count,399933,127635817,30,0.999766,1.0731,1.02082,0.0388438,1.59871,,,,,,,,,
-alibaba_v2022,calls_by_um,count by (um) (rt),keys,count,15063,127635817,30,1.11269,1.14611,1.13341,0.128004,2.68552,,,,,,,,,
-alibaba_v2022,calls_by_dm,count by (dm) (rt),keys,count,25155,127635817,30,1.09664,1.12579,1.11105,0.0709133,2.60259,,,,,,,,,
-alibaba_v2022,calls_by_interface,count by (interface) (rt),keys,count,1.19888e+06,127635817,30,0.989149,1.06008,1.00892,0.0259165,1.28963,,,,,,,,,
-alibaba_v2022,calls_by_um_dm,"count by (um, dm) (rt)",keys,count,99257,127635817,30,0.976609,1.02162,1.00079,0.0262826,2.34181,,,,,,,,,
-alibaba_v2022,calls_by_service_um_dm,"count by (service, um, dm) (rt)",keys,count,1.27135e+06,127635817,30,0.91038,0.981876,0.929804,0.010094,1.68258,,,,,,,,,
-alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,count,399933,127635817,30,0.999766,1.0731,1.02082,0.0388438,1.59871,,,,,,,,,
-alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,value,313796,127635817,30,1.12843,1.17197,1.18869,0.241919,2.3833,,,,,,,,,
-alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,,125647293,30,1.90633,2.4739,2.78544,,,0.386496,71,0.0377468,0.0356,-0.305327,0.153917,92.7487,0.00348067,True
-alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,count,28159,13987704,30,0.826067,0.826138,0.82617,0.0164781,1.26917,,,,,,,,,
-alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,value,28158,13987704,30,0.891051,0.893458,0.897012,0.0092067,1.6656,,,,,,,,,
-alibaba_v2022,ms_cpu_p99,"quantile(0.99, cpu_utilization)",values,,,13987704,30,3.02388,4.46166,6.93479,,,2.97404e-05,0.32589,0.0603559,0.0854,-13.7365,0.000639644,-14.3703,9.63628e-06,False
-alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,count,42554,1228782,29,3.68585e-06,0.00427455,3.69803e-06,2.36006e-05,0.00882373,,,,,,,,,
-alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,value,42552,1228782,29,0.316475,0.302619,0.32804,0.000107701,0.374094,,,,,,,,,
-alibaba_v2022,node_cpu_p99,"quantile(0.99, cpu_utilization)",values,,,1228782,29,4.69344,5.19128,6.59384,,,4.72012e-05,0.257581,0.0283684,0.2176,-3.97421,0.128424,7.36288,0.350139,True
-boom,target_tail[ds-2187-H],"quantile(0.99, target)",values,,100,523100,2000,1.72632,3.21772,5.37616,,,0.000191168,1.85333,0.0647201,0.0728,-2.07292,0.132572,8.52511,0.0461671,True
-boom,target_tail[ds-2394-D],"quantile(0.99, target)",values,,73,10001,0,,2.05901,,,,0.185881,0.4824,0.18029,0.779412,-14.299,0.000918518,-13.9953,0.000104956,False
-boom,target_tail[ds-1135-5T],"quantile(0.99, target)",values,,26,425984,243,2.12844,4.04798,6.31335,,,0.549368,3.02737,0.0743629,0.0542,-1.83713,0.128304,1.6523,0.0594927,True
-boom,target_tail[ds-1833-D],"quantile(0.99, target)",values,,17,3689,0,,1.72967,,,,0.239631,0.665448,0.594321,1,-283.626,8.1371e-12,-98.1767,0,False
-boom,target_tail[ds-2806-D],"quantile(0.99, target)",values,,100,13700,0,,1.85064,,,,0.700365,0.177947,0.18851,0.88806,-18.3939,0.000684349,-14.5781,0.0146828,False
-boom,target_tail[ds-2573-D],"quantile(0.99, target)",values,,45,9765,0,,4.28086,,,,0.00798771,1.94081,0.153677,0.625,-2.42592,0.133614,-1.4821,0.0125487,True
-boom,target_tail[ds-2222-30T],"quantile(0.99, target)",values,,100,1045600,678,1.47344,5.49131,19.7826,,,0.570518,1.16523,0.227535,0.74046,-4.35745,6.92289e-12,11.5169,1.24782e-14,False
-boom,target_tail[ds-1914-30T],"quantile(0.99, target)",values,,64,669504,0,,,,,,0.999177,,,,,,,,
-boom,target_tail[ds-2577-H],"quantile(0.99, target)",values,,11,57541,220,2.21739,4.0196,6.90404,,,0.000191168,2.73386,0.0396294,0.1084,-1.70375,0.197066,6.70502,0.0128851,True
-boom,target_tail[ds-2212-D],"quantile(0.99, target)",values,,42,9114,0,,1.13374,,,,0.205508,2.69982e-06,0.230087,1,-10.4749,0.0179962,366.112,1.47908e-08,False
-boom,target_tail[ds-2782-H],"quantile(0.99, target)",values,,20,16500,0,,,,,,0.992364,,,,,,,,
-boom,target_tail[ds-1400-10S],"quantile(0.99, target)",values,,75,1228800,1500,4.036,7.0724,9.03294,,,0.000139974,3.82339,0.039047,0.129,-1.27558,0.263896,2.47535,0.102376,True
-boom,target_tail[ds-2650-D],"quantile(0.99, target)",values,,56,12152,0,,2.64825,,,,0.00477288,0.723296,0.124754,0.490741,-5.05782,0.124238,-2.87425,0.0484973,True
-boom,target_tail[ds-1316-10S],"quantile(0.99, target)",values,,40,655360,800,1.34693,1.98494,3.77865,,,0.122093,0.10877,0.0391658,0.5031,-2.97671,0.0570022,1181.72,2.81468e-45,False
-boom,target_tail[ds-1558-5T],"quantile(0.99, target)",values,,97,1589248,1764,2.06103,3.87851,12.9998,,,0.197184,1.6553,0.124462,0.2916,-0.702945,0.150216,41.5952,3.53002e-05,True
-boom,target_tail[ds-1972-D],"quantile(0.99, target)",values,,39,5343,0,,2.28479,,,,0.0557739,0.376831,0.276055,0.806086,-36.3262,0.000493092,-4.89259,4.82754e-23,False
-boom,target_tail[ds-1840-D],"quantile(0.99, target)",values,,100,21700,0,,348.72,,,,0.00465438,8.33471,0.273522,0.689815,-34.8883,1.74754e-05,-1.04022,1.66232e-22,True
-boom,target_tail[ds-671-10S],"quantile(0.99, target)",values,,100,1638400,2000,79.9422,11259.5,12666.3,,,6.10352e-05,10.9861,0.144019,0.0386,-43.3943,1.49559e-10,-5.50753,1.98273e-38,True
-boom,target_tail[ds-1524-5T],"quantile(0.99, target)",values,,93,1267683,122,1.61633,3.93845,4.90315,,,0.944851,7.32407,0.294664,0.963303,-23.7515,0.000142278,-10.6513,6.75745e-26,False
-boom,target_tail[ds-899-T],"quantile(0.99, target)",values,,12,196608,144,2.35649,2.71558,3.5848,,,0.420344,0.373495,0.068062,0.6426,-0.547811,0.146172,1391.71,6.17661e-104,True
-google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,count,518,2520773,17,1.22012,1.23997,1.27526,0.157436,2.33409,,,,,,,,,
-google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,value,495,2520773,17,1.24604,1.30345,1.42414,0.1682,3.7868,,,,,,,,,
-google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,count,869,2520773,17,1.22497,1.24584,1.27931,0.151999,2.11869,,,,,,,,,
-google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,value,840,2520773,17,1.26988,1.32416,1.43661,0.168118,3.41093,,,,,,,,,
-google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,count,7,2520773,17,1.0334,1.10046,1.17431,0.32255,1.89497,,,,,,,,,
-google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,value,7,2520773,17,1.43865,1.60501,1.75174,0.536005,2.03241,,,,,,,,,
-google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,count,4852,2520773,17,1.11406,1.1028,1.1396,0.138099,1.68596,,,,,,,,,
-google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,value,4741,2520773,17,1.14258,1.14339,1.22505,0.0488375,2.91631,,,,,,,,,
-google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,count,4076,2520773,17,1.11531,1.10016,1.13977,0.138099,1.67481,,,,,,,,,
-google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,value,3994,2520773,17,1.13852,1.13736,1.22246,0.0488375,2.95553,,,,,,,,,
-google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,count,4,2520773,17,0.409689,0.582621,0.758605,0.381155,0.574297,,,,,,,,,
-google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,value,4,2520773,17,0.373199,0.429641,0.984739,0.306212,0.565076,,,,,,,,,
-google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,count,12478,2520773,17,0.22599,0.207643,0.246048,0.000191211,0.252654,,,,,,,,,
-google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,value,12477,2520773,17,0.310753,0.286387,0.354508,0.000345691,0.399985,,,,,,,,,
-google_2011,cpu_p99,"quantile(0.99, cpu_rate)",values,,,2520773,17,2.51611,2.78462,6.0283,,,0.095295,0.04016,0.0415811,0.1648,-3.3012,0.0492978,58.9964,1.35817e-07,False
-google_2011,memory_p99,"quantile(0.99, canonical_memory_usage)",values,,,2520773,17,1.83045,3.24354,4.59216,,,0.113868,0.04865,0.128324,0.1642,-4.71955,0.0171806,30.6367,0.00238745,False
+dataset,query_id,promql,kind,weight,window_len_s,K,rows,n_windows,lower,mle,upper,top1_share,theta_ls,dropped_frac,xmin,ks_d,tail_frac,R_lognormal,p_lognormal,R_exponential,p_exponential,power_law_ok,best_alt,ok_frac
+alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,count,60,26077,90315535,30,1.34145,1.53568,1.90045,0.551844,1.35882,,,,,,,,,,,
+alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,value,60,17911,90315535,30,1.02886,1.11054,1.30697,0.18365,3.6235,,,,,,,,,,,
+alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,count,300,26077,90315535,6,1.45905,1.53568,1.66474,0.551844,1.35882,,,,,,,,,,,
+alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,value,300,17911,90315535,6,1.07345,1.11054,1.18124,0.18365,3.6235,,,,,,,,,,,
+alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,count,1800,26077,90315535,1,1.53568,1.53568,1.53568,0.551844,1.35882,,,,,,,,,,,
+alibaba_v2022,mcr_by_msname,sum by (msname) (providerrpc_mcr),keys,value,1800,17911,90315535,1,1.11054,1.11054,1.11054,0.18365,3.6235,,,,,,,,,,,
+alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,count,60,30776,90315535,30,1.06962,1.1256,1.22637,0.0299395,0.671771,,,,,,,,,,,
+alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,value,60,28319,90315535,30,0.629764,0.760365,0.985563,0.0103042,0.905303,,,,,,,,,,,
+alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,count,300,30776,90315535,6,1.11474,1.1256,1.17579,0.0299395,0.671771,,,,,,,,,,,
+alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,value,300,28319,90315535,6,0.711785,0.760365,0.858603,0.0103042,0.905303,,,,,,,,,,,
+alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,count,1800,30776,90315535,1,1.1256,1.1256,1.1256,0.0299395,0.671771,,,,,,,,,,,
+alibaba_v2022,mcr_by_nodeid,sum by (nodeid) (providerrpc_mcr),keys,value,1800,28319,90315535,1,0.760365,0.760365,0.760365,0.0103042,0.905303,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,count,60,26077,90315535,30,1.34145,1.53568,1.90045,0.551844,1.35882,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,value,60,17879,90315535,30,1.55788,2.06565,2.86274,0.883125,2.23262,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,count,300,26077,90315535,6,1.45905,1.53568,1.66474,0.551844,1.35882,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,value,300,17879,90315535,6,1.91457,2.06565,2.26485,0.883125,2.23262,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,count,1800,26077,90315535,1,1.53568,1.53568,1.53568,0.551844,1.35882,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",keys,value,1800,17879,90315535,1,2.06565,2.06565,2.06565,0.883125,2.23262,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",values,,60,,90315535,30,2.26083,9.48921,19.3664,,,0.0733479,104.752,0.0722386,0.33763,20.9205,1.58403e-24,33305.7,0.0400746,True,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",values,,300,,90315535,6,2.69795,9.48921,9.48921,,,0.0733479,104.752,0.0722386,0.33763,20.9205,1.58403e-24,33305.7,0.0400746,True,,
+alibaba_v2022,rt_p99_by_msname,"quantile by (msname) (0.99, providerrpc_rt)",values,,1800,,90315535,1,9.48921,9.48921,9.48921,,,0.0733479,104.752,0.0722386,0.33763,20.9205,1.58403e-24,33305.7,0.0400746,True,,
+alibaba_v2022,calls_by_rpctype,count by (rpctype) (rt),keys,count,60,6,127635817,30,1.25893,1.3204,1.38466,0.426987,2.23811,,,,,,,,,,,
+alibaba_v2022,calls_by_rpctype,count by (rpctype) (rt),keys,count,300,6,127635817,6,1.29467,1.3204,1.33952,0.426987,2.23811,,,,,,,,,,,
+alibaba_v2022,calls_by_rpctype,count by (rpctype) (rt),keys,count,1800,6,127635817,1,1.3204,1.3204,1.3204,0.426987,2.23811,,,,,,,,,,,
+alibaba_v2022,calls_by_service,count by (service) (rt),keys,count,60,399933,127635817,30,0.999766,1.0731,1.0731,0.0388438,1.59871,,,,,,,,,,,
+alibaba_v2022,calls_by_service,count by (service) (rt),keys,count,300,399933,127635817,6,1.03815,1.0731,1.0731,0.0388438,1.59871,,,,,,,,,,,
+alibaba_v2022,calls_by_service,count by (service) (rt),keys,count,1800,399933,127635817,1,1.0731,1.0731,1.0731,0.0388438,1.59871,,,,,,,,,,,
+alibaba_v2022,calls_by_um,count by (um) (rt),keys,count,60,15063,127635817,30,1.11269,1.14611,1.14611,0.128004,2.68552,,,,,,,,,,,
+alibaba_v2022,calls_by_um,count by (um) (rt),keys,count,300,15063,127635817,6,1.13005,1.14611,1.14611,0.128004,2.68552,,,,,,,,,,,
+alibaba_v2022,calls_by_um,count by (um) (rt),keys,count,1800,15063,127635817,1,1.14611,1.14611,1.14611,0.128004,2.68552,,,,,,,,,,,
+alibaba_v2022,calls_by_dm,count by (dm) (rt),keys,count,60,25155,127635817,30,1.09664,1.12579,1.12579,0.0709133,2.60259,,,,,,,,,,,
+alibaba_v2022,calls_by_dm,count by (dm) (rt),keys,count,300,25155,127635817,6,1.11312,1.12579,1.12579,0.0709133,2.60259,,,,,,,,,,,
+alibaba_v2022,calls_by_dm,count by (dm) (rt),keys,count,1800,25155,127635817,1,1.12579,1.12579,1.12579,0.0709133,2.60259,,,,,,,,,,,
+alibaba_v2022,calls_by_interface,count by (interface) (rt),keys,count,60,1.19888e+06,127635817,30,0.989149,1.06008,1.06008,0.0259165,1.28963,,,,,,,,,,,
+alibaba_v2022,calls_by_interface,count by (interface) (rt),keys,count,300,1.19888e+06,127635817,6,1.02446,1.06008,1.06008,0.0259165,1.28963,,,,,,,,,,,
+alibaba_v2022,calls_by_interface,count by (interface) (rt),keys,count,1800,1.19888e+06,127635817,1,1.06008,1.06008,1.06008,0.0259165,1.28963,,,,,,,,,,,
+alibaba_v2022,calls_by_um_dm,"count by (um, dm) (rt)",keys,count,60,99257,127635817,30,0.976609,1.02162,1.02162,0.0262826,2.34181,,,,,,,,,,,
+alibaba_v2022,calls_by_um_dm,"count by (um, dm) (rt)",keys,count,300,99257,127635817,6,0.998943,1.02162,1.02162,0.0262826,2.34181,,,,,,,,,,,
+alibaba_v2022,calls_by_um_dm,"count by (um, dm) (rt)",keys,count,1800,99257,127635817,1,1.02162,1.02162,1.02162,0.0262826,2.34181,,,,,,,,,,,
+alibaba_v2022,calls_by_service_um_dm,"count by (service, um, dm) (rt)",keys,count,60,1.27135e+06,127635817,30,0.91038,0.981876,0.981876,0.010094,1.68258,,,,,,,,,,,
+alibaba_v2022,calls_by_service_um_dm,"count by (service, um, dm) (rt)",keys,count,300,1.27135e+06,127635817,6,0.945969,0.981876,0.981876,0.010094,1.68258,,,,,,,,,,,
+alibaba_v2022,calls_by_service_um_dm,"count by (service, um, dm) (rt)",keys,count,1800,1.27135e+06,127635817,1,0.981876,0.981876,0.981876,0.010094,1.68258,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,count,60,399933,127635817,30,0.999766,1.0731,1.0731,0.0388438,1.59871,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,value,60,313796,127635817,30,1.12843,1.17197,1.18869,0.241919,2.3833,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,count,300,399933,127635817,6,1.03815,1.0731,1.0731,0.0388438,1.59871,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,value,300,313796,127635817,6,1.149,1.17197,1.17378,0.241919,2.3833,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,count,1800,399933,127635817,1,1.0731,1.0731,1.0731,0.0388438,1.59871,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,value,1800,313796,127635817,1,1.17197,1.17197,1.17197,0.241919,2.3833,,,,,,,,,,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,60,,125647293,30,2.10507,2.22496,2.39368,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,True,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,300,,125647293,6,2.22251,2.22496,2.37091,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,True,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,1800,,125647293,1,2.22496,2.22496,2.22496,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,True,,
+alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,count,60,28159,13987704,30,0.826067,0.826138,0.82617,0.0164781,1.26917,,,,,,,,,,,
+alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,value,60,28158,13987704,30,0.891051,0.893458,0.897012,0.0092067,1.6656,,,,,,,,,,,
+alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,count,300,28159,13987704,6,0.8261,0.826138,0.826145,0.0164781,1.26917,,,,,,,,,,,
+alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,value,300,28158,13987704,6,0.891446,0.893458,0.895369,0.0092067,1.6656,,,,,,,,,,,
+alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,count,1800,28159,13987704,1,0.826138,0.826138,0.826138,0.0164781,1.26917,,,,,,,,,,,
+alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,value,1800,28158,13987704,1,0.893458,0.893458,0.893458,0.0092067,1.6656,,,,,,,,,,,
+alibaba_v2022,ms_cpu_p99,"quantile(0.99, cpu_utilization)",values,,60,,13987704,30,3.12623,5.54219,7.13806,,,2.97404e-05,0.462804,0.0489465,0.03156,-76.2721,2.03777e-16,-76.0488,9.72424e-30,False,lognormal,
+alibaba_v2022,ms_cpu_p99,"quantile(0.99, cpu_utilization)",values,,300,,13987704,6,5.24142,5.54219,6.13548,,,2.97404e-05,0.462804,0.0489465,0.03156,-76.2721,2.03777e-16,-76.0488,9.72424e-30,False,lognormal,
+alibaba_v2022,ms_cpu_p99,"quantile(0.99, cpu_utilization)",values,,1800,,13987704,1,5.54219,5.54219,5.54219,,,2.97404e-05,0.462804,0.0489465,0.03156,-76.2721,2.03777e-16,-76.0488,9.72424e-30,False,lognormal,
+alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,count,60,42554,1228782,29,3.68585e-06,0.00427455,0.00427455,2.36006e-05,0.00882373,,,,,,,,,,,
+alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,value,60,42552,1228782,29,0.302619,0.302619,0.32804,0.000107701,0.374094,,,,,,,,,,,
+alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,count,300,42554,1228782,6,0.00173761,0.00427455,0.00427455,2.36006e-05,0.00882373,,,,,,,,,,,
+alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,value,300,42552,1228782,6,0.302619,0.302619,0.311077,0.000107701,0.374094,,,,,,,,,,,
+alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,count,1800,42554,1228782,1,0.00427455,0.00427455,0.00427455,2.36006e-05,0.00882373,,,,,,,,,,,
+alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,value,1800,42552,1228782,1,0.302619,0.302619,0.302619,0.000107701,0.374094,,,,,,,,,,,
+alibaba_v2022,node_cpu_p99,"quantile(0.99, cpu_utilization)",values,,60,,1228782,29,5.55533,5.88868,6.15762,,,4.72012e-05,0.355012,0.0153465,0.06211,-3.90752,0.0576593,71.8823,3.08632e-08,False,lognormal,
+alibaba_v2022,node_cpu_p99,"quantile(0.99, cpu_utilization)",values,,300,,1228782,6,5.69748,5.88868,5.99247,,,4.72012e-05,0.355012,0.0153465,0.06211,-3.90752,0.0576593,71.8823,3.08632e-08,False,lognormal,
+alibaba_v2022,node_cpu_p99,"quantile(0.99, cpu_utilization)",values,,1800,,1228782,1,5.88868,5.88868,5.88868,,,4.72012e-05,0.355012,0.0153465,0.06211,-3.90752,0.0576593,71.8823,3.08632e-08,False,lognormal,
+boom,target_tail[ds-2187-H],"quantile(0.99, target)",values,,,100,523100,1000,1.83826,4.25548,6.2417,,,0.000191168,2.55269,0.0564534,0.0722753,-0.511853,0.405175,13.901,0.0635678,True,,0.5
+boom,target_tail[ds-2394-D],"quantile(0.99, target)",values,,,73,10001,0,,,,,,0.185881,,,,,,,,False,,
+boom,target_tail[ds-1135-5T],"quantile(0.99, target)",values,,,26,425984,0,,,,,,0.549368,3.26443,0.106705,0.0519633,-34.771,0.00522338,-6.81313,0.0425655,False,lognormal,0.428571
+boom,target_tail[ds-1833-D],"quantile(0.99, target)",values,,,17,3689,0,,,,,,0.239631,,,,,,,,False,,
+boom,target_tail[ds-2806-D],"quantile(0.99, target)",values,,,100,13700,0,,,,,,0.700365,,,,,,,,False,,
+boom,target_tail[ds-2573-D],"quantile(0.99, target)",values,,,45,9765,0,4.39465,4.39465,4.39465,,,0.00798771,1.87847,0.169387,0.481481,-0.555623,0.314343,2.08433,0.234396,True,,0.6
+boom,target_tail[ds-2222-30T],"quantile(0.99, target)",values,,,100,1045600,692,5.12284,27.8931,45.4353,,,0.570518,3.90947,0.136929,0.0349965,-0.172378,0.350612,16.7272,1.14374e-14,True,,0.81
+boom,target_tail[ds-1914-30T],"quantile(0.99, target)",values,,,64,669504,0,,,,,,0.999177,,,,,,,,False,,
+boom,target_tail[ds-2577-H],"quantile(0.99, target)",values,,,11,57541,0,,,,,,0.000191168,2.49525,0.0506031,0.270937,-8.53816,0.00348972,3.98324,0.365683,False,lognormal,0.454545
+boom,target_tail[ds-2212-D],"quantile(0.99, target)",values,,,42,9114,0,,,,,,0.205508,0.0171532,0.268598,0.5,-21.0003,0.000620382,-13.2558,0.000145154,False,lognormal,0.363636
+boom,target_tail[ds-2782-H],"quantile(0.99, target)",values,,,20,16500,0,,,,,,0.992364,,,,,,,,False,,
+boom,target_tail[ds-1400-10S],"quantile(0.99, target)",values,,,75,1228800,0,,,,,,0.000139974,3.58167,0.0401948,0.113044,-11.3256,0.00374703,-3.37719,7.22762e-05,False,lognormal,0.4
+boom,target_tail[ds-2650-D],"quantile(0.99, target)",values,,,56,12152,0,2.52362,2.52362,2.52362,,,0.00477288,0.4255,0.0813898,0.481481,-1.1773,0.365167,11.8682,0.103707,True,,0.5
+boom,target_tail[ds-1316-10S],"quantile(0.99, target)",values,,,40,655360,420,1.34981,2.94518,2.9669,,,0.122093,2.43799,0.0396472,0.021441,-0.127417,0.605348,39.883,0.000108837,True,,0.525
+boom,target_tail[ds-1558-5T],"quantile(0.99, target)",values,,,97,1589248,1185,2.98708,5.76602,24.7461,,,0.197184,2.2767,0.0870426,0.220245,0.0176096,0.27179,130.926,3.24486e-07,True,,0.659794
+boom,target_tail[ds-1972-D],"quantile(0.99, target)",values,,,39,5343,0,,,,,,0.0557739,,,,,,,,False,,
+boom,target_tail[ds-1840-D],"quantile(0.99, target)",values,,,100,21700,0,779.957,779.957,779.957,,,0.00465438,8.61433,0.355908,0.587963,-0.435604,0.505999,4.25879,0.00299889,True,,0.71
+boom,target_tail[ds-671-10S],"quantile(0.99, target)",values,,,100,1638400,1900,127.269,10151.9,28143.7,,,6.10352e-05,11.085,0.160838,0.0315571,,,,,True,,1
+boom,target_tail[ds-1524-5T],"quantile(0.99, target)",values,,,93,1267683,0,,,,,,0.944851,2.77447,0.137907,0.0781713,-10.2982,0.00465206,-8.15093,7.45138e-08,False,lognormal,0.470588
+boom,target_tail[ds-899-T],"quantile(0.99, target)",values,,,12,196608,96,2.36862,4.77602,4.77602,,,0.420344,3.31643,0.0820839,0.0530058,-0.412674,0.218355,64.5435,4.61242e-07,True,,0.666667
+google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,count,300,518,2520773,17,1.22012,1.23997,1.27526,0.157436,2.33409,,,,,,,,,,,
+google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,value,300,495,2520773,17,1.24604,1.30345,1.42414,0.1682,3.7868,,,,,,,,,,,
+google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,count,900,518,2520773,7,1.22012,1.23997,1.25824,0.157436,2.33409,,,,,,,,,,,
+google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,value,900,495,2520773,7,1.24604,1.30345,1.36946,0.1682,3.7868,,,,,,,,,,,
+google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,count,3600,518,2520773,2,1.2314,1.23997,1.24591,0.157436,2.33409,,,,,,,,,,,
+google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,value,3600,495,2520773,2,1.299,1.30345,1.30858,0.1682,3.7868,,,,,,,,,,,
+google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,count,300,869,2520773,17,1.22497,1.24584,1.27931,0.151999,2.11869,,,,,,,,,,,
+google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,value,300,840,2520773,17,1.26988,1.32416,1.43661,0.168118,3.41093,,,,,,,,,,,
+google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,count,900,869,2520773,7,1.22497,1.24584,1.26245,0.151999,2.11869,,,,,,,,,,,
+google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,value,900,840,2520773,7,1.26988,1.32416,1.38497,0.168118,3.41093,,,,,,,,,,,
+google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,count,3600,869,2520773,2,1.23706,1.24584,1.25092,0.151999,2.11869,,,,,,,,,,,
+google_2011,cpu_by_user_priority,"sum by (user, priority) (cpu_rate)",keys,value,3600,840,2520773,2,1.31927,1.32416,1.32812,0.168118,3.41093,,,,,,,,,,,
+google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,count,300,7,2520773,17,1.0334,1.10046,1.17431,0.32255,1.89497,,,,,,,,,,,
+google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,value,300,7,2520773,17,1.43865,1.60501,1.75174,0.536005,2.03241,,,,,,,,,,,
+google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,count,900,7,2520773,7,1.06809,1.10046,1.17431,0.32255,1.89497,,,,,,,,,,,
+google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,value,900,7,2520773,7,1.49898,1.60501,1.7108,0.536005,2.03241,,,,,,,,,,,
+google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,count,3600,7,2520773,2,1.08297,1.10046,1.1272,0.32255,1.89497,,,,,,,,,,,
+google_2011,cpu_by_priority,sum by (priority) (cpu_rate),keys,value,3600,7,2520773,2,1.59355,1.60501,1.64514,0.536005,2.03241,,,,,,,,,,,
+google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,count,300,4852,2520773,17,1.1028,1.1028,1.1396,0.138099,1.68596,,,,,,,,,,,
+google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,value,300,4741,2520773,17,1.14258,1.14339,1.22505,0.0488375,2.91631,,,,,,,,,,,
+google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,count,900,4852,2520773,7,1.1028,1.1028,1.11909,0.138099,1.68596,,,,,,,,,,,
+google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,value,900,4741,2520773,7,1.14339,1.14339,1.2012,0.0488375,2.91631,,,,,,,,,,,
+google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,count,3600,4852,2520773,2,1.1028,1.1028,1.11042,0.138099,1.68596,,,,,,,,,,,
+google_2011,cpu_by_job_id,sum by (job_id) (cpu_rate),keys,value,3600,4741,2520773,2,1.14299,1.14339,1.17023,0.0488375,2.91631,,,,,,,,,,,
+google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,count,300,4076,2520773,17,1.10016,1.10016,1.13977,0.138099,1.67481,,,,,,,,,,,
+google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,value,300,3994,2520773,17,1.13736,1.13736,1.22246,0.0488375,2.95553,,,,,,,,,,,
+google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,count,900,4076,2520773,7,1.10016,1.10016,1.11896,0.138099,1.67481,,,,,,,,,,,
+google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,value,900,3994,2520773,7,1.13736,1.13736,1.19819,0.0488375,2.95553,,,,,,,,,,,
+google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,count,3600,4076,2520773,2,1.10016,1.10016,1.11033,0.138099,1.67481,,,,,,,,,,,
+google_2011,cpu_by_logical_job_name,sum by (logical_job_name) (cpu_rate),keys,value,3600,3994,2520773,2,1.13736,1.13736,1.16633,0.0488375,2.95553,,,,,,,,,,,
+google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,count,300,4,2520773,17,0.409689,0.582621,0.758605,0.381155,0.574297,,,,,,,,,,,
+google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,value,300,4,2520773,17,0.373199,0.429641,0.984739,0.306212,0.565076,,,,,,,,,,,
+google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,count,900,4,2520773,7,0.409689,0.582621,0.688766,0.381155,0.574297,,,,,,,,,,,
+google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,value,900,4,2520773,7,0.385382,0.429641,0.750656,0.306212,0.565076,,,,,,,,,,,
+google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,count,3600,4,2520773,2,0.509008,0.582621,0.632622,0.381155,0.574297,,,,,,,,,,,
+google_2011,cpu_by_scheduling_class,sum by (scheduling_class) (cpu_rate),keys,value,3600,4,2520773,2,0.429641,0.429641,0.515166,0.306212,0.565076,,,,,,,,,,,
+google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,count,300,12478,2520773,17,0.207643,0.207643,0.246048,0.000191211,0.252654,,,,,,,,,,,
+google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,value,300,12477,2520773,17,0.286387,0.286387,0.354508,0.000345691,0.399985,,,,,,,,,,,
+google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,count,900,12478,2520773,7,0.207643,0.207643,0.238947,0.000191211,0.252654,,,,,,,,,,,
+google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,value,900,12477,2520773,7,0.286387,0.286387,0.352387,0.000345691,0.399985,,,,,,,,,,,
+google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,count,3600,12478,2520773,2,0.207112,0.207643,0.215858,0.000191211,0.252654,,,,,,,,,,,
+google_2011,cpu_by_machine_id,sum by (machine_id) (cpu_rate),keys,value,3600,12477,2520773,2,0.284414,0.286387,0.31254,0.000345691,0.399985,,,,,,,,,,,
+google_2011,cpu_p99,"quantile(0.99, cpu_rate)",values,,300,,2520773,17,2.60391,2.9174,14.4531,,,0.095295,0.04578,0.0423316,0.14383,-46.9071,3.19362e-13,851.96,6.06387e-88,False,lognormal,
+google_2011,cpu_p99,"quantile(0.99, cpu_rate)",values,,900,,2520773,7,2.67306,2.9174,3.34021,,,0.095295,0.04578,0.0423316,0.14383,-46.9071,3.19362e-13,851.96,6.06387e-88,False,lognormal,
+google_2011,cpu_p99,"quantile(0.99, cpu_rate)",values,,3600,,2520773,2,2.84976,2.9174,2.9174,,,0.095295,0.04578,0.0423316,0.14383,-46.9071,3.19362e-13,851.96,6.06387e-88,False,lognormal,
+google_2011,memory_p99,"quantile(0.99, canonical_memory_usage)",values,,300,,2520773,17,1.77476,3.29427,4.33728,,,0.113868,0.05066,0.14122,0.15382,-34.9439,7.23912e-13,747.907,2.31647e-98,False,lognormal,
+google_2011,memory_p99,"quantile(0.99, canonical_memory_usage)",values,,900,,2520773,7,1.80739,3.29427,3.29427,,,0.113868,0.05066,0.14122,0.15382,-34.9439,7.23912e-13,747.907,2.31647e-98,False,lognormal,
+google_2011,memory_p99,"quantile(0.99, canonical_memory_usage)",values,,3600,,2520773,2,1.79867,3.29427,3.29427,,,0.113868,0.05066,0.14122,0.15382,-34.9439,7.23912e-13,747.907,2.31647e-98,False,lognormal,

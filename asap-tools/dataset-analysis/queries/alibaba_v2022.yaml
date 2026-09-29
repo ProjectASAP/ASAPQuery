@@ -1,6 +1,7 @@
 # Alibaba cluster-trace-microservices-v2022, first 30 minutes.
 dataset: alibaba_v2022
-window_secs: 60
+# Bounds are computed at each window length; the first is the finest.
+window_lengths_s: [60, 300, 1800]
 # NodeMetricsUpdate_0 covers 12 hours; clip every table to the 30 minutes
 # covered by the CallGraph and MCRRTUpdate shards.
 max_time_secs: 1800

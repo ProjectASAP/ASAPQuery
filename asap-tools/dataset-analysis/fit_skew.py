@@ -27,6 +27,7 @@ import pyarrow as pa
 import pyarrow.csv as pacsv
 import yaml
 from matplotlib.figure import Figure
+from numpy.typing import ArrayLike
 from scipy.optimize import minimize_scalar
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -35,11 +36,15 @@ DEFAULT_SUMMARY = SCRIPT_DIR / "results" / "skew_summary.csv"
 DEFAULT_OUT = SCRIPT_DIR / "out"
 
 ZIPF_THETA_BOUNDS = (0.0, 5.0)
-# powerlaw's xmin search is quadratic in sample size, so fits use a uniform subsample.
-MAX_FIT_SAMPLES = 5000
-# xmin is searched only where at least this many values remain in the tail;
-# tinier tails give meaningless alphas.
+# Each power-law fit uses a uniform subsample of at most this many values.
+MAX_FIT_SAMPLES = 100_000
+# xmin is chosen by KS distance over this many quantiles of the sample, and only
+# where at least MIN_TAIL_SAMPLES values remain in the tail.
+XMIN_GRID_SIZE = 50
+XMIN_GRID_QUANTILES = (0.5, 0.999)
 MIN_TAIL_SAMPLES = 100
+# BOOM series report alpha only if at least this share of variates pass.
+BOOM_MIN_OK_FRAC = 0.5
 SAMPLE_SEED = 0
 DEFAULT_MIN_WINDOW_ROWS = 200
 DEFAULT_MIN_WINDOW_KEYS = 2
@@ -63,6 +68,7 @@ SUMMARY_COLUMNS = [
     "promql",
     "kind",
     "weight",
+    "window_len_s",
     "K",
     "rows",
     "n_windows",
@@ -80,6 +86,8 @@ SUMMARY_COLUMNS = [
     "R_exponential",
     "p_exponential",
     "power_law_ok",
+    "best_alt",
+    "ok_frac",
 ]
 
 # Plot colors: observed data in neutral ink, the three estimates as one blue ramp.
@@ -121,7 +129,18 @@ def validate_query(q: Dict[str, Any], table: Dict[str, Any], where: str) -> None
         raise ValueError(f"{where}: weight 'value' needs a value column")
 
 
+def validate_window_lengths(lengths: Sequence[int], where: str) -> None:
+    """Coarser windows are built by merging finest windows, so every length
+    must be a multiple of the first (finest) one."""
+    if not lengths or list(lengths) != sorted(set(lengths)):
+        raise ValueError(f"{where}: window_lengths_s must be ascending and unique")
+    if any(length % lengths[0] for length in lengths):
+        raise ValueError(f"{where}: window_lengths_s must be multiples of the first")
+
+
 def validate_config(cfg: Dict[str, Any]) -> None:
+    if "window_lengths_s" in cfg:
+        validate_window_lengths(cfg["window_lengths_s"], cfg["dataset"])
     for q in cfg["queries"]:
         where = f"{cfg['dataset']}/{q['id']}"
         table = cfg["tables"].get(q["table"])
@@ -275,7 +294,7 @@ def add_values(acc: Dict[str, Any], windows: np.ndarray, values: np.ndarray) -> 
 
 def aggregate_file(task: Tuple[Any, ...]) -> Dict[str, Any]:
     """Per-window key aggregates and positive values for one file."""
-    data_root, table, path, queries, window_secs, max_time_secs, max_rows = task
+    data_root, table, path, queries, window_len_s, max_time_secs, max_rows = task
     time_col = table["time_column"]
     value_cols = {q["value"] for q in queries if q.get("value")}
     join_cols = [c for j in table.get("joins", []) for c in j["columns"]]
@@ -305,7 +324,7 @@ def aggregate_file(task: Tuple[Any, ...]) -> Dict[str, Any]:
         if max_time_secs is not None:
             keep &= secs < max_time_secs
         frame = frame[keep].copy()
-        frame[WINDOW_COL] = np.floor(secs[keep] / window_secs).astype(np.int64)
+        frame[WINDOW_COL] = np.floor(secs[keep] / window_len_s).astype(np.int64)
         for join, lookup in joins:
             frame = frame.astype({c: object for c in join["keys"]})
             frame = frame.join(lookup, on=join["keys"])
@@ -336,7 +355,7 @@ def aggregate_file(task: Tuple[Any, ...]) -> Dict[str, Any]:
 # ---------------------------------------------------------------- fitting
 
 
-def zipf_mle(weights: Sequence[float]) -> float:
+def zipf_mle(weights: ArrayLike) -> float:
     """Discrete Zipf exponent over ranks 1..K maximizing the likelihood of the
     sorted weights (counts, or value sums used as fractional counts)."""
     w = np.sort(np.asarray(weights, dtype=float))[::-1]
@@ -355,7 +374,7 @@ def zipf_mle(weights: Sequence[float]) -> float:
     return float(res.x)
 
 
-def loglog_slope(weights: Sequence[float]) -> float:
+def loglog_slope(weights: ArrayLike) -> float:
     """Negated least-squares slope of log(weight) vs log(rank)."""
     w = np.sort(np.asarray(weights, dtype=float))[::-1]
     w = w[w > 0]
@@ -364,12 +383,33 @@ def loglog_slope(weights: Sequence[float]) -> float:
     return float(-np.polyfit(np.log(np.arange(1, len(w) + 1)), np.log(w), 1)[0])
 
 
-def window_bounds(estimates: Sequence[float]) -> Tuple[float, float, int]:
-    """(min, max, count) over the finite per-window estimates."""
-    finite = [e for e in estimates if np.isfinite(e)]
-    if not finite:
+def window_bounds(
+    window_estimates: Sequence[float], pooled: float
+) -> Tuple[float, float, int]:
+    """(lower, upper, n_windows): min and max over the finite per-window
+    estimates together with the pooled estimate, so lower <= pooled <= upper."""
+    windows = [e for e in window_estimates if np.isfinite(e)]
+    candidates = windows + ([pooled] if np.isfinite(pooled) else [])
+    if not candidates:
         return float("nan"), float("nan"), 0
-    return min(finite), max(finite), len(finite)
+    return min(candidates), max(candidates), len(windows)
+
+
+def coarsen_keys(agg: pd.DataFrame, factor: int, group_by: List[str]) -> pd.DataFrame:
+    """Merge every `factor` consecutive finest windows of a key aggregate."""
+    frame = agg.reset_index()
+    frame[WINDOW_COL] //= factor
+    return merge_key_parts([frame], group_by)
+
+
+def coarsen_values(
+    windows: Dict[int, np.ndarray], factor: int
+) -> Dict[int, np.ndarray]:
+    """Concatenate the values of every `factor` consecutive finest windows."""
+    parts: Dict[int, List[np.ndarray]] = {}
+    for w, x in windows.items():
+        parts.setdefault(w // factor, []).append(x)
+    return {w: np.concatenate(xs) for w, xs in parts.items()}
 
 
 def subsample(x: np.ndarray) -> np.ndarray:
@@ -379,24 +419,45 @@ def subsample(x: np.ndarray) -> np.ndarray:
     return x[rng.choice(len(x), MAX_FIT_SAMPLES, replace=False)]
 
 
-def power_law_ok(comparisons: Sequence[Tuple[float, float]]) -> bool:
-    """False if any (R, p) comparison says the power law is significantly worse."""
-    return not any(r < 0 and p < COMPARE_P_THRESHOLD for r, p in comparisons)
+def best_alternative(comparisons: Dict[str, Tuple[float, float]]) -> str:
+    """The alternative that fits significantly better than the power law
+    (R < 0 with small p), preferring the most negative R; '' if none."""
+    losing = {
+        alt: r
+        for alt, (r, p) in comparisons.items()
+        if r < 0 and p < COMPARE_P_THRESHOLD
+    }
+    return min(losing, key=lambda alt: losing[alt]) if losing else ""
+
+
+def xmin_candidates(x_sorted: np.ndarray) -> np.ndarray:
+    """Quantile grid of xmin values that leave at least MIN_TAIL_SAMPLES in the tail."""
+    levels = np.linspace(*XMIN_GRID_QUANTILES, XMIN_GRID_SIZE)
+    grid = np.unique(np.quantile(x_sorted, levels))
+    return grid[grid <= x_sorted[-MIN_TAIL_SAMPLES]]
 
 
 def fit_power_law(x: np.ndarray, compare: bool) -> Dict[str, Any]:
-    """Continuous power-law fit (xmin by KS) of positive values; with compare,
-    also the likelihood ratio against each alternative distribution."""
+    """Continuous power-law fit of positive values with xmin minimizing the KS
+    distance over a quantile grid; with compare, also the likelihood ratio
+    against each alternative distribution."""
     result: Dict[str, Any] = {"alpha": np.nan, "xmin": np.nan, "ks_d": np.nan}
     if len(x) < MIN_TAIL_SAMPLES:
         return result
-    xmin_range = (float(np.min(x)), float(np.sort(x)[-MIN_TAIL_SAMPLES]))
+    x = np.sort(x)
+    candidates = xmin_candidates(x)
+    if not len(candidates):
+        return result
     # powerlaw prints xmin search progress unconditionally.
     with warnings.catch_warnings(), np.errstate(all="ignore"), redirect_stdout(
         io.StringIO()
     ):
         warnings.simplefilter("ignore")
-        fit = powerlaw.Fit(x, xmin=xmin_range, verbose=False)
+        fits = [powerlaw.Fit(x, xmin=xmin, verbose=False) for xmin in candidates]
+        distances = np.array([f.power_law.D for f in fits], dtype=float)
+        if np.all(np.isnan(distances)):
+            return result
+        fit = fits[int(np.nanargmin(distances))]
         result.update(
             alpha=fit.power_law.alpha,
             xmin=fit.xmin,
@@ -405,12 +466,13 @@ def fit_power_law(x: np.ndarray, compare: bool) -> Dict[str, Any]:
         )
         if not compare or not np.isfinite(result["alpha"]):
             return result
-        comparisons = []
+        comparisons = {}
         for alt in POWER_LAW_ALTERNATIVES:
             ratio, p = fit.distribution_compare("power_law", alt)
             result[f"R_{alt}"], result[f"p_{alt}"] = ratio, p
-            comparisons.append((ratio, p))
-    result["power_law_ok"] = power_law_ok(comparisons)
+            comparisons[alt] = (ratio, p)
+    result["best_alt"] = best_alternative(comparisons)
+    result["power_law_ok"] = not result["best_alt"]
     return result
 
 
@@ -474,49 +536,59 @@ def summarize_keys(
     dataset: str,
     q: Dict[str, Any],
     agg: pd.DataFrame,
+    window_lengths: Sequence[int],
     min_rows: int,
     min_keys: int,
     plot_dir: Optional[Path],
 ) -> List[Dict[str, Any]]:
+    """One row per weight and window length; agg holds finest-window counts."""
     rows = int(agg[COUNT_COL].sum())
     if rows == 0:
         raise ValueError(f"{dataset}/{q['id']}: no rows with non-null group keys")
+    columns = {w: COUNT_COL if w == "count" else VALUE_SUM_COL for w in q["weights"]}
+    per_key = {}
+    for weight, col in columns.items():
+        totals = agg.groupby(level=q["group_by"])[col].sum().to_numpy()
+        per_key[weight] = np.sort(totals[totals > 0])[::-1]
+    pooled = {weight: zipf_mle(w) for weight, w in per_key.items()}
     out = []
-    for weight in q["weights"]:
-        col = COUNT_COL if weight == "count" else VALUE_SUM_COL
-        per_key = agg.groupby(level=q["group_by"])[col].sum().to_numpy()
-        per_key = np.sort(per_key[per_key > 0])[::-1]
-        estimates = []
-        for _, window in agg.groupby(level=WINDOW_COL):
-            w = window[col].to_numpy()
-            if window[COUNT_COL].sum() >= min_rows and np.sum(w > 0) >= min_keys:
-                estimates.append(zipf_mle(w))
-        lower, upper, n_windows = window_bounds(estimates)
-        mle = zipf_mle(per_key)
-        out.append(
-            {
-                "dataset": dataset,
-                "query_id": q["id"],
-                "promql": q["promql"],
-                "kind": "keys",
-                "weight": weight,
-                "K": len(per_key),
-                "rows": rows,
-                "n_windows": n_windows,
-                "lower": lower,
-                "mle": mle,
-                "upper": upper,
-                "top1_share": per_key[0] / per_key.sum() if len(per_key) else np.nan,
-                "theta_ls": loglog_slope(per_key),
-            }
-        )
-        if plot_dir is not None and len(per_key):
-            plot_rank_frequency(
-                per_key,
-                {"lower": lower, "mle": mle, "upper": upper},
-                f"{dataset}: {q['promql']} [{weight}]",
-                plot_path(plot_dir, dataset, f"{q['id']}__rank_{weight}"),
+    for window_len in window_lengths:
+        coarse = coarsen_keys(agg, window_len // window_lengths[0], q["group_by"])
+        for weight, col in columns.items():
+            estimates = []
+            for _, window in coarse.groupby(level=WINDOW_COL):
+                w = window[col].to_numpy()
+                if window[COUNT_COL].sum() >= min_rows and np.sum(w > 0) >= min_keys:
+                    estimates.append(zipf_mle(w))
+            lower, upper, n_windows = window_bounds(estimates, pooled[weight])
+            keys = per_key[weight]
+            out.append(
+                {
+                    "dataset": dataset,
+                    "query_id": q["id"],
+                    "promql": q["promql"],
+                    "kind": "keys",
+                    "weight": weight,
+                    "window_len_s": window_len,
+                    "K": len(keys),
+                    "rows": rows,
+                    "n_windows": n_windows,
+                    "lower": lower,
+                    "mle": pooled[weight],
+                    "upper": upper,
+                    "top1_share": keys[0] / keys.sum() if len(keys) else np.nan,
+                    "theta_ls": loglog_slope(keys),
+                }
             )
+            if plot_dir is not None and len(keys):
+                plot_rank_frequency(
+                    keys,
+                    {"lower": lower, "mle": pooled[weight], "upper": upper},
+                    f"{dataset}: {q['promql']} [{weight}, {window_len}s windows]",
+                    plot_path(
+                        plot_dir, dataset, f"{q['id']}__rank_{weight}__{window_len}s"
+                    ),
+                )
     return out
 
 
@@ -524,20 +596,27 @@ def summarize_values(
     dataset: str,
     q: Dict[str, Any],
     acc: Dict[str, Any],
+    window_lengths: Sequence[int],
     pool: Any,
     min_rows: int,
     plot_dir: Optional[Path],
-) -> Dict[str, Any]:
-    windows = {w: np.concatenate(parts) for w, parts in acc["windows"].items()}
-    if not windows:
+) -> List[Dict[str, Any]]:
+    """One row per window length; acc holds positive values per finest window.
+    Coarser windows concatenate the full finest-window values, then subsample."""
+    finest = {w: np.concatenate(parts) for w, parts in acc["windows"].items()}
+    if not finest:
         raise ValueError(f"{dataset}/{q['id']}: no positive values")
-    all_values = np.concatenate(list(windows.values()))
+    all_values = np.concatenate(list(finest.values()))
     mle_sample = subsample(all_values)
-    jobs = [(mle_sample, True)] + [
-        (subsample(x), False) for x in windows.values() if len(x) >= min_rows
-    ]
+    jobs = [(mle_sample, True)]
+    job_window_lens = [0]
+    for window_len in window_lengths:
+        coarse = coarsen_values(finest, window_len // window_lengths[0])
+        for x in coarse.values():
+            if len(x) >= min_rows:
+                jobs.append((subsample(x), False))
+                job_window_lens.append(window_len)
     fits = pool.starmap(fit_power_law, jobs)
-    lower, upper, n_windows = window_bounds([f["alpha"] for f in fits[1:]])
     mle_fit = fits[0]
     if plot_dir is not None:
         plot_ccdf(
@@ -546,20 +625,30 @@ def summarize_values(
             f"{dataset}: {q['value']} ({q['id']})",
             plot_path(plot_dir, dataset, f"{q['id']}__ccdf"),
         )
-    return {
-        "dataset": dataset,
-        "query_id": q["id"],
-        "promql": q["promql"],
-        "kind": "values",
-        "weight": "",
-        "rows": acc["n_finite"],
-        "n_windows": n_windows,
-        "lower": lower,
-        "mle": mle_fit["alpha"],
-        "upper": upper,
-        "dropped_frac": 1.0 - len(all_values) / acc["n_finite"],
-        **{k: v for k, v in mle_fit.items() if k != "alpha"},
-    }
+    out = []
+    for window_len in window_lengths:
+        alphas = [
+            f["alpha"] for f, wl in zip(fits, job_window_lens) if wl == window_len
+        ]
+        lower, upper, n_windows = window_bounds(alphas, mle_fit["alpha"])
+        out.append(
+            {
+                "dataset": dataset,
+                "query_id": q["id"],
+                "promql": q["promql"],
+                "kind": "values",
+                "weight": "",
+                "window_len_s": window_len,
+                "rows": acc["n_finite"],
+                "n_windows": n_windows,
+                "lower": lower,
+                "mle": mle_fit["alpha"],
+                "upper": upper,
+                "dropped_frac": 1.0 - len(all_values) / acc["n_finite"],
+                **{k: v for k, v in mle_fit.items() if k != "alpha"},
+            }
+        )
+    return out
 
 
 def analyze_table(
@@ -577,7 +666,7 @@ def analyze_table(
             table,
             path,
             queries,
-            cfg["window_secs"],
+            cfg["window_lengths_s"][0],
             cfg.get("max_time_secs"),
             args.max_rows,
         )
@@ -602,6 +691,7 @@ def analyze_table(
                     cfg["dataset"],
                     q,
                     agg,
+                    cfg["window_lengths_s"],
                     args.min_window_rows,
                     args.min_window_keys,
                     plot_dir,
@@ -613,9 +703,15 @@ def analyze_table(
                 acc["n_finite"] += p["values"][key]["n_finite"]
                 for w, parts in p["values"][key]["windows"].items():
                     acc["windows"].setdefault(w, []).extend(parts)
-            out.append(
+            out.extend(
                 summarize_values(
-                    cfg["dataset"], q, acc, pool, args.min_window_rows, plot_dir
+                    cfg["dataset"],
+                    q,
+                    acc,
+                    cfg["window_lengths_s"],
+                    pool,
+                    args.min_window_rows,
+                    plot_dir,
                 )
             )
         log.info("%s %s %s done", cfg["dataset"], q["id"], q["kind"])
@@ -650,7 +746,8 @@ def summarize_boom_series(
     fits: List[Dict[str, Any]],
     plot_dir: Optional[Path],
 ) -> Dict[str, Any]:
-    """Median over variates of each variate's lower/mle/upper and diagnostics."""
+    """Medians over the passing variates if at least BOOM_MIN_OK_FRAC of the
+    compared variates pass; otherwise no alpha and medians over the failing ones."""
     full: Dict[int, Dict[str, Any]] = {}
     samples: Dict[int, np.ndarray] = {}
     chunk_alphas: Dict[int, List[float]] = {v: [] for v in range(len(shifted))}
@@ -659,10 +756,13 @@ def summarize_boom_series(
             full[v], samples[v] = fit, x
         else:
             chunk_alphas[v].append(fit["alpha"])
-    bounds = [window_bounds(alphas) for alphas in chunk_alphas.values()]
-    oks = [f["power_law_ok"] for f in full.values() if "power_law_ok" in f]
+    compared = [v for v, f in full.items() if "power_law_ok" in f]
+    passing = [v for v in compared if full[v]["power_law_ok"]]
+    ok_frac = len(passing) / len(compared) if compared else np.nan
+    ok = bool(compared) and ok_frac >= BOOM_MIN_OK_FRAC
+    chosen = passing if ok else [v for v in compared if v not in passing]
     finite = int(np.isfinite(shifted).sum())
-    row = {
+    row: Dict[str, Any] = {
         "dataset": dataset,
         "query_id": f"{q['id']}[{series}]",
         "promql": q["promql"],
@@ -670,21 +770,31 @@ def summarize_boom_series(
         "weight": "",
         "K": len(shifted),
         "rows": finite,
-        "n_windows": sum(b[2] for b in bounds),
-        "lower": median_or_nan([b[0] for b in bounds]),
-        "mle": median_or_nan([f["alpha"] for f in full.values()]),
-        "upper": median_or_nan([b[1] for b in bounds]),
         "dropped_frac": 1.0 - np.sum(shifted > 0) / finite,
-        "power_law_ok": np.mean(oks) >= 0.5 if oks else np.nan,
+        "power_law_ok": ok,
+        "ok_frac": ok_frac,
+        "n_windows": 0,
     }
+    if ok:
+        bounds = [window_bounds(chunk_alphas[v], full[v]["alpha"]) for v in chosen]
+        row.update(
+            n_windows=sum(b[2] for b in bounds),
+            lower=median_or_nan([b[0] for b in bounds]),
+            mle=median_or_nan([full[v]["alpha"] for v in chosen]),
+            upper=median_or_nan([b[1] for b in bounds]),
+            best_alt="",
+        )
+    elif chosen:
+        alts = [full[v]["best_alt"] for v in chosen]
+        row["best_alt"] = max(POWER_LAW_ALTERNATIVES, key=alts.count)
     for col in ("xmin", "ks_d", "tail_frac") + tuple(
         f"{k}_{alt}" for alt in POWER_LAW_ALTERNATIVES for k in ("R", "p")
     ):
-        row[col] = median_or_nan([f.get(col, np.nan) for f in full.values()])
-    fitted = [v for v in full if np.isfinite(full[v]["alpha"])]
-    if plot_dir is not None and fitted:
-        # Show the variate whose alpha is closest to the series median.
-        v = min(fitted, key=lambda v: abs(full[v]["alpha"] - row["mle"]))
+        row[col] = median_or_nan([full[v].get(col, np.nan) for v in chosen])
+    if plot_dir is not None and chosen:
+        # Show the chosen variate whose alpha is closest to their median.
+        median_alpha = median_or_nan([full[v]["alpha"] for v in chosen])
+        v = min(chosen, key=lambda v: abs(full[v]["alpha"] - median_alpha))
         plot_ccdf(
             samples[v],
             full[v],

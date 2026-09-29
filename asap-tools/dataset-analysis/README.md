@@ -14,7 +14,7 @@ Two tasks:
      group-by key (weighted by row count and by value sum), and
    - a continuous power-law tail exponent α to every value query's column,
 
-   once on all data and once per time window.
+   once on all data and once per time window, at several window lengths.
 
 ## Running
 
@@ -43,10 +43,10 @@ Tests: `python -m unittest discover -s tests -p 'test_*.py'`.
 
 ## Datasets
 
-| Dataset | Files | Tables | Window |
+| Dataset | Files | Tables | Window lengths |
 |---|---|---|---|
-| Google ClusterData 2011-2 | `task_usage` and `task_events` part 0 of 500, all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5 min |
-| Alibaba microservices v2022 | `NodeMetricsUpdate_0`, `MSMetricsUpdate_0`, `CallGraph_0..9`, `MCRRTUpdate_0..9` (first 30 minutes) | `MSRTMCR`, `CallGraph`, `MSMetrics`, `NodeMetrics` | 1 min |
+| Google ClusterData 2011-2 | `task_usage` and `task_events` part 0 of 500, all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5, 15, 60 min |
+| Alibaba microservices v2022 | `NodeMetricsUpdate_0`, `MSMetricsUpdate_0`, `CallGraph_0..9`, `MCRRTUpdate_0..9` (first 30 minutes) | `MSRTMCR`, `CallGraph`, `MSMetrics`, `NodeMetrics` | 1, 5, 30 min |
 | Datadog BOOM | `dataset_taxonomy.json` and 20 multivariate series | per-series `target` | 20 equal chunks per series |
 
 Citations:
@@ -83,25 +83,37 @@ Citations:
   (`scipy.optimize.minimize_scalar`, bounded to [0, 5]). The weight is
   either the row count per key (`weight=count`) or the sum of the value per
   key with negatives clipped to 0 (`weight=value`).
-- **Value α**: `powerlaw.Fit` (continuous, `xmin` chosen by minimizing the
-  KS distance), with α the exponent of the pdf `p(x) ∝ x^-α` for
-  `x ≥ xmin`. Non-positive values are dropped first. Each fit uses a uniform
-  subsample of at most 5000 values because the `xmin` search is quadratic,
-  and `xmin` is only searched where at least 100 values remain in the tail,
-  so α describes roughly the top 2% or more of the distribution.
-- **lower / upper**: min / max of the estimate over the windows that pass the
-  thresholds. **mle**: the estimate on all data pooled. mle is not a bound
-  and can sit outside [lower, upper]: pooling many windows adds rare keys to
-  the tail and accumulates mass on persistent heavy keys, which steepens the
-  pooled rank-frequency (seen in most CallGraph queries).
-- **power_law_ok**: the power law is not significantly worse than both a
-  lognormal and an exponential (`distribution_compare`; worse means `R < 0`
-  with `p < 0.1`).
+- **Value α**: continuous power law fitted with `powerlaw.Fit` (pinned to
+  1.5), with α the exponent of the pdf `p(x) ∝ x^-α` for `x ≥ xmin`.
+  Non-positive values are dropped first, and each fit uses a uniform
+  subsample of at most 100,000 values. `xmin` minimizes the KS distance over
+  a grid of 50 quantiles from p50 to p99.9, restricted to candidates that
+  keep at least 100 values in the tail. α therefore describes a tail between
+  the top half and roughly the top 0.1% of the values; `tail_frac` says
+  which. A window needs at least 200 positive values to be fittable.
+- **mle**: the estimate on all data pooled.
+- **lower / upper**: min / max over the set {every per-window estimate that
+  passes the thresholds, mle}, so `lower <= mle <= upper` always. The pooled
+  and per-window fits have no fixed order: pooling adds rare keys to the tail
+  and accumulates mass on persistent heavy keys, which usually steepens the
+  pooled rank-frequency (most CallGraph queries), but it can also flatten it.
+- **Window lengths**: each dataset YAML lists `window_lengths_s`, finest
+  first; every length must be a multiple of the finest. Data are read once
+  and aggregated per finest window; coarser windows sum the finest per-key
+  aggregates (key queries) or concatenate the finest windows' values before
+  subsampling (value queries). mle does not depend on the window length.
+  BOOM has no timestamps in this analysis and keeps its 20 equal chunks per
+  series (`window_len_s` is empty).
+- **power_law_ok / best_alt**: the power law is compared with a lognormal
+  and an exponential (`distribution_compare`); it is significantly worse
+  when `R < 0` with `p < 0.1`. If it is worse than either, `power_law_ok` is
+  false and `best_alt` names the alternative with the most negative `R`;
+  α is still reported. `best_alt` is empty when `power_law_ok` is true.
 
 ## Output: `results/skew_summary.csv`
 
-One row per (query, kind, weight). The sketch-bench saturation study reads
-`dataset, query_id, kind, weight, lower, mle, upper` to pick the θ and α
+One row per (query, kind, weight, window length). The sketch-bench saturation study reads
+`dataset, query_id, kind, weight, window_len_s, lower, mle, upper` to pick the θ and α
 range it sweeps.
 
 | Column | Meaning |
@@ -109,6 +121,7 @@ range it sweeps.
 | `dataset`, `query_id`, `promql` | query identity (a query with both kinds gets a `keys` and a `values` row) |
 | `kind` | `keys` (θ) or `values` (α) |
 | `weight` | `count` or `value` for key rows, empty for value rows |
+| `window_len_s` | window length the bounds were computed at (empty for BOOM) |
 | `K` | distinct keys with positive weight (BOOM: variates) |
 | `rows` | rows with non-null keys (values: finite values) |
 | `n_windows` | windows used for the bounds (BOOM: variate-chunk fits) |
@@ -117,19 +130,30 @@ range it sweeps.
 | `dropped_frac` | value rows: fraction of finite values that were ≤ 0 |
 | `xmin`, `ks_d`, `tail_frac` | value rows: fitted `xmin`, KS distance of the tail, and fraction of the fitted sample at or above `xmin` |
 | `R_lognormal`, `p_lognormal`, `R_exponential`, `p_exponential` | log-likelihood ratio (power law vs alternative) and its p-value |
-| `power_law_ok` | see Definitions |
+| `power_law_ok`, `best_alt` | see Definitions |
+| `ok_frac` | BOOM rows: share of variates with `power_law_ok` |
 
-Plots in `out/`: `<dataset>__<query>__rank_<weight>.png` (log-log
-rank-frequency with the lower/mle/upper θ lines) and
+Plots in `out/`: `<dataset>__<query>__rank_<weight>__<window_len>s.png` (log-log
+rank-frequency with the lower/mle/upper θ lines, one per window length) and
 `<dataset>__<query>__ccdf.png` (empirical CCDF with the fitted α).
 
 ## Caveats
 
+- **θ depends on time scale.** A sketch sees the keys of one window of
+  length x, while a query aggregates over its lookback S (often many
+  windows). Short windows see fewer keys with noisier counts; long ones pool
+  more keys. Pick the row whose `window_len_s` matches the sketch window, and
+  compare it with mle (all data) for long lookbacks.
+
 - **BOOM** strips tags and z-scores each variate, so there is no key θ and
   the raw value scale is lost. α is fitted per variate on `x - min(x)`
-  (zeros dropped); the series row reports the median over variates of each
-  variate's lower, mle and upper, and `power_law_ok` is true when at least
-  half of the variates pass.
+  (zeros dropped). `ok_frac` is the share of compared variates with
+  `power_law_ok`. If `ok_frac >= 0.5`, the series row reports the medians
+  over the passing variates of each variate's lower, mle and upper, and the
+  diagnostics (`xmin`, `R`, `p`, ...) are medians over the same variates. If
+  `ok_frac < 0.5`, lower/mle/upper are empty, `power_law_ok` is false,
+  `best_alt` is the alternative most failing variates lose to, and the
+  diagnostics are medians over the failing variates.
 - **Google join rule**: `task_usage` rows get `user`, `priority` and
   `scheduling_class` from the last non-null `task_events` value for the same
   `(job_id, task_index)`, and `logical_job_name` from the last non-null
