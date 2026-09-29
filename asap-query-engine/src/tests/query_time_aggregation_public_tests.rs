@@ -246,6 +246,49 @@ mod tests {
         }
     }
 
+    #[test]
+    fn topk_and_quantile_boundary_parameters_execute_through_the_public_handler() {
+        let engine = engine();
+        let topk = |k| QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Topk,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::All,
+                labels: Vec::new(),
+            },
+            parameter: Some(QueryTimeAggregationParameter::Integer(k)),
+        };
+        let quantile = |phi| QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Quantile,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::All,
+                labels: Vec::new(),
+            },
+            parameter: Some(QueryTimeAggregationParameter::Float(phi)),
+        };
+
+        assert_eq!(
+            execute(&engine, format!("topk(1, {ANCHOR})"), topk(1)),
+            expected(vec![(vec!["b", "worker", "west"], 7.0)])
+        );
+        assert_eq!(
+            execute(&engine, format!("topk(10, {ANCHOR})"), topk(10)),
+            expected(vec![
+                (vec!["a", "api", "east"], 1.0),
+                (vec!["a", "worker", "west"], 5.0),
+                (vec!["b", "api", "east"], 3.0),
+                (vec!["b", "worker", "west"], 7.0),
+            ])
+        );
+        assert_eq!(
+            execute(&engine, format!("quantile(0, {ANCHOR})"), quantile(0.0)),
+            expected(vec![(vec![], 1.0)])
+        );
+        assert_eq!(
+            execute(&engine, format!("quantile(1, {ANCHOR})"), quantile(1.0)),
+            expected(vec![(vec![], 7.0)])
+        );
+    }
+
     fn expected(values: Vec<(Vec<&str>, f64)>) -> Vec<(Vec<String>, f64)> {
         values
             .into_iter()
