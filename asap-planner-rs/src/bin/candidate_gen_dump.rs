@@ -6,8 +6,9 @@ use std::path::PathBuf;
 
 use asap_planner::{
     optimizer::{
-        enumerate_candidates, extract_aqes, load_optional_selected_atomic_cost_table,
-        resolve_atomic_costs, AtomicCostTable, AtomicCosts, CandidateConfig, RQE,
+        enumerate_candidates, extract_aqes, load_nearest_atomic_cost_table,
+        load_optional_selected_atomic_cost_table, resolve_atomic_costs, AtomicCostTable,
+        AtomicCosts, CandidateConfig, DataShape, ShapeMatchPolicy, RQE,
     },
     ControllerConfig,
 };
@@ -38,16 +39,43 @@ struct Args {
     /// JSON `profiles[].workload` value selecting exactly one measured profile.
     #[arg(long = "atomic-cost-workload", requires = "atomic_costs")]
     atomic_cost_workload: Option<PathBuf>,
+    #[arg(
+        long = "atomic-cost-observed-shape",
+        requires = "atomic_costs",
+        conflicts_with = "atomic_cost_workload"
+    )]
+    atomic_cost_observed_shape: Option<PathBuf>,
+    #[arg(long, default_value_t = 100_000)]
+    minimum_benchmark_events: u64,
+    #[arg(long, default_value_t = 1.0)]
+    max_log2_cardinality_distance: f64,
+    #[arg(long, default_value_t = 0.2)]
+    max_zipf_distance: f64,
 }
 
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let atomic_cost_table = load_optional_selected_atomic_cost_table(
-        args.atomic_costs.as_deref(),
-        args.atomic_cost_workload.as_deref(),
-    )?
-    .unwrap_or_default();
+    let atomic_cost_table = if let Some(shape_path) = args.atomic_cost_observed_shape.as_deref() {
+        let observed: DataShape = serde_json::from_str(&std::fs::read_to_string(shape_path)?)?;
+        load_nearest_atomic_cost_table(
+            args.atomic_costs
+                .as_deref()
+                .expect("clap requires --atomic-costs"),
+            observed,
+            ShapeMatchPolicy {
+                minimum_benchmark_events: args.minimum_benchmark_events,
+                max_log2_cardinality_distance: args.max_log2_cardinality_distance,
+                max_zipf_distance: args.max_zipf_distance,
+            },
+        )?
+    } else {
+        load_optional_selected_atomic_cost_table(
+            args.atomic_costs.as_deref(),
+            args.atomic_cost_workload.as_deref(),
+        )?
+        .unwrap_or_default()
+    };
 
     let yaml_str = std::fs::read_to_string(&args.input_config)?;
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
