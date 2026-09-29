@@ -80,8 +80,14 @@ impl QueryTimeAggregation {
         match (&self.operator, &self.parameter) {
             (
                 QueryTimeAggregationOperator::Topk,
+                Some(QueryTimeAggregationParameter::Integer(k)),
+            ) if *k > 0 => {}
+            (
+                QueryTimeAggregationOperator::Topk,
                 Some(QueryTimeAggregationParameter::Integer(_)),
-            ) => {}
+            ) => {
+                return Err("topk requires a positive integer parameter".to_string());
+            }
             (QueryTimeAggregationOperator::Topk, _) => {
                 return Err("topk requires an integer parameter".to_string());
             }
@@ -136,5 +142,56 @@ impl QueryConfig {
     pub fn with_aggregations(mut self, aggregations: Vec<AggregationReference>) -> Self {
         self.aggregations = aggregations;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn topk(k: u64) -> QueryTimeAggregation {
+        QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Topk,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::All,
+                labels: Vec::new(),
+            },
+            parameter: Some(QueryTimeAggregationParameter::Integer(k)),
+        }
+    }
+
+    #[test]
+    fn topk_requires_a_positive_k() {
+        assert!(topk(1).validate().is_ok());
+        assert_eq!(
+            topk(0).validate(),
+            Err("topk requires a positive integer parameter".into())
+        );
+    }
+
+    #[test]
+    fn quantile_accepts_endpoints_and_rejects_out_of_range_values() {
+        for phi in [0.0, 1.0] {
+            assert!(QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Quantile,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::All,
+                    labels: Vec::new(),
+                },
+                parameter: Some(QueryTimeAggregationParameter::Float(phi)),
+            }
+            .validate()
+            .is_ok());
+        }
+        assert!(QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Quantile,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::All,
+                labels: Vec::new(),
+            },
+            parameter: Some(QueryTimeAggregationParameter::Float(1.01)),
+        }
+        .validate()
+        .is_err());
     }
 }
