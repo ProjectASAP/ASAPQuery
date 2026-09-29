@@ -1,0 +1,145 @@
+# Alibaba cluster-trace-microservices-v2022, first 30 minutes.
+dataset: alibaba_v2022
+window_secs: 60
+# NodeMetricsUpdate_0 covers 12 hours; clip every table to the 30 minutes
+# covered by the CallGraph and MCRRTUpdate shards.
+max_time_secs: 1800
+tables:
+  MSRTMCR:
+    format: alibaba_tar
+    files: ["alibaba-v2022/MCRRTUpdate_[0-9].tar.gz"]
+    time_column: timestamp
+    time_unit_secs: 1.0e-3
+    label_columns: [msname, msinstanceid, nodeid]
+    value_columns: [providerrpc_rt, providerrpc_mcr]
+  CallGraph:
+    format: alibaba_tar
+    files: ["alibaba-v2022/CallGraph_[0-9].tar.gz"]
+    time_column: timestamp
+    time_unit_secs: 1.0e-3
+    label_columns: [traceid, service, rpc_id, rpctype, um, uminstanceid, interface, dm, dminstanceid]
+    value_columns: [rt]
+  MSMetrics:
+    format: alibaba_tar
+    files: [alibaba-v2022/MSMetricsUpdate_0.tar.gz]
+    time_column: timestamp
+    time_unit_secs: 1.0e-3
+    label_columns: [msname, msinstanceid, nodeid]
+    value_columns: [cpu_utilization, memory_utilization]
+  NodeMetrics:
+    format: alibaba_tar
+    files: [alibaba-v2022/NodeMetricsUpdate_0.tar.gz]
+    time_column: timestamp
+    time_unit_secs: 1.0e-3
+    label_columns: [nodeid]
+    value_columns: [cpu_utilization, memory_utilization]
+queries:
+  - id: mcr_by_msname
+    promql: sum by (msname) (providerrpc_mcr)
+    table: MSRTMCR
+    kind: keys
+    group_by: [msname]
+    value: providerrpc_mcr
+    weights: [count, value]
+  - id: mcr_by_nodeid
+    promql: sum by (nodeid) (providerrpc_mcr)
+    table: MSRTMCR
+    kind: keys
+    group_by: [nodeid]
+    value: providerrpc_mcr
+    weights: [count, value]
+  - id: rt_p99_by_msname
+    promql: quantile by (msname) (0.99, providerrpc_rt)
+    table: MSRTMCR
+    kind: keys
+    group_by: [msname]
+    value: providerrpc_rt
+    weights: [count, value]
+  - id: rt_p99_by_msname
+    promql: quantile by (msname) (0.99, providerrpc_rt)
+    table: MSRTMCR
+    kind: values
+    group_by: []
+    value: providerrpc_rt
+  - id: calls_by_rpctype
+    promql: count by (rpctype) (rt)
+    table: CallGraph
+    kind: keys
+    group_by: [rpctype]
+    weights: [count]
+  - id: calls_by_service
+    promql: count by (service) (rt)
+    table: CallGraph
+    kind: keys
+    group_by: [service]
+    weights: [count]
+  - id: calls_by_um
+    promql: count by (um) (rt)
+    table: CallGraph
+    kind: keys
+    group_by: [um]
+    weights: [count]
+  - id: calls_by_dm
+    promql: count by (dm) (rt)
+    table: CallGraph
+    kind: keys
+    group_by: [dm]
+    weights: [count]
+  - id: calls_by_interface
+    promql: count by (interface) (rt)
+    table: CallGraph
+    kind: keys
+    group_by: [interface]
+    weights: [count]
+  - id: calls_by_um_dm
+    promql: count by (um, dm) (rt)
+    table: CallGraph
+    kind: keys
+    group_by: [um, dm]
+    weights: [count]
+  - id: calls_by_service_um_dm
+    promql: count by (service, um, dm) (rt)
+    table: CallGraph
+    kind: keys
+    group_by: [service, um, dm]
+    weights: [count]
+  - id: rt_p99_by_service
+    promql: quantile by (service) (0.99, rt)
+    table: CallGraph
+    kind: keys
+    group_by: [service]
+    value: rt
+    weights: [count, value]
+  - id: rt_p99_by_service
+    promql: quantile by (service) (0.99, rt)
+    table: CallGraph
+    kind: values
+    group_by: []
+    value: rt
+  - id: ms_cpu_by_msname
+    promql: sum by (msname) (cpu_utilization)
+    table: MSMetrics
+    kind: keys
+    group_by: [msname]
+    value: cpu_utilization
+    weights: [count, value]
+  # Baseline: one key per node, expected to be close to uniform.
+  - id: node_cpu_by_nodeid
+    promql: sum by (nodeid) (cpu_utilization)
+    table: NodeMetrics
+    kind: keys
+    group_by: [nodeid]
+    value: cpu_utilization
+    weights: [count, value]
+  - id: ms_cpu_p99
+    promql: quantile(0.99, cpu_utilization)
+    table: MSMetrics
+    kind: values
+    group_by: []
+    value: cpu_utilization
+  - id: node_cpu_p99
+    promql: quantile(0.99, cpu_utilization)
+    table: NodeMetrics
+    kind: values
+    group_by: []
+    value: cpu_utilization

@@ -1,0 +1,8 @@
+matplotlib==3.10.9
+numpy==2.2.6
+pandas==2.3.3
+# 2.x caps alpha at 3 by default and falls back to slow numerical fits.
+powerlaw==1.5
+pyarrow==25.0.1
+PyYAML==6.0.3
+scipy==1.15.3
