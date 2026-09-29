@@ -358,6 +358,26 @@ def main(args):
         with open(monitor_info_file, "r") as f:
             monitor_info = json.load(f)
 
+        exited = [
+            f"{pid} ({entry['keyword']}) at sample "
+            f"{entry[constants.PROCESS_MONITOR_EXITED_AT_SAMPLE_KEY]}"
+            for pid, entry in monitor_info.items()
+            if constants.PROCESS_MONITOR_EXITED_AT_SAMPLE_KEY in entry
+        ]
+        if exited:
+            msg = f"Mode {experiment_mode}: monitored process exited mid-run: {', '.join(exited)}"
+            if not args.allow_partial_runs:
+                print(
+                    f"ERROR: {msg}. Skipping this mode; "
+                    "pass --allow_partial_runs to include it anyway.",
+                    file=sys.stderr,
+                )
+                continue
+            print(
+                f"WARNING: {msg}; costs cover only the samples before exit.",
+                file=sys.stderr,
+            )
+
         resources_across_pids = defaultdict(list)
 
         pids = list(monitor_info.keys())
@@ -606,6 +626,14 @@ if __name__ == "__main__":
             "the baseline mode's Query CPU is computed by subtracting the "
             "median Prometheus CPU%% measured in that run, instead of the "
             "5th-percentile-of-this-run heuristic."
+        ),
+    )
+    parser.add_argument(
+        "--allow_partial_runs",
+        action="store_true",
+        help=(
+            "Include modes where a monitored process exited mid-run, computing "
+            "costs over the samples before the exit (otherwise such modes are skipped)."
         ),
     )
     parser.add_argument(

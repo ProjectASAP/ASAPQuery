@@ -176,6 +176,34 @@ class MyMonitor(multiprocessing.Process):
 
         return iteration_info
 
+    def _sample_counts(self) -> dict:
+        # All list fields of a pid entry grow in lockstep, so one length per pid suffices.
+        return {
+            pid: len(m[self.monitors[0]]) for pid, m in self.pid_monitor_map.items()
+        }
+
+    def _terminate_early(self, dead_pid: int, counts_before_round: dict):
+        """
+        Roll back the partial sampling round so every series stays aligned, and
+        mark the dead seed pid so consumers can tell the run was cut short.
+        """
+        for pid in list(self.pid_monitor_map):
+            if pid not in counts_before_round:
+                del self.pid_monitor_map[pid]
+                continue
+            n = counts_before_round[pid]
+            for value in self.pid_monitor_map[pid].values():
+                if isinstance(value, list):
+                    del value[n:]
+        self.pid_monitor_map[dead_pid][
+            constants.PROCESS_MONITOR_EXITED_AT_SAMPLE_KEY
+        ] = counts_before_round[dead_pid]
+        print(
+            f"Monitored process {dead_pid} "
+            f"({self.pid_monitor_map[dead_pid]['keyword']}) exited; "
+            f"stopping monitor after {counts_before_round[dead_pid]} samples"
+        )
+
     def run(self):
         # NOTE: Possibility of init() (and close()) being called more than once if multiple
         #       processes get started up that were passed the same reference
@@ -201,11 +229,21 @@ class MyMonitor(multiprocessing.Process):
 
                 iteration_info = []
                 stop_requested = False
+                seed_died = False
+                counts_before_round = self._sample_counts()
                 for pid, p in self.psutil_handles.items():
                     if self.pipe.poll(0):
                         stop_requested = True
                         break
-                    iteration_info += self.update_pid_monitor_map(p)
+                    try:
+                        iteration_info += self.update_pid_monitor_map(p)
+                        children = (
+                            p.children(recursive=True) if self.include_children else []
+                        )
+                    except psutil.NoSuchProcess:
+                        self._terminate_early(pid, counts_before_round)
+                        seed_died = True
+                        break
                     if (
                         self.thread_attribution_keyword is not None
                         and self.pid_monitor_map[pid]["keyword"]
@@ -213,7 +251,7 @@ class MyMonitor(multiprocessing.Process):
                     ):
                         self._compute_thread_group_cpu(pid, elapsed)
                     if self.include_children:
-                        for child in p.children(recursive=True):
+                        for child in children:
                             if self.pipe.poll(0):
                                 stop_requested = True
                                 break
@@ -221,7 +259,11 @@ class MyMonitor(multiprocessing.Process):
                                 self.add_child_pid_to_map(pid, child.pid)
                                 self.child_handles[child.pid] = child
                             handle = self.child_handles[child.pid]
-                            iteration_info += self.update_pid_monitor_map(handle)
+                            try:
+                                iteration_info += self.update_pid_monitor_map(handle)
+                            except psutil.NoSuchProcess:
+                                # Children come and go; the dead child's series just ends here.
+                                continue
                             if (
                                 self.thread_attribution_keyword is not None
                                 and self.pid_monitor_map[handle.pid]["keyword"]
@@ -231,7 +273,7 @@ class MyMonitor(multiprocessing.Process):
                         if stop_requested:
                             break
 
-                if stop_requested:
+                if stop_requested or seed_died:
                     break
 
                 self.update_hooks(iteration_info)

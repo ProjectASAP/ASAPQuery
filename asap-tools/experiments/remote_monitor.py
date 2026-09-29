@@ -334,6 +334,12 @@ def main(args):
 
         if prometheus_client_service.use_container:
             while prometheus_client_service.is_healthy():
+                # The sampler only sends data unprompted when a monitored process died.
+                if control_pipe.poll(0):
+                    logger.error(
+                        "A monitored process exited mid-run; stopping prometheus client early"
+                    )
+                    break
                 logger.debug(
                     "Waiting for prometheus client container to stop running..."
                 )
@@ -380,7 +386,9 @@ def main(args):
             signal.signal(signal.SIGINT, signal.SIG_DFL)
     elif args.execution_mode == "timed":
         logger.debug(f"Running for {args.time_to_run} seconds")
-        time.sleep(args.time_to_run)
+        # Returns early if the sampler sends data because a monitored process died.
+        if control_pipe.poll(args.time_to_run):
+            logger.error("A monitored process exited mid-run; stopping early")
 
     if qe_flamegraph_procs:
         logger.debug("Stopping profiling for query engine pids")
@@ -406,6 +414,13 @@ def main(args):
         if os.path.exists(monitor_output_file):
             os.remove(monitor_output_file)
     else:
+        for pid, entry in monitor_info.items():
+            if constants.PROCESS_MONITOR_EXITED_AT_SAMPLE_KEY in entry:
+                logger.error(
+                    f"Monitored process {pid} ({entry['keyword']}) exited after "
+                    f"{entry[constants.PROCESS_MONITOR_EXITED_AT_SAMPLE_KEY]} samples; "
+                    f"{args.monitor_output_file} covers only the run up to that point"
+                )
         with open(monitor_output_file, "w") as f:
             json.dump(monitor_info, f)
 
