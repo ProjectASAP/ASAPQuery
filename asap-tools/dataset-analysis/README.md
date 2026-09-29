@@ -105,10 +105,14 @@ Citations:
   BOOM has no timestamps in this analysis and keeps its 20 equal chunks per
   series (`window_len_s` is empty).
 - **power_law_ok / best_alt**: the power law is compared with a lognormal
-  and an exponential (`distribution_compare`); it is significantly worse
-  when `R < 0` with `p < 0.1`. If it is worse than either, `power_law_ok` is
-  false and `best_alt` names the alternative with the most negative `R`;
-  α is still reported. `best_alt` is empty when `power_law_ok` is true.
+  and an exponential (`distribution_compare`, likelihood ratio `R` and
+  p-value `p`). `power_law_ok` is true only if the power law significantly
+  beats both (`R > 0` and `p < 0.1` for each). Otherwise `best_alt` names the
+  alternative that is significantly better with the most negative `R`, or
+  `inconclusive` if neither is; α is still reported. `best_alt` is empty
+  when `power_law_ok` is true. A lognormal with large σ mimics a power-law
+  tail, so this rule rarely passes: even an exact Pareto(α=2) sample comes out
+  `inconclusive` (see the tests).
 
 ## Output: `results/skew_summary.csv`
 
@@ -152,7 +156,7 @@ rank-frequency with the lower/mle/upper θ lines, one per window length) and
   over the passing variates of each variate's lower, mle and upper, and the
   diagnostics (`xmin`, `R`, `p`, ...) are medians over the same variates. If
   `ok_frac < 0.5`, lower/mle/upper are empty, `power_law_ok` is false,
-  `best_alt` is the alternative most failing variates lose to, and the
+  `best_alt` is the most common `best_alt` among the failing variates, and the
   diagnostics are medians over the failing variates.
 - **Google join rule**: `task_usage` rows get `user`, `priority` and
   `scheduling_class` from the last non-null `task_events` value for the same

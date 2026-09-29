@@ -47,9 +47,9 @@ alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,count,30
 alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,value,300,313796,127635817,6,1.149,1.17197,1.17378,0.241919,2.3833,,,,,,,,,,,
 alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,count,1800,399933,127635817,1,1.0731,1.0731,1.0731,0.0388438,1.59871,,,,,,,,,,,
 alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",keys,value,1800,313796,127635817,1,1.17197,1.17197,1.17197,0.241919,2.3833,,,,,,,,,,,
-alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,60,,125647293,30,2.10507,2.22496,2.39368,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,True,,
-alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,300,,125647293,6,2.22251,2.22496,2.37091,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,True,,
-alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,1800,,125647293,1,2.22496,2.22496,2.22496,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,True,,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,60,,125647293,30,2.10507,2.22496,2.39368,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,False,inconclusive,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,300,,125647293,6,2.22251,2.22496,2.37091,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,False,inconclusive,
+alibaba_v2022,rt_p99_by_service,"quantile by (service) (0.99, rt)",values,,1800,,125647293,1,2.22496,2.22496,2.22496,,,0.386496,54,0.0305356,0.04198,0.058631,0.574121,4657.66,1.18251e-37,False,inconclusive,
 alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,count,60,28159,13987704,30,0.826067,0.826138,0.82617,0.0164781,1.26917,,,,,,,,,,,
 alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,value,60,28158,13987704,30,0.891051,0.893458,0.897012,0.0092067,1.6656,,,,,,,,,,,
 alibaba_v2022,ms_cpu_by_msname,sum by (msname) (cpu_utilization),keys,count,300,28159,13987704,6,0.8261,0.826138,0.826145,0.0164781,1.26917,,,,,,,,,,,
@@ -68,26 +68,26 @@ alibaba_v2022,node_cpu_by_nodeid,sum by (nodeid) (cpu_utilization),keys,value,18
 alibaba_v2022,node_cpu_p99,"quantile(0.99, cpu_utilization)",values,,60,,1228782,29,5.55533,5.88868,6.15762,,,4.72012e-05,0.355012,0.0153465,0.06211,-3.90752,0.0576593,71.8823,3.08632e-08,False,lognormal,
 alibaba_v2022,node_cpu_p99,"quantile(0.99, cpu_utilization)",values,,300,,1228782,6,5.69748,5.88868,5.99247,,,4.72012e-05,0.355012,0.0153465,0.06211,-3.90752,0.0576593,71.8823,3.08632e-08,False,lognormal,
 alibaba_v2022,node_cpu_p99,"quantile(0.99, cpu_utilization)",values,,1800,,1228782,1,5.88868,5.88868,5.88868,,,4.72012e-05,0.355012,0.0153465,0.06211,-3.90752,0.0576593,71.8823,3.08632e-08,False,lognormal,
-boom,target_tail[ds-2187-H],"quantile(0.99, target)",values,,,100,523100,1000,1.83826,4.25548,6.2417,,,0.000191168,2.55269,0.0564534,0.0722753,-0.511853,0.405175,13.901,0.0635678,True,,0.5
+boom,target_tail[ds-2187-H],"quantile(0.99, target)",values,,,100,523100,0,,,,,,0.000191168,1.86372,0.0678309,0.0621415,-2.66997,0.0957456,7.26352,0.0103471,False,inconclusive,0.02
 boom,target_tail[ds-2394-D],"quantile(0.99, target)",values,,,73,10001,0,,,,,,0.185881,,,,,,,,False,,
-boom,target_tail[ds-1135-5T],"quantile(0.99, target)",values,,,26,425984,0,,,,,,0.549368,3.26443,0.106705,0.0519633,-34.771,0.00522338,-6.81313,0.0425655,False,lognormal,0.428571
+boom,target_tail[ds-1135-5T],"quantile(0.99, target)",values,,,26,425984,0,,,,,,0.549368,3.04047,0.0770813,0.0723464,-4.64396,0.0889076,2.50936,0.0851311,False,lognormal,0.0714286
 boom,target_tail[ds-1833-D],"quantile(0.99, target)",values,,,17,3689,0,,,,,,0.239631,,,,,,,,False,,
 boom,target_tail[ds-2806-D],"quantile(0.99, target)",values,,,100,13700,0,,,,,,0.700365,,,,,,,,False,,
-boom,target_tail[ds-2573-D],"quantile(0.99, target)",values,,,45,9765,0,4.39465,4.39465,4.39465,,,0.00798771,1.87847,0.169387,0.481481,-0.555623,0.314343,2.08433,0.234396,True,,0.6
-boom,target_tail[ds-2222-30T],"quantile(0.99, target)",values,,,100,1045600,692,5.12284,27.8931,45.4353,,,0.570518,3.90947,0.136929,0.0349965,-0.172378,0.350612,16.7272,1.14374e-14,True,,0.81
+boom,target_tail[ds-2573-D],"quantile(0.99, target)",values,,,45,9765,0,,,,,,0.00798771,2,0.196448,0.490608,-2.20309,0.169861,-1.48001,0.00529496,False,inconclusive,0.0222222
+boom,target_tail[ds-2222-30T],"quantile(0.99, target)",values,,,100,1045600,0,,,,,,0.570518,3.90768,0.142619,0.036589,-0.636215,0.359395,16.5504,3.04357e-15,False,inconclusive,0.23
 boom,target_tail[ds-1914-30T],"quantile(0.99, target)",values,,,64,669504,0,,,,,,0.999177,,,,,,,,False,,
-boom,target_tail[ds-2577-H],"quantile(0.99, target)",values,,,11,57541,0,,,,,,0.000191168,2.49525,0.0506031,0.270937,-8.53816,0.00348972,3.98324,0.365683,False,lognormal,0.454545
-boom,target_tail[ds-2212-D],"quantile(0.99, target)",values,,,42,9114,0,,,,,,0.205508,0.0171532,0.268598,0.5,-21.0003,0.000620382,-13.2558,0.000145154,False,lognormal,0.363636
+boom,target_tail[ds-2577-H],"quantile(0.99, target)",values,,,11,57541,0,,,,,,0.000191168,2.86054,0.0485189,0.123327,-3.68521,0.108043,5.58335,0.252722,False,inconclusive,0
+boom,target_tail[ds-2212-D],"quantile(0.99, target)",values,,,42,9114,0,,,,,,0.205508,0.108561,0.160336,0.481481,-13.3573,0.00217957,11.7339,0.00479764,False,lognormal,0
 boom,target_tail[ds-2782-H],"quantile(0.99, target)",values,,,20,16500,0,,,,,,0.992364,,,,,,,,False,,
-boom,target_tail[ds-1400-10S],"quantile(0.99, target)",values,,,75,1228800,0,,,,,,0.000139974,3.58167,0.0401948,0.113044,-11.3256,0.00374703,-3.37719,7.22762e-05,False,lognormal,0.4
-boom,target_tail[ds-2650-D],"quantile(0.99, target)",values,,,56,12152,0,2.52362,2.52362,2.52362,,,0.00477288,0.4255,0.0813898,0.481481,-1.1773,0.365167,11.8682,0.103707,True,,0.5
-boom,target_tail[ds-1316-10S],"quantile(0.99, target)",values,,,40,655360,420,1.34981,2.94518,2.9669,,,0.122093,2.43799,0.0396472,0.021441,-0.127417,0.605348,39.883,0.000108837,True,,0.525
-boom,target_tail[ds-1558-5T],"quantile(0.99, target)",values,,,97,1589248,1185,2.98708,5.76602,24.7461,,,0.197184,2.2767,0.0870426,0.220245,0.0176096,0.27179,130.926,3.24486e-07,True,,0.659794
+boom,target_tail[ds-1400-10S],"quantile(0.99, target)",values,,,75,1228800,0,,,,,,0.000139974,3.87737,0.0363198,0.092657,-3.81591,0.0601745,3.24,0.000648227,False,lognormal,0.0266667
+boom,target_tail[ds-2650-D],"quantile(0.99, target)",values,,,56,12152,0,,,,,,0.00477288,0.742612,0.131788,0.481481,-5.62187,0.100787,-3.08806,0.0629494,False,inconclusive,0
+boom,target_tail[ds-1316-10S],"quantile(0.99, target)",values,,,40,655360,0,,,,,,0.122093,2.27323,0.0380431,0.0316185,-1.52691,0.162568,48.8426,4.79386e-08,False,inconclusive,0
+boom,target_tail[ds-1558-5T],"quantile(0.99, target)",values,,,97,1589248,0,,,,,,0.197184,2.2767,0.124378,0.174525,-0.874186,0.159869,19.4441,2.12478e-06,False,inconclusive,0.195876
 boom,target_tail[ds-1972-D],"quantile(0.99, target)",values,,,39,5343,0,,,,,,0.0557739,,,,,,,,False,,
-boom,target_tail[ds-1840-D],"quantile(0.99, target)",values,,,100,21700,0,779.957,779.957,779.957,,,0.00465438,8.61433,0.355908,0.587963,-0.435604,0.505999,4.25879,0.00299889,True,,0.71
-boom,target_tail[ds-671-10S],"quantile(0.99, target)",values,,,100,1638400,1900,127.269,10151.9,28143.7,,,6.10352e-05,11.085,0.160838,0.0315571,,,,,True,,1
-boom,target_tail[ds-1524-5T],"quantile(0.99, target)",values,,,93,1267683,0,,,,,,0.944851,2.77447,0.137907,0.0781713,-10.2982,0.00465206,-8.15093,7.45138e-08,False,lognormal,0.470588
-boom,target_tail[ds-899-T],"quantile(0.99, target)",values,,,12,196608,96,2.36862,4.77602,4.77602,,,0.420344,3.31643,0.0820839,0.0530058,-0.412674,0.218355,64.5435,4.61242e-07,True,,0.666667
+boom,target_tail[ds-1840-D],"quantile(0.99, target)",values,,,100,21700,0,,,,,,0.00465438,8.38342,0.357878,0.587963,-15.6984,0.0157093,-0.485135,3.22441e-08,False,inconclusive,0
+boom,target_tail[ds-671-10S],"quantile(0.99, target)",values,,,100,1638400,0,,,,,,6.10352e-05,11.085,0.160838,0.0315571,,,,,False,inconclusive,0
+boom,target_tail[ds-1524-5T],"quantile(0.99, target)",values,,,93,1267683,0,,,,,,0.944851,2.87022,0.171058,0.154978,-2.0138,0.0819491,30.5114,2.10736e-05,False,inconclusive,0.0588235
+boom,target_tail[ds-899-T],"quantile(0.99, target)",values,,,12,196608,0,,,,,,0.420344,3.35591,0.0826745,0.0524982,-0.699821,0.165161,63.6559,3.49682e-07,False,inconclusive,0.0833333
 google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,count,300,518,2520773,17,1.22012,1.23997,1.27526,0.157436,2.33409,,,,,,,,,,,
 google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,value,300,495,2520773,17,1.24604,1.30345,1.42414,0.1682,3.7868,,,,,,,,,,,
 google_2011,cpu_by_user,sum by (user) (cpu_rate),keys,count,900,518,2520773,7,1.22012,1.23997,1.25824,0.157436,2.33409,,,,,,,,,,,

@@ -48,8 +48,9 @@ BOOM_MIN_OK_FRAC = 0.5
 SAMPLE_SEED = 0
 DEFAULT_MIN_WINDOW_ROWS = 200
 DEFAULT_MIN_WINDOW_KEYS = 2
-# R < 0 with p below this means the power law fits significantly worse.
+# A likelihood-ratio comparison is significant when its p is below this.
 COMPARE_P_THRESHOLD = 0.1
+INCONCLUSIVE = "inconclusive"
 POWER_LAW_ALTERNATIVES = ("lognormal", "exponential")
 
 CSV_BLOCK_BYTES = 64 << 20
@@ -420,14 +421,19 @@ def subsample(x: np.ndarray) -> np.ndarray:
 
 
 def best_alternative(comparisons: Dict[str, Tuple[float, float]]) -> str:
-    """The alternative that fits significantly better than the power law
-    (R < 0 with small p), preferring the most negative R; '' if none."""
-    losing = {
+    """'' if the power law significantly beats every alternative (R > 0 with
+    small p); otherwise the alternative significantly better than it with the
+    most negative R, or 'inconclusive' if none is significantly better."""
+    if comparisons and all(
+        r > 0 and p < COMPARE_P_THRESHOLD for r, p in comparisons.values()
+    ):
+        return ""
+    better = {
         alt: r
         for alt, (r, p) in comparisons.items()
         if r < 0 and p < COMPARE_P_THRESHOLD
     }
-    return min(losing, key=lambda alt: losing[alt]) if losing else ""
+    return min(better, key=lambda alt: better[alt]) if better else INCONCLUSIVE
 
 
 def xmin_candidates(x_sorted: np.ndarray) -> np.ndarray:
@@ -786,7 +792,7 @@ def summarize_boom_series(
         )
     elif chosen:
         alts = [full[v]["best_alt"] for v in chosen]
-        row["best_alt"] = max(POWER_LAW_ALTERNATIVES, key=alts.count)
+        row["best_alt"] = max(sorted(set(alts)), key=alts.count)
     for col in ("xmin", "ks_d", "tail_frac") + tuple(
         f"{k}_{alt}" for alt in POWER_LAW_ALTERNATIVES for k in ("R", "p")
     ):

@@ -61,22 +61,48 @@ class PowerLawFitTest(unittest.TestCase):
             alpha = shape + 1.0  # pdf exponent of a Pareto with this shape
             with self.subTest(alpha=alpha):
                 x = rng.pareto(shape, PARETO_SAMPLES) + 1.0
-                fit = fit_skew.fit_power_law(x, compare=True)
+                fit = fit_skew.fit_power_law(x, compare=False)
                 self.assertAlmostEqual(
                     fit["alpha"], alpha, delta=PARETO_REL_TOLERANCE * alpha
                 )
-                self.assertTrue(fit["power_law_ok"])
-                self.assertEqual(fit["best_alt"], "")
                 tail = np.sum(x >= fit["xmin"])
                 self.assertGreaterEqual(tail, fit_skew.MIN_TAIL_SAMPLES)
 
+    def test_exponential_and_lognormal_rejected(self):
+        samples = {
+            "exponential": np.random.default_rng(11).exponential(1.0, 20_000),
+            "lognormal": np.random.default_rng(12).lognormal(0.0, 1.0, 20_000),
+        }
+        for name, x in samples.items():
+            with self.subTest(name):
+                fit = fit_skew.fit_power_law(x, compare=True)
+                self.assertFalse(fit["power_law_ok"])
+                self.assertEqual(fit["best_alt"], name)
+                self.assertTrue(np.isfinite(fit["alpha"]))
+
+    def test_pareto_beats_exponential_but_not_lognormal(self):
+        # A lognormal with large sigma mimics a power-law tail, so even an exact
+        # Pareto(alpha=2) cannot significantly beat it: the result is
+        # inconclusive rather than a pass.
+        x = np.random.default_rng(13).pareto(1.0, 20_000) + 1.0
+        fit = fit_skew.fit_power_law(x, compare=True)
+        self.assertGreater(fit["R_exponential"], 0)
+        self.assertLess(fit["p_exponential"], fit_skew.COMPARE_P_THRESHOLD)
+        self.assertFalse(fit["power_law_ok"])
+        self.assertEqual(fit["best_alt"], fit_skew.INCONCLUSIVE)
+
     def test_best_alternative(self):
         best = fit_skew.best_alternative
-        # Not significant, or the power law wins: no better alternative.
+        # The power law significantly beats both alternatives.
         self.assertEqual(
-            best({"lognormal": (-1.0, 0.5), "exponential": (3.0, 0.01)}), ""
+            best({"lognormal": (2.0, 0.05), "exponential": (3.0, 0.01)}), ""
         )
-        self.assertEqual(best({}), "")
+        # Winning one comparison without significance is not enough.
+        self.assertEqual(
+            best({"lognormal": (2.0, 0.5), "exponential": (3.0, 0.01)}),
+            fit_skew.INCONCLUSIVE,
+        )
+        self.assertEqual(best({}), fit_skew.INCONCLUSIVE)
         self.assertEqual(
             best({"lognormal": (-1.0, 0.05), "exponential": (3.0, 0.01)}), "lognormal"
         )
@@ -85,13 +111,6 @@ class PowerLawFitTest(unittest.TestCase):
             best({"lognormal": (-1.0, 0.01), "exponential": (-5.0, 0.01)}),
             "exponential",
         )
-
-    def test_losing_fit_still_reports_alpha(self):
-        # A pure lognormal loses to the lognormal alternative over the body.
-        x = np.random.default_rng(8).lognormal(0.0, 0.5, PARETO_SAMPLES)
-        fit = fit_skew.fit_power_law(x, compare=True)
-        self.assertTrue(np.isfinite(fit["alpha"]))
-        self.assertEqual(fit["power_law_ok"], fit["best_alt"] == "")
 
     def test_xmin_grid(self):
         x = np.sort(np.random.default_rng(9).pareto(1.5, PARETO_SAMPLES) + 1.0)
