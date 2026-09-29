@@ -104,21 +104,27 @@ Citations:
   subsampling (value queries). mle does not depend on the window length.
   BOOM has no timestamps in this analysis and keeps its 20 equal chunks per
   series (`window_len_s` is empty).
-- **power_law_ok / best_alt**: the power law is compared with a lognormal
-  and an exponential (`distribution_compare`, likelihood ratio `R` and
-  p-value `p`). `power_law_ok` is true only if the power law significantly
-  beats both (`R > 0` and `p < 0.1` for each). Otherwise `best_alt` names the
-  alternative that is significantly better with the most negative `R`, or
-  `inconclusive` if neither is; α is still reported. `best_alt` is empty
-  when `power_law_ok` is true. A lognormal with large σ mimics a power-law
-  tail, so this rule rarely passes: even an exact Pareto(α=2) sample comes out
-  `inconclusive` (see the tests).
+- **tail_class**: the power law is compared with an exponential and a
+  lognormal (`distribution_compare`, likelihood ratio `R` and p-value `p`;
+  significant means `p < 0.1`). `light` if the power law does not
+  significantly beat the exponential (`R > 0`); otherwise `power_law` if it
+  also significantly beats the lognormal, `lognormal` if it is significantly
+  worse than the lognormal (`R < 0`), else `heavy_inconclusive`. α is always
+  reported. Power law and lognormal are often indistinguishable: a lognormal
+  with large σ is nearly straight on a log-log plot over several decades, so
+  the likelihood-ratio test usually cannot separate them without far more
+  tail data than a trace provides (Clauset, Shalizi and Newman, "Power-law
+  distributions in empirical data", SIAM Review 2009). Even an exact
+  Pareto(α=2) sample of 20,000 values comes out `heavy_inconclusive` here.
 
 ## Output: `results/skew_summary.csv`
 
 One row per (query, kind, weight, window length). The sketch-bench saturation study reads
 `dataset, query_id, kind, weight, window_len_s, lower, mle, upper` to pick the θ and α
-range it sweeps.
+range it sweeps. For value rows it should use only rows whose `tail_class` is
+not `light`: a light tail decays at least exponentially, so its α is just the
+slope of whatever sliver of the tail the fit picked and does not describe a
+power-law regime.
 
 | Column | Meaning |
 |---|---|
@@ -134,8 +140,8 @@ range it sweeps.
 | `dropped_frac` | value rows: fraction of finite values that were ≤ 0 |
 | `xmin`, `ks_d`, `tail_frac` | value rows: fitted `xmin`, KS distance of the tail, and fraction of the fitted sample at or above `xmin` |
 | `R_lognormal`, `p_lognormal`, `R_exponential`, `p_exponential` | log-likelihood ratio (power law vs alternative) and its p-value |
-| `power_law_ok`, `best_alt` | see Definitions |
-| `ok_frac` | BOOM rows: share of variates with `power_law_ok` |
+| `tail_class` | see Definitions (BOOM: majority class over variates) |
+| `ok_frac` | BOOM rows: share of variates whose `tail_class` is not `light` |
 
 Plots in `out/`: `<dataset>__<query>__rank_<weight>__<window_len>s.png` (log-log
 rank-frequency with the lower/mle/upper θ lines, one per window length) and
@@ -151,13 +157,12 @@ rank-frequency with the lower/mle/upper θ lines, one per window length) and
 
 - **BOOM** strips tags and z-scores each variate, so there is no key θ and
   the raw value scale is lost. α is fitted per variate on `x - min(x)`
-  (zeros dropped). `ok_frac` is the share of compared variates with
-  `power_law_ok`. If `ok_frac >= 0.5`, the series row reports the medians
-  over the passing variates of each variate's lower, mle and upper, and the
-  diagnostics (`xmin`, `R`, `p`, ...) are medians over the same variates. If
-  `ok_frac < 0.5`, lower/mle/upper are empty, `power_law_ok` is false,
-  `best_alt` is the most common `best_alt` among the failing variates, and the
-  diagnostics are medians over the failing variates.
+  (zeros dropped), and each variate gets its own `tail_class`. The series
+  row reports the majority class and `ok_frac`, the share of variates that
+  are not `light`. lower/mle/upper are medians over the non-light variates of
+  each variate's lower, mle and upper, and the diagnostics (`xmin`, `R`,
+  `p`, ...) are medians over the same variates; all are empty if every
+  variate is light.
 - **Google join rule**: `task_usage` rows get `user`, `priority` and
   `scheduling_class` from the last non-null `task_events` value for the same
   `(job_id, task_index)`, and `logical_job_name` from the last non-null

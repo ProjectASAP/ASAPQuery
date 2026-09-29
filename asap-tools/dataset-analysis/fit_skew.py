@@ -43,14 +43,15 @@ MAX_FIT_SAMPLES = 100_000
 XMIN_GRID_SIZE = 50
 XMIN_GRID_QUANTILES = (0.5, 0.999)
 MIN_TAIL_SAMPLES = 100
-# BOOM series report alpha only if at least this share of variates pass.
-BOOM_MIN_OK_FRAC = 0.5
 SAMPLE_SEED = 0
 DEFAULT_MIN_WINDOW_ROWS = 200
 DEFAULT_MIN_WINDOW_KEYS = 2
 # A likelihood-ratio comparison is significant when its p is below this.
 COMPARE_P_THRESHOLD = 0.1
-INCONCLUSIVE = "inconclusive"
+TAIL_LIGHT = "light"
+TAIL_POWER_LAW = "power_law"
+TAIL_LOGNORMAL = "lognormal"
+TAIL_HEAVY_INCONCLUSIVE = "heavy_inconclusive"
 POWER_LAW_ALTERNATIVES = ("lognormal", "exponential")
 
 CSV_BLOCK_BYTES = 64 << 20
@@ -86,8 +87,7 @@ SUMMARY_COLUMNS = [
     "p_lognormal",
     "R_exponential",
     "p_exponential",
-    "power_law_ok",
-    "best_alt",
+    "tail_class",
     "ok_frac",
 ]
 
@@ -420,20 +420,22 @@ def subsample(x: np.ndarray) -> np.ndarray:
     return x[rng.choice(len(x), MAX_FIT_SAMPLES, replace=False)]
 
 
-def best_alternative(comparisons: Dict[str, Tuple[float, float]]) -> str:
-    """'' if the power law significantly beats every alternative (R > 0 with
-    small p); otherwise the alternative significantly better than it with the
-    most negative R, or 'inconclusive' if none is significantly better."""
-    if comparisons and all(
-        r > 0 and p < COMPARE_P_THRESHOLD for r, p in comparisons.values()
-    ):
-        return ""
-    better = {
-        alt: r
-        for alt, (r, p) in comparisons.items()
-        if r < 0 and p < COMPARE_P_THRESHOLD
-    }
-    return min(better, key=lambda alt: better[alt]) if better else INCONCLUSIVE
+def significant(comparison: Tuple[float, float], sign: int) -> bool:
+    """Whether (R, p) favors the power law (sign=1) or the alternative (sign=-1)."""
+    ratio, p = comparison
+    return ratio * sign > 0 and p < COMPARE_P_THRESHOLD
+
+
+def tail_class(comparisons: Dict[str, Tuple[float, float]]) -> str:
+    """light unless the power law significantly beats the exponential; then
+    power_law or lognormal by whichever significantly wins, else inconclusive."""
+    if not significant(comparisons["exponential"], 1):
+        return TAIL_LIGHT
+    if significant(comparisons["lognormal"], 1):
+        return TAIL_POWER_LAW
+    if significant(comparisons["lognormal"], -1):
+        return TAIL_LOGNORMAL
+    return TAIL_HEAVY_INCONCLUSIVE
 
 
 def xmin_candidates(x_sorted: np.ndarray) -> np.ndarray:
@@ -477,8 +479,7 @@ def fit_power_law(x: np.ndarray, compare: bool) -> Dict[str, Any]:
             ratio, p = fit.distribution_compare("power_law", alt)
             result[f"R_{alt}"], result[f"p_{alt}"] = ratio, p
             comparisons[alt] = (ratio, p)
-    result["best_alt"] = best_alternative(comparisons)
-    result["power_law_ok"] = not result["best_alt"]
+    result["tail_class"] = tail_class(comparisons)
     return result
 
 
@@ -752,8 +753,8 @@ def summarize_boom_series(
     fits: List[Dict[str, Any]],
     plot_dir: Optional[Path],
 ) -> Dict[str, Any]:
-    """Medians over the passing variates if at least BOOM_MIN_OK_FRAC of the
-    compared variates pass; otherwise no alpha and medians over the failing ones."""
+    """Majority tail class over the variates; alpha and diagnostics are medians
+    over the non-light variates, empty if every variate is light."""
     full: Dict[int, Dict[str, Any]] = {}
     samples: Dict[int, np.ndarray] = {}
     chunk_alphas: Dict[int, List[float]] = {v: [] for v in range(len(shifted))}
@@ -762,11 +763,10 @@ def summarize_boom_series(
             full[v], samples[v] = fit, x
         else:
             chunk_alphas[v].append(fit["alpha"])
-    compared = [v for v, f in full.items() if "power_law_ok" in f]
-    passing = [v for v in compared if full[v]["power_law_ok"]]
-    ok_frac = len(passing) / len(compared) if compared else np.nan
-    ok = bool(compared) and ok_frac >= BOOM_MIN_OK_FRAC
-    chosen = passing if ok else [v for v in compared if v not in passing]
+    classes = [f["tail_class"] for f in full.values() if "tail_class" in f]
+    chosen = [
+        v for v, f in full.items() if f.get("tail_class", TAIL_LIGHT) != TAIL_LIGHT
+    ]
     finite = int(np.isfinite(shifted).sum())
     row: Dict[str, Any] = {
         "dataset": dataset,
@@ -777,22 +777,18 @@ def summarize_boom_series(
         "K": len(shifted),
         "rows": finite,
         "dropped_frac": 1.0 - np.sum(shifted > 0) / finite,
-        "power_law_ok": ok,
-        "ok_frac": ok_frac,
+        "tail_class": max(sorted(set(classes)), key=classes.count) if classes else "",
+        "ok_frac": len(chosen) / len(classes) if classes else np.nan,
         "n_windows": 0,
     }
-    if ok:
+    if chosen:
         bounds = [window_bounds(chunk_alphas[v], full[v]["alpha"]) for v in chosen]
         row.update(
             n_windows=sum(b[2] for b in bounds),
             lower=median_or_nan([b[0] for b in bounds]),
             mle=median_or_nan([full[v]["alpha"] for v in chosen]),
             upper=median_or_nan([b[1] for b in bounds]),
-            best_alt="",
         )
-    elif chosen:
-        alts = [full[v]["best_alt"] for v in chosen]
-        row["best_alt"] = max(sorted(set(alts)), key=alts.count)
     for col in ("xmin", "ks_d", "tail_frac") + tuple(
         f"{k}_{alt}" for alt in POWER_LAW_ALTERNATIVES for k in ("R", "p")
     ):

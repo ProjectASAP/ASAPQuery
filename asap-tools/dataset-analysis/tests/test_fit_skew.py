@@ -68,48 +68,45 @@ class PowerLawFitTest(unittest.TestCase):
                 tail = np.sum(x >= fit["xmin"])
                 self.assertGreaterEqual(tail, fit_skew.MIN_TAIL_SAMPLES)
 
-    def test_exponential_and_lognormal_rejected(self):
-        samples = {
-            "exponential": np.random.default_rng(11).exponential(1.0, 20_000),
-            "lognormal": np.random.default_rng(12).lognormal(0.0, 1.0, 20_000),
-        }
-        for name, x in samples.items():
-            with self.subTest(name):
-                fit = fit_skew.fit_power_law(x, compare=True)
-                self.assertFalse(fit["power_law_ok"])
-                self.assertEqual(fit["best_alt"], name)
-                self.assertTrue(np.isfinite(fit["alpha"]))
+    def test_tail_class_synthetic(self):
+        exponential = np.random.default_rng(11).exponential(1.0, 20_000)
+        self.assertEqual(
+            fit_skew.fit_power_law(exponential, compare=True)["tail_class"],
+            fit_skew.TAIL_LIGHT,
+        )
+        # The KS-chosen tail of a lognormal(sigma=1) is its top few percent,
+        # where it decays too fast for the power law to beat an exponential,
+        # so it is classed light; only heavier lognormal tails reach
+        # lognormal or heavy_inconclusive.
+        lognormal = np.random.default_rng(12).lognormal(0.0, 1.0, 20_000)
+        fit = fit_skew.fit_power_law(lognormal, compare=True)
+        self.assertEqual(fit["tail_class"], fit_skew.TAIL_LIGHT)
+        self.assertTrue(np.isfinite(fit["alpha"]))
+        # A lognormal with large sigma mimics a power-law tail, so an exact
+        # Pareto(alpha=2) beats the exponential but not the lognormal.
+        pareto = np.random.default_rng(13).pareto(1.0, 20_000) + 1.0
+        fit = fit_skew.fit_power_law(pareto, compare=True)
+        self.assertIn(
+            fit["tail_class"],
+            (fit_skew.TAIL_POWER_LAW, fit_skew.TAIL_HEAVY_INCONCLUSIVE),
+        )
 
-    def test_pareto_beats_exponential_but_not_lognormal(self):
-        # A lognormal with large sigma mimics a power-law tail, so even an exact
-        # Pareto(alpha=2) cannot significantly beat it: the result is
-        # inconclusive rather than a pass.
-        x = np.random.default_rng(13).pareto(1.0, 20_000) + 1.0
-        fit = fit_skew.fit_power_law(x, compare=True)
-        self.assertGreater(fit["R_exponential"], 0)
-        self.assertLess(fit["p_exponential"], fit_skew.COMPARE_P_THRESHOLD)
-        self.assertFalse(fit["power_law_ok"])
-        self.assertEqual(fit["best_alt"], fit_skew.INCONCLUSIVE)
+    def test_tail_class_rule(self):
+        def classify(lognormal, exponential):
+            return fit_skew.tail_class(
+                {"lognormal": lognormal, "exponential": exponential}
+            )
 
-    def test_best_alternative(self):
-        best = fit_skew.best_alternative
-        # The power law significantly beats both alternatives.
+        beats_exp = (5.0, 0.01)
+        self.assertEqual(classify((2.0, 0.01), (5.0, 0.2)), fit_skew.TAIL_LIGHT)
+        self.assertEqual(classify((2.0, 0.01), (-5.0, 0.01)), fit_skew.TAIL_LIGHT)
+        self.assertEqual(classify((2.0, 0.01), beats_exp), fit_skew.TAIL_POWER_LAW)
+        self.assertEqual(classify((-2.0, 0.01), beats_exp), fit_skew.TAIL_LOGNORMAL)
         self.assertEqual(
-            best({"lognormal": (2.0, 0.05), "exponential": (3.0, 0.01)}), ""
+            classify((-2.0, 0.5), beats_exp), fit_skew.TAIL_HEAVY_INCONCLUSIVE
         )
-        # Winning one comparison without significance is not enough.
         self.assertEqual(
-            best({"lognormal": (2.0, 0.5), "exponential": (3.0, 0.01)}),
-            fit_skew.INCONCLUSIVE,
-        )
-        self.assertEqual(best({}), fit_skew.INCONCLUSIVE)
-        self.assertEqual(
-            best({"lognormal": (-1.0, 0.05), "exponential": (3.0, 0.01)}), "lognormal"
-        )
-        # Both significantly better: the most negative R wins.
-        self.assertEqual(
-            best({"lognormal": (-1.0, 0.01), "exponential": (-5.0, 0.01)}),
-            "exponential",
+            classify((2.0, 0.5), beats_exp), fit_skew.TAIL_HEAVY_INCONCLUSIVE
         )
 
     def test_xmin_grid(self):
@@ -137,7 +134,7 @@ class PowerLawFitTest(unittest.TestCase):
             np.arange(1.0, fit_skew.MIN_TAIL_SAMPLES), compare=True
         )
         self.assertTrue(np.isnan(fit["alpha"]))
-        self.assertNotIn("power_law_ok", fit)
+        self.assertNotIn("tail_class", fit)
 
 
 def key_window_frames(thetas, rng):
@@ -241,61 +238,70 @@ class WindowBoundsTest(unittest.TestCase):
             self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
 
 
-def boom_inputs(oks):
-    """Fake per-variate full fits (alpha = index + 2) with the given flags."""
-    shifted = np.ones((len(oks), 10))
-    jobs = [(np.ones(10), True) for _ in oks]
+def boom_inputs(classes):
+    """Fake per-variate full fits (alpha = index + 2) with the given classes."""
+    shifted = np.ones((len(classes), 10))
+    jobs = [(np.ones(10), True) for _ in classes]
     fits = [
         {
             "alpha": v + 2.0,
             "xmin": 1.0,
             "ks_d": 0.01,
             "tail_frac": 0.1,
-            "R_lognormal": 1.0 if ok else -3.0,
-            "p_lognormal": 0.5 if ok else 0.01,
-            "R_exponential": 2.0,
+            "R_lognormal": -1.0,
+            "p_lognormal": 0.5,
+            "R_exponential": -2.0 if cls == fit_skew.TAIL_LIGHT else 4.0,
             "p_exponential": 0.01,
-            "best_alt": "" if ok else "lognormal",
-            "power_law_ok": ok,
+            "tail_class": cls,
         }
-        for v, ok in enumerate(oks)
+        for v, cls in enumerate(classes)
     ]
-    return shifted, jobs, list(range(len(oks))), fits
+    return shifted, jobs, list(range(len(classes))), fits
+
+
+LIGHT = fit_skew.TAIL_LIGHT
+HEAVY = fit_skew.TAIL_HEAVY_INCONCLUSIVE
 
 
 class BoomSummaryTest(unittest.TestCase):
-    def summarize(self, oks):
+    def summarize(self, classes):
         q = {"id": "t", "promql": "quantile(0.99, target)"}
-        return fit_skew.summarize_boom_series("boom", q, "s", *boom_inputs(oks), None)
+        return fit_skew.summarize_boom_series(
+            "boom", q, "s", *boom_inputs(classes), None
+        )
 
-    def test_alpha_over_passing_variates(self):
-        row = self.summarize([True, False, True, True])
+    def test_alpha_over_non_light_variates(self):
+        row = self.summarize([HEAVY, LIGHT, HEAVY, fit_skew.TAIL_POWER_LAW])
+        self.assertEqual(row["tail_class"], HEAVY)
         self.assertEqual(row["ok_frac"], 0.75)
-        self.assertTrue(row["power_law_ok"])
-        self.assertEqual(row["best_alt"], "")
-        # Passing variates 0, 2, 3 have alpha 2, 4, 5.
+        # Non-light variates 0, 2, 3 have alpha 2, 4, 5.
         self.assertEqual(row["mle"], 4.0)
         self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
-        self.assertEqual(row["R_lognormal"], 1.0)
+        # R/p come from the same non-light variates.
+        self.assertEqual(row["R_exponential"], 4.0)
 
-    def test_mostly_failing_series_has_no_alpha(self):
-        row = self.summarize([True, False, False, False])
+    def test_majority_light_still_reports_heavy_alpha(self):
+        row = self.summarize([HEAVY, LIGHT, LIGHT, LIGHT])
+        self.assertEqual(row["tail_class"], LIGHT)
         self.assertEqual(row["ok_frac"], 0.25)
-        self.assertFalse(row["power_law_ok"])
-        self.assertEqual(row["best_alt"], "lognormal")
+        self.assertEqual(row["mle"], 2.0)
+        self.assertEqual(row["R_exponential"], 4.0)
+
+    def test_all_light_has_no_alpha(self):
+        row = self.summarize([LIGHT, LIGHT])
+        self.assertEqual(row["tail_class"], LIGHT)
+        self.assertEqual(row["ok_frac"], 0.0)
         self.assertNotIn("mle", row)
-        self.assertNotIn("lower", row)
-        # Diagnostics come from the failing variates, consistent with the flag.
-        self.assertEqual(row["R_lognormal"], -3.0)
+        self.assertTrue(np.isnan(row["R_exponential"]))
 
     def test_no_compared_variates(self):
         q = {"id": "t", "promql": "quantile(0.99, target)"}
-        shifted, jobs, owners, _ = boom_inputs([True])
+        shifted, jobs, owners, _ = boom_inputs([LIGHT])
         fits = [{"alpha": np.nan, "xmin": np.nan, "ks_d": np.nan}]
         row = fit_skew.summarize_boom_series(
             "boom", q, "s", shifted, jobs, owners, fits, None
         )
-        self.assertFalse(row["power_law_ok"])
+        self.assertEqual(row["tail_class"], "")
         self.assertTrue(np.isnan(row["ok_frac"]))
 
 
