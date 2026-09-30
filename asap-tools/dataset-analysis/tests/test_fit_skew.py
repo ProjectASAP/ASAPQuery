@@ -137,27 +137,40 @@ class PowerLawFitTest(unittest.TestCase):
         self.assertNotIn("tail_class", fit)
 
 
-def key_window_frames(thetas, rng):
-    """Finest-window key count frames, one Zipf window per theta."""
-    frames = [
+def key_step_frames(thetas, rng):
+    """Per-step key count frames, one Zipf distribution per step."""
+    return [
         pd.DataFrame(
             {
-                fit_skew.WINDOW_COL: window,
-                "k": np.arange(ZIPF_K).astype(str).astype(object),
+                fit_skew.STEP_COL: step,
+                fit_skew.KEY_COL: np.arange(1, ZIPF_K + 1, dtype=np.uint64),
                 fit_skew.COUNT_COL: zipf_counts(theta, rng),
             }
         )
-        for window, theta in enumerate(thetas)
+        for step, theta in enumerate(thetas)
     ]
-    return frames
 
 
 COUNT_QUERY = {
     "id": "q",
     "promql": "count by (k) (x)",
+    "promql_range": "sum by (k) (count_over_time(x[{range}]))",
     "group_by": ["k"],
     "weights": ["count"],
 }
+VALUE_QUERY = {
+    "id": "v",
+    "promql": "quantile(0.99, x)",
+    "promql_range": "quantile_over_time(0.99, x[{range}])",
+    "value": "x",
+}
+
+
+def summarize_counts(frames, token, span, min_keys=2):
+    agg = fit_skew.merge_key_parts(frames)
+    return fit_skew.summarize_keys(
+        "test", COUNT_QUERY, token, 60, agg, span, 1, min_keys, None
+    )
 
 
 class WindowBoundsTest(unittest.TestCase):
@@ -183,87 +196,196 @@ class WindowBoundsTest(unittest.TestCase):
         self.assertTrue(np.isnan(lower) and np.isnan(upper))
         self.assertEqual(n, 0)
 
-    def test_summarize_keys_skips_small_windows(self):
-        frames = key_window_frames((0.8, 1.2), np.random.default_rng(5))
-        # Window 2 has too few keys to be fitted.
+
+class RangeEvaluationTest(unittest.TestCase):
+    def test_skips_small_evaluations(self):
+        frames = key_step_frames((0.8, 1.2), np.random.default_rng(5))
+        # Step 2 has too few keys to be fitted.
         frames.append(
             pd.DataFrame(
-                {fit_skew.WINDOW_COL: 2, "k": ["0", "1"], fit_skew.COUNT_COL: [1e6, 1]}
+                {
+                    fit_skew.STEP_COL: 2,
+                    fit_skew.KEY_COL: np.array([1, 2], dtype=np.uint64),
+                    fit_skew.COUNT_COL: [1e6, 1],
+                }
             )
         )
-        agg = fit_skew.merge_key_parts(frames, ["k"])
-        (row,) = fit_skew.summarize_keys("test", COUNT_QUERY, agg, [60], 1, 10, None)
-        self.assertEqual(row["n_windows"], 2)
+        (row,) = summarize_counts(frames, "1m", (0, 2), min_keys=10)
+        self.assertEqual(row["n_evals"], 2)
+        self.assertEqual(row["range_s"], 60)
+        self.assertEqual(row["promql"], "sum by (k) (count_over_time(x[1m]))")
         self.assertAlmostEqual(row["lower"], 0.8, delta=ZIPF_TOLERANCE)
         self.assertAlmostEqual(row["upper"], 1.2, delta=ZIPF_TOLERANCE)
         self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
         self.assertEqual(row["K_total"], ZIPF_K)
-        self.assertEqual(row["window_len_s"], 60)
 
-    def test_summarize_keys_window_lengths(self):
-        frames = key_window_frames((0.8, 1.2, 0.8, 1.2), np.random.default_rng(6))
-        agg = fit_skew.merge_key_parts(frames, ["k"])
-        fine, coarse = fit_skew.summarize_keys(
-            "test", COUNT_QUERY, agg, [60, 120], 1, 2, None
-        )
-        self.assertEqual((fine["window_len_s"], coarse["window_len_s"]), (60, 120))
-        self.assertEqual((fine["n_windows"], coarse["n_windows"]), (4, 2))
-        self.assertEqual(fine["mle"], coarse["mle"])
-        # Merging a 0.8 and a 1.2 window gives something in between.
-        self.assertGreater(coarse["lower"], fine["lower"])
-        self.assertLess(coarse["upper"], fine["upper"])
-        for row in (fine, coarse):
-            self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
+    def test_sliding_ranges(self):
+        # A 2-step range is evaluated at every step once it is full (3 times
+        # over 4 steps), not over disjoint windows.
+        frames = key_step_frames((0.8, 1.2, 0.8, 1.2), np.random.default_rng(6))
+        (one,) = summarize_counts(frames, "1m", (0, 3))
+        (two,) = summarize_counts(frames, "2m", (0, 3))
+        self.assertEqual((one["n_evals"], two["n_evals"]), (4, 3))
+        self.assertEqual(one["mle"], two["mle"])
+        # Merging a 0.8 and a 1.2 step gives something in between.
+        self.assertGreater(two["lower"], one["lower"])
+        self.assertLess(two["upper"], one["upper"])
 
-    def test_per_window_stats(self):
-        # Finest windows 0..3 with 3, 1, 2, 2 keys; key "a" appears in all.
+    def test_per_evaluation_stats(self):
+        # Steps 0..3 with 3, 1, 2, 2 keys; key 1 appears in all.
         frame = pd.DataFrame(
             {
-                fit_skew.WINDOW_COL: [0, 0, 0, 1, 2, 2, 3, 3],
-                "k": ["a", "b", "c", "a", "a", "b", "a", "d"],
+                fit_skew.STEP_COL: [0, 0, 0, 1, 2, 2, 3, 3],
+                fit_skew.KEY_COL: np.array([1, 2, 3, 1, 1, 2, 1, 4], dtype=np.uint64),
                 fit_skew.COUNT_COL: [5, 1, 1, 7, 2, 2, 1, 9],
             }
         )
-        agg = fit_skew.merge_key_parts([frame], ["k"])
-        fine, coarse = fit_skew.summarize_keys(
-            "test", COUNT_QUERY, agg, [60, 120], 1, 2, None
-        )
-        self.assertEqual((fine["K_total"], fine["rows_total"]), (4, 28))
+        (one,) = summarize_counts([frame], "1m", (0, 3))
+        (two,) = summarize_counts([frame], "2m", (0, 3))
+        self.assertEqual((one["K_total"], one["rows_total"]), (4, 28))
         self.assertEqual(
-            (fine["K_win_min"], fine["K_win_median"], fine["K_win_max"]), (1, 2, 3)
+            (one["K_win_min"], one["K_win_median"], one["K_win_max"]), (1, 2, 3)
         )
         self.assertEqual(
-            (fine["rows_win_min"], fine["rows_win_median"], fine["rows_win_max"]),
+            (one["rows_win_min"], one["rows_win_median"], one["rows_win_max"]),
             (4, 7, 10),
         )
-        # Merged windows {0,1} and {2,3}: keys {a,b,c} and {a,b,d}, rows 14 and 14.
-        self.assertEqual((coarse["K_win_min"], coarse["K_win_max"]), (3, 3))
-        self.assertEqual((coarse["rows_win_min"], coarse["rows_win_max"]), (14, 14))
-        self.assertEqual(coarse["K_total"], fine["K_total"])
+        # Ranges {0,1}, {1,2}, {2,3}: keys {1,2,3}, {1,2}, {1,2,4}; rows 14, 11, 14.
+        self.assertEqual((two["K_win_min"], two["K_win_max"]), (2, 3))
+        self.assertEqual((two["rows_win_min"], two["rows_win_max"]), (11, 14))
+        self.assertLessEqual(set(one), set(fit_skew.SUMMARY_COLUMNS))
 
-    def test_coarsen_values(self):
-        windows = {0: np.array([1.0]), 1: np.array([2.0]), 2: np.array([3.0])}
-        coarse = fit_skew.coarsen_values(windows, 2)
-        self.assertEqual(sorted(coarse), [0, 1])
-        np.testing.assert_array_equal(coarse[0], [1.0, 2.0])
-        np.testing.assert_array_equal(coarse[1], [3.0])
+    def test_empty_steps_inside_span(self):
+        # Steps 1 and 2 have no rows; a 1-step range there is not evaluated.
+        frame = pd.DataFrame(
+            {
+                fit_skew.STEP_COL: [0, 0, 3, 3],
+                fit_skew.KEY_COL: np.array([1, 2, 1, 2], dtype=np.uint64),
+                fit_skew.COUNT_COL: [3, 1, 3, 1],
+            }
+        )
+        (row,) = summarize_counts([frame], "1m", (0, 3))
+        self.assertEqual(row["n_evals"], 2)
+        # Empty evaluations are gaps, not evaluations that saw zero rows.
+        self.assertEqual((row["rows_win_min"], row["K_win_min"]), (4, 2))
 
-    def test_summarize_values_window_lengths(self):
+    def test_merge_samples_is_uniform(self):
+        # Two parts, 10x apart in size, merged into a sample capped at
+        # MAX_FIT_SAMPLES: each part's share follows its size.
+        big = fit_skew.value_sample(np.zeros(10 * fit_skew.MAX_FIT_SAMPLES))
+        small = fit_skew.value_sample(np.ones(fit_skew.MAX_FIT_SAMPLES))
+        total, merged = fit_skew.merge_samples([big, small])
+        self.assertEqual(total, 11 * fit_skew.MAX_FIT_SAMPLES)
+        self.assertEqual(len(merged), fit_skew.MAX_FIT_SAMPLES)
+        self.assertAlmostEqual(merged.mean(), 1 / 11, delta=0.01)
+
+    def test_summarize_values_ranges(self):
         rng = np.random.default_rng(7)
         acc = {
             "n_finite": 4000,
-            "windows": {w: [rng.pareto(1.5, 1000) + 1.0] for w in range(4)},
+            "steps": {
+                w: fit_skew.value_sample(rng.pareto(1.5, 1000) + 1.0) for w in range(4)
+            },
         }
-        q = {"id": "v", "promql": "quantile(0.99, x)", "value": "x"}
+        rows = []
         # One thread: redirect_stdout in fit_power_law is process-wide.
         with ThreadPool(1) as pool:
-            rows = fit_skew.summarize_values("test", q, acc, [60, 240], pool, 1, None)
-        self.assertEqual([r["window_len_s"] for r in rows], [60, 240])
-        self.assertEqual([r["n_windows"] for r in rows], [4, 1])
+            for token in ("1m", "4m"):
+                rows.append(
+                    fit_skew.summarize_values(
+                        "test", VALUE_QUERY, token, 60, acc, (0, 3), pool, 1, None
+                    )
+                )
+        self.assertEqual([r["n_evals"] for r in rows], [4, 1])
         self.assertEqual([r["rows_win_median"] for r in rows], [1000, 4000])
         self.assertNotIn("K_win_median", rows[0])
+        self.assertLessEqual(set(rows[0]), set(fit_skew.SUMMARY_COLUMNS))
         for row in rows:
             self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
+
+
+def latest_rows(samples):
+    """(series, time_s) pairs -> latest_part-style rows with step = ceil(t / 60)."""
+    series, times = zip(*samples)
+    times = np.array(times, dtype=float)
+    return pd.DataFrame(
+        {
+            fit_skew.SERIES_COL: np.array(series, dtype=np.uint64),
+            fit_skew.STEP_COL: np.ceil(times / 60).astype(np.int64),
+            fit_skew.TIME_COL: times,
+            "_key:k": np.array(series, dtype=np.uint64),
+        }
+    )
+
+
+INSTANT_QUERY = {**COUNT_QUERY, "kind": "keys", "range": ["instant"]}
+INSTANT_KEY = fit_skew.query_key(INSTANT_QUERY)
+
+
+def instant_counts(parts):
+    """{(step, key): count} from instant_parts outputs."""
+    agg = fit_skew.merge_key_parts([p[INSTANT_KEY] for p in parts])
+    return {
+        (int(s), int(k)): int(c)
+        for s, k, c in agg[
+            [fit_skew.STEP_COL, fit_skew.KEY_COL, fit_skew.COUNT_COL]
+        ].itertuples(index=False)
+    }
+
+
+def split_files(files, lookback):
+    """instant parts computed per file then merged via resolve_boundaries."""
+    parts, boundary = [], []
+    for samples in files:
+        inner, edge = fit_skew.split_instant(
+            latest_rows(samples), [INSTANT_QUERY], lookback
+        )
+        parts.append(inner)
+        boundary.append(edge)
+    parts.append(fit_skew.resolve_boundaries(boundary, [INSTANT_QUERY], lookback))
+    return instant_counts(parts)
+
+
+class InstantEvaluationTest(unittest.TestCase):
+    def test_lookback_carries_last_sample(self):
+        # Series 1 is sampled at steps 1 and 2 then stops: with a 3-step
+        # lookback it is still seen at steps 3 and 4, not at 5.
+        counts = split_files([[(1, 60), (1, 120)]], lookback=3)
+        self.assertEqual(sorted(counts), [(1, 1), (2, 1), (3, 1), (4, 1)])
+
+    def test_gap_shorter_than_lookback(self):
+        # Samples at steps 1 and 3: step 2 still sees the step-1 sample once.
+        counts = split_files([[(1, 60), (1, 180)]], lookback=5)
+        self.assertEqual(counts[(2, 1)], 1)
+        self.assertEqual(counts[(3, 1)], 1)
+
+    def test_latest_sample_per_step(self):
+        # Two samples in step 1 count once.
+        counts = split_files([[(1, 30), (1, 55)]], lookback=1)
+        self.assertEqual(counts, {(1, 1): 1})
+
+    def test_split_across_files_matches_one_file(self):
+        rng = np.random.default_rng(8)
+        samples = [
+            (int(series), float(t))
+            for series in range(1, 6)
+            for t in np.sort(rng.choice(np.arange(1, 1200), 15, replace=False))
+        ]
+        samples.sort(key=lambda st: st[1])
+        whole = split_files([samples], lookback=5)
+        # Consecutive time chunks, cut inside a step so step 10 spans both files.
+        cut = [s for s in samples if s[1] <= 570], [s for s in samples if s[1] > 570]
+        self.assertEqual(split_files(list(cut), lookback=5), whole)
+
+    def test_interleaved_files_fail(self):
+        files = [[(1, 60), (1, 300)], [(1, 180)]]
+        with self.assertRaises(ValueError):
+            split_files(files, lookback=5)
+
+    def test_lookback_steps(self):
+        self.assertEqual(fit_skew.lookback_steps({"step_s": 60}), 5)
+        # A sampling period longer than 5 minutes is one step.
+        self.assertEqual(fit_skew.lookback_steps({"step_s": 600}), 1)
 
 
 def boom_inputs(classes):
@@ -305,6 +427,12 @@ class BoomSummaryTest(unittest.TestCase):
         # Non-light variates 0, 2, 3 have alpha 2, 4, 5.
         self.assertEqual(row["mle"], 4.0)
         self.assertTrue(row["lower"] <= row["mle"] <= row["upper"])
+        self.assertEqual(
+            (row["worst_alpha_memory"], row["worst_alpha_rank"]),
+            (row["lower"], row["upper"]),
+        )
+        # Every summary field must be a CSV column, or it is silently dropped.
+        self.assertLessEqual(set(row), set(fit_skew.SUMMARY_COLUMNS))
         # R/p come from the same non-light variates.
         self.assertEqual(row["R_exponential"], 4.0)
 
@@ -336,7 +464,12 @@ class BoomSummaryTest(unittest.TestCase):
 VALID_CONFIG = {
     "dataset": "d",
     "tables": {
-        "t": {"label_columns": ["a", "b"], "value_columns": ["v"]},
+        "t": {
+            "label_columns": ["a", "b"],
+            "value_columns": ["v"],
+            "step_s": 60,
+            "series_key": ["a", "b"],
+        },
     },
     "queries": [
         {
@@ -346,8 +479,19 @@ VALID_CONFIG = {
             "group_by": ["a"],
             "value": "v",
             "weights": ["count", "value"],
+            "promql": "count by (a) (v)",
+            "promql_range": "sum by (a) (count_over_time(v[{range}]))",
+            "range": ["instant", "5m"],
         },
-        {"id": "vals", "table": "t", "kind": "values", "group_by": [], "value": "v"},
+        {
+            "id": "vals",
+            "table": "t",
+            "kind": "values",
+            "group_by": [],
+            "value": "v",
+            "promql": "quantile(0.99, v)",
+            "range": ["instant"],
+        },
     ],
 }
 
@@ -373,20 +517,38 @@ class ValidateConfigTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     fit_skew.validate_config(cfg)
 
-    def test_window_lengths(self):
-        fit_skew.validate_window_lengths([60, 300, 1800], "d")
-        for lengths in ([], [300, 60], [60, 60], [60, 90]):
-            with self.subTest(lengths=lengths):
+    def test_bad_ranges(self):
+        cases = {
+            "no range": [],
+            "bad duration": ["5x"],
+            "not a multiple of step_s": ["90s"],
+        }
+        for name, ranges in cases.items():
+            with self.subTest(name):
+                cfg = copy.deepcopy(VALID_CONFIG)
+                cfg["queries"][0]["range"] = ranges
                 with self.assertRaises(ValueError):
-                    fit_skew.validate_window_lengths(lengths, "d")
+                    fit_skew.validate_config(cfg)
 
-    def test_table_window_lengths(self):
+    def test_range_needs_promql_range(self):
         cfg = copy.deepcopy(VALID_CONFIG)
-        cfg["tables"]["t"]["window_lengths_s"] = [60, 86400]
-        fit_skew.validate_config(cfg)
-        cfg["tables"]["t"]["window_lengths_s"] = [60, 90]
+        cfg["queries"][1]["range"] = ["5m"]
         with self.assertRaises(ValueError):
             fit_skew.validate_config(cfg)
+
+    def test_instant_needs_series_key(self):
+        cfg = copy.deepcopy(VALID_CONFIG)
+        del cfg["tables"]["t"]["series_key"]
+        with self.assertRaises(ValueError):
+            fit_skew.validate_config(cfg)
+
+    def test_bad_step(self):
+        for step in (None, 0, 1.5):
+            with self.subTest(step=step):
+                cfg = copy.deepcopy(VALID_CONFIG)
+                cfg["tables"]["t"]["step_s"] = step
+                with self.assertRaises(ValueError):
+                    fit_skew.validate_config(cfg)
 
     def test_value_weight_needs_value(self):
         cfg = copy.deepcopy(VALID_CONFIG)

@@ -2,9 +2,10 @@
 """Fit label skew (Zipf theta) and value skew (power-law alpha) for trace query sets.
 
 Key queries fit a discrete Zipf exponent to the rank-frequency of the group-by
-key; value queries fit a continuous power law to the queried column. Every fit
-is repeated per window: lower/upper are the min/max over windows and mle is the
-fit on all data.
+key; value queries fit a continuous power law to the queried column. Every
+query is evaluated at each step of its table, as an instant query (latest
+sample per series) and/or as range queries over the last S seconds: lower/upper
+are the min/max over evaluation times and mle is the fit on all data.
 """
 
 import argparse
@@ -12,6 +13,7 @@ import glob
 import io
 import logging
 import os
+import re
 import tarfile
 import time
 import warnings
@@ -28,6 +30,7 @@ import pyarrow.csv as pacsv
 import yaml
 from matplotlib.figure import Figure
 from numpy.typing import ArrayLike
+from scipy import sparse
 from scipy.optimize import minimize_scalar
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -44,8 +47,8 @@ XMIN_GRID_SIZE = 50
 XMIN_GRID_QUANTILES = (0.5, 0.999)
 MIN_TAIL_SAMPLES = 100
 SAMPLE_SEED = 0
-DEFAULT_MIN_WINDOW_ROWS = 200
-DEFAULT_MIN_WINDOW_KEYS = 2
+DEFAULT_MIN_EVAL_ROWS = 200
+DEFAULT_MIN_EVAL_KEYS = 2
 # A likelihood-ratio comparison is significant when its p is below this.
 COMPARE_P_THRESHOLD = 0.1
 TAIL_LIGHT = "light"
@@ -54,11 +57,35 @@ TAIL_LOGNORMAL = "lognormal"
 TAIL_HEAVY_INCONCLUSIVE = "heavy_inconclusive"
 POWER_LAW_ALTERNATIVES = ("lognormal", "exponential")
 
+INSTANT = "instant"
+# An instant query sees a series' latest sample at most this old (Prometheus
+# default), or one sampling period if that is longer.
+PROMETHEUS_LOOKBACK_S = 300
+DURATION_UNITS_S = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+# Range key sums are materialized for this many evaluation times at a time.
+EVAL_CHUNK = 32
+# Accuracy each sketch must reach on a query; a query's `targets` overrides.
+DEFAULT_TARGETS = {
+    "are_top100": 0.05,  # CMS / CountSketch mean relative error of the top 100 keys
+    "precision_at_k": 0.95,  # top-k precision@k
+    "hll_rel_err": 0.02,  # HLL relative cardinality error
+    "rank_err": 0.01,  # KLL / DDSketch mean rank error
+}
+
 CSV_BLOCK_BYTES = 64 << 20
 CSV_NULL_VALUES = ["", "None", "NULL", "NaN", "nan"]
 LABEL_TYPE = pa.dictionary(pa.int32(), pa.string())
 
-WINDOW_COL = "_window"
+# Step index w holds timestamps in ((w - 1) * step_s, w * step_s], so the
+# evaluation at t = w * step_s over range S sums steps w - S / step_s + 1 .. w.
+STEP_COL = "_step"
+TIME_COL = "_time_s"
+# Label tuples are hashed to uint64; MISSING_KEY marks a null label.
+KEY_COL = "_key"
+SERIES_COL = "_series"
+NEXT_COL = "_next_step"
+FILE_COL = "_file"
+MISSING_KEY = np.uint64(0)
 COUNT_COL = "count"
 VALUE_SUM_COL = "value_sum"
 KEY_WEIGHTS = {"count", "value"}
@@ -72,7 +99,9 @@ SUMMARY_COLUMNS = [
     "promql",
     "kind",
     "weight",
-    "window_len_s",
+    "range",
+    "range_s",
+    "step_s",
     "K_total",
     "rows_total",
     "K_win_min",
@@ -81,10 +110,17 @@ SUMMARY_COLUMNS = [
     "rows_win_min",
     "rows_win_median",
     "rows_win_max",
-    "n_windows",
+    "n_evals",
     "lower",
     "mle",
     "upper",
+    "worst_theta_cms",
+    "worst_K",
+    "min_N",
+    "max_N",
+    "worst_alpha_rank",
+    "worst_alpha_memory",
+    *(f"target_{name}" for name in DEFAULT_TARGETS),
     "top1_share",
     "theta_ls",
     "dropped_frac",
@@ -116,6 +152,46 @@ def load_config(path: str) -> Dict[str, Any]:
     return cfg
 
 
+def duration_secs(token: str) -> int:
+    """'5m' -> 300."""
+    match = re.fullmatch(r"(\d+)([smhd])", token)
+    if match is None:
+        raise ValueError(f"bad duration {token!r}, expected e.g. 30s, 5m, 1h")
+    return int(match.group(1)) * DURATION_UNITS_S[match.group(2)]
+
+
+def range_secs(token: str) -> float:
+    """Range duration in seconds; NaN for instant."""
+    return np.nan if token == INSTANT else duration_secs(token)
+
+
+def range_steps(token: str, step_s: int) -> int:
+    """Steps an evaluation covers: one for instant (per-evaluation aggregates)."""
+    return 1 if token == INSTANT else duration_secs(token) // step_s
+
+
+def lookback_steps(table: Dict[str, Any]) -> int:
+    lookback_s = max(PROMETHEUS_LOOKBACK_S, table["step_s"])
+    return -(-lookback_s // table["step_s"])
+
+
+def validate_ranges(q: Dict[str, Any], table: Dict[str, Any], where: str) -> None:
+    if not q.get("range"):
+        raise ValueError(f"{where}: range must list instant and/or durations")
+    for token in q["range"]:
+        if token == INSTANT:
+            if "series_key" not in table:
+                raise ValueError(f"{where}: instant needs a table series_key")
+            if "promql" not in q:
+                raise ValueError(f"{where}: instant needs promql")
+            continue
+        secs = duration_secs(token)
+        if secs % table["step_s"]:
+            raise ValueError(f"{where}: range {token} is not a multiple of step_s")
+        if "{range}" not in q.get("promql_range", ""):
+            raise ValueError(f"{where}: range queries need promql_range with {{range}}")
+
+
 def validate_query(q: Dict[str, Any], table: Dict[str, Any], where: str) -> None:
     if q["kind"] not in QUERY_KINDS:
         raise ValueError(f"{where}: kind must be one of {sorted(QUERY_KINDS)}")
@@ -125,6 +201,11 @@ def validate_query(q: Dict[str, Any], table: Dict[str, Any], where: str) -> None
     value = q.get("value")
     if value is not None and value not in table["value_columns"]:
         raise ValueError(f"{where}: {value!r} is not a value column")
+    unknown = set(q.get("targets", {})) - set(DEFAULT_TARGETS)
+    if unknown:
+        raise ValueError(f"{where}: unknown targets {sorted(unknown)}")
+    if table.get("format") != "boom_arrow":
+        validate_ranges(q, table, where)
     if q["kind"] == "values":
         if value is None:
             raise ValueError(f"{where}: value queries need a value column")
@@ -136,31 +217,41 @@ def validate_query(q: Dict[str, Any], table: Dict[str, Any], where: str) -> None
         raise ValueError(f"{where}: weights must be a subset of {KEY_WEIGHTS}")
     if "value" in weights and value is None:
         raise ValueError(f"{where}: weight 'value' needs a value column")
-
-
-def validate_window_lengths(lengths: Sequence[int], where: str) -> None:
-    """Coarser windows are built by merging finest windows, so every length
-    must be a multiple of the first (finest) one."""
-    if not lengths or list(lengths) != sorted(set(lengths)):
-        raise ValueError(f"{where}: window_lengths_s must be ascending and unique")
-    if any(length % lengths[0] for length in lengths):
-        raise ValueError(f"{where}: window_lengths_s must be multiples of the first")
+    if cms_weight(q) not in weights:
+        raise ValueError(f"{where}: cms_weight must be one of the weights")
 
 
 def validate_config(cfg: Dict[str, Any]) -> None:
-    if "window_lengths_s" in cfg:
-        validate_window_lengths(cfg["window_lengths_s"], cfg["dataset"])
     for name, table in cfg["tables"].items():
-        if "window_lengths_s" in table:
-            validate_window_lengths(
-                table["window_lengths_s"], f"{cfg['dataset']}/{name}"
-            )
+        where = f"{cfg['dataset']}/{name}"
+        if table.get("format") == "boom_arrow":
+            continue
+        if not isinstance(table.get("step_s"), int) or table["step_s"] <= 0:
+            raise ValueError(f"{where}: step_s must be a positive integer")
+        if not set(table.get("series_key", [])) <= set(table["label_columns"]):
+            raise ValueError(f"{where}: series_key must be label columns")
     for q in cfg["queries"]:
         where = f"{cfg['dataset']}/{q['id']}"
         table = cfg["tables"].get(q["table"])
         if table is None:
             raise ValueError(f"{where}: unknown table {q['table']!r}")
         validate_query(q, table, where)
+
+
+def cms_weight(q: Dict[str, Any]) -> str:
+    """Weight a per-key counter sketch sees: count for count-by, value for sum-by."""
+    return q.get("cms_weight", "count")
+
+
+def query_targets(q: Dict[str, Any]) -> Dict[str, float]:
+    targets = {**DEFAULT_TARGETS, **q.get("targets", {})}
+    return {f"target_{name}": value for name, value in targets.items()}
+
+
+def range_promql(q: Dict[str, Any], token: str) -> str:
+    if token == INSTANT:
+        return q["promql"]
+    return q["promql_range"].format(range=token)
 
 
 def expand_files(data_root: str, patterns: Sequence[str]) -> List[str]:
@@ -277,53 +368,234 @@ def query_key(q: Dict[str, Any]) -> Tuple[str, str]:
     return q["id"], q["kind"]
 
 
-def merge_key_parts(parts: List[pd.DataFrame], group_by: List[str]) -> pd.DataFrame:
-    """Sum per-(window, key) counts and value sums; indexed by window and keys."""
-    return pd.concat(parts, ignore_index=True).groupby([WINDOW_COL] + group_by).sum()
+def has_range(q: Dict[str, Any]) -> bool:
+    return any(token != INSTANT for token in q["range"])
+
+
+def label_hash(frame: pd.DataFrame, cols: Sequence[str]) -> np.ndarray:
+    """uint64 hash of each row's label tuple, equal across batches and files."""
+    return pd.util.hash_pandas_object(frame[list(cols)], index=False).to_numpy()
+
+
+def key_hash(frame: pd.DataFrame, cols: Sequence[str]) -> np.ndarray:
+    """label_hash, with MISSING_KEY where any label is null (such rows are dropped)."""
+    hashes = label_hash(frame, cols)
+    hashes[frame[list(cols)].isna().any(axis=1).to_numpy()] = MISSING_KEY
+    return hashes
+
+
+def group_col(q: Dict[str, Any]) -> str:
+    return f"{KEY_COL}:{','.join(q['group_by'])}"
+
+
+def merge_key_parts(parts: List[pd.DataFrame]) -> pd.DataFrame:
+    """Sum per-(step, key) counts and value sums."""
+    return (
+        pd.concat(parts, ignore_index=True)
+        .groupby([STEP_COL, KEY_COL], sort=False)
+        .sum()
+        .reset_index()
+    )
 
 
 def key_part(frame: pd.DataFrame, q: Dict[str, Any]) -> pd.DataFrame:
-    keys = [WINDOW_COL] + q["group_by"]
+    """Row count and clipped value sum per (step, key); frame carries KEY_COL."""
+    frame = frame[frame[KEY_COL] != MISSING_KEY]
+    keys = [STEP_COL, KEY_COL]
     if "value" in q["weights"]:
         clipped = frame.assign(**{VALUE_SUM_COL: frame[q["value"]].clip(lower=0)})
-        part = clipped.groupby(keys, observed=True, sort=False).agg(
+        part = clipped.groupby(keys, sort=False).agg(
             **{
                 COUNT_COL: (VALUE_SUM_COL, "size"),
                 VALUE_SUM_COL: (VALUE_SUM_COL, "sum"),
             }
         )
     else:
-        part = frame.groupby(keys, observed=True, sort=False).size().to_frame(COUNT_COL)
-    # Categories differ between batches, so merge on plain values.
-    return part.reset_index().astype({c: object for c in q["group_by"]})
+        part = frame.groupby(keys, sort=False).size().to_frame(COUNT_COL)
+    return part.reset_index()
 
 
-def add_values(acc: Dict[str, Any], windows: np.ndarray, values: np.ndarray) -> None:
+def add_values(acc: Dict[str, Any], steps: np.ndarray, values: np.ndarray) -> None:
     finite = np.isfinite(values)
     positive = values > 0
     acc["n_finite"] += int(finite.sum())
-    for w in np.unique(windows[positive]):
-        acc["windows"].setdefault(int(w), []).append(values[positive & (windows == w)])
+    for w in np.unique(steps[positive]):
+        acc["steps"].setdefault(int(w), []).append(values[positive & (steps == w)])
+
+
+def value_sample(x: np.ndarray) -> Tuple[int, np.ndarray]:
+    """(len(x), up to MAX_FIT_SAMPLES of x in random order): any prefix of the
+    sample is a uniform sample of x, which merge_samples relies on."""
+    rng = np.random.default_rng(SAMPLE_SEED)
+    return len(x), x[rng.permutation(len(x))[:MAX_FIT_SAMPLES]]
+
+
+def merge_samples(parts: Sequence[Tuple[int, np.ndarray]]) -> Tuple[int, np.ndarray]:
+    """Uniform sample of the union of value_sample parts: each part gives a
+    multivariate-hypergeometric share of its prefix."""
+    counts = np.array([n for n, _ in parts], dtype=np.int64)
+    total = int(counts.sum())
+    rng = np.random.default_rng(SAMPLE_SEED)
+    take = rng.multivariate_hypergeometric(counts, min(total, MAX_FIT_SAMPLES))
+    merged = np.concatenate([x[:k] for (_, x), k in zip(parts, take)])
+    return total, rng.permutation(merged)
+
+
+def sample_steps(acc: Dict[str, Any]) -> Dict[str, Any]:
+    """Replace each step's value arrays by one value_sample."""
+    steps = {w: value_sample(np.concatenate(xs)) for w, xs in acc["steps"].items()}
+    return {"n_finite": acc["n_finite"], "steps": steps}
+
+
+def merge_step_samples(accs: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    parts: Dict[int, List[Tuple[int, np.ndarray]]] = {}
+    for acc in accs:
+        for w, sample in acc["steps"].items():
+            parts.setdefault(w, []).append(sample)
+    return {
+        "n_finite": sum(acc["n_finite"] for acc in accs),
+        "steps": {w: merge_samples(ps) for w, ps in parts.items()},
+    }
+
+
+def latest_per_step(rows: pd.DataFrame) -> pd.DataFrame:
+    """Each series' last sample in each step."""
+    rows = rows.sort_values(TIME_COL, kind="stable")
+    return rows.drop_duplicates([SERIES_COL, STEP_COL], keep="last")
+
+
+def latest_part(
+    frame: pd.DataFrame, series_key: List[str], queries: List[Dict[str, Any]]
+) -> pd.DataFrame:
+    """Per (series, step) latest sample with the group keys and values the
+    instant queries need."""
+    cols: Dict[str, Any] = {
+        SERIES_COL: label_hash(frame, series_key),
+        STEP_COL: frame[STEP_COL].to_numpy(),
+        TIME_COL: frame[TIME_COL].to_numpy(),
+    }
+    for q in queries:
+        if q["kind"] == "keys":
+            cols[group_col(q)] = key_hash(frame, q["group_by"])
+        if q.get("value"):
+            cols[q["value"]] = frame[q["value"]].to_numpy(dtype=float)
+    return latest_per_step(pd.DataFrame(cols))
+
+
+def next_step_of_series(rows: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    """For rows sorted by (series, step): the series' next step (NaN if none)
+    and whether the row is the series' first."""
+    series = rows[SERIES_COL].to_numpy()
+    steps = rows[STEP_COL].to_numpy()
+    same = series[1:] == series[:-1]
+    has_next = np.append(same, False)
+    next_step = np.where(has_next, np.append(steps[1:], 0), np.nan)
+    return next_step, ~np.append(False, same)
+
+
+def split_instant(
+    rows: pd.DataFrame, queries: List[Dict[str, Any]], lookback: int
+) -> Tuple[Dict[Tuple[str, str], Any], pd.DataFrame]:
+    """Instant aggregates of one file's latest samples, except each series'
+    first and last sample in the file, which are returned for resolve_boundaries
+    because another file may hold the same step or the next sample."""
+    rows = latest_per_step(rows).sort_values([SERIES_COL, STEP_COL], kind="stable")
+    next_step, first = next_step_of_series(rows)
+    rows = rows.assign(**{NEXT_COL: next_step})
+    interior = ~first & ~np.isnan(next_step)
+    return instant_parts(rows[interior], queries, lookback), rows[~interior]
+
+
+def check_file_order(rows: pd.DataFrame) -> None:
+    """split_instant takes a series' next sample from the same file, so a
+    series' steps in one file must not interleave with its steps in another."""
+    spans = (
+        rows.groupby([SERIES_COL, FILE_COL])[STEP_COL]
+        .agg(["min", "max"])
+        .reset_index()
+        .sort_values([SERIES_COL, "min", "max"])
+    )
+    series = spans[SERIES_COL].to_numpy()
+    lo, hi = spans["min"].to_numpy(), spans["max"].to_numpy()
+    overlap = (series[1:] == series[:-1]) & (lo[1:] < hi[:-1])
+    if overlap.any():
+        raise ValueError(
+            f"{int(overlap.sum())} series have samples interleaved across files; "
+            "instant evaluation needs files that are consecutive time chunks"
+        )
+
+
+def resolve_boundaries(
+    boundary: Sequence[pd.DataFrame], queries: List[Dict[str, Any]], lookback: int
+) -> Dict[Tuple[str, str], Any]:
+    """Instant aggregates of the per-file first/last samples: keep the latest
+    sample per (series, step) over files, and take its next step as the
+    nearer of the in-file next step and the next boundary sample."""
+    rows = pd.concat(
+        [b.assign(**{FILE_COL: i}) for i, b in enumerate(boundary)], ignore_index=True
+    )
+    check_file_order(rows)
+    rows = rows.sort_values([SERIES_COL, STEP_COL, TIME_COL], kind="stable")
+    in_file_next = rows.groupby([SERIES_COL, STEP_COL])[NEXT_COL].transform("min")
+    rows = rows.assign(**{NEXT_COL: in_file_next})
+    rows = rows.drop_duplicates([SERIES_COL, STEP_COL], keep="last")
+    next_step, _ = next_step_of_series(rows)
+    rows = rows.assign(**{NEXT_COL: np.fmin(rows[NEXT_COL].to_numpy(), next_step)})
+    return instant_parts(rows, queries, lookback)
+
+
+def instant_parts(
+    rows: pd.DataFrame, queries: List[Dict[str, Any]], lookback: int
+) -> Dict[Tuple[str, str], Any]:
+    """Per-evaluation aggregates of latest samples. A sample at step w is its
+    series' latest for evaluations w .. min(next step, w + lookback) - 1, e.g.
+    with lookback 5 a series that stops after step 3 counts at steps 3..7."""
+    start = rows[STEP_COL].to_numpy()
+    end = np.fmin(rows[NEXT_COL].to_numpy(), start + lookback).astype(np.int64)
+    reps = end - start
+    idx = np.repeat(np.arange(len(rows)), reps)
+    offsets = np.arange(len(idx)) - np.repeat(np.cumsum(reps) - reps, reps)
+    evals = rows.iloc[idx].assign(**{STEP_COL: start[idx] + offsets})
+    out: Dict[Tuple[str, str], Any] = {}
+    for q in queries:
+        if q["kind"] == "keys":
+            out[query_key(q)] = key_part(
+                evals.rename(columns={group_col(q): KEY_COL}), q
+            )
+        else:
+            acc: Dict[str, Any] = {"n_finite": 0, "steps": {}}
+            add_values(
+                acc, evals[STEP_COL].to_numpy(), evals[q["value"]].to_numpy(float)
+            )
+            out[query_key(q)] = sample_steps(acc)
+    return out
 
 
 def aggregate_file(task: Tuple[Any, ...]) -> Dict[str, Any]:
-    """Per-window key aggregates and positive values for one file."""
-    data_root, table, path, queries, window_len_s, joins, max_rows = task
+    """Per-step key aggregates and value samples (range queries) and instant
+    aggregates (instant queries) for one file."""
+    data_root, table, path, queries, joins, max_rows = task
     time_col = table["time_column"]
+    range_queries = [q for q in queries if has_range(q)]
+    instant_queries = [q for q in queries if INSTANT in q["range"]]
     value_cols = {q["value"] for q in queries if q.get("value")}
     join_cols = [c for j in table.get("joins", []) for c in j["columns"]]
     needed = {time_col} | value_cols
     needed |= {c for q in queries for c in q["group_by"] if c not in join_cols}
     needed |= {c for j in table.get("joins", []) for c in j["keys"]}
+    if instant_queries:
+        needed |= set(table["series_key"])
 
     key_parts: Dict[Tuple[str, str], List[pd.DataFrame]] = {}
     values: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    for q in queries:
+    for q in range_queries:
         if q["kind"] == "keys":
             key_parts[query_key(q)] = []
         else:
-            values[query_key(q)] = {"n_finite": 0, "windows": {}}
+            values[query_key(q)] = {"n_finite": 0, "steps": {}}
+    latest: List[pd.DataFrame] = []
     rows_read = 0
+    step_span = (np.inf, -np.inf)
     bad_rows: List[str] = []
     frames = table_frames(
         data_root, table, path, sorted(needed), value_cols | {time_col}, bad_rows
@@ -335,32 +607,42 @@ def aggregate_file(task: Tuple[Any, ...]) -> Dict[str, Any]:
         secs = frame[time_col] * table["time_unit_secs"]
         keep = secs.notna()
         frame = frame[keep].copy()
-        frame[WINDOW_COL] = np.floor(secs[keep] / window_len_s).astype(np.int64)
+        frame[TIME_COL] = secs[keep]
+        frame[STEP_COL] = np.ceil(secs[keep] / table["step_s"]).astype(np.int64)
+        if len(frame):
+            step_span = (
+                min(step_span[0], frame[STEP_COL].min()),
+                max(step_span[1], frame[STEP_COL].max()),
+            )
         for join, lookup in joins:
             frame = frame.astype({c: object for c in join["keys"]})
             frame = frame.join(lookup, on=join["keys"])
-        for q in queries:
+        for q in range_queries:
             if q["kind"] == "keys":
-                key_parts[query_key(q)].append(key_part(frame, q))
+                keyed = frame.assign(**{KEY_COL: key_hash(frame, q["group_by"])})
+                key_parts[query_key(q)].append(key_part(keyed, q))
             else:
                 add_values(
                     values[query_key(q)],
-                    frame[WINDOW_COL].to_numpy(),
+                    frame[STEP_COL].to_numpy(),
                     frame[q["value"]].to_numpy(dtype=float),
                 )
+        if instant_queries:
+            latest.append(latest_part(frame, table["series_key"], instant_queries))
         if max_rows is not None and rows_read >= max_rows:
             break
-    keys = {
-        query_key(q): merge_key_parts(key_parts[query_key(q)], q["group_by"])
-        for q in queries
-        if q["kind"] == "keys"
-    }
-    return {
-        "keys": keys,
-        "values": values,
+    out: Dict[str, Any] = {
+        "keys": {k: merge_key_parts(parts) for k, parts in key_parts.items()},
+        "values": {k: sample_steps(acc) for k, acc in values.items()},
+        "span": step_span,
         "rows_read": rows_read,
         "bad_rows": len(bad_rows),
     }
+    if instant_queries:
+        out["instant"], out["boundary"] = split_instant(
+            pd.concat(latest, ignore_index=True), instant_queries, lookback_steps(table)
+        )
+    return out
 
 
 # ---------------------------------------------------------------- fitting
@@ -397,7 +679,7 @@ def loglog_slope(weights: ArrayLike) -> float:
 def window_bounds(
     window_estimates: Sequence[float], pooled: float
 ) -> Tuple[float, float, int]:
-    """(lower, upper, n_windows): min and max over the finite per-window
+    """(lower, upper, n_evals): min and max over the finite per-window
     estimates together with the pooled estimate, so lower <= pooled <= upper."""
     windows = [e for e in window_estimates if np.isfinite(e)]
     candidates = windows + ([pooled] if np.isfinite(pooled) else [])
@@ -415,23 +697,6 @@ def spread(prefix: str, per_window: Sequence[float]) -> Dict[str, float]:
         f"{prefix}_median": float(np.median(per_window)),
         f"{prefix}_max": float(np.max(per_window)),
     }
-
-
-def coarsen_keys(agg: pd.DataFrame, factor: int, group_by: List[str]) -> pd.DataFrame:
-    """Merge every `factor` consecutive finest windows of a key aggregate."""
-    frame = agg.reset_index()
-    frame[WINDOW_COL] //= factor
-    return merge_key_parts([frame], group_by)
-
-
-def coarsen_values(
-    windows: Dict[int, np.ndarray], factor: int
-) -> Dict[int, np.ndarray]:
-    """Concatenate the values of every `factor` consecutive finest windows."""
-    parts: Dict[int, List[np.ndarray]] = {}
-    for w, x in windows.items():
-        parts.setdefault(w // factor, []).append(x)
-    return {w: np.concatenate(xs) for w, xs in parts.items()}
 
 
 def subsample(x: np.ndarray) -> np.ndarray:
@@ -560,132 +825,185 @@ def plot_path(plot_dir: Path, dataset: str, name: str) -> Path:
 # ---------------------------------------------------------------- summaries
 
 
+def rolling_key_sums(
+    agg: pd.DataFrame, columns: Sequence[str], n_steps: int, span: Tuple[int, int]
+) -> Iterator[Dict[str, np.ndarray]]:
+    """For each evaluation step t in [first + n_steps - 1, last], the per-key
+    sums of `columns` over steps t - n_steps + 1 .. t (keys present only).
+    Computed as a banded 0/1 matrix times the sparse step x key matrix."""
+    first, last = span
+    agg = agg[(agg[STEP_COL] >= first) & (agg[STEP_COL] <= last)]
+    n_total = last - first + 1
+    n_evals = n_total - n_steps + 1
+    if n_evals <= 0 or agg.empty:
+        return
+    _, key_idx = np.unique(agg[KEY_COL].to_numpy(), return_inverse=True)
+    coords = (agg[STEP_COL].to_numpy() - first, key_idx)
+    shape = (n_total, int(key_idx.max()) + 1)
+    mats = {
+        c: sparse.csr_matrix((agg[c].to_numpy(dtype=float), coords), shape=shape)
+        for c in columns
+    }
+    # Row e covers steps e .. e + n_steps - 1, i.e. evaluation first + e + n_steps - 1.
+    band_rows = np.repeat(np.arange(n_evals), n_steps)
+    band_cols = band_rows + np.tile(np.arange(n_steps), n_evals)
+    band = sparse.csr_matrix(
+        (np.ones(len(band_rows)), (band_rows, band_cols)), shape=(n_evals, n_total)
+    )
+    for start in range(0, n_evals, EVAL_CHUNK):
+        chunk = {
+            c: (band[start : start + EVAL_CHUNK] @ m).tocsr() for c, m in mats.items()
+        }
+        for i in range(min(EVAL_CHUNK, n_evals - start)):
+            yield {c: m.data[m.indptr[i] : m.indptr[i + 1]] for c, m in chunk.items()}
+
+
 def summarize_keys(
     dataset: str,
     q: Dict[str, Any],
+    token: str,
+    step_s: int,
     agg: pd.DataFrame,
-    window_lengths: Sequence[int],
+    span: Tuple[int, int],
     min_rows: int,
     min_keys: int,
     plot_dir: Optional[Path],
 ) -> List[Dict[str, Any]]:
-    """One row per weight and window length; agg holds finest-window counts."""
+    """One row per weight for one range; agg holds per-step key aggregates
+    (range queries) or per-evaluation ones (instant, one step each)."""
+    n_steps = range_steps(token, step_s)
     rows = int(agg[COUNT_COL].sum())
     if rows == 0:
         raise ValueError(f"{dataset}/{q['id']}: no rows with non-null group keys")
     columns = {w: COUNT_COL if w == "count" else VALUE_SUM_COL for w in q["weights"]}
     per_key = {}
     for weight, col in columns.items():
-        totals = agg.groupby(level=q["group_by"])[col].sum().to_numpy()
+        totals = agg.groupby(KEY_COL)[col].sum().to_numpy()
         per_key[weight] = np.sort(totals[totals > 0])[::-1]
     pooled = {weight: zipf_mle(w) for weight, w in per_key.items()}
-    out = []
-    for window_len in window_lengths:
-        coarse = coarsen_keys(agg, window_len // window_lengths[0], q["group_by"])
-        by_window = coarse.groupby(level=WINDOW_COL)[COUNT_COL]
-        window_stats = {
-            **spread("K_win", by_window.size().tolist()),
-            **spread("rows_win", by_window.sum().tolist()),
-        }
+    estimates: Dict[str, List[float]] = {weight: [] for weight in columns}
+    keys_per_eval, rows_per_eval = [], []
+    for sums in rolling_key_sums(agg, sorted(set(columns.values())), n_steps, span):
+        counts = sums[COUNT_COL]
+        n_rows = counts.sum()
+        if n_rows == 0:
+            # No data in range (a gap in the trace), as summarize_values skips.
+            continue
+        keys_per_eval.append(int(np.sum(counts > 0)))
+        rows_per_eval.append(n_rows)
         for weight, col in columns.items():
-            estimates = []
-            for _, window in coarse.groupby(level=WINDOW_COL):
-                w = window[col].to_numpy()
-                if window[COUNT_COL].sum() >= min_rows and np.sum(w > 0) >= min_keys:
-                    estimates.append(zipf_mle(w))
-            lower, upper, n_windows = window_bounds(estimates, pooled[weight])
-            keys = per_key[weight]
-            out.append(
-                {
-                    "dataset": dataset,
-                    "query_id": q["id"],
-                    "promql": q["promql"],
-                    "kind": "keys",
-                    "weight": weight,
-                    "window_len_s": window_len,
-                    "K_total": len(keys),
-                    "rows_total": rows,
-                    **window_stats,
-                    "n_windows": n_windows,
-                    "lower": lower,
-                    "mle": pooled[weight],
-                    "upper": upper,
-                    "top1_share": keys[0] / keys.sum() if len(keys) else np.nan,
-                    "theta_ls": loglog_slope(keys),
-                }
+            w = sums[col]
+            if n_rows >= min_rows and np.sum(w > 0) >= min_keys:
+                estimates[weight].append(zipf_mle(w))
+    eval_stats = {
+        **spread("K_win", keys_per_eval),
+        **spread("rows_win", rows_per_eval),
+    }
+    out = []
+    for weight in columns:
+        lower, upper, n_evals = window_bounds(estimates[weight], pooled[weight])
+        keys = per_key[weight]
+        out.append(
+            {
+                "dataset": dataset,
+                "query_id": q["id"],
+                "promql": range_promql(q, token),
+                "kind": "keys",
+                "weight": weight,
+                "range": token,
+                "range_s": range_secs(token),
+                "step_s": step_s,
+                "K_total": len(keys),
+                "rows_total": rows,
+                **eval_stats,
+                "n_evals": n_evals,
+                "lower": lower,
+                "mle": pooled[weight],
+                "upper": upper,
+                "worst_theta_cms": lower if weight == cms_weight(q) else np.nan,
+                "worst_K": eval_stats.get("K_win_max", np.nan),
+                "min_N": eval_stats.get("rows_win_min", np.nan),
+                "max_N": eval_stats.get("rows_win_max", np.nan),
+                **query_targets(q),
+                "top1_share": keys[0] / keys.sum() if len(keys) else np.nan,
+                "theta_ls": loglog_slope(keys),
+            }
+        )
+        if plot_dir is not None and len(keys):
+            plot_rank_frequency(
+                keys,
+                {"lower": lower, "mle": pooled[weight], "upper": upper},
+                f"{dataset}: {range_promql(q, token)} [{weight}]",
+                plot_path(plot_dir, dataset, f"{q['id']}__rank_{weight}__{token}"),
             )
-            if plot_dir is not None and len(keys):
-                plot_rank_frequency(
-                    keys,
-                    {"lower": lower, "mle": pooled[weight], "upper": upper},
-                    f"{dataset}: {q['promql']} [{weight}, {window_len}s windows]",
-                    plot_path(
-                        plot_dir, dataset, f"{q['id']}__rank_{weight}__{window_len}s"
-                    ),
-                )
     return out
 
 
 def summarize_values(
     dataset: str,
     q: Dict[str, Any],
+    token: str,
+    step_s: int,
     acc: Dict[str, Any],
-    window_lengths: Sequence[int],
+    span: Tuple[int, int],
     pool: Any,
     min_rows: int,
     plot_dir: Optional[Path],
-) -> List[Dict[str, Any]]:
-    """One row per window length; acc holds positive values per finest window.
-    Coarser windows concatenate the full finest-window values, then subsample."""
-    finest = {w: np.concatenate(parts) for w, parts in acc["windows"].items()}
-    if not finest:
+) -> Dict[str, Any]:
+    """Row for one range; acc holds a value_sample per step (range queries)
+    or per evaluation (instant). Each evaluation merges its steps' samples."""
+    n_steps = range_steps(token, step_s)
+    steps = acc["steps"]
+    if not steps:
         raise ValueError(f"{dataset}/{q['id']}: no positive values")
-    all_values = np.concatenate(list(finest.values()))
-    mle_sample = subsample(all_values)
+    n_positive, mle_sample = merge_samples(list(steps.values()))
     jobs = [(mle_sample, True)]
-    job_window_lens = [0]
-    window_rows: Dict[int, List[int]] = {}
-    for window_len in window_lengths:
-        coarse = coarsen_values(finest, window_len // window_lengths[0])
-        window_rows[window_len] = [len(x) for x in coarse.values()]
-        for x in coarse.values():
-            if len(x) >= min_rows:
-                jobs.append((subsample(x), False))
-                job_window_lens.append(window_len)
+    rows_per_eval = []
+    first, last = span
+    for t in range(first + n_steps - 1, last + 1):
+        parts = [steps[s] for s in range(t - n_steps + 1, t + 1) if s in steps]
+        if not parts:
+            continue
+        n_t, sample = merge_samples(parts)
+        rows_per_eval.append(n_t)
+        if n_t >= min_rows:
+            jobs.append((sample, False))
     fits = pool.starmap(fit_power_law, jobs)
     mle_fit = fits[0]
     if plot_dir is not None:
         plot_ccdf(
             mle_sample,
             mle_fit,
-            f"{dataset}: {q['value']} ({q['id']})",
-            plot_path(plot_dir, dataset, f"{q['id']}__ccdf"),
+            f"{dataset}: {range_promql(q, token)}",
+            plot_path(plot_dir, dataset, f"{q['id']}__ccdf__{token}"),
         )
-    out = []
-    for window_len in window_lengths:
-        alphas = [
-            f["alpha"] for f, wl in zip(fits, job_window_lens) if wl == window_len
-        ]
-        lower, upper, n_windows = window_bounds(alphas, mle_fit["alpha"])
-        out.append(
-            {
-                "dataset": dataset,
-                "query_id": q["id"],
-                "promql": q["promql"],
-                "kind": "values",
-                "weight": "",
-                "window_len_s": window_len,
-                "rows_total": acc["n_finite"],
-                **spread("rows_win", window_rows[window_len]),
-                "n_windows": n_windows,
-                "lower": lower,
-                "mle": mle_fit["alpha"],
-                "upper": upper,
-                "dropped_frac": 1.0 - len(all_values) / acc["n_finite"],
-                **{k: v for k, v in mle_fit.items() if k != "alpha"},
-            }
-        )
-    return out
+    lower, upper, n_evals = window_bounds(
+        [f["alpha"] for f in fits[1:]], mle_fit["alpha"]
+    )
+    eval_stats = spread("rows_win", rows_per_eval)
+    return {
+        "dataset": dataset,
+        "query_id": q["id"],
+        "promql": range_promql(q, token),
+        "kind": "values",
+        "weight": "",
+        "range": token,
+        "range_s": range_secs(token),
+        "step_s": step_s,
+        "rows_total": acc["n_finite"],
+        **eval_stats,
+        "n_evals": n_evals,
+        "lower": lower,
+        "mle": mle_fit["alpha"],
+        "upper": upper,
+        "min_N": eval_stats.get("rows_win_min", np.nan),
+        "max_N": eval_stats.get("rows_win_max", np.nan),
+        "worst_alpha_rank": upper,
+        "worst_alpha_memory": lower,
+        **query_targets(q),
+        "dropped_frac": 1.0 - n_positive / acc["n_finite"],
+        **{k: v for k, v in mle_fit.items() if k != "alpha"},
+    }
 
 
 def analyze_table(
@@ -697,64 +1015,75 @@ def analyze_table(
     args: argparse.Namespace,
     plot_dir: Optional[Path],
 ) -> List[Dict[str, Any]]:
-    window_lengths = table.get("window_lengths_s") or cfg["window_lengths_s"]
     # Load each join once here rather than in every file task.
     joins = [(j, load_join(data_root, table, j)) for j in table.get("joins", [])]
     tasks = [
-        (
-            data_root,
-            table,
-            path,
-            queries,
-            window_lengths[0],
-            joins,
-            args.max_rows,
-        )
+        (data_root, table, path, queries, joins, args.max_rows)
         for path in expand_files(data_root, table["files"])
     ]
     partials = pool.map(aggregate_file, tasks)
+    span = (
+        int(min(p["span"][0] for p in partials)),
+        int(max(p["span"][1] for p in partials)),
+    )
     log.info(
-        "read %d rows (%d malformed rows skipped) from %d files",
+        "read %d rows (%d malformed rows skipped) from %d files, steps %d..%d",
         sum(p["rows_read"] for p in partials),
         sum(p["bad_rows"] for p in partials),
         len(partials),
+        *span,
     )
+    instant_queries = [q for q in queries if INSTANT in q["range"]]
+    boundary: Dict[Tuple[str, str], Any] = {}
+    if instant_queries:
+        boundary = resolve_boundaries(
+            [p.pop("boundary") for p in partials],
+            instant_queries,
+            lookback_steps(table),
+        )
     out: List[Dict[str, Any]] = []
     for q in queries:
         key = query_key(q)
-        if q["kind"] == "keys":
-            agg = merge_key_parts(
-                [p["keys"][key].reset_index() for p in partials], q["group_by"]
-            )
-            out.extend(
-                summarize_keys(
-                    cfg["dataset"],
-                    q,
-                    agg,
-                    window_lengths,
-                    args.min_window_rows,
-                    args.min_window_keys,
-                    plot_dir,
+        merge: Any = merge_key_parts if q["kind"] == "keys" else merge_step_samples
+        # Pop parts as they are merged to free memory early.
+        per_step: Any = (
+            merge([p[q["kind"]].pop(key) for p in partials]) if has_range(q) else None
+        )
+        for token in q["range"]:
+            agg: Any
+            if token == INSTANT:
+                agg = merge([p["instant"].pop(key) for p in partials] + [boundary[key]])
+            else:
+                agg = per_step
+            if q["kind"] == "keys":
+                out.extend(
+                    summarize_keys(
+                        cfg["dataset"],
+                        q,
+                        token,
+                        table["step_s"],
+                        agg,
+                        span,
+                        args.min_eval_rows,
+                        args.min_eval_keys,
+                        plot_dir,
+                    )
                 )
-            )
-        else:
-            acc: Dict[str, Any] = {"n_finite": 0, "windows": {}}
-            for p in partials:
-                acc["n_finite"] += p["values"][key]["n_finite"]
-                for w, parts in p["values"][key]["windows"].items():
-                    acc["windows"].setdefault(w, []).extend(parts)
-            out.extend(
-                summarize_values(
-                    cfg["dataset"],
-                    q,
-                    acc,
-                    window_lengths,
-                    pool,
-                    args.min_window_rows,
-                    plot_dir,
+            else:
+                out.append(
+                    summarize_values(
+                        cfg["dataset"],
+                        q,
+                        token,
+                        table["step_s"],
+                        agg,
+                        span,
+                        pool,
+                        args.min_eval_rows,
+                        plot_dir,
+                    )
                 )
-            )
-        log.info("%s %s %s done", cfg["dataset"], q["id"], q["kind"])
+            log.info("%s %s %s %s done", cfg["dataset"], q["id"], q["kind"], token)
     return out
 
 
@@ -812,16 +1141,18 @@ def summarize_boom_series(
         "dropped_frac": 1.0 - np.sum(shifted > 0) / finite,
         "tail_class": max(sorted(set(classes)), key=classes.count) if classes else "",
         "ok_frac": len(chosen) / len(classes) if classes else np.nan,
-        "n_windows": 0,
+        "n_evals": 0,
+        **query_targets(q),
     }
     if chosen:
         bounds = [window_bounds(chunk_alphas[v], full[v]["alpha"]) for v in chosen]
         row.update(
-            n_windows=sum(b[2] for b in bounds),
+            n_evals=sum(b[2] for b in bounds),
             lower=median_or_nan([b[0] for b in bounds]),
             mle=median_or_nan([full[v]["alpha"] for v in chosen]),
             upper=median_or_nan([b[1] for b in bounds]),
         )
+        row.update(worst_alpha_rank=row["upper"], worst_alpha_memory=row["lower"])
     for col in ("xmin", "ks_d", "tail_frac") + tuple(
         f"{k}_{alt}" for alt in POWER_LAW_ALTERNATIVES for k in ("R", "p")
     ):
@@ -855,7 +1186,7 @@ def analyze_boom(
         if args.max_rows is not None:
             variates = variates[:, : args.max_rows]
         shifted = variates - np.nanmin(variates, axis=1, keepdims=True)
-        jobs, owners = boom_fit_jobs(shifted, cfg["n_chunks"], args.min_window_rows)
+        jobs, owners = boom_fit_jobs(shifted, cfg["n_chunks"], args.min_eval_rows)
         fits = pool.starmap(fit_power_law, jobs)
         series = Path(path).parent.name
         out.append(
@@ -904,16 +1235,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="rows read per file (BOOM: time steps per series), for smoke runs",
     )
     parser.add_argument(
-        "--min-window-rows",
+        "--min-eval-rows",
         type=int,
-        default=DEFAULT_MIN_WINDOW_ROWS,
-        help="skip windows with fewer rows (values: fewer positive values)",
+        default=DEFAULT_MIN_EVAL_ROWS,
+        help="skip evaluations with fewer rows (values: fewer positive values)",
     )
     parser.add_argument(
-        "--min-window-keys",
+        "--min-eval-keys",
         type=int,
-        default=DEFAULT_MIN_WINDOW_KEYS,
-        help="skip key-query windows with fewer distinct keys",
+        default=DEFAULT_MIN_EVAL_KEYS,
+        help="skip key-query evaluations with fewer distinct keys",
     )
     parser.add_argument("--workers", type=int, default=os.cpu_count())
     return parser.parse_args(argv)

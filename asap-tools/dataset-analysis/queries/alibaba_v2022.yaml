@@ -1,15 +1,21 @@
 # Alibaba cluster-trace-microservices-v2022: first 6 hours of CallGraph and
 # MCRRTUpdate, first day of MSMetricsUpdate and NodeMetricsUpdate.
+#
+# Tables: step_s is the sampling period and the evaluation step; series_key
+# (metric tables only) is the label set identifying one series.
+# Queries: range lists `instant` and/or durations; promql is the instant form
+# and promql_range the range form with {range} substituted. cms_weight is the
+# key weight a per-key counter sketch sees (default count; value for sum-by).
+# targets overrides the default accuracy targets in fit_skew.py.
 dataset: alibaba_v2022
-# Bounds are computed at each window length; the first is the finest. Tables
-# without window_lengths_s use this one.
-window_lengths_s: [60, 300, 1800, 3600, 21600]
 tables:
   MSRTMCR:
     format: alibaba_tar
     files: ["alibaba-v2022/MCRRTUpdate_*.tar.gz"]
     time_column: timestamp
     time_unit_secs: 1.0e-3
+    step_s: 60
+    series_key: [msname, msinstanceid, nodeid]
     label_columns: [msname, msinstanceid, nodeid]
     value_columns: [providerrpc_rt, providerrpc_mcr]
   CallGraph:
@@ -17,130 +23,163 @@ tables:
     files: ["alibaba-v2022/CallGraph_*.tar.gz"]
     time_column: timestamp
     time_unit_secs: 1.0e-3
+    step_s: 60
     label_columns: [traceid, service, rpc_id, rpctype, um, uminstanceid, interface, dm, dminstanceid]
     value_columns: [rt]
   MSMetrics:
     format: alibaba_tar
     files: ["alibaba-v2022/MSMetricsUpdate_*.tar.gz"]
-    window_lengths_s: [60, 300, 1800, 3600, 21600, 86400]
     time_column: timestamp
     time_unit_secs: 1.0e-3
+    step_s: 60
+    series_key: [msname, msinstanceid, nodeid]
     label_columns: [msname, msinstanceid, nodeid]
     value_columns: [cpu_utilization, memory_utilization]
   NodeMetrics:
     format: alibaba_tar
     files: ["alibaba-v2022/NodeMetricsUpdate_*.tar.gz"]
-    window_lengths_s: [60, 300, 1800, 3600, 21600, 86400]
     time_column: timestamp
     time_unit_secs: 1.0e-3
+    step_s: 60
+    series_key: [nodeid]
     label_columns: [nodeid]
     value_columns: [cpu_utilization, memory_utilization]
 queries:
   - id: mcr_by_msname
     promql: sum by (msname) (providerrpc_mcr)
+    promql_range: sum by (msname) (sum_over_time(providerrpc_mcr[{range}]))
+    range: [instant, 5m, 1h]
     table: MSRTMCR
     kind: keys
     group_by: [msname]
     value: providerrpc_mcr
     weights: [count, value]
+    cms_weight: value
   - id: mcr_by_nodeid
     promql: sum by (nodeid) (providerrpc_mcr)
+    promql_range: sum by (nodeid) (sum_over_time(providerrpc_mcr[{range}]))
+    range: [instant, 5m, 1h]
     table: MSRTMCR
     kind: keys
     group_by: [nodeid]
     value: providerrpc_mcr
     weights: [count, value]
+    cms_weight: value
   - id: rt_p99_by_msname
     promql: quantile by (msname) (0.99, providerrpc_rt)
+    promql_range: quantile by (msname) (0.99, quantile_over_time(0.99, providerrpc_rt[{range}]))
+    range: [instant, 5m, 1h]
     table: MSRTMCR
     kind: keys
     group_by: [msname]
     value: providerrpc_rt
     weights: [count, value]
   - id: rt_p99_by_msname
-    promql: quantile by (msname) (0.99, providerrpc_rt)
+    promql: quantile(0.99, providerrpc_rt)
+    promql_range: quantile_over_time(0.99, providerrpc_rt[{range}])
+    range: [instant, 5m, 1h]
     table: MSRTMCR
     kind: values
     group_by: []
     value: providerrpc_rt
+  # CallGraph rows are events (one per call), so only range queries apply.
   - id: calls_by_rpctype
-    promql: count by (rpctype) (rt)
+    promql_range: sum by (rpctype) (count_over_time(rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [rpctype]
     weights: [count]
   - id: calls_by_service
-    promql: count by (service) (rt)
+    promql_range: sum by (service) (count_over_time(rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [service]
     weights: [count]
   - id: calls_by_um
-    promql: count by (um) (rt)
+    promql_range: sum by (um) (count_over_time(rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [um]
     weights: [count]
   - id: calls_by_dm
-    promql: count by (dm) (rt)
+    promql_range: sum by (dm) (count_over_time(rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [dm]
     weights: [count]
   - id: calls_by_interface
-    promql: count by (interface) (rt)
+    promql_range: sum by (interface) (count_over_time(rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [interface]
     weights: [count]
   - id: calls_by_um_dm
-    promql: count by (um, dm) (rt)
+    promql_range: sum by (um, dm) (count_over_time(rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [um, dm]
     weights: [count]
   - id: calls_by_service_um_dm
-    promql: count by (service, um, dm) (rt)
+    promql_range: sum by (service, um, dm) (count_over_time(rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [service, um, dm]
     weights: [count]
   - id: rt_p99_by_service
-    promql: quantile by (service) (0.99, rt)
+    promql_range: quantile by (service) (0.99, quantile_over_time(0.99, rt[{range}]))
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: keys
     group_by: [service]
     value: rt
     weights: [count, value]
   - id: rt_p99_by_service
-    promql: quantile by (service) (0.99, rt)
+    promql_range: quantile_over_time(0.99, rt[{range}])
+    range: [1m, 5m, 1h]
     table: CallGraph
     kind: values
     group_by: []
     value: rt
   - id: ms_cpu_by_msname
     promql: sum by (msname) (cpu_utilization)
+    promql_range: sum by (msname) (sum_over_time(cpu_utilization[{range}]))
+    range: [instant, 5m, 1h]
     table: MSMetrics
     kind: keys
     group_by: [msname]
     value: cpu_utilization
     weights: [count, value]
+    cms_weight: value
   # Baseline: one key per node, expected to be close to uniform.
   - id: node_cpu_by_nodeid
     promql: sum by (nodeid) (cpu_utilization)
+    promql_range: sum by (nodeid) (sum_over_time(cpu_utilization[{range}]))
+    range: [instant, 5m, 1h]
     table: NodeMetrics
     kind: keys
     group_by: [nodeid]
     value: cpu_utilization
     weights: [count, value]
+    cms_weight: value
   - id: ms_cpu_p99
     promql: quantile(0.99, cpu_utilization)
+    promql_range: quantile_over_time(0.99, cpu_utilization[{range}])
+    range: [instant, 5m, 1h]
     table: MSMetrics
     kind: values
     group_by: []
     value: cpu_utilization
   - id: node_cpu_p99
     promql: quantile(0.99, cpu_utilization)
+    promql_range: quantile_over_time(0.99, cpu_utilization[{range}])
+    range: [instant, 5m, 1h]
     table: NodeMetrics
     kind: values
     group_by: []

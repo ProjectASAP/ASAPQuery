@@ -1,15 +1,16 @@
 # Google ClusterData 2011-2: task_usage parts 0-119 (about 7 days) joined with
-# task and job attributes.
+# task and job attributes. Fields are described in alibaba_v2022.yaml.
 dataset: google_2011
-# Bounds are computed at each window length; the first is the finest.
-window_lengths_s: [300, 900, 3600, 21600, 86400, 604800]
 tables:
   task_usage:
     format: google_csv
     schema: google-2011/schema.csv
     files: ["google-2011/task_usage/part-*-of-00500.csv.gz"]
-    time_column: start_time
+    # Each row measures a 5-minute interval; it is stamped at its end time.
+    time_column: end_time
     time_unit_secs: 1.0e-6
+    step_s: 300
+    series_key: [job_id, task_index, machine_id]
     # Each join keeps the last event per key (sorted by sort_by) and left-joins it.
     joins:
       - files: ["google-2011/task_events/part-*-of-00500.csv.gz"]
@@ -20,67 +21,92 @@ tables:
         keys: [job_id]
         sort_by: time
         columns: [logical_job_name]
-    label_columns: [job_id, machine_id, user, priority, scheduling_class, logical_job_name]
+    label_columns: [job_id, task_index, machine_id, user, priority, scheduling_class, logical_job_name]
     value_columns: [cpu_rate, canonical_memory_usage]
 queries:
   - id: cpu_by_user
     promql: sum by (user) (cpu_rate)
+    promql_range: sum by (user) (sum_over_time(cpu_rate[{range}]))
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: keys
     group_by: [user]
     value: cpu_rate
     weights: [count, value]
+    cms_weight: value
   - id: cpu_by_user_priority
     promql: sum by (user, priority) (cpu_rate)
+    promql_range: sum by (user, priority) (sum_over_time(cpu_rate[{range}]))
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: keys
     group_by: [user, priority]
     value: cpu_rate
     weights: [count, value]
+    cms_weight: value
   - id: cpu_by_priority
     promql: sum by (priority) (cpu_rate)
+    promql_range: sum by (priority) (sum_over_time(cpu_rate[{range}]))
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: keys
     group_by: [priority]
     value: cpu_rate
     weights: [count, value]
+    cms_weight: value
   - id: cpu_by_job_id
     promql: sum by (job_id) (cpu_rate)
+    promql_range: sum by (job_id) (sum_over_time(cpu_rate[{range}]))
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: keys
     group_by: [job_id]
     value: cpu_rate
     weights: [count, value]
+    cms_weight: value
   - id: cpu_by_logical_job_name
     promql: sum by (logical_job_name) (cpu_rate)
+    promql_range: sum by (logical_job_name) (sum_over_time(cpu_rate[{range}]))
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: keys
     group_by: [logical_job_name]
     value: cpu_rate
     weights: [count, value]
+    cms_weight: value
   - id: cpu_by_scheduling_class
     promql: sum by (scheduling_class) (cpu_rate)
+    promql_range: sum by (scheduling_class) (sum_over_time(cpu_rate[{range}]))
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: keys
     group_by: [scheduling_class]
     value: cpu_rate
     weights: [count, value]
+    cms_weight: value
   # Baseline: one key per machine, expected to be close to uniform.
   - id: cpu_by_machine_id
     promql: sum by (machine_id) (cpu_rate)
+    promql_range: sum by (machine_id) (sum_over_time(cpu_rate[{range}]))
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: keys
     group_by: [machine_id]
     value: cpu_rate
     weights: [count, value]
+    cms_weight: value
   - id: cpu_p99
     promql: quantile(0.99, cpu_rate)
+    promql_range: quantile_over_time(0.99, cpu_rate[{range}])
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: values
     group_by: []
     value: cpu_rate
   - id: memory_p99
     promql: quantile(0.99, canonical_memory_usage)
+    promql_range: quantile_over_time(0.99, canonical_memory_usage[{range}])
+    range: [instant, 5m, 1h]
     table: task_usage
     kind: values
     group_by: []

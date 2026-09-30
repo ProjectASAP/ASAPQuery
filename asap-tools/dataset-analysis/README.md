@@ -5,16 +5,17 @@ be run over a realistic range of skew rather than a single guessed value.
 
 Two tasks:
 
-1. **Label query sets per dataset.** `queries/*.yaml` lists PromQL-style
-   queries over each trace (`sum by (user) (cpu_rate)`,
-   `count by (um, dm) (rt)`, `quantile(0.99, cpu_rate)`, ...), each with
-   the table, group-by labels and value column it reads.
+1. **Label query sets per dataset.** `queries/*.yaml` lists PromQL queries
+   over each trace, each in an instant form (`sum by (user) (cpu_rate)`)
+   and/or a range form (`sum by (user) (sum_over_time(cpu_rate[5m]))`),
+   with the table, group-by labels and value column it reads.
 2. **Lower / MLE / upper skew per distribution.** `fit_skew.py` fits
    - a discrete Zipf exponent θ to the rank-frequency of every key query's
      group-by key (weighted by row count and by value sum), and
    - a continuous power-law tail exponent α to every value query's column,
 
-   once on all data and once per time window, at several window lengths.
+   once on all data and once per evaluation time, the way Prometheus would
+   evaluate the query every `step_s` seconds.
 
 ## Running
 
@@ -31,24 +32,25 @@ This writes `results/skew_summary.csv` (committed) and plots to `out/`
 - `--max-rows 300000`: rows read per file (BOOM: time steps per series)
   for a quick smoke run.
 - `--no-plots`, `--out DIR`, `--summary PATH`.
-- `--min-window-rows` (default 200) and `--min-window-keys` (default 2):
-  windows below either threshold are skipped when computing the bounds.
+- `--min-eval-rows` (default 200) and `--min-eval-keys` (default 2):
+  evaluations below either threshold are skipped when computing the bounds.
 - `--workers N`: process pool size (default: all cores). Files and fits run
   in parallel.
 
-A full run over the fetched data takes about 1.6 hours with 24 workers on a
-56-core machine (peak RSS of the main process about 49 GB). Alibaba archives are streamed with `tarfile`, not extracted.
+A full run over the fetched data takes about 2 hours with 24 workers on a
+56-core machine (peak RSS of the main process about 69 GB). Alibaba archives are streamed with `tarfile`, not extracted.
 
 Tests: `python -m unittest discover -s tests -p 'test_*.py'`.
 
 ## Datasets
 
-| Dataset | Files | Tables | Window lengths |
-|---|---|---|---|
-| Google ClusterData 2011-2 | `task_usage` and `task_events` parts 0..119 of 500 (about 7 days), all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5 min, 15 min, 1 h, 6 h, 1 day, 7 days |
-| Alibaba microservices v2022 | `CallGraph_0..119`, `MCRRTUpdate_0..119` (first 6 hours) | `CallGraph`, `MSRTMCR` | 1 min, 5 min, 30 min, 1 h, 6 h |
-| | `MSMetricsUpdate_0..47`, `NodeMetricsUpdate_0..1` (first day) | `MSMetrics`, `NodeMetrics` | 1 min, 5 min, 30 min, 1 h, 6 h, 1 day |
-| Datadog BOOM | `dataset_taxonomy.json` and 20 multivariate series | per-series `target` | 20 equal chunks per series |
+| Dataset | Files | Tables | Step | Ranges |
+|---|---|---|---|---|
+| Google ClusterData 2011-2 | `task_usage` and `task_events` parts 0..119 of 500 (about 7 days), all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5 min | instant, 5m, 1h |
+| Alibaba microservices v2022 | `MCRRTUpdate_0..119` (first 6 hours) | `MSRTMCR` | 1 min | instant, 5m, 1h |
+| | `CallGraph_0..119` (first 6 hours) | `CallGraph` | 1 min | 1m, 5m, 1h (events, no instant) |
+| | `MSMetricsUpdate_0..47`, `NodeMetricsUpdate_0..1` (first day) | `MSMetrics`, `NodeMetrics` | 1 min | instant, 5m, 1h |
+| Datadog BOOM | `dataset_taxonomy.json` and 20 multivariate series | per-series `target` | none | 20 equal chunks per series |
 
 Citations:
 
@@ -91,20 +93,37 @@ Citations:
   a grid of 50 quantiles from p50 to p99.9, restricted to candidates that
   keep at least 100 values in the tail. α therefore describes a tail between
   the top half and roughly the top 0.1% of the values; `tail_frac` says
-  which. A window needs at least 200 positive values to be fittable.
+  which. An evaluation needs at least 200 positive values to be fittable.
 - **mle**: the estimate on all data pooled.
-- **lower / upper**: min / max over the set {every per-window estimate that
+- **lower / upper**: min / max over the set {every per-evaluation estimate that
   passes the thresholds, mle}, so `lower <= mle <= upper` always. The pooled
-  and per-window fits have no fixed order: pooling adds rare keys to the tail
+  and per-evaluation fits have no fixed order: pooling adds rare keys to the tail
   and accumulates mass on persistent heavy keys, which usually steepens the
   pooled rank-frequency (most CallGraph queries), but it can also flatten it.
-- **Window lengths**: each dataset YAML lists `window_lengths_s`, finest
-  first; every length must be a multiple of the finest. Data are read once
-  and aggregated per finest window; coarser windows sum the finest per-key
-  aggregates (key queries) or concatenate the finest windows' values before
-  subsampling (value queries). mle does not depend on the window length.
+- **Evaluation**: each table has a `step_s` (its sampling period). A row
+  at time `t` belongs to step `ceil(t / step_s)`, so the evaluation at step
+  `w` (time `w * step_s`) sees rows in `((w - 1) * step_s, w * step_s]`.
+  Every query is evaluated at every step, as in a Prometheus range query
+  with that step:
+  - **range** (`5m`, `1h`, ...; a multiple of `step_s`): the rows of the
+    last `range / step_s` steps, i.e. a sliding window, not disjoint
+    windows. Only evaluations whose whole range lies in the data are used.
+    Key queries sum the per-step per-key aggregates; value queries merge
+    per-step uniform samples (at most 100,000 each) into a uniform sample
+    of the range.
+  - **instant**: one row per series (the table's `series_key`), its latest
+    sample at or before the evaluation time and at most 5 minutes old (the
+    Prometheus lookback; one step if `step_s` is longer). A series that
+    stops is still seen for up to 5 minutes. Needs files that are
+    consecutive time chunks; the run fails if a series' samples interleave
+    across files. Event tables (CallGraph) have no series and only range
+    forms.
+
+  mle pools every row the query form sees: all rows for range forms, and
+  every (series, evaluation) pair for the instant form, so `rows_total` of
+  an instant row counts a series once per evaluation it is visible in.
   BOOM has no timestamps in this analysis and keeps its 20 equal chunks per
-  series (`window_len_s` is empty).
+  series (`range` is empty).
 - **tail_class**: the power law is compared with an exponential and a
   lognormal (`distribution_compare`, likelihood ratio `R` and p-value `p`;
   significant means `p < 0.1`). `light` if the power law does not
@@ -120,13 +139,12 @@ Citations:
 
 ## Output: `results/skew_summary.csv`
 
-One row per (query, kind, weight, window length). The sketch-bench saturation study reads
-`dataset, query_id, kind, weight, window_len_s, lower, mle, upper` to pick the θ and α
-range it sweeps. It takes the stream size per sketch window N from
-`rows_win_*` and the key cardinality per window K from `K_win_*`, comparing
-them at the sketch window x (the row whose `window_len_s` is x) and at the query
-lookback S (the row whose `window_len_s` is S, or `*_total` for the whole
-sample). `K_total` and `rows_total` are the same on every window length. For
+One row per (query, kind, weight, range). The sketch-bench saturation study
+reads the worst case per query: `worst_theta_cms` (key rows: the lowest θ of
+the weight a per-key counter sketch sees, `cms_weight`), `worst_K`,
+`min_N` and `max_N` for the key cardinality and stream size an evaluation
+sees, and `worst_alpha_rank` / `worst_alpha_memory` for value rows, plus the
+`target_*` accuracy it has to reach. For
 value rows it should use only rows whose `tail_class` is not `light`: a light tail decays at least exponentially, so its α is just the
 slope of whatever sliver of the tail the fit picked and does not describe a
 power-law regime.
@@ -136,13 +154,18 @@ power-law regime.
 | `dataset`, `query_id`, `promql` | query identity (a query with both kinds gets a `keys` and a `values` row) |
 | `kind` | `keys` (θ) or `values` (α) |
 | `weight` | `count` or `value` for key rows, empty for value rows |
-| `window_len_s` | window length the bounds were computed at (empty for BOOM) |
+| `range`, `range_s` | `instant` or the range duration (`range_s` empty for instant and BOOM) |
+| `step_s` | evaluation step of the table |
 | `K_total` | distinct keys with positive weight over the whole sample (BOOM: variates) |
-| `rows_total` | rows with non-null keys over the whole sample (values: finite values) |
-| `K_win_min`, `K_win_median`, `K_win_max` | key rows: distinct keys per window at this `window_len_s` |
-| `rows_win_min`, `rows_win_median`, `rows_win_max` | rows per window at this `window_len_s` (value rows: positive values per window; empty for BOOM) |
-| `n_windows` | windows used for the bounds (BOOM: variate-chunk fits) |
+| `rows_total` | rows with non-null keys over the whole sample (values: finite values; instant: series-evaluations) |
+| `K_win_min`, `K_win_median`, `K_win_max` | key rows: distinct keys per evaluation |
+| `rows_win_min`, `rows_win_median`, `rows_win_max` | rows per evaluation (value rows: positive values; empty for BOOM) |
+| `n_evals` | evaluations used for the bounds (BOOM: variate-chunk fits) |
 | `lower`, `mle`, `upper` | θ or α as defined above |
+| `worst_theta_cms` | key rows whose weight is the query's `cms_weight`: `lower` |
+| `worst_K`, `min_N`, `max_N` | `K_win_max`, `rows_win_min`, `rows_win_max` |
+| `worst_alpha_rank`, `worst_alpha_memory` | value rows: `upper` (steepest tail, hardest for rank error) and `lower` (heaviest tail, largest value range) |
+| `target_are_top100`, `target_precision_at_k`, `target_hll_rel_err`, `target_rank_err` | accuracy targets (defaults in `fit_skew.py`, overridden by a query's `targets`) |
 | `top1_share`, `theta_ls` | key rows: share of the largest key, negated log-log least-squares slope |
 | `dropped_frac` | value rows: fraction of finite values that were ≤ 0 |
 | `xmin`, `ks_d`, `tail_frac` | value rows: fitted `xmin`, KS distance of the tail, and fraction of the fitted sample at or above `xmin` |
@@ -150,17 +173,17 @@ power-law regime.
 | `tail_class` | see Definitions (BOOM: majority class over variates) |
 | `ok_frac` | BOOM rows: share of variates whose `tail_class` is not `light` |
 
-Plots in `out/`: `<dataset>__<query>__rank_<weight>__<window_len>s.png` (log-log
-rank-frequency with the lower/mle/upper θ lines, one per window length) and
-`<dataset>__<query>__ccdf.png` (empirical CCDF with the fitted α).
+Plots in `out/`: `<dataset>__<query>__rank_<weight>__<range>.png` (log-log
+rank-frequency with the lower/mle/upper θ lines) and
+`<dataset>__<query>__ccdf__<range>.png` (empirical CCDF with the fitted α).
 
 ## Caveats
 
-- **θ depends on time scale.** A sketch sees the keys of one window of
-  length x, while a query aggregates over its lookback S (often many
-  windows). Short windows see fewer keys with noisier counts; long ones pool
-  more keys. Pick the row whose `window_len_s` matches the sketch window, and
-  compare it with mle (all data) for long lookbacks.
+- **θ depends on the query form.** An instant query sees one sample per
+  series, so its count-weighted θ measures how series spread over keys; a
+  range query sees every row in its range. Short ranges see fewer keys with
+  noisier counts; long ones pool more keys. Use the row whose `range`
+  matches the query.
 
 - **BOOM** strips tags and z-scores each variate, so there is no key θ and
   the raw value scale is lost. α is fitted per variate on `x - min(x)`
@@ -176,13 +199,10 @@ rank-frequency with the lower/mle/upper θ lines, one per window length) and
   `job_events` value for the same `job_id` (both ordered by event time).
 - **Small counts bias θ upward**: θ is fitted to the *sorted observed*
   counts, so the long tail of keys seen once or twice is flatter than the
-  true law and the order statistics exaggerate the head. Windows with few
-  rows per key (short windows, high-cardinality keys) are most affected, which
+  true law and the order statistics exaggerate the head. Evaluations with few
+  rows per key (short ranges, high-cardinality keys) are most affected, which
   widens `upper`.
-- Each table covers its full downloaded span, so the longest window length
-  of a table is one window over the whole sample. A table's
-  `window_lengths_s` overrides the dataset's. MSMetrics and NodeMetrics
-  sample every 60 s, so a 1-minute window holds one sample per instance or
-  node. CallGraph has malformed rows
+- Google `task_usage` rows measure 5-minute intervals and are stamped at
+  their `end_time`. CallGraph has malformed rows
   (extra fields), which are skipped and counted in the log, and `rt` values
   of `None`, which are read as missing.
