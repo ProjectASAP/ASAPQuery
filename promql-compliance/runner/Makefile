@@ -42,6 +42,7 @@ run-cases:
 	run_id="$$(date +%s%N)"; \
 	now_ms="$$(date +%s%3N)"; \
 	base_time_ms="$$((now_ms / 300000 * 300000 - 1800000))"; \
+	port_seed="$$((run_id % 10000))"; \
 	case_index=0; \
 	for test_case in $(CASES); do \
 		name="$${test_case%%:*}"; \
@@ -50,13 +51,21 @@ run-cases:
 		suite="$${rest#*:}"; \
 		project="asapquery-differential-$$name-$$run_id"; \
 		case_base_time_ms="$$((base_time_ms + case_index * 60000))"; \
+		port_offset="$$((port_seed + case_index))"; \
+		prometheus_port="$$((20000 + port_offset))"; \
+		query_port="$$((30000 + port_offset))"; \
+		ingest_port="$$((40000 + port_offset))"; \
 		case_index="$$((case_index + 1))"; \
 		echo "Running $$name ($$dataset, $$suite)"; \
-		if ! go run ./cmd/differential-runner \
+		if ! PROMETHEUS_PORT="$$prometheus_port" ASAP_QUERY_PORT="$$query_port" ASAP_INGEST_PORT="$$ingest_port" go run ./cmd/differential-runner \
 			--dataset "$$dataset" \
 			--suite "$$suite" \
 			--compose-file ../docker-compose.yml \
 			--compose-project "$$project" \
+			--reference-url "http://localhost:$$prometheus_port" \
+			--reference-write-url "http://localhost:$$prometheus_port" \
+			--test-url "http://localhost:$$query_port" \
+			--test-write-url "http://localhost:$$ingest_port" \
 			--base-time-ms "$$case_base_time_ms" \
 			--output "$(REPORT_DIR)/$$name.json"; then \
 			echo "FAILED: $$name" >&2; \
