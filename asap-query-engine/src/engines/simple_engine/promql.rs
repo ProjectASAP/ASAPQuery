@@ -496,8 +496,8 @@ impl SimpleEngine {
                 let Some((ctx, label_names)) = self.resolve_arm_leaf_context(arm_ast, time) else {
                     return Ok(None);
                 };
-                let Some(results) = Self::classify_native_execution(
-                    self.execute_query_pipeline(&ctx, true, false),
+                let Some(results) = Self::map_local_execution_outcome(
+                    self.execute_query_pipeline_result(&ctx, true, false),
                 )?
                 else {
                     return Ok(None);
@@ -758,7 +758,7 @@ impl SimpleEngine {
             // Binary arms need Topk limiting, but must remain in the
             // unformatted intermediate label representation until after the
             // arithmetic operation.
-            let Some(results) = Self::classify_native_execution(
+            let Some(results) = Self::map_local_execution_outcome(
                 self.execute_observed_range_query_pipeline(&ctx, true, false),
             )?
             else {
@@ -801,13 +801,13 @@ impl SimpleEngine {
             return Ok(None);
         }
         // Binary arms need Topk limiting, but not final presentation formatting.
-        let Some(lhs_results) = Self::classify_native_execution(
+        let Some(lhs_results) = Self::map_local_execution_outcome(
             self.execute_observed_range_query_pipeline(&lhs_ctx, true, false),
         )?
         else {
             return Ok(None);
         };
-        let Some(rhs_results) = Self::classify_native_execution(
+        let Some(rhs_results) = Self::map_local_execution_outcome(
             self.execute_observed_range_query_pipeline(&rhs_ctx, true, false),
         )?
         else {
@@ -1383,7 +1383,7 @@ impl SimpleEngine {
         // Execute range query pipeline. (true, true): self-gated, same as
         // instant's handle_query_promql -- both flags are no-ops unless this
         // query's statistic is Topk.
-        let Some(results): Option<Vec<RangeVectorElement>> = Self::classify_native_execution(
+        let Some(results): Option<Vec<RangeVectorElement>> = Self::map_local_execution_outcome(
             self.execute_observed_range_query_pipeline(&context, true, true),
         )?
         else {

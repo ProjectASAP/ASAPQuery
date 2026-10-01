@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::drivers::query::adapters::{create_http_adapter, AdapterConfig, HttpProtocolAdapter};
 use crate::engines::{QueryExecutionError, SimpleEngine};
@@ -287,7 +287,16 @@ async fn process_query_request(
                 }
             }
         }
-        Err(error) => format_native_execution_error(state, error).await,
+        Err(error) => {
+            let total_duration = start_time.elapsed();
+            warn!(query = %parsed_request.query, error = %error, "Native query execution failed");
+            info!(
+                "query='{}' destination=none_native_error total_latency_ms={:.2}",
+                parsed_request.query,
+                total_duration.as_secs_f64() * 1000.0
+            );
+            format_native_execution_error(state, error).await
+        }
     }
 }
 
@@ -595,7 +604,16 @@ async fn process_range_query_request(
                 }
             }
         }
-        Err(error) => format_native_execution_error(state, error).await,
+        Err(error) => {
+            let total_duration = start_time.elapsed();
+            warn!(query = %parsed_request.query, error = %error, "Native range query execution failed");
+            info!(
+                "query='{}' destination=none_native_error total_latency_ms={:.2}",
+                parsed_request.query,
+                total_duration.as_secs_f64() * 1000.0
+            );
+            format_native_execution_error(state, error).await
+        }
     }
 }
 
