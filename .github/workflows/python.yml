@@ -39,6 +39,7 @@ jobs:
       utilities: ${{ steps.filter.outputs.utilities }}
       prometheus_exporters: ${{ steps.filter.outputs.prometheus_exporters }}
       execution_utilities: ${{ steps.filter.outputs.execution_utilities }}
+      dataset_analysis: ${{ steps.filter.outputs.dataset_analysis }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v2
@@ -57,6 +58,8 @@ jobs:
             execution_utilities:
               - 'asap-tools/execution-utilities/**'
               - 'asap-common/dependencies/py/**'
+            dataset_analysis:
+              - 'asap-tools/dataset-analysis/**'
 
   test-prometheus-client:
     needs: detect-changes
@@ -135,6 +138,37 @@ jobs:
         pip install -r asap-tools/experiments/requirements.txt
     - name: Run experiment tests
       working-directory: asap-tools/experiments
+      run: python -m unittest discover -s tests -p 'test_*.py' -v
+
+  test-dataset-analysis:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.dataset_analysis == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install black==24.8.0 flake8==6.1.0 isort==5.13.2 mypy==1.14.1 types-PyYAML
+        pip install -r asap-tools/dataset-analysis/requirements.txt
+    - name: Check formatting with Black
+      working-directory: asap-tools/dataset-analysis
+      run: black --check --diff .
+    - name: Check import sorting with isort
+      working-directory: asap-tools/dataset-analysis
+      run: isort --check-only --diff --settings-file .isort.cfg .
+    - name: Lint with flake8
+      working-directory: asap-tools/dataset-analysis
+      run: flake8 . --config=../../.flake8 --count --show-source --statistics
+    - name: Type check with mypy
+      working-directory: asap-tools/dataset-analysis
+      run: mypy . --config-file=.mypy.ini
+    - name: Run tests
+      working-directory: asap-tools/dataset-analysis
       run: python -m unittest discover -s tests -p 'test_*.py' -v
 
   test-prometheus-exporters:

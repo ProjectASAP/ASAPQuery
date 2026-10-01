@@ -1,0 +1,38 @@
+# Datadog BOOM: 20 multivariate series. Tags are stripped and each variate is
+# z-scored, so only the value tail is fitted, per variate on x - min(x).
+dataset: boom
+# Each series is split into this many equal-length chunks for the bounds.
+n_chunks: 20
+tables:
+  series:
+    format: boom_arrow
+    files:
+      - boom/ds-2187-H/data-00000-of-00001.arrow
+      - boom/ds-2394-D/data-00000-of-00001.arrow
+      - boom/ds-1135-5T/data-00000-of-00001.arrow
+      - boom/ds-1833-D/data-00000-of-00001.arrow
+      - boom/ds-2806-D/data-00000-of-00001.arrow
+      - boom/ds-2573-D/data-00000-of-00001.arrow
+      - boom/ds-2222-30T/data-00000-of-00001.arrow
+      - boom/ds-1914-30T/data-00000-of-00001.arrow
+      - boom/ds-2577-H/data-00000-of-00001.arrow
+      - boom/ds-2212-D/data-00000-of-00001.arrow
+      - boom/ds-2782-H/data-00000-of-00001.arrow
+      - boom/ds-1400-10S/data-00000-of-00001.arrow
+      - boom/ds-2650-D/data-00000-of-00001.arrow
+      - boom/ds-1316-10S/data-00000-of-00001.arrow
+      - boom/ds-1558-5T/data-00000-of-00001.arrow
+      - boom/ds-1972-D/data-00000-of-00001.arrow
+      - boom/ds-1840-D/data-00000-of-00001.arrow
+      - boom/ds-671-10S/data-00000-of-00001.arrow
+      - boom/ds-1524-5T/data-00000-of-00001.arrow
+      - boom/ds-899-T/data-00000-of-00001.arrow
+    label_columns: []
+    value_columns: [target]
+queries:
+  - id: target_tail
+    promql: quantile(0.99, target)
+    table: series
+    kind: values
+    group_by: []
+    value: target
