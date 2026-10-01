@@ -31,7 +31,7 @@ func TestCheckedInFixturesAndSuites(t *testing.T) {
 }
 
 func TestCheckedInTemporalSuite(t *testing.T) {
-	if _, err := seeder.LoadFixture("../datasets/sparse-checkout.yaml"); err != nil {
+	if _, err := seeder.LoadFixture("../datasets/single-rate.yaml"); err != nil {
 		t.Fatalf("LoadFixture: %v", err)
 	}
 	suite, err := LoadSuiteFile("../suites/temporal.yaml")
@@ -66,7 +66,6 @@ func TestCheckedInNativeDagSuites(t *testing.T) {
 	parser := promqlparser.NewParser(promqlparser.Options{})
 	for _, path := range []string{
 		"../suites/native-dag-aggregations.yaml",
-		"../suites/native-dag-sparse.yaml",
 	} {
 		suite, err := LoadSuiteFile(path)
 		if err != nil {

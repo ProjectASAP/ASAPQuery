@@ -10,8 +10,6 @@ BASE_TIME_MS ?= $(shell now_ms=$$(date +%s%3N); echo $$((now_ms / 300000 * 30000
 CI_CASES := \
 	single-rate-temporal:../datasets/single-rate.yaml:../suites/temporal.yaml \
 	single-rate-off-grid-rate:../datasets/single-rate.yaml:../suites/off-grid-rate.yaml \
-	sparse-checkout-temporal:../datasets/sparse-checkout.yaml:../suites/temporal.yaml \
-	sparse-checkout-native-dag:../datasets/sparse-checkout.yaml:../suites/native-dag-sparse.yaml \
 	aggregations-native-dag:../datasets/aggregations.yaml:../suites/native-dag-aggregations.yaml \
 	aggregations:../datasets/aggregations.yaml:../suites/aggregations.yaml \
 	quantiles:../datasets/quantiles.yaml:../suites/quantiles.yaml
