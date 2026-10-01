@@ -14,7 +14,7 @@ use crate::tests::test_utilities::{assert_execution_context_equivalent, TestConf
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Minimal no-op store that panics if queried
+/// Minimal no-op store that fails if queried.
 ///
 /// This ensures that tests don't accidentally query the store.
 /// Context building should not require store access.
@@ -28,7 +28,7 @@ impl Store for NoOpStore {
         _start_timestamp: u64,
         _end_timestamp: u64,
     ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
-        panic!("NoOpStore: query_precomputed_output should not be called in equivalence tests");
+        Err(std::io::Error::other("test store read failure").into())
     }
 
     fn query_precomputed_output_exact(
@@ -38,9 +38,7 @@ impl Store for NoOpStore {
         _exact_start: u64,
         _exact_end: u64,
     ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
-        panic!(
-            "NoOpStore: query_precomputed_output_exact should not be called in equivalence tests"
-        );
+        Err(std::io::Error::other("test store read failure").into())
     }
 
     fn query_precomputed_output_exact_batch(
@@ -49,9 +47,7 @@ impl Store for NoOpStore {
         _aggregation_id: u64,
         _windows: &[crate::stores::TimestampRange],
     ) -> Result<TimestampedBucketsMap, Box<dyn std::error::Error + Send + Sync>> {
-        panic!(
-            "NoOpStore: query_precomputed_output_exact_batch should not be called in equivalence tests"
-        );
+        Err(std::io::Error::other("test store read failure").into())
     }
 
     fn insert_precomputed_output(
@@ -88,6 +84,32 @@ impl Store for NoOpStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn public_promql_method_returns_store_failures() {
+        let query = "sum(requests)";
+        let (inference_config, streaming_config) = TestConfigBuilder::new("requests")
+            .add_spatial_query(query, "SELECT SUM(value) FROM requests", 1)
+            .build();
+        let engine = SimpleEngine::new(
+            Arc::new(NoOpStore),
+            inference_config,
+            streaming_config,
+            1_000,
+            QueryLanguage::promql,
+        );
+
+        assert!(engine.handle_query_promql(query.to_string(), 1.0).is_err());
+        assert!(engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .is_err());
+        assert!(engine
+            .handle_query_promql(format!("{query} + 1"), 1.0)
+            .is_err());
+        assert!(engine
+            .handle_range_query_promql(format!("{query} + 1"), 1.0, 2.0, 1.0)
+            .is_err());
+    }
 
     #[test]
     fn sql_executes_wider_sliding_window_exact_cover() {

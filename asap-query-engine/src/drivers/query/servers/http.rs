@@ -12,10 +12,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::drivers::query::adapters::{create_http_adapter, AdapterConfig, HttpProtocolAdapter};
-use crate::engines::SimpleEngine;
+use crate::engines::{QueryExecutionError, SimpleEngine};
 use crate::query_tracker::QueryTracker;
 use crate::stores::Store;
 
@@ -42,6 +42,22 @@ struct AppState {
     query_tracker: Option<Arc<QueryTracker>>,
     adapter: Arc<dyn HttpProtocolAdapter>,
     fallback: Option<Arc<dyn crate::drivers::query::fallback::FallbackClient>>,
+}
+
+async fn format_native_execution_error(state: &AppState, error: QueryExecutionError) -> Response {
+    match state
+        .adapter
+        .format_error_response(
+            &crate::drivers::query::adapters::AdapterError::ProtocolError(error.to_string()),
+        )
+        .await
+    {
+        Ok(mut response) => {
+            *response.status_mut() = StatusCode::INTERNAL_SERVER_ERROR;
+            response
+        }
+        Err(status) => status.into_response(),
+    }
 }
 
 impl HttpServer {
@@ -193,7 +209,7 @@ async fn process_query_request(
         .query_engine
         .handle_query(parsed_request.query.clone(), parsed_request.time)
     {
-        Some((query_output_labels, query_result)) => {
+        Ok(Some((query_output_labels, query_result))) => {
             let query_duration = query_start_time.elapsed();
             debug!("=== QUERY ENGINE SUCCESS ===");
             debug!(
@@ -233,7 +249,7 @@ async fn process_query_request(
                 Err(status) => status.into_response(),
             }
         }
-        None => {
+        Ok(None) => {
             let total_duration = start_time.elapsed();
             debug!("=== QUERY ENGINE RETURNED NONE ===");
             debug!(
@@ -270,6 +286,16 @@ async fn process_query_request(
                     Err(status) => status.into_response(),
                 }
             }
+        }
+        Err(error) => {
+            let total_duration = start_time.elapsed();
+            warn!(query = %parsed_request.query, error = %error, "Native query execution failed");
+            info!(
+                "query='{}' destination=none_native_error total_latency_ms={:.2}",
+                parsed_request.query,
+                total_duration.as_secs_f64() * 1000.0
+            );
+            format_native_execution_error(state, error).await
         }
     }
 }
@@ -524,7 +550,7 @@ async fn process_range_query_request(
         parsed_request.end,
         parsed_request.step,
     ) {
-        Some((query_output_labels, query_result)) => {
+        Ok(Some((query_output_labels, query_result))) => {
             let query_duration = query_start_time.elapsed();
             debug!(
                 "Range query execution took: {:.2}ms",
@@ -547,7 +573,7 @@ async fn process_range_query_request(
                 Err(status) => status.into_response(),
             }
         }
-        None => {
+        Ok(None) => {
             let total_duration = start_time.elapsed();
             debug!("Range query returned None - query not supported");
 
@@ -577,6 +603,16 @@ async fn process_range_query_request(
                     Err(status) => status.into_response(),
                 }
             }
+        }
+        Err(error) => {
+            let total_duration = start_time.elapsed();
+            warn!(query = %parsed_request.query, error = %error, "Native range query execution failed");
+            info!(
+                "query='{}' destination=none_native_error total_latency_ms={:.2}",
+                parsed_request.query,
+                total_duration.as_secs_f64() * 1000.0
+            );
+            format_native_execution_error(state, error).await
         }
     }
 }

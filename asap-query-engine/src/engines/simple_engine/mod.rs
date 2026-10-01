@@ -10,7 +10,9 @@ use crate::data_model::{
 };
 use crate::engines::query_plan::{PlanOptions, QueryPlan};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
-use crate::engines::sliding_window_composition::{plan_exact_cover, SlidingWindowSpec};
+use crate::engines::sliding_window_composition::{
+    plan_exact_cover, CompositionError, SlidingWindowSpec,
+};
 // use crate::stores::promsketch_store::{
 //     self, is_usampling_function, metrics as ps_metrics, PromSketchStore,
 // };
@@ -52,6 +54,15 @@ pub struct QueryMetadata {
     /// forwards sum_over_time's dropped name -- #710). Unused outside the
     /// PromQL Topk formatting path.
     pub keep_metric_name: bool,
+}
+
+/// A native query was accepted but could not be executed locally.
+#[derive(Debug, thiserror::Error)]
+pub enum QueryExecutionError {
+    #[error("no local data: {0}")]
+    NoLocalData(String),
+    #[error("native query execution failed: {0}")]
+    Native(String),
 }
 
 /// Parameters for a single store query
@@ -799,7 +810,7 @@ impl SimpleEngine {
         lookback_ms: u64,
         window_size_ms: u64,
         slide_interval_ms: u64,
-    ) -> Result<TimestampedBucketsMap, String> {
+    ) -> Result<TimestampedBucketsMap, QueryExecutionError> {
         let spec = SlidingWindowSpec {
             window_size_ms,
             slide_interval_ms,
@@ -810,10 +821,16 @@ impl SimpleEngine {
         let mut windows = BTreeSet::new();
         for &output_timestamp in output_timestamps {
             let cover = plan_exact_cover(output_timestamp, lookback_ms, spec).map_err(|error| {
-                format!(
+                let message = format!(
                     "Cannot compose Sliding aggregation {} for lookback {}ms (W={}ms, S={}ms): {:?}",
                     params.aggregation_id, lookback_ms, window_size_ms, slide_interval_ms, error
-                )
+                );
+                match error {
+                    CompositionError::LookbackBeforeEpoch { .. } => {
+                        QueryExecutionError::NoLocalData(message)
+                    }
+                    _ => QueryExecutionError::Native(message),
+                }
             })?;
             windows.extend(cover.windows);
         }
@@ -836,13 +853,13 @@ impl SimpleEngine {
             .store
             .query_precomputed_output_exact_batch(&params.metric, params.aggregation_id, &windows)
             .map_err(|error| {
-                format!(
+                QueryExecutionError::Native(format!(
                     "Error querying store for metric {}, agg {}, {} exact Sliding windows: {}",
                     params.metric,
                     params.aggregation_id,
                     windows.len(),
                     error
-                )
+                ))
             })?;
 
         // An instant query has one all-or-nothing cover. Range queries defer
@@ -854,7 +871,7 @@ impl SimpleEngine {
                 let found: BTreeSet<_> = buckets.iter().map(|(range, _)| *range).collect();
                 if found != required {
                     let missing: Vec<_> = required.difference(&found).copied().collect();
-                    return Err(format!(
+                    return Err(QueryExecutionError::NoLocalData(format!(
                         "Incomplete Sliding-window cover for metric {}, agg {}, group {:?}: \
                          requested {} exact windows, missing {:?}",
                         params.metric,
@@ -862,7 +879,7 @@ impl SimpleEngine {
                         group_key,
                         windows.len(),
                         missing
-                    ));
+                    )));
                 }
             }
         }
@@ -1329,14 +1346,24 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<InstantVectorElement>, String> {
+        self.execute_query_pipeline_result(context, enable_topk_limiting, enable_topk_formatting)
+            .map_err(|error| error.to_string())
+    }
+
+    fn execute_query_pipeline_result(
+        &self,
+        context: &QueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
+    ) -> Result<Vec<InstantVectorElement>, QueryExecutionError> {
         let query_time = context.query_time;
         let range_context = self
             .build_instant_range_context(context.clone(), query_time)
             .ok_or_else(|| {
-                format!(
+                QueryExecutionError::NoLocalData(format!(
                     "Failed to build instant-as-range context for metric: {}",
                     context.metric
-                )
+                ))
             })?;
 
         let range_results = self.execute_observed_range_query_pipeline(
@@ -1536,27 +1563,54 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let results = self
-            .execute_query_pipeline(&context, enable_topk_limiting, enable_topk_formatting)
-            .map_err(|e| {
-                warn!("Query execution failed: {}", e);
-                e
-            })
-            .ok()?;
-        Some((
+        self.execute_context_result(context, enable_topk_limiting, enable_topk_formatting)
+            .map_err(|error| warn!("Query execution failed: {error}"))
+            .ok()
+            .flatten()
+    }
+
+    fn execute_context_result(
+        &self,
+        context: QueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
+        let Some(results) = Self::map_local_execution_outcome(self.execute_query_pipeline_result(
+            &context,
+            enable_topk_limiting,
+            enable_topk_formatting,
+        ))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some((
             context.metadata.query_output_labels,
             QueryResult::vector(results, context.query_time),
-        ))
+        )))
+    }
+
+    fn map_local_execution_outcome<T>(
+        result: Result<T, QueryExecutionError>,
+    ) -> Result<Option<T>, QueryExecutionError> {
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(QueryExecutionError::NoLocalData(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// Handle a query following Python's unified architecture
     // pub async fn handle_query(
-    pub fn handle_query(&self, query: String, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+    pub fn handle_query(
+        &self,
+        query: String,
+        time: f64,
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
         match self.query_language {
             QueryLanguage::promql => self.handle_query_promql(query, time),
-            QueryLanguage::sql => self.handle_query_sql(query, time),
-            QueryLanguage::elastic_querydsl => self.handle_query_elastic(query, time),
-            QueryLanguage::elastic_sql => self.handle_query_sql(query, time),
+            QueryLanguage::sql => Ok(self.handle_query_sql(query, time)),
+            QueryLanguage::elastic_querydsl => Ok(self.handle_query_elastic(query, time)),
+            QueryLanguage::elastic_sql => Ok(self.handle_query_sql(query, time)),
         }
     }
 
@@ -2072,14 +2126,15 @@ impl SimpleEngine {
         context: &RangeQueryExecutionContext,
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
-    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         let plan = QueryPlan::compile_range(
             context,
             PlanOptions {
                 limit_topk: enable_topk_limiting,
                 format_output: enable_topk_formatting,
             },
-        )?;
+        )
+        .map_err(QueryExecutionError::Native)?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
         self.execute_range_query_pipeline(context, enable_topk_limiting, enable_topk_formatting)
     }
@@ -2089,7 +2144,7 @@ impl SimpleEngine {
         context: &RangeQueryExecutionContext,
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
-    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         use crate::engines::query_result::RangeVectorElement;
         use crate::engines::window_merger::create_window_merger;
 
@@ -2105,11 +2160,11 @@ impl SimpleEngine {
                 .iter()
                 .find(|&&timestamp| !timestamp.is_multiple_of(context.tumbling_window_ms))
             {
-                return Err(format!(
+                return Err(QueryExecutionError::NoLocalData(format!(
                     "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
                      timestamp {} (grid interval {}ms)",
                     off_grid_timestamp, context.tumbling_window_ms
-                ));
+                )));
             }
         }
 
@@ -2127,11 +2182,15 @@ impl SimpleEngine {
                 context.tumbling_window_ms,
             )?
         } else {
-            self.execute_store_query(&context.base.store_plan.values_query)?
+            self.execute_store_query(&context.base.store_plan.values_query)
+                .map_err(QueryExecutionError::Native)?
         };
 
         if all_data.is_empty() {
-            return Err(format!("No data found for metric: {}", context.base.metric));
+            return Err(QueryExecutionError::NoLocalData(format!(
+                "No data found for metric: {}",
+                context.base.metric
+            )));
         }
 
         debug!(
@@ -2150,22 +2209,31 @@ impl SimpleEngine {
         // mirroring the values loop, is the fix.
         let keys_raw_data: Option<TimestampedBucketsMap> = match &context.base.store_plan.keys_query
         {
-            Some(keys_query) if context.keys_window_type == Some(WindowType::Sliding) => Some(
-                self.execute_sliding_cover_query(
+            Some(keys_query) if context.keys_window_type == Some(WindowType::Sliding) => {
+                Some(self.execute_sliding_cover_query(
                     keys_query,
                     &context.output_timestamps,
-                    context
-                        .keys_lookback_ms
-                        .ok_or("Sliding keys query is missing its lookback")?,
-                    context
-                        .keys_window_size_ms
-                        .ok_or("Sliding keys query is missing its window size")?,
-                    context
-                        .keys_tumbling_window_ms
-                        .ok_or("Sliding keys query is missing its slide interval")?,
-                )?,
+                    context.keys_lookback_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Sliding keys query is missing its lookback".to_string(),
+                        )
+                    })?,
+                    context.keys_window_size_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Sliding keys query is missing its window size".to_string(),
+                        )
+                    })?,
+                    context.keys_tumbling_window_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Sliding keys query is missing its slide interval".to_string(),
+                        )
+                    })?,
+                )?)
+            }
+            Some(keys_query) => Some(
+                self.execute_store_query(keys_query)
+                    .map_err(QueryExecutionError::Native)?,
             ),
-            Some(keys_query) => Some(self.execute_store_query(keys_query)?),
             None => None,
         };
 
@@ -2355,7 +2423,10 @@ impl SimpleEngine {
         let topk_k: Option<usize> = if enable_topk_limiting
             && context.base.metadata.statistic_to_compute == Statistic::Topk
         {
-            Some(Self::parse_topk_limit(&context.base.metadata.query_kwargs)?)
+            Some(
+                Self::parse_topk_limit(&context.base.metadata.query_kwargs)
+                    .map_err(QueryExecutionError::Native)?,
+            )
         } else {
             None
         };
@@ -2373,14 +2444,24 @@ impl SimpleEngine {
         // (#581). One loop shape for topk and non-topk alike, rather than
         // maintaining two.
         for &current_time in &context.output_timestamps {
-            let current_time_i64 = i64::try_from(current_time)
-                .map_err(|_| "Output timestamp exceeds signed timestamp range".to_string())?;
-            let query_range_ms = i64::try_from(context.query_range_ms)
-                .map_err(|_| "Query range exceeds signed timestamp range".to_string())?;
+            let current_time_i64 = i64::try_from(current_time).map_err(|_| {
+                QueryExecutionError::Native(
+                    "Output timestamp exceeds signed timestamp range".to_string(),
+                )
+            })?;
+            let query_range_ms = i64::try_from(context.query_range_ms).map_err(|_| {
+                QueryExecutionError::Native(
+                    "Query range exceeds signed timestamp range".to_string(),
+                )
+            })?;
             let query_bounds = QueryBounds::new(
                 current_time_i64
                     .checked_sub(query_range_ms)
-                    .ok_or("Query range underflows timestamp range".to_string())?,
+                    .ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Query range underflows timestamp range".to_string(),
+                        )
+                    })?,
                 current_time_i64,
             );
             // This timestamp's (key, value) pairs from every group, each
@@ -2635,7 +2716,7 @@ impl SimpleEngine {
 
 #[cfg(test)]
 mod topk_metadata_tests {
-    use super::SimpleEngine;
+    use super::{QueryExecutionError, SimpleEngine};
     use std::collections::HashMap;
 
     #[test]
@@ -2652,6 +2733,19 @@ mod topk_metadata_tests {
             SimpleEngine::parse_topk_limit(&HashMap::from([("k".to_string(), "3".to_string())])),
             Ok(3)
         );
+    }
+
+    #[test]
+    fn local_execution_outcomes_are_classified_by_variant() {
+        let no_local_data = SimpleEngine::map_local_execution_outcome::<()>(Err(
+            QueryExecutionError::NoLocalData("an arbitrary diagnostic".to_string()),
+        ));
+        assert!(matches!(no_local_data, Ok(None)));
+
+        let native_error = SimpleEngine::map_local_execution_outcome::<()>(Err(
+            QueryExecutionError::Native("No data found, but the operation failed".to_string()),
+        ));
+        assert!(matches!(native_error, Err(QueryExecutionError::Native(_))));
     }
 }
 
@@ -4088,7 +4182,7 @@ mod sketch_query_tests {
     // fn test_sketch_instant_entropy_over_time() {
     //     let engine = engine_with_sketch_data("mymetric");
     //     // Query at time 0.1s (= 100ms) with a 100ms range
-    //     let result = engine.handle_query_promql("entropy_over_time(mymetric[100s])".into(), 0.1);
+    //     let result = engine.handle_query_promql("entropy_over_time(mymetric[100s])".into(), 0.1).expect("native query execution should not fail");
     //     assert!(result.is_some(), "entropy_over_time should return a result");
     //     let (labels, qr) = result.unwrap();
     //     assert!(!labels.labels.is_empty());
@@ -4105,7 +4199,7 @@ mod sketch_query_tests {
     // fn test_sketch_instant_quantile_over_time() {
     //     let engine = engine_with_sketch_data("mymetric");
     //     let result =
-    //         engine.handle_query_promql("quantile_over_time(0.5, mymetric[100s])".into(), 0.1);
+    //         engine.handle_query_promql("quantile_over_time(0.5, mymetric[100s])".into(), 0.1).expect("native query execution should not fail");
     //     assert!(
     //         result.is_some(),
     //         "quantile_over_time should return a result"
@@ -4128,7 +4222,7 @@ mod sketch_query_tests {
     // #[test]
     // fn test_sketch_instant_avg_over_time() {
     //     let engine = engine_with_sketch_data("cpu");
-    //     let result = engine.handle_query_promql("avg_over_time(cpu[100s])".into(), 0.1);
+    //     let result = engine.handle_query_promql("avg_over_time(cpu[100s])".into(), 0.1).expect("native query execution should not fail");
     //     assert!(result.is_some(), "avg_over_time should return a result");
     //     let (_labels, qr) = result.unwrap();
     //     if let crate::engines::query_result::QueryResult::Vector(iv) = qr {
@@ -4188,7 +4282,7 @@ mod sketch_query_tests {
     //         0.01,
     //         0.1,
     //         0.01,
-    //     );
+    //     ).expect("native query execution should not fail");
     //     assert!(
     //         result.is_some(),
     //         "sketch range query should return a result"
@@ -4958,6 +5052,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
         );
         let (_, qr) = engine
             .handle_query_promql("sum(cpu_load) by (host) * 5".to_string(), 3.0)
+            .expect("native query execution should not fail")
             .expect("scalar binary-expr query should resolve");
         assert_eq!(matrix_metric(qr), 500.0);
     }
@@ -5045,6 +5140,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                 "sum(metric_a) by (host) + sum(metric_b) by (host)".to_string(),
                 3.0,
             )
+            .expect("native query execution should not fail")
             .expect("vector-vector binary-expr query should resolve");
         assert_eq!(matrix_metric(qr), 30.0);
     }

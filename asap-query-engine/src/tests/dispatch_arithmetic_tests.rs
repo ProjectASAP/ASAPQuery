@@ -35,10 +35,12 @@ mod tests {
             "sum(requests_total) by (host)",
         );
 
-        let result = engine.handle_query_promql(
-            "sum(errors_total) by (host) / sum(requests_total) by (host)".to_string(),
-            QUERY_TIME,
-        );
+        let result = engine
+            .handle_query_promql(
+                "sum(errors_total) by (host) / sum(requests_total) by (host)".to_string(),
+                QUERY_TIME,
+            )
+            .expect("native query execution should not fail");
         assert!(result.is_some(), "Binary query should return Some");
         let (labels, qr) = result.unwrap();
         assert!(!labels.labels.is_empty(), "Should have output label names");
@@ -65,10 +67,12 @@ mod tests {
         );
 
         // foo() is not a supported PromQL function → arm lookup fails → returns None
-        let result = engine.handle_query_promql(
-            "foo(errors_total[5m]) / sum(requests_total) by (host)".to_string(),
-            QUERY_TIME,
-        );
+        let result = engine
+            .handle_query_promql(
+                "foo(errors_total[5m]) / sum(requests_total) by (host)".to_string(),
+                QUERY_TIME,
+            )
+            .expect("native query execution should not fail");
         assert!(
             result.is_none(),
             "Should return None for non-acceleratable arm (graceful fallback)"
@@ -88,8 +92,9 @@ mod tests {
             "sum(errors_total) by (host)",
         );
 
-        let result =
-            engine.handle_query_promql("sum(errors_total) by (host) * 100".to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql("sum(errors_total) by (host) * 100".to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         assert!(result.is_some(), "Scalar binary should return Some");
         let (_, qr) = result.unwrap();
         let elements = match qr {
@@ -120,8 +125,9 @@ mod tests {
             "sum(http_requests) by (host)",
         );
 
-        let result =
-            engine.handle_query_promql("sum(http_requests) by (host)".to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql("sum(http_requests) by (host)".to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         assert!(
             result.is_some(),
             "Single-metric query should still work after binary dispatch"

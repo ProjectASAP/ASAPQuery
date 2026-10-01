@@ -63,7 +63,9 @@ mod tests {
         );
 
         let query = "sum(errors_total) by (host) / sum(requests_total) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         assert!(result.is_some(), "Expected Some result for binary query");
         let (_, qr) = result.unwrap();
         let elements = match qr {
@@ -99,7 +101,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) * sum(metric_b) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result");
         let elements = match qr {
             crate::engines::query_result::QueryResult::Vector(iv) => iv.values,
@@ -130,7 +134,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) + sum(metric_b) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result");
         let elements = match qr {
             crate::engines::query_result::QueryResult::Vector(iv) => iv.values,
@@ -161,7 +167,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) - sum(metric_b) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result");
         let elements = match qr {
             crate::engines::query_result::QueryResult::Vector(iv) => iv.values,
@@ -207,7 +215,9 @@ mod tests {
         );
 
         let query = "sum(errors_total) by (host) / sum(requests_total) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result");
         let elements = match qr {
             crate::engines::query_result::QueryResult::Vector(iv) => iv.values,
@@ -244,7 +254,9 @@ mod tests {
         );
 
         let query = "sum(errors_total) by (host) * 100";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result for scalar-right multiply");
         let elements = match qr {
             crate::engines::query_result::QueryResult::Vector(iv) => iv.values,
@@ -278,7 +290,9 @@ mod tests {
         );
 
         let query = "1 - sum(success_total) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result for scalar-left subtract");
         let elements = match qr {
             crate::engines::query_result::QueryResult::Vector(iv) => iv.values,
@@ -347,7 +361,9 @@ mod tests {
         );
 
         let query = "(sum(metric_a) by (host) + sum(metric_b) by (host)) / sum(metric_c) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result for nested binary expression");
         let elements = match qr {
             crate::engines::query_result::QueryResult::Vector(iv) => iv.values,
