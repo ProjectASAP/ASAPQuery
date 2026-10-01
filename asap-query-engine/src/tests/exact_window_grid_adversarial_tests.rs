@@ -568,7 +568,9 @@ mod tests {
             WindowType::Sliding,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 3.0, 5.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 3.0, 5.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         let samples = host_a_samples(&elements);
@@ -623,6 +625,7 @@ mod tests {
 
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), 4.0)
+            .expect("native query execution should not fail")
             .expect("instant query failed");
         let values = vector_values(qr);
         assert_eq!(values.len(), 1, "expected exactly one series for host-a");
@@ -683,7 +686,9 @@ mod tests {
             WindowType::Sliding,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 2.0, 4.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 2.0, 4.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         let samples = host_a_samples(&elements);
@@ -738,7 +743,9 @@ mod tests {
             WindowType::Tumbling,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         let samples = host_a_samples(&elements);
@@ -901,7 +908,9 @@ mod tests {
         let query_time_sec = base_ts as f64 / 1000.0;
 
         let call_start = Instant::now();
-        let result = engine.handle_query_promql(query.to_string(), query_time_sec);
+        let result = engine
+            .handle_query_promql(query.to_string(), query_time_sec)
+            .expect("native query execution should not fail");
         let elapsed = call_start.elapsed();
 
         let (_, qr) = result.expect("query failed to resolve real data near a huge timestamp");
@@ -961,7 +970,9 @@ mod tests {
         // exercises execute_range_query_pipeline's per-step keys merge
         // exactly once, same shape as the instant case, through the range
         // entry point instead.
-        let result = engine.handle_range_query_promql(query.to_string(), t, t + 1.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), t, t + 1.0, 1.0)
+            .expect("native query execution should not fail");
         let elapsed = call_start.elapsed();
 
         let (_, qr) =

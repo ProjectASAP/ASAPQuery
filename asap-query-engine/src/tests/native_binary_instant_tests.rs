@@ -72,6 +72,7 @@ mod tests {
             let query = format!("sum(metric_a) by (host) {op} sum(metric_b) by (host)");
             let (_, qr) = engine
                 .handle_query_promql(query, QUERY_TIME)
+                .expect("native query execution should not fail")
                 .unwrap_or_else(|| panic!("query failed for op {op}"));
 
             let values = vector_values(qr);
@@ -108,6 +109,7 @@ mod tests {
         let query = "sum(metric_a) by (host) ^ sum(metric_b) by (host)";
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail")
             .expect("query failed");
         let values = vector_values(qr);
         assert!((values[0].1 - 1024.0).abs() < 1e-6, "2^10 = 1024");
@@ -132,6 +134,7 @@ mod tests {
         ] {
             let (_, qr) = engine
                 .handle_query_promql(query.to_string(), QUERY_TIME)
+                .expect("native query execution should not fail")
                 .unwrap_or_else(|| panic!("query failed for {query}"));
             let values = vector_values(qr);
             assert!((values[0].1 - 700.0).abs() < 1e-10, "{query}");
@@ -171,6 +174,7 @@ mod tests {
         let query = "(sum(metric_a) by (host) + sum(metric_b) by (host)) * sum(metric_c) by (host)";
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail")
             .expect("query failed");
         let values = vector_values(qr);
         assert!((values[0].1 - 90.0).abs() < 1e-10, "(10+20)*3 = 90");
@@ -201,7 +205,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) + sum(metric_b) by (host)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         assert!(
             result.is_none(),
             "arm with no current precomputed data falls back to Prometheus"
@@ -226,6 +232,7 @@ mod tests {
         let query = "foo(errors_total[5m]) / sum(requests_total) by (host)";
         assert!(engine
             .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail")
             .is_none());
     }
 
@@ -255,6 +262,7 @@ mod tests {
         let query = "count(event_frequency) by (host, event) + 0";
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail")
             .expect("query failed");
         assert!(!sorted(vector_values(qr)).is_empty());
     }
@@ -318,6 +326,7 @@ mod tests {
         let query = "count(event_frequency) by (region, host, event)";
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail")
             .expect(
                 "instant query should succeed by skipping the value-less region=orphan \
                  group, not fail the entire query because of it",
@@ -403,6 +412,7 @@ mod tests {
         let query = "count(event_frequency) by (region, host, event) + 0";
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail")
             .expect(
                 "instant query should succeed by skipping the unresolvable region=broken group",
             );
@@ -461,7 +471,7 @@ mod tests {
         );
 
         let query = "sum(event_frequency) by (host, event) + 0";
-        let (_, qr) = engine.handle_query_promql(query.to_string(), QUERY_TIME).expect(
+        let (_, qr) = engine.handle_query_promql(query.to_string(), QUERY_TIME).expect("native query execution should not fail").expect(
             "instant query should succeed by skipping the one key missing from the value accumulator",
         );
         let values = sorted(vector_values(qr));
@@ -507,6 +517,7 @@ mod tests {
         let query = format!("{leaf_query} + 0");
         let (_, qr) = engine
             .handle_query_promql(query, QUERY_TIME)
+            .expect("native query execution should not fail")
             .expect("query failed");
         let values = vector_values(qr);
         assert_eq!(values.len(), 1);
@@ -536,8 +547,9 @@ mod tests {
             "sum(errors_total) by (host)",
         );
 
-        let result =
-            engine.handle_query_promql("sum(errors_total) by (host) * 2".to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql("sum(errors_total) by (host) * 2".to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
         assert!(result.is_some());
     }
 
@@ -578,7 +590,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) + sum(metric_b) by (region)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
 
         assert!(
             result.is_none(),
@@ -611,7 +625,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host, dc) + sum(metric_b) by (region, zone)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
 
         assert!(
             result.is_none(),
@@ -645,7 +661,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) + sum(metric_b) by (region)";
-        let result = engine.handle_query_promql(query.to_string(), QUERY_TIME);
+        let result = engine
+            .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail");
 
         assert!(
             result.is_none(),
@@ -680,6 +698,7 @@ mod tests {
         let query = "sum(metric_a) by (host) + sum(metric_b) by (host)";
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), QUERY_TIME)
+            .expect("native query execution should not fail")
             .expect("query failed");
 
         assert_eq!(vector_values(qr), Vec::new());

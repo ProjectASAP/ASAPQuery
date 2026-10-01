@@ -235,6 +235,7 @@ impl PromqlPrecomputeFixture<'_> {
 
         query_engine
             .handle_query_promql(self.query.to_string(), self.evaluation_time_seconds)
+            .expect("native query execution should not fail")
             .unwrap_or_else(|| panic!("precomputed query should succeed: {}", self.query))
             .1
     }
@@ -320,6 +321,7 @@ async fn e2e_sliding_precompute_outputs_compose_a_wider_query() {
 
     let (_, result) = query_engine
         .handle_query_promql(query.to_string(), 10.0)
+        .expect("native query execution should not fail")
         .expect("worker-emitted Sliding windows should answer the wider query");
     let QueryResult::Vector(vector) = result else {
         panic!("expected instant vector result");

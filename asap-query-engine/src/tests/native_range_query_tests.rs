@@ -135,6 +135,7 @@ mod tests {
                 1_002.0,
                 1.0,
             )
+            .expect("native query execution should not fail")
             .expect("range rate query failed");
         let elements = matrix_values(result);
         let samples = &elements
@@ -209,11 +210,13 @@ mod tests {
                     12.5,
                     1.0,
                 )
+                .expect("native query execution should not fail")
                 .is_none()
         );
 
         let (_, on_grid_result) = engine
             .handle_range_query_promql("rate(http_requests_total[2s])".to_string(), 11.0, 12.0, 1.0)
+            .expect("native query execution should not fail")
             .expect("on-grid Sliding counter query should use native execution");
         let on_grid_samples = matrix_values(on_grid_result)
             .into_iter()
@@ -584,7 +587,9 @@ mod tests {
         );
 
         let query = "sum by (host, event) (count_over_time(event_frequency[2s]))";
-        let result = engine.handle_range_query_promql(query.to_string(), 5.0, 5.5, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 5.0, 5.5, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -619,12 +624,14 @@ mod tests {
             1_000,
         );
 
-        let result = engine.handle_range_query_promql(
-            "count(event_frequency) by (host, event)".to_string(),
-            1.0,
-            1.5,
-            1.0,
-        );
+        let result = engine
+            .handle_range_query_promql(
+                "count(event_frequency) by (host, event)".to_string(),
+                1.0,
+                1.5,
+                1.0,
+            )
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert!(labels_have_sample_at(
@@ -668,12 +675,14 @@ mod tests {
             1_000,
         );
 
-        let result = engine.handle_range_query_promql(
-            "count(event_frequency) by (host, event)".to_string(),
-            1.0,
-            2.0,
-            1.0,
-        );
+        let result = engine
+            .handle_range_query_promql(
+                "count(event_frequency) by (host, event)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert!(labels_have_sample_at(
@@ -760,7 +769,9 @@ mod tests {
         );
 
         let query = "sum by (host, event) (count_over_time(event_frequency[2s]))";
-        let result = engine.handle_range_query_promql(query.to_string(), 3.0, 4.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 3.0, 4.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -816,7 +827,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         assert!(
             !matrix_values(qr).is_empty(),
@@ -883,7 +896,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -970,7 +985,9 @@ mod tests {
             WindowType::Sliding,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1000.0, 1000.5, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1000.0, 1000.5, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1, "expected one merged series for host-a");
@@ -1016,7 +1033,9 @@ mod tests {
             WindowType::Sliding,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1000.0, 1000.5, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1000.0, 1000.5, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1, "expected one merged series for host-a");
@@ -1052,7 +1071,9 @@ mod tests {
             WindowType::Sliding,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1000.0, 1000.5, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1000.0, 1000.5, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1);
@@ -1098,7 +1119,9 @@ mod tests {
             WindowType::Sliding,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 2.0, 2.5, 2.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 2.0, 2.5, 2.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1, "expected one series for host-a");
@@ -1146,7 +1169,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert!(
@@ -1203,7 +1228,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1280,7 +1307,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1362,7 +1391,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event) * 1";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1460,7 +1491,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1522,7 +1555,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event) * 1";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1619,7 +1654,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 3.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 3.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1696,7 +1733,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1821,7 +1860,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (region, host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -1968,7 +2009,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (region, host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -2078,7 +2121,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (region, host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect(
             "range query should succeed by skipping the value-less region=orphan group, \
              not fail the entire query because of it",
@@ -2206,7 +2251,9 @@ mod tests {
         let engine =
             create_range_engine_self_keyed("transfer_events", "srcip", vec![(1000, sketch)], query);
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -2305,7 +2352,9 @@ mod tests {
         );
 
         let query = "count(event_frequency) by (host, event)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
 
@@ -2435,7 +2484,9 @@ mod tests {
             QueryLanguage::promql,
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("range query failed");
         let elements = matrix_values(qr);
         assert_eq!(

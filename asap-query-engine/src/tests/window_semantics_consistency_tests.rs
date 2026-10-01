@@ -166,6 +166,7 @@ mod tests {
 
         let range_result = engine
             .handle_range_query_promql(query.to_string(), 3.0, 5.0, 1.0)
+            .expect("native query execution should not fail")
             .expect("range query failed");
         let range_samples = host_a_samples(&matrix_values(range_result.1));
 
@@ -180,6 +181,7 @@ mod tests {
         {
             let instant_result = engine
                 .handle_query_promql(query.to_string(), query_time_sec)
+                .expect("native query execution should not fail")
                 .unwrap_or_else(|| panic!("instant query at t={query_time_sec} failed"));
             let instant_value = single_host_a_value(instant_result.1);
             assert_close(
@@ -232,6 +234,7 @@ mod tests {
 
         let result = engine
             .handle_query_promql(query.to_string(), 6.0)
+            .expect("native query execution should not fail")
             .expect("the wider Sliding query should be accelerated");
 
         assert_close(
@@ -242,6 +245,7 @@ mod tests {
 
         let misaligned_result = engine
             .handle_query_promql(query.to_string(), 6.5)
+            .expect("native query execution should not fail")
             .expect("the endpoint should align down to the latest complete slide boundary");
         assert_close(
             single_host_a_value(misaligned_result.1),
@@ -283,7 +287,10 @@ mod tests {
         );
 
         assert!(
-            engine.handle_query_promql(query.to_string(), 6.0).is_none(),
+            engine
+                .handle_query_promql(query.to_string(), 6.0)
+                .expect("native query execution should not fail")
+                .is_none(),
             "a partial exact cover must fall back instead of returning partial data"
         );
     }
@@ -315,6 +322,7 @@ mod tests {
 
         let result = engine
             .handle_range_query_promql(query.to_string(), 6.0, 7.0, 1.0)
+            .expect("native query execution should not fail")
             .expect("the wider Sliding range query should be accelerated");
 
         assert_eq!(
@@ -375,11 +383,13 @@ mod tests {
 
         let instant_result = engine
             .handle_query_promql(query.to_string(), 4.0)
+            .expect("native query execution should not fail")
             .expect("instant query failed");
         let instant_value = single_host_a_value(instant_result.1);
 
         let range_result = engine
             .handle_range_query_promql(query.to_string(), 4.0, 4.5, 1.0)
+            .expect("native query execution should not fail")
             .expect("range query failed");
         let range_samples = host_a_samples(&matrix_values(range_result.1));
 
@@ -534,6 +544,7 @@ mod tests {
 
         let (_, tumbling_qr) = tumbling_engine
             .handle_query_promql(query.to_string(), 5.0)
+            .expect("native query execution should not fail")
             .expect("tumbling-keys instant query failed");
         let tumbling_values = vector_values(tumbling_qr);
 
@@ -546,6 +557,7 @@ mod tests {
         assert!(
             sliding_engine
                 .handle_query_promql(query.to_string(), 5.0)
+                .expect("native query execution should not fail")
                 .is_none(),
             "a pre-bound SetAggregator must share the value aggregation's window grid"
         );
@@ -635,6 +647,7 @@ mod tests {
 
         let (_, result) = engine
             .handle_query_promql(query.to_string(), 6.0)
+            .expect("native query execution should not fail")
             .expect("the wider dual-population Sliding query should be accelerated");
         let mut values = vector_values(result);
         values.sort_by(|left, right| left.0.cmp(&right.0));
@@ -742,6 +755,7 @@ mod tests {
 
         let (_, result) = engine
             .handle_query_promql(query.to_string(), 4.0)
+            .expect("native query execution should not fail")
             .expect("compatible Tumbling DeltaSet keys should resolve Sliding values");
         let mut values = vector_values(result);
         values.sort_by(|left, right| left.0.cmp(&right.0));
@@ -756,6 +770,7 @@ mod tests {
 
         let (_, misaligned_result) = engine
             .handle_query_promql(query.to_string(), 4.5)
+            .expect("native query execution should not fail")
             .expect("misaligned evaluation should use the latest complete value grid point");
         let mut misaligned_values = vector_values(misaligned_result);
         misaligned_values.sort_by(|left, right| left.0.cmp(&right.0));
@@ -826,6 +841,7 @@ mod tests {
 
         let (_, first_qr) = engine
             .handle_query_promql(query.to_string(), 2.0)
+            .expect("native query execution should not fail")
             .expect("instant query for the fully-paned window [0,2000) failed");
         assert_close(
             single_host_a_value(first_qr),
@@ -833,7 +849,9 @@ mod tests {
             "window [0,2000) has both required panes (5+7) and must resolve exactly",
         );
 
-        let gap_result = engine.handle_query_promql(query.to_string(), 3.0);
+        let gap_result = engine
+            .handle_query_promql(query.to_string(), 3.0)
+            .expect("native query execution should not fail");
         let gap_values = match gap_result {
             Some((_, qr)) => vector_values(qr),
             None => Vec::new(),
@@ -848,6 +866,7 @@ mod tests {
 
         let (_, third_qr) = engine
             .handle_query_promql(query.to_string(), 5.0)
+            .expect("native query execution should not fail")
             .expect("instant query for the fully-paned window [3000,5000) failed");
         assert_close(
             single_host_a_value(third_qr),
@@ -885,6 +904,7 @@ mod tests {
 
         let (_, instant_qr) = engine
             .handle_query_promql(query.to_string(), 1.0)
+            .expect("native query execution should not fail")
             .expect("instant query failed");
         let instant_value = single_host_a_value(instant_qr);
         assert_close(
@@ -895,6 +915,7 @@ mod tests {
 
         let (_, range_qr) = engine
             .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail")
             .expect("range query failed");
         let range_samples = host_a_samples(&matrix_values(range_qr));
         assert_eq!(
@@ -930,7 +951,9 @@ mod tests {
             WindowType::Tumbling,
         );
 
-        let instant_result = engine.handle_query_promql(query.to_string(), 1.0);
+        let instant_result = engine
+            .handle_query_promql(query.to_string(), 1.0)
+            .expect("native query execution should not fail");
         let instant_values = match instant_result {
             Some((_, qr)) => vector_values(qr),
             None => Vec::new(),
@@ -943,7 +966,9 @@ mod tests {
              for host-a, not a fabricated/partial value: got {instant_values:?}"
         );
 
-        let range_result = engine.handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0);
+        let range_result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail");
         let range_has_sample_at_1000 = match range_result {
             Some((_, qr)) => host_a_samples(&matrix_values(qr))
                 .iter()

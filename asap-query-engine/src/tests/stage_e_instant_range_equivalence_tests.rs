@@ -275,6 +275,7 @@ mod tests {
 
         let (_, instant_result) = engine
             .handle_query_promql(shape.query.to_string(), shape.query_time_s)
+            .expect("native query execution should not fail")
             .unwrap_or_else(|| panic!("{case_name}: instant query returned None"));
         let mut instant_pairs: Vec<(Vec<String>, f64)> = match instant_result {
             QueryResult::Vector(v) => v
@@ -297,6 +298,7 @@ mod tests {
                 shape.query_time_s + 0.5,
                 1.0,
             )
+            .expect("native query execution should not fail")
             .unwrap_or_else(|| panic!("{case_name}: range query returned None"));
         let mut range_pairs: Vec<(Vec<String>, f64)> = match range_result {
             QueryResult::Matrix(m) => m
@@ -516,6 +518,7 @@ mod tests {
 
         let (_, result) = engine
             .handle_range_query_promql(query.to_string(), 1.0, 2.5, 1.0)
+            .expect("native query execution should not fail")
             .expect("range topk query failed");
         let elements = match result {
             QueryResult::Matrix(m) => m.values,
@@ -556,6 +559,7 @@ mod tests {
 
         let (_, instant_result) = engine
             .handle_query_promql(query.to_string(), 1.0)
+            .expect("native query execution should not fail")
             .expect("instant topk query failed");
         let mut instant_pairs: Vec<(Vec<String>, f64)> = match instant_result {
             QueryResult::Vector(v) => v
@@ -568,6 +572,7 @@ mod tests {
 
         let (_, range_result) = engine
             .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail")
             .expect("range topk query failed");
         let mut range_pairs: Vec<(Vec<String>, f64)> = match range_result {
             QueryResult::Matrix(m) => m
@@ -604,6 +609,7 @@ mod tests {
 
         let (_, result) = engine
             .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail")
             .expect("range topk query failed");
         let elements = match result {
             QueryResult::Matrix(m) => m.values,
@@ -642,6 +648,7 @@ mod tests {
 
         let (_, result) = engine
             .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("native query execution should not fail")
             .expect("range topk query failed");
         let elements = match result {
             QueryResult::Matrix(m) => m.values,

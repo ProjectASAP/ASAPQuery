@@ -4,7 +4,10 @@
 //! dispatch, range-query handling, and query dispatch.
 
 use super::SimpleEngine;
-use super::{QueryExecutionContext, QueryMetadata, QueryTimestamps, RangeQueryExecutionContext};
+use super::{
+    QueryExecutionContext, QueryExecutionError, QueryMetadata, QueryTimestamps,
+    RangeQueryExecutionContext,
+};
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
 use asap_types::query_requirements::build_query_requirements_promql;
@@ -18,6 +21,8 @@ use std::time::Instant;
 use tracing::{debug, warn};
 
 pub(super) const METRIC_NAME_LABEL: &str = "__name__";
+
+type BinaryInstantArm = (Vec<InstantVectorElement>, Vec<String>);
 
 /// Detects whether either side of a PromQL binary expression is a scalar
 /// (numeric literal), returning the scalar value, the other (vector) arm,
@@ -452,57 +457,52 @@ impl SimpleEngine {
         &self,
         arm_ast: &promql_parser::parser::Expr,
         time: f64,
-    ) -> Option<(Vec<InstantVectorElement>, Vec<String>)> {
+    ) -> Result<Option<BinaryInstantArm>, QueryExecutionError> {
         use promql_parser::parser::Expr;
 
         match arm_ast {
-            Expr::NumberLiteral(_) => None, // caller handles scalars
+            Expr::NumberLiteral(_) => Ok(None), // caller handles scalars
             Expr::Paren(paren) => self.evaluate_binary_arm(&paren.expr, time),
             Expr::Binary(binary) => {
                 if binary.modifier.is_some() {
-                    return None;
+                    return Ok(None);
                 }
                 if !is_supported_binary_arithmetic_op(&binary.op) {
-                    return None;
+                    return Ok(None);
                 }
                 // Nested binary expression — recurse on both sides
-                let (lhs_results, lhs_labels) = self.evaluate_binary_arm(&binary.lhs, time)?;
-                let (rhs_results, rhs_labels) = self.evaluate_binary_arm(&binary.rhs, time)?;
-                let combined = combine_vector_vector(
+                let Some((lhs_results, lhs_labels)) =
+                    self.evaluate_binary_arm(&binary.lhs, time)?
+                else {
+                    return Ok(None);
+                };
+                let Some((rhs_results, rhs_labels)) =
+                    self.evaluate_binary_arm(&binary.rhs, time)?
+                else {
+                    return Ok(None);
+                };
+                let Some(combined) = combine_vector_vector(
                     lhs_results,
                     &lhs_labels,
                     rhs_results,
                     &rhs_labels,
                     &binary.op,
-                )?;
-                Some((combined, lhs_labels))
+                ) else {
+                    return Ok(None);
+                };
+                Ok(Some((combined, lhs_labels)))
             }
             _ => {
-                let (ctx, label_names) = self.resolve_arm_leaf_context(arm_ast, time)?;
-                // Unlike DataFusion's PrecomputedSummaryReadExec (which streamed
-                // whatever rows existed, including zero, so a currently-empty arm
-                // used to return Some(empty vector)), execute_query_pipeline errors
-                // when the store has no precomputed outputs at all for this arm —
-                // that propagates to None here, triggering a full Prometheus
-                // fallback for the whole expression instead of an empty result
-                // for just this arm. Accepted behavior change (#567); warn loudly
-                // so it's visible rather than silent.
-                let results = self
-                    // Binary arms need Topk limiting, but must remain in the
-                    // unformatted intermediate label representation until
-                    // after the binary join.
-                    .execute_query_pipeline(&ctx, true, false)
-                    .map_err(|e| {
-                        warn!(
-                            "Binary-expr arm for metric '{}' failed ({}) — \
-                             falls back to Prometheus for the whole expression rather than \
-                             returning an empty result for just this arm",
-                            ctx.metric, e
-                        );
-                        e
-                    })
-                    .ok()?;
-                Some((results, label_names))
+                let Some((ctx, label_names)) = self.resolve_arm_leaf_context(arm_ast, time) else {
+                    return Ok(None);
+                };
+                let Some(results) = Self::classify_native_execution(
+                    self.execute_query_pipeline(&ctx, true, false),
+                )?
+                else {
+                    return Ok(None);
+                };
+                Ok(Some((results, label_names)))
             }
         }
     }
@@ -515,21 +515,21 @@ impl SimpleEngine {
         &self,
         ast: &promql_parser::parser::Expr,
         time: f64,
-    ) -> Option<(KeyByLabelNames, QueryResult)> {
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
         use promql_parser::parser::Expr;
 
         let query_time = Self::convert_query_time_to_data_time(time);
 
         let binary = match ast {
             Expr::Binary(b) => b,
-            _ => return None,
+            _ => return Ok(None),
         };
 
         if !is_supported_binary_arithmetic_op(&binary.op) {
-            return None;
+            return Ok(None);
         }
         if binary.modifier.is_some() {
-            return None;
+            return Ok(None);
         }
 
         let lhs = binary.lhs.as_ref();
@@ -537,21 +537,34 @@ impl SimpleEngine {
         let op = &binary.op;
 
         if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
-            let (vector_results, label_names) = self.evaluate_binary_arm(vector_arm, time)?;
+            let Some((vector_results, label_names)) = self.evaluate_binary_arm(vector_arm, time)?
+            else {
+                return Ok(None);
+            };
             let combined = combine_scalar(vector_results, scalar, op, scalar_on_left);
-            return Some((
+            return Ok(Some((
                 KeyByLabelNames::new(label_names),
                 QueryResult::vector(combined, query_time),
-            ));
+            )));
         }
 
         // Vector–vector
-        let (lhs_results, lhs_labels) = self.evaluate_binary_arm(lhs, time)?;
-        let (rhs_results, rhs_labels) = self.evaluate_binary_arm(rhs, time)?;
-        let combined =
-            combine_vector_vector(lhs_results, &lhs_labels, rhs_results, &rhs_labels, op)?;
+        let Some((lhs_results, lhs_labels)) = self.evaluate_binary_arm(lhs, time)? else {
+            return Ok(None);
+        };
+        let Some((rhs_results, rhs_labels)) = self.evaluate_binary_arm(rhs, time)? else {
+            return Ok(None);
+        };
+        let Some(combined) =
+            combine_vector_vector(lhs_results, &lhs_labels, rhs_results, &rhs_labels, op)
+        else {
+            return Ok(None);
+        };
         let output_labels = KeyByLabelNames::new(lhs_labels);
-        Some((output_labels, QueryResult::vector(combined, query_time)))
+        Ok(Some((
+            output_labels,
+            QueryResult::vector(combined, query_time),
+        )))
     }
 
     /// Applies a PromQL binary arithmetic operator to two f64 values.
@@ -718,19 +731,19 @@ impl SimpleEngine {
         start: f64,
         end: f64,
         step: f64,
-    ) -> Option<(KeyByLabelNames, QueryResult)> {
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
         use promql_parser::parser::Expr;
 
         let binary = match ast {
             Expr::Binary(b) => b,
-            _ => return None,
+            _ => return Ok(None),
         };
 
         if !is_supported_binary_arithmetic_op(&binary.op) {
-            return None;
+            return Ok(None);
         }
         if binary.modifier.is_some() {
-            return None;
+            return Ok(None);
         }
 
         let lhs = binary.lhs.as_ref();
@@ -738,13 +751,19 @@ impl SimpleEngine {
         let op = &binary.op;
 
         if let Some((scalar, vector_arm, scalar_on_left)) = detect_scalar_arm(lhs, rhs) {
-            let (ctx, labels) = self.build_arm_range_context(vector_arm, start, end, step)?;
+            let Some((ctx, labels)) = self.build_arm_range_context(vector_arm, start, end, step)
+            else {
+                return Ok(None);
+            };
             // Binary arms need Topk limiting, but must remain in the
             // unformatted intermediate label representation until after the
             // arithmetic operation.
-            let results = self
-                .execute_observed_range_query_pipeline(&ctx, true, false)
-                .ok()?;
+            let Some(results) = Self::classify_native_execution(
+                self.execute_observed_range_query_pipeline(&ctx, true, false),
+            )?
+            else {
+                return Ok(None);
+            };
             let combined: Vec<RangeVectorElement> = results
                 .into_iter()
                 .map(|mut elem| {
@@ -758,7 +777,10 @@ impl SimpleEngine {
                     elem
                 })
                 .collect();
-            return Some((KeyByLabelNames::new(labels), QueryResult::matrix(combined)));
+            return Ok(Some((
+                KeyByLabelNames::new(labels),
+                QueryResult::matrix(combined),
+            )));
         }
 
         // Vector-vector: evaluate both arms, join by label key, apply op per matching timestamp.
@@ -767,18 +789,30 @@ impl SimpleEngine {
         // KeyByLabelValues equality below is only safe once the label *names*
         // match (they're canonically sorted by KeyByLabelNames::new(), so two
         // arms with the same label set always order their values the same way).
-        let (lhs_ctx, lhs_labels) = self.build_arm_range_context(lhs, start, end, step)?;
-        let (rhs_ctx, rhs_labels) = self.build_arm_range_context(rhs, start, end, step)?;
+        let Some((lhs_ctx, lhs_labels)) = self.build_arm_range_context(lhs, start, end, step)
+        else {
+            return Ok(None);
+        };
+        let Some((rhs_ctx, rhs_labels)) = self.build_arm_range_context(rhs, start, end, step)
+        else {
+            return Ok(None);
+        };
         if lhs_labels != rhs_labels {
-            return None;
+            return Ok(None);
         }
         // Binary arms need Topk limiting, but not final presentation formatting.
-        let lhs_results = self
-            .execute_observed_range_query_pipeline(&lhs_ctx, true, false)
-            .ok()?;
-        let rhs_results = self
-            .execute_observed_range_query_pipeline(&rhs_ctx, true, false)
-            .ok()?;
+        let Some(lhs_results) = Self::classify_native_execution(
+            self.execute_observed_range_query_pipeline(&lhs_ctx, true, false),
+        )?
+        else {
+            return Ok(None);
+        };
+        let Some(rhs_results) = Self::classify_native_execution(
+            self.execute_observed_range_query_pipeline(&rhs_ctx, true, false),
+        )?
+        else {
+            return Ok(None);
+        };
 
         // Build lookup: label_key -> {timestamp -> value} for rhs
         let mut rhs_map: HashMap<KeyByLabelValues, HashMap<u64, f64>> = HashMap::new();
@@ -810,7 +844,7 @@ impl SimpleEngine {
         }
 
         let output_labels = KeyByLabelNames::new(lhs_labels);
-        Some((output_labels, QueryResult::matrix(combined)))
+        Ok(Some((output_labels, QueryResult::matrix(combined))))
     }
 
     // /// Try to extract sketch query components from a PromQL query string.
@@ -1053,7 +1087,7 @@ impl SimpleEngine {
         &self,
         query: String,
         time: f64,
-    ) -> Option<(KeyByLabelNames, QueryResult)> {
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
         let query_start_time = Instant::now();
         debug!("Handling query: {} at time {}", query, time);
 
@@ -1061,7 +1095,7 @@ impl SimpleEngine {
             Ok(ast) => ast,
             Err(e) => {
                 warn!("Failed to parse PromQL query '{}': {}", query, e);
-                return None;
+                return Ok(None);
             }
         };
 
@@ -1077,7 +1111,10 @@ impl SimpleEngine {
             return result;
         }
 
-        let context = self.build_query_execution_context_from_parsed(&ast, &query, time)?;
+        let Some(context) = self.build_query_execution_context_from_parsed(&ast, &query, time)
+        else {
+            return Ok(None);
+        };
 
         debug!(
             "Querying store for metric: {}, aggregation_id: {}, range: [{}, {}]",
@@ -1087,7 +1124,7 @@ impl SimpleEngine {
             context.store_plan.values_query.end_timestamp
         );
 
-        let result = self.execute_context(context, true, true);
+        let result = self.execute_context_result(context, true, true)?;
 
         // Determine query routing order based on function type.
         // USampling functions prefer the precomputed path first (sketch fallback),
@@ -1160,7 +1197,7 @@ impl SimpleEngine {
             "Total query handling took: {:.2}ms (no results)",
             total_query_duration.as_secs_f64() * 1000.0
         );
-        result
+        Ok(result)
     }
 
     pub fn build_query_execution_context_promql(
@@ -1311,7 +1348,7 @@ impl SimpleEngine {
         start: f64,
         end: f64,
         step: f64,
-    ) -> Option<(KeyByLabelNames, QueryResult)> {
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
         let query_start_time = Instant::now();
         debug!(
             "Handling range query: {} from {} to {} step {}",
@@ -1322,7 +1359,7 @@ impl SimpleEngine {
             Ok(ast) => ast,
             Err(e) => {
                 warn!("Failed to parse PromQL query '{}': {}", query, e);
-                return None;
+                return Ok(None);
             }
         };
 
@@ -1337,19 +1374,21 @@ impl SimpleEngine {
             return result;
         }
 
-        let context =
-            self.build_range_query_execution_context_from_parsed(&ast, &query, start, end, step)?;
+        let Some(context) =
+            self.build_range_query_execution_context_from_parsed(&ast, &query, start, end, step)
+        else {
+            return Ok(None);
+        };
 
         // Execute range query pipeline. (true, true): self-gated, same as
         // instant's handle_query_promql -- both flags are no-ops unless this
         // query's statistic is Topk.
-        let results: Vec<RangeVectorElement> = self
-            .execute_observed_range_query_pipeline(&context, true, true)
-            .map_err(|e| {
-                warn!("Range query execution failed: {}", e);
-                e
-            })
-            .ok()?;
+        let Some(results): Option<Vec<RangeVectorElement>> = Self::classify_native_execution(
+            self.execute_observed_range_query_pipeline(&context, true, true),
+        )?
+        else {
+            return Ok(None);
+        };
 
         // // Determine query routing order based on function type.
         // // USampling functions prefer the precomputed path first (sketch fallback),
@@ -1407,10 +1446,10 @@ impl SimpleEngine {
             total_duration.as_secs_f64() * 1000.0
         );
 
-        Some((
+        Ok(Some((
             context.base.metadata.query_output_labels,
             QueryResult::matrix(results),
-        ))
+        )))
     }
 }
 
@@ -1561,6 +1600,30 @@ mod topk_pipeline_tests {
     }
 
     #[test]
+    fn public_promql_methods_report_capability_misses_as_ok_none() {
+        let (engine, _store) = build_topk_engine();
+
+        assert!(matches!(
+            engine.handle_query_promql("topk(".to_string(), QUERY_TIME),
+            Ok(None)
+        ));
+        assert!(matches!(
+            engine.handle_range_query_promql(
+                "topk(".to_string(),
+                QUERY_TIME - 1.0,
+                QUERY_TIME,
+                1.0
+            ),
+            Ok(None)
+        ));
+        let no_local_data = engine.handle_query_promql(TOPK_QUERY.to_string(), QUERY_TIME);
+        assert!(
+            matches!(no_local_data, Ok(None)),
+            "missing local data should be a capability miss, got {no_local_data:?}"
+        );
+    }
+
+    #[test]
     fn detects_topk_and_resolves_self_keyed_heap() {
         let (engine, _store) = build_topk_engine();
         let context = engine
@@ -1706,8 +1769,10 @@ mod topk_pipeline_tests {
             .insert_precomputed_output(output, Box::new(sketch))
             .expect("insert should succeed");
 
-        let (_, query_result) = engine
-            .handle_query_promql(format!("{TOPK_QUERY} + 0"), QUERY_TIME)
+        let result = engine.handle_query_promql(format!("{TOPK_QUERY} + 0"), QUERY_TIME);
+        assert!(matches!(&result, Ok(Some(_))));
+        let (_, query_result) = result
+            .expect("native query execution should not fail")
             .expect("binary-expr-wrapped topk should still resolve");
 
         let results = match query_result {
@@ -1940,6 +2005,7 @@ mod topk_pipeline_tests {
                 format!("{TOPK_OVER_SUM_OVER_TIME_QUERY} + 0"),
                 TOPK_OVER_SUM_OVER_TIME_QUERY_TIME,
             )
+            .expect("native query execution should not fail")
             .expect("binary-expr-wrapped topk-over-sum_over_time should still resolve");
 
         assert_eq!(

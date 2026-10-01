@@ -37,6 +37,13 @@ use serde_json::Value;
 #[allow(dead_code)]
 type MergedOutputsMap = HashMap<Option<KeyByLabelValues>, Box<dyn AggregateCore>>;
 
+const NO_LOCAL_DATA_ERROR_PREFIXES: [&str; 4] = [
+    "No precomputed outputs found",
+    "No data found",
+    "Incomplete Sliding-window cover",
+    "Exact Prometheus counter bounds are unavailable for off-grid",
+];
+
 /// Metadata extracted from a query, independent of query language
 #[derive(Debug, Clone)]
 pub struct QueryMetadata {
@@ -52,6 +59,13 @@ pub struct QueryMetadata {
     /// forwards sum_over_time's dropped name -- #710). Unused outside the
     /// PromQL Topk formatting path.
     pub keep_metric_name: bool,
+}
+
+/// A native query was accepted but could not be executed locally.
+#[derive(Debug, thiserror::Error)]
+pub enum QueryExecutionError {
+    #[error("native query execution failed: {0}")]
+    Native(String),
 }
 
 /// Parameters for a single store query
@@ -1536,27 +1550,60 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Option<(KeyByLabelNames, QueryResult)> {
-        let results = self
-            .execute_query_pipeline(&context, enable_topk_limiting, enable_topk_formatting)
-            .map_err(|e| {
-                warn!("Query execution failed: {}", e);
-                e
-            })
-            .ok()?;
-        Some((
+        self.execute_context_result(context, enable_topk_limiting, enable_topk_formatting)
+            .map_err(|error| warn!("Query execution failed: {error}"))
+            .ok()
+            .flatten()
+    }
+
+    fn execute_context_result(
+        &self,
+        context: QueryExecutionContext,
+        enable_topk_limiting: bool,
+        enable_topk_formatting: bool,
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
+        let Some(results) = Self::classify_native_execution(self.execute_query_pipeline(
+            &context,
+            enable_topk_limiting,
+            enable_topk_formatting,
+        ))?
+        else {
+            return Ok(None);
+        };
+        Ok(Some((
             context.metadata.query_output_labels,
             QueryResult::vector(results, context.query_time),
-        ))
+        )))
+    }
+
+    fn classify_native_execution<T>(
+        result: Result<T, String>,
+    ) -> Result<Option<T>, QueryExecutionError> {
+        match result {
+            Ok(value) => Ok(Some(value)),
+            Err(error)
+                if NO_LOCAL_DATA_ERROR_PREFIXES
+                    .iter()
+                    .any(|prefix| error.starts_with(prefix)) =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(QueryExecutionError::Native(error)),
+        }
     }
 
     /// Handle a query following Python's unified architecture
     // pub async fn handle_query(
-    pub fn handle_query(&self, query: String, time: f64) -> Option<(KeyByLabelNames, QueryResult)> {
+    pub fn handle_query(
+        &self,
+        query: String,
+        time: f64,
+    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
         match self.query_language {
             QueryLanguage::promql => self.handle_query_promql(query, time),
-            QueryLanguage::sql => self.handle_query_sql(query, time),
-            QueryLanguage::elastic_querydsl => self.handle_query_elastic(query, time),
-            QueryLanguage::elastic_sql => self.handle_query_sql(query, time),
+            QueryLanguage::sql => Ok(self.handle_query_sql(query, time)),
+            QueryLanguage::elastic_querydsl => Ok(self.handle_query_elastic(query, time)),
+            QueryLanguage::elastic_sql => Ok(self.handle_query_sql(query, time)),
         }
     }
 
@@ -4088,7 +4135,7 @@ mod sketch_query_tests {
     // fn test_sketch_instant_entropy_over_time() {
     //     let engine = engine_with_sketch_data("mymetric");
     //     // Query at time 0.1s (= 100ms) with a 100ms range
-    //     let result = engine.handle_query_promql("entropy_over_time(mymetric[100s])".into(), 0.1);
+    //     let result = engine.handle_query_promql("entropy_over_time(mymetric[100s])".into(), 0.1).expect("native query execution should not fail");
     //     assert!(result.is_some(), "entropy_over_time should return a result");
     //     let (labels, qr) = result.unwrap();
     //     assert!(!labels.labels.is_empty());
@@ -4105,7 +4152,7 @@ mod sketch_query_tests {
     // fn test_sketch_instant_quantile_over_time() {
     //     let engine = engine_with_sketch_data("mymetric");
     //     let result =
-    //         engine.handle_query_promql("quantile_over_time(0.5, mymetric[100s])".into(), 0.1);
+    //         engine.handle_query_promql("quantile_over_time(0.5, mymetric[100s])".into(), 0.1).expect("native query execution should not fail");
     //     assert!(
     //         result.is_some(),
     //         "quantile_over_time should return a result"
@@ -4128,7 +4175,7 @@ mod sketch_query_tests {
     // #[test]
     // fn test_sketch_instant_avg_over_time() {
     //     let engine = engine_with_sketch_data("cpu");
-    //     let result = engine.handle_query_promql("avg_over_time(cpu[100s])".into(), 0.1);
+    //     let result = engine.handle_query_promql("avg_over_time(cpu[100s])".into(), 0.1).expect("native query execution should not fail");
     //     assert!(result.is_some(), "avg_over_time should return a result");
     //     let (_labels, qr) = result.unwrap();
     //     if let crate::engines::query_result::QueryResult::Vector(iv) = qr {
@@ -4188,7 +4235,7 @@ mod sketch_query_tests {
     //         0.01,
     //         0.1,
     //         0.01,
-    //     );
+    //     ).expect("native query execution should not fail");
     //     assert!(
     //         result.is_some(),
     //         "sketch range query should return a result"
@@ -4958,6 +5005,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
         );
         let (_, qr) = engine
             .handle_query_promql("sum(cpu_load) by (host) * 5".to_string(), 3.0)
+            .expect("native query execution should not fail")
             .expect("scalar binary-expr query should resolve");
         assert_eq!(matrix_metric(qr), 500.0);
     }
@@ -5045,6 +5093,7 @@ mod stage_e4_instant_wrapper_equivalence_tests {
                 "sum(metric_a) by (host) + sum(metric_b) by (host)".to_string(),
                 3.0,
             )
+            .expect("native query execution should not fail")
             .expect("vector-vector binary-expr query should resolve");
         assert_eq!(matrix_metric(qr), 30.0);
     }

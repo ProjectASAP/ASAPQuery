@@ -158,7 +158,9 @@ mod tests {
         );
 
         let query = "sum(errors_total) by (host) / sum(requests_total) by (host)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result for range vector-vector query");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1, "Expected 1 series (host-a)");
@@ -191,7 +193,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) + sum(metric_b) by (host)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1);
@@ -219,7 +223,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) * 100";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result for scalar range query");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1);
@@ -246,7 +252,9 @@ mod tests {
         );
 
         let query = "1 - sum(metric_a) by (host)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result for scalar-left range query");
         let elements = matrix_values(qr);
         assert_eq!(elements.len(), 1);
@@ -280,7 +288,9 @@ mod tests {
         );
 
         let query = "sum(metric_a) by (host) + sum(metric_b) by (region)";
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         assert!(
             result.is_none(),
             "BUG: arms grouped by different label sets must not join, even when their \
@@ -423,6 +433,7 @@ mod tests {
 
         let (_, qr) = engine
             .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail")
             .expect("Expected result for range topk/plain query");
         let elements = matrix_values(qr);
 
@@ -543,6 +554,7 @@ mod tests {
 
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), 1.0)
+            .expect("native query execution should not fail")
             .expect("Expected result for instant topk/topk query");
         let elements = match qr {
             QueryResult::Vector(vector) => vector.values,
@@ -566,6 +578,7 @@ mod tests {
 
         let (_, qr) = engine
             .handle_query_promql(query.to_string(), 1.0)
+            .expect("native query execution should not fail")
             .expect("Expected result for instant topk/plain query");
         let elements = match qr {
             QueryResult::Vector(vector) => vector.values,
@@ -600,7 +613,9 @@ mod tests {
             &[("host-a", 5.0), ("host-b", 200.0), ("host-c", 300.0)],
         );
 
-        let result = engine.handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0);
+        let result = engine
+            .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("Expected result for topk/topk range query");
         let elements = matrix_values(qr);
 
@@ -663,6 +678,7 @@ mod tests {
             let query = format!("topk(2, metric_a) {op} topk(2, metric_b)");
             let (_, qr) = engine
                 .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+                .expect("native query execution should not fail")
                 .unwrap_or_else(|| panic!("Expected result for operator {op}"));
             let elements = matrix_values(qr);
 
@@ -693,6 +709,7 @@ mod tests {
                 2.0,
                 1.0,
             )
+            .expect("native query execution should not fail")
             .expect("Expected result for power operator");
         let elements = matrix_values(qr);
         let values: HashMap<String, f64> = elements
@@ -713,8 +730,9 @@ mod tests {
             &[("host-c", 300.0), ("host-d", 200.0)],
         );
 
-        let result =
-            engine.handle_query_promql("topk(2, metric_a) + topk(2, metric_b)".to_string(), 1.0);
+        let result = engine
+            .handle_query_promql("topk(2, metric_a) + topk(2, metric_b)".to_string(), 1.0)
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("valid no-match join should return an empty vector");
         let elements = match qr {
             QueryResult::Vector(vector) => vector.values,
@@ -732,12 +750,14 @@ mod tests {
             &[("host-c", 300.0), ("host-d", 200.0)],
         );
 
-        let result = engine.handle_range_query_promql(
-            "topk(2, metric_a) + topk(2, metric_b)".to_string(),
-            1.0,
-            2.0,
-            1.0,
-        );
+        let result = engine
+            .handle_range_query_promql(
+                "topk(2, metric_a) + topk(2, metric_b)".to_string(),
+                1.0,
+                2.0,
+                1.0,
+            )
+            .expect("native query execution should not fail");
         let (_, qr) = result.expect("valid no-match join should return an empty matrix");
         assert!(matrix_values(qr).is_empty());
     }
@@ -753,6 +773,7 @@ mod tests {
 
         let (_, qr) = engine
             .handle_range_query_promql("topk(2, metric_a) + 2".to_string(), 1.0, 2.0, 1.0)
+            .expect("native query execution should not fail")
             .expect("Expected result for range topk/scalar query");
         let elements = matrix_values(qr);
 
@@ -780,6 +801,7 @@ mod tests {
 
         assert!(engine
             .handle_query_promql("topk(2, metric_a) == topk(2, metric_b)".to_string(), 1.0,)
+            .expect("native query execution should not fail")
             .is_none());
     }
 
@@ -799,6 +821,7 @@ mod tests {
                 2.0,
                 1.0,
             )
+            .expect("native query execution should not fail")
             .is_none());
     }
 
@@ -816,6 +839,7 @@ mod tests {
                 "(topk(2, metric_a) == topk(2, metric_b)) + topk(2, metric_a)".to_string(),
                 1.0,
             )
+            .expect("native query execution should not fail")
             .is_none());
     }
 
@@ -833,6 +857,7 @@ mod tests {
                 "topk(2, metric_a) + on(__name__) topk(2, metric_b)".to_string(),
                 1.0,
             )
+            .expect("native query execution should not fail")
             .is_none());
     }
 
@@ -852,6 +877,7 @@ mod tests {
                 2.0,
                 1.0,
             )
+            .expect("native query execution should not fail")
             .is_none());
     }
 
@@ -870,6 +896,7 @@ mod tests {
                     .to_string(),
                 1.0,
             )
+            .expect("native query execution should not fail")
             .is_none());
     }
 }
