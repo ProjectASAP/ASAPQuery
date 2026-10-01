@@ -71,6 +71,23 @@ pub(crate) trait QueryPlanRuntime {
     ) -> Result<Self::Output, Self::Error>;
 }
 
+#[derive(Debug)]
+pub(crate) enum QueryPlanExecutionError<E> {
+    InvalidPlan(String),
+    Node { id: NodeId, source: E },
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for QueryPlanExecutionError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidPlan(error) => write!(formatter, "invalid query plan: {error}"),
+            Self::Node { id, source } => {
+                write!(formatter, "Query plan node n{} failed: {source}", id.0)
+            }
+        }
+    }
+}
+
 impl QueryPlan {
     pub(crate) fn compile_range(
         context: &RangeQueryExecutionContext,
@@ -171,8 +188,12 @@ impl QueryPlan {
         Ok(())
     }
 
-    pub(crate) fn execute<R: QueryPlanRuntime>(&self, runtime: &R) -> Result<R::Output, String> {
-        self.validate()?;
+    pub(crate) fn execute<R: QueryPlanRuntime>(
+        &self,
+        runtime: &R,
+    ) -> Result<R::Output, QueryPlanExecutionError<R::Error>> {
+        self.validate()
+            .map_err(QueryPlanExecutionError::InvalidPlan)?;
         let mut outputs: Vec<R::Output> = Vec::with_capacity(self.nodes.len());
         for (index, node) in self.nodes.iter().enumerate() {
             let inputs = node
@@ -188,7 +209,10 @@ impl QueryPlan {
             );
             let output = runtime
                 .execute_node(NodeId(index), node, &inputs)
-                .map_err(|error| format!("Query plan node n{index} failed: {error}"))?;
+                .map_err(|source| QueryPlanExecutionError::Node {
+                    id: NodeId(index),
+                    source,
+                })?;
             debug!(
                 node_id = index,
                 node_kind = node.kind(),

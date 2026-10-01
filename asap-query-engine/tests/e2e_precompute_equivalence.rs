@@ -253,6 +253,24 @@ impl NativeDagScenario<'_> {
     }
 }
 
+#[cfg(feature = "native_query_legacy_test_support")]
+fn assert_range_results_match(
+    mut dag: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
+    mut legacy: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
+) {
+    for result in [&mut dag, &mut legacy] {
+        if let Some((_, QueryResult::Matrix(matrix))) = result {
+            matrix
+                .values
+                .sort_by(|left, right| left.labels.labels.cmp(&right.labels.labels));
+        }
+    }
+    assert_eq!(
+        serde_json::to_value(dag).unwrap(),
+        serde_json::to_value(legacy).unwrap()
+    );
+}
+
 #[tokio::test]
 async fn e2e_sliding_precompute_outputs_compose_a_wider_query() {
     let port = 19402u16;
@@ -431,9 +449,11 @@ async fn e2e_native_leaf_range_matches_instant_at_range_end() {
     let (engine, query) = scenario.build_engine().await;
     let (_, instant) = engine
         .handle_query_promql(query.clone(), 2.0)
+        .expect("instant native query should not fail")
         .expect("instant native query should succeed");
     let (_, range) = engine
         .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("range native query should not fail")
         .expect("range native query should succeed");
 
     let QueryResult::Vector(instant) = instant else {
@@ -483,16 +503,13 @@ async fn e2e_native_dag_range_matches_legacy_range() {
     let (dag, query) = scenario.build_engine().await;
     let (legacy, _) = legacy_scenario.build_engine().await;
     let dag = dag
-        .try_handle_range_query_promql(query.clone(), 2.0, 3.0, 1.0)
+        .handle_range_query_promql(query.clone(), 2.0, 3.0, 1.0)
         .expect("DAG execution should not fail");
     let legacy = legacy
         .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
-        .try_handle_range_query_promql(query, 2.0, 3.0, 1.0)
+        .handle_range_query_promql(query, 2.0, 3.0, 1.0)
         .expect("legacy execution should not fail");
-    assert_eq!(
-        serde_json::to_value(dag).unwrap(),
-        serde_json::to_value(legacy).unwrap()
-    );
+    assert_range_results_match(dag, legacy);
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]
@@ -527,16 +544,13 @@ async fn e2e_sparse_range_dag_matches_legacy_range() {
     let (dag, query) = scenario.build_engine().await;
     let (legacy, _) = legacy_scenario.build_engine().await;
     let dag = dag
-        .try_handle_range_query_promql(query.clone(), 1.0, 9.0, 1.0)
+        .handle_range_query_promql(query.clone(), 1.0, 9.0, 1.0)
         .expect("DAG execution should not fail");
     let legacy = legacy
         .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
-        .try_handle_range_query_promql(query, 1.0, 9.0, 1.0)
+        .handle_range_query_promql(query, 1.0, 9.0, 1.0)
         .expect("legacy execution should not fail");
-    assert_eq!(
-        serde_json::to_value(dag).unwrap(),
-        serde_json::to_value(legacy).unwrap()
-    );
+    assert_range_results_match(dag, legacy);
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]
@@ -589,16 +603,13 @@ async fn e2e_keyed_count_range_dag_matches_legacy_range() {
     let (dag, query) = scenario.build_engine().await;
     let (legacy, _) = legacy_scenario.build_engine().await;
     let dag = dag
-        .try_handle_range_query_promql(query.clone(), 1.0, 3.0, 1.0)
+        .handle_range_query_promql(query.clone(), 1.0, 3.0, 1.0)
         .unwrap();
     let legacy = legacy
         .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
-        .try_handle_range_query_promql(query, 1.0, 3.0, 1.0)
+        .handle_range_query_promql(query, 1.0, 3.0, 1.0)
         .unwrap();
-    assert_eq!(
-        serde_json::to_value(dag).unwrap(),
-        serde_json::to_value(legacy).unwrap()
-    );
+    assert_range_results_match(dag, legacy);
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]
@@ -642,16 +653,13 @@ async fn e2e_self_keyed_topk_dag_matches_legacy_range() {
     let (dag, query) = scenario.build_engine().await;
     let (legacy, _) = legacy_scenario.build_engine().await;
     let dag = dag
-        .try_handle_range_query_promql(query.clone(), 1.0, 1.0, 1.0)
+        .handle_range_query_promql(query.clone(), 1.0, 1.0, 1.0)
         .unwrap();
     let legacy = legacy
         .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
-        .try_handle_range_query_promql(query, 1.0, 1.0, 1.0)
+        .handle_range_query_promql(query, 1.0, 1.0, 1.0)
         .unwrap();
-    assert_eq!(
-        serde_json::to_value(dag).unwrap(),
-        serde_json::to_value(legacy).unwrap()
-    );
+    assert_range_results_match(dag, legacy);
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]
@@ -685,7 +693,7 @@ async fn e2e_malformed_native_plan_returns_local_error() {
     .await;
     assert!(engine
         .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::MalformedPlan)
-        .try_handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
         .is_err());
 }
 
@@ -720,7 +728,7 @@ async fn e2e_native_store_failure_returns_local_error() {
     .await;
     assert!(engine
         .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::FailingStore)
-        .try_handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
         .is_err());
 }
 
@@ -864,7 +872,7 @@ async fn e2e_quantile_over_time_uses_open_closed_evaluation_window() {
 /// must not prepend the metric name; only PromQL topk has that output shape.
 #[tokio::test]
 async fn e2e_grouped_quantile_preserves_output_label_shape() {
-    let port = 19416u16;
+    let port = 19420u16;
     let metric = "grouped_latency";
     let query = "quantile by (job) (0.99, grouped_latency)";
     let mut config = make_agg_config(
@@ -900,7 +908,7 @@ async fn e2e_grouped_quantile_preserves_output_label_shape() {
     .await;
 
     let (output_labels, result) = engine
-        .try_handle_query_promql(query, 2.0)
+        .handle_query_promql(query, 2.0)
         .expect("grouped quantile should execute")
         .expect("grouped quantile should match configured inference");
     assert_eq!(output_labels.labels, vec!["job"]);

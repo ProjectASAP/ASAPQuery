@@ -1110,7 +1110,7 @@ impl SimpleEngine {
                 "Binary arithmetic query handling took: {:.2}ms",
                 total_query_duration.as_secs_f64() * 1000.0
             );
-            return Ok(result);
+            return result;
         }
 
         let Some(context) = self.build_query_execution_context_from_parsed(&ast, &query, time)
@@ -1392,7 +1392,7 @@ impl SimpleEngine {
                 "Binary arithmetic range query handling took: {:.2}ms",
                 total_duration.as_secs_f64() * 1000.0
             );
-            return Ok(result);
+            return result;
         }
 
         let Some(context) =

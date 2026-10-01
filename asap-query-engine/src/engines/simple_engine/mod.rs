@@ -8,7 +8,9 @@ use crate::data_model::{
     AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
     StreamingConfig,
 };
-use crate::engines::query_plan::{NodeId, PlanOptions, QueryPlan, QueryPlanNode, QueryPlanRuntime};
+use crate::engines::query_plan::{
+    NodeId, PlanOptions, QueryPlan, QueryPlanExecutionError, QueryPlanNode, QueryPlanRuntime,
+};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{
     plan_exact_cover, CompositionError, SlidingWindowSpec,
@@ -214,13 +216,9 @@ struct NativePlanRuntime<'a> {
 }
 
 impl NativePlanRuntime<'_> {
-    fn reads(&self) -> Result<RangeQueryReads, String> {
+    fn reads(&self) -> Result<RangeQueryReads, QueryExecutionError> {
         if self.reads.borrow().is_none() {
-            *self.reads.borrow_mut() = Some(
-                self.engine
-                    .read_range_query_inputs(self.context)
-                    .map_err(|error| error.to_string())?,
-            );
+            *self.reads.borrow_mut() = Some(self.engine.read_range_query_inputs(self.context)?);
         }
         Ok(self
             .reads
@@ -233,7 +231,7 @@ impl NativePlanRuntime<'_> {
 
 impl QueryPlanRuntime for NativePlanRuntime<'_> {
     type Output = NativePlanOutput;
-    type Error = String;
+    type Error = QueryExecutionError;
 
     fn execute_node(
         &self,
@@ -248,17 +246,20 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                 {
                     Ok(NativePlanOutput::Read(reads.values))
                 } else {
-                    reads
-                        .keys
-                        .map(NativePlanOutput::Read)
-                        .ok_or_else(|| "Query plan requested missing key read".to_string())
+                    reads.keys.map(NativePlanOutput::Read).ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Query plan requested missing key read".to_string(),
+                        )
+                    })
                 }
             }
             QueryPlanNode::ComposeWindows { .. } => match inputs {
                 [NativePlanOutput::Read(data)] => Ok(NativePlanOutput::Composed(
                     self.engine.compose_range_read(data),
                 )),
-                _ => Err("ComposeWindows expected store data".into()),
+                _ => Err(QueryExecutionError::Native(
+                    "ComposeWindows expected store data".into(),
+                )),
             },
             QueryPlanNode::ResolveKeys { keys, .. } => match (inputs, keys) {
                 ([NativePlanOutput::Composed(values)], None) => {
@@ -274,24 +275,28 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     values: values.clone(),
                     keys: Some(keys.clone()),
                 })),
-                _ => Err("ResolveKeys received incompatible inputs".into()),
+                _ => Err(QueryExecutionError::Native(
+                    "ResolveKeys received incompatible inputs".into(),
+                )),
             },
             QueryPlanNode::Estimate { .. } => match inputs {
                 [NativePlanOutput::Resolved(reads)] => self
                     .engine
                     .estimate_range_query(self.context, reads.clone())
-                    .map_err(|error| error.to_string())
                     .map(NativePlanOutput::Results),
-                _ => Err("Estimate expected resolved reads".into()),
+                _ => Err(QueryExecutionError::Native(
+                    "Estimate expected resolved reads".into(),
+                )),
             },
             QueryPlanNode::LimitTopK { k, .. } => match inputs {
                 [NativePlanOutput::Results(results)] => self
                     .engine
                     .limit_range_topk(results, k)
                     .map_err(QueryExecutionError::Native)
-                    .map_err(|error| error.to_string())
                     .map(NativePlanOutput::Results),
-                _ => Err("LimitTopK expected estimates".into()),
+                _ => Err(QueryExecutionError::Native(
+                    "LimitTopK expected estimates".into(),
+                )),
             },
             QueryPlanNode::Format {
                 include_metric_name,
@@ -302,7 +307,9 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     self.engine
                         .format_range_results(results, *include_metric_name, metric),
                 )),
-                _ => Err("result node expected estimates".into()),
+                _ => Err(QueryExecutionError::Native(
+                    "result node expected estimates".into(),
+                )),
             },
         }
     }
@@ -1824,17 +1831,6 @@ impl SimpleEngine {
         }
     }
 
-    pub fn try_handle_query(
-        &self,
-        query: String,
-        time: f64,
-    ) -> Result<Option<(KeyByLabelNames, QueryResult)>, QueryExecutionError> {
-        match self.query_language {
-            QueryLanguage::promql => self.try_handle_query_promql(query, time),
-            _ => Ok(self.handle_query(query, time)),
-        }
-    }
-
     /// Merge precomputed outputs (extracts buckets from timestamped data)
     #[allow(dead_code)]
     fn merge_precomputed_outputs(
@@ -2383,7 +2379,10 @@ impl SimpleEngine {
             context,
             reads: std::cell::RefCell::new(None),
         };
-        match plan.execute(&runtime).map_err(QueryExecutionError::Native)? {
+        match plan.execute(&runtime).map_err(|error| match error {
+            QueryPlanExecutionError::InvalidPlan(reason) => QueryExecutionError::Native(reason),
+            QueryPlanExecutionError::Node { source, .. } => source,
+        })? {
             NativePlanOutput::Results(results) => Ok(results),
             _ => Err(QueryExecutionError::Native(
                 "Query plan root did not produce results".to_string(),
@@ -2410,21 +2409,18 @@ impl SimpleEngine {
             },
         )?;
         if enable_topk_limiting && context.base.metadata.statistic_to_compute == Statistic::Topk {
-            let k = context
-                .base
-                .metadata
-                .query_kwargs
-                .get("k")
-                .ok_or_else(|| {
-                    QueryExecutionError::Native("Topk query is missing required `k` parameter".into())
-                })?;
+            let k = context.base.metadata.query_kwargs.get("k").ok_or_else(|| {
+                QueryExecutionError::Native("Topk query is missing required `k` parameter".into())
+            })?;
             results = self
                 .limit_range_topk(&results, k)
                 .map_err(QueryExecutionError::Native)?;
         }
         Ok(self.format_range_results(
             &results,
-            enable_topk_formatting && context.base.metadata.keep_metric_name,
+            enable_topk_formatting
+                && context.base.metadata.statistic_to_compute == Statistic::Topk
+                && context.base.metadata.keep_metric_name,
             &context.base.metric,
         ))
     }
@@ -2441,8 +2437,7 @@ impl SimpleEngine {
                 lookback_ms,
                 context.window_size_ms,
                 context.tumbling_window_ms,
-            )
-            .map_err(QueryExecutionError::Native)?
+            )?
         } else {
             self.execute_store_query(&context.base.store_plan.values_query)
                 .map_err(QueryExecutionError::Native)?
@@ -2460,22 +2455,27 @@ impl SimpleEngine {
         );
 
         let keys = match &context.base.store_plan.keys_query {
-            Some(query) if context.keys_window_type == Some(WindowType::Sliding) => Some(
-                self.execute_sliding_cover_query(
+            Some(query) if context.keys_window_type == Some(WindowType::Sliding) => {
+                Some(self.execute_sliding_cover_query(
                     query,
                     &context.output_timestamps,
-                    context
-                        .keys_lookback_ms
-                        .ok_or("Sliding keys query is missing its lookback")?,
-                    context
-                        .keys_window_size_ms
-                        .ok_or("Sliding keys query is missing its window size")?,
-                    context
-                        .keys_tumbling_window_ms
-                        .ok_or("Sliding keys query is missing its slide interval")?,
-                )
-                .map_err(QueryExecutionError::Native)?,
-            ),
+                    context.keys_lookback_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Sliding keys query is missing its lookback".into(),
+                        )
+                    })?,
+                    context.keys_window_size_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Sliding keys query is missing its window size".into(),
+                        )
+                    })?,
+                    context.keys_tumbling_window_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Sliding keys query is missing its slide interval".into(),
+                        )
+                    })?,
+                )?)
+            }
             Some(query) => Some(
                 self.execute_store_query(query)
                     .map_err(QueryExecutionError::Native)?,

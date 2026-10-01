@@ -1529,11 +1529,11 @@ mod tests {
     fn range_query_delta_set_replay_dag_matches_legacy() {
         let query = "count(event_frequency) by (host, event)";
         let dag = create_oscillating_delta_set_engine()
-            .try_handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
+            .handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
             .expect("DAG execution failed");
         let legacy = create_oscillating_delta_set_engine()
             .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
-            .try_handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
+            .handle_range_query_promql(query.to_string(), 1.0, 5.0, 1.0)
             .expect("legacy execution failed");
 
         assert_eq!(
