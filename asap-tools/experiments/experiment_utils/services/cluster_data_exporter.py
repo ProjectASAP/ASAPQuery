@@ -493,12 +493,15 @@ class ClusterDataExporterService(BaseService):
         while time.time() - start_time < timeout:
             # Run curl from the remote node to check health
             check_cmd = f"curl -s -o /dev/null -w '%{{http_code}}' {url}"
+            # curl exits non-zero while the exporter is still starting; the
+            # local provider raises on that, so keep polling instead.
             result = self.provider.execute_command(
                 node_idx=node_idx,
                 cmd=check_cmd,
                 cmd_dir="",
                 nohup=False,
                 popen=False,
+                ignore_errors=True,
             )
 
             try:
