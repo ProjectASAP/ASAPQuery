@@ -23,11 +23,12 @@ experiment_params:
         data_year: 2022
         parts_mode: part-index
         part_index: 0
+        scrape_timeout: 10s
   query_groups:
   - id: 1
     queries:
     - sum by (ms_name) (alibaba_microservice_cpu_usage)
-    repetition_delay_ms: 5000
+    repetition_delay_ms: 10000
     client_options:
       repetitions: 20
       query_time_offset: 10
@@ -45,6 +46,8 @@ experiment_params:
     - node_id
     exporter: cluster_data_exporter
 cluster_data_directory: /data/cluster_traces/alibaba_msmetrics
+prometheus:
+  scrape_interval: 10s
 sketch_parameters:
   CountMinSketch:
     depth: 3
