@@ -105,6 +105,30 @@ class GenerateTest(unittest.TestCase):
         )
         self.assertEqual(recommended["cluster_data_directory"], "/traces/google")
 
+    def test_alibaba_scrape_interval_bounds_query_rate(self):
+        # One Alibaba MSMetrics scrape takes about 5 s, and the planner rejects
+        # queries repeated faster than the scrape interval.
+        configs, _ = rsc.generate(
+            [
+                recommendation(
+                    "alibaba_v2022",
+                    "ms_cpu_by_msname",
+                    "instant",
+                    "cms",
+                    "rows=3 cols=16384",
+                )
+            ],
+            [("alibaba_v2022", "ms_cpu_by_msname", "instant")],
+            "/traces",
+        )
+        config = configs["alibaba_v2022_ms_cpu_by_msname_instant_recommended"]
+        self.assertEqual(config["prometheus"], {"scrape_interval": "10s"})
+        group = config["experiment_params"]["query_groups"][0]
+        self.assertEqual(group["repetition_delay_ms"], 10000)
+        self.assertEqual(
+            group["queries"], ["sum by (ms_name) (alibaba_microservice_cpu_usage)"]
+        )
+
     def test_families_without_planner_sketch_are_skipped(self):
         configs, skipped = rsc.generate(
             self.recommendations,

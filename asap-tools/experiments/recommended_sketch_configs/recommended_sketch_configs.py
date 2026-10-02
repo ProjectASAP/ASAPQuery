@@ -81,7 +81,10 @@ EXPORTERS: Dict[Tuple[str, str], dict] = {
             "data_year": 2022,
             "parts_mode": "part-index",
             "part_index": 0,
+            "scrape_timeout": "10s",
         },
+        # One scrape holds about 470k series (117 MB) and takes about 5 s.
+        "scrape_interval": "10s",
         "data_subdir": "alibaba_msmetrics",
         "metrics": {
             "cpu_utilization": "alibaba_microservice_cpu_usage",
@@ -194,6 +197,11 @@ def build_experiment_config(
     else:
         promql = query_spec["promql_range"].format(range=range_)
         starting_delay = MIN_STARTING_DELAY_S + parse_duration_s(range_)
+    # The planner needs queries no more often than the scrape interval.
+    repetition_delay_ms = REPETITION_DELAY_MS
+    if "scrape_interval" in exporter:
+        scrape_interval_ms = 1000 * parse_duration_s(exporter["scrape_interval"])
+        repetition_delay_ms = max(repetition_delay_ms, scrape_interval_ms)
     query = translate_promql(promql, exporter)
     labels = ["instance", "job"] + list(exporter["labels"].values())
     metric = exporter["metrics"][query_spec["value"]]
@@ -217,7 +225,7 @@ def build_experiment_config(
             {
                 "id": 1,
                 "queries": [query],
-                "repetition_delay_ms": REPETITION_DELAY_MS,
+                "repetition_delay_ms": repetition_delay_ms,
                 "client_options": {
                     "repetitions": REPETITIONS,
                     "query_time_offset": 10,
@@ -240,6 +248,8 @@ def build_experiment_config(
             cluster_data_root, exporter["data_subdir"]
         ),
     }
+    if "scrape_interval" in exporter:
+        config["prometheus"] = {"scrape_interval": exporter["scrape_interval"]}
     if sketch_parameters is not None:
         config["sketch_parameters"] = sketch_parameters
     return config
@@ -317,6 +327,13 @@ def are_top_keys(exact: Dict, estimate: Dict, num_keys: int = 100) -> float:
     return float(np.mean(errors)) if errors else float("nan")
 
 
+def monitor_output_path(experiment_dir: str) -> str:
+    """Written by remote_monitor.py when the run finishes."""
+    return os.path.join(
+        experiment_dir, "sketchdb", "remote_monitor_output", "monitor_output.json"
+    )
+
+
 def summarize_experiment(experiment_dir: str) -> dict:
     """Measured error and latency of one finished experiment."""
     sys.path.insert(0, EXPERIMENTS_DIR)
@@ -341,11 +358,7 @@ def summarize_experiment(experiment_dir: str) -> dict:
         server: [r.latency for r in results[server][0].query_results if r.latency]
         for server in ("prometheus", "sketchdb")
     }
-    with open(
-        os.path.join(
-            experiment_dir, "sketchdb", "remote_monitor_output", "monitor_output.json"
-        )
-    ) as f:
+    with open(monitor_output_path(experiment_dir)) as f:
         monitor = json.load(f)
     peak_rss_mb = {
         process["keyword"]: max(process["memory_info"]) / 1e6
@@ -375,6 +388,9 @@ def summarize(recommendations: List[dict], experiments_dir: str) -> List[dict]:
             )
             experiment_dir = os.path.join(experiments_dir, name)
             if not os.path.isdir(experiment_dir):
+                continue
+            if not os.path.exists(monitor_output_path(experiment_dir)):
+                print(f"skipped unfinished {name}", file=sys.stderr)
                 continue
             summary = summarize_experiment(experiment_dir)
             rows.append(
