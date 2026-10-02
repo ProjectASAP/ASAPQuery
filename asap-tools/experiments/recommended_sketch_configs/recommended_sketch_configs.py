@@ -10,7 +10,8 @@ config.yaml's sketch parameters.
 `summarize` reads finished experiments and prints, per query and config, the
 measured error against Prometheus (ARE over the 100 largest keys for key
 queries, the metric sketch-bench's CMS estimate uses; relative value error for
-quantile queries) next to the predicted error, plus query latencies.
+quantile queries; ARE over all keys as a second column) next to the predicted
+error, plus query latencies.
 
 Usage (from asap-tools/experiments):
   python recommended_sketch_configs/recommended_sketch_configs.py generate \
@@ -21,6 +22,7 @@ Usage (from asap-tools/experiments):
 
 import argparse
 import csv
+import json
 import os
 import re
 import sys
@@ -119,6 +121,9 @@ PLANNER_FAMILIES = {"cms": "CountMinSketch", "kll": "DatasketchesKLL"}
 REPETITIONS = 20
 REPETITION_DELAY_MS = 5000
 MIN_STARTING_DELAY_S = 90
+
+# remote_monitor.py keyword of the containerized query engine.
+QUERY_ENGINE_MONITOR_KEYWORD = "sketchdb-queryengine-rust"
 
 
 def parse_duration_s(text: str) -> int:
@@ -323,18 +328,38 @@ def summarize_experiment(experiment_dir: str) -> dict:
     exact = results["prometheus"][0].query_results
     estimate = results["sketchdb"][0].query_results
     errors = []
+    errors_all_keys = []
     for exact_rep, estimate_rep in zip(exact, estimate):
         if exact_rep.result and estimate_rep.result:
             errors.append(are_top_keys(exact_rep.result, estimate_rep.result))
+            errors_all_keys.append(
+                are_top_keys(
+                    exact_rep.result, estimate_rep.result, len(exact_rep.result)
+                )
+            )
     latencies = {
         server: [r.latency for r in results[server][0].query_results if r.latency]
         for server in ("prometheus", "sketchdb")
     }
+    with open(
+        os.path.join(
+            experiment_dir, "sketchdb", "remote_monitor_output", "monitor_output.json"
+        )
+    ) as f:
+        monitor = json.load(f)
+    peak_rss_mb = {
+        process["keyword"]: max(process["memory_info"]) / 1e6
+        for process in monitor.values()
+    }
     return {
         "measured_error": float(np.nanmedian(errors)) if errors else float("nan"),
+        "measured_error_all_keys": (
+            float(np.nanmedian(errors_all_keys)) if errors else float("nan")
+        ),
         "answered": f"{len(errors)}/{len(exact)}",
         "asap_latency_ms": 1000 * float(np.median(latencies["sketchdb"])),
         "prom_latency_ms": 1000 * float(np.median(latencies["prometheus"])),
+        "asap_peak_rss_mb": peak_rss_mb[QUERY_ENGINE_MONITOR_KEYWORD],
     }
 
 
