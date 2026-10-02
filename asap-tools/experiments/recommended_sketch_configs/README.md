@@ -119,3 +119,10 @@ its MAPE is 13.6% (k=200), 43% (K=20) and 3.7% (K=500).
   recommendations are not run. No query in the sets uses HLL.
 - Memory is the query engine's whole RSS, not per-sketch bytes; sketch-bench
   reports 49 KB (3x4096) and 197 KB (3x16384) per sketch.
+
+## Reproducing
+
+- Running these configs end to end with the local provider needs the runner fixes in ProjectASAP/ASAPQuery#751.
+- `results_summary.csv` is the summary table of the runs above.
+- p99 rank error is computed offline against the replayed trace values:
+  `python kll_rank_error.py --trace <task_usage part-00000-of-00500.csv.gz> --outputs <experiment_outputs>`
