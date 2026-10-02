@@ -45,6 +45,20 @@ class ValidateAlibabaDataTest(unittest.TestCase):
             service._validate_alibaba_data("msresource", 2020)
 
 
+class DockerCommandTest(unittest.TestCase):
+    def test_msresource_uses_exporter_cli_value(self):
+        # The exporter's clap enum spells it ms-resource; passing the config
+        # value through made the container exit before serving metrics.
+        service = ClusterDataExporterService(RecordingProvider(), 0, "/traces")
+        service.container_name = "cde"
+        cmd = service._build_docker_command(
+            {"provider": "alibaba", "data_type": "msresource", "data_year": 2022},
+            port=40000,
+            output_dir="/out",
+        )
+        self.assertIn("--data-type=ms-resource", cmd)
+
+
 class NodeCountTest(unittest.TestCase):
     def test_more_than_one_worker_node_is_rejected(self):
         service = ClusterDataExporterService(RecordingProvider(), 0, "/traces")

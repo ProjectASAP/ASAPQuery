@@ -13,6 +13,10 @@ from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
 
+# Experiment-config data_type -> the exporter's --data-type value.
+ALIBABA_DATA_TYPE_CLI_VALUES = {"node": "node", "msresource": "ms-resource"}
+
+
 class ClusterDataExporterService(BaseService):
     """
     Service for managing cluster_data_exporter via Docker.
@@ -259,7 +263,8 @@ class ClusterDataExporterService(BaseService):
 
         elif provider == "alibaba":
             if "data_type" in config:
-                cmd_parts.append(f"--data-type={config['data_type']}")
+                data_type = ALIBABA_DATA_TYPE_CLI_VALUES[config["data_type"]]
+                cmd_parts.append(f"--data-type={data_type}")
             if "data_year" in config:
                 cmd_parts.append(f"--data-year={config['data_year']}")
 
