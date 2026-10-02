@@ -100,13 +100,19 @@ class RemoteMonitorService(BaseService):
                 else:
                     keywords.append(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
 
+        # Over SSH the command is parsed by two shells, so the quotes that keep
+        # the keyword list one argument must be escaped once more.
+        keywords_arg = '"{}"'.format(",".join(keywords))
+        if self.provider.is_remote():
+            keywords_arg = r"\"{}\"".format(",".join(keywords))
+
         if use_timed_mode:
             # Build command for timed mode (skip_querying)
             cmd = (
                 "python3 -u remote_monitor.py "
                 "--execution_mode timed "
                 "--experiment_mode {} "
-                r"--keywords \"{}\" "
+                "--keywords {} "
                 "--config_file {} "
                 "--experiment_output_dir {} "
                 "--monitor_output_file {} "
@@ -116,7 +122,7 @@ class RemoteMonitorService(BaseService):
                 "--monitor_interval_seconds {} "
             ).format(
                 experiment_mode,
-                ",".join(keywords),
+                keywords_arg,
                 os.path.join(
                     os.path.dirname(experiment_output_dir),
                     "controller_client_configs",
@@ -162,7 +168,7 @@ class RemoteMonitorService(BaseService):
             "python3 -u remote_monitor.py "
             "--execution_mode prometheus_client "
             "--experiment_mode {} "
-            r"--keywords \"{}\" "
+            "--keywords {} "
             "--config_file {} "
             "--experiment_output_dir {} "
             "--monitor_output_file {} "
@@ -172,7 +178,7 @@ class RemoteMonitorService(BaseService):
             "--monitor_interval_seconds {} "
         ).format(
             experiment_mode,
-            ",".join(keywords),
+            keywords_arg,
             os.path.join(
                 os.path.dirname(experiment_output_dir),
                 "controller_client_configs",

@@ -13,6 +13,10 @@ from .base import BaseService
 from experiment_utils.providers.base import InfrastructureProvider
 
 
+# Experiment-config data_type -> the exporter's --data-type value.
+ALIBABA_DATA_TYPE_CLI_VALUES = {"node": "node", "msresource": "ms-resource"}
+
+
 class ClusterDataExporterService(BaseService):
     """
     Service for managing cluster_data_exporter via Docker.
@@ -71,10 +75,11 @@ class ClusterDataExporterService(BaseService):
         # Get number of nodes from provider (assuming it has this info)
         num_nodes = kwargs.get("num_nodes", 1)
 
-        # Assert that we have exactly 2 nodes
-        assert num_nodes == 1, (
-            f"cluster_data_exporter requires exactly 1 node (num_nodes==1), "
-            f"got {num_nodes}"
+        # One worker node next to the coordinator; local mode reports 0 nodes
+        # and runs everything on this machine.
+        assert num_nodes in (0, 1), (
+            f"cluster_data_exporter requires one worker node (num_nodes==1) "
+            f"or local mode (num_nodes==0), got {num_nodes}"
         )
 
         # Extract configuration
@@ -258,7 +263,8 @@ class ClusterDataExporterService(BaseService):
 
         elif provider == "alibaba":
             if "data_type" in config:
-                cmd_parts.append(f"--data-type={config['data_type']}")
+                data_type = ALIBABA_DATA_TYPE_CLI_VALUES[config["data_type"]]
+                cmd_parts.append(f"--data-type={data_type}")
             if "data_year" in config:
                 cmd_parts.append(f"--data-year={config['data_year']}")
 
@@ -400,23 +406,18 @@ class ClusterDataExporterService(BaseService):
         Raises:
             ValueError: If required files are missing
         """
-        # Determine expected file pattern based on data type and year
-        if data_type == "node":
-            if data_year == 2021 or data_year == 2022:
-                pattern = "Node_*.csv.gz"
-            else:
-                raise ValueError(
-                    f"Invalid data_year for Alibaba node data: {data_year}"
-                )
-        elif data_type == "msresource":
-            if data_year == 2021 or data_year == 2022:
-                pattern = "MsResource_*.csv.gz"
-            else:
-                raise ValueError(
-                    f"Invalid data_year for Alibaba msresource data: {data_year}"
-                )
-        else:
-            raise ValueError(f"Invalid data_type for Alibaba: {data_type}")
+        # File names the exporter reads (alibaba_metrics/{node,ms_resource}.rs).
+        patterns = {
+            ("node", 2021): "Node_*.csv.gz",
+            ("node", 2022): "NodeMetrics_*.csv.gz",
+            ("msresource", 2021): "MSResource_*.csv.gz",
+            ("msresource", 2022): "MSMetrics_*.csv.gz",
+        }
+        pattern = patterns.get((data_type, int(data_year)))
+        if pattern is None:
+            raise ValueError(
+                f"Invalid Alibaba data_type/data_year: {data_type}/{data_year}"
+            )
 
         # Check for data files on remote node
         target_node = self.node_offset + 1
@@ -497,12 +498,15 @@ class ClusterDataExporterService(BaseService):
         while time.time() - start_time < timeout:
             # Run curl from the remote node to check health
             check_cmd = f"curl -s -o /dev/null -w '%{{http_code}}' {url}"
+            # curl exits non-zero while the exporter is still starting; the
+            # local provider raises on that, so keep polling instead.
             result = self.provider.execute_command(
                 node_idx=node_idx,
                 cmd=check_cmd,
                 cmd_dir="",
                 nohup=False,
                 popen=False,
+                ignore_errors=True,
             )
 
             try:
