@@ -6,9 +6,9 @@ This is the completion checklist for the native range-query DAG cutover.
 
 - [x] Re-run the Docker differential matrix from an isolated Compose lifecycle and record the result for every case.
   Each case now has an isolated Compose project, base timestamp, and host-port trio. The 2026-10-01 reports are in `/tmp/asapquery-differential-reports`.
-- [x] Classify every remaining Prometheus differential mismatch using the legacy-versus-DAG E2E matrix.
-  No DAG regression was observed: `aggregations-native-dag` and `quantiles` pass, and the legacy-versus-DAG E2E matrix passes for range leaves, sparse input, keyed count, and self-keyed topk.
-  `temporal` retains the final-window `sum_over_time` mismatch (and its `+ 1` wrapper); `off-grid-rate` runs natively at the non-grid timestamps rather than falling back and returns partial-window rates; `aggregations` retains grouped-topk cardinality differences and unsupported rate-based topk/sum queries; and non-CI `olly-bench` retains its documented planner-coverage failures. These are native-query capability/parity gaps, not evidence that the DAG cutover changed the covered execution behavior.
+- [x] Re-run the Docker differential matrix against `main` and classify the result per suite.
+  `quantiles` passes on both revisions. The existing `request-rate` temporal case passes on both; the PR's newly added final-window `sum_over_time` cases fail and characterize a pre-existing native-query parity gap. The new off-grid rate case fails because native execution does not fall back at non-grid timestamps. `olly-bench` retains its documented non-CI planner-coverage failures.
+  `aggregations` has 14 new failures relative to `main`: grouped `topk` over a bare selector, `sum_over_time`, and `count_over_time` return too few series. The pre-existing rate-based `topk` and `sum` failures remain. The DAG-focused aggregation suite passes, so the current coverage does not reproduce the regression; add a legacy-versus-DAG E2E case for grouped topk before fixing it.
 - [ ] Add any missing public E2E characterization needed by a classified regression, then fix only DAG-caused regressions.
 
 ## Public error API
