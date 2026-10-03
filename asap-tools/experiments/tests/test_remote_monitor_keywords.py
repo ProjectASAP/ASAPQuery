@@ -47,6 +47,19 @@ def keywords_seen_by_monitor(remote):
     return args[args.index("--keywords") + 1]
 
 
+def clickhouse_ingest_keywords_seen_by_monitor(remote):
+    provider = RecordingProvider(remote)
+    RemoteMonitorService(provider, 0).start_clickhouse_ingest_monitor(
+        controller_client_config="/out/controller_client_configs/baseline.yaml",
+        experiment_output_dir="/out/baseline",
+    )
+    # The first command clears the stop file; the last launches the monitor.
+    args = shlex.split(provider.commands[-1])
+    if remote:
+        args = shlex.split(" ".join(args))
+    return args[args.index("--keywords") + 1]
+
+
 class KeywordQuotingTest(unittest.TestCase):
     def test_local_provider_gets_unescaped_keywords(self):
         # Escaped quotes meant for SSH used to reach remote_monitor.py
@@ -55,6 +68,16 @@ class KeywordQuotingTest(unittest.TestCase):
 
     def test_remote_provider_keeps_escaped_quotes_for_ssh(self):
         self.assertEqual(keywords_seen_by_monitor(remote=True), "prometheus.yml")
+
+    def test_clickhouse_ingest_local_provider_gets_unescaped_keywords(self):
+        self.assertEqual(
+            clickhouse_ingest_keywords_seen_by_monitor(remote=False), "clickhouse"
+        )
+
+    def test_clickhouse_ingest_remote_provider_keeps_escaped_quotes_for_ssh(self):
+        self.assertEqual(
+            clickhouse_ingest_keywords_seen_by_monitor(remote=True), "clickhouse"
+        )
 
 
 if __name__ == "__main__":
