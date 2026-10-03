@@ -754,10 +754,12 @@ async fn e2e_self_keyed_topk_dag_matches_legacy_range() {
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]
-#[tokio::test]
-async fn e2e_grouped_topk_range_dag_matches_legacy_range() {
-    let metric = "grouped_topk_dag_differential";
-    let query = "topk by (job) (3, grouped_topk_dag_differential)";
+async fn assert_grouped_topk_range_dag_matches_legacy_range(
+    metric: &str,
+    query: &str,
+    dag_port: u16,
+    legacy_port: u16,
+) {
     let labels = vec!["job".to_string(), "instance".to_string()];
     let samples: Vec<TimeSeries> = ["frontend", "backend", "worker"]
         .into_iter()
@@ -785,7 +787,7 @@ async fn e2e_grouped_topk_range_dag_matches_legacy_range() {
     let (legacy_streaming_config, legacy_inference_config) =
         plan_promql_query(metric, labels, query, 1_000);
     let dag_engine = build_engine_from_configs(
-        19421,
+        dag_port,
         dag_streaming_config,
         dag_inference_config,
         samples.clone(),
@@ -802,7 +804,7 @@ async fn e2e_grouped_topk_range_dag_matches_legacy_range() {
         .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
         .unwrap();
     let legacy_engine = build_engine_from_configs(
-        19422,
+        legacy_port,
         legacy_streaming_config,
         legacy_inference_config,
         samples,
@@ -830,6 +832,42 @@ async fn e2e_grouped_topk_range_dag_matches_legacy_range() {
     // Each job has four differently frequent instances. The lowest-ranked
     // instance per job is removed, leaving three rows in each of three jobs.
     assert_eq!(row_count, 9);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_grouped_topk_range_dag_matches_legacy_range() {
+    assert_grouped_topk_range_dag_matches_legacy_range(
+        "grouped_topk_dag_differential",
+        "topk by (job) (3, grouped_topk_dag_differential)",
+        19421,
+        19422,
+    )
+    .await;
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_grouped_topk_sum_over_time_dag_matches_legacy_range() {
+    assert_grouped_topk_range_dag_matches_legacy_range(
+        "grouped_topk_sum_over_time_dag_differential",
+        "topk by (job) (3, sum_over_time(grouped_topk_sum_over_time_dag_differential[1s]))",
+        19423,
+        19424,
+    )
+    .await;
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_grouped_topk_count_over_time_dag_matches_legacy_range() {
+    assert_grouped_topk_range_dag_matches_legacy_range(
+        "grouped_topk_count_over_time_dag_differential",
+        "topk by (job) (3, count_over_time(grouped_topk_count_over_time_dag_differential[1s]))",
+        19425,
+        19426,
+    )
+    .await;
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]
