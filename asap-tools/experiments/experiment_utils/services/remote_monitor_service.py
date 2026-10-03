@@ -7,7 +7,7 @@ import re
 import shlex
 import time
 import subprocess
-from typing import Optional
+from typing import List, Optional
 
 import constants
 from .base import BaseService
@@ -100,13 +100,15 @@ class RemoteMonitorService(BaseService):
                 else:
                     keywords.append(constants.QUERY_ENGINE_RS_PROCESS_KEYWORD)
 
+        keywords_arg = self._keywords_arg(keywords)
+
         if use_timed_mode:
             # Build command for timed mode (skip_querying)
             cmd = (
                 "python3 -u remote_monitor.py "
                 "--execution_mode timed "
                 "--experiment_mode {} "
-                r"--keywords \"{}\" "
+                "--keywords {} "
                 "--config_file {} "
                 "--experiment_output_dir {} "
                 "--monitor_output_file {} "
@@ -116,7 +118,7 @@ class RemoteMonitorService(BaseService):
                 "--monitor_interval_seconds {} "
             ).format(
                 experiment_mode,
-                ",".join(keywords),
+                keywords_arg,
                 os.path.join(
                     os.path.dirname(experiment_output_dir),
                     "controller_client_configs",
@@ -162,7 +164,7 @@ class RemoteMonitorService(BaseService):
             "python3 -u remote_monitor.py "
             "--execution_mode prometheus_client "
             "--experiment_mode {} "
-            r"--keywords \"{}\" "
+            "--keywords {} "
             "--config_file {} "
             "--experiment_output_dir {} "
             "--monitor_output_file {} "
@@ -172,7 +174,7 @@ class RemoteMonitorService(BaseService):
             "--monitor_interval_seconds {} "
         ).format(
             experiment_mode,
-            ",".join(keywords),
+            keywords_arg,
             os.path.join(
                 os.path.dirname(experiment_output_dir),
                 "controller_client_configs",
@@ -261,7 +263,7 @@ class RemoteMonitorService(BaseService):
             "python3 -u remote_monitor.py "
             "--execution_mode ingest "
             "--experiment_mode {} "
-            r"--keywords \"{}\" "
+            "--keywords {} "
             "--config_file {} "
             "--experiment_output_dir {} "
             "--monitor_output_file {} "
@@ -271,7 +273,7 @@ class RemoteMonitorService(BaseService):
             "--backend_protocol clickhouse "
         ).format(
             constants.BASELINE_EXPERIMENT_NAME,
-            ",".join(keywords),
+            self._keywords_arg(keywords),
             controller_client_config,
             experiment_output_dir,
             monitor_output_file,
@@ -312,6 +314,13 @@ class RemoteMonitorService(BaseService):
             nohup=True,
             popen=False,
         )
+
+    def _keywords_arg(self, keywords: List[str]) -> str:
+        # Over SSH the command is parsed by two shells, so the quotes that keep
+        # the keyword list one argument must be escaped once more.
+        if self.provider.is_remote():
+            return r"\"{}\"".format(",".join(keywords))
+        return '"{}"'.format(",".join(keywords))
 
     @staticmethod
     def _remote_monitor_pgrep_pattern(

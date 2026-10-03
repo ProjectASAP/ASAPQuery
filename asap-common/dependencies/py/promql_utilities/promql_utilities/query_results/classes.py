@@ -65,8 +65,10 @@ class QueryResultAcrossTime:
 
         for k in keys:
             for repetition_idx, result in enumerate(self.query_results):
+                # A key absent from one repetition (e.g. a series that appears
+                # mid-run) stays None for that repetition.
                 if result.result:
-                    intermediate_ret[k][repetition_idx] = result.result[k]
+                    intermediate_ret[k][repetition_idx] = result.result.get(k)
 
             ret[k] = TimeSeries(k, intermediate_ret[k])
 
