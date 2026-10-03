@@ -7,8 +7,10 @@
 //!  3. Advances the watermark past the window boundary to close it
 //!  4. Drains captured outputs and queries them
 
+use asap_planner::{Controller, RuntimeOptions, StreamingEngine};
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::enums::{AggregationType, CleanupPolicy, QueryLanguage, WindowType};
+use promql_utilities::data_model::KeyByLabelNames;
 use prost::Message;
 use serde_json::json;
 use std::collections::HashMap;
@@ -157,6 +159,93 @@ fn engine_config() -> PrecomputeEngineConfig {
     }
 }
 
+fn plan_promql_query(
+    metric: &str,
+    labels: Vec<String>,
+    query: &str,
+    interval_ms: u64,
+) -> (Arc<StreamingConfig>, InferenceConfig) {
+    let controller_config = format!(
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: {interval_ms}
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#
+    );
+    let planner = Controller::from_yaml_with_schema(
+        &controller_config,
+        PromQLSchema::new().add_metric(metric.to_string(), KeyByLabelNames::new(labels)),
+        RuntimeOptions {
+            data_ingestion_interval_ms: interval_ms,
+            streaming_engine: StreamingEngine::Precompute,
+            enable_punting: false,
+            range_duration_ms: interval_ms,
+            step_ms: interval_ms,
+        },
+    )
+    .expect("planner configuration should be valid");
+    let output = planner.generate().expect("planner should support query");
+    let inference_config = output
+        .to_inference_config(QueryLanguage::promql)
+        .expect("planner should produce inference config");
+    let streaming_config = output
+        .to_streaming_config(QueryLanguage::promql)
+        .expect("planner should produce streaming config");
+    (Arc::new(streaming_config), inference_config)
+}
+
+async fn build_engine_from_configs(
+    port: u16,
+    streaming_config: Arc<StreamingConfig>,
+    inference_config: InferenceConfig,
+    samples: Vec<TimeSeries>,
+    base_interval_ms: u64,
+) -> SimpleEngine {
+    let sink = Arc::new(CapturingOutputSink::new());
+    let engine = PrecomputeEngine::new(
+        engine_config(),
+        streaming_config.clone(),
+        sink.clone(),
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))],
+    );
+    tokio::spawn(async move {
+        engine
+            .run()
+            .await
+            .expect("precompute engine should keep running");
+    });
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    let client = reqwest::Client::new();
+    for sample in samples {
+        send_remote_write(&client, port, vec![sample]).await;
+    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+    for (output, accumulator) in sink.drain() {
+        store
+            .insert_precomputed_output(output, accumulator)
+            .unwrap();
+    }
+
+    SimpleEngine::new(
+        store,
+        inference_config,
+        streaming_config,
+        base_interval_ms,
+        QueryLanguage::promql,
+    )
+}
+
 #[derive(Clone)]
 struct NativeDagScenario<'a> {
     port: u16,
@@ -255,19 +344,21 @@ impl NativeDagScenario<'_> {
 
 #[cfg(feature = "native_query_legacy_test_support")]
 fn assert_range_results_match(
-    mut dag: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
-    mut legacy: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
+    dag: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
+    legacy: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
 ) {
-    for result in [&mut dag, &mut legacy] {
-        if let Some((_, QueryResult::Matrix(matrix))) = result {
+    let mut dag = dag.expect("DAG path should execute natively");
+    let mut legacy = legacy.expect("legacy path should execute natively");
+    for (_, result) in [&mut dag, &mut legacy] {
+        if let QueryResult::Matrix(matrix) = result {
             matrix
                 .values
                 .sort_by(|left, right| left.labels.labels.cmp(&right.labels.labels));
         }
     }
     assert_eq!(
-        serde_json::to_value(dag).unwrap(),
-        serde_json::to_value(legacy).unwrap()
+        serde_json::to_value(Some(dag)).unwrap(),
+        serde_json::to_value(Some(legacy)).unwrap()
     );
 }
 
@@ -653,13 +744,92 @@ async fn e2e_self_keyed_topk_dag_matches_legacy_range() {
     let (dag, query) = scenario.build_engine().await;
     let (legacy, _) = legacy_scenario.build_engine().await;
     let dag = dag
-        .handle_range_query_promql(query.clone(), 1.0, 1.0, 1.0)
+        .handle_range_query_promql(query.clone(), 1.0, 2.0, 1.0)
         .unwrap();
     let legacy = legacy
         .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
-        .handle_range_query_promql(query, 1.0, 1.0, 1.0)
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
         .unwrap();
     assert_range_results_match(dag, legacy);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_grouped_topk_range_dag_matches_legacy_range() {
+    let metric = "grouped_topk_dag_differential";
+    let query = "topk by (job) (3, grouped_topk_dag_differential)";
+    let labels = vec!["job".to_string(), "instance".to_string()];
+    let samples: Vec<TimeSeries> = ["frontend", "backend", "worker"]
+        .into_iter()
+        .flat_map(|job| {
+            (1_i64..=4).map(move |rank| {
+                make_timeseries(
+                    metric,
+                    vec![("job", job), ("instance", format!("i-{rank}").as_str())],
+                    1_000,
+                    rank as f64,
+                )
+            })
+        })
+        .chain(["frontend", "backend", "worker"].into_iter().map(|job| {
+            make_timeseries(
+                metric,
+                vec![("job", job), ("instance", "flush")],
+                3_000,
+                0.0,
+            )
+        }))
+        .collect();
+    let (dag_streaming_config, dag_inference_config) =
+        plan_promql_query(metric, labels.clone(), query, 1_000);
+    let (legacy_streaming_config, legacy_inference_config) =
+        plan_promql_query(metric, labels, query, 1_000);
+    let dag_engine = build_engine_from_configs(
+        19421,
+        dag_streaming_config,
+        dag_inference_config,
+        samples.clone(),
+        1_000,
+    )
+    .await;
+    assert!(
+        dag_engine
+            .build_range_query_execution_context_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .is_some(),
+        "planner output should build a native range context"
+    );
+    let dag = dag_engine
+        .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+        .unwrap();
+    let legacy_engine = build_engine_from_configs(
+        19422,
+        legacy_streaming_config,
+        legacy_inference_config,
+        samples,
+        1_000,
+    )
+    .await;
+    assert!(
+        legacy_engine
+            .build_range_query_execution_context_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .is_some(),
+        "planner output should build a native range context"
+    );
+    let legacy = legacy_engine
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+        .unwrap();
+    assert_range_results_match(dag.clone(), legacy);
+    let Some((_, result)) = dag else {
+        panic!("grouped topk should execute natively, got {dag:?}");
+    };
+    let row_count = match result {
+        QueryResult::Matrix(matrix) => matrix.values.len(),
+        QueryResult::Vector(vector) => vector.values.len(),
+    };
+    // Each job has four differently frequent instances. The lowest-ranked
+    // instance per job is removed, leaving three rows in each of three jobs.
+    assert_eq!(row_count, 9);
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]

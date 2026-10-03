@@ -2,6 +2,7 @@
 
 use crate::engines::simple_engine::{RangeQueryExecutionContext, StoreQueryParams};
 use asap_types::enums::WindowType;
+use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
 use tracing::debug;
 
@@ -39,6 +40,7 @@ pub(crate) enum QueryPlanNode {
     LimitTopK {
         input: NodeId,
         k: String,
+        grouping_labels: KeyByLabelNames,
     },
     Format {
         input: NodeId,
@@ -145,7 +147,14 @@ impl QueryPlan {
                 .ok_or_else(|| "Topk query is missing required `k` parameter".to_string())?;
             k.parse::<usize>()
                 .map_err(|_| "Topk query has an invalid `k` parameter".to_string())?;
-            root = Self::push(&mut nodes, QueryPlanNode::LimitTopK { input: root, k });
+            root = Self::push(
+                &mut nodes,
+                QueryPlanNode::LimitTopK {
+                    input: root,
+                    k,
+                    grouping_labels: context.base.grouping_labels.clone(),
+                },
+            );
         }
         if options.format_output {
             root = Self::push(
@@ -290,7 +299,9 @@ impl QueryPlan {
                     kwargs.sort_unstable_by_key(|(key, _)| *key);
                     format!("n{index} Estimate(n{}, {statistic}, {kwargs:?})", input.0)
                 },
-                QueryPlanNode::LimitTopK { input, k } => format!("n{index} LimitTopK(n{}, k={k})", input.0),
+                QueryPlanNode::LimitTopK { input, k, .. } => {
+                    format!("n{index} LimitTopK(n{}, k={k})", input.0)
+                }
                 QueryPlanNode::Format { input, include_metric_name, metric } => format!(
                     "n{index} Format(n{}, include_metric_name={include_metric_name}) metric={metric}", input.0
                 ),

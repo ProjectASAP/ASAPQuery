@@ -189,6 +189,8 @@ struct RangeQueryReads {
 }
 
 type BucketMap = HashMap<u64, Vec<Arc<dyn AggregateCore>>>;
+type TopkPartition = (u64, Vec<String>);
+type TopkCandidates<'a> = HashMap<TopkPartition, Vec<(&'a KeyByLabelValues, f64)>>;
 
 #[derive(Clone)]
 struct ComposedRangeRead {
@@ -288,10 +290,21 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     "Estimate expected resolved reads".into(),
                 )),
             },
-            QueryPlanNode::LimitTopK { k, .. } => match inputs {
+            QueryPlanNode::LimitTopK {
+                k, grouping_labels, ..
+            } => match inputs {
                 [NativePlanOutput::Results(results)] => self
                     .engine
-                    .limit_range_topk(results, k)
+                    .limit_range_topk(
+                        results,
+                        k,
+                        &SimpleEngine::topk_row_label_order(
+                            &self.context.base.metadata,
+                            &self.context.base.grouping_labels,
+                            &self.context.base.aggregated_labels,
+                        ),
+                        grouping_labels,
+                    )
                     .map_err(QueryExecutionError::Native)
                     .map(NativePlanOutput::Results),
                 _ => Err(QueryExecutionError::Native(
@@ -1483,28 +1496,48 @@ impl SimpleEngine {
         &self,
         results: &[crate::engines::query_result::RangeVectorElement],
         k: &str,
+        row_label_order: &KeyByLabelNames,
+        grouping_labels: &KeyByLabelNames,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
         use crate::engines::query_result::RangeVectorElement;
 
         let k = Self::parse_topk_limit(&HashMap::from([("k".to_string(), k.to_string())]))?;
         let mut retained: HashMap<KeyByLabelValues, Vec<u64>> = HashMap::new();
-        let mut candidates: HashMap<u64, Vec<(&KeyByLabelValues, f64)>> = HashMap::new();
+        let grouping_positions: Vec<usize> = grouping_labels
+            .labels
+            .iter()
+            .map(|label| {
+                row_label_order
+                    .labels
+                    .iter()
+                    .position(|candidate| candidate == label)
+                    .ok_or_else(|| format!("Topk grouping label '{label}' is absent from output"))
+            })
+            .collect::<Result<_, _>>()?;
+        let mut candidates: TopkCandidates<'_> = HashMap::new();
         for result in results {
+            let grouping_key = grouping_positions
+                .iter()
+                .map(|&position| {
+                    result.labels.labels.get(position).cloned().ok_or_else(|| {
+                        format!(
+                            "Topk result has {} labels but grouping position {} was requested",
+                            result.labels.labels.len(),
+                            position
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             for sample in &result.samples {
                 candidates
-                    .entry(sample.timestamp)
+                    .entry((sample.timestamp, grouping_key.clone()))
                     .or_default()
                     .push((&result.labels, sample.value));
             }
         }
-        for candidates in candidates.values_mut() {
+        for ((timestamp, _), mut candidates) in candidates {
             candidates
                 .sort_by(|a, b| Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels));
-            for (labels, _) in candidates.iter().take(k) {
-                retained.entry((*labels).clone()).or_default();
-            }
-        }
-        for (timestamp, candidates) in candidates {
             for (labels, _) in candidates.into_iter().take(k) {
                 retained.entry(labels.clone()).or_default().push(timestamp);
             }
@@ -2413,7 +2446,16 @@ impl SimpleEngine {
                 QueryExecutionError::Native("Topk query is missing required `k` parameter".into())
             })?;
             results = self
-                .limit_range_topk(&results, k)
+                .limit_range_topk(
+                    &results,
+                    k,
+                    &Self::topk_row_label_order(
+                        &context.base.metadata,
+                        &context.base.grouping_labels,
+                        &context.base.aggregated_labels,
+                    ),
+                    &context.base.grouping_labels,
+                )
                 .map_err(QueryExecutionError::Native)?;
         }
         Ok(self.format_range_results(
