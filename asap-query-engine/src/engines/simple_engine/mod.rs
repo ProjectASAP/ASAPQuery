@@ -219,6 +219,15 @@ struct NativePlanRuntime<'a> {
 
 impl NativePlanRuntime<'_> {
     fn reads(&self) -> Result<RangeQueryReads, QueryExecutionError> {
+        #[cfg(feature = "native_query_legacy_test_support")]
+        if matches!(
+            self.engine.native_range_execution_mode,
+            NativeRangeExecutionMode::FailingStore
+        ) {
+            return Err(QueryExecutionError::Native(
+                "test-only native store failure".to_string(),
+            ));
+        }
         if self.reads.borrow().is_none() {
             *self.reads.borrow_mut() = Some(self.engine.read_range_query_inputs(self.context)?);
         }
@@ -2387,6 +2396,7 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        Self::reject_off_grid_sliding_counter_query(context)?;
         #[cfg(feature = "native_query_legacy_test_support")]
         if matches!(
             self.native_range_execution_mode,
@@ -2398,6 +2408,23 @@ impl SimpleEngine {
                 enable_topk_formatting,
             );
         }
+        #[cfg(feature = "native_query_legacy_test_support")]
+        let plan = if matches!(
+            self.native_range_execution_mode,
+            NativeRangeExecutionMode::MalformedPlan
+        ) {
+            QueryPlan::malformed_for_test()
+        } else {
+            QueryPlan::compile_range(
+                context,
+                PlanOptions {
+                    limit_topk: enable_topk_limiting,
+                    format_output: enable_topk_formatting,
+                },
+            )
+            .map_err(QueryExecutionError::Native)?
+        };
+        #[cfg(not(feature = "native_query_legacy_test_support"))]
         let plan = QueryPlan::compile_range(
             context,
             PlanOptions {
@@ -2527,6 +2554,32 @@ impl SimpleEngine {
         Ok(RangeQueryReads { values, keys })
     }
 
+    fn reject_off_grid_sliding_counter_query(
+        context: &RangeQueryExecutionContext,
+    ) -> Result<(), QueryExecutionError> {
+        if context.window_type != WindowType::Sliding
+            || context.tumbling_window_ms == 0
+            || !matches!(
+                context.base.metadata.statistic_to_compute,
+                Statistic::Increase | Statistic::Rate
+            )
+        {
+            return Ok(());
+        }
+        if let Some(&timestamp) = context
+            .output_timestamps
+            .iter()
+            .find(|&&timestamp| !timestamp.is_multiple_of(context.tumbling_window_ms))
+        {
+            return Err(QueryExecutionError::NoLocalData(format!(
+                "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
+                 timestamp {} (grid interval {}ms)",
+                timestamp, context.tumbling_window_ms
+            )));
+        }
+        Ok(())
+    }
+
     fn estimate_range_query(
         &self,
         context: &RangeQueryExecutionContext,
@@ -2534,26 +2587,6 @@ impl SimpleEngine {
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         use crate::engines::query_result::RangeVectorElement;
         use crate::engines::window_merger::create_window_merger;
-
-        if context.window_type == WindowType::Sliding
-            && context.tumbling_window_ms > 0
-            && matches!(
-                context.base.metadata.statistic_to_compute,
-                Statistic::Increase | Statistic::Rate
-            )
-        {
-            if let Some(&off_grid_timestamp) = context
-                .output_timestamps
-                .iter()
-                .find(|&&timestamp| !timestamp.is_multiple_of(context.tumbling_window_ms))
-            {
-                return Err(QueryExecutionError::NoLocalData(format!(
-                    "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
-                     timestamp {} (grid interval {}ms)",
-                    off_grid_timestamp, context.tumbling_window_ms
-                )));
-            }
-        }
 
         let ResolvedRangeReads {
             values: ComposedRangeRead { groups: all_data },

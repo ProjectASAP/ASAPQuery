@@ -226,6 +226,20 @@ mod tests {
             .expect("host-a result missing")
             .samples;
         assert_eq!(on_grid_samples.len(), 2);
+
+        #[cfg(feature = "native_query_legacy_test_support")]
+        assert!(
+            engine
+                .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::FailingStore)
+                .handle_range_query_promql(
+                    "rate(http_requests_total[2s])".to_string(),
+                    10.5,
+                    12.5,
+                    1.0,
+                )
+                .expect("off-grid counter query should not read the store")
+                .is_none()
+        );
     }
 
     /// Checks every `(label_values, ts, expected_present, reason)` case

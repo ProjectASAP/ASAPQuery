@@ -3,8 +3,6 @@
 //! Contains all PromQL-specific context building, pattern matching, binary arithmetic
 //! dispatch, range-query handling, and query dispatch.
 
-#[cfg(feature = "native_query_legacy_test_support")]
-use super::NativeRangeExecutionMode;
 use super::SimpleEngine;
 use super::{
     QueryExecutionContext, QueryExecutionError, QueryMetadata, QueryTimestamps,
@@ -1356,25 +1354,6 @@ impl SimpleEngine {
             "Handling range query: {} from {} to {} step {}",
             query, start, end, step
         );
-
-        #[cfg(feature = "native_query_legacy_test_support")]
-        if matches!(
-            self.native_range_execution_mode,
-            NativeRangeExecutionMode::MalformedPlan
-        ) {
-            return Err(QueryExecutionError::Native(
-                "test-only malformed native query plan".to_string(),
-            ));
-        }
-        #[cfg(feature = "native_query_legacy_test_support")]
-        if matches!(
-            self.native_range_execution_mode,
-            NativeRangeExecutionMode::FailingStore
-        ) {
-            return Err(QueryExecutionError::Native(
-                "test-only native store failure".to_string(),
-            ));
-        }
 
         let ast = match promql_parser::parser::parse(&query) {
             Ok(ast) => ast,

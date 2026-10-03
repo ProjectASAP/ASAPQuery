@@ -1,13 +1,19 @@
 #[cfg(test)]
-use crate::data_model::{CleanupPolicy, InferenceConfig, QueryLanguage, StreamingConfig};
+use crate::data_model::{
+    AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, PromQLSchema,
+    QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
+};
 use crate::drivers::query::adapters::AdapterConfig;
 use crate::drivers::query::servers::http::{HttpServer, HttpServerConfig};
 use crate::engines::SimpleEngine;
 use crate::stores::simple_map_store::SimpleMapStore;
 #[cfg(feature = "native_query_legacy_test_support")]
 use crate::NativeRangeExecutionMode;
+use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::AggregationType;
 use reqwest::Client;
 use serde_json::Value;
+use std::collections::HashMap;
 #[cfg(feature = "native_query_legacy_test_support")]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -169,6 +175,43 @@ async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
 }
 
 #[cfg(feature = "native_query_legacy_test_support")]
+fn native_range_error_configs() -> (InferenceConfig, Arc<StreamingConfig>) {
+    let metric = "native_metric";
+    let streaming_config = Arc::new(StreamingConfig::new(HashMap::from([(
+        1,
+        AggregationConfig {
+            aggregation_id: 1,
+            aggregation_type: AggregationType::Sum,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::empty(),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 1_000,
+            slide_interval_ms: 1_000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: metric.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        },
+    )])));
+    let inference_config = InferenceConfig {
+        schema: SchemaConfig::PromQL(
+            PromQLSchema::new().add_metric(metric.to_string(), KeyByLabelNames::empty()),
+        ),
+        query_configs: vec![QueryConfig::new("sum(native_metric)".to_string())
+            .add_aggregation(AggregationReference::new(1, None))],
+        cleanup_policy: CleanupPolicy::NoCleanup,
+    };
+    (inference_config, streaming_config)
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
 async fn setup_test_server_with_native_range_mode(
     prometheus_port: u16,
     mode: NativeRangeExecutionMode,
@@ -182,8 +225,7 @@ async fn setup_test_server_with_native_range_mode(
             30,
         ),
     };
-    let inference_config = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup);
-    let streaming_config = Arc::new(StreamingConfig::default());
+    let (inference_config, streaming_config) = native_range_error_configs();
     let store = Arc::new(SimpleMapStore::new(
         streaming_config.clone(),
         CleanupPolicy::NoCleanup,
@@ -425,9 +467,9 @@ async fn native_range_execution_error_is_local_and_does_not_fallback() {
         let response = Client::new()
             .get(format!("http://127.0.0.1:{server_port}/api/v1/query_range"))
             .query(&[
-                ("query", "unsupported_metric"),
-                ("start", "1"),
-                ("end", "2"),
+                ("query", "sum(native_metric)"),
+                ("start", "60"),
+                ("end", "61"),
                 ("step", "1"),
             ])
             .send()

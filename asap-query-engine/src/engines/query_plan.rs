@@ -91,6 +91,14 @@ impl<E: std::fmt::Display> std::fmt::Display for QueryPlanExecutionError<E> {
 }
 
 impl QueryPlan {
+    #[cfg(feature = "native_query_legacy_test_support")]
+    pub(crate) fn malformed_for_test() -> Self {
+        Self {
+            nodes: Vec::new(),
+            root: NodeId(0),
+        }
+    }
+
     pub(crate) fn compile_range(
         context: &RangeQueryExecutionContext,
         options: PlanOptions,
