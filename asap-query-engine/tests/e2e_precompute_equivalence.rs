@@ -7,8 +7,10 @@
 //!  3. Advances the watermark past the window boundary to close it
 //!  4. Drains captured outputs and queries them
 
+use asap_planner::{Controller, RuntimeOptions, StreamingEngine};
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::enums::{AggregationType, CleanupPolicy, QueryLanguage, WindowType};
+use promql_utilities::data_model::KeyByLabelNames;
 use prost::Message;
 use serde_json::json;
 use std::collections::HashMap;
@@ -23,6 +25,8 @@ use query_engine_rust::drivers::ingest::prometheus_remote_write::{
 use query_engine_rust::precompute_engine::config::{LateDataPolicy, PrecomputeEngineConfig};
 use query_engine_rust::precompute_engine::output_sink::CapturingOutputSink;
 use query_engine_rust::precompute_engine::{HttpIngestConfig, HttpIngestSource, PrecomputeEngine};
+#[cfg(feature = "native_query_legacy_test_support")]
+use query_engine_rust::NativeRangeExecutionMode;
 use query_engine_rust::{QueryResult, SimpleEngine, SimpleMapStore, Store};
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -155,7 +159,95 @@ fn engine_config() -> PrecomputeEngineConfig {
     }
 }
 
-struct PromqlPrecomputeFixture<'a> {
+fn plan_promql_query(
+    metric: &str,
+    labels: Vec<String>,
+    query: &str,
+    interval_ms: u64,
+) -> (Arc<StreamingConfig>, InferenceConfig) {
+    let controller_config = format!(
+        r#"
+query_groups:
+  - id: 1
+    queries:
+      - "{query}"
+    repetition_delay_ms: {interval_ms}
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#
+    );
+    let planner = Controller::from_yaml_with_schema(
+        &controller_config,
+        PromQLSchema::new().add_metric(metric.to_string(), KeyByLabelNames::new(labels)),
+        RuntimeOptions {
+            data_ingestion_interval_ms: interval_ms,
+            streaming_engine: StreamingEngine::Precompute,
+            enable_punting: false,
+            range_duration_ms: interval_ms,
+            step_ms: interval_ms,
+        },
+    )
+    .expect("planner configuration should be valid");
+    let output = planner.generate().expect("planner should support query");
+    let inference_config = output
+        .to_inference_config(QueryLanguage::promql)
+        .expect("planner should produce inference config");
+    let streaming_config = output
+        .to_streaming_config(QueryLanguage::promql)
+        .expect("planner should produce streaming config");
+    (Arc::new(streaming_config), inference_config)
+}
+
+async fn build_engine_from_configs(
+    port: u16,
+    streaming_config: Arc<StreamingConfig>,
+    inference_config: InferenceConfig,
+    samples: Vec<TimeSeries>,
+    base_interval_ms: u64,
+) -> SimpleEngine {
+    let sink = Arc::new(CapturingOutputSink::new());
+    let engine = PrecomputeEngine::new(
+        engine_config(),
+        streaming_config.clone(),
+        sink.clone(),
+        vec![Box::new(HttpIngestSource::new(HttpIngestConfig { port }))],
+    );
+    tokio::spawn(async move {
+        engine
+            .run()
+            .await
+            .expect("precompute engine should keep running");
+    });
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    let client = reqwest::Client::new();
+    for sample in samples {
+        send_remote_write(&client, port, vec![sample]).await;
+    }
+    tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
+
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+    for (output, accumulator) in sink.drain() {
+        store
+            .insert_precomputed_output(output, accumulator)
+            .unwrap();
+    }
+
+    SimpleEngine::new(
+        store,
+        inference_config,
+        streaming_config,
+        base_interval_ms,
+        QueryLanguage::promql,
+    )
+}
+
+#[derive(Clone)]
+struct NativeDagScenario<'a> {
     port: u16,
     metric: &'a str,
     query: &'a str,
@@ -166,8 +258,8 @@ struct PromqlPrecomputeFixture<'a> {
     base_interval_ms: u64,
 }
 
-impl PromqlPrecomputeFixture<'_> {
-    async fn run(self) -> QueryResult {
+impl NativeDagScenario<'_> {
+    async fn build_engine(self) -> (SimpleEngine, String) {
         let aggregation_ids: Vec<u64> = self
             .aggregation_configs
             .iter()
@@ -189,7 +281,10 @@ impl PromqlPrecomputeFixture<'_> {
             }))],
         );
         tokio::spawn(async move {
-            let _ = engine.run().await;
+            engine
+                .run()
+                .await
+                .expect("precompute engine should keep running");
         });
         tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
@@ -233,12 +328,38 @@ impl PromqlPrecomputeFixture<'_> {
             QueryLanguage::promql,
         );
 
+        (query_engine, self.query.to_string())
+    }
+
+    async fn run(self) -> QueryResult {
+        let evaluation_time_seconds = self.evaluation_time_seconds;
+        let (query_engine, query) = self.build_engine().await;
         query_engine
-            .handle_query_promql(self.query.to_string(), self.evaluation_time_seconds)
+            .handle_query_promql(query.clone(), evaluation_time_seconds)
             .expect("native query execution should not fail")
-            .unwrap_or_else(|| panic!("precomputed query should succeed: {}", self.query))
+            .unwrap_or_else(|| panic!("precomputed query should succeed: {query}"))
             .1
     }
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+fn assert_range_results_match(
+    dag: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
+    legacy: Option<(promql_utilities::data_model::KeyByLabelNames, QueryResult)>,
+) {
+    let mut dag = dag.expect("DAG path should execute natively");
+    let mut legacy = legacy.expect("legacy path should execute natively");
+    for (_, result) in [&mut dag, &mut legacy] {
+        if let QueryResult::Matrix(matrix) = result {
+            matrix
+                .values
+                .sort_by(|left, right| left.labels.labels.cmp(&right.labels.labels));
+        }
+    }
+    assert_eq!(
+        serde_json::to_value(Some(dag)).unwrap(),
+        serde_json::to_value(Some(legacy)).unwrap()
+    );
 }
 
 #[tokio::test]
@@ -362,7 +483,7 @@ async fn e2e_promql_sum_uses_open_closed_evaluation_window() {
     .into_iter()
     .map(|(timestamp_ms, value)| make_timeseries(metric, vec![], timestamp_ms, value))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,
@@ -380,6 +501,443 @@ async fn e2e_promql_sum_uses_open_closed_evaluation_window() {
 
     assert_eq!(vector.values.len(), 1);
     assert_eq!(vector.values[0].value, 5.0);
+}
+
+/// A native leaf must give the same value at the end of a range query as an
+/// instant query at that timestamp. This is the baseline that the DAG
+/// executor must preserve during the cutover.
+#[tokio::test]
+async fn e2e_native_leaf_range_matches_instant_at_range_end() {
+    let port = 19408u16;
+    let agg_id = 8u64;
+    let window_size_ms = 1_000u64;
+    let metric = "dag_requests";
+    let query = "sum(dag_requests)";
+    let scenario = NativeDagScenario {
+        port,
+        metric,
+        query,
+        aggregation_configs: vec![make_agg_config(
+            agg_id,
+            metric,
+            AggregationType::Sum,
+            "",
+            window_size_ms,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries(metric, vec![], 1_000, 100.0),
+            make_timeseries(metric, vec![], 1_500, 2.0),
+            make_timeseries(metric, vec![], 2_000, 3.0),
+            make_timeseries(metric, vec![], 3_500, 0.0),
+        ],
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: window_size_ms,
+    };
+
+    let (engine, query) = scenario.build_engine().await;
+    let (_, instant) = engine
+        .handle_query_promql(query.clone(), 2.0)
+        .expect("instant native query should not fail")
+        .expect("instant native query should succeed");
+    let (_, range) = engine
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("range native query should not fail")
+        .expect("range native query should succeed");
+
+    let QueryResult::Vector(instant) = instant else {
+        panic!("expected instant vector result");
+    };
+    let QueryResult::Matrix(range) = range else {
+        panic!("expected range vector result");
+    };
+    assert_eq!(instant.values.len(), 1);
+    assert_eq!(range.values.len(), 1);
+    let final_sample = range.values[0]
+        .samples
+        .last()
+        .expect("range result should contain the end timestamp");
+    assert_eq!(final_sample.timestamp, 2_000);
+    assert_eq!(final_sample.value, instant.values[0].value);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_native_dag_range_matches_legacy_range() {
+    let scenario = NativeDagScenario {
+        port: 19409,
+        metric: "dag_differential_requests",
+        query: "sum_over_time(dag_differential_requests[2s])",
+        aggregation_configs: vec![make_agg_config(
+            9,
+            "dag_differential_requests",
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries("dag_differential_requests", vec![], 1_000, 1.0),
+            make_timeseries("dag_differential_requests", vec![], 2_000, 2.0),
+            make_timeseries("dag_differential_requests", vec![], 3_000, 3.0),
+            make_timeseries("dag_differential_requests", vec![], 5_000, 0.0),
+        ],
+        evaluation_time_seconds: 3.0,
+        base_interval_ms: 1_000,
+    };
+    let mut legacy_scenario = scenario.clone();
+    legacy_scenario.port = 19410;
+    let (dag, query) = scenario.build_engine().await;
+    let (legacy, _) = legacy_scenario.build_engine().await;
+    let dag = dag
+        .handle_range_query_promql(query.clone(), 2.0, 3.0, 1.0)
+        .expect("DAG execution should not fail");
+    let legacy = legacy
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .handle_range_query_promql(query, 2.0, 3.0, 1.0)
+        .expect("legacy execution should not fail");
+    assert_range_results_match(dag, legacy);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_sparse_range_dag_matches_legacy_range() {
+    let scenario = NativeDagScenario {
+        port: 19411,
+        metric: "sparse_dag_differential",
+        query: "sum(sparse_dag_differential)",
+        aggregation_configs: vec![make_agg_config(
+            10,
+            "sparse_dag_differential",
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries("sparse_dag_differential", vec![], 1_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 2_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 8_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 9_000, 1.0),
+            make_timeseries("sparse_dag_differential", vec![], 12_000, 0.0),
+        ],
+        evaluation_time_seconds: 9.0,
+        base_interval_ms: 1_000,
+    };
+    let mut legacy_scenario = scenario.clone();
+    legacy_scenario.port = 19412;
+    let (dag, query) = scenario.build_engine().await;
+    let (legacy, _) = legacy_scenario.build_engine().await;
+    let dag = dag
+        .handle_range_query_promql(query.clone(), 1.0, 9.0, 1.0)
+        .expect("DAG execution should not fail");
+    let legacy = legacy
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .handle_range_query_promql(query, 1.0, 9.0, 1.0)
+        .expect("legacy execution should not fail");
+    assert_range_results_match(dag, legacy);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_keyed_count_range_dag_matches_legacy_range() {
+    let metric = "keyed_dag_differential";
+    let mut values = make_agg_config_full(
+        11,
+        metric,
+        AggregationType::CountMinSketch,
+        "count",
+        1_000,
+        0,
+        vec![],
+        vec!["host"],
+    );
+    values.parameters.insert("depth".to_string(), json!(3_u64));
+    values
+        .parameters
+        .insert("width".to_string(), json!(128_u64));
+    let scenario = NativeDagScenario {
+        port: 19413,
+        metric,
+        query: "count(keyed_dag_differential) by (host)",
+        aggregation_configs: vec![
+            values,
+            make_agg_config_full(
+                12,
+                metric,
+                AggregationType::SetAggregator,
+                "",
+                1_000,
+                0,
+                vec![],
+                vec!["host"],
+            ),
+        ],
+        schema_labels: vec!["host".to_string()],
+        samples: vec![
+            make_timeseries(metric, vec![("host", "a")], 1_000, 1.0),
+            make_timeseries(metric, vec![("host", "b")], 2_000, 1.0),
+            make_timeseries(metric, vec![("host", "a")], 3_000, 1.0),
+            make_timeseries(metric, vec![], 5_000, 0.0),
+        ],
+        evaluation_time_seconds: 3.0,
+        base_interval_ms: 1_000,
+    };
+    let mut legacy_scenario = scenario.clone();
+    legacy_scenario.port = 19414;
+    let (dag, query) = scenario.build_engine().await;
+    let (legacy, _) = legacy_scenario.build_engine().await;
+    let dag = dag
+        .handle_range_query_promql(query.clone(), 1.0, 3.0, 1.0)
+        .unwrap();
+    let legacy = legacy
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .handle_range_query_promql(query, 1.0, 3.0, 1.0)
+        .unwrap();
+    assert_range_results_match(dag, legacy);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_self_keyed_topk_dag_matches_legacy_range() {
+    let metric = "topk_dag_differential";
+    let mut config = make_agg_config_full(
+        13,
+        metric,
+        AggregationType::CountMinSketchWithHeap,
+        "count",
+        1_000,
+        0,
+        vec![],
+        vec!["host"],
+    );
+    config.parameters.insert("depth".to_string(), json!(3_u64));
+    config
+        .parameters
+        .insert("width".to_string(), json!(128_u64));
+    config
+        .parameters
+        .insert("heapsize".to_string(), json!(16_u64));
+    let scenario = NativeDagScenario {
+        port: 19415,
+        metric,
+        query: "topk(2, topk_dag_differential)",
+        aggregation_configs: vec![config],
+        schema_labels: vec!["host".to_string()],
+        samples: vec![
+            make_timeseries(metric, vec![("host", "a")], 1_000, 3.0),
+            make_timeseries(metric, vec![("host", "b")], 1_000, 3.0),
+            make_timeseries(metric, vec![("host", "c")], 1_000, 3.0),
+            make_timeseries(metric, vec![], 3_000, 0.0),
+        ],
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let mut legacy_scenario = scenario.clone();
+    legacy_scenario.port = 19416;
+    let (dag, query) = scenario.build_engine().await;
+    let (legacy, _) = legacy_scenario.build_engine().await;
+    let dag = dag
+        .handle_range_query_promql(query.clone(), 1.0, 2.0, 1.0)
+        .unwrap();
+    let legacy = legacy
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .unwrap();
+    assert_range_results_match(dag, legacy);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+async fn assert_grouped_topk_range_dag_matches_legacy_range(
+    metric: &str,
+    query: &str,
+    dag_port: u16,
+    legacy_port: u16,
+) {
+    let labels = vec!["job".to_string(), "instance".to_string()];
+    let samples: Vec<TimeSeries> = ["frontend", "backend", "worker"]
+        .into_iter()
+        .flat_map(|job| {
+            (1_i64..=4).map(move |rank| {
+                make_timeseries(
+                    metric,
+                    vec![("job", job), ("instance", format!("i-{rank}").as_str())],
+                    1_000,
+                    rank as f64,
+                )
+            })
+        })
+        .chain(["frontend", "backend", "worker"].into_iter().map(|job| {
+            make_timeseries(
+                metric,
+                vec![("job", job), ("instance", "flush")],
+                3_000,
+                0.0,
+            )
+        }))
+        .collect();
+    let (dag_streaming_config, dag_inference_config) =
+        plan_promql_query(metric, labels.clone(), query, 1_000);
+    let (legacy_streaming_config, legacy_inference_config) =
+        plan_promql_query(metric, labels, query, 1_000);
+    let dag_engine = build_engine_from_configs(
+        dag_port,
+        dag_streaming_config,
+        dag_inference_config,
+        samples.clone(),
+        1_000,
+    )
+    .await;
+    assert!(
+        dag_engine
+            .build_range_query_execution_context_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .is_some(),
+        "planner output should build a native range context"
+    );
+    let dag = dag_engine
+        .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+        .unwrap();
+    let legacy_engine = build_engine_from_configs(
+        legacy_port,
+        legacy_streaming_config,
+        legacy_inference_config,
+        samples,
+        1_000,
+    )
+    .await;
+    assert!(
+        legacy_engine
+            .build_range_query_execution_context_promql(query.to_string(), 1.0, 2.0, 1.0)
+            .is_some(),
+        "planner output should build a native range context"
+    );
+    let legacy = legacy_engine
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::Legacy)
+        .handle_range_query_promql(query.to_string(), 1.0, 2.0, 1.0)
+        .unwrap();
+    assert_range_results_match(dag.clone(), legacy);
+    let Some((_, result)) = dag else {
+        panic!("grouped topk should execute natively, got {dag:?}");
+    };
+    let row_count = match result {
+        QueryResult::Matrix(matrix) => matrix.values.len(),
+        QueryResult::Vector(vector) => vector.values.len(),
+    };
+    // Each job has four differently frequent instances. The lowest-ranked
+    // instance per job is removed, leaving three rows in each of three jobs.
+    assert_eq!(row_count, 9);
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_grouped_topk_range_dag_matches_legacy_range() {
+    assert_grouped_topk_range_dag_matches_legacy_range(
+        "grouped_topk_dag_differential",
+        "topk by (job) (3, grouped_topk_dag_differential)",
+        19421,
+        19422,
+    )
+    .await;
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_grouped_topk_sum_over_time_dag_matches_legacy_range() {
+    assert_grouped_topk_range_dag_matches_legacy_range(
+        "grouped_topk_sum_over_time_dag_differential",
+        "topk by (job) (3, sum_over_time(grouped_topk_sum_over_time_dag_differential[1s]))",
+        19423,
+        19424,
+    )
+    .await;
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_grouped_topk_count_over_time_dag_matches_legacy_range() {
+    assert_grouped_topk_range_dag_matches_legacy_range(
+        "grouped_topk_count_over_time_dag_differential",
+        "topk by (job) (3, count_over_time(grouped_topk_count_over_time_dag_differential[1s]))",
+        19425,
+        19426,
+    )
+    .await;
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_malformed_native_plan_returns_local_error() {
+    let metric = "dag_requests";
+    let (engine, query) = NativeDagScenario {
+        port: 19417,
+        metric,
+        query: "sum(dag_requests)",
+        aggregation_configs: vec![make_agg_config(
+            14,
+            metric,
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries(metric, vec![], 1_000, 100.0),
+            make_timeseries(metric, vec![], 1_500, 2.0),
+            make_timeseries(metric, vec![], 2_000, 3.0),
+            make_timeseries(metric, vec![], 3_500, 0.0),
+        ],
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: 1_000,
+    }
+    .build_engine()
+    .await;
+    assert!(engine
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::MalformedPlan)
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .is_err());
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn e2e_native_store_failure_returns_local_error() {
+    let metric = "store_failure_differential";
+    let (engine, query) = NativeDagScenario {
+        port: 19418,
+        metric,
+        query: "sum(store_failure_differential)",
+        aggregation_configs: vec![make_agg_config(
+            15,
+            metric,
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec![],
+        )],
+        schema_labels: vec![],
+        samples: vec![
+            make_timeseries(metric, vec![], 1_000, 1.0),
+            make_timeseries(metric, vec![], 1_500, 2.0),
+            make_timeseries(metric, vec![], 2_000, 3.0),
+            make_timeseries(metric, vec![], 3_500, 0.0),
+        ],
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: 1_000,
+    }
+    .build_engine()
+    .await;
+    assert!(engine
+        .with_native_range_execution_mode_for_test(NativeRangeExecutionMode::FailingStore)
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .is_err());
 }
 
 /// The #698 boundary contract applies independently to a query's value and
@@ -430,7 +988,7 @@ async fn e2e_promql_count_uses_open_closed_value_and_key_windows() {
     .into_iter()
     .map(|(timestamp_ms, host)| make_timeseries(metric, vec![("host", host)], timestamp_ms, 1.0))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,
@@ -498,7 +1056,7 @@ async fn e2e_quantile_over_time_uses_open_closed_evaluation_window() {
     .into_iter()
     .map(|(timestamp_ms, value)| make_timeseries(metric, vec![], timestamp_ms, value))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,
@@ -516,6 +1074,65 @@ async fn e2e_quantile_over_time_uses_open_closed_evaluation_window() {
 
     assert_eq!(vector.values.len(), 1);
     assert_eq!(vector.values[0].value, 4.0);
+}
+
+/// Regression: grouped quantiles retain their grouping labels. The native DAG
+/// must not prepend the metric name; only PromQL topk has that output shape.
+#[tokio::test]
+async fn e2e_grouped_quantile_preserves_output_label_shape() {
+    let port = 19420u16;
+    let metric = "grouped_latency";
+    let query = "quantile by (job) (0.99, grouped_latency)";
+    let mut config = make_agg_config(
+        16,
+        metric,
+        AggregationType::DatasketchesKLL,
+        "",
+        1_000,
+        0,
+        vec!["job"],
+    );
+    config.parameters.insert("K".to_string(), json!(200_u64));
+    let samples = [("frontend", 100.0), ("backend", 200.0)]
+        .into_iter()
+        .flat_map(|(job, value)| {
+            [
+                make_timeseries(metric, vec![("job", job)], 1_500, value),
+                make_timeseries(metric, vec![("job", job)], 3_500, 0.0),
+            ]
+        })
+        .collect();
+    let (engine, query) = NativeDagScenario {
+        port,
+        metric,
+        query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["job".to_string()],
+        samples,
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: 1_000,
+    }
+    .build_engine()
+    .await;
+
+    let (output_labels, result) = engine
+        .handle_query_promql(query, 2.0)
+        .expect("grouped quantile should execute")
+        .expect("grouped quantile should match configured inference");
+    assert_eq!(output_labels.labels, vec!["job"]);
+    let QueryResult::Vector(vector) = result else {
+        panic!("expected instant vector result");
+    };
+    let mut returned_labels: Vec<_> = vector
+        .values
+        .into_iter()
+        .map(|element| element.labels.labels)
+        .collect();
+    returned_labels.sort();
+    assert_eq!(
+        returned_labels,
+        vec![vec!["backend".to_string()], vec!["frontend".to_string()]]
+    );
 }
 
 /// Sliding precomputes keep their existing exact-cover composition while
@@ -550,7 +1167,7 @@ async fn e2e_sliding_query_uses_open_closed_boundaries_without_double_counting()
     .into_iter()
     .map(|(timestamp_ms, value)| make_timeseries(metric, vec![], timestamp_ms, value))
     .collect();
-    let result = PromqlPrecomputeFixture {
+    let result = NativeDagScenario {
         port,
         metric,
         query,

@@ -284,6 +284,8 @@ func (l *composeLifecycle) Start(ctx context.Context) error {
 	command.Env = append(os.Environ(), l.env...)
 	output, err := command.CombinedOutput()
 	if err != nil {
+		l.started = true
+		l.Stop()
 		return fmt.Errorf("start compose project %q: %w\n%s", l.project, err, output)
 	}
 	l.started = true

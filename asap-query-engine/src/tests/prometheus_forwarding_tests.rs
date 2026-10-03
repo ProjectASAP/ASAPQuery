@@ -1,11 +1,21 @@
 #[cfg(test)]
-use crate::data_model::{CleanupPolicy, InferenceConfig, QueryLanguage, StreamingConfig};
+use crate::data_model::{
+    AggregationConfig, AggregationReference, CleanupPolicy, InferenceConfig, PromQLSchema,
+    QueryConfig, QueryLanguage, SchemaConfig, StreamingConfig, WindowType,
+};
 use crate::drivers::query::adapters::AdapterConfig;
 use crate::drivers::query::servers::http::{HttpServer, HttpServerConfig};
 use crate::engines::SimpleEngine;
 use crate::stores::simple_map_store::SimpleMapStore;
+#[cfg(feature = "native_query_legacy_test_support")]
+use crate::NativeRangeExecutionMode;
+use promql_utilities::data_model::KeyByLabelNames;
+use promql_utilities::query_logics::enums::AggregationType;
 use reqwest::Client;
 use serde_json::Value;
+use std::collections::HashMap;
+#[cfg(feature = "native_query_legacy_test_support")]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
@@ -100,6 +110,35 @@ async fn start_mock_prometheus_server() -> Result<u16, Box<dyn std::error::Error
     Ok(port)
 }
 
+#[cfg(feature = "native_query_legacy_test_support")]
+async fn start_counting_mock_prometheus_server() -> (u16, Arc<AtomicUsize>) {
+    use axum::{response::Json, routing::get, Router};
+    use serde_json::json;
+
+    let requests = Arc::new(AtomicUsize::new(0));
+    let request_counter = requests.clone();
+    let app = Router::new().route(
+        "/api/v1/query_range",
+        get(move || {
+            let request_counter = request_counter.clone();
+            async move {
+                request_counter.fetch_add(1, Ordering::SeqCst);
+                Json(json!({"status": "success", "data": {"resultType": "matrix", "result": []}}))
+            }
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("mock fallback should bind");
+    let port = listener.local_addr().expect("mock fallback address").port();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("mock fallback should run");
+    });
+    (port, requests)
+}
+
 async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
     let config = HttpServerConfig {
         port: 0, // Use random port
@@ -133,6 +172,80 @@ async fn setup_test_server(prometheus_port: u16) -> (HttpServer, u16) {
         .expect("Failed to start test server");
 
     (server, actual_port)
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+fn native_range_error_configs() -> (InferenceConfig, Arc<StreamingConfig>) {
+    let metric = "native_metric";
+    let streaming_config = Arc::new(StreamingConfig::new(HashMap::from([(
+        1,
+        AggregationConfig {
+            aggregation_id: 1,
+            aggregation_type: AggregationType::Sum,
+            aggregation_sub_type: String::new(),
+            parameters: HashMap::new(),
+            grouping_labels: KeyByLabelNames::empty(),
+            aggregated_labels: KeyByLabelNames::empty(),
+            rollup_labels: KeyByLabelNames::empty(),
+            original_yaml: String::new(),
+            window_size_ms: 1_000,
+            slide_interval_ms: 1_000,
+            window_type: WindowType::Tumbling,
+            spatial_filter: String::new(),
+            spatial_filter_normalized: String::new(),
+            metric: metric.to_string(),
+            num_aggregates_to_retain: None,
+            read_count_threshold: None,
+            table_name: None,
+            value_column: None,
+        },
+    )])));
+    let inference_config = InferenceConfig {
+        schema: SchemaConfig::PromQL(
+            PromQLSchema::new().add_metric(metric.to_string(), KeyByLabelNames::empty()),
+        ),
+        query_configs: vec![QueryConfig::new("sum(native_metric)".to_string())
+            .add_aggregation(AggregationReference::new(1, None))],
+        cleanup_policy: CleanupPolicy::NoCleanup,
+    };
+    (inference_config, streaming_config)
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+async fn setup_test_server_with_native_range_mode(
+    prometheus_port: u16,
+    mode: NativeRangeExecutionMode,
+) -> (HttpServer, u16) {
+    let config = HttpServerConfig {
+        port: 0,
+        handle_http_requests: true,
+        adapter_config: AdapterConfig::prometheus_promql(
+            format!("http://127.0.0.1:{prometheus_port}"),
+            true,
+            30,
+        ),
+    };
+    let (inference_config, streaming_config) = native_range_error_configs();
+    let store = Arc::new(SimpleMapStore::new(
+        streaming_config.clone(),
+        CleanupPolicy::NoCleanup,
+    ));
+    let query_engine = Arc::new(
+        SimpleEngine::new(
+            store.clone(),
+            inference_config,
+            streaming_config,
+            15000,
+            QueryLanguage::promql,
+        )
+        .with_native_range_execution_mode_for_test(mode),
+    );
+    let server = HttpServer::new(config, query_engine, store, None);
+    let port = server
+        .start_test_server()
+        .await
+        .expect("test query server should start");
+    (server, port)
 }
 
 #[tokio::test]
@@ -338,6 +451,42 @@ async fn test_prometheus_forwarding_range_query() {
     assert_eq!(result["metric"]["__name__"], "unsupported_metric");
     assert_eq!(result["values"][0][1], "42.0");
     assert_eq!(result["values"][1][1], "43.0");
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[tokio::test]
+async fn native_range_execution_error_is_local_and_does_not_fallback() {
+    for mode in [
+        NativeRangeExecutionMode::MalformedPlan,
+        NativeRangeExecutionMode::FailingStore,
+    ] {
+        let (prometheus_port, fallback_requests) = start_counting_mock_prometheus_server().await;
+        let (_server, server_port) =
+            setup_test_server_with_native_range_mode(prometheus_port, mode).await;
+
+        let response = Client::new()
+            .get(format!("http://127.0.0.1:{server_port}/api/v1/query_range"))
+            .query(&[
+                ("query", "sum(native_metric)"),
+                ("start", "60"),
+                ("end", "61"),
+                ("step", "1"),
+            ])
+            .send()
+            .await
+            .expect("range request should complete");
+        let body: Value = response
+            .json()
+            .await
+            .expect("error response should be JSON");
+
+        assert_eq!(body["status"], "error");
+        assert_eq!(
+            fallback_requests.load(Ordering::SeqCst),
+            0,
+            "native execution errors must not be forwarded to Prometheus"
+        );
+    }
 }
 
 #[tokio::test]

@@ -8,7 +8,9 @@ use crate::data_model::{
     AggregationIdInfo, InferenceConfig, KeyByLabelValues, QueryBounds, QueryConfig, QueryLanguage,
     StreamingConfig,
 };
-use crate::engines::query_plan::{PlanOptions, QueryPlan};
+use crate::engines::query_plan::{
+    NodeId, PlanOptions, QueryPlan, QueryPlanExecutionError, QueryPlanNode, QueryPlanRuntime,
+};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{
     plan_exact_cover, CompositionError, SlidingWindowSpec,
@@ -63,6 +65,15 @@ pub enum QueryExecutionError {
     NoLocalData(String),
     #[error("native query execution failed: {0}")]
     Native(String),
+}
+
+#[cfg(feature = "native_query_legacy_test_support")]
+#[derive(Clone, Copy)]
+pub enum NativeRangeExecutionMode {
+    Dag,
+    Legacy,
+    MalformedPlan,
+    FailingStore,
 }
 
 /// Parameters for a single store query
@@ -171,6 +182,161 @@ pub struct RangeQueryExecutionContext {
     pub keys_tumbling_window_ms: Option<u64>,
 }
 
+#[derive(Clone)]
+struct RangeQueryReads {
+    values: TimestampedBucketsMap,
+    keys: Option<TimestampedBucketsMap>,
+}
+
+type BucketMap = HashMap<u64, Vec<Arc<dyn AggregateCore>>>;
+type TopkPartition = (u64, Vec<String>);
+type TopkCandidates<'a> = HashMap<TopkPartition, Vec<(&'a KeyByLabelValues, f64)>>;
+
+#[derive(Clone)]
+struct ComposedRangeRead {
+    groups: HashMap<Option<KeyByLabelValues>, BucketMap>,
+}
+
+#[derive(Clone)]
+struct ResolvedRangeReads {
+    values: ComposedRangeRead,
+    keys: Option<ComposedRangeRead>,
+}
+
+#[derive(Clone)]
+enum NativePlanOutput {
+    Read(TimestampedBucketsMap),
+    Composed(ComposedRangeRead),
+    Resolved(ResolvedRangeReads),
+    Results(Vec<crate::engines::query_result::RangeVectorElement>),
+}
+
+struct NativePlanRuntime<'a> {
+    engine: &'a SimpleEngine,
+    context: &'a RangeQueryExecutionContext,
+    reads: std::cell::RefCell<Option<RangeQueryReads>>,
+}
+
+impl NativePlanRuntime<'_> {
+    fn reads(&self) -> Result<RangeQueryReads, QueryExecutionError> {
+        #[cfg(feature = "native_query_legacy_test_support")]
+        if matches!(
+            self.engine.native_range_execution_mode,
+            NativeRangeExecutionMode::FailingStore
+        ) {
+            return Err(QueryExecutionError::Native(
+                "test-only native store failure".to_string(),
+            ));
+        }
+        if self.reads.borrow().is_none() {
+            *self.reads.borrow_mut() = Some(self.engine.read_range_query_inputs(self.context)?);
+        }
+        Ok(self
+            .reads
+            .borrow()
+            .as_ref()
+            .expect("reads initialized")
+            .clone())
+    }
+}
+
+impl QueryPlanRuntime for NativePlanRuntime<'_> {
+    type Output = NativePlanOutput;
+    type Error = QueryExecutionError;
+
+    fn execute_node(
+        &self,
+        _id: NodeId,
+        node: &QueryPlanNode,
+        inputs: &[Self::Output],
+    ) -> Result<Self::Output, Self::Error> {
+        match node {
+            QueryPlanNode::StoreRead { query, strategy: _ } => {
+                let reads = self.reads()?;
+                if query.aggregation_id == self.context.base.store_plan.values_query.aggregation_id
+                {
+                    Ok(NativePlanOutput::Read(reads.values))
+                } else {
+                    reads.keys.map(NativePlanOutput::Read).ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Query plan requested missing key read".to_string(),
+                        )
+                    })
+                }
+            }
+            QueryPlanNode::ComposeWindows { .. } => match inputs {
+                [NativePlanOutput::Read(data)] => Ok(NativePlanOutput::Composed(
+                    self.engine.compose_range_read(data),
+                )),
+                _ => Err(QueryExecutionError::Native(
+                    "ComposeWindows expected store data".into(),
+                )),
+            },
+            QueryPlanNode::ResolveKeys { keys, .. } => match (inputs, keys) {
+                ([NativePlanOutput::Composed(values)], None) => {
+                    Ok(NativePlanOutput::Resolved(ResolvedRangeReads {
+                        values: values.clone(),
+                        keys: None,
+                    }))
+                }
+                (
+                    [NativePlanOutput::Composed(values), NativePlanOutput::Composed(keys)],
+                    Some(_),
+                ) => Ok(NativePlanOutput::Resolved(ResolvedRangeReads {
+                    values: values.clone(),
+                    keys: Some(keys.clone()),
+                })),
+                _ => Err(QueryExecutionError::Native(
+                    "ResolveKeys received incompatible inputs".into(),
+                )),
+            },
+            QueryPlanNode::Estimate { .. } => match inputs {
+                [NativePlanOutput::Resolved(reads)] => self
+                    .engine
+                    .estimate_range_query(self.context, reads.clone())
+                    .map(NativePlanOutput::Results),
+                _ => Err(QueryExecutionError::Native(
+                    "Estimate expected resolved reads".into(),
+                )),
+            },
+            QueryPlanNode::LimitTopK {
+                k, grouping_labels, ..
+            } => match inputs {
+                [NativePlanOutput::Results(results)] => self
+                    .engine
+                    .limit_range_topk(
+                        results,
+                        k,
+                        &SimpleEngine::topk_row_label_order(
+                            &self.context.base.metadata,
+                            &self.context.base.grouping_labels,
+                            &self.context.base.aggregated_labels,
+                        ),
+                        grouping_labels,
+                    )
+                    .map_err(QueryExecutionError::Native)
+                    .map(NativePlanOutput::Results),
+                _ => Err(QueryExecutionError::Native(
+                    "LimitTopK expected estimates".into(),
+                )),
+            },
+            QueryPlanNode::Format {
+                include_metric_name,
+                metric,
+                ..
+            } => match inputs {
+                [NativePlanOutput::Results(results)] => Ok(NativePlanOutput::Results(
+                    self.engine
+                        .format_range_results(results, *include_metric_name, metric),
+                )),
+                _ => Err(QueryExecutionError::Native(
+                    "result node expected estimates".into(),
+                )),
+            },
+        }
+    }
+}
+
 // /// Parsed components of a sketch query, extracted either via the PromQL AST
 // /// parser (for standard functions) or via regex (for custom functions like
 // /// `entropy_over_time` that the promql-parser crate doesn't recognize).
@@ -195,6 +361,8 @@ pub struct SimpleEngine {
     data_ingestion_interval_ms: u64,
     controller_patterns: Vec<PromQLPattern>,
     query_language: QueryLanguage,
+    #[cfg(feature = "native_query_legacy_test_support")]
+    native_range_execution_mode: NativeRangeExecutionMode,
 }
 
 impl SimpleEngine {
@@ -368,7 +536,18 @@ impl SimpleEngine {
             data_ingestion_interval_ms,
             controller_patterns,
             query_language,
+            #[cfg(feature = "native_query_legacy_test_support")]
+            native_range_execution_mode: NativeRangeExecutionMode::Dag,
         }
+    }
+
+    #[cfg(feature = "native_query_legacy_test_support")]
+    pub fn with_native_range_execution_mode_for_test(
+        mut self,
+        mode: NativeRangeExecutionMode,
+    ) -> Self {
+        self.native_range_execution_mode = mode;
+        self
     }
 
     /// Replace the inference config at runtime. Called by the applier task after
@@ -1322,6 +1501,86 @@ impl SimpleEngine {
         key.labels.insert(0, metric.to_string());
     }
 
+    fn limit_range_topk(
+        &self,
+        results: &[crate::engines::query_result::RangeVectorElement],
+        k: &str,
+        row_label_order: &KeyByLabelNames,
+        grouping_labels: &KeyByLabelNames,
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, String> {
+        use crate::engines::query_result::RangeVectorElement;
+
+        let k = Self::parse_topk_limit(&HashMap::from([("k".to_string(), k.to_string())]))?;
+        let mut retained: HashMap<KeyByLabelValues, Vec<u64>> = HashMap::new();
+        let grouping_positions: Vec<usize> = grouping_labels
+            .labels
+            .iter()
+            .map(|label| {
+                row_label_order
+                    .labels
+                    .iter()
+                    .position(|candidate| candidate == label)
+                    .ok_or_else(|| format!("Topk grouping label '{label}' is absent from output"))
+            })
+            .collect::<Result<_, _>>()?;
+        let mut candidates: TopkCandidates<'_> = HashMap::new();
+        for result in results {
+            let grouping_key = grouping_positions
+                .iter()
+                .map(|&position| {
+                    result.labels.labels.get(position).cloned().ok_or_else(|| {
+                        format!(
+                            "Topk result has {} labels but grouping position {} was requested",
+                            result.labels.labels.len(),
+                            position
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            for sample in &result.samples {
+                candidates
+                    .entry((sample.timestamp, grouping_key.clone()))
+                    .or_default()
+                    .push((&result.labels, sample.value));
+            }
+        }
+        for ((timestamp, _), mut candidates) in candidates {
+            candidates
+                .sort_by(|a, b| Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels));
+            for (labels, _) in candidates.into_iter().take(k) {
+                retained.entry(labels.clone()).or_default().push(timestamp);
+            }
+        }
+        Ok(results
+            .iter()
+            .filter_map(|result| {
+                let timestamps = retained.get(&result.labels)?;
+                let mut limited = RangeVectorElement::new(result.labels.clone());
+                for sample in &result.samples {
+                    if timestamps.contains(&sample.timestamp) {
+                        limited.add_sample(sample.timestamp, sample.value);
+                    }
+                }
+                (!limited.samples.is_empty()).then_some(limited)
+            })
+            .collect())
+    }
+
+    fn format_range_results(
+        &self,
+        results: &[crate::engines::query_result::RangeVectorElement],
+        include_metric_name: bool,
+        metric: &str,
+    ) -> Vec<crate::engines::query_result::RangeVectorElement> {
+        let mut results = results.to_vec();
+        if include_metric_name {
+            for result in &mut results {
+                Self::prepend_metric_name(metric, &mut result.labels);
+            }
+        }
+        results
+    }
+
     /// Executes the complete query pipeline: plan, execute, collect, and format.
     ///
     /// The two top-k flags are deliberately separate because the two engines
@@ -1970,14 +2229,24 @@ impl SimpleEngine {
     /// be merged, not just the last one collected here. Used identically by
     /// `execute_range_query_pipeline` for both the value side and (#583)
     /// the keys side.
-    fn build_bucket_map(
-        buckets: &[crate::stores::TimestampedBucket],
-    ) -> HashMap<u64, Vec<&dyn AggregateCore>> {
-        let mut bucket_map: HashMap<u64, Vec<&dyn AggregateCore>> = HashMap::new();
+    fn build_bucket_map(buckets: &[crate::stores::TimestampedBucket]) -> BucketMap {
+        let mut bucket_map: BucketMap = HashMap::new();
         for ((start, _), bucket) in buckets {
-            bucket_map.entry(*start).or_default().push(bucket.as_ref());
+            bucket_map
+                .entry(*start)
+                .or_default()
+                .push(Arc::clone(bucket));
         }
         bucket_map
+    }
+
+    fn compose_range_read(&self, data: &TimestampedBucketsMap) -> ComposedRangeRead {
+        ComposedRangeRead {
+            groups: data
+                .iter()
+                .map(|(key, buckets)| (key.clone(), Self::build_bucket_map(buckets)))
+                .collect(),
+        }
     }
 
     /// Collects every bucket in `bucket_map` whose start falls in
@@ -1996,7 +2265,7 @@ impl SimpleEngine {
     /// path MUST use `collect_bucket_map_entries_before` instead, never this
     /// (#581 stage E.4 review; see that function's doc for why).
     fn sum_window(
-        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        bucket_map: &BucketMap,
         window_start: u64,
         window_end: u64,
         step_increment: u64,
@@ -2068,10 +2337,10 @@ impl SimpleEngine {
     /// inherited from the store's own sort, same as it always was for
     /// `sum_window` (#581 stage E.4 review).
     fn collect_bucket_map_entries_before(
-        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        bucket_map: &BucketMap,
         before: u64,
     ) -> Vec<Box<dyn AggregateCore>> {
-        let mut entries: Vec<(u64, &&dyn AggregateCore)> = bucket_map
+        let mut entries: Vec<(u64, &Arc<dyn AggregateCore>)> = bucket_map
             .iter()
             .filter(|(&t, _)| t < before)
             .flat_map(|(&t, buckets)| buckets.iter().map(move |b| (t, b)))
@@ -2093,7 +2362,7 @@ impl SimpleEngine {
     /// that path must call `collect_bucket_map_entries_before` directly
     /// instead (see its doc comment).
     fn window_buckets_for_step(
-        bucket_map: &HashMap<u64, Vec<&dyn AggregateCore>>,
+        bucket_map: &BucketMap,
         window_start: u64,
         window_end: u64,
         step_increment: u64,
@@ -2127,6 +2396,35 @@ impl SimpleEngine {
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        Self::reject_off_grid_sliding_counter_query(context)?;
+        #[cfg(feature = "native_query_legacy_test_support")]
+        if matches!(
+            self.native_range_execution_mode,
+            NativeRangeExecutionMode::Legacy
+        ) {
+            return self.execute_legacy_range_query_pipeline(
+                context,
+                enable_topk_limiting,
+                enable_topk_formatting,
+            );
+        }
+        #[cfg(feature = "native_query_legacy_test_support")]
+        let plan = if matches!(
+            self.native_range_execution_mode,
+            NativeRangeExecutionMode::MalformedPlan
+        ) {
+            QueryPlan::malformed_for_test()
+        } else {
+            QueryPlan::compile_range(
+                context,
+                PlanOptions {
+                    limit_topk: enable_topk_limiting,
+                    format_output: enable_topk_formatting,
+                },
+            )
+            .map_err(QueryExecutionError::Native)?
+        };
+        #[cfg(not(feature = "native_query_legacy_test_support"))]
         let plan = QueryPlan::compile_range(
             context,
             PlanOptions {
@@ -2136,44 +2434,72 @@ impl SimpleEngine {
         )
         .map_err(QueryExecutionError::Native)?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
-        self.execute_range_query_pipeline(context, enable_topk_limiting, enable_topk_formatting)
+        let runtime = NativePlanRuntime {
+            engine: self,
+            context,
+            reads: std::cell::RefCell::new(None),
+        };
+        match plan.execute(&runtime).map_err(|error| match error {
+            QueryPlanExecutionError::InvalidPlan(reason) => QueryExecutionError::Native(reason),
+            QueryPlanExecutionError::Node { source, .. } => source,
+        })? {
+            NativePlanOutput::Results(results) => Ok(results),
+            _ => Err(QueryExecutionError::Native(
+                "Query plan root did not produce results".to_string(),
+            )),
+        }
     }
 
-    fn execute_range_query_pipeline(
+    #[cfg(feature = "native_query_legacy_test_support")]
+    fn execute_legacy_range_query_pipeline(
         &self,
         context: &RangeQueryExecutionContext,
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
-        use crate::engines::query_result::RangeVectorElement;
-        use crate::engines::window_merger::create_window_merger;
-
-        if context.window_type == WindowType::Sliding
-            && context.tumbling_window_ms > 0
-            && matches!(
-                context.base.metadata.statistic_to_compute,
-                Statistic::Increase | Statistic::Rate
-            )
-        {
-            if let Some(&off_grid_timestamp) = context
-                .output_timestamps
-                .iter()
-                .find(|&&timestamp| !timestamp.is_multiple_of(context.tumbling_window_ms))
-            {
-                return Err(QueryExecutionError::NoLocalData(format!(
-                    "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
-                     timestamp {} (grid interval {}ms)",
-                    off_grid_timestamp, context.tumbling_window_ms
-                )));
-            }
+        let reads = self.read_range_query_inputs(context)?;
+        let mut results = self.estimate_range_query(
+            context,
+            ResolvedRangeReads {
+                values: self.compose_range_read(&reads.values),
+                keys: reads
+                    .keys
+                    .as_ref()
+                    .map(|keys| self.compose_range_read(keys)),
+            },
+        )?;
+        if enable_topk_limiting && context.base.metadata.statistic_to_compute == Statistic::Topk {
+            let k = context.base.metadata.query_kwargs.get("k").ok_or_else(|| {
+                QueryExecutionError::Native("Topk query is missing required `k` parameter".into())
+            })?;
+            results = self
+                .limit_range_topk(
+                    &results,
+                    k,
+                    &Self::topk_row_label_order(
+                        &context.base.metadata,
+                        &context.base.grouping_labels,
+                        &context.base.aggregated_labels,
+                    ),
+                    &context.base.grouping_labels,
+                )
+                .map_err(QueryExecutionError::Native)?;
         }
+        Ok(self.format_range_results(
+            &results,
+            enable_topk_formatting
+                && context.base.metadata.statistic_to_compute == Statistic::Topk
+                && context.base.metadata.keep_metric_name,
+            &context.base.metric,
+        ))
+    }
 
+    fn read_range_query_inputs(
+        &self,
+        context: &RangeQueryExecutionContext,
+    ) -> Result<RangeQueryReads, QueryExecutionError> {
         let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
-
-        // Step 1: Fetch all data needed for the entire range. Sliding
-        // aggregates are already full, overlapping windows in the store, so
-        // request only the W-spaced exact cover for each output timestamp.
-        let all_data = if context.window_type == WindowType::Sliding {
+        let values = if context.window_type == WindowType::Sliding {
             self.execute_sliding_cover_query(
                 &context.base.store_plan.values_query,
                 &context.output_timestamps,
@@ -2185,57 +2511,88 @@ impl SimpleEngine {
             self.execute_store_query(&context.base.store_plan.values_query)
                 .map_err(QueryExecutionError::Native)?
         };
-
-        if all_data.is_empty() {
+        if values.is_empty() {
             return Err(QueryExecutionError::NoLocalData(format!(
                 "No data found for metric: {}",
                 context.base.metric
             )));
         }
-
         debug!(
             "Range query: fetched {} keys, {} total buckets",
-            all_data.len(),
-            all_data.values().map(|v| v.len()).sum::<usize>()
+            values.len(),
+            values.values().map(|buckets| buckets.len()).sum::<usize>()
         );
 
-        // #583: fetch keys raw (no merge). Unlike keys, values have always
-        // been fetched raw here and merged per-step below (see the loop);
-        // keys used to go through fetch_and_merge_keys, which collapses
-        // every fetched bucket into ONE snapshot before this function ever
-        // sees it. That collapse is the bug: once buckets are merged
-        // together there's no way to ask what the key set looked like at
-        // any specific earlier timestamp. Fetching raw and merging per-step,
-        // mirroring the values loop, is the fix.
-        let keys_raw_data: Option<TimestampedBucketsMap> = match &context.base.store_plan.keys_query
-        {
-            Some(keys_query) if context.keys_window_type == Some(WindowType::Sliding) => {
+        let keys = match &context.base.store_plan.keys_query {
+            Some(query) if context.keys_window_type == Some(WindowType::Sliding) => {
                 Some(self.execute_sliding_cover_query(
-                    keys_query,
+                    query,
                     &context.output_timestamps,
                     context.keys_lookback_ms.ok_or_else(|| {
                         QueryExecutionError::Native(
-                            "Sliding keys query is missing its lookback".to_string(),
+                            "Sliding keys query is missing its lookback".into(),
                         )
                     })?,
                     context.keys_window_size_ms.ok_or_else(|| {
                         QueryExecutionError::Native(
-                            "Sliding keys query is missing its window size".to_string(),
+                            "Sliding keys query is missing its window size".into(),
                         )
                     })?,
                     context.keys_tumbling_window_ms.ok_or_else(|| {
                         QueryExecutionError::Native(
-                            "Sliding keys query is missing its slide interval".to_string(),
+                            "Sliding keys query is missing its slide interval".into(),
                         )
                     })?,
                 )?)
             }
-            Some(keys_query) => Some(
-                self.execute_store_query(keys_query)
+            Some(query) => Some(
+                self.execute_store_query(query)
                     .map_err(QueryExecutionError::Native)?,
             ),
             None => None,
         };
+        Ok(RangeQueryReads { values, keys })
+    }
+
+    fn reject_off_grid_sliding_counter_query(
+        context: &RangeQueryExecutionContext,
+    ) -> Result<(), QueryExecutionError> {
+        if context.window_type != WindowType::Sliding
+            || context.tumbling_window_ms == 0
+            || !matches!(
+                context.base.metadata.statistic_to_compute,
+                Statistic::Increase | Statistic::Rate
+            )
+        {
+            return Ok(());
+        }
+        if let Some(&timestamp) = context
+            .output_timestamps
+            .iter()
+            .find(|&&timestamp| !timestamp.is_multiple_of(context.tumbling_window_ms))
+        {
+            return Err(QueryExecutionError::NoLocalData(format!(
+                "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
+                 timestamp {} (grid interval {}ms)",
+                timestamp, context.tumbling_window_ms
+            )));
+        }
+        Ok(())
+    }
+
+    fn estimate_range_query(
+        &self,
+        context: &RangeQueryExecutionContext,
+        reads: ResolvedRangeReads,
+    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        use crate::engines::query_result::RangeVectorElement;
+        use crate::engines::window_merger::create_window_merger;
+
+        let ResolvedRangeReads {
+            values: ComposedRangeRead { groups: all_data },
+            keys: keys_raw_data,
+        } = reads;
+        let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
@@ -2308,12 +2665,12 @@ impl SimpleEngine {
         // bucket_map field below and the step-major `groups` binding
         // further down (#581 stage E.4 review: previously duplicated as the
         // raw type at the PerStep site instead of using this alias).
-        type GroupBucketMap<'a> = HashMap<u64, Vec<&'a dyn AggregateCore>>;
+        type GroupBucketMap = BucketMap;
 
-        enum KeysSource<'a> {
+        enum KeysSource {
             Fixed(Option<KeyByLabelValues>),
             PerStep {
-                bucket_map: GroupBucketMap<'a>,
+                bucket_map: GroupBucketMap,
                 lookback_ms: u64,
                 tumbling_window_ms: u64,
                 stored_window_size_ms: u64,
@@ -2328,8 +2685,7 @@ impl SimpleEngine {
         // of failing the whole range query (#583; previously
         // `.ok_or_else(...)?` here hard-failed everything for one missing
         // group). See #582 review for collect_results_separate_keys parity.
-        let groups: Vec<(&Vec<crate::stores::TimestampedBucket>, KeysSource)> = match &keys_raw_data
-        {
+        let groups: Vec<(GroupBucketMap, KeysSource)> = match &keys_raw_data {
             Some(keys_map) => {
                 // keys_raw_data is Some, so context.keys_lookback_ms /
                 // context.keys_tumbling_window_ms are guaranteed Some too
@@ -2345,13 +2701,14 @@ impl SimpleEngine {
                 let keys_window_size_ms =
                     keys_window_size_ms.expect("keys_raw_data implies keys_window_size_ms is Some");
                 keys_map
+                    .groups
                     .iter()
                     .filter_map(
-                        |(group_key, raw_keys_buckets)| match all_data.get(group_key) {
-                            Some(timestamped_buckets) => Some((
-                                timestamped_buckets,
+                        |(group_key, key_bucket_map)| match all_data.get(group_key) {
+                            Some(value_bucket_map) => Some((
+                                value_bucket_map.clone(),
                                 KeysSource::PerStep {
-                                    bucket_map: Self::build_bucket_map(raw_keys_buckets),
+                                    bucket_map: key_bucket_map.clone(),
                                     lookback_ms: keys_lookback_ms,
                                     tumbling_window_ms: keys_tumbling_window_ms,
                                     stored_window_size_ms: keys_window_size_ms,
@@ -2379,7 +2736,9 @@ impl SimpleEngine {
             // this list.
             None => all_data
                 .iter()
-                .map(|(group_key, buckets)| (buckets, KeysSource::Fixed(group_key.clone())))
+                .map(|(group_key, bucket_map)| {
+                    (bucket_map.clone(), KeysSource::Fixed(group_key.clone()))
+                })
                 .collect(),
         };
 
@@ -2400,37 +2759,21 @@ impl SimpleEngine {
         // timestamp's candidates needs every group's bucket_map available at
         // that timestamp, so they can't be built lazily one group at a time
         // anymore.
-        let groups: Vec<(GroupBucketMap, KeysSource)> = groups
-            .into_iter()
-            .map(|(timestamped_buckets, keys_source)| {
-                let bucket_map = Self::build_bucket_map(timestamped_buckets);
-                debug!(
-                    "Group with {} start-timestamps ({} keys start-timestamps)",
-                    bucket_map.len(),
-                    match &keys_source {
-                        KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
-                        KeysSource::Fixed(_) => 0,
-                    }
-                );
-                (bucket_map, keys_source)
-            })
-            .collect();
+        for (bucket_map, keys_source) in &groups {
+            debug!(
+                "Group with {} start-timestamps ({} keys start-timestamps)",
+                bucket_map.len(),
+                match keys_source {
+                    KeysSource::PerStep { bucket_map, .. } => bucket_map.len(),
+                    KeysSource::Fixed(_) => 0,
+                }
+            );
+        }
 
         // Top-k's k, parsed once rather than per timestamp. Some only when
         // this is actually a topk query with limiting requested -- gates
         // both the per-step sort/truncate below and nothing else, so a
         // non-topk query pays zero cost for this.
-        let topk_k: Option<usize> = if enable_topk_limiting
-            && context.base.metadata.statistic_to_compute == Statistic::Topk
-        {
-            Some(
-                Self::parse_topk_limit(&context.base.metadata.query_kwargs)
-                    .map_err(QueryExecutionError::Native)?,
-            )
-        } else {
-            None
-        };
-
         let row_label_order = Self::topk_row_label_order(
             &context.base.metadata,
             &context.base.grouping_labels,
@@ -2653,7 +2996,7 @@ impl SimpleEngine {
                 // single-population groups let the value accumulator's own
                 // get_keys() take priority once merged, falling back to
                 // fallback_key otherwise. Same resolver the instant path uses.
-                let mut group_results: Vec<(KeyByLabelValues, f64)> = self
+                let group_results: Vec<(KeyByLabelValues, f64)> = self
                     .resolve_and_query_group(
                         Some(merged.as_ref()),
                         keys_precompute.as_deref(),
@@ -2678,13 +3021,6 @@ impl SimpleEngine {
                 // against each other, not against other jobs' candidates.
                 // Tie-broken by label for determinism (HashMap iteration
                 // order isn't stable across runs).
-                if let Some(k) = topk_k {
-                    group_results.sort_by(|a, b| {
-                        Self::cmp_topk_value_desc(a.1, &a.0.labels, b.1, &b.0.labels)
-                    });
-                    group_results.truncate(k);
-                }
-
                 step_results.extend(group_results);
             }
 
@@ -2701,15 +3037,6 @@ impl SimpleEngine {
         // not once per timestep -- a separate pass over the final results,
         // after every timestamp's ranking above has already decided which
         // groups/samples survive.
-        if enable_topk_formatting
-            && context.base.metadata.statistic_to_compute == Statistic::Topk
-            && context.base.metadata.keep_metric_name
-        {
-            for elem in results.values_mut() {
-                Self::prepend_metric_name(&context.base.metric, &mut elem.labels);
-            }
-        }
-
         Ok(results.into_values().collect())
     }
 }
