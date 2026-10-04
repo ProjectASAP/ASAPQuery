@@ -1,0 +1,12 @@
+[package]
+name = "rqe-optimizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "v1 brute-force solver for the RQE -> sketch-deployment mapping problem (docs/rqe_sketch_deployment_v1.md). Consumes aqpbm-core's AtomicCostEntry directly so a real atomic-cost export can be dropped in later without a translation layer."
+
+[dependencies]
+aqpbm-core = { workspace = true, default-features = false }
+serde_json.workspace = true
+good_lp.workspace = true
