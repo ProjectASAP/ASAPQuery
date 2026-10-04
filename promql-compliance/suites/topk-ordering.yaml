@@ -1,7 +1,7 @@
 name: topk-ordering
 
 queries:
-  # Equal values make the full label set the TopK tie-breaker.
+  # Equal values make bucket contiguity observable independently of ranking.
   - name: topk-tied
     expr: "topk(6, ordered_data)"
     instant_offsets_seconds: &evaluation_offsets [300, 600]

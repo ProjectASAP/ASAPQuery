@@ -282,6 +282,7 @@ func orderGroupKey(metric model.Metric, grouping *OrderGrouping) string {
 		return metricString(labels)
 	}
 	excluded := make(map[model.LabelName]struct{}, len(grouping.Labels))
+	excluded[model.MetricNameLabel] = struct{}{}
 	for _, label := range grouping.Labels {
 		excluded[model.LabelName(label)] = struct{}{}
 	}

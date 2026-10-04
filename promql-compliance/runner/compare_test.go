@@ -340,6 +340,23 @@ func TestCompareQueryAllowsWithoutGroupedInstantBucketsInAnyOrder(t *testing.T) 
 	}
 }
 
+func TestCompareQueryWithoutGroupingIgnoresMetricName(t *testing.T) {
+	timestamp := model.Time(1)
+	policy := ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+		Direction: instantOrderDescending,
+		Grouping:  &OrderGrouping{Mode: orderGroupingWithout, Labels: []string{"instance"}},
+	}}
+	reference := model.Vector{
+		&model.Sample{Metric: model.Metric{model.MetricNameLabel: "a", "job": "api", "instance": "one"}, Value: 2, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{model.MetricNameLabel: "b", "job": "api", "instance": "two"}, Value: 1, Timestamp: timestamp},
+	}
+	test := model.Vector{reference[1], reference[0]}
+
+	if diff := compareInstantValues(reference, test, policy); diff == "" {
+		t.Fatal("without grouping treated metric names as separate buckets")
+	}
+}
+
 func TestCompareQueryAcceptsAscendingInstantVectorOrder(t *testing.T) {
 	base := time.UnixMilli(1_700_000_000_000).UTC()
 	timestamp := model.Time(base.UnixMilli())
