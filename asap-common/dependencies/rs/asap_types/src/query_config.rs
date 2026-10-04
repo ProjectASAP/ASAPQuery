@@ -56,10 +56,8 @@ impl QueryTimeAggregation {
             QueryTimeGroupingMode::All if !self.grouping.labels.is_empty() => {
                 return Err("all grouping cannot name labels".to_string());
             }
-            QueryTimeGroupingMode::By | QueryTimeGroupingMode::Without
-                if self.grouping.labels.is_empty() =>
-            {
-                return Err("by and without grouping must name at least one label".to_string());
+            QueryTimeGroupingMode::By if self.grouping.labels.is_empty() => {
+                return Err("by grouping must name at least one label".to_string());
             }
             _ => {}
         }
@@ -193,5 +191,19 @@ mod tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[test]
+    fn without_empty_labels_is_a_valid_promql_grouping() {
+        assert!(QueryTimeAggregation {
+            operator: QueryTimeAggregationOperator::Sum,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::Without,
+                labels: Vec::new(),
+            },
+            parameter: None,
+        }
+        .validate()
+        .is_ok());
     }
 }

@@ -437,6 +437,9 @@ impl SimpleEngine {
             Expr::Paren(paren) => self.resolve_arm_leaf_context(&paren.expr, time),
             other => {
                 let config = self.find_query_config_promql_structural(other)?;
+                if !config.query_time_aggregations.is_empty() {
+                    return None;
+                }
                 let ctx = self.build_query_execution_context_from_ast(
                     other,
                     &config,
@@ -1126,12 +1129,9 @@ impl SimpleEngine {
                 let anchor_ast = match promql_parser::parser::parse(&config.planned_subquery) {
                     Ok(ast) => ast,
                     Err(error) => {
-                        warn!(
-                            query = %query,
-                            planned_subquery = %config.planned_subquery,
+                        return Err(QueryExecutionError::Native(format!(
                             "configured query-time aggregation anchor does not parse: {error}"
-                        );
-                        return Ok(None);
+                        )));
                     }
                 };
                 let Some(context) = self.build_query_execution_context_from_ast(
@@ -1431,12 +1431,9 @@ impl SimpleEngine {
                 let anchor_ast = match promql_parser::parser::parse(&config.planned_subquery) {
                     Ok(ast) => ast,
                     Err(error) => {
-                        warn!(
-                            query = %query,
-                            planned_subquery = %config.planned_subquery,
+                        return Err(QueryExecutionError::Native(format!(
                             "configured query-time aggregation anchor does not parse: {error}"
-                        );
-                        return Ok(None);
+                        )));
                     }
                 };
                 let Some(anchor_context) = self.build_query_execution_context_from_ast(

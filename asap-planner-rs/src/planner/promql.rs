@@ -75,7 +75,7 @@ fn aggregation_stage(
             else {
                 return None;
             };
-            if number.val < 0.0 || number.val.fract() != 0.0 {
+            if number.val <= 0.0 || number.val.fract() != 0.0 {
                 return None;
             }
             Some(QueryTimeAggregationParameter::Integer(number.val as u64))
@@ -85,6 +85,9 @@ fn aggregation_stage(
             else {
                 return None;
             };
+            if !number.val.is_finite() || !(0.0..=1.0).contains(&number.val) {
+                return None;
+            }
             Some(QueryTimeAggregationParameter::Float(number.val))
         }
         _ => None,
@@ -457,5 +460,17 @@ mod tests {
             QueryTimeGroupingMode::Without
         ));
         assert!(stage.grouping.labels.is_empty());
+    }
+
+    #[test]
+    fn invalid_query_time_parameters_are_not_planned() {
+        for query in ["topk(0, requests_total)", "quantile(1.1, requests_total)"] {
+            let expression = promql_parser::parser::parse(query).expect("query should parse");
+            let promql_parser::parser::Expr::Aggregate(aggregate) = expression else {
+                panic!("query should parse as an aggregation");
+            };
+
+            assert!(aggregation_stage(&aggregate).is_none(), "{query}");
+        }
     }
 }

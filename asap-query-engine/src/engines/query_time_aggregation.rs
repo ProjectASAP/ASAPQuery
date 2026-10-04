@@ -168,7 +168,6 @@ fn apply_stage(
             group.truncate(k);
             results.extend(group);
         }
-        results.sort_by(|left, right| left.labels.labels.cmp(&right.labels.labels));
         return Ok((output_labels, results));
     }
 

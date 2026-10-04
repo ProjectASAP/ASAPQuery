@@ -539,7 +539,7 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
             "topk",
             QueryTimeAggregationOperator::Topk,
             Some(QueryTimeAggregationParameter::Integer(3)),
-            vec![(vec!["api"], 5.0), (vec!["worker"], 9.0)],
+            vec![(vec!["worker"], 9.0), (vec!["api"], 5.0)],
         ),
     ];
 
@@ -593,6 +593,15 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
             .collect();
         assert_eq!(instant_values, expected, "instant {name}");
 
+        let range_expected = if name == "topk" {
+            vec![
+                (vec!["api".to_string()], 5.0),
+                (vec!["worker".to_string()], 9.0),
+            ]
+        } else {
+            expected.clone()
+        };
+
         let Some((_, range)) = engine
             .handle_range_query_promql(query, 1.0, 2.0, 1.0)
             .unwrap_or_else(|error| panic!("range {name}: {error}"))
@@ -613,7 +622,7 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
                 (value.labels.labels, sample.value)
             })
             .collect();
-        assert_eq!(range_values, expected, "range {name}");
+        assert_eq!(range_values, range_expected, "range {name}");
     }
 }
 

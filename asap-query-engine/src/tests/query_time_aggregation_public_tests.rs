@@ -158,15 +158,15 @@ mod tests {
                 QueryTimeAggregationOperator::Topk,
                 Some(QueryTimeAggregationParameter::Integer(3)),
                 vec![
+                    (vec!["b", "worker", "west"], 7.0),
                     (vec!["a", "worker", "west"], 5.0),
                     (vec!["b", "api", "east"], 3.0),
-                    (vec!["b", "worker", "west"], 7.0),
                 ],
                 vec![
-                    (vec!["a", "api", "east"], 1.0),
-                    (vec!["a", "worker", "west"], 5.0),
                     (vec!["b", "api", "east"], 3.0),
+                    (vec!["a", "api", "east"], 1.0),
                     (vec!["b", "worker", "west"], 7.0),
+                    (vec!["a", "worker", "west"], 5.0),
                 ],
             ),
         ];
@@ -276,10 +276,10 @@ mod tests {
         assert_eq!(
             execute(&engine, format!("topk(10, {ANCHOR})"), topk(10)),
             expected(vec![
-                (vec!["a", "api", "east"], 1.0),
+                (vec!["b", "worker", "west"], 7.0),
                 (vec!["a", "worker", "west"], 5.0),
                 (vec!["b", "api", "east"], 3.0),
-                (vec!["b", "worker", "west"], 7.0),
+                (vec!["a", "api", "east"], 1.0),
             ])
         );
         assert_eq!(
@@ -333,6 +333,79 @@ mod tests {
                 (vec!["b", "worker", "west"], 7.0),
             ])
         );
+    }
+
+    #[test]
+    fn malformed_planned_subquery_fails_loudly_for_instant_and_range() {
+        let engine = engine();
+        let query = "sum(query_time_aggregation_metric)".to_string();
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec![
+                    "instance".to_string(),
+                    "job".to_string(),
+                    "region".to_string(),
+                ]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                query.clone(),
+                "sum(".to_string(),
+                vec![stage(
+                    QueryTimeAggregationOperator::Sum,
+                    QueryTimeGroupingMode::All,
+                    &[],
+                    None,
+                )],
+            )
+            .add_aggregation(AggregationReference::new(1, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        for result in [
+            engine.handle_query_promql(query.clone(), 1_000.0),
+            engine.handle_range_query_promql(query.clone(), 999.0, 1_000.0, 1.0),
+        ] {
+            assert!(matches!(
+                result,
+                Err(crate::QueryExecutionError::Native(message))
+                    if message.contains("configured query-time aggregation anchor does not parse")
+            ));
+        }
+    }
+
+    #[test]
+    fn binary_expression_with_a_query_time_pipeline_falls_back_until_complete_dag_support() {
+        let engine = engine();
+        let arm = format!("sum({ANCHOR})");
+        let query = format!("{arm} + 1");
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec![
+                    "instance".to_string(),
+                    "job".to_string(),
+                    "region".to_string(),
+                ]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                arm,
+                ANCHOR.to_string(),
+                vec![stage(
+                    QueryTimeAggregationOperator::Sum,
+                    QueryTimeGroupingMode::All,
+                    &[],
+                    None,
+                )],
+            )
+            .add_aggregation(AggregationReference::new(1, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        assert!(matches!(
+            engine.handle_query_promql(query, 1_000.0),
+            Ok(None)
+        ));
     }
 
     #[test]
