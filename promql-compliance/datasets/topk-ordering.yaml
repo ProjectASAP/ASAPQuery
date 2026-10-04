@@ -1,0 +1,20 @@
+name: topk-ordering
+series:
+  - metric: ordered_data
+    labels: {job: backend, instance: a}
+    samples: [{offset_seconds: 0, value: 1}, {offset_seconds: 300, value: 1}, {offset_seconds: 600, value: 1}]
+  - metric: ordered_data
+    labels: {job: backend, instance: b}
+    samples: [{offset_seconds: 0, value: 1}, {offset_seconds: 300, value: 1}, {offset_seconds: 600, value: 1}]
+  - metric: ordered_data
+    labels: {job: backend, instance: c}
+    samples: [{offset_seconds: 0, value: 1}, {offset_seconds: 300, value: 1}, {offset_seconds: 600, value: 1}]
+  - metric: ordered_data
+    labels: {job: frontend, instance: a}
+    samples: [{offset_seconds: 0, value: 1}, {offset_seconds: 300, value: 1}, {offset_seconds: 600, value: 1}]
+  - metric: ordered_data
+    labels: {job: frontend, instance: b}
+    samples: [{offset_seconds: 0, value: 1}, {offset_seconds: 300, value: 1}, {offset_seconds: 600, value: 1}]
+  - metric: ordered_data
+    labels: {job: frontend, instance: c}
+    samples: [{offset_seconds: 0, value: 1}, {offset_seconds: 300, value: 1}, {offset_seconds: 600, value: 1}]

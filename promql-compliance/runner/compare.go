@@ -24,7 +24,7 @@ type QueryAPI interface {
 type QueryReport struct {
 	Name            string              `json:"name"`
 	Expr            string              `json:"expr"`
-	Tolerance       ComparisonPolicy    `json:"tolerance"`
+	Comparison      ComparisonPolicy    `json:"comparison"`
 	Range           *ComparisonOutcome  `json:"range,omitempty"`
 	Instant         []InstantComparison `json:"instant,omitempty"`
 	ReferenceParity []ParityComparison  `json:"referenceParity,omitempty"`
@@ -55,12 +55,12 @@ type ParityComparison struct {
 // It compares the two targets and also checks range-at-t against
 // instant-at-t within each target.
 func CompareQuery(ctx context.Context, reference, test QueryAPI, query QueryCase, base time.Time, defaults ComparisonPolicy) (QueryReport, error) {
-	effective := query.EffectiveTolerance(defaults)
+	effective := query.EffectiveComparison(defaults)
 	report := QueryReport{
-		Name:      query.Name,
-		Expr:      query.Expr,
-		Tolerance: effective,
-		Passed:    true,
+		Name:       query.Name,
+		Expr:       query.Expr,
+		Comparison: effective,
+		Passed:     true,
 	}
 
 	var referenceRange, testRange model.Value
@@ -81,7 +81,7 @@ func CompareQuery(ctx context.Context, reference, test QueryAPI, query QueryCase
 	for index, instantTime := range instantTimes {
 		referenceInstant, _, referenceErr := reference.Query(ctx, query.Expr, instantTime)
 		testInstant, _, testErr := test.Query(ctx, query.Expr, instantTime)
-		outcome := responseComparison(referenceInstant, testInstant, referenceErr, testErr, effective)
+		outcome := instantResponseComparison(referenceInstant, testInstant, referenceErr, testErr, effective)
 		report.Instant = append(report.Instant, InstantComparison{
 			OffsetSeconds: query.InstantOffsetsSeconds[index],
 			Time:          instantTime,
@@ -125,6 +125,18 @@ func (q QueryCase) RangeAt(base time.Time) (clientv1.Range, error) {
 }
 
 func responseComparison(reference, test model.Value, referenceErr, testErr error, tolerance ComparisonPolicy) ComparisonOutcome {
+	return responseComparisonWith(reference, test, referenceErr, testErr, func(reference, test model.Value) string {
+		return compareValues(reference, test, tolerance)
+	})
+}
+
+func instantResponseComparison(reference, test model.Value, referenceErr, testErr error, policy ComparisonPolicy) ComparisonOutcome {
+	return responseComparisonWith(reference, test, referenceErr, testErr, func(reference, test model.Value) string {
+		return compareInstantValues(reference, test, policy)
+	})
+}
+
+func responseComparisonWith(reference, test model.Value, referenceErr, testErr error, compare func(model.Value, model.Value) string) ComparisonOutcome {
 	outcome := ComparisonOutcome{}
 	if referenceErr != nil {
 		outcome.ReferenceError = referenceErr.Error()
@@ -136,7 +148,7 @@ func responseComparison(reference, test model.Value, referenceErr, testErr error
 		outcome.Passed = false
 		return outcome
 	}
-	outcome.Diff = compareValues(reference, test, tolerance)
+	outcome.Diff = compare(reference, test)
 	outcome.Passed = outcome.Diff == ""
 	return outcome
 }
@@ -164,6 +176,99 @@ func compareValues(reference, test model.Value, tolerance ComparisonPolicy) stri
 		return fmt.Sprintf("test result cannot be compared: %v", err)
 	}
 	return compareNormalized(referenceNormalized, testNormalized, tolerance)
+}
+
+func compareInstantValues(reference, test model.Value, policy ComparisonPolicy) string {
+	if policy.InstantVectorOrder == nil {
+		return compareValues(reference, test, policy)
+	}
+	referenceVector, referenceIsVector := reference.(model.Vector)
+	testVector, testIsVector := test.(model.Vector)
+	if !referenceIsVector || !testIsVector {
+		return fmt.Sprintf(
+			"instant vector order policy requires vector results, got reference %T and test %T",
+			reference,
+			test,
+		)
+	}
+
+	referenceGroups, err := orderedVectorGroups(referenceVector, policy.InstantVectorOrder.Grouping)
+	if err != nil {
+		return orderedVectorDiff("reference instant vector grouping is invalid: "+err.Error(), referenceVector, testVector)
+	}
+	testGroups, err := orderedVectorGroups(testVector, policy.InstantVectorOrder.Grouping)
+	if err != nil {
+		return orderedVectorDiff("test instant vector grouping is invalid: "+err.Error(), referenceVector, testVector)
+	}
+	if len(referenceGroups) != len(testGroups) {
+		return orderedVectorDiff(fmt.Sprintf("instant vector ordered group count differs: reference %d, test %d", len(referenceGroups), len(testGroups)), referenceVector, testVector)
+	}
+	for key, referenceGroup := range referenceGroups {
+		testGroup, found := testGroups[key]
+		if !found {
+			return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q is absent from test result", key), referenceVector, testVector)
+		}
+		if len(referenceGroup) != len(testGroup) {
+			return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q sample count differs: reference %d, test %d", key, len(referenceGroup), len(testGroup)), referenceVector, testVector)
+		}
+		for index := range referenceGroup {
+			left, right := referenceGroup[index], testGroup[index]
+			if left.Metric != right.Metric || left.Timestamp != right.Timestamp {
+				return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q differs at sample %d", key, index), referenceVector, testVector)
+			}
+			if !equalFloat(left.Value, right.Value, policy.ValueTolerance) {
+				return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q value differs at sample %d", key, index), referenceVector, testVector)
+			}
+		}
+	}
+	return ""
+}
+
+func orderedVectorDiff(reason string, reference, test model.Vector) string {
+	return fmt.Sprintf("%s\nreference: %v\ntest: %v", reason, reference, test)
+}
+
+func orderedVectorGroups(vector model.Vector, grouping *OrderGrouping) (map[string][]normalizedSample, error) {
+	groups := make(map[string][]normalizedSample)
+	var currentKey string
+	hasCurrentGroup := false
+	for _, sample := range vector {
+		key := orderGroupKey(sample.Metric, grouping)
+		if !hasCurrentGroup || key != currentKey {
+			if _, seen := groups[key]; seen {
+				return nil, fmt.Errorf("group %q is not contiguous", key)
+			}
+			groups[key] = []normalizedSample{}
+			currentKey = key
+			hasCurrentGroup = true
+		}
+		groups[key] = append(groups[key], normalizedSample{Metric: metricString(sample.Metric), Timestamp: int64(sample.Timestamp), Value: float64(sample.Value)})
+	}
+	return groups, nil
+}
+
+func orderGroupKey(metric model.Metric, grouping *OrderGrouping) string {
+	if grouping == nil {
+		return ""
+	}
+	labels := make(model.Metric)
+	if grouping.Mode == orderGroupingBy {
+		for _, label := range grouping.Labels {
+			labelName := model.LabelName(label)
+			labels[labelName] = metric[labelName]
+		}
+		return metricString(labels)
+	}
+	excluded := make(map[model.LabelName]struct{}, len(grouping.Labels))
+	for _, label := range grouping.Labels {
+		excluded[model.LabelName(label)] = struct{}{}
+	}
+	for label, value := range metric {
+		if _, skip := excluded[label]; !skip {
+			labels[label] = value
+		}
+	}
+	return metricString(labels)
 }
 
 type normalizedValue struct {

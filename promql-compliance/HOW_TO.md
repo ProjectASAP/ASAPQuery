@@ -154,6 +154,33 @@ queries:
 If tolerance is omitted, values are compared exactly. A tolerance should be
 small and justified; a broad tolerance can hide a correctness bug.
 
+### Require PromQL instant-vector ordering
+
+Vector and matrix comparisons are order-insensitive by default. Opt into the
+PromQL ordering rule for an instant `topk` or `bottomk` response with:
+
+```yaml
+comparison:
+  instant_vector_order:
+    direction: descending
+```
+
+Use `ascending` for `bottomk`. Grouped TopK/BottomK keeps ordering inside a
+bucket but does not impose an order on buckets, so declare the grouping used
+by the query:
+
+```yaml
+comparison:
+  instant_vector_order:
+    direction: descending
+    grouping:
+      mode: by
+      labels: [job]
+```
+
+`mode: without` is also supported. This policy applies only to `/query`
+responses; `/query_range` and range-at-t parity remain order-insensitive.
+
 ## Run with DEBUG logging
 
 The default Compose stack uses `INFO`. Temporarily change the query engine

@@ -144,3 +144,277 @@ func TestCompareValuesHonorsExplicitToleranceOnlyForValues(t *testing.T) {
 		t.Fatal("comparison accepted different labels because values were within tolerance")
 	}
 }
+
+func TestCompareQueryRejectsReorderedInstantVectorWhenOrderIsRequired(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	reference := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 2, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 1, Timestamp: timestamp},
+	}
+	test := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 1, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 2, Timestamp: timestamp},
+	}
+	query := QueryCase{
+		Name:                  "ordered-topk",
+		Expr:                  "topk(2, up)",
+		InstantOffsetsSeconds: []float64{0},
+		Comparison: &ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+			Direction: "descending",
+		}},
+	}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): reference}},
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): test}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if report.Instant[0].Comparison.Passed {
+		t.Fatal("ordered instant comparison accepted reordered samples")
+	}
+}
+
+func TestCompareQueryKeepsDefaultInstantVectorComparisonOrderInsensitive(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	reference := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 2, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 1, Timestamp: timestamp},
+	}
+	test := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 1, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 2, Timestamp: timestamp},
+	}
+	query := QueryCase{Name: "unordered-vector", Expr: "up", InstantOffsetsSeconds: []float64{0}}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): reference}},
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): test}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if !report.Instant[0].Comparison.Passed {
+		t.Fatalf("default instant comparison rejected reordered samples: %#v", report.Instant[0].Comparison)
+	}
+}
+
+func TestCompareQueryRequiresFullLabelOrderForEqualInstantValues(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	reference := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 1, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 1, Timestamp: timestamp},
+	}
+	test := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 1, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 1, Timestamp: timestamp},
+	}
+	query := QueryCase{
+		Name:                  "tied-topk",
+		Expr:                  "topk(2, up)",
+		InstantOffsetsSeconds: []float64{0},
+		Comparison: &ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+			Direction: "descending",
+		}},
+	}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): reference}},
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): test}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if report.Instant[0].Comparison.Passed {
+		t.Fatal("ordered instant comparison accepted reversed equal-value labels")
+	}
+}
+
+func TestCompareQueryAcceptsPrometheusTieOrderAsTheReference(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	prometheusOrder := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 1, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 1, Timestamp: timestamp},
+	}
+	query := QueryCase{
+		Name:                  "tied-topk",
+		Expr:                  "topk(2, up)",
+		InstantOffsetsSeconds: []float64{0},
+		Comparison: &ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+			Direction: instantOrderDescending,
+		}},
+	}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): prometheusOrder}},
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): prometheusOrder}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if !report.Instant[0].Comparison.Passed {
+		t.Fatalf("ordered instant comparison rejected Prometheus's tied sequence: %#v", report.Instant[0].Comparison)
+	}
+}
+
+func TestCompareQueryAllowsGroupedInstantBucketsInAnyOrder(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	frontend := []*model.Sample{
+		{Metric: model.Metric{"job": "frontend", "instance": "a"}, Value: 3, Timestamp: timestamp},
+		{Metric: model.Metric{"job": "frontend", "instance": "b"}, Value: 2, Timestamp: timestamp},
+	}
+	backend := []*model.Sample{
+		{Metric: model.Metric{"job": "backend", "instance": "a"}, Value: 4, Timestamp: timestamp},
+		{Metric: model.Metric{"job": "backend", "instance": "b"}, Value: 1, Timestamp: timestamp},
+	}
+	query := QueryCase{
+		Name:                  "grouped-topk",
+		Expr:                  "topk by (job) (2, up)",
+		InstantOffsetsSeconds: []float64{0},
+		Comparison: &ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+			Direction: "descending",
+			Grouping:  &OrderGrouping{Mode: "by", Labels: []string{"job"}},
+		}},
+	}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): model.Vector(append(frontend, backend...))}},
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): model.Vector(append(backend, frontend...))}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if !report.Instant[0].Comparison.Passed {
+		t.Fatalf("grouped instant comparison rejected reordered buckets: %#v", report.Instant[0].Comparison)
+	}
+}
+
+func TestCompareQueryAllowsWithoutGroupedInstantBucketsInAnyOrder(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	frontend := []*model.Sample{
+		{Metric: model.Metric{"job": "frontend", "instance": "a"}, Value: 3, Timestamp: timestamp},
+		{Metric: model.Metric{"job": "frontend", "instance": "b"}, Value: 2, Timestamp: timestamp},
+	}
+	backend := []*model.Sample{
+		{Metric: model.Metric{"job": "backend", "instance": "a"}, Value: 4, Timestamp: timestamp},
+		{Metric: model.Metric{"job": "backend", "instance": "b"}, Value: 1, Timestamp: timestamp},
+	}
+	query := QueryCase{
+		Name:                  "without-grouped-topk",
+		Expr:                  "topk without (instance) (2, up)",
+		InstantOffsetsSeconds: []float64{0},
+		Comparison: &ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+			Direction: "descending",
+			Grouping:  &OrderGrouping{Mode: "without", Labels: []string{"instance"}},
+		}},
+	}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): model.Vector(append(frontend, backend...))}},
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): model.Vector(append(backend, frontend...))}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if !report.Instant[0].Comparison.Passed {
+		t.Fatalf("without-grouped instant comparison rejected reordered buckets: %#v", report.Instant[0].Comparison)
+	}
+}
+
+func TestCompareQueryAcceptsAscendingInstantVectorOrder(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	ordered := model.Vector{
+		&model.Sample{Metric: model.Metric{"instance": "a"}, Value: 1, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"instance": "b"}, Value: 2, Timestamp: timestamp},
+	}
+	query := QueryCase{
+		Name:                  "ordered-bottomk",
+		Expr:                  "bottomk(2, up)",
+		InstantOffsetsSeconds: []float64{0},
+		Comparison: &ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+			Direction: "ascending",
+		}},
+	}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): ordered}},
+		fakeTarget{instantByMS: map[int64]model.Value{base.UnixMilli(): ordered}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if !report.Instant[0].Comparison.Passed {
+		t.Fatalf("ascending instant comparison failed: %#v", report.Instant[0].Comparison)
+	}
+}
+
+func TestCompareQueryKeepsRangeComparisonsOrderInsensitive(t *testing.T) {
+	base := time.UnixMilli(1_700_000_000_000).UTC()
+	timestamp := model.Time(base.UnixMilli())
+	first := &model.SampleStream{Metric: model.Metric{"instance": "a"}, Values: []model.SamplePair{{Timestamp: timestamp, Value: 2}}}
+	second := &model.SampleStream{Metric: model.Metric{"instance": "b"}, Values: []model.SamplePair{{Timestamp: timestamp, Value: 1}}}
+	query := QueryCase{
+		Name:  "range-topk",
+		Expr:  "topk(2, up)",
+		Range: &RangeSpec{StartOffsetSeconds: 0, EndOffsetSeconds: 60, StepSeconds: 60},
+		Comparison: &ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+			Direction: "descending",
+		}},
+	}
+
+	report, err := CompareQuery(
+		context.Background(),
+		fakeTarget{rangeValue: model.Matrix{first, second}},
+		fakeTarget{rangeValue: model.Matrix{second, first}},
+		query, base, ComparisonPolicy{},
+	)
+	if err != nil {
+		t.Fatalf("CompareQuery: %v", err)
+	}
+	if report.Range == nil || !report.Range.Passed {
+		t.Fatalf("range comparison rejected reordered streams: %#v", report.Range)
+	}
+}
+
+func TestInstantVectorOrderRejectsInvalidResponseShapesAndSequences(t *testing.T) {
+	order := ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{Direction: instantOrderDescending}}
+	if diff := compareInstantValues(&model.Scalar{Value: 1}, model.Vector{}, order); diff == "" {
+		t.Fatal("ordered comparison accepted a non-vector response")
+	}
+
+	timestamp := model.Time(1)
+	grouped := ComparisonPolicy{InstantVectorOrder: &InstantVectorOrder{
+		Direction: instantOrderDescending,
+		Grouping:  &OrderGrouping{Mode: orderGroupingBy, Labels: []string{"job"}},
+	}}
+	nonContiguous := model.Vector{
+		&model.Sample{Metric: model.Metric{"job": "a"}, Value: 3, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"job": "b"}, Value: 2, Timestamp: timestamp},
+		&model.Sample{Metric: model.Metric{"job": "a"}, Value: 1, Timestamp: timestamp},
+	}
+	if diff := compareInstantValues(nonContiguous, nonContiguous, grouped); diff == "" {
+		t.Fatal("ordered comparison accepted non-contiguous grouping buckets")
+	}
+}
