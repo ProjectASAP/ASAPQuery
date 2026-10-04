@@ -353,7 +353,8 @@ Takes the same `ControllerConfig` YAML format as `asap-planner --input_config`; 
 `metrics:` hints are required and must cover every workload metric, since they supply the
 label schema. `--label-set-facts` is a YAML file of externally provided facts — the optimizer
 never estimates them (example: `optimizer-label-set-facts.example.yaml`, for the workload
-`optimizer-workload.example.yaml`):
+`optimizer-workload.example.yaml`; its top-k query needs `--atomic-costs` with a CMS-with-heap
+reference row, otherwise the run fails with that item listed as unservable):
 
 ```yaml
 series:                         # per (metric, spatial_filter)
@@ -378,7 +379,8 @@ containing the exact `profiles[].workload` value from that benchmark artifact.
 The loader validates the document schema and rejects a selector that matches
 zero or multiple profiles; it never mixes entries across workloads. Omit both
 flags and ordinary unbenchmarked candidates use the flat stub, while
-CMS-with-heap candidates warn and are dropped until a matching reference row is available.
+CMS-with-heap candidates warn and are dropped until a matching reference row is available;
+an item left with no candidate makes the run fail, listing every unservable item.
 
 ### Running with real sketch-bench costs
 

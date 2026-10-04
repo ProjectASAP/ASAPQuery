@@ -3,7 +3,9 @@ series:
   - {metric: http_requests_total, spatial_filter: 'env="prod"', series_count: 200}
   - {metric: latency_ms, spatial_filter: "", series_count: 50}
 groups:
-  # sum by (job): output labels [job].
+  # sum by (job): output labels [job]; also the `topk by (job)` buckets.
   - {metric: http_requests_total, spatial_filter: 'env="prod"', grouping_labels: [job], cardinality: 10}
+  # topk keeps every label: output labels are all of them.
+  - {metric: http_requests_total, spatial_filter: 'env="prod"', grouping_labels: [env, instance, job], cardinality: 200}
   # quantile_over_time keeps every label.
   - {metric: latency_ms, spatial_filter: "", grouping_labels: [instance], cardinality: 50}
