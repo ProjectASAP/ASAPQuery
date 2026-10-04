@@ -1,0 +1,35 @@
+name: native-dag-aggregations
+comparison_defaults:
+  value_tolerance:
+    relative: 0.01
+    absolute: 0.000001
+queries:
+  - name: tumbling-sum
+    expr: sum(data)
+    instant_offsets_seconds: [300, 600, 900, 1200]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
+  - name: keyed-count
+    expr: count(data) by (job)
+    instant_offsets_seconds: [300, 600, 900, 1200]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
+  # Regression: native formatting must preserve the grouped label values.
+  - name: grouped-quantile-labels
+    expr: quantile by (job) (0.99, data)
+    instant_offsets_seconds: [300, 600, 900, 1200]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
+  - name: self-keyed-topk
+    expr: topk(2, data)
+    instant_offsets_seconds: [300, 600, 900, 1200]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60

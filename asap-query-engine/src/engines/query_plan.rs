@@ -2,7 +2,9 @@
 
 use crate::engines::simple_engine::{RangeQueryExecutionContext, StoreQueryParams};
 use asap_types::enums::WindowType;
+use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
+use tracing::debug;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NodeId(usize);
@@ -38,10 +40,12 @@ pub(crate) enum QueryPlanNode {
     LimitTopK {
         input: NodeId,
         k: String,
+        grouping_labels: KeyByLabelNames,
     },
     Format {
         input: NodeId,
         include_metric_name: bool,
+        metric: String,
     },
 }
 
@@ -57,7 +61,44 @@ pub(crate) struct PlanOptions {
     pub format_output: bool,
 }
 
+pub(crate) trait QueryPlanRuntime {
+    type Output: Clone;
+    type Error: std::fmt::Display;
+
+    fn execute_node(
+        &self,
+        id: NodeId,
+        node: &QueryPlanNode,
+        inputs: &[Self::Output],
+    ) -> Result<Self::Output, Self::Error>;
+}
+
+#[derive(Debug)]
+pub(crate) enum QueryPlanExecutionError<E> {
+    InvalidPlan(String),
+    Node { id: NodeId, source: E },
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for QueryPlanExecutionError<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidPlan(error) => write!(formatter, "invalid query plan: {error}"),
+            Self::Node { id, source } => {
+                write!(formatter, "Query plan node n{} failed: {source}", id.0)
+            }
+        }
+    }
+}
+
 impl QueryPlan {
+    #[cfg(feature = "native_query_legacy_test_support")]
+    pub(crate) fn malformed_for_test() -> Self {
+        Self {
+            nodes: Vec::new(),
+            root: NodeId(0),
+        }
+    }
+
     pub(crate) fn compile_range(
         context: &RangeQueryExecutionContext,
         options: PlanOptions,
@@ -114,18 +155,90 @@ impl QueryPlan {
                 .ok_or_else(|| "Topk query is missing required `k` parameter".to_string())?;
             k.parse::<usize>()
                 .map_err(|_| "Topk query has an invalid `k` parameter".to_string())?;
-            root = Self::push(&mut nodes, QueryPlanNode::LimitTopK { input: root, k });
+            root = Self::push(
+                &mut nodes,
+                QueryPlanNode::LimitTopK {
+                    input: root,
+                    k,
+                    grouping_labels: context.base.grouping_labels.clone(),
+                },
+            );
         }
         if options.format_output {
             root = Self::push(
                 &mut nodes,
                 QueryPlanNode::Format {
                     input: root,
-                    include_metric_name: context.base.metadata.keep_metric_name,
+                    include_metric_name: context.base.metadata.statistic_to_compute
+                        == Statistic::Topk
+                        && context.base.metadata.keep_metric_name,
+                    metric: context.base.metric.clone(),
                 },
             );
         }
-        Ok(Self { nodes, root })
+        let plan = Self { nodes, root };
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    /// Rejects plans whose node dependencies cannot be executed safely.
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self.nodes.is_empty() {
+            return Err("Query plan has no nodes".to_string());
+        }
+        if self.root.0 != self.nodes.len() - 1 {
+            return Err(format!(
+                "Query plan root n{} does not include every node",
+                self.root.0
+            ));
+        }
+        for (index, node) in self.nodes.iter().enumerate() {
+            for input in node.inputs() {
+                if input.0 >= index {
+                    return Err(format!(
+                        "Query plan node n{index} references unavailable input n{}",
+                        input.0
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn execute<R: QueryPlanRuntime>(
+        &self,
+        runtime: &R,
+    ) -> Result<R::Output, QueryPlanExecutionError<R::Error>> {
+        self.validate()
+            .map_err(QueryPlanExecutionError::InvalidPlan)?;
+        let mut outputs: Vec<R::Output> = Vec::with_capacity(self.nodes.len());
+        for (index, node) in self.nodes.iter().enumerate() {
+            let inputs = node
+                .inputs()
+                .into_iter()
+                .map(|input| outputs[input.0].clone())
+                .collect::<Vec<_>>();
+            debug!(
+                node_id = index,
+                node_kind = node.kind(),
+                input_count = inputs.len(),
+                "Executing native query plan node"
+            );
+            let output = runtime
+                .execute_node(NodeId(index), node, &inputs)
+                .map_err(|source| QueryPlanExecutionError::Node {
+                    id: NodeId(index),
+                    source,
+                })?;
+            debug!(
+                node_id = index,
+                node_kind = node.kind(),
+                "Completed native query plan node"
+            );
+            outputs.push(output);
+        }
+        debug!(root_node_id = self.root.0, "Completed native query plan");
+        Ok(outputs[self.root.0].clone())
     }
 
     fn push(nodes: &mut Vec<QueryPlanNode>, node: QueryPlanNode) -> NodeId {
@@ -194,15 +307,46 @@ impl QueryPlan {
                     kwargs.sort_unstable_by_key(|(key, _)| *key);
                     format!("n{index} Estimate(n{}, {statistic}, {kwargs:?})", input.0)
                 },
-                QueryPlanNode::LimitTopK { input, k } => format!("n{index} LimitTopK(n{}, k={k})", input.0),
-                QueryPlanNode::Format { input, include_metric_name } => format!(
-                    "n{index} Format(n{}, include_metric_name={include_metric_name})", input.0
+                QueryPlanNode::LimitTopK { input, k, .. } => {
+                    format!("n{index} LimitTopK(n{}, k={k})", input.0)
+                }
+                QueryPlanNode::Format { input, include_metric_name, metric } => format!(
+                    "n{index} Format(n{}, include_metric_name={include_metric_name}) metric={metric}", input.0
                 ),
             };
             lines.push(line);
         }
         lines.push(format!("root: n{}", self.root.0));
         lines.join("\n")
+    }
+}
+
+impl QueryPlanNode {
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::StoreRead { .. } => "StoreRead",
+            Self::ComposeWindows { .. } => "ComposeWindows",
+            Self::ResolveKeys { .. } => "ResolveKeys",
+            Self::Estimate { .. } => "Estimate",
+            Self::LimitTopK { .. } => "LimitTopK",
+            Self::Format { .. } => "Format",
+        }
+    }
+
+    fn inputs(&self) -> Vec<NodeId> {
+        match self {
+            Self::StoreRead { .. } => Vec::new(),
+            Self::ComposeWindows { input, .. }
+            | Self::Estimate { input, .. }
+            | Self::LimitTopK { input, .. }
+            | Self::Format { input, .. } => vec![*input],
+            Self::ResolveKeys { values, keys } => {
+                keys.iter().copied().fold(vec![*values], |mut inputs, key| {
+                    inputs.push(key);
+                    inputs
+                })
+            }
+        }
     }
 }
 
@@ -213,6 +357,7 @@ mod tests {
     use crate::engines::simple_engine::{QueryExecutionContext, QueryMetadata, StoreQueryPlan};
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::AggregationType;
+    use std::cell::RefCell;
     use std::collections::HashMap;
 
     fn context() -> RangeQueryExecutionContext {
@@ -346,5 +491,67 @@ mod tests {
         .expect_err("topk plan without k must fail loudly");
 
         assert_eq!(error, "Topk query is missing required `k` parameter");
+    }
+
+    #[test]
+    fn rejects_a_node_that_references_a_later_node() {
+        let plan = QueryPlan {
+            nodes: vec![QueryPlanNode::Estimate {
+                input: NodeId(1),
+                statistic: Statistic::Sum,
+                query_kwargs: HashMap::new(),
+            }],
+            root: NodeId(0),
+        };
+
+        assert_eq!(
+            plan.validate().expect_err("invalid plan must fail loudly"),
+            "Query plan node n0 references unavailable input n1"
+        );
+    }
+
+    struct RecordingRuntime(RefCell<Vec<usize>>);
+
+    impl QueryPlanRuntime for RecordingRuntime {
+        type Output = usize;
+        type Error = std::convert::Infallible;
+
+        fn execute_node(
+            &self,
+            id: NodeId,
+            _node: &QueryPlanNode,
+            inputs: &[Self::Output],
+        ) -> Result<Self::Output, Self::Error> {
+            self.0.borrow_mut().push(id.0);
+            Ok(1 + inputs.iter().sum::<usize>())
+        }
+    }
+
+    #[test]
+    fn executes_nodes_once_in_dependency_order() {
+        let plan = QueryPlan {
+            nodes: vec![
+                QueryPlanNode::StoreRead {
+                    query: StoreQueryParams {
+                        metric: "requests".into(),
+                        aggregation_id: 7,
+                        start_timestamp: 0,
+                        end_timestamp: 1,
+                    },
+                    strategy: StoreReadStrategy::WindowGrid,
+                },
+                QueryPlanNode::ComposeWindows {
+                    input: NodeId(0),
+                    output_timestamps: vec![1],
+                    lookback_ms: 1,
+                    window_size_ms: 1,
+                    bucket_step_ms: 1,
+                },
+            ],
+            root: NodeId(1),
+        };
+        let runtime = RecordingRuntime(RefCell::new(Vec::new()));
+        assert_eq!(plan.execute(&runtime).unwrap(), 2);
+        assert_eq!(*runtime.0.borrow(), vec![0, 1]);
     }
 }

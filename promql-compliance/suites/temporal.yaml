@@ -4,6 +4,20 @@ comparison_defaults:
     relative: 0
     absolute: 0.000001
 queries:
+  - name: sum-over-time
+    expr: sum_over_time(http_requests_total[5m])
+    instant_offsets_seconds: [300, 600, 1200]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
+  - name: sum-over-time-plus-one
+    expr: sum_over_time(http_requests_total[5m]) + 1
+    instant_offsets_seconds: [300, 600, 1200]
+    range:
+      start_offset_seconds: 300
+      end_offset_seconds: 1200
+      step_seconds: 60
   - name: request-rate
     expr: rate(http_requests_total[5m])
     instant_offsets_seconds: [300, 600, 1200]

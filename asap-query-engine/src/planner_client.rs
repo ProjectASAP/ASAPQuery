@@ -14,6 +14,7 @@ pub struct PlannerResult {
     pub punted_queries: Vec<String>,
 }
 
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait PlannerClient: Send + Sync {
     async fn plan(&self, config: ControllerConfig) -> Result<PlannerResult>;

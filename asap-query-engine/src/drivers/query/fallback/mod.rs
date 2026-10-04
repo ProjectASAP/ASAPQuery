@@ -37,6 +37,7 @@ impl IntoResponse for FallbackResponse {
 }
 
 /// Client for forwarding unsupported queries to a fallback backend
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait FallbackClient: Send + Sync {
     /// Execute a query against the fallback backend

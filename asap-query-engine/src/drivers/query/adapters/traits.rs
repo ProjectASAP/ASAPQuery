@@ -60,6 +60,7 @@ impl std::error::Error for AdapterError {}
 
 /// Trait for parsing incoming HTTP requests into internal query format
 /// Handles Axum extractors directly for different request types (GET/POST)
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait QueryRequestAdapter: Send + Sync {
     /// Parse a GET request with query parameters
@@ -106,6 +107,7 @@ pub trait QueryRequestAdapter: Send + Sync {
 }
 
 /// Trait for formatting query results into protocol-specific HTTP responses
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait QueryResponseAdapter: Send + Sync {
     /// Format a successful query result into protocol response
@@ -135,6 +137,7 @@ pub trait QueryResponseAdapter: Send + Sync {
 /// define separate adapter traits.
 ///
 /// Note: Fallback logic is handled separately via FallbackClient
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait HttpProtocolAdapter: QueryRequestAdapter + QueryResponseAdapter + Send + Sync {
     /// Get a descriptive name for this adapter (for logging/debugging)
