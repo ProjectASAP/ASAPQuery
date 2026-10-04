@@ -174,6 +174,19 @@ impl QueryPlan {
                 },
             );
         }
+        let materialize_metric_name = !query_time_aggregations.is_empty()
+            && context.base.metadata.statistic_to_compute == Statistic::Topk
+            && context.base.metadata.keep_metric_name;
+        if materialize_metric_name {
+            root = Self::push(
+                &mut nodes,
+                QueryPlanNode::Format {
+                    input: root,
+                    include_metric_name: true,
+                    metric: context.base.metric.clone(),
+                },
+            );
+        }
         let mut labels = context.base.metadata.query_output_labels.clone();
         for aggregation in query_time_aggregations {
             root = Self::push(
@@ -186,7 +199,7 @@ impl QueryPlan {
             );
             labels = output_labels_for_aggregation(&labels, aggregation)?;
         }
-        if options.format_output {
+        if options.format_output && !materialize_metric_name {
             root = Self::push(
                 &mut nodes,
                 QueryPlanNode::Format {

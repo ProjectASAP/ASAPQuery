@@ -10,7 +10,7 @@ use super::{
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
-use crate::engines::query_time_aggregation::apply_instant_pipeline;
+use crate::engines::query_time_aggregation::{apply_instant_pipeline, pipeline_supports_labels};
 use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
@@ -1142,14 +1142,25 @@ impl SimpleEngine {
                 ) else {
                     return Ok(None);
                 };
+                let anchor_metric = context.metric.clone();
                 let Some((anchor_labels, anchor_result)) =
                     self.execute_context_result(context, true, false)?
                 else {
                     return Ok(None);
                 };
-                let QueryResult::Vector(anchor_values) = anchor_result else {
+                if !pipeline_supports_labels(&anchor_labels, &config.query_time_aggregations)
+                    .map_err(QueryExecutionError::Native)?
+                {
+                    return Ok(None);
+                }
+                let QueryResult::Vector(mut anchor_values) = anchor_result else {
                     return Ok(None);
                 };
+                if anchor_labels.labels.first().map(String::as_str) == Some(METRIC_NAME_LABEL) {
+                    for value in &mut anchor_values.values {
+                        Self::prepend_metric_name(&anchor_metric, &mut value.labels);
+                    }
+                }
                 let (labels, values) = apply_instant_pipeline(
                     anchor_labels,
                     anchor_values.values,
@@ -1448,6 +1459,14 @@ impl SimpleEngine {
                 else {
                     return Ok(None);
                 };
+                if !pipeline_supports_labels(
+                    &context.base.metadata.query_output_labels,
+                    &config.query_time_aggregations,
+                )
+                .map_err(QueryExecutionError::Native)?
+                {
+                    return Ok(None);
+                }
                 let Some(output) =
                     Self::map_local_execution_outcome(self.execute_observed_range_query_pipeline(
                         &context,

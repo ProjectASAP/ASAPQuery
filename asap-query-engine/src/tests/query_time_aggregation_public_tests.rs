@@ -293,22 +293,36 @@ mod tests {
     }
 
     #[test]
-    fn grouping_by_a_missing_label_uses_prometheus_empty_label_value() {
+    fn grouping_by_a_missing_label_falls_back_to_prometheus() {
         let engine = engine();
-
-        assert_eq!(
-            execute(
-                &engine,
-                format!("sum by (missing) ({ANCHOR})"),
-                stage(
+        let query = format!("sum by (missing) ({ANCHOR})");
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec![
+                    "instance".to_string(),
+                    "job".to_string(),
+                    "region".to_string(),
+                ]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                query.clone(),
+                ANCHOR.to_string(),
+                vec![stage(
                     QueryTimeAggregationOperator::Sum,
                     QueryTimeGroupingMode::By,
                     &["missing"],
                     None,
-                ),
-            ),
-            expected(vec![(vec![""], 16.0)])
-        );
+                )],
+            )
+            .add_aggregation(AggregationReference::new(1, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        assert!(matches!(
+            engine.handle_query_promql(query, 1_000.0),
+            Ok(None)
+        ));
     }
 
     #[test]
@@ -404,6 +418,53 @@ mod tests {
 
         assert!(matches!(
             engine.handle_query_promql(query, 1_000.0),
+            Ok(None)
+        ));
+    }
+
+    #[test]
+    fn pipeline_falls_back_when_a_later_by_stage_uses_a_removed_label() {
+        let engine = engine();
+        let query = format!("max by (instance) (sum by (job) ({ANCHOR}))");
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec![
+                    "instance".to_string(),
+                    "job".to_string(),
+                    "region".to_string(),
+                ]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                query.clone(),
+                ANCHOR.to_string(),
+                vec![
+                    stage(
+                        QueryTimeAggregationOperator::Sum,
+                        QueryTimeGroupingMode::By,
+                        &["job"],
+                        None,
+                    ),
+                    stage(
+                        QueryTimeAggregationOperator::Max,
+                        QueryTimeGroupingMode::By,
+                        &["instance"],
+                        None,
+                    ),
+                ],
+            )
+            .add_aggregation(AggregationReference::new(1, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        // Prometheus omits an absent grouping label; this native representation
+        // cannot distinguish it from an explicitly empty value.
+        assert!(matches!(
+            engine.handle_query_promql(query.clone(), 1_000.0),
+            Ok(None)
+        ));
+        assert!(matches!(
+            engine.handle_range_query_promql(query, 999.0, 1_000.0, 1.0),
             Ok(None)
         ));
     }

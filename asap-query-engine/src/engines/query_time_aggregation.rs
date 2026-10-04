@@ -32,6 +32,27 @@ pub(crate) fn output_labels_for_aggregation(
     Ok(KeyByLabelNames::new(labels))
 }
 
+pub(crate) fn pipeline_supports_labels(
+    input_labels: &KeyByLabelNames,
+    pipeline: &[QueryTimeAggregation],
+) -> Result<bool, String> {
+    let mut labels = input_labels.clone();
+    for aggregation in pipeline {
+        if !matches!(aggregation.operator, QueryTimeAggregationOperator::Topk)
+            && matches!(aggregation.grouping.mode, QueryTimeGroupingMode::By)
+            && aggregation
+                .grouping
+                .labels
+                .iter()
+                .any(|label| !labels.labels.contains(label))
+        {
+            return Ok(false);
+        }
+        labels = output_labels_for_aggregation(&labels, aggregation)?;
+    }
+    Ok(true)
+}
+
 fn label_indices(
     input_labels: &KeyByLabelNames,
     output_labels: &KeyByLabelNames,
