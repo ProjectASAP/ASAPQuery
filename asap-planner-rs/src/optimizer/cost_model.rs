@@ -1,11 +1,11 @@
 use asap_types::enums::WindowType;
-use promql_utilities::query_logics::enums::AggregationType;
+use promql_utilities::query_logics::enums::{AggregationType, Statistic};
 
 use super::candidate_gen::CandidateConfig;
 use super::constants::{
-    EXACT_QUERY_CPU_SECS, INGEST_CPU_WEIGHT, INGEST_MEM_WEIGHT, INSERT_CPU_SECS,
-    MEM_BYTES_PER_INSTANCE, MERGE_CPU_SECS, QUERY_CPU_SECS, QUERY_CPU_WEIGHT, QUERY_MEM_WEIGHT,
-    SUBPOPULATION_COUNT, SUBTRACT_CPU_SECS,
+    EXACT_QUERY_CPU_SECS, HASH_TABLE_SLACK, INGEST_CPU_WEIGHT, INGEST_MEM_WEIGHT, INSERT_CPU_SECS,
+    LABEL_VALUE_CODE_BYTES, MEM_BYTES_PER_INSTANCE, MERGE_CPU_SECS, QUERY_CPU_SECS,
+    QUERY_CPU_WEIGHT, QUERY_MEM_WEIGHT, SUBTRACT_CPU_SECS,
 };
 use super::sketch_properties::sketch_properties;
 use super::solution::{QueryMethod, AQE};
@@ -14,6 +14,7 @@ use super::solution::{QueryMethod, AQE};
 /// values come from sketch-bench in Phase 3 (see implementation plan, 3c).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtomicCosts {
+    /// One instance; for a keyed-unbounded map, one group's entry.
     pub mem_bytes_per_instance: f64,
     pub insert_cpu_secs: f64,
     pub merge_cpu_secs: f64,
@@ -76,7 +77,7 @@ pub fn ingest_cost(
         return 0.0; // EXACT: no streaming config deployed.
     };
 
-    let subpopulation_count = effective_subpopulation_count(candidate, agg_config.aggregation_type);
+    let units = stored_units(candidate, agg_config.aggregation_type);
 
     // Defensive floor: slide_interval_ms is a plain u64 on a widely-shared struct;
     // guard against div-by-zero producing `inf` and poisoning cost comparisons.
@@ -87,19 +88,38 @@ pub fn ingest_cost(
         }
     };
 
-    let mem_active = n_concurrent * subpopulation_count * costs.mem_bytes_per_instance;
+    let mem_active = n_concurrent * units * costs.mem_bytes_per_instance;
 
     let cpu_ingest = match agg_config.window_type {
         WindowType::Tumbling => arrival_rate_hz * costs.insert_cpu_secs,
         WindowType::Sliding => arrival_rate_hz * n_concurrent * costs.insert_cpu_secs,
     };
 
-    weights.ingest_mem * mem_active + weights.ingest_cpu * cpu_ingest
+    weights.ingest_mem * mem_active
+        + weights.ingest_cpu * cpu_ingest
+        + key_tracker_ingest_cost(candidate, arrival_rate_hz, weights)
+}
+
+/// Ingest cost of the paired key aggregation, if any: one key entry per
+/// output group in its single tumbling pane, one insert per item.
+// ponytail: stub insert CPU and analytical key bytes; use sketch-bench numbers once DeltaSet is measured.
+fn key_tracker_ingest_cost(
+    candidate: &CandidateConfig,
+    arrival_rate_hz: f64,
+    weights: &CostWeights,
+) -> f64 {
+    let Some(key_config) = &candidate.key_config else {
+        return 0.0;
+    };
+    let n_labels = key_config.grouping_labels.len() + key_config.aggregated_labels.len();
+    let entry_bytes = n_labels as f64 * LABEL_VALUE_CODE_BYTES * HASH_TABLE_SLACK;
+    weights.ingest_mem * candidate.output_group_count as f64 * entry_bytes
+        + weights.ingest_cpu * arrival_rate_hz * INSERT_CPU_SECS
 }
 
 /// QueryCost(a,g): cost of answering one query for `aqe` from `candidate`.
 pub fn query_cost(
-    _aqe: &AQE,
+    aqe: &AQE,
     candidate: &CandidateConfig,
     costs: &AtomicCosts,
     weights: &CostWeights,
@@ -108,29 +128,25 @@ pub fn query_cost(
         return costs.exact_query_cpu_secs * weights.query_cpu; // EXACT: raw query at query time.
     };
 
-    // Subpopulation count; see ingest_cost comment.
-    let subpopulation_count = effective_subpopulation_count(candidate, agg_config.aggregation_type);
+    let units = stored_units(candidate, agg_config.aggregation_type);
     let props = sketch_properties(agg_config.aggregation_type);
+    let read_cpu = reads_per_query(aqe, candidate) * costs.query_cpu_secs;
 
     let (cpu, mem) = match &candidate.query_method {
-        QueryMethod::Direct => (
-            subpopulation_count * costs.query_cpu_secs,
-            subpopulation_count * costs.mem_bytes_per_instance,
-        ),
+        QueryMethod::Direct => (read_cpu, units * costs.mem_bytes_per_instance),
         QueryMethod::Merge { num_windows } => {
             debug_assert!(props.mergeable);
             let merges = (*num_windows).saturating_sub(1) as f64;
             (
-                subpopulation_count * (merges * costs.merge_cpu_secs + costs.query_cpu_secs),
-                *num_windows as f64 * subpopulation_count * costs.mem_bytes_per_instance,
+                units * merges * costs.merge_cpu_secs + read_cpu,
+                *num_windows as f64 * units * costs.mem_bytes_per_instance,
             )
         }
         QueryMethod::Subtract => {
             debug_assert!(props.subtractable);
             (
-                subpopulation_count
-                    * (costs.merge_cpu_secs + costs.subtract_cpu_secs + costs.query_cpu_secs),
-                2.0 * subpopulation_count * costs.mem_bytes_per_instance,
+                units * (costs.merge_cpu_secs + costs.subtract_cpu_secs) + read_cpu,
+                2.0 * units * costs.mem_bytes_per_instance,
             )
         }
         // candidate_gen only ever pairs Exact with config=None, already handled above.
@@ -142,18 +158,28 @@ pub fn query_cost(
     weights.query_cpu * cpu + weights.query_mem * mem
 }
 
-fn effective_subpopulation_count(
-    candidate: &CandidateConfig,
-    aggregation_type: AggregationType,
-) -> f64 {
-    if sketch_properties(aggregation_type).subpopulation_aware {
-        SUBPOPULATION_COUNT
+/// Units of `mem_bytes_per_instance` held per window; also scales
+/// whole-structure merge/subtract work. A keyed map stores one entry per
+/// output group; anything else stores fixed-size instances.
+fn stored_units(candidate: &CandidateConfig, aggregation_type: AggregationType) -> f64 {
+    assert!(
+        candidate.instance_count > 0 && candidate.output_group_count > 0,
+        "candidates require positive group counts"
+    );
+    if sketch_properties(aggregation_type).memory_grows_with_keys {
+        candidate.output_group_count as f64
     } else {
-        assert!(
-            candidate.label_group_count > 0,
-            "non-subpopulation-aware candidates require a positive label_group_count"
-        );
-        candidate.label_group_count as f64
+        candidate.instance_count as f64
+    }
+}
+
+/// `query_cpu_secs` operations per query: one per output group, except
+/// top-k, which reads each heap once (its query cost already covers the heap).
+fn reads_per_query(aqe: &AQE, candidate: &CandidateConfig) -> f64 {
+    if aqe.requirements.statistics == [Statistic::Topk] {
+        candidate.instance_count as f64
+    } else {
+        candidate.output_group_count as f64
     }
 }
 
@@ -174,10 +200,10 @@ pub fn total_cost_rate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizer::candidate_gen::enumerate_candidates;
+    use crate::optimizer::candidate_gen::{enumerate_candidates, enumerate_candidates_with_facts};
+    use crate::optimizer::label_set_facts::ItemFacts;
     use asap_types::query_requirements::QueryRequirements;
     use promql_utilities::data_model::KeyByLabelNames;
-    use promql_utilities::query_logics::enums::Statistic;
 
     fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> AQE {
         AQE {
@@ -203,7 +229,9 @@ mod tests {
             config: None,
             query_method: QueryMethod::Exact,
             n_windows: 0,
-            label_group_count: 1,
+            instance_count: 1,
+            output_group_count: 1,
+            key_config: None,
         };
         let costs = AtomicCosts::default();
         let weights = CostWeights::default();
@@ -229,13 +257,17 @@ mod tests {
             config: Some(template.clone()),
             query_method: QueryMethod::Merge { num_windows: 2 },
             n_windows: 2,
-            label_group_count: 1,
+            instance_count: 1,
+            output_group_count: 1,
+            key_config: None,
         };
         let c5 = CandidateConfig {
             config: Some(template),
             query_method: QueryMethod::Merge { num_windows: 5 },
             n_windows: 5,
-            label_group_count: 1,
+            instance_count: 1,
+            output_group_count: 1,
+            key_config: None,
         };
 
         assert_eq!(
@@ -262,13 +294,17 @@ mod tests {
             config: Some(template.clone()),
             query_method: QueryMethod::Merge { num_windows: 5 },
             n_windows: 5,
-            label_group_count: 1,
+            instance_count: 1,
+            output_group_count: 1,
+            key_config: None,
         };
         let subtract = CandidateConfig {
             config: Some(template),
             query_method: QueryMethod::Subtract,
             n_windows: 5,
-            label_group_count: 1,
+            instance_count: 1,
+            output_group_count: 1,
+            key_config: None,
         };
 
         assert!(
@@ -276,72 +312,115 @@ mod tests {
         );
     }
 
-    #[test]
-    fn non_subpopulation_aware_cost_scales_with_label_group_count() {
-        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
-        let candidate = enumerate_candidates(&a, 60_000)
+    /// The Direct-method `agg_type` candidate for a `stat` AQE grouped by
+    /// `svc` (and bucketed by it for top-k), with `groups` output groups.
+    fn direct_candidate(
+        stat: Statistic,
+        agg_type: AggregationType,
+        groups: u64,
+    ) -> (AQE, CandidateConfig) {
+        let mut a = make_aqe(stat, 300_000, 300_000);
+        a.requirements.grouping_labels = KeyByLabelNames::new(vec!["svc".into()]);
+        let facts = ItemFacts {
+            output_group_count: groups,
+            topk_by_group_count: None,
+            arrival_rate_per_sec: 1.0,
+        };
+        let candidate = enumerate_candidates_with_facts(&a, 60_000, &facts)
             .into_iter()
-            .find(|candidate| {
-                candidate.config.as_ref().is_some_and(|config| {
-                    !sketch_properties(config.aggregation_type).subpopulation_aware
-                })
+            .find(|c| {
+                c.query_method == QueryMethod::Direct
+                    && c.config
+                        .as_ref()
+                        .is_some_and(|cfg| cfg.aggregation_type == agg_type)
             })
-            .expect("expected a non-subpopulation-aware candidate");
-        let one_group = CandidateConfig {
-            label_group_count: 1,
-            ..candidate.clone()
-        };
-        let five_groups = CandidateConfig {
-            label_group_count: 5,
-            ..candidate
-        };
-        let costs = AtomicCosts::default();
-        let weights = CostWeights {
-            ingest_mem: 1.0,
-            ingest_cpu: 0.0,
-            query_mem: 1.0,
-            query_cpu: 0.0,
-        };
+            .unwrap_or_else(|| panic!("expected a Direct {agg_type:?} candidate"));
+        (a, candidate)
+    }
 
-        assert_eq!(
-            ingest_cost(&five_groups, 1.0, &costs, &weights),
-            5.0 * ingest_cost(&one_group, 1.0, &costs, &weights)
+    const MEM_ONLY: CostWeights = CostWeights {
+        ingest_mem: 1.0,
+        ingest_cpu: 0.0,
+        query_mem: 1.0,
+        query_cpu: 0.0,
+    };
+    const QUERY_CPU_ONLY: CostWeights = CostWeights {
+        ingest_mem: 0.0,
+        ingest_cpu: 0.0,
+        query_mem: 0.0,
+        query_cpu: 1.0,
+    };
+
+    #[test]
+    fn per_group_and_keyed_map_costs_scale_with_output_groups() {
+        // KLL: one instance per group. MultipleSum: one map, one entry per group.
+        let costs = AtomicCosts::default();
+        for (stat, agg_type) in [
+            (Statistic::Quantile, AggregationType::DatasketchesKLL),
+            (Statistic::Sum, AggregationType::MultipleSum),
+        ] {
+            let (a, one) = direct_candidate(stat, agg_type, 1);
+            let (_, five) = direct_candidate(stat, agg_type, 5);
+            assert_eq!(
+                ingest_cost(&five, 1.0, &costs, &MEM_ONLY),
+                5.0 * ingest_cost(&one, 1.0, &costs, &MEM_ONLY),
+                "{agg_type:?} ingest memory"
+            );
+            for weights in [MEM_ONLY, QUERY_CPU_ONLY] {
+                assert_eq!(
+                    query_cost(&a, &five, &costs, &weights),
+                    5.0 * query_cost(&a, &one, &costs, &weights),
+                    "{agg_type:?} query cost"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fixed_size_keyed_sketch_memory_ignores_groups_but_query_reads_each() {
+        let costs = AtomicCosts::default();
+        let (a, one) = direct_candidate(Statistic::Sum, AggregationType::CountMinSketch, 1);
+        let (_, five) = direct_candidate(Statistic::Sum, AggregationType::CountMinSketch, 5);
+        // Only the paired key tracker grows: one 1-label entry per extra group.
+        let key_entry_bytes = LABEL_VALUE_CODE_BYTES * HASH_TABLE_SLACK;
+        assert!(
+            (ingest_cost(&five, 1.0, &costs, &MEM_ONLY)
+                - ingest_cost(&one, 1.0, &costs, &MEM_ONLY)
+                - 4.0 * key_entry_bytes)
+                .abs()
+                < 1e-9
         );
         assert_eq!(
-            query_cost(&a, &five_groups, &costs, &weights),
-            5.0 * query_cost(&a, &one_group, &costs, &weights)
+            query_cost(&a, &one, &costs, &MEM_ONLY),
+            query_cost(&a, &five, &costs, &MEM_ONLY)
+        );
+        assert_eq!(
+            query_cost(&a, &five, &costs, &QUERY_CPU_ONLY),
+            5.0 * query_cost(&a, &one, &costs, &QUERY_CPU_ONLY)
         );
     }
 
     #[test]
-    fn subpopulation_aware_cost_ignores_label_group_count() {
-        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
-        let candidate = enumerate_candidates(&a, 60_000)
-            .into_iter()
-            .find(|candidate| {
-                candidate.config.as_ref().is_some_and(|config| {
-                    sketch_properties(config.aggregation_type).subpopulation_aware
-                })
-            })
-            .expect("expected a subpopulation-aware candidate");
-        let one_group = CandidateConfig {
-            label_group_count: 1,
-            ..candidate.clone()
-        };
-        let five_groups = CandidateConfig {
-            label_group_count: 5,
-            ..candidate
-        };
+    fn topk_reads_each_heap_once_regardless_of_output_groups() {
         let costs = AtomicCosts::default();
-        let weights = CostWeights::default();
-
+        let mut a = make_aqe(Statistic::Topk, 60_000, 60_000);
+        a.requirements.grouping_labels = KeyByLabelNames::new(vec!["svc".into()]);
+        let heap = |groups| {
+            let facts = ItemFacts {
+                output_group_count: groups,
+                topk_by_group_count: None,
+                arrival_rate_per_sec: 1.0,
+            };
+            enumerate_candidates_with_facts(&a, 15_000, &facts)
+                .into_iter()
+                .find(|c| c.config.is_some())
+                .expect("a CMS-with-heap candidate")
+        };
+        let (few, many) = (heap(1), heap(1000));
+        assert_eq!(many.instance_count, 1);
         assert_eq!(
-            ingest_cost(&one_group, 1.0, &costs, &weights),
-            ingest_cost(&five_groups, 1.0, &costs, &weights)
-        );
-        assert_eq!(
-            query_cost(&a, &one_group, &costs, &weights),
-            query_cost(&a, &five_groups, &costs, &weights)
+            query_cost(&a, &few, &costs, &QUERY_CPU_ONLY),
+            query_cost(&a, &many, &costs, &QUERY_CPU_ONLY)
         );
     }
 }

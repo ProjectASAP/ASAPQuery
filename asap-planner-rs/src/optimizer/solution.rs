@@ -69,6 +69,10 @@ pub struct AQEAssignment {
     /// `None` means the EXACT_a fallback (no streaming config, raw query).
     pub aggregation_id: Option<u64>,
 
+    /// ID of the paired key aggregation, for value sketches that can't list
+    /// their own keys.
+    pub key_aggregation_id: Option<u64>,
+
     /// How this AQE's answer is derived from the assigned config.
     pub query_method: QueryMethod,
 
@@ -143,6 +147,7 @@ impl OptimizerSolution {
             .map(|aqe| AQEAssignment {
                 aqe,
                 aggregation_id: None,
+                key_aggregation_id: None,
                 query_method: QueryMethod::Exact,
                 estimated_query_cost_per_sec: 0.0,
             })

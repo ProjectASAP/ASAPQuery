@@ -103,11 +103,13 @@ impl std::fmt::Display for LabelSetKey {
     }
 }
 
-/// Facts for one item's label set, ready for costing.
+/// Facts for one AQE, ready for costing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ItemFacts {
-    /// Distinct grouping-label value combinations.
-    pub cardinality: u64,
+    /// Distinct value combinations of the AQE's output (grouping) labels.
+    pub output_group_count: u64,
+    /// Distinct values of the `topk by` labels; `Some` iff the AQE has them.
+    pub topk_by_group_count: Option<u64>,
     /// Aggregate items/sec into the grouped stream, across all groups.
     pub arrival_rate_per_sec: f64,
 }
@@ -208,9 +210,10 @@ impl LabelSetFacts {
         })
     }
 
-    /// Look up facts for every AQE's label set. Errors list every missing key
-    /// at once; facts no AQE uses are only warned about, so one file can serve
-    /// several workloads.
+    /// Look up facts for every AQE, index-aligned with `aqes`. An AQE needs its
+    /// series row, its output label set's group row, and for `topk by (L)` a
+    /// group row for `L`. Errors list every missing key at once; facts no AQE
+    /// uses are only warned about, so one file can serve several workloads.
     ///
     /// Arrival rate assumes each series yields one sample per scrape:
     /// `series_count / scrape interval`.
@@ -219,31 +222,48 @@ impl LabelSetFacts {
         &self,
         aqes: &[AQE],
         scrape_interval_ms: u64,
-    ) -> Result<HashMap<LabelSetKey, ItemFacts>, LabelSetFactsError> {
-        let mut resolved = HashMap::new();
+    ) -> Result<Vec<ItemFacts>, LabelSetFactsError> {
+        let mut used_series = HashSet::new();
+        let mut used_groups = HashSet::new();
         let mut missing = Vec::new();
-        for aqe in aqes {
-            let key = LabelSetKey::from_requirements(&aqe.requirements);
-            if resolved.contains_key(&key) {
-                continue;
-            }
-            let series_count = self.series_counts.get(&key.series_key());
-            let cardinality = self.cardinalities.get(&key);
-            if series_count.is_none() {
-                missing.push(format!("series: {}", key.series_key()));
-            }
-            if cardinality.is_none() {
+        let mut lookup_group = |key: LabelSetKey, missing: &mut Vec<String>| {
+            let found = self.cardinalities.get(&key).copied();
+            if found.is_none() {
                 missing.push(format!("groups: {key}"));
             }
-            if let (Some(&series_count), Some(&cardinality)) = (series_count, cardinality) {
-                let arrival_rate_per_sec = series_count as f64 * 1000.0 / scrape_interval_ms as f64;
-                resolved.insert(
-                    key,
-                    ItemFacts {
-                        cardinality,
-                        arrival_rate_per_sec,
+            used_groups.insert(key);
+            found
+        };
+
+        let mut resolved = Vec::with_capacity(aqes.len());
+        for aqe in aqes {
+            let key = LabelSetKey::from_requirements(&aqe.requirements);
+            let series_key = key.series_key();
+            let series_count = self.series_counts.get(&series_key).copied();
+            if series_count.is_none() {
+                missing.push(format!("series: {series_key}"));
+            }
+            used_series.insert(series_key);
+
+            let topk_by_group_count = aqe.requirements.topk_by_labels.as_ref().map(|labels| {
+                lookup_group(
+                    LabelSetKey {
+                        grouping_labels: labels.clone(),
+                        ..key.clone()
                     },
-                );
+                    &mut missing,
+                )
+            });
+            let output_group_count = lookup_group(key, &mut missing);
+
+            if let (Some(series_count), Some(output_group_count)) =
+                (series_count, output_group_count)
+            {
+                resolved.push(ItemFacts {
+                    output_group_count,
+                    topk_by_group_count: topk_by_group_count.flatten(),
+                    arrival_rate_per_sec: series_count as f64 * 1000.0 / scrape_interval_ms as f64,
+                });
             }
         }
         if !missing.is_empty() {
@@ -252,15 +272,13 @@ impl LabelSetFacts {
             return Err(LabelSetFactsError::MissingFacts(missing));
         }
 
-        let used_series: HashSet<SeriesKey> =
-            resolved.keys().map(LabelSetKey::series_key).collect();
         for key in self.series_counts.keys() {
             if !used_series.contains(key) {
                 tracing::warn!(%key, "series facts match no workload item");
             }
         }
         for key in self.cardinalities.keys() {
-            if !resolved.contains_key(key) {
+            if !used_groups.contains(key) {
                 tracing::warn!(%key, "group facts match no workload item");
             }
         }
@@ -317,10 +335,41 @@ groups:
             r#"job="api",env="prod""#,
             &["endpoint", "service"],
         );
-        let resolved = facts.resolve(std::slice::from_ref(&item), 15_000).unwrap();
-        let got = resolved[&LabelSetKey::from_requirements(&item.requirements)];
-        assert_eq!(got.cardinality, 50);
+        let got = facts.resolve(&[item], 15_000).unwrap()[0];
+        assert_eq!(got.output_group_count, 50);
+        assert_eq!(got.topk_by_group_count, None);
         assert!((got.arrival_rate_per_sec - 1000.0 / 15.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn topk_by_items_also_resolve_the_by_label_set() {
+        let facts = LabelSetFacts::from_yaml(FACTS).unwrap();
+        let mut item = aqe(
+            "http_requests_total",
+            r#"job="api",env="prod""#,
+            &["endpoint", "service"],
+        );
+        item.requirements.topk_by_labels = Some(KeyByLabelNames::new(vec!["service".into()]));
+
+        // No [service] group row yet: must be reported, not defaulted.
+        let err = facts
+            .resolve(std::slice::from_ref(&item), 15_000)
+            .unwrap_err();
+        let LabelSetFactsError::MissingFacts(missing) = err else {
+            panic!("expected MissingFacts, got {err:?}");
+        };
+        assert_eq!(missing.len(), 1, "{missing:?}");
+        assert!(missing[0].contains(r#"grouping_labels=["service"]"#));
+
+        let with_by = format!(
+            "{FACTS}  - {{metric: http_requests_total, spatial_filter: 'job=\"api\",env=\"prod\"', grouping_labels: [service], cardinality: 5}}\n"
+        );
+        let got = LabelSetFacts::from_yaml(&with_by)
+            .unwrap()
+            .resolve(&[item], 15_000)
+            .unwrap()[0];
+        assert_eq!(got.output_group_count, 50);
+        assert_eq!(got.topk_by_group_count, Some(5));
     }
 
     #[test]

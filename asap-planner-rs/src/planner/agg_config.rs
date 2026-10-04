@@ -8,6 +8,15 @@ use std::collections::HashMap;
 use crate::planner::labels::set_subpopulation_labels;
 use crate::planner::window::IntermediateWindowConfig;
 
+/// Value aggregations that can't list their own keys, so the engine needs a
+/// paired DeltaSetAggregator to enumerate groups at query time.
+pub fn needs_key_aggregation(agg_type: AggregationType) -> bool {
+    matches!(
+        agg_type,
+        AggregationType::CountMinSketch | AggregationType::HydraKLL
+    )
+}
+
 /// Internal representation of an aggregation config before IDs are assigned
 #[derive(Debug, Clone)]
 pub struct IntermediateAggConfig {
@@ -105,10 +114,7 @@ pub fn build_agg_configs_for_statistics(
             &mut aggregated,
         );
 
-        if matches!(
-            agg_type,
-            AggregationType::CountMinSketch | AggregationType::HydraKLL
-        ) {
+        if needs_key_aggregation(agg_type) {
             let delta_params = get_params(AggregationType::DeltaSetAggregator, "")?;
             configs.push(IntermediateAggConfig {
                 aggregation_type: AggregationType::DeltaSetAggregator,

@@ -80,7 +80,11 @@ fn main() -> anyhow::Result<()> {
         println!("  queries: {:?}", aqe.query_strings);
 
         let candidates = enumerate_candidates(aqe, args.scrape_interval_ms);
-        print_candidates_grouped(&candidates, &atomic_cost_table);
+        print_candidates_grouped(
+            &candidates,
+            &atomic_cost_table,
+            aqe.requirements.grouping_labels.len(),
+        );
     }
 
     Ok(())
@@ -93,7 +97,11 @@ fn main() -> anyhow::Result<()> {
 ///     params (M)  [× N windows = NM total]:
 ///       ...
 /// EXACT is printed last as a single line.
-fn print_candidates_grouped(candidates: &[CandidateConfig], atomic_cost_table: &AtomicCostTable) {
+fn print_candidates_grouped(
+    candidates: &[CandidateConfig],
+    atomic_cost_table: &AtomicCostTable,
+    n_grouping_labels: usize,
+) {
     // Collect unique (agg_type_str, sub_type) keys in first-seen order.
     let mut group_order: Vec<(String, String)> = Vec::new();
     // (agg_type_str, sub_type) -> (agg_type, unique windows, unique params)
@@ -197,10 +205,18 @@ fn print_candidates_grouped(candidates: &[CandidateConfig], atomic_cost_table: &
             } else {
                 let param_map: HashMap<String, Value> =
                     p.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-                match resolve_atomic_costs(atomic_cost_table, *agg_type, &param_map) {
+                match resolve_atomic_costs(
+                    atomic_cost_table,
+                    *agg_type,
+                    &param_map,
+                    n_grouping_labels,
+                ) {
                     Some(costs) => {
-                        let label = if costs == AtomicCosts::default() {
+                        let stub = AtomicCosts::default();
+                        let label = if costs == stub {
                             "stub"
+                        } else if costs.insert_cpu_secs == stub.insert_cpu_secs {
+                            "analytical mem, stub cpu"
                         } else {
                             "real"
                         };

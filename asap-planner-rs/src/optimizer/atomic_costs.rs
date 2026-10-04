@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use super::constants::{
     CMS_HEAP_AVERAGE_KEY_BYTES, CMS_HEAP_COUNTER_BYTES, CMS_HEAP_ENTRY_OVERHEAD_BYTES,
-    CMS_HEAP_REFERENCE_HEAP_SIZE, EXACT_QUERY_CPU_SECS, SUBTRACT_CPU_SECS,
+    CMS_HEAP_REFERENCE_HEAP_SIZE, EXACT_QUERY_CPU_SECS, HASH_TABLE_SLACK, INCREASE_VALUE_BYTES,
+    LABEL_VALUE_CODE_BYTES, MIN_MAX_VALUE_BYTES, SUBTRACT_CPU_SECS, SUM_VALUE_BYTES,
 };
 use super::cost_model::AtomicCosts;
 
@@ -215,6 +216,17 @@ fn sketch_bench_key(
     }
 }
 
+/// Bytes of one group's value for the trivial accumulators, whose per-group
+/// and `Multiple*` forms store the same entry per group.
+fn trivial_value_bytes(agg_type: AggregationType) -> Option<f64> {
+    match agg_type {
+        AggregationType::Sum | AggregationType::MultipleSum => Some(SUM_VALUE_BYTES),
+        AggregationType::MinMax | AggregationType::MultipleMinMax => Some(MIN_MAX_VALUE_BYTES),
+        AggregationType::Increase | AggregationType::MultipleIncrease => Some(INCREASE_VALUE_BYTES),
+        _ => None,
+    }
+}
+
 /// Resolve the [`AtomicCosts`] a candidate should be costed at.
 ///
 /// - `agg_type` outside the benchmarked families (see [`sketch_bench_key`]):
@@ -233,13 +245,30 @@ fn sketch_bench_key(
 ///   reference data returns `None` and drops the candidate.
 /// - Other benchmarked families, no matching row: `None` — drop the candidate,
 ///   per #524.
+/// - Trivial accumulators (see [`trivial_value_bytes`]): stub CPU costs, but
+///   memory is the analytical size of one group's entry for
+///   `n_grouping_labels` labels, so per-group and `Multiple*` twins tie.
 pub fn resolve_atomic_costs(
     table: &AtomicCostTable,
     agg_type: AggregationType,
     params: &HashMap<String, Value>,
+    n_grouping_labels: usize,
 ) -> Option<AtomicCosts> {
     if agg_type == AggregationType::CountMinSketchWithHeap {
         return resolve_cms_heap_costs(table, params, &CmsHeapCostAssumptions::default());
+    }
+
+    if let Some(value_bytes) = trivial_value_bytes(agg_type) {
+        tracing::warn!(
+            ?agg_type,
+            "no sketch-bench CPU data for this family; using stub CPU costs and analytical memory"
+        );
+        return Some(AtomicCosts {
+            mem_bytes_per_instance: (n_grouping_labels as f64 * LABEL_VALUE_CODE_BYTES
+                + value_bytes)
+                * HASH_TABLE_SLACK,
+            ..AtomicCosts::default()
+        });
     }
 
     let Some((sketch, sketch_params)) = sketch_bench_key(agg_type, params) else {
@@ -617,6 +646,7 @@ mod tests {
             &table,
             AggregationType::CountMinSketch,
             &cms_params(3, 1024),
+            0,
         )
         .expect("exact grid point must resolve");
         assert_eq!(costs.mem_bytes_per_instance, 3.0 * 1024.0 * 4.0);
@@ -629,21 +659,47 @@ mod tests {
     #[test]
     fn cms_param_point_outside_the_grid_drops_the_candidate() {
         let table = vec![cms_entry(3, 1024)];
-        assert!(
-            resolve_atomic_costs(&table, AggregationType::CountMinSketch, &cms_params(7, 999))
-                .is_none()
-        );
+        assert!(resolve_atomic_costs(
+            &table,
+            AggregationType::CountMinSketch,
+            &cms_params(7, 999),
+            0
+        )
+        .is_none());
     }
 
     #[test]
     fn unbenchmarked_family_falls_back_to_the_stub() {
         let table: AtomicCostTable = vec![];
-        let costs = resolve_atomic_costs(&table, AggregationType::Sum, &HashMap::new())
+        let costs = resolve_atomic_costs(&table, AggregationType::HydraKLL, &HashMap::new(), 2)
             .expect("unbenchmarked families still get a usable (stub) cost");
+        assert_eq!(costs, AtomicCosts::default());
+    }
+
+    #[test]
+    fn trivial_accumulators_get_analytical_per_group_memory() {
+        let table: AtomicCostTable = vec![];
+        let mem = |agg_type, n_labels| {
+            resolve_atomic_costs(&table, agg_type, &HashMap::new(), n_labels)
+                .expect("trivial accumulators always resolve")
+                .mem_bytes_per_instance
+        };
+        // Two 4-byte label codes + one f64, with 8/7 hash-table slack.
+        assert!((mem(AggregationType::Sum, 2) - 16.0 * 8.0 / 7.0).abs() < 1e-9);
+        // Per-group and keyed-map forms store the same entry per group.
         assert_eq!(
-            costs.mem_bytes_per_instance,
-            AtomicCosts::default().mem_bytes_per_instance
+            mem(AggregationType::Sum, 2),
+            mem(AggregationType::MultipleSum, 2)
         );
+        assert_eq!(
+            mem(AggregationType::MinMax, 3),
+            mem(AggregationType::MultipleMinMax, 3)
+        );
+        assert_eq!(
+            mem(AggregationType::Increase, 1),
+            mem(AggregationType::MultipleIncrease, 1)
+        );
+        assert!(mem(AggregationType::Increase, 1) > mem(AggregationType::Sum, 1));
     }
 
     #[test]
@@ -654,7 +710,7 @@ mod tests {
         let table: AtomicCostTable = vec![];
         let params = cms_heap_params(3, 1024, 40);
         assert!(
-            resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params)
+            resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params, 0)
                 .is_none()
         );
     }
@@ -687,8 +743,9 @@ mod tests {
     fn public_resolver_dispatches_cms_with_heap_to_the_reference_model() {
         let table = vec![cms_heap_entry(3, 1024)];
         let params = cms_heap_params(3, 1024, 32);
-        let costs = resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params)
-            .expect("public resolver must dispatch CMS-with-heap candidates");
+        let costs =
+            resolve_atomic_costs(&table, AggregationType::CountMinSketchWithHeap, &params, 0)
+                .expect("public resolver must dispatch CMS-with-heap candidates");
 
         assert_eq!(
             costs.mem_bytes_per_instance,
@@ -722,7 +779,7 @@ mod tests {
         // different from this case).
         let table: AtomicCostTable = vec![];
         let params = HashMap::from([("width".to_string(), Value::from(1024u64))]);
-        resolve_atomic_costs(&table, AggregationType::CountMinSketch, &params);
+        resolve_atomic_costs(&table, AggregationType::CountMinSketch, &params, 0);
     }
 
     #[test]
@@ -737,7 +794,7 @@ mod tests {
             query_accuracy: BTreeMap::new(),
         }];
         let hll_params = HashMap::from([("precision".to_string(), Value::from(14u64))]);
-        assert!(resolve_atomic_costs(&hll_table, AggregationType::HLL, &hll_params).is_some());
+        assert!(resolve_atomic_costs(&hll_table, AggregationType::HLL, &hll_params, 0).is_some());
 
         let kll_table = vec![AtomicCostEntry {
             sketch: "kll-percall".into(),
@@ -750,7 +807,7 @@ mod tests {
         }];
         let kll_params = HashMap::from([("K".to_string(), Value::from(200u64))]);
         assert!(
-            resolve_atomic_costs(&kll_table, AggregationType::DatasketchesKLL, &kll_params)
+            resolve_atomic_costs(&kll_table, AggregationType::DatasketchesKLL, &kll_params, 0)
                 .is_some()
         );
     }

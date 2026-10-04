@@ -1,11 +1,9 @@
-use std::collections::HashMap;
-
 use tracing::debug;
 
 use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
-use super::candidate_gen::enumerate_candidates_with_label_group_count;
+use super::candidate_gen::enumerate_candidates_with_facts;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
-use super::label_set_facts::{ItemFacts, LabelSetKey};
+use super::label_set_facts::ItemFacts;
 use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 
 /// Greedily assign each AQE to its independently-cheapest candidate config.
@@ -14,8 +12,8 @@ use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 /// two AQEs could share one. The Phase 3 MIP finds sharing opportunities; this
 /// is the v1 baseline.
 ///
-/// `facts` supplies each AQE's group cardinality and arrival rate, keyed by
-/// its label set; every AQE must have an entry.
+/// `facts` supplies each AQE's group counts and arrival rate, index-aligned
+/// with `aqes`.
 ///
 /// Each candidate is costed at its own `(sketch_type, params)` via
 /// `atomic_cost_table` (see ASAPQuery#524) rather than one cost applied to
@@ -26,21 +24,18 @@ pub fn greedy_assign(
     scrape_interval_ms: u64,
     atomic_cost_table: &AtomicCostTable,
     weights: &CostWeights,
-    facts: &HashMap<LabelSetKey, ItemFacts>,
+    facts: &[ItemFacts],
 ) -> OptimizerSolution {
+    assert_eq!(
+        aqes.len(),
+        facts.len(),
+        "facts must be index-aligned with aqes"
+    );
     let mut solution = OptimizerSolution::empty();
 
-    for aqe in aqes {
-        let key = LabelSetKey::from_requirements(&aqe.requirements);
-        let item_facts = *facts
-            .get(&key)
-            .unwrap_or_else(|| panic!("missing label-set facts for {key}"));
+    for (aqe, item_facts) in aqes.into_iter().zip(facts) {
         let arrival_rate_hz = item_facts.arrival_rate_per_sec;
-        let candidates = enumerate_candidates_with_label_group_count(
-            &aqe,
-            scrape_interval_ms,
-            item_facts.cardinality,
-        );
+        let candidates = enumerate_candidates_with_facts(&aqe, scrape_interval_ms, item_facts);
 
         let (best, costs) = candidates
             .into_iter()
@@ -53,6 +48,7 @@ pub fn greedy_assign(
                         atomic_cost_table,
                         cfg.aggregation_type,
                         &cfg.parameters,
+                        aqe.requirements.grouping_labels.len(),
                     )?,
                 };
                 let cost = total_cost_rate(&aqe, &c, arrival_rate_hz, &costs, weights);
@@ -71,6 +67,9 @@ pub fn greedy_assign(
         let query_method = best.query_method.clone();
 
         let aggregation_id = best.config.map(|config| solution.register_config(config));
+        let key_aggregation_id = best
+            .key_config
+            .map(|config| solution.register_config(config));
 
         debug!(
             metric = %aqe.requirements.metric,
@@ -87,6 +86,7 @@ pub fn greedy_assign(
         solution.assignments.push(AQEAssignment {
             aqe,
             aggregation_id,
+            key_aggregation_id,
             query_method,
             estimated_query_cost_per_sec: query_rate,
         });
@@ -97,10 +97,9 @@ pub fn greedy_assign(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use super::*;
     use crate::optimizer::atomic_costs::AtomicCostEntry;
+    use crate::optimizer::label_set_facts::ItemFacts;
     use asap_types::query_requirements::QueryRequirements;
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::{AggregationType, Statistic};
@@ -124,17 +123,13 @@ mod tests {
         }
     }
 
-    /// One group, one item/sec for every AQE's label set.
-    fn unit_facts(aqes: &[AQE]) -> HashMap<LabelSetKey, ItemFacts> {
+    /// One group, one item/sec for every AQE.
+    fn unit_facts(aqes: &[AQE]) -> Vec<ItemFacts> {
         aqes.iter()
-            .map(|aqe| {
-                (
-                    LabelSetKey::from_requirements(&aqe.requirements),
-                    ItemFacts {
-                        cardinality: 1,
-                        arrival_rate_per_sec: 1.0,
-                    },
-                )
+            .map(|aqe| ItemFacts {
+                output_group_count: 1,
+                topk_by_group_count: aqe.requirements.topk_by_labels.as_ref().map(|_| 1),
+                arrival_rate_per_sec: 1.0,
             })
             .collect()
     }
@@ -242,6 +237,62 @@ mod tests {
                 .expect("one CMS-with-heap config deployed")
                 .aggregation_type,
             AggregationType::CountMinSketchWithHeap
+        );
+    }
+
+    /// A grouped query served by CMS needs a key aggregation the engine can
+    /// list groups from, referenced alongside the value in its query config.
+    #[test]
+    fn cms_assignment_deploys_a_key_aggregation_the_engine_matches() {
+        let table = vec![AtomicCostEntry {
+            sketch: "cms-fastpath-vector2d".into(),
+            sketch_config: serde_json::json!({
+                "algorithm": "cms-fastpath-vector2d",
+                "params": { "rows": 3, "cols": 512 }
+            }),
+            mem_bytes_per_instance: 1.0,
+            insert_cpu_secs: 0.0,
+            merge_cpu_secs: 0.0,
+            query_cpu_secs: 0.0,
+            query_accuracy: std::collections::BTreeMap::new(),
+        }];
+        let mut aqe = make_aqe(Statistic::Sum, 60_000, 60_000, 1.0 / 60.0);
+        aqe.requirements.grouping_labels = KeyByLabelNames::new(vec!["svc".into()]);
+        let solution = greedy_assign(
+            vec![aqe.clone()],
+            60_000,
+            &table,
+            &CostWeights::default(),
+            &unit_facts(std::slice::from_ref(&aqe)),
+        );
+
+        let assignment = &solution.assignments[0];
+        let value_id = assignment.aggregation_id.expect("CMS deployed");
+        let key_id = assignment.key_aggregation_id.expect("key tracker deployed");
+        let deployed = solution.deployed_configs();
+        assert_eq!(
+            deployed[&value_id].aggregation_type,
+            AggregationType::CountMinSketch
+        );
+        assert_eq!(
+            deployed[&key_id].aggregation_type,
+            AggregationType::DeltaSetAggregator
+        );
+
+        let (_, inference) = crate::optimizer::translate(&solution);
+        let refs: Vec<u64> = inference.query_configs[0]
+            .aggregations
+            .iter()
+            .map(|r| r.aggregation_id)
+            .collect();
+        assert_eq!(refs, vec![value_id, key_id]);
+
+        // The engine's query-config path validates the pair with this check.
+        assert!(
+            asap_types::capability_matching::key_agg_compatible_with_value(
+                &deployed[&value_id],
+                &deployed[&key_id],
+            )
         );
     }
 }

@@ -8,7 +8,7 @@ use super::aqe_extractor::{extract_aqes, RQE};
 use super::atomic_costs::AtomicCostTable;
 use super::cost_model::CostWeights;
 use super::greedy::greedy_assign;
-use super::label_set_facts::{LabelSetFacts, LabelSetFactsError};
+use super::label_set_facts::{LabelSetFacts, LabelSetFactsError, LabelSetKey};
 use super::solution::{OptimizerSolution, AQE};
 use super::translator::{translate, TranslationSummary};
 
@@ -103,10 +103,11 @@ pub fn run_greedy_pipeline(
     }
 
     let item_facts = facts.resolve(&aqes, scrape_interval_ms)?;
-    for (key, item) in &item_facts {
+    for (aqe, item) in aqes.iter().zip(&item_facts) {
         tracing::info!(
-            %key,
-            cardinality = item.cardinality,
+            key = %LabelSetKey::from_requirements(&aqe.requirements),
+            output_group_count = item.output_group_count,
+            topk_by_group_count = ?item.topk_by_group_count,
             arrival_rate_per_sec = item.arrival_rate_per_sec,
             "optimizer label-set facts"
         );
