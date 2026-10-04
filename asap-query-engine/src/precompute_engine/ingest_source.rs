@@ -130,6 +130,7 @@ fn compile_spatial_filter(config: &AggregationConfig) -> Result<Vec<Matcher>, St
 ///
 /// Implementors decode incoming data (HTTP, file, etc.) and push it
 /// into the engine via [`route_decoded_samples`].
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait IngestSource: Send + Sync {
     async fn run(
