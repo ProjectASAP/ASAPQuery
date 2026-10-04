@@ -155,18 +155,6 @@ impl QueryPlan {
                 output_labels: context.base.metadata.query_output_labels.clone(),
             },
         );
-        let mut labels = context.base.metadata.query_output_labels.clone();
-        for aggregation in query_time_aggregations {
-            root = Self::push(
-                &mut nodes,
-                QueryPlanNode::AggregateVector {
-                    input: root,
-                    aggregation: aggregation.clone(),
-                    input_labels: labels.clone(),
-                },
-            );
-            labels = output_labels_for_aggregation(&labels, aggregation)?;
-        }
         if options.limit_topk && context.base.metadata.statistic_to_compute == Statistic::Topk {
             let k = context
                 .base
@@ -185,6 +173,18 @@ impl QueryPlan {
                     grouping_labels: context.base.grouping_labels.clone(),
                 },
             );
+        }
+        let mut labels = context.base.metadata.query_output_labels.clone();
+        for aggregation in query_time_aggregations {
+            root = Self::push(
+                &mut nodes,
+                QueryPlanNode::AggregateVector {
+                    input: root,
+                    aggregation: aggregation.clone(),
+                    input_labels: labels.clone(),
+                },
+            );
+            labels = output_labels_for_aggregation(&labels, aggregation)?;
         }
         if options.format_output {
             root = Self::push(

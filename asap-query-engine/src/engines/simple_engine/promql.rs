@@ -1143,7 +1143,7 @@ impl SimpleEngine {
                     return Ok(None);
                 };
                 let Some((anchor_labels, anchor_result)) =
-                    self.execute_context_result(context, false, false)?
+                    self.execute_context_result(context, true, false)?
                 else {
                     return Ok(None);
                 };
@@ -1451,12 +1451,16 @@ impl SimpleEngine {
                 else {
                     return Ok(None);
                 };
-                let output = self.execute_observed_range_query_pipeline(
-                    &context,
-                    false,
-                    false,
-                    &config.query_time_aggregations,
-                )?;
+                let Some(output) =
+                    Self::map_local_execution_outcome(self.execute_observed_range_query_pipeline(
+                        &context,
+                        true,
+                        false,
+                        &config.query_time_aggregations,
+                    ))?
+                else {
+                    return Ok(None);
+                };
                 return Ok(Some((output.labels, QueryResult::matrix(output.values))));
             }
         }
@@ -1560,6 +1564,10 @@ mod topk_pipeline_tests {
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
     use crate::utils::http::convert_query_result_to_prometheus;
+    use asap_types::query_config::{
+        QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::Statistic;
     use std::collections::{HashMap, HashSet};
@@ -1830,6 +1838,115 @@ mod topk_pipeline_tests {
         for pair in wire_values.windows(2) {
             assert!(pair[0] >= pair[1]);
         }
+    }
+
+    #[test]
+    fn nested_sum_applies_topk_anchor_before_its_outer_aggregation() {
+        let (engine, store) = build_topk_engine();
+        let nested_query = "sum(topk(3, transfer_events))";
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec!["srcip".to_string()]),
+            )),
+            query_configs: vec![
+                QueryConfig::with_plan(
+                    nested_query.to_string(),
+                    TOPK_QUERY.replace("10", "3"),
+                    vec![QueryTimeAggregation {
+                        operator: QueryTimeAggregationOperator::Sum,
+                        grouping: QueryTimeGrouping {
+                            mode: QueryTimeGroupingMode::All,
+                            labels: Vec::new(),
+                        },
+                        parameter: None,
+                    }],
+                )
+                .add_aggregation(AggregationReference::new(AGG_ID, None)),
+                QueryConfig::new("topk(3, transfer_events)".to_string())
+                    .add_aggregation(AggregationReference::new(AGG_ID, None)),
+            ],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        let context = engine
+            .build_query_execution_context_promql(
+                "topk(3, transfer_events)".to_string(),
+                QUERY_TIME,
+            )
+            .expect("topk anchor should build a context");
+        let window = &context.store_plan.values_query;
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for i in 1..=15u64 {
+            sketch.inner.update(&format!("10.0.0.{i}"), (i * 10) as f64);
+        }
+        store
+            .insert_precomputed_output(
+                PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID),
+                Box::new(sketch),
+            )
+            .expect("insert should succeed");
+
+        let (_, result) = engine
+            .handle_query_promql(nested_query.to_string(), QUERY_TIME)
+            .expect("nested query should not fail")
+            .expect("nested query should execute locally");
+        let QueryResult::Vector(vector) = result else {
+            panic!("nested instant query should return a vector");
+        };
+        assert_eq!(vector.values.len(), 1);
+        assert_eq!(vector.values[0].value, 420.0);
+
+        let (_, result) = engine
+            .handle_range_query_promql(nested_query.to_string(), QUERY_TIME - 1.0, QUERY_TIME, 1.0)
+            .expect("nested range query should not fail")
+            .expect("nested range query should execute locally");
+        let QueryResult::Matrix(matrix) = result else {
+            panic!("nested range query should return a matrix");
+        };
+        let end_sample = matrix
+            .values
+            .iter()
+            .flat_map(|element| &element.samples)
+            .find(|sample| sample.timestamp == (QUERY_TIME * 1_000.0) as u64)
+            .expect("range result should contain the end timestamp");
+        assert_eq!(end_sample.value, 420.0);
+    }
+
+    #[test]
+    fn nested_range_no_local_data_remains_a_prometheus_fallback() {
+        let (engine, _store) = build_topk_engine();
+        let nested_query = "sum(topk(3, transfer_events))";
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec!["srcip".to_string()]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                nested_query.to_string(),
+                "topk(3, transfer_events)".to_string(),
+                vec![QueryTimeAggregation {
+                    operator: QueryTimeAggregationOperator::Sum,
+                    grouping: QueryTimeGrouping {
+                        mode: QueryTimeGroupingMode::All,
+                        labels: Vec::new(),
+                    },
+                    parameter: None,
+                }],
+            )
+            .add_aggregation(AggregationReference::new(AGG_ID, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        assert!(matches!(
+            engine.handle_range_query_promql(
+                nested_query.to_string(),
+                QUERY_TIME - 1.0,
+                QUERY_TIME,
+                1.0,
+            ),
+            Ok(None)
+        ));
     }
 
     /// A topk leaf wrapped in an arithmetic binary expr (`topk(10, ...) + 0`)
