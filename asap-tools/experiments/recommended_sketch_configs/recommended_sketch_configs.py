@@ -9,9 +9,9 @@ config.yaml's sketch parameters.
 
 `summarize` reads finished experiments and prints, per query and config, the
 measured error against Prometheus (ARE over the 100 largest keys for key
-queries, the metric sketch-bench's CMS estimate uses; relative value error for
-quantile queries; ARE over all keys as a second column) next to the predicted
-error, plus query latencies.
+queries, the metric sketch-bench's CMS estimate uses, with ARE over all keys as
+a second column; rank error against the replayed trace values for the p99
+query) next to the predicted error, plus query latencies.
 
 Usage (from asap-tools/experiments):
   python recommended_sketch_configs/recommended_sketch_configs.py generate \
@@ -22,6 +22,7 @@ Usage (from asap-tools/experiments):
 
 import argparse
 import csv
+import gzip
 import json
 import os
 import re
@@ -127,6 +128,12 @@ MIN_STARTING_DELAY_S = 90
 
 # remote_monitor.py keyword of the containerized query engine.
 QUERY_ENGINE_MONITOR_KEYWORD = "sketchdb-queryengine-rust"
+
+# The only quantile query is cpu_p99. A run replays Google at 1/10 speed, so by
+# its queries the exporter has exported the rows starting by 615 s (the
+# 5-minute window starting at 600 s).
+P99 = 0.99
+P99_REPLAY_CUTOFF_US = 615_000_000
 
 
 def parse_duration_s(text: str) -> int:
@@ -327,6 +334,27 @@ def are_top_keys(exact: Dict, estimate: Dict, num_keys: int = 100) -> float:
     return float(np.mean(errors)) if errors else float("nan")
 
 
+def replayed_google_cpu_values(trace: str, cutoff_us: int) -> np.ndarray:
+    """Sorted mean CPU usage of the task_usage rows the exporter replayed.
+
+    Rows with start_time <= cutoff_us and aggregation_type 0 (the series the
+    p99 query reads).
+    """
+    values = []
+    with gzip.open(trace, "rt") as f:
+        for line in f:
+            c = line.rstrip("\n").split(",")
+            if int(c[0]) <= cutoff_us and c[18] in ("", "0") and c[5] != "":
+                values.append(float(c[5]))
+    return np.sort(values)
+
+
+def rank_errors(sorted_values: np.ndarray, estimates: List[float], q: float):
+    """|F(estimate) - q| per estimate, F the empirical CDF of sorted_values."""
+    ranks = np.searchsorted(sorted_values, estimates, side="right")
+    return np.abs(ranks / len(sorted_values) - q)
+
+
 def monitor_output_path(experiment_dir: str) -> str:
     """Written by remote_monitor.py when the run finishes."""
     return os.path.join(
@@ -334,8 +362,14 @@ def monitor_output_path(experiment_dir: str) -> str:
     )
 
 
-def summarize_experiment(experiment_dir: str) -> dict:
-    """Measured error and latency of one finished experiment."""
+def summarize_experiment(
+    experiment_dir: str, quantile_values: Optional[np.ndarray] = None
+) -> dict:
+    """Measured error and latency of one finished experiment.
+
+    With quantile_values (sorted replayed values), the measured error is the
+    p99 rank error instead of the ARE, and there is no all-keys column.
+    """
     sys.path.insert(0, EXPERIMENTS_DIR)
     from post_experiment.lib.results_loader import load_results
 
@@ -347,13 +381,16 @@ def summarize_experiment(experiment_dir: str) -> dict:
     errors = []
     errors_all_keys = []
     for exact_rep, estimate_rep in zip(exact, estimate):
-        if exact_rep.result and estimate_rep.result:
-            errors.append(are_top_keys(exact_rep.result, estimate_rep.result))
-            errors_all_keys.append(
-                are_top_keys(
-                    exact_rep.result, estimate_rep.result, len(exact_rep.result)
-                )
-            )
+        if not (exact_rep.result and estimate_rep.result):
+            continue
+        if quantile_values is not None:
+            (value,) = estimate_rep.result.values()
+            errors.append(float(rank_errors(quantile_values, [value], P99)[0]))
+            continue
+        errors.append(are_top_keys(exact_rep.result, estimate_rep.result))
+        errors_all_keys.append(
+            are_top_keys(exact_rep.result, estimate_rep.result, len(exact_rep.result))
+        )
     latencies = {
         server: [r.latency for r in results[server][0].query_results if r.latency]
         for server in ("prometheus", "sketchdb")
@@ -367,7 +404,7 @@ def summarize_experiment(experiment_dir: str) -> dict:
     return {
         "measured_error": float(np.nanmedian(errors)) if errors else float("nan"),
         "measured_error_all_keys": (
-            float(np.nanmedian(errors_all_keys)) if errors else float("nan")
+            float(np.nanmedian(errors_all_keys)) if errors_all_keys else ""
         ),
         "answered": f"{len(errors)}/{len(exact)}",
         "asap_latency_ms": 1000 * float(np.median(latencies["sketchdb"])),
@@ -376,9 +413,12 @@ def summarize_experiment(experiment_dir: str) -> dict:
     }
 
 
-def summarize(recommendations: List[dict], experiments_dir: str) -> List[dict]:
+def summarize(
+    recommendations: List[dict], experiments_dir: str, google_trace: str
+) -> List[dict]:
     """One row per finished recommended or default experiment."""
     rows = []
+    quantile_values = None
     for row in recommendations:
         if row["family"] not in PLANNER_FAMILIES:
             continue
@@ -392,13 +432,21 @@ def summarize(recommendations: List[dict], experiments_dir: str) -> List[dict]:
             if not os.path.exists(monitor_output_path(experiment_dir)):
                 print(f"skipped unfinished {name}", file=sys.stderr)
                 continue
-            summary = summarize_experiment(experiment_dir)
+            if row["family"] == "kll" and quantile_values is None:
+                quantile_values = replayed_google_cpu_values(
+                    google_trace, P99_REPLAY_CUTOFF_US
+                )
+            summary = summarize_experiment(
+                experiment_dir, quantile_values if row["family"] == "kll" else None
+            )
+            recommended = variant == "recommended"
             rows.append(
                 {
                     "experiment": name,
                     "family": row["family"],
-                    "config": row["config"] if variant == "recommended" else "default",
-                    "predicted_error": float(row["est_error"]),
+                    "config": row["config"] if recommended else "default",
+                    # Only the recommended config has a prediction.
+                    "predicted_error": float(row["est_error"]) if recommended else "",
                     "target": float(row["target"]),
                     **summary,
                     "meets_target": summary["measured_error"] <= float(row["target"]),
@@ -418,6 +466,11 @@ def main() -> None:
     summ.add_argument("--recommendations", required=True)
     summ.add_argument("--experiments-dir", required=True)
     summ.add_argument("--output-csv")
+    summ.add_argument(
+        "--google-trace",
+        default="/data/cluster_traces/google/part-00000-of-00500.csv.gz",
+        help="task_usage part the p99 runs replayed, for their rank error",
+    )
     args = parser.parse_args()
 
     recommendations = load_recommendations(args.recommendations)
@@ -432,7 +485,7 @@ def main() -> None:
             print(f"skipped {note}")
         return
 
-    rows = summarize(recommendations, args.experiments_dir)
+    rows = summarize(recommendations, args.experiments_dir, args.google_trace)
     if not rows:
         print("No finished experiments found")
         return

@@ -7,7 +7,6 @@ estimate is |F(estimate) - 0.99|.
 """
 
 import argparse
-import gzip
 import os
 import sys
 
@@ -19,16 +18,12 @@ sys.path.insert(
     0, os.path.join(HERE, "../../../asap-common/dependencies/py/promql_utilities")
 )
 from post_experiment.lib.results_loader import load_results  # noqa: E402
-
-
-def replayed_values(trace: str, cutoff_us: int) -> np.ndarray:
-    values = []
-    with gzip.open(trace, "rt") as f:
-        for line in f:
-            c = line.rstrip("\n").split(",")
-            if int(c[0]) <= cutoff_us and c[18] in ("", "0") and c[5] != "":
-                values.append(float(c[5]))
-    return np.sort(values)
+from recommended_sketch_configs import (  # noqa: E402
+    P99,
+    P99_REPLAY_CUTOFF_US,
+    rank_errors,
+    replayed_google_cpu_values,
+)
 
 
 def main() -> None:
@@ -39,7 +34,7 @@ def main() -> None:
     parser.add_argument(
         "--outputs", required=True, help="experiment_outputs directory of the runs"
     )
-    parser.add_argument("--cutoff-us", type=int, default=615_000_000)
+    parser.add_argument("--cutoff-us", type=int, default=P99_REPLAY_CUTOFF_US)
     parser.add_argument(
         "--runs",
         default="recommended,default,k500",
@@ -47,8 +42,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    v = replayed_values(args.trace, args.cutoff_us)
-    print(f"{len(v)} values, exact p99 {np.quantile(v, 0.99):.6f}")
+    v = replayed_google_cpu_values(args.trace, args.cutoff_us)
+    print(f"{len(v)} values, exact p99 {np.quantile(v, P99):.6f}")
     for name in args.runs.split(","):
         out = os.path.join(
             args.outputs,
@@ -62,7 +57,7 @@ def main() -> None:
             for q in results["sketchdb"][0].query_results
             if q.result
         ]
-        err = np.abs(np.searchsorted(v, est, side="right") / len(v) - 0.99)
+        err = rank_errors(v, est, P99)
         print(
             f"{name}: n={len(est)} rank_err median={np.median(err):.4f} "
             f"mean={np.mean(err):.4f} max={np.max(err):.4f}"

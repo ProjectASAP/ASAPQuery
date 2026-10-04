@@ -1,8 +1,11 @@
 """Tests for recommended_sketch_configs.py (config generation and error metric)."""
 
 import os
+import tempfile
 import unittest
+from unittest import mock
 
+import numpy as np
 from hydra import compose, initialize_config_dir
 
 from recommended_sketch_configs import recommended_sketch_configs as rsc
@@ -200,6 +203,52 @@ class AreTopKeysTest(unittest.TestCase):
 
     def test_missing_estimate_counts_as_zero(self):
         self.assertEqual(rsc.are_top_keys({"a": 4.0}, {}), 1.0)
+
+
+class RankErrorsTest(unittest.TestCase):
+    def test_distance_of_estimate_rank_from_quantile(self):
+        values = np.arange(1.0, 101.0)
+        np.testing.assert_allclose(
+            rsc.rank_errors(values, [99.0, 95.0, 1000.0], 0.99), [0.0, 0.04, 0.01]
+        )
+
+
+class SummarizeTest(unittest.TestCase):
+    # The p99 runs were once scored by relative value error against the
+    # rank-error target, and default rows showed the recommended prediction.
+    def summarize(self, family):
+        rec = recommendation("google_2011", "cpu_p99", "instant", family, "k=200")
+        with tempfile.TemporaryDirectory() as tmp:
+            for variant in ("recommended", "default"):
+                name = rsc.experiment_name("google_2011", "cpu_p99", "instant", variant)
+                os.makedirs(os.path.dirname(rsc.monitor_output_path(f"{tmp}/{name}")))
+                open(rsc.monitor_output_path(f"{tmp}/{name}"), "w").close()
+            with mock.patch.object(
+                rsc, "summarize_experiment", return_value={"measured_error": 0.002}
+            ) as summarize_experiment, mock.patch.object(
+                rsc, "replayed_google_cpu_values", return_value="values"
+            ) as replayed:
+                rows = rsc.summarize([rec], tmp, "trace.csv.gz")
+        return rows, summarize_experiment, replayed
+
+    def test_kll_is_scored_on_replayed_values(self):
+        rows, summarize_experiment, replayed = self.summarize("kll")
+        replayed.assert_called_once_with("trace.csv.gz", rsc.P99_REPLAY_CUTOFF_US)
+        for call in summarize_experiment.call_args_list:
+            self.assertEqual(call.args[1], "values")
+
+    def test_cms_does_not_read_the_trace(self):
+        _, summarize_experiment, replayed = self.summarize("cms")
+        replayed.assert_not_called()
+        for call in summarize_experiment.call_args_list:
+            self.assertIsNone(call.args[1])
+
+    def test_only_recommended_row_has_a_prediction(self):
+        rows, _, _ = self.summarize("kll")
+        self.assertEqual(
+            [(r["config"], r["predicted_error"]) for r in rows],
+            [("k=200", 0.04), ("default", "")],
+        )
 
 
 if __name__ == "__main__":
