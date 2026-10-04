@@ -29,20 +29,13 @@ pub(crate) fn output_labels_for_aggregation(
             .cloned()
             .collect(),
     };
-    for label in &labels {
-        if !input_labels.labels.contains(label) {
-            return Err(format!(
-                "query-time aggregation references unknown label '{label}'"
-            ));
-        }
-    }
     Ok(KeyByLabelNames::new(labels))
 }
 
 fn label_indices(
     input_labels: &KeyByLabelNames,
     output_labels: &KeyByLabelNames,
-) -> Result<Vec<usize>, String> {
+) -> Vec<Option<usize>> {
     output_labels
         .labels
         .iter()
@@ -51,19 +44,25 @@ fn label_indices(
                 .labels
                 .iter()
                 .position(|candidate| candidate == label)
-                .ok_or_else(|| format!("query-time aggregation references unknown label '{label}'"))
         })
         .collect()
 }
 
-fn select_labels(labels: &KeyByLabelValues, indices: &[usize]) -> Result<KeyByLabelValues, String> {
+fn select_labels(
+    labels: &KeyByLabelValues,
+    indices: &[Option<usize>],
+) -> Result<KeyByLabelValues, String> {
     indices
         .iter()
         .map(|index| {
-            labels
-                .get(*index)
-                .cloned()
-                .ok_or_else(|| "result labels do not match the configured label schema".to_string())
+            index.map_or_else(
+                || Ok(String::new()),
+                |index| {
+                    labels.get(index).cloned().ok_or_else(|| {
+                        "result labels do not match the configured label schema".to_string()
+                    })
+                },
+            )
         })
         .collect::<Result<Vec<_>, _>>()
         .map(KeyByLabelValues::new_with_labels)
@@ -146,7 +145,7 @@ fn apply_stage(
         },
         _ => output_labels.clone(),
     };
-    let indices = label_indices(input_labels, &grouping_labels)?;
+    let indices = label_indices(input_labels, &grouping_labels);
     let mut groups: BTreeMap<Vec<String>, Vec<InstantVectorElement>> = BTreeMap::new();
     for element in input {
         if !element.value.is_finite() {

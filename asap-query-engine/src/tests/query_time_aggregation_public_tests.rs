@@ -293,6 +293,25 @@ mod tests {
     }
 
     #[test]
+    fn grouping_by_a_missing_label_uses_prometheus_empty_label_value() {
+        let engine = engine();
+
+        assert_eq!(
+            execute(
+                &engine,
+                format!("sum by (missing) ({ANCHOR})"),
+                stage(
+                    QueryTimeAggregationOperator::Sum,
+                    QueryTimeGroupingMode::By,
+                    &["missing"],
+                    None,
+                ),
+            ),
+            expected(vec![(vec![""], 16.0)])
+        );
+    }
+
+    #[test]
     fn query_time_topk_breaks_ties_by_full_label_set() {
         let engine = create_engine_single_pop(
             METRIC,
