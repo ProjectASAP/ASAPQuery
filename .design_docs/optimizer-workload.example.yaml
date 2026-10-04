@@ -1,0 +1,10 @@
+# Example workload for asap-optimizer-cli; facts in optimizer-label-set-facts.example.yaml.
+query_groups:
+  - queries:
+      - 'sum by (job) (http_requests_total{env="prod"})'
+      - 'quantile_over_time(0.99, latency_ms[5m])'
+      - 'topk by (job) (5, sum_over_time(http_requests_total{env="prod"}[5m]))'
+    repetition_delay_ms: 60000
+metrics:
+  - {metric: http_requests_total, labels: [job, instance, env]}
+  - {metric: latency_ms, labels: [instance]}
