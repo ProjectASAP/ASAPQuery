@@ -43,6 +43,10 @@ Task-oriented guides for common operations:
 - [Deploy to CloudLab](03-how-to-guides/operations/deploy-cloudlab.md) - Deployment guide
 - [Troubleshooting](03-how-to-guides/operations/troubleshooting.md) - Common issues & solutions
 
+## Evaluation plans
+
+- [AutoSketch vs. the ASAPQuery planner](evaluation/autosketch-vs-planner.md) - Paper §6.3 plan: methods, cost model, PRs
+
 ## 04. Development
 
 Developer practices and infrastructure:
