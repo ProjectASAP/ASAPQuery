@@ -1,7 +1,9 @@
 //! Request-specific native query DAGs.
 
+use crate::engines::query_time_aggregation::output_labels_for_aggregation;
 use crate::engines::simple_engine::{RangeQueryExecutionContext, StoreQueryParams};
 use asap_types::enums::WindowType;
+use asap_types::query_config::QueryTimeAggregation;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::Statistic;
 use tracing::debug;
@@ -36,6 +38,12 @@ pub(crate) enum QueryPlanNode {
         input: NodeId,
         statistic: Statistic,
         query_kwargs: std::collections::HashMap<String, String>,
+        output_labels: KeyByLabelNames,
+    },
+    AggregateVector {
+        input: NodeId,
+        aggregation: QueryTimeAggregation,
+        input_labels: KeyByLabelNames,
     },
     LimitTopK {
         input: NodeId,
@@ -102,6 +110,7 @@ impl QueryPlan {
     pub(crate) fn compile_range(
         context: &RangeQueryExecutionContext,
         options: PlanOptions,
+        query_time_aggregations: &[QueryTimeAggregation],
     ) -> Result<Self, String> {
         let mut nodes = Vec::new();
         let values_read = Self::push_read(
@@ -143,8 +152,21 @@ impl QueryPlan {
                 input: resolved,
                 statistic: context.base.metadata.statistic_to_compute,
                 query_kwargs: context.base.metadata.query_kwargs.clone(),
+                output_labels: context.base.metadata.query_output_labels.clone(),
             },
         );
+        let mut labels = context.base.metadata.query_output_labels.clone();
+        for aggregation in query_time_aggregations {
+            root = Self::push(
+                &mut nodes,
+                QueryPlanNode::AggregateVector {
+                    input: root,
+                    aggregation: aggregation.clone(),
+                    input_labels: labels.clone(),
+                },
+            );
+            labels = output_labels_for_aggregation(&labels, aggregation)?;
+        }
         if options.limit_topk && context.base.metadata.statistic_to_compute == Statistic::Topk {
             let k = context
                 .base
@@ -302,13 +324,16 @@ impl QueryPlan {
                     values.0,
                     keys.map(|id| format!("n{}", id.0)).unwrap_or_else(|| "self".to_string())
                 ),
-                QueryPlanNode::Estimate { input, statistic, query_kwargs } => {
+                QueryPlanNode::Estimate { input, statistic, query_kwargs, .. } => {
                     let mut kwargs: Vec<_> = query_kwargs.iter().collect();
                     kwargs.sort_unstable_by_key(|(key, _)| *key);
                     format!("n{index} Estimate(n{}, {statistic}, {kwargs:?})", input.0)
                 },
                 QueryPlanNode::LimitTopK { input, k, .. } => {
                     format!("n{index} LimitTopK(n{}, k={k})", input.0)
+                }
+                QueryPlanNode::AggregateVector { input, aggregation, .. } => {
+                    format!("n{index} AggregateVector(n{}, {:?})", input.0, aggregation)
                 }
                 QueryPlanNode::Format { input, include_metric_name, metric } => format!(
                     "n{index} Format(n{}, include_metric_name={include_metric_name}) metric={metric}", input.0
@@ -328,6 +353,7 @@ impl QueryPlanNode {
             Self::ComposeWindows { .. } => "ComposeWindows",
             Self::ResolveKeys { .. } => "ResolveKeys",
             Self::Estimate { .. } => "Estimate",
+            Self::AggregateVector { .. } => "AggregateVector",
             Self::LimitTopK { .. } => "LimitTopK",
             Self::Format { .. } => "Format",
         }
@@ -338,6 +364,7 @@ impl QueryPlanNode {
             Self::StoreRead { .. } => Vec::new(),
             Self::ComposeWindows { input, .. }
             | Self::Estimate { input, .. }
+            | Self::AggregateVector { input, .. }
             | Self::LimitTopK { input, .. }
             | Self::Format { input, .. } => vec![*input],
             Self::ResolveKeys { values, keys } => {
@@ -355,6 +382,10 @@ mod tests {
     use super::*;
     use crate::data_model::AggregationIdInfo;
     use crate::engines::simple_engine::{QueryExecutionContext, QueryMetadata, StoreQueryPlan};
+    use asap_types::query_config::{
+        QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::AggregationType;
     use std::cell::RefCell;
@@ -423,6 +454,7 @@ mod tests {
                 limit_topk: false,
                 format_output: false,
             },
+            &[],
         )
         .unwrap()
         .explain();
@@ -430,6 +462,41 @@ mod tests {
         assert!(explanation.contains("n4 ResolveKeys(values=n1, keys=n3)"));
         assert!(explanation.contains("n2 StoreRead(SlidingExactCover, requests#8"));
         assert!(explanation.ends_with("root: n5"));
+    }
+
+    #[test]
+    fn nested_aggregation_pipeline_is_visible_as_ordered_plan_nodes() {
+        let explanation = QueryPlan::compile_range(
+            &context(),
+            PlanOptions {
+                limit_topk: false,
+                format_output: true,
+            },
+            &[
+                QueryTimeAggregation {
+                    operator: QueryTimeAggregationOperator::Sum,
+                    grouping: QueryTimeGrouping {
+                        mode: QueryTimeGroupingMode::All,
+                        labels: Vec::new(),
+                    },
+                    parameter: None,
+                },
+                QueryTimeAggregation {
+                    operator: QueryTimeAggregationOperator::Max,
+                    grouping: QueryTimeGrouping {
+                        mode: QueryTimeGroupingMode::All,
+                        labels: Vec::new(),
+                    },
+                    parameter: None,
+                },
+            ],
+        )
+        .unwrap()
+        .explain();
+
+        assert!(explanation.contains("n4 AggregateVector(n3, QueryTimeAggregation { operator: Sum"));
+        assert!(explanation.contains("n5 AggregateVector(n4, QueryTimeAggregation { operator: Max"));
+        assert!(explanation.contains("n6 Format(n5"));
     }
 
     #[test]
@@ -443,6 +510,7 @@ mod tests {
                 limit_topk: false,
                 format_output: false,
             },
+            &[],
         )
         .unwrap()
         .explain();
@@ -467,6 +535,7 @@ mod tests {
                 limit_topk: true,
                 format_output: true,
             },
+            &[],
         )
         .unwrap()
         .explain();
@@ -487,6 +556,7 @@ mod tests {
                 limit_topk: true,
                 format_output: false,
             },
+            &[],
         )
         .expect_err("topk plan without k must fail loudly");
 
@@ -500,6 +570,7 @@ mod tests {
                 input: NodeId(1),
                 statistic: Statistic::Sum,
                 query_kwargs: HashMap::new(),
+                output_labels: KeyByLabelNames::empty(),
             }],
             root: NodeId(0),
         };

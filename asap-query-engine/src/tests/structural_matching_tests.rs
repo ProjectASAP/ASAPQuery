@@ -84,9 +84,12 @@ mod tests {
             cleanup_policy: CleanupPolicy::NoCleanup,
         });
 
-        let (labels, result) = engine
+        let Some((labels, result)) = engine
             .handle_query_promql(query.to_string(), 1_000.0)
-            .expect("the exact configured query should use its planned anchor");
+            .expect("the exact configured query should use its planned anchor")
+        else {
+            panic!("the exact configured query should use its planned anchor");
+        };
 
         assert_eq!(labels.labels, vec!["job"]);
         let QueryResult::Vector(vector) = result else {

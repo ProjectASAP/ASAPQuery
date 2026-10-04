@@ -10,7 +10,7 @@ use super::{
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
-use crate::engines::query_time_aggregation::{apply_instant_pipeline, apply_range_pipeline};
+use crate::engines::query_time_aggregation::apply_instant_pipeline;
 use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
@@ -766,7 +766,8 @@ impl SimpleEngine {
             // unformatted intermediate label representation until after the
             // arithmetic operation.
             let Some(results) = Self::map_local_execution_outcome(
-                self.execute_observed_range_query_pipeline(&ctx, true, false),
+                self.execute_observed_range_query_pipeline(&ctx, true, false, &[])
+                    .map(|output| output.values),
             )?
             else {
                 return Ok(None);
@@ -809,13 +810,15 @@ impl SimpleEngine {
         }
         // Binary arms need Topk limiting, but not final presentation formatting.
         let Some(lhs_results) = Self::map_local_execution_outcome(
-            self.execute_observed_range_query_pipeline(&lhs_ctx, true, false),
+            self.execute_observed_range_query_pipeline(&lhs_ctx, true, false, &[])
+                .map(|output| output.values),
         )?
         else {
             return Ok(None);
         };
         let Some(rhs_results) = Self::map_local_execution_outcome(
-            self.execute_observed_range_query_pipeline(&rhs_ctx, true, false),
+            self.execute_observed_range_query_pipeline(&rhs_ctx, true, false, &[])
+                .map(|output| output.values),
         )?
         else {
             return Ok(None);
@@ -1139,8 +1142,11 @@ impl SimpleEngine {
                 ) else {
                     return Ok(None);
                 };
-                let (anchor_labels, anchor_result) =
-                    self.execute_context_result(context, false, false)?;
+                let Some((anchor_labels, anchor_result)) =
+                    self.execute_context_result(context, false, false)?
+                else {
+                    return Ok(None);
+                };
                 let QueryResult::Vector(anchor_values) = anchor_result else {
                     return Ok(None);
                 };
@@ -1445,16 +1451,13 @@ impl SimpleEngine {
                 else {
                     return Ok(None);
                 };
-                let anchor_results = self
-                    .execute_observed_range_query_pipeline(&context, false, false)
-                    .map_err(QueryExecutionError::Native)?;
-                let (labels, results) = apply_range_pipeline(
-                    context.base.metadata.query_output_labels,
-                    anchor_results,
+                let output = self.execute_observed_range_query_pipeline(
+                    &context,
+                    false,
+                    false,
                     &config.query_time_aggregations,
-                )
-                .map_err(QueryExecutionError::Native)?;
-                return Ok(Some((labels, QueryResult::matrix(results))));
+                )?;
+                return Ok(Some((output.labels, QueryResult::matrix(output.values))));
             }
         }
 
@@ -1468,7 +1471,8 @@ impl SimpleEngine {
         // instant's handle_query_promql -- both flags are no-ops unless this
         // query's statistic is Topk.
         let Some(results): Option<Vec<RangeVectorElement>> = Self::map_local_execution_outcome(
-            self.execute_observed_range_query_pipeline(&context, true, true),
+            self.execute_observed_range_query_pipeline(&context, true, true, &[])
+                .map(|output| output.values),
         )?
         else {
             return Ok(None);

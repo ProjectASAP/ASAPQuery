@@ -91,9 +91,12 @@ mod tests {
             .add_aggregation(AggregationReference::new(1, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
         });
-        let (_, result) = engine
+        let Some((_, result)) = engine
             .handle_query_promql(query, 1_000.0)
-            .expect("configured nested query should execute locally");
+            .expect("configured nested query should execute locally")
+        else {
+            panic!("configured nested query should execute locally");
+        };
         let QueryResult::Vector(vector) = result else {
             panic!("instant query should return a vector");
         };

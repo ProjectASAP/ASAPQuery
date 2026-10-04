@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 const METRIC_NAME_LABEL: &str = "__name__";
 
-fn output_labels(
+pub(crate) fn output_labels_for_aggregation(
     input_labels: &KeyByLabelNames,
     aggregation: &QueryTimeAggregation,
 ) -> Result<KeyByLabelNames, String> {
@@ -130,7 +130,7 @@ fn apply_stage(
     input: Vec<InstantVectorElement>,
     aggregation: &QueryTimeAggregation,
 ) -> Result<(KeyByLabelNames, Vec<InstantVectorElement>), String> {
-    let output_labels = output_labels(input_labels, aggregation)?;
+    let output_labels = output_labels_for_aggregation(input_labels, aggregation)?;
     let grouping_labels = match aggregation.operator {
         QueryTimeAggregationOperator::Topk => match aggregation.grouping.mode {
             QueryTimeGroupingMode::All => KeyByLabelNames::empty(),

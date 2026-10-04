@@ -434,9 +434,12 @@ async fn e2e_nested_topk_executes_after_its_planned_sum_anchor() {
             }],
         )
         .await;
-    let (_, result) = engine
+    let Some((_, result)) = engine
         .handle_query_promql(query, 1.0)
-        .expect("nested query should execute through the planned anchor");
+        .expect("nested query should execute through the planned anchor")
+    else {
+        panic!("nested query should execute through the planned anchor");
+    };
     let QueryResult::Vector(vector) = result else {
         panic!("instant query should return a vector");
     };
@@ -570,9 +573,12 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
             .add_aggregation(AggregationReference::new(18, None))],
             cleanup_policy: CleanupPolicy::NoCleanup,
         });
-        let (_, instant) = engine
+        let Some((_, instant)) = engine
             .handle_query_promql(query.clone(), 1.0)
-            .unwrap_or_else(|| panic!("instant {name}"));
+            .unwrap_or_else(|error| panic!("instant {name}: {error}"))
+        else {
+            panic!("instant {name} returned no local result");
+        };
         let QueryResult::Vector(instant) = instant else {
             panic!("instant {name} should return a vector");
         };
@@ -587,9 +593,12 @@ async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
             .collect();
         assert_eq!(instant_values, expected, "instant {name}");
 
-        let (_, range) = engine
+        let Some((_, range)) = engine
             .handle_range_query_promql(query, 1.0, 2.0, 1.0)
-            .unwrap_or_else(|| panic!("range {name}"));
+            .unwrap_or_else(|error| panic!("range {name}: {error}"))
+        else {
+            panic!("range {name} returned no local result");
+        };
         let QueryResult::Matrix(range) = range else {
             panic!("range {name} should return a matrix");
         };

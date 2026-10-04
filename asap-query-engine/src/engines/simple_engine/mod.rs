@@ -208,7 +208,15 @@ enum NativePlanOutput {
     Read(TimestampedBucketsMap),
     Composed(ComposedRangeRead),
     Resolved(ResolvedRangeReads),
-    Results(Vec<crate::engines::query_result::RangeVectorElement>),
+    Results {
+        labels: KeyByLabelNames,
+        values: Vec<crate::engines::query_result::RangeVectorElement>,
+    },
+}
+
+struct RangePipelineOutput {
+    labels: KeyByLabelNames,
+    values: Vec<crate::engines::query_result::RangeVectorElement>,
 }
 
 struct NativePlanRuntime<'a> {
@@ -290,22 +298,43 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     "ResolveKeys received incompatible inputs".into(),
                 )),
             },
-            QueryPlanNode::Estimate { .. } => match inputs {
+            QueryPlanNode::Estimate { output_labels, .. } => match inputs {
                 [NativePlanOutput::Resolved(reads)] => self
                     .engine
                     .estimate_range_query(self.context, reads.clone())
-                    .map(NativePlanOutput::Results),
+                    .map(|values| NativePlanOutput::Results {
+                        labels: output_labels.clone(),
+                        values,
+                    }),
                 _ => Err(QueryExecutionError::Native(
                     "Estimate expected resolved reads".into(),
+                )),
+            },
+            QueryPlanNode::AggregateVector {
+                aggregation,
+                input_labels,
+                ..
+            } => match inputs {
+                [NativePlanOutput::Results { values, .. }] => {
+                    crate::engines::query_time_aggregation::apply_range_pipeline(
+                        input_labels.clone(),
+                        values.clone(),
+                        std::slice::from_ref(aggregation),
+                    )
+                    .map(|(labels, values)| NativePlanOutput::Results { labels, values })
+                    .map_err(QueryExecutionError::Native)
+                }
+                _ => Err(QueryExecutionError::Native(
+                    "AggregateVector expected estimates".into(),
                 )),
             },
             QueryPlanNode::LimitTopK {
                 k, grouping_labels, ..
             } => match inputs {
-                [NativePlanOutput::Results(results)] => self
+                [NativePlanOutput::Results { labels, values }] => self
                     .engine
                     .limit_range_topk(
-                        results,
+                        values,
                         k,
                         &SimpleEngine::topk_row_label_order(
                             &self.context.base.metadata,
@@ -315,7 +344,10 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                         grouping_labels,
                     )
                     .map_err(QueryExecutionError::Native)
-                    .map(NativePlanOutput::Results),
+                    .map(|values| NativePlanOutput::Results {
+                        labels: labels.clone(),
+                        values,
+                    }),
                 _ => Err(QueryExecutionError::Native(
                     "LimitTopK expected estimates".into(),
                 )),
@@ -325,10 +357,12 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                 metric,
                 ..
             } => match inputs {
-                [NativePlanOutput::Results(results)] => Ok(NativePlanOutput::Results(
-                    self.engine
-                        .format_range_results(results, *include_metric_name, metric),
-                )),
+                [NativePlanOutput::Results { labels, values }] => Ok(NativePlanOutput::Results {
+                    labels: labels.clone(),
+                    values: self
+                        .engine
+                        .format_range_results(values, *include_metric_name, metric),
+                }),
                 _ => Err(QueryExecutionError::Native(
                     "result node expected estimates".into(),
                 )),
@@ -1625,11 +1659,14 @@ impl SimpleEngine {
                 ))
             })?;
 
-        let range_results = self.execute_observed_range_query_pipeline(
-            &range_context,
-            enable_topk_limiting,
-            enable_topk_formatting,
-        )?;
+        let range_results = self
+            .execute_observed_range_query_pipeline(
+                &range_context,
+                enable_topk_limiting,
+                enable_topk_formatting,
+                &[],
+            )?
+            .values;
 
         let mut results: Vec<InstantVectorElement> = range_results
             .into_iter()
@@ -2395,18 +2432,29 @@ impl SimpleEngine {
         context: &RangeQueryExecutionContext,
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
-    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        query_time_aggregations: &[asap_types::query_config::QueryTimeAggregation],
+    ) -> Result<RangePipelineOutput, QueryExecutionError> {
         Self::reject_off_grid_sliding_counter_query(context)?;
         #[cfg(feature = "native_query_legacy_test_support")]
         if matches!(
             self.native_range_execution_mode,
             NativeRangeExecutionMode::Legacy
         ) {
-            return self.execute_legacy_range_query_pipeline(
-                context,
-                enable_topk_limiting,
-                enable_topk_formatting,
-            );
+            if !query_time_aggregations.is_empty() {
+                return Err(QueryExecutionError::Native(
+                    "Legacy range execution does not support query-time aggregations".to_string(),
+                ));
+            }
+            return self
+                .execute_legacy_range_query_pipeline(
+                    context,
+                    enable_topk_limiting,
+                    enable_topk_formatting,
+                )
+                .map(|values| RangePipelineOutput {
+                    labels: context.base.metadata.query_output_labels.clone(),
+                    values,
+                });
         }
         #[cfg(feature = "native_query_legacy_test_support")]
         let plan = if matches!(
@@ -2421,6 +2469,7 @@ impl SimpleEngine {
                     limit_topk: enable_topk_limiting,
                     format_output: enable_topk_formatting,
                 },
+                query_time_aggregations,
             )
             .map_err(QueryExecutionError::Native)?
         };
@@ -2431,6 +2480,7 @@ impl SimpleEngine {
                 limit_topk: enable_topk_limiting,
                 format_output: enable_topk_formatting,
             },
+            query_time_aggregations,
         )
         .map_err(QueryExecutionError::Native)?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
@@ -2443,7 +2493,9 @@ impl SimpleEngine {
             QueryPlanExecutionError::InvalidPlan(reason) => QueryExecutionError::Native(reason),
             QueryPlanExecutionError::Node { source, .. } => source,
         })? {
-            NativePlanOutput::Results(results) => Ok(results),
+            NativePlanOutput::Results { labels, values } => {
+                Ok(RangePipelineOutput { labels, values })
+            }
             _ => Err(QueryExecutionError::Native(
                 "Query plan root did not produce results".to_string(),
             )),
