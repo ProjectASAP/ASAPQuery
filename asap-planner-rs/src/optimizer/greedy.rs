@@ -3,8 +3,9 @@ use tracing::debug;
 use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
 use super::candidate_gen::enumerate_candidates_with_facts;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
+use super::error::{OptimizerError, UnservableItem};
 use super::label_set_facts::ItemFacts;
-use super::solution::{AQEAssignment, OptimizerSolution, AQE};
+use super::solution::{AQEAssignment, OptimizerItem, OptimizerSolution};
 
 /// Greedily assign each AQE to its independently-cheapest candidate config.
 ///
@@ -20,24 +21,25 @@ use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 /// every candidate; a candidate whose config has no matching table entry is
 /// dropped from consideration (`resolve_atomic_costs` returns `None`).
 pub fn greedy_assign(
-    aqes: Vec<AQE>,
+    aqes: Vec<OptimizerItem>,
     scrape_interval_ms: u64,
     atomic_cost_table: &AtomicCostTable,
     weights: &CostWeights,
     facts: &[ItemFacts],
-) -> OptimizerSolution {
+) -> Result<OptimizerSolution, OptimizerError> {
     assert_eq!(
         aqes.len(),
         facts.len(),
         "facts must be index-aligned with aqes"
     );
     let mut solution = OptimizerSolution::empty();
+    let mut unservable_items = Vec::new();
 
     for (aqe, item_facts) in aqes.into_iter().zip(facts) {
         let arrival_rate_hz = item_facts.arrival_rate_per_sec;
         let candidates = enumerate_candidates_with_facts(&aqe, scrape_interval_ms, item_facts);
 
-        let (best, costs) = candidates
+        let Some((best, costs)) = candidates
             .into_iter()
             .filter_map(|c| {
                 // EXACT (config: None) always costs at the flat stub — it has
@@ -57,16 +59,27 @@ pub fn greedy_assign(
             // total_cmp (not partial_cmp().unwrap()) so a stray NaN cost can't panic.
             .min_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
             .map(|(c, costs, _)| (c, costs))
-            .expect(
-                "enumerate_candidates always returns at least the EXACT fallback, \
-                 which always resolves (flat stub, no table lookup)",
-            );
+        else {
+            unservable_items.push(UnservableItem {
+                metric: aqe.requirements.metric.clone(),
+                statistics: aqe.requirements.statistics.clone(),
+                data_range_ms: aqe.requirements.data_range_ms,
+                t_repeat_ms: aqe.t_repeat_ms,
+                accuracy_sla: aqe.accuracy_sla,
+                latency_sla: aqe.latency_sla,
+                reason: "no candidate remained after structural and atomic-cost filters".into(),
+            });
+            continue;
+        };
 
         let ingest = ingest_cost(&best, arrival_rate_hz, &costs, weights);
         let query_rate = aqe.query_frequency_hz * query_cost(&aqe, &best, &costs, weights);
         let query_method = best.query_method.clone();
 
-        let aggregation_id = best.config.map(|config| solution.register_config(config));
+        let aggregation_id = solution.register_config(
+            best.config
+                .expect("candidate configs are streaming configs"),
+        );
         let key_aggregation_id = best
             .key_config
             .map(|config| solution.register_config(config));
@@ -84,7 +97,7 @@ pub fn greedy_assign(
         solution.estimated_total_cost_per_sec += ingest + query_rate;
 
         solution.assignments.push(AQEAssignment {
-            aqe,
+            item: aqe,
             aggregation_id,
             key_aggregation_id,
             query_method,
@@ -92,7 +105,13 @@ pub fn greedy_assign(
         });
     }
 
-    solution
+    if unservable_items.is_empty() {
+        Ok(solution)
+    } else {
+        Err(OptimizerError::UnservableItems {
+            items: unservable_items,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -105,8 +124,8 @@ mod tests {
     use promql_utilities::query_logics::enums::{AggregationType, Statistic};
     use std::collections::HashMap as StdHashMap;
 
-    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64, freq_hz: f64) -> AQE {
-        AQE {
+    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64, freq_hz: f64) -> OptimizerItem {
+        OptimizerItem {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![stat],
@@ -118,13 +137,14 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: freq_hz,
-            min_t_repeat_ms: min_t,
-            t_repeat_gcd_ms: min_t,
+            t_repeat_ms: min_t,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         }
     }
 
-    /// One group, one item/sec for every AQE.
-    fn unit_facts(aqes: &[AQE]) -> Vec<ItemFacts> {
+    /// One group, one item/sec for every item.
+    fn unit_facts(aqes: &[OptimizerItem]) -> Vec<ItemFacts> {
         aqes.iter()
             .map(|aqe| ItemFacts {
                 output_group_count: 1,
@@ -147,7 +167,8 @@ mod tests {
             &AtomicCostTable::default(),
             &CostWeights::default(),
             &facts,
-        );
+        )
+        .unwrap();
 
         let mut seen_ids: StdHashMap<u64, ()> = StdHashMap::new();
         for id in solution.deployed_configs().keys() {
@@ -160,8 +181,8 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_multi_statistic_aqe_falls_back_to_exact() {
-        let aqe = AQE {
+    fn unsupported_multi_statistic_item_is_unservable() {
+        let aqe = OptimizerItem {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![Statistic::Sum, Statistic::Count], // avg-style, unsupported
@@ -173,26 +194,26 @@ mod tests {
             },
             query_strings: vec!["avg_query".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_ms: 60_000,
-            t_repeat_gcd_ms: 60_000,
+            t_repeat_ms: 60_000,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         };
-        let solution = greedy_assign(
+        let error = greedy_assign(
             vec![aqe.clone()],
             60_000,
             &AtomicCostTable::default(),
             &CostWeights::default(),
             &unit_facts(&[aqe]),
         );
-        assert_eq!(solution.num_exact_fallback(), 1);
-        assert!(solution.deployed_configs().is_empty());
+        assert!(matches!(error, Err(OptimizerError::UnservableItems { .. })));
     }
 
     #[test]
-    fn missing_cms_with_heap_reference_cost_falls_back_to_exact() {
+    fn missing_cms_with_heap_reference_cost_is_unservable() {
         // Regression coverage for #651: an uncosted CMS-with-heap candidate
         // must be dropped rather than inheriting the flat stub and winning.
         let aqe = make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0);
-        let solution = greedy_assign(
+        let error = greedy_assign(
             vec![aqe.clone()],
             60_000,
             &AtomicCostTable::default(),
@@ -200,8 +221,7 @@ mod tests {
             &unit_facts(&[aqe]),
         );
 
-        assert_eq!(solution.num_exact_fallback(), 1);
-        assert!(solution.deployed_configs().is_empty());
+        assert!(matches!(error, Err(OptimizerError::UnservableItems { .. })));
     }
 
     #[test]
@@ -225,9 +245,9 @@ mod tests {
             &table,
             &CostWeights::default(),
             &unit_facts(&[aqe]),
-        );
+        )
+        .unwrap();
 
-        assert_eq!(solution.num_exact_fallback(), 0);
         assert_eq!(solution.deployed_configs().len(), 1);
         assert_eq!(
             solution
@@ -264,10 +284,11 @@ mod tests {
             &table,
             &CostWeights::default(),
             &unit_facts(std::slice::from_ref(&aqe)),
-        );
+        )
+        .unwrap();
 
         let assignment = &solution.assignments[0];
-        let value_id = assignment.aggregation_id.expect("CMS deployed");
+        let value_id = assignment.aggregation_id;
         let key_id = assignment.key_aggregation_id.expect("key tracker deployed");
         let deployed = solution.deployed_configs();
         assert_eq!(

@@ -1,6 +1,6 @@
 use asap_types::inference_config::InferenceConfig;
 use asap_types::streaming_config::StreamingConfig;
-use asap_types::PromQLSchema;
+use thiserror::Error;
 
 use crate::config::input::ControllerConfig;
 
@@ -9,23 +9,15 @@ use super::atomic_costs::AtomicCostTable;
 use super::cost_model::CostWeights;
 use super::greedy::greedy_assign;
 use super::label_set_facts::{LabelSetFacts, LabelSetFactsError, LabelSetKey};
-use super::solution::{OptimizerSolution, AQE};
+use super::solution::OptimizerSolution;
 use super::translator::{translate, TranslationSummary};
 
-/// Shared shell for optimizer pipelines: RQEs → AQEs → `solve` → deployment
-/// artifacts, with a uniform log line. `solver_name` only affects the log.
-fn run_pipeline(
-    config: &ControllerConfig,
-    schema: &PromQLSchema,
-    scrape_interval_ms: u64,
-    solver_name: &str,
-    solve: impl FnOnce(Vec<AQE>) -> OptimizerSolution,
-) -> (StreamingConfig, InferenceConfig) {
-    let rqes = config_to_rqes(config);
-    let aqes = extract_aqes(&rqes, schema, scrape_interval_ms);
-    let solution = solve(aqes);
-
-    finish_pipeline(solution, solver_name)
+#[derive(Debug, Error)]
+pub enum OptimizerPipelineError {
+    #[error(transparent)]
+    LabelSetFacts(#[from] LabelSetFactsError),
+    #[error(transparent)]
+    Optimizer(#[from] super::error::OptimizerError),
 }
 
 fn finish_pipeline(
@@ -37,7 +29,6 @@ fn finish_pipeline(
         solver = solver_name,
         num_deployed_configs = summary.num_deployed_configs,
         num_sketch_assignments = summary.num_sketch_assignments,
-        num_exact_fallbacks = summary.num_exact_fallbacks,
         estimated_ingest_cost_per_sec = solution.estimated_ingest_cost_per_sec,
         estimated_total_cost_per_sec = solution.estimated_total_cost_per_sec,
         "optimizer pipeline: solution produced"
@@ -46,48 +37,26 @@ fn finish_pipeline(
     translate(&solution)
 }
 
-/// Run the all-EXACT optimizer pipeline (Phase 1 scaffolding).
+/// Run the greedy optimizer pipeline: each item is assigned independently to
+/// its cheapest eligible streaming config.
 ///
-/// Converts a `ControllerConfig` into `(StreamingConfig, InferenceConfig)` via
-/// the optimizer path: RQEs → AQEs → all-EXACT solution → deployment artifacts.
-///
-/// No streaming configs are deployed — every AQE falls back to raw data at
-/// query time. This validates the end-to-end pipeline plumbing before real
-/// sketch selection logic is added in Phase 2.
-pub fn run_all_exact_pipeline(
-    config: &ControllerConfig,
-    schema: &PromQLSchema,
-    scrape_interval_ms: u64,
-) -> (StreamingConfig, InferenceConfig) {
-    run_pipeline(
-        config,
-        schema,
-        scrape_interval_ms,
-        "all-EXACT",
-        OptimizerSolution::all_exact,
-    )
-}
-
-/// Run the greedy optimizer pipeline (Phase 2): each AQE is assigned, independently,
-/// to its cheapest feasible candidate config (or to the EXACT fallback).
-///
-/// No cross-AQE sharing — every deployed sketch serves exactly one AQE, even
+/// No cross-item sharing — every deployed sketch serves exactly one item, even
 /// if two AQEs could share one. The Phase 3 MIP finds sharing opportunities.
 ///
 /// The workload's `metrics:` hints supply the label schema; `facts` supply each
-/// AQE's group cardinality and series count.
+/// item's group cardinality and series count.
 pub fn run_greedy_pipeline(
     config: &ControllerConfig,
     facts: &LabelSetFacts,
     scrape_interval_ms: u64,
     atomic_cost_table: &AtomicCostTable,
-) -> Result<(StreamingConfig, InferenceConfig), LabelSetFactsError> {
+) -> Result<(StreamingConfig, InferenceConfig), OptimizerPipelineError> {
     if config.metrics.is_none() {
-        return Err(LabelSetFactsError::MissingMetricHints);
+        return Err(LabelSetFactsError::MissingMetricHints.into());
     }
     let schema = config.schema_from_hints();
     let rqes = config_to_rqes(config);
-    let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms);
+    let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms)?;
 
     // Requirement extraction treats an unknown metric as having no labels,
     // which would silently mis-resolve `without (...)` and plain selectors.
@@ -99,7 +68,7 @@ pub fn run_greedy_pipeline(
     if !unhinted.is_empty() {
         unhinted.sort();
         unhinted.dedup();
-        return Err(LabelSetFactsError::MetricsWithoutHints(unhinted));
+        return Err(LabelSetFactsError::MetricsWithoutHints(unhinted).into());
     }
 
     let item_facts = facts.resolve(&aqes, scrape_interval_ms)?;
@@ -119,7 +88,7 @@ pub fn run_greedy_pipeline(
         atomic_cost_table,
         &CostWeights::default(),
         &item_facts,
-    );
+    )?;
 
     Ok(finish_pipeline(solution, "greedy"))
 }
@@ -134,6 +103,8 @@ fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
             qg.queries.iter().map(|q| RQE {
                 query_string: q.clone(),
                 t_repeat_ms: qg.repetition_delay_ms,
+                accuracy_sla: qg.controller_options.accuracy_sla,
+                latency_sla: qg.controller_options.latency_sla,
             })
         })
         .collect()
@@ -142,6 +113,7 @@ fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use asap_types::PromQLSchema;
 
     fn make_config(queries: &[(&str, u64)]) -> ControllerConfig {
         use crate::config::input::QueryGroup;
@@ -167,18 +139,6 @@ mod tests {
             existing_streaming_config: None,
             existing_inference_config: None,
         }
-    }
-
-    #[test]
-    fn all_exact_pipeline_produces_empty_streaming_config() {
-        let config = make_config(&[
-            ("sum_over_time(metric[5m])", 60_000),
-            ("sum(other_metric)", 30_000),
-        ]);
-        let schema = PromQLSchema::new();
-        let (streaming, _inference) = run_all_exact_pipeline(&config, &schema, 15_000);
-        // All-EXACT: no streaming configs deployed.
-        assert!(streaming.get_all_aggregation_configs().is_empty());
     }
 
     fn with_hints(mut config: ControllerConfig, hints: &[(&str, &[&str])]) -> ControllerConfig {
@@ -223,7 +183,9 @@ groups:
         let facts = LabelSetFacts::from_yaml(METRIC_FACTS).unwrap();
         assert!(matches!(
             run_greedy_pipeline(&config, &facts, 60_000, &AtomicCostTable::default()),
-            Err(LabelSetFactsError::MissingMetricHints)
+            Err(OptimizerPipelineError::LabelSetFacts(
+                LabelSetFactsError::MissingMetricHints
+            ))
         ));
     }
 
@@ -239,7 +201,9 @@ groups:
         let facts = LabelSetFacts::from_yaml(METRIC_FACTS).unwrap();
         assert!(matches!(
             run_greedy_pipeline(&config, &facts, 60_000, &AtomicCostTable::default()),
-            Err(LabelSetFactsError::MetricsWithoutHints(metrics)) if metrics == ["unhinted"]
+            Err(OptimizerPipelineError::LabelSetFacts(
+                LabelSetFactsError::MetricsWithoutHints(metrics)
+            )) if metrics == ["unhinted"]
         ));
     }
 
@@ -252,7 +216,9 @@ groups:
         let facts = LabelSetFacts::from_yaml(METRIC_FACTS).unwrap();
         assert!(matches!(
             run_greedy_pipeline(&config, &facts, 60_000, &AtomicCostTable::default()),
-            Err(LabelSetFactsError::MissingFacts(_))
+            Err(OptimizerPipelineError::LabelSetFacts(
+                LabelSetFactsError::MissingFacts(_)
+            ))
         ));
     }
 
@@ -260,7 +226,7 @@ groups:
     fn spatial_only_aqe_gets_explicit_range_from_pipeline() {
         let config = make_config(&[("sum(metric)", 60_000)]);
         let rqes = config_to_rqes(&config);
-        let aqes = extract_aqes(&rqes, &PromQLSchema::new(), 15_000);
+        let aqes = extract_aqes(&rqes, &PromQLSchema::new(), 15_000).unwrap();
         assert_eq!(aqes.len(), 1);
         assert_eq!(aqes[0].requirements.data_range_ms, 15_000);
     }

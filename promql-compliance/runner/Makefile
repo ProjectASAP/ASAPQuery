@@ -12,6 +12,7 @@ CI_CASES := \
 	single-rate-off-grid-rate:../datasets/single-rate.yaml:../suites/off-grid-rate.yaml \
 	aggregations-native-dag:../datasets/aggregations.yaml:../suites/native-dag-aggregations.yaml \
 	aggregations:../datasets/aggregations.yaml:../suites/aggregations.yaml \
+	topk-ordering:../datasets/topk-ordering.yaml:../suites/topk-ordering.yaml \
 	quantiles:../datasets/quantiles.yaml:../suites/quantiles.yaml
 
 # Tracks planner coverage (#738); most queries are expected to fail.

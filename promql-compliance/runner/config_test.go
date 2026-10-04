@@ -50,13 +50,13 @@ queries:
 		t.Fatalf("range end = %s, want %s", got, want)
 	}
 
-	if got := first.EffectiveTolerance(suite.ComparisonDefaults); got.ValueTolerance == nil || got.ValueTolerance.Relative == nil || *got.ValueTolerance.Relative != 0.01 {
+	if got := first.EffectiveComparison(suite.ComparisonDefaults); got.ValueTolerance == nil || got.ValueTolerance.Relative == nil || *got.ValueTolerance.Relative != 0.01 {
 		t.Fatalf("global tolerance was not inherited: %#v", got)
 	}
-	if got := suite.Queries[1].EffectiveTolerance(suite.ComparisonDefaults); got.ValueTolerance == nil || got.ValueTolerance.Absolute == nil || *got.ValueTolerance.Absolute != 0.000001 {
+	if got := suite.Queries[1].EffectiveComparison(suite.ComparisonDefaults); got.ValueTolerance == nil || got.ValueTolerance.Absolute == nil || *got.ValueTolerance.Absolute != 0.000001 {
 		t.Fatalf("per-query tolerance was not applied: %#v", got)
 	}
-	if got := suite.Queries[1].EffectiveTolerance(suite.ComparisonDefaults); got.ValueTolerance == nil || got.ValueTolerance.Relative == nil || *got.ValueTolerance.Relative != 0.01 {
+	if got := suite.Queries[1].EffectiveComparison(suite.ComparisonDefaults); got.ValueTolerance == nil || got.ValueTolerance.Relative == nil || *got.ValueTolerance.Relative != 0.01 {
 		t.Fatalf("per-query tolerance did not inherit global relative value: %#v", got)
 	}
 }
@@ -116,5 +116,58 @@ queries:
 `))
 	if err == nil {
 		t.Fatal("LoadSuite accepted a sub-millisecond range")
+	}
+}
+
+func TestLoadSuiteAcceptsInstantVectorOrderPolicy(t *testing.T) {
+	suite, err := LoadSuite([]byte(`name: ordered
+queries:
+  - name: grouped-topk
+    expr: topk by (job) (3, up)
+    instant_offsets_seconds: [60]
+    comparison:
+      instant_vector_order:
+        direction: descending
+        grouping:
+          mode: by
+          labels: [job]
+`))
+	if err != nil {
+		t.Fatalf("LoadSuite: %v", err)
+	}
+
+	order := suite.Queries[0].EffectiveComparison(suite.ComparisonDefaults).InstantVectorOrder
+	if order == nil || order.Direction != "descending" || order.Grouping == nil || order.Grouping.Mode != "by" {
+		t.Fatalf("instant vector order = %#v, want descending by(job)", order)
+	}
+}
+
+func TestLoadSuiteRejectsInvalidInstantVectorOrderPolicy(t *testing.T) {
+	for _, policy := range []string{
+		"direction: sideways",
+		"direction: descending\n        grouping:\n          mode: sideways\n          labels: [job]",
+		"direction: descending\n        grouping:\n          mode: by\n          labels: []",
+		"direction: descending\n        grouping:\n          mode: by\n          labels: ['', job]",
+		"direction: descending\n        grouping:\n          mode: by\n          labels: [job, job]",
+	} {
+		_, err := LoadSuite([]byte("name: invalid-order\nqueries:\n  - name: topk\n    expr: topk(3, up)\n    instant_offsets_seconds: [60]\n    comparison:\n      instant_vector_order:\n        " + policy + "\n"))
+		if err == nil {
+			t.Fatalf("LoadSuite accepted invalid instant vector order policy: %s", policy)
+		}
+	}
+}
+
+func TestLoadSuiteRejectsInvalidInstantVectorOrderDirection(t *testing.T) {
+	_, err := LoadSuite([]byte(`name: invalid-order
+queries:
+  - name: topk
+    expr: topk(3, up)
+    instant_offsets_seconds: [60]
+    comparison:
+      instant_vector_order:
+        direction: sideways
+`))
+	if err == nil {
+		t.Fatal("LoadSuite accepted an invalid instant vector order direction")
 	}
 }

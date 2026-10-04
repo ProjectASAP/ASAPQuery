@@ -8,7 +8,7 @@ use super::constants::{
     QUERY_CPU_WEIGHT, QUERY_MEM_WEIGHT, SUBTRACT_CPU_SECS,
 };
 use super::sketch_properties::sketch_properties;
-use super::solution::{QueryMethod, AQE};
+use super::solution::{OptimizerItem, QueryMethod};
 
 /// Per-operation costs for one sketch instance. Stub defaults for v1 — real
 /// values come from sketch-bench in Phase 3 (see implementation plan, 3c).
@@ -119,7 +119,7 @@ fn key_tracker_ingest_cost(
 
 /// QueryCost(a,g): cost of answering one query for `aqe` from `candidate`.
 pub fn query_cost(
-    aqe: &AQE,
+    item: &OptimizerItem,
     candidate: &CandidateConfig,
     costs: &AtomicCosts,
     weights: &CostWeights,
@@ -130,7 +130,7 @@ pub fn query_cost(
 
     let units = stored_units(candidate, agg_config.aggregation_type);
     let props = sketch_properties(agg_config.aggregation_type);
-    let read_cpu = reads_per_query(aqe, candidate) * costs.query_cpu_secs;
+    let read_cpu = reads_per_query(item, candidate) * costs.query_cpu_secs;
 
     let (cpu, mem) = match &candidate.query_method {
         QueryMethod::Direct => (read_cpu, units * costs.mem_bytes_per_instance),
@@ -148,11 +148,7 @@ pub fn query_cost(
                 units * (costs.merge_cpu_secs + costs.subtract_cpu_secs) + read_cpu,
                 2.0 * units * costs.mem_bytes_per_instance,
             )
-        }
-        // candidate_gen only ever pairs Exact with config=None, already handled above.
-        QueryMethod::Exact => {
-            unreachable!("Exact query_method must not be paired with Some(config)")
-        }
+        } // candidate_gen only ever pairs Exact with config=None, already handled above.
     };
 
     weights.query_cpu * cpu + weights.query_mem * mem
@@ -175,8 +171,8 @@ fn stored_units(candidate: &CandidateConfig, aggregation_type: AggregationType) 
 
 /// `query_cpu_secs` operations per query: one per output group, except
 /// top-k, which reads each heap once (its query cost already covers the heap).
-fn reads_per_query(aqe: &AQE, candidate: &CandidateConfig) -> f64 {
-    if aqe.requirements.statistics == [Statistic::Topk] {
+fn reads_per_query(item: &OptimizerItem, candidate: &CandidateConfig) -> f64 {
+    if item.requirements.statistics == [Statistic::Topk] {
         candidate.instance_count as f64
     } else {
         candidate.output_group_count as f64
@@ -187,14 +183,14 @@ fn reads_per_query(aqe: &AQE, candidate: &CandidateConfig) -> f64 {
 /// `aqe.query_frequency_hz`) to `candidate`: IngestCost(g) + frequency * QueryCost(a,g).
 /// This is the per-(a,g) term the greedy/MIP solver minimizes.
 pub fn total_cost_rate(
-    aqe: &AQE,
+    item: &OptimizerItem,
     candidate: &CandidateConfig,
     arrival_rate_hz: f64,
     costs: &AtomicCosts,
     weights: &CostWeights,
 ) -> f64 {
     ingest_cost(candidate, arrival_rate_hz, costs, weights)
-        + aqe.query_frequency_hz * query_cost(aqe, candidate, costs, weights)
+        + item.query_frequency_hz * query_cost(item, candidate, costs, weights)
 }
 
 #[cfg(test)]
@@ -205,8 +201,8 @@ mod tests {
     use asap_types::query_requirements::QueryRequirements;
     use promql_utilities::data_model::KeyByLabelNames;
 
-    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> AQE {
-        AQE {
+    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> OptimizerItem {
+        OptimizerItem {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![stat],
@@ -218,26 +214,10 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_ms: min_t,
-            t_repeat_gcd_ms: min_t,
+            t_repeat_ms: min_t,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         }
-    }
-
-    #[test]
-    fn exact_has_zero_ingest_cost_and_nonzero_query_cost() {
-        let candidate = CandidateConfig {
-            config: None,
-            query_method: QueryMethod::Exact,
-            n_windows: 0,
-            instance_count: 1,
-            output_group_count: 1,
-            key_config: None,
-        };
-        let costs = AtomicCosts::default();
-        let weights = CostWeights::default();
-        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
-        assert_eq!(ingest_cost(&candidate, 1.0, &costs, &weights), 0.0);
-        assert!(query_cost(&a, &candidate, &costs, &weights) > 0.0);
     }
 
     #[test]
@@ -318,7 +298,7 @@ mod tests {
         stat: Statistic,
         agg_type: AggregationType,
         groups: u64,
-    ) -> (AQE, CandidateConfig) {
+    ) -> (OptimizerItem, CandidateConfig) {
         let mut a = make_aqe(stat, 300_000, 300_000);
         a.requirements.grouping_labels = KeyByLabelNames::new(vec!["svc".into()]);
         let facts = ItemFacts {

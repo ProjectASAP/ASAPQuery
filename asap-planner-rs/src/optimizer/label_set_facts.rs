@@ -11,7 +11,7 @@ use promql_utilities::data_model::KeyByLabelNames;
 use serde::Deserialize;
 use thiserror::Error;
 
-use super::solution::AQE;
+use super::solution::OptimizerItem;
 
 #[derive(Debug, Error)]
 pub enum LabelSetFactsError {
@@ -103,12 +103,12 @@ impl std::fmt::Display for LabelSetKey {
     }
 }
 
-/// Facts for one AQE, ready for costing.
+/// Facts for one optimizer item, ready for costing.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ItemFacts {
-    /// Distinct value combinations of the AQE's output (grouping) labels.
+    /// Distinct value combinations of the item's output (grouping) labels.
     pub output_group_count: u64,
-    /// Distinct values of the `topk by` labels; `Some` iff the AQE has them.
+    /// Distinct values of the `topk by` labels; `Some` iff the item has them.
     pub topk_by_group_count: Option<u64>,
     /// Aggregate items/sec into the grouped stream, across all groups.
     pub arrival_rate_per_sec: f64,
@@ -210,17 +210,17 @@ impl LabelSetFacts {
         })
     }
 
-    /// Look up facts for every AQE, index-aligned with `aqes`. An AQE needs its
-    /// series row, its output label set's group row, and for `topk by (L)` a
-    /// group row for `L`. Errors list every missing key at once; facts no AQE
-    /// uses are only warned about, so one file can serve several workloads.
+    /// Look up facts for every item, index-aligned with `items`. An item needs
+    /// its series row, its output label set's group row, and for `topk by (L)`
+    /// a group row for `L`. Errors list every missing key at once; facts no
+    /// item uses are only warned about, so one file can serve several workloads.
     ///
     /// Arrival rate assumes each series yields one sample per scrape:
     /// `series_count / scrape interval`.
     // ponytail: overestimates sparse or irregular series; take a measured rate if that matters.
     pub fn resolve(
         &self,
-        aqes: &[AQE],
+        items: &[OptimizerItem],
         scrape_interval_ms: u64,
     ) -> Result<Vec<ItemFacts>, LabelSetFactsError> {
         let mut used_series = HashSet::new();
@@ -235,9 +235,9 @@ impl LabelSetFacts {
             found
         };
 
-        let mut resolved = Vec::with_capacity(aqes.len());
-        for aqe in aqes {
-            let key = LabelSetKey::from_requirements(&aqe.requirements);
+        let mut resolved = Vec::with_capacity(items.len());
+        for item in items {
+            let key = LabelSetKey::from_requirements(&item.requirements);
             let series_key = key.series_key();
             let series_count = self.series_counts.get(&series_key).copied();
             if series_count.is_none() {
@@ -245,7 +245,7 @@ impl LabelSetFacts {
             }
             used_series.insert(series_key);
 
-            let topk_by_group_count = aqe.requirements.topk_by_labels.as_ref().map(|labels| {
+            let topk_by_group_count = item.requirements.topk_by_labels.as_ref().map(|labels| {
                 lookup_group(
                     LabelSetKey {
                         grouping_labels: labels.clone(),
@@ -291,8 +291,8 @@ mod tests {
     use super::*;
     use promql_utilities::query_logics::enums::Statistic;
 
-    fn aqe(metric: &str, filter: &str, labels: &[&str]) -> AQE {
-        AQE {
+    fn aqe(metric: &str, filter: &str, labels: &[&str]) -> OptimizerItem {
+        OptimizerItem {
             requirements: QueryRequirements {
                 metric: metric.into(),
                 statistics: vec![Statistic::Sum],
@@ -306,8 +306,9 @@ mod tests {
             },
             query_strings: vec!["q".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_ms: 60_000,
-            t_repeat_gcd_ms: 60_000,
+            t_repeat_ms: 60_000,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         }
     }
 
