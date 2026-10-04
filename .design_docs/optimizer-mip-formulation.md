@@ -32,13 +32,13 @@ Symbols computed during optimizer setup (before the MIP is solved). Formulas are
 | Symbol | Derived from | Definition |
 |--------|-------------|-----------|
 | $T_r$ | Query workload | Repeat interval for RQE $r$ (ms) |
-| $A = \{a_1, \ldots, a_m\}$ | Query workload | All AQEs (Atomic Query Expressions), deduplicated across all RQEs |
-| $R_a \subseteq R$ | Query workload | RQEs that reference AQE $a$ |
+| $A = \{a_1, \ldots, a_m\}$ | Query workload | Optimizer items, each keyed by AQE requirements, repeat interval, and SLAs |
+| $R_a \subseteq R$ | Query workload | RQEs that contribute to item $a$ |
 | $\text{range}_a$ | Query workload | Lookback duration baked into $a$'s range vector |
 | $n_g$ | Configs | Number of $g$-windows used at query time. For tumbling, $n_g = d_g$. For sliding, $n_g$ is a generation parameter used to size $d_g$; the optimizer does not reference it directly. |
 | $d_g$ | Configs | Physical storage depth — number of completed windows $g$ retains. For tumbling $d_g = n_g$; for sliding $d_g \geq (n_g - 1)(W_g/S_g) + 1$. |
 | $n(a,g)$ | Query workload, configs | $\lceil \text{range}_a / W_g \rceil$ — number of $g$-windows needed to cover $a$'s lookback range. |
-| $f_a$ | Query workload | $\sum_{r \in R_a} 1/T_r$ — aggregate query rate for AQE $a$ (queries/sec). |
+| $f_a$ | Query workload | $|R_a| / T_a$ — aggregate query rate for item $a$ (queries/sec). |
 | $N(s,g)$ |  | Label-group multiplier: 1 if $\text{subpop-aware}(s)$, else $N_g$. |
 | Query method for $(a,g)$ |  | One of Direct / Merge / Subtract / Exact — see Derived Quantities. |
 
@@ -123,11 +123,10 @@ A sketch's window size must not be greater than the query range.
 
 *Implication for Direct queries:* $n(a,g) = 1$ requires $\lceil \text{range}_a / W_g \rceil = 1$, i.e. $W_g \geq \text{range}_a$. Combined with (WIN) this means the Direct method is only possible when $W_g = \text{range}_a$. Thus. Direct configs are uniquely sized per AQE.
 
-**Freshness** (ingest-type specific):
-$$x_{a,g} = 1 \Rightarrow W_g \leq \min_{r \in R_a} T_r \quad \tau_g = \text{tumbling} \tag{FRESHt}$$
-$$x_{a,g} = 1 \Rightarrow S_g \leq \min_{r \in R_a} T_r \quad \tau_g = \text{sliding} \tag{FRESHs}$$
+**Window compatibility:**
+$$x_{a,g} = 1 \Rightarrow \text{range}_a \bmod W_g = 0 \land T_a \bmod S_g = 0 \land W_g \bmod S_g = 0 \tag{WINDOW}$$
 
-For tumbling, a completed window must exist for every query cycle, so $W \leq T_r$. For sliding, a new completed window appears every $S$ seconds, so the binding constraint is $S \leq T_r$ — $W$ can exceed $T_r$ for sliding.
+For tumbling, $S_g = W_g$. Candidate dimensions must also be aligned to the scrape interval.
 
 **Accuracy:**
 $$x_{a,g} = 1 \Rightarrow \text{Error}(a, g, \theta_a) \leq \varepsilon_a \tag{ACC}$$
@@ -191,7 +190,7 @@ $$x_{a,g} \leq y_g \qquad \forall a \in A,\ g \in G \tag{2}$$
 
 $$x_{a,g},\ y_g \in \{0,1\} \tag{3}$$
 
-**(1)** Every AQE is assigned to exactly one config. Always satisfiable since $\text{EXACT}_a$ satisfies all feasibility conditions for any $a$.
+**(1)** Every item is assigned to exactly one eligible config. A workload with an item having no eligible config is an optimizer error.
 **(2)** An AQE cannot be served by a config that is not deployed.
 **(3)** Integrality. Feasibility is enforced by restricting $x_{a,g}$ to the domain where $\text{Feasible}(a,g) = 1$.
 

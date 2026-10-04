@@ -8,7 +8,7 @@ use super::constants::{
     SUBPOPULATION_COUNT, SUBTRACT_CPU_SECS,
 };
 use super::sketch_properties::sketch_properties;
-use super::solution::{QueryMethod, AQE};
+use super::solution::{OptimizerItem, QueryMethod};
 
 /// Per-operation costs for one sketch instance. Stub defaults for v1 — real
 /// values come from sketch-bench in Phase 3 (see implementation plan, 3c).
@@ -99,7 +99,7 @@ pub fn ingest_cost(
 
 /// QueryCost(a,g): cost of answering one query for `aqe` from `candidate`.
 pub fn query_cost(
-    _aqe: &AQE,
+    _item: &OptimizerItem,
     candidate: &CandidateConfig,
     costs: &AtomicCosts,
     weights: &CostWeights,
@@ -132,11 +132,7 @@ pub fn query_cost(
                     * (costs.merge_cpu_secs + costs.subtract_cpu_secs + costs.query_cpu_secs),
                 2.0 * subpopulation_count * costs.mem_bytes_per_instance,
             )
-        }
-        // candidate_gen only ever pairs Exact with config=None, already handled above.
-        QueryMethod::Exact => {
-            unreachable!("Exact query_method must not be paired with Some(config)")
-        }
+        } // candidate_gen only ever pairs Exact with config=None, already handled above.
     };
 
     weights.query_cpu * cpu + weights.query_mem * mem
@@ -161,14 +157,14 @@ fn effective_subpopulation_count(
 /// `aqe.query_frequency_hz`) to `candidate`: IngestCost(g) + frequency * QueryCost(a,g).
 /// This is the per-(a,g) term the greedy/MIP solver minimizes.
 pub fn total_cost_rate(
-    aqe: &AQE,
+    item: &OptimizerItem,
     candidate: &CandidateConfig,
     arrival_rate_hz: f64,
     costs: &AtomicCosts,
     weights: &CostWeights,
 ) -> f64 {
     ingest_cost(candidate, arrival_rate_hz, costs, weights)
-        + aqe.query_frequency_hz * query_cost(aqe, candidate, costs, weights)
+        + item.query_frequency_hz * query_cost(item, candidate, costs, weights)
 }
 
 #[cfg(test)]
@@ -179,8 +175,8 @@ mod tests {
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::Statistic;
 
-    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> AQE {
-        AQE {
+    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> OptimizerItem {
+        OptimizerItem {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![stat],
@@ -192,24 +188,10 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_ms: min_t,
-            t_repeat_gcd_ms: min_t,
+            t_repeat_ms: min_t,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         }
-    }
-
-    #[test]
-    fn exact_has_zero_ingest_cost_and_nonzero_query_cost() {
-        let candidate = CandidateConfig {
-            config: None,
-            query_method: QueryMethod::Exact,
-            n_windows: 0,
-            label_group_count: 1,
-        };
-        let costs = AtomicCosts::default();
-        let weights = CostWeights::default();
-        let a = make_aqe(Statistic::Sum, 300_000, 300_000);
-        assert_eq!(ingest_cost(&candidate, 1.0, &costs, &weights), 0.0);
-        assert!(query_cost(&a, &candidate, &costs, &weights) > 0.0);
     }
 
     #[test]

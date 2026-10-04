@@ -11,12 +11,12 @@ use super::constants::{
     CMS_DEPTHS, CMS_HEAP_SIZES, CMS_WIDTHS, HLL_PRECISIONS, HYDRA_COLS, HYDRA_K, HYDRA_ROWS, KLL_KS,
 };
 use super::sketch_properties::sketch_properties;
-use super::solution::{QueryMethod, AQE};
+use super::solution::{OptimizerItem, QueryMethod};
 
-/// A candidate streaming config for a single AQE, ready for cost evaluation.
+/// A candidate streaming config for one optimizer item, ready for cost evaluation.
 #[derive(Debug, Clone)]
 pub struct CandidateConfig {
-    /// None = EXACT fallback (no streaming config; raw Prometheus query at query time).
+    /// A streaming config; candidates without one are no longer generated.
     pub config: Option<AggregationConfig>,
     /// Query method derived from (ingest type × W vs range_a × sketch algebra).
     pub query_method: QueryMethod,
@@ -27,20 +27,18 @@ pub struct CandidateConfig {
     pub label_group_count: u64,
 }
 
-/// Enumerate all candidate configs for an AQE.
+/// Enumerate all structurally valid candidate configs for an optimizer item.
 ///
 /// Iterates over compatible agg types × parameter grid × valid window sizes ×
-/// {Tumbling, Sliding}. Always appends an EXACT candidate last (always feasible).
-///
-/// Multi-statistic AQEs (e.g. avg = [Sum, Count]) return only EXACT — a single
-/// sketch family cannot serve two incompatible statistics simultaneously.
-pub fn enumerate_candidates(aqe: &AQE, scrape_interval_ms: u64) -> Vec<CandidateConfig> {
-    enumerate_candidates_with_label_group_count(aqe, scrape_interval_ms, 1)
+/// {Tumbling, Sliding}. Multi-statistic items yield no candidates because a
+/// single sketch cannot serve incompatible statistics simultaneously.
+pub fn enumerate_candidates(item: &OptimizerItem, scrape_interval_ms: u64) -> Vec<CandidateConfig> {
+    enumerate_candidates_with_label_group_count(item, scrape_interval_ms, 1)
 }
 
 /// Enumerate candidates with a dataset-derived label-group count.
 pub fn enumerate_candidates_with_label_group_count(
-    aqe: &AQE,
+    item: &OptimizerItem,
     scrape_interval_ms: u64,
     label_group_count: u64,
 ) -> Vec<CandidateConfig> {
@@ -50,14 +48,12 @@ pub fn enumerate_candidates_with_label_group_count(
     );
     let mut candidates = Vec::new();
 
-    if aqe.requirements.statistics.len() != 1 {
-        // ponytail: multi-stat AQEs (avg) need two sketches; not supported in v1.
-        candidates.push(exact_candidate(label_group_count));
+    if item.requirements.statistics.len() != 1 {
         return candidates;
     }
 
-    let stat = aqe.requirements.statistics[0];
-    let range_a_ms = aqe.requirements.data_range_ms;
+    let stat = item.requirements.statistics[0];
+    let range_a_ms = item.requirements.data_range_ms;
 
     for &agg_type in compatible_agg_types(stat) {
         let props = sketch_properties(agg_type);
@@ -67,7 +63,7 @@ pub fn enumerate_candidates_with_label_group_count(
         // dimension params -- enumerate both weightings when the query doesn't pin one.
         let sub_type_variants: Vec<String> = if agg_type == AggregationType::CountMinSketchWithHeap
         {
-            match aqe.requirements.topk_count_events {
+            match item.requirements.topk_count_events {
                 Some(true) => vec!["count".to_string()],
                 Some(false) => vec!["sum".to_string()],
                 None => vec!["count".to_string(), "sum".to_string()],
@@ -79,7 +75,7 @@ pub fn enumerate_candidates_with_label_group_count(
         for sub_type in &sub_type_variants {
             for params in param_grid(agg_type) {
                 for (window_type, w, slide_interval, n) in
-                    window_candidates(range_a_ms, aqe.t_repeat_gcd_ms, scrape_interval_ms)
+                    window_candidates(range_a_ms, item.t_repeat_ms, scrape_interval_ms)
                 {
                     // DeltaSetAggregator only tracks added/removed keys since the
                     // last window, so it's only correct for non-overlapping
@@ -94,7 +90,7 @@ pub fn enumerate_candidates_with_label_group_count(
                     };
 
                     let config = build_config(
-                        aqe,
+                        item,
                         agg_type,
                         sub_type,
                         &params,
@@ -114,37 +110,17 @@ pub fn enumerate_candidates_with_label_group_count(
         }
     }
 
-    candidates.push(exact_candidate(label_group_count));
     candidates
-}
-
-fn exact_candidate(label_group_count: u64) -> CandidateConfig {
-    CandidateConfig {
-        config: None,
-        query_method: QueryMethod::Exact,
-        n_windows: 0,
-        label_group_count,
-    }
 }
 
 /// Window candidates: (WindowType, W_ms, slide_interval_ms, n_windows).
 ///
-/// Tumbling: W must divide GCD(range_a, t_repeat_gcd_ms) and be a multiple of scrape_interval.
-///           Dividing the GCD ensures (a) n complete windows cover range_a exactly, and
-///           (b) window completions are harmonically aligned with every dashboard refresh cycle.
-///           Slide interval = W (a tumbling window "slides" by its own width).
-/// Sliding:  W = range_a / k for each W that is a multiple of scrape_interval and divides
-///           range_a (k = range_a / W). At query time k staggered readings spaced W apart
-///           are merged or subtracted to cover range_a.
-///           S must satisfy three constraints:
-///             (a) S | W   — so W-spaced snapshots land on slide boundaries (multi-window correctness)
-///             (b) S | t_repeat_gcd — so slide boundaries align with every dashboard refresh cycle
-///             (c) S < W   — S=W is excluded because slide==window is tumbling (duplicate candidate)
-///           S is enumerated as multiples of scrape_interval < W; the divisibility check on
-///           gcd(W, t_repeat_gcd) rejects values that fail (a) or (b) without a separate bound.
+/// Every candidate satisfies `L % W == 0`, `T % S == 0`, and `W % S == 0`.
+/// Tumbling uses `S = W`; sliding uses `S < W`. Both dimensions remain aligned
+/// to the scrape interval.
 fn window_candidates(
     range_a_ms: u64,
-    t_repeat_gcd_ms: u64,
+    t_repeat_ms: u64,
     scrape_interval_ms: u64,
 ) -> Vec<(WindowType, u64, u64, u64)> {
     let range_a = range_a_ms;
@@ -154,11 +130,7 @@ fn window_candidates(
 
     let mut out = Vec::new();
 
-    // Tumbling: W divides GCD(range_a, t_repeat_gcd) and is a multiple of scrape_interval.
-    // W | t_repeat_gcd ensures window completions align harmonically with all dashboards.
-    // W | range_a (implied since t_repeat_gcd | range_a is checked at generation time, but
-    // we verify explicitly via the gcd) ensures n windows cover range_a exactly.
-    let tumbling_divisor = super::aqe_extractor::gcd(range_a, t_repeat_gcd_ms);
+    let tumbling_divisor = super::aqe_extractor::gcd(range_a, t_repeat_ms);
     let mut w = scrape_interval_ms;
     while w <= tumbling_divisor {
         if tumbling_divisor.is_multiple_of(w) {
@@ -168,15 +140,11 @@ fn window_candidates(
         w += scrape_interval_ms;
     }
 
-    // Sliding: W = range_a / k for each valid W (multiple of scrape_interval, divides range_a).
-    // S doubles from scrape_interval up to min(W, min_t_repeat_ms). n_windows = k.
     let mut w = scrape_interval_ms;
     while w <= range_a {
         if range_a.is_multiple_of(w) {
             let k = range_a / w;
-            // Valid S: S | gcd(W, t_repeat_gcd). Iterate up to W (exclusive); the
-            // divisibility check rejects anything above gcd automatically.
-            let slide_divisor = super::aqe_extractor::gcd(w, t_repeat_gcd_ms);
+            let slide_divisor = super::aqe_extractor::gcd(w, t_repeat_ms);
             let mut s = scrape_interval_ms;
             while s < w {
                 if slide_divisor.is_multiple_of(s) {
@@ -218,7 +186,7 @@ fn determine_query_method(
 /// overwrites it with a real id when (if) a solver deploys this candidate.
 #[allow(clippy::too_many_arguments)]
 fn build_config(
-    aqe: &AQE,
+    item: &OptimizerItem,
     agg_type: AggregationType,
     sub_type: &str,
     params: &HashMap<String, Value>,
@@ -232,15 +200,15 @@ fn build_config(
         agg_type,
         sub_type.to_string(),
         params.clone(),
-        aqe.requirements.grouping_labels.clone(),
+        item.requirements.grouping_labels.clone(),
         KeyByLabelNames::empty(), // aggregated_labels (not needed for optimizer feasibility)
         KeyByLabelNames::empty(), // rollup_labels
         String::new(),            // original_yaml
         w,
         slide_interval,
         window_type,
-        aqe.requirements.spatial_filter_normalized.clone(),
-        aqe.requirements.metric.clone(),
+        item.requirements.spatial_filter_normalized.clone(),
+        item.requirements.metric.clone(),
         Some(n_windows),
         None, // read_count_threshold
         None, // table_name (SQL only)
@@ -336,9 +304,9 @@ mod tests {
     use asap_types::enums::WindowType;
     use promql_utilities::data_model::KeyByLabelNames;
 
-    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> AQE {
+    fn make_aqe(stat: Statistic, range_ms: u64, min_t: u64) -> OptimizerItem {
         use asap_types::query_requirements::QueryRequirements;
-        AQE {
+        OptimizerItem {
             requirements: QueryRequirements {
                 metric: "test_metric".into(),
                 statistics: vec![stat],
@@ -350,18 +318,17 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: 1.0 / 60.0,
-            min_t_repeat_ms: min_t,
-            t_repeat_gcd_ms: min_t,
+            t_repeat_ms: min_t,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         }
     }
 
     #[test]
-    fn always_includes_exact_fallback() {
+    fn does_not_include_exact_fallback() {
         let aqe = make_aqe(Statistic::Sum, 300_000, 60_000);
         let candidates = enumerate_candidates(&aqe, 15_000);
-        assert!(candidates
-            .iter()
-            .any(|c| c.config.is_none() && c.query_method == QueryMethod::Exact));
+        assert!(candidates.iter().all(|c| c.config.is_some()));
     }
 
     #[test]
@@ -474,7 +441,7 @@ mod tests {
 
     #[test]
     fn sliding_full_width_direct_generated_when_range_exceeds_t_repeat() {
-        // range_a=600_000ms > t_repeat_gcd=30_000ms. W=range_a is valid for sliding since
+        // range_a=600_000ms > T=30_000ms. W=range_a is valid for sliding since
         // freshness is governed by S (not W). S=30_000 | gcd(600_000, 30_000)=30_000 → emitted.
         let aqe = make_aqe(Statistic::Sum, 600_000, 30_000);
         let candidates = enumerate_candidates(&aqe, 30_000);
@@ -485,13 +452,13 @@ mod tests {
                 }) && c.query_method == QueryMethod::Direct
                     && c.n_windows == 1
             }),
-            "full-width Sliding Direct should be generated even when range_a > min_t_repeat"
+            "full-width Sliding Direct should be generated even when range_a > T"
         );
     }
 
     #[test]
     fn sliding_slide_must_divide_gcd_of_window_and_t_repeat() {
-        // range_a=20_000, t_repeat_gcd=5_000, scrape=1_000.
+        // range_a=20_000, T=5_000, scrape=1_000.
         // W=10_000 (k=2): slide_divisor = gcd(10_000, 5_000) = 5_000.
         // Valid S: divisors of 5_000 that are multiples of 1_000 and < 10_000 → {1_000, 5_000}.
         // Invalid: S=2_000 (5_000 % 2_000 ≠ 0), S=4_000 (5_000 % 4_000 ≠ 0).
@@ -532,7 +499,7 @@ mod tests {
 
     #[test]
     fn sliding_slide_must_divide_window_size() {
-        // W=6_000, t_repeat_gcd=6_000: slide_divisor = gcd(6_000, 6_000) = 6_000.
+        // W=6_000, T=6_000: slide_divisor = gcd(6_000, 6_000) = 6_000.
         // S=4_000: 6_000 % 4_000 = 2_000 ≠ 0 → rejected even though 4_000 < 6_000.
         // S=2_000: 6_000 % 2_000 = 0 → valid.
         let aqe = make_aqe(Statistic::Sum, 12_000, 6_000);
