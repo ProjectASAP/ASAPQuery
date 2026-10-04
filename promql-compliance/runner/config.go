@@ -10,6 +10,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	instantOrderAscending  = "ascending"
+	instantOrderDescending = "descending"
+	orderGroupingBy        = "by"
+	orderGroupingWithout   = "without"
+)
+
 // Suite is a data-independent collection of PromQL cases. All timestamps are
 // offsets from the dataset base time selected for a run.
 type Suite struct {
@@ -35,7 +42,20 @@ type RangeSpec struct {
 // ComparisonPolicy is intentionally pointer-valued: omitted means exact
 // comparison, while zero is a valid explicit tolerance.
 type ComparisonPolicy struct {
-	ValueTolerance *Tolerance `yaml:"value_tolerance" json:"valueTolerance"`
+	ValueTolerance     *Tolerance          `yaml:"value_tolerance" json:"valueTolerance"`
+	InstantVectorOrder *InstantVectorOrder `yaml:"instant_vector_order" json:"instantVectorOrder"`
+}
+
+// InstantVectorOrder opts an instant-vector comparison into PromQL ordering
+// rules. Range responses deliberately remain order-insensitive.
+type InstantVectorOrder struct {
+	Direction string         `yaml:"direction" json:"direction"`
+	Grouping  *OrderGrouping `yaml:"grouping" json:"grouping"`
+}
+
+type OrderGrouping struct {
+	Mode   string   `yaml:"mode" json:"mode"`
+	Labels []string `yaml:"labels" json:"labels"`
 }
 
 type Tolerance struct {
@@ -92,7 +112,11 @@ func LoadSuite(contents []byte) (Suite, error) {
 				}
 			}
 		}
-		if err := validateTolerance(query.EffectiveTolerance(suite.ComparisonDefaults).ValueTolerance); err != nil {
+		effective := query.EffectiveComparison(suite.ComparisonDefaults)
+		if err := validateTolerance(effective.ValueTolerance); err != nil {
+			return Suite{}, fmt.Errorf("query %q: %w", query.Name, err)
+		}
+		if err := validateInstantVectorOrder(effective.InstantVectorOrder); err != nil {
 			return Suite{}, fmt.Errorf("query %q: %w", query.Name, err)
 		}
 	}
@@ -116,22 +140,27 @@ func (q QueryCase) InstantTimes(base time.Time) []time.Time {
 	return result
 }
 
-func (q QueryCase) EffectiveTolerance(defaults ComparisonPolicy) ComparisonPolicy {
-	if q.Comparison == nil || q.Comparison.ValueTolerance == nil {
+func (q QueryCase) EffectiveComparison(defaults ComparisonPolicy) ComparisonPolicy {
+	if q.Comparison == nil {
 		return defaults
 	}
 	result := defaults
-	if result.ValueTolerance == nil {
-		result.ValueTolerance = &Tolerance{}
+	if q.Comparison.ValueTolerance != nil {
+		if result.ValueTolerance == nil {
+			result.ValueTolerance = &Tolerance{}
+		}
+		merged := *result.ValueTolerance
+		if q.Comparison.ValueTolerance.Relative != nil {
+			merged.Relative = q.Comparison.ValueTolerance.Relative
+		}
+		if q.Comparison.ValueTolerance.Absolute != nil {
+			merged.Absolute = q.Comparison.ValueTolerance.Absolute
+		}
+		result.ValueTolerance = &merged
 	}
-	merged := *result.ValueTolerance
-	if q.Comparison.ValueTolerance.Relative != nil {
-		merged.Relative = q.Comparison.ValueTolerance.Relative
+	if q.Comparison.InstantVectorOrder != nil {
+		result.InstantVectorOrder = q.Comparison.InstantVectorOrder
 	}
-	if q.Comparison.ValueTolerance.Absolute != nil {
-		merged.Absolute = q.Comparison.ValueTolerance.Absolute
-	}
-	result.ValueTolerance = &merged
 	return result
 }
 
@@ -174,6 +203,35 @@ func validateTolerance(tolerance *Tolerance) error {
 	}
 	if tolerance.Absolute != nil && (*tolerance.Absolute < 0 || math.IsNaN(*tolerance.Absolute) || math.IsInf(*tolerance.Absolute, 0)) {
 		return fmt.Errorf("absolute tolerance must be a finite non-negative number")
+	}
+	return nil
+}
+
+func validateInstantVectorOrder(order *InstantVectorOrder) error {
+	if order == nil {
+		return nil
+	}
+	if order.Direction != instantOrderAscending && order.Direction != instantOrderDescending {
+		return fmt.Errorf("instant vector order direction must be ascending or descending")
+	}
+	if order.Grouping == nil {
+		return nil
+	}
+	if order.Grouping.Mode != orderGroupingBy && order.Grouping.Mode != orderGroupingWithout {
+		return fmt.Errorf("instant vector order grouping mode must be by or without")
+	}
+	if len(order.Grouping.Labels) == 0 {
+		return fmt.Errorf("instant vector order grouping must include at least one label")
+	}
+	seen := make(map[string]struct{}, len(order.Grouping.Labels))
+	for _, label := range order.Grouping.Labels {
+		if label == "" {
+			return fmt.Errorf("instant vector order grouping labels must be non-empty")
+		}
+		if _, duplicate := seen[label]; duplicate {
+			return fmt.Errorf("instant vector order grouping label %q is duplicated", label)
+		}
+		seen[label] = struct{}{}
 	}
 	return nil
 }
