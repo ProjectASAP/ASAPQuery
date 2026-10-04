@@ -142,7 +142,7 @@ cost is shown for those points but marked as infeasible.
 | --- | --- | --- |
 | W0 | `small_problem`'s 8 RQEs (freq, quantile, cardinality, top-k; 1h–1d lookbacks; 60s/300s intervals), tolerances moved to §5 | Readable worked example; one table in the paper |
 | W1 | Seeded synthetic batches, `N ∈ {8, 32, 128, 512, 2048}` RQEs. Lookbacks {5m, 15m, 1h, 6h, 1d}, intervals {10s, 60s, 300s}, 4 capabilities, 3 label sets with fixed cardinality/rate. Knob: fraction of RQEs drawn from shared (capability, labels) cohorts, {0, 0.5, 1}. | Planning-time scaling; cost vs. shareability |
-| W2 (optional) | RQEs from the Google cluster-trace query sets ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)), with label cardinalities and rates measured from the trace | Realistic mix |
+| W2 | RQEs from the Google cluster-trace query sets ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)). Label cardinalities, rates and data parameters are fit over the whole trace. | Reported results |
 
 ### Benchmark input
 
@@ -151,12 +151,26 @@ configs per variant, otherwise Algorithm 4's neighbor search has nothing to
 search: CMS/Count Sketch depth {2..8} × width {256..8192}, KLL k
 {50..800}, DD α {0.005..0.05}, HLL precision {10..16}.
 
-Accuracy and cost are read at saturation, using sketch-bench's saturation
-study (#130, `docs/saturation_conclusions.md`). Past `N_sat`, a sketch's error
-depends on its config alone, not on the stream length `N`. Per-item insert,
-merge and query CPU are flat in `N`, and memory is fixed by the config (DDSketch
-and KLL grow only with `ln N`). So each (config, data shape) point contributes
-its error plateau and its costs at `N_sat`.
+#### Data parameters, shared by both methods
+
+The benchmark inputs are generated from data parameters fit over the **whole
+measured dataset**, not from a short sample or the average. These are key skew
+`θ`, distinct keys `K` per window, value tail index `a`, and per-label-set
+`λ` and `card`. Use the worst case across the dataset; for example, size CMS
+and top-k from the lower `θ` bound. Longer samples expose worse cases (sketch-bench
+`docs/saturation_conclusions.md`, conclusions 1–5). Fitting follows ASAPQuery
+#746 and sketch-bench `scripts/recommend_config.py`.
+
+- **W2 (trace) gives the reported results.** Its parameters are fit on the
+  full trace.
+- **W0/W1 (synthetic)** use their generators' parameters.
+
+Following AutoSketch §5.2, each config is benchmarked at these parameters with
+and without traffic bursts. The bursts use sketch-bench's AutoSketch-style
+injection (`--burst-intervals 2 --burst-extra-fraction 0.5`, sketch-bench
+#126). A config passes only if it meets the target on all of these inputs.
+AutoSketch's benchmark uses the same inputs, which matches the paper: it lets
+users "use their own trace".
 
 A query with lookback `S` on label set `ℓ` reads about
 
@@ -164,45 +178,47 @@ A query with lookback `S` on label set `ℓ` reads about
 n(S, ℓ) = λ(ℓ) · S / card(ℓ)   events per group
 ```
 
-The saturated value applies when `n(S, ℓ) ≥ N_sat`. This is what matters when
-ASAP merges: a deployment with window `x < S` answers the query by merging
-`m = S/x` instances, each holding only `n(x, ℓ)` events, which may be below
-`N_sat`.
+#### ASAPQuery: saturated values, because it merges
+
+ASAP may answer a query by merging `m = S/x` smaller-window sketches into one.
+Each of them holds only `n(x, ℓ)` events, which may be below the length at
+which its error has settled. So ASAP reads accuracy and cost at saturation, as
+measured in sketch-bench's saturation study (#130):
+
+- Past `N_sat`, error depends on the config alone.
+- Per-item insert, merge and query CPU are flat in `N`.
+- Memory is fixed by the config; DDSketch and KLL grow only with `ln N`.
+
+Each (config, dataset parameters) point therefore contributes its error
+plateau and its costs at `N_sat`. `N_sat` is taken over the whole measured
+dataset: it is the saturation length at the dataset's worst-case parameters
+above. A lookup is valid when `n(S, ℓ) ≥ N_sat`.
 
 - **CMS, Count Sketch, HLL and DDSketch merge exactly.** The merged sketch
   equals one sketch over all `n(S, ℓ)` events, so the saturated single-sketch
-  value is the right lookup however small each pane is.
+  value applies however small each pane is.
 - **KLL and top-k do not.** Merging raises KLL's error, by 1.0–1.1× at
   k = 50/200 and 1.12–1.32× at k = 800, and up to 3–4× at small `N`. Top-k
   loses up to 40% precision at large `K`. For these sketches, a deployment
   with `m > 1` uses the saturated value from the merged curves at `m` shards
   (sketch-bench #131).
-
-Two cases where the saturated value is not available:
-
-- If `n(S, ℓ) < N_sat`, use the curve's value at the smallest measured
-  checkpoint `≥ n(S, ℓ)`.
+- If `n(S, ℓ) < N_sat`, the query's window never saturates. ASAP uses the curve's
+  value at the smallest measured checkpoint `≥ n(S, ℓ)`.
 - With uniform keys and large `K`, CMS, Count Sketch and top-k do not saturate
   by 1e9 events. Their `N_sat` is a lower bound; flag these points in the
-  results instead of treating them as saturated.
+  results.
 
-AutoSketch-Adapted keeps one sketch per query window (`m = 1`), so it reads the
-single-sketch value at `n(S, ℓ)`. For a given config, both methods therefore
-read identical accuracy for CMS, Count Sketch, HLL and DDSketch. For KLL and
-top-k, only ASAP pays the merge penalty, which works against ASAP.
+#### AutoSketch: no saturation requirement
 
-Following AutoSketch §5.2, each config's saturation curve is measured on several
-inputs, and a config passes only if it meets the target on all of them:
-
-- Zipf skew `s ∈ {0.8, 1.1, 1.4}`;
-- each with and without traffic bursts, using sketch-bench's AutoSketch-style
-  burst injection (`--burst-intervals 2 --burst-extra-fraction 0.5`, from
-  sketch-bench #126).
+AutoSketch never merges: it keeps one sketch per query window. In the paper it
+benchmarks a config on its workloads and accepts it if the accuracy intent
+holds, with no notion of `N_sat`. AutoSketch-Adapted therefore reads the
+measured value at its own input size `n(S, ℓ)`, using the dataset-derived
+inputs above.
 
 The windows of a repeating query see different data each time. AutoSketch does
 not re-tune for this: it configures once, before deployment, against these
-varied inputs (§9 Q2). ASAP reads the same worst-case accuracy, so both methods
-share the same evidence.
+inputs (§9 Q2).
 
 ## 7. Metrics and figures
 
@@ -243,7 +259,7 @@ Figures:
 | --- | --- | --- | --- |
 | this | ASAPQuery | This plan (`docs/evaluation/autosketch-vs-planner.md`) | Zeying |
 | 1 | sketch-bench | `rqe-optimizer`: retained-memory term in `objectives.rs`; `milp::minimize_cost` with per-family price (§4); committed EC2 pricing JSON; dominance pruning also compares retained memory, so it cannot drop a candidate that is cheaper under the new objective. Tests: brute-force agreement on the tiny workload, as `#129` already does for CPU. | Zeying, coordinated with Milind since he is porting `milp.rs` |
-| 2 | sketch-bench | Evaluation table (§6, "Benchmark input"): for the wider config grid × skews × bursts, export each point's saturated error, `N_sat`, its saturation curve, and costs at `N_sat`, from #130's `study_saturation.py` outputs. For KLL and top-k, add the merged-curve values per `m` from #131. Keep the worst accuracy across inputs. Record benchmark wall time per point (needed for §7). `rqe-optimizer`'s lookup uses `m = S/x` and `n(S, ℓ)` as in §6. Committed table. Depends on #131 for KLL/top-k. | Zeying |
+| 2 | sketch-bench | Evaluation table (§6, "Benchmark input"): for the wider config grid at the dataset-fit parameters × bursts, export each point's saturated error, `N_sat`, its saturation curve, and costs at `N_sat`, from #130's `study_saturation.py` outputs. For KLL and top-k, add the merged-curve values per `m` from #131. Keep the worst accuracy across inputs. Also keep each curve's value at every checkpoint, which AutoSketch's lookup at `n(S, ℓ)` needs. Record benchmark wall time per point (needed for §7). Lookups follow §6: ASAP uses saturated values with `m = S/x`; AutoSketch uses the curve value at `n(S, ℓ)`. Committed table. Depends on #131 for KLL/top-k. | Zeying |
 | 3 | sketch-bench | `rqe-optimizer/src/autosketch.rs`: Algorithm 4 ported from ASAPQuery-backend `autosketch_comparison.rs`, generalized from the CMS width/depth grid to each variant's measured parameter axes; one dedicated `Deployment` per RQE. Tests: picks the smallest feasible config on a grid; never shares; its window adapter output is eligible under `candidates::is_eligible`. | Zeying |
 | 4 | sketch-bench | `rqe-optimizer/examples/autosketch_vs_asap.rs` (W0/W1 generators, all three methods, JSON output) and `scripts/plot_autosketch_vs_asap.py`; committed results and figures | Zeying |
 | 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port PR 1's objective there and rerun PR 4 against it, so the paper reports the planner that ships | Zeying + Milind |
