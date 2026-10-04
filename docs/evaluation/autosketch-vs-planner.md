@@ -1,8 +1,6 @@
 # Evaluation plan: AutoSketch vs. the ASAPQuery planner (paper §6.3)
 
-Status: plan, no results yet. Open decisions are listed in §9 with a
-recommended answer each; nothing in sketch-bench is implemented until they are
-settled.
+Status: plan, no results yet. The design decisions are settled in §9.
 
 ## 1. Question
 
@@ -49,7 +47,8 @@ function (§4).
 2. **AutoSketch-Adapted** — Algorithm 4 run independently per RQE:
    - search space: the measured configs of the RQE's capability families
      (`Capability::families()`);
-   - constraint: the RQE's accuracy tolerance, read from the measured table;
+   - constraint: the RQE's accuracy tolerance must hold on **every** benchmark
+     input (§6, "Benchmark input"), as in the paper's §5.2;
    - objective: per-instance memory (AutoSketch's register-memory objective),
      tie-break on insert CPU;
    - window adapter: one sliding sketch per query, `x = S`, `y = T` (if
@@ -65,8 +64,9 @@ function (§4).
    isolates the objective/window benefit.
 
 AutoSketch-Adapted is a planner baseline, not a reproduction of the P4
-compiler; stage/page/ALU constraints are dropped, and its accuracy oracle is
-the sketch-bench table instead of online sketch execution (§9 Q3).
+compiler: stage/page/ALU constraints are dropped. Its accuracy probes read
+sketch-bench measurements instead of running a benchmark inside the search, but
+the cost of running those benchmarks is charged to its planning time (§9 Q3).
 
 ## 4. Cost model
 
@@ -142,21 +142,60 @@ cost is shown for those points but marked as infeasible.
 | W1 | Seeded synthetic batches, `N ∈ {8, 32, 128, 512, 2048}` RQEs. Lookbacks {5m, 15m, 1h, 6h, 1d}, intervals {10s, 60s, 300s}, 4 capabilities, 3 label sets with fixed cardinality/rate. Knob: fraction of RQEs drawn from shared (capability, labels) cohorts, {0, 0.5, 1}. | Planning-time scaling; cost vs. shareability |
 | W2 (optional) | RQEs from the Google cluster-trace query sets ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)), with label cardinalities and rates measured from the trace | Realistic mix |
 
+### Benchmark input
+
 The cost table used for the evaluation needs a wider grid than today's two
 configs per variant, otherwise Algorithm 4's neighbor search has nothing to
 search: CMS/Count Sketch depth {2..8} × width {256..8192}, KLL k
-{50..800}, DD α {0.005..0.05}, HLL precision {10..16}. Data: Zipf, as in the
-existing export script.
+{50..800}, DD α {0.005..0.05}, HLL precision {10..16}.
+
+Accuracy depends on how many events one sketch instance absorbs. Today's table
+measures every config at one fixed size (`--size 1000000`), whatever the window.
+An instance with window `x` on label set `ℓ` absorbs about
+
+```text
+n(x, ℓ) = λ(ℓ) · x / card(ℓ)   events
+```
+
+so a 1-day sketch sees 1440× the events of a 1-minute sketch for the same
+query, and needs a larger config to meet the same error. The table is therefore
+measured over a size axis, `--size ∈ {10^3, …, 10^8}` in powers of ten. Both
+methods look up accuracy at the smallest measured size `≥ n(x, ℓ)`, which is
+conservative. AutoSketch-Adapted uses `n(S, ℓ)`, since it keeps one sketch per
+query window; ASAP uses `n(x, ℓ)` for the window it picks.
+
+Following AutoSketch §5.2, each (config, size) point is benchmarked on several
+inputs, and a config passes only if it meets the target on all of them:
+
+- Zipf skew `s ∈ {0.8, 1.1, 1.4}`;
+- each with and without traffic bursts, using sketch-bench's AutoSketch-style
+  burst injection (`--burst-intervals 2 --burst-extra-fraction 0.5`, from
+  sketch-bench #126).
+
+The windows of a repeating query see different data each time. AutoSketch does
+not re-tune for this: it configures once, before deployment, against these
+varied inputs (§9 Q2). ASAP reads the same worst-case accuracy, so both methods
+share the same evidence.
 
 ## 7. Metrics and figures
 
 Reported per (workload, method, machine family, α), median of 10 runs for
 timings:
 
-- **Planning time.** AutoSketch: sum of per-RQE search wall time, plus the
-  number of accuracy probes. ASAP: candidate generation + dominance pruning +
-  MILP solve. Offline sketch-bench profiling is shared by both and reported
-  separately, once.
+- **Planning time.** Reported in two parts, because the two planners spend
+  their time differently:
+  - *Search time:* AutoSketch is the sum over RQEs of Algorithm 4 wall time,
+    using table lookups. ASAP is candidate generation, dominance pruning and
+    MILP solve.
+  - *Benchmark time:* AutoSketch benchmarks every probed (config, input size)
+    per RQE, as in the paper (§5.2, Exp#9: 1–2 minutes per config, about
+    6.5 minutes per application). We charge `Σ_r Σ_probes t_bench(config,
+    n(S_r, ℓ_r))`, where `t_bench` is sketch-bench's measured wall time for
+    that point over all benchmark inputs; probes already charged for the same
+    (config, size) are not charged again. ASAP's benchmark time is one profiling
+    pass over the grid, shared by all RQEs and reusable across workloads. It is
+    reported once, next to how many RQEs it served.
+  - The paper's figure shows search + benchmark per method, stacked.
 - **Total cost** ($/hour) and its breakdown: ingest CPU, query + merge CPU,
   memory, and which resource binds `n_f`.
 - **Latency SLA violations** per method.
@@ -177,7 +216,7 @@ Figures:
 | --- | --- | --- | --- |
 | this | ASAPQuery | This plan (`docs/evaluation/autosketch-vs-planner.md`) | Zeying |
 | 1 | sketch-bench | `rqe-optimizer`: retained-memory term in `objectives.rs`; `milp::minimize_cost` with per-family price (§4); committed EC2 pricing JSON; dominance pruning also compares retained memory, so it cannot drop a candidate that is cheaper under the new objective. Tests: brute-force agreement on the tiny workload, as `#129` already does for CPU. | Zeying, coordinated with Milind since he is porting `milp.rs` |
-| 2 | sketch-bench | Wider evaluation grid in `scripts/export_rqe_optimizer_costs.sh` (or a sibling script) and the resulting committed table | Zeying |
+| 2 | sketch-bench | Evaluation table (§6, "Benchmark input"): wider config grid × size axis × skews × bursts, built with a sibling of `scripts/export_rqe_optimizer_costs.sh`. Records benchmark wall time per point (needed for §7). `AtomicCostEntry` gains the measured size and keeps the worst accuracy across inputs; lookup takes the smallest size `≥ n`. Committed table. | Zeying |
 | 3 | sketch-bench | `rqe-optimizer/src/autosketch.rs`: Algorithm 4 ported from ASAPQuery-backend `autosketch_comparison.rs`, generalized from the CMS width/depth grid to each variant's measured parameter axes; one dedicated `Deployment` per RQE. Tests: picks the smallest feasible config on a grid; never shares; its window adapter output is eligible under `candidates::is_eligible`. | Zeying |
 | 4 | sketch-bench | `rqe-optimizer/examples/autosketch_vs_asap.rs` (W0/W1 generators, all three methods, JSON output) and `scripts/plot_autosketch_vs_asap.py`; committed results and figures | Zeying |
 | 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port PR 1's objective there and rerun PR 4 against it, so the paper reports the planner that ships | Zeying + Milind |
@@ -185,41 +224,42 @@ Figures:
 PRs 1 and 2 are independent; 3 depends on 2 for a meaningful grid only; 4
 depends on 1–3.
 
-## 9. Open decisions
+## 9. Decisions
 
-**Q1. AutoSketch's objective.** Recommended: per-instance memory (faithful to
-the paper), plus PerQuery-CostAware as the strong ablation. Alternative: give
-AutoSketch the §4 cost per query directly, which removes the objective
-difference but no longer resembles AutoSketch.
+**Q1. AutoSketch's objective.** Per-instance memory, as in the paper
+(`SC(c) = α·n_ALU + β·n_mem` with no ALUs in software). PerQuery-CostAware is
+the strong ablation.
 
-**Q2. "Once per repeating time".** Recommended: one AutoSketch call per RQE
-(QE × repeat interval), reused for every evaluation, since the chosen config
-would not change between evaluations. Alternative: one call per evaluation over
-a horizon `H`, i.e. planning time `Σ_r (H / T_r) · t_r`, which inflates
-AutoSketch's planning time without changing its plan.
+**Q2. One AutoSketch call per RQE, reused for every evaluation.** The paper
+configures statically: "AutoSketch adopts static configuration instead of
+dynamic adjusting" (§3.2), and "the searching is performed once before an
+application is deployed" (§7, Exp#9). Data varies between windows of a repeating
+query, but AutoSketch handles that through its benchmark inputs, not by
+re-planning: a config must meet the target on every benchmark workload,
+including random burst intervals (§5.2). So the benchmark input changes per RQE
+in one way only: its size follows the RQE's window, `n(S, ℓ)` (§6). It does not
+change per evaluation.
 
-**Q3. AutoSketch accuracy probes.** Recommended: table lookup, the same
-evidence ASAP uses, so the plans differ only by algorithm. AutoSketch's
-planning time then excludes sketch execution; report its probe count so the
-cost of online probing can be stated. Alternative: execute each probe, which
-needs sketch-bench in the loop and makes planning-time comparisons dominated by
-profiling.
+**Q3. Probes read sketch-bench measurements, and their benchmark cost is
+charged.** In the paper every probe is a benchmark run (§5.2, Algorithm 4
+line 5: "Evaluate T by c"), and benchmarking dominates search time (Exp#9).
+Running sketch-bench inside the search would give the same accuracy answers as
+reading the same measurements, so the plan is unchanged. Planning time adds the
+measured benchmark time of each distinct probed (config, size) point (§7). A
+lookup-only time would understate AutoSketch's planning cost.
 
-**Q4. AutoSketch window adapter.** Recommended: `x = S, y = T`, one sliding
-sketch per query. Alternative: tumbling `x = y = gcd(S, T)` with merges at
-query time, as a sensitivity run.
+**Q4. AutoSketch window adapter.** `x = S`, `y = T` (or `gcd(S, T)`): one
+sliding sketch per query.
 
-**Q5. Memory model.** Recommended: retained state as in §4. Alternative: keep
-today's peak per-query memory, which undercounts state for long lookbacks.
+**Q5. Memory model.** Retained state, as in §4.
 
-**Q6. Machine-family cost.** Recommended: fractional-instance `max` model (§4).
-Alternative: fixed linear weights per family, which need an arbitrary
-CPU/memory split of each instance's price.
+**Q6. Machine-family cost.** The fractional-instance `max` model in §4.
 
 ## 10. Known limitations
 
 - **Merged accuracy is not validated.** The cost table measures single
-  instances. ASAP plans often merge `S/x` instances, while AutoSketch-Adapted
+  instances at size `n(x, ℓ)`; merging `S/x` instances is not the same as one
+  instance of size `n(S, ℓ)`. ASAP plans often merge `S/x` instances, while AutoSketch-Adapted
   merges none, so this gap affects ASAP only. Before the paper claims accuracy
   parity, replay at least W0's chosen plans in sketch-bench and report
   post-merge error (`docs/rqe_optimizer_TODO.md`, "Next").
