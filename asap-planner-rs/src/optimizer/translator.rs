@@ -8,9 +8,6 @@ use super::solution::{OptimizerSolution, QueryMethod};
 /// Translate an `OptimizerSolution` into the deployment artifacts consumed by
 /// Arroyo and the query engine.
 ///
-/// Phase 1 (all-EXACT): deployed_configs is empty, all assignments are Exact,
-/// so both output structs are empty/stub. Real translation logic fills in as
-/// Phase 2/3 add sketch configs to the solution.
 pub fn translate(solution: &OptimizerSolution) -> (StreamingConfig, InferenceConfig) {
     let streaming_config = build_streaming_config(solution);
     let inference_config = build_inference_config(solution);
@@ -27,17 +24,12 @@ fn build_inference_config(solution: &OptimizerSolution) -> InferenceConfig {
 
     let mut inference = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::NoCleanup);
 
-    // For Phase 1 (all-EXACT), every assignment has aggregation_id = None, so
-    // this loop emits nothing — the inference engine falls back to raw
-    // querying for all AQEs, matching the all-EXACT solution.
     for assignment in &solution.assignments {
-        let Some(aggregation_id) = assignment.aggregation_id else {
-            continue;
-        };
+        let aggregation_id = assignment.aggregation_id;
         let retain = retention_count_for_assignment(&assignment.query_method);
         let agg_ref = AggregationReference::new(aggregation_id, Some(retain));
 
-        for query_string in &assignment.aqe.query_strings {
+        for query_string in &assignment.item.query_strings {
             inference.query_configs.push(
                 QueryConfig::with_plan(query_string.clone(), query_string.clone(), vec![])
                     .add_aggregation(agg_ref.clone()),
@@ -60,7 +52,6 @@ pub fn retention_count_for_assignment(query_method: &QueryMethod) -> u64 {
         // (see candidate_gen.rs's n_windows, a separate concept: the deployed
         // AggregationConfig's retention depth).
         QueryMethod::Subtract => 2,
-        QueryMethod::Exact => 0,
     }
 }
 
@@ -69,7 +60,6 @@ pub fn retention_count_for_assignment(query_method: &QueryMethod) -> u64 {
 pub struct TranslationSummary {
     pub num_deployed_configs: usize,
     pub num_sketch_assignments: usize,
-    pub num_exact_fallbacks: usize,
 }
 
 impl TranslationSummary {
@@ -77,7 +67,6 @@ impl TranslationSummary {
         Self {
             num_deployed_configs: solution.deployed_configs().len(),
             num_sketch_assignments: solution.num_sketch_served(),
-            num_exact_fallbacks: solution.num_exact_fallback(),
         }
     }
 }

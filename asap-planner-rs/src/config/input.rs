@@ -3,7 +3,7 @@ use asap_types::inference_config::InferenceConfig;
 use asap_types::streaming_config::StreamingConfig;
 use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use tracing::warn;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -66,6 +66,7 @@ impl ControllerConfig {
 pub struct QueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
+    #[serde(deserialize_with = "deserialize_positive_u64")]
     pub repetition_delay_ms: u64,
     #[serde(default)]
     pub controller_options: ControllerOptions,
@@ -79,8 +80,34 @@ pub struct QueryGroup {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ControllerOptions {
+    #[serde(deserialize_with = "deserialize_finite_f64")]
     pub accuracy_sla: f64,
+    #[serde(deserialize_with = "deserialize_finite_f64")]
     pub latency_sla: f64,
+}
+
+fn deserialize_finite_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("must be a finite number"))
+    }
+}
+
+fn deserialize_positive_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = u64::deserialize(deserializer)?;
+    if value > 0 {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom("must be greater than zero"))
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -224,4 +251,58 @@ pub struct ElasticDSLQueryGroup {
     pub index: String,
     pub time_field: String,
     pub controller_options: ControllerOptions,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_non_finite_controller_slas() {
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: .nan
+      latency_sla: .inf
+"#;
+
+        let error = serde_yaml::from_str::<ControllerConfig>(yaml)
+            .expect_err("non-finite SLA values must be rejected")
+            .to_string();
+
+        assert!(error.contains("must be a finite number"));
+    }
+
+    #[test]
+    fn accepts_finite_controller_slas() {
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#;
+
+        let config: ControllerConfig = serde_yaml::from_str(yaml).unwrap();
+        let options = &config.query_groups[0].controller_options;
+        assert_eq!(options.accuracy_sla, 0.99);
+        assert_eq!(options.latency_sla, 1.0);
+    }
+
+    #[test]
+    fn rejects_zero_repetition_delay() {
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 0
+"#;
+
+        let error = serde_yaml::from_str::<ControllerConfig>(yaml)
+            .expect_err("zero repeat interval must be rejected")
+            .to_string();
+        assert!(error.contains("must be greater than zero"));
+    }
 }

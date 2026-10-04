@@ -1,0 +1,36 @@
+name: topk-ordering
+
+queries:
+  # Equal values make bucket contiguity observable independently of ranking.
+  - name: topk-tied
+    expr: "topk(6, ordered_data)"
+    instant_offsets_seconds: &evaluation_offsets [300, 600]
+    range: &evaluation_range
+      start_offset_seconds: 300
+      end_offset_seconds: 600
+      step_seconds: 300
+    comparison:
+      instant_vector_order:
+        direction: descending
+
+  - name: topk-tied-by-job
+    expr: "topk by (job) (3, ordered_data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison:
+      instant_vector_order:
+        direction: descending
+        grouping:
+          mode: by
+          labels: [job]
+
+  - name: topk-tied-without-instance
+    expr: "topk without (instance) (3, ordered_data)"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
+    comparison:
+      instant_vector_order:
+        direction: descending
+        grouping:
+          mode: without
+          labels: [instance]

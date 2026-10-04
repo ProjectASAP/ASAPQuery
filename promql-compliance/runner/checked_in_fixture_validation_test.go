@@ -10,6 +10,7 @@ import (
 func TestCheckedInFixturesAndSuites(t *testing.T) {
 	pairs := []struct{ dataset, suite string }{
 		{"../datasets/aggregations.yaml", "../suites/aggregations.yaml"},
+		{"../datasets/topk-ordering.yaml", "../suites/topk-ordering.yaml"},
 		{"../datasets/quantiles.yaml", "../suites/quantiles.yaml"},
 		{"../datasets/olly-bench.yaml", "../suites/olly-bench.yaml"},
 	}

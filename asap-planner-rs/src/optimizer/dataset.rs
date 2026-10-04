@@ -13,7 +13,7 @@ use thiserror::Error;
 
 use crate::config::input::MetricDefinition;
 
-use super::solution::AQE;
+use super::solution::OptimizerItem;
 
 const METRIC_COLUMN: &str = "metric";
 
@@ -253,7 +253,10 @@ impl SeriesDataset {
         Ok(())
     }
 
-    pub fn profile_aqes(&self, aqes: &[AQE]) -> Result<HashMap<ProfileKey, u64>, DatasetError> {
+    pub fn profile_aqes(
+        &self,
+        aqes: &[OptimizerItem],
+    ) -> Result<HashMap<ProfileKey, u64>, DatasetError> {
         let workload_metrics: HashSet<&str> = aqes
             .iter()
             .map(|aqe| aqe.requirements.metric.as_str())
@@ -553,12 +556,13 @@ mod tests {
         let dataset =
             SeriesDataset::from_reader("metric,job\nrequests,api\nother,worker\n".as_bytes())
                 .unwrap();
-        let requests = AQE {
+        let requests = OptimizerItem {
             requirements: requirements("requests", &["job"], ""),
             query_strings: vec![],
             query_frequency_hz: 1.0,
-            min_t_repeat_ms: 1,
-            t_repeat_gcd_ms: 1,
+            t_repeat_ms: 1,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         };
 
         assert!(matches!(
