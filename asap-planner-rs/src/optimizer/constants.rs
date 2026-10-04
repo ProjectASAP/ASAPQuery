@@ -41,8 +41,18 @@ pub const INGEST_CPU_WEIGHT: f64 = 1.0;
 pub const QUERY_MEM_WEIGHT: f64 = 1e-9;
 pub const QUERY_CPU_WEIGHT: f64 = 1.0;
 
-/// Subpopulation count: 1 if subpopulation_aware else the distinct label-group
-/// count for this config. The label-group count isn't profiled yet (needs
-/// Prometheus series-count data) — use 1 as a placeholder; both branches
-/// collapse to the same value until that lands.
-pub const SUBPOPULATION_COUNT: f64 = 1.0;
+// Analytical per-group memory for trivial accumulators (Sum/MinMax/Increase and
+// their Multiple* maps): one dictionary code per grouping-label value plus the
+// value, inflated by hash-table slack. The dictionary itself is amortized over
+// time and not charged.
+pub const LABEL_VALUE_CODE_BYTES: f64 = 4.0;
+/// hashbrown's maximum load factor is 7/8.
+pub const HASH_TABLE_SLACK: f64 = 8.0 / 7.0;
+/// One f64.
+pub const SUM_VALUE_BYTES: f64 = 8.0;
+/// One f64.
+pub const MIN_MAX_VALUE_BYTES: f64 = 8.0;
+/// Start/last measurement and timestamp, sample count, reset adjustment, and
+/// an empty reset-event Vec.
+// ponytail: ignores counter-reset events; add per-event bytes if resets are frequent.
+pub const INCREASE_VALUE_BYTES: f64 = 72.0;
