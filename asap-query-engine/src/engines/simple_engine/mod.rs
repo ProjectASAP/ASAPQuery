@@ -1517,6 +1517,53 @@ impl SimpleEngine {
             .then_with(|| a_labels.cmp(b_labels))
     }
 
+    fn sort_instant_topk_results(
+        results: &mut [InstantVectorElement],
+        output_labels: &KeyByLabelNames,
+        grouping_labels: &KeyByLabelNames,
+    ) -> Result<(), QueryExecutionError> {
+        let grouping_positions = grouping_labels
+            .labels
+            .iter()
+            .map(|label| {
+                output_labels
+                    .labels
+                    .iter()
+                    .position(|candidate| candidate == label)
+                    .ok_or_else(|| {
+                        QueryExecutionError::Native(format!(
+                            "Topk grouping label '{label}' is absent from output"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for result in results.iter() {
+            if grouping_positions
+                .iter()
+                .any(|position| result.labels.labels.get(*position).is_none())
+            {
+                return Err(QueryExecutionError::Native(
+                    "Topk result labels do not match the configured output schema".to_string(),
+                ));
+            }
+        }
+        results.sort_by(|left, right| {
+            for position in &grouping_positions {
+                let order = left.labels.labels[*position].cmp(&right.labels.labels[*position]);
+                if !order.is_eq() {
+                    return order;
+                }
+            }
+            Self::cmp_topk_value_desc(
+                left.value,
+                &left.labels.labels,
+                right.value,
+                &right.labels.labels,
+            )
+        });
+        Ok(())
+    }
+
     /// Returns the required `k` parameter for a Topk query.
     ///
     /// PromQL context construction validates this before execution, but the
@@ -1690,9 +1737,11 @@ impl SimpleEngine {
         // restore it. Tie-broken by label for determinism, matching the
         // range engine's own topk sort (#581 stage E.3).
         if context.metadata.statistic_to_compute == Statistic::Topk {
-            results.sort_by(|a, b| {
-                Self::cmp_topk_value_desc(a.value, &a.labels.labels, b.value, &b.labels.labels)
-            });
+            Self::sort_instant_topk_results(
+                &mut results,
+                &context.metadata.query_output_labels,
+                &context.grouping_labels,
+            )?;
         }
 
         Ok(results)
@@ -3096,6 +3145,9 @@ impl SimpleEngine {
 #[cfg(test)]
 mod topk_metadata_tests {
     use super::{QueryExecutionError, SimpleEngine};
+    use crate::data_model::KeyByLabelValues;
+    use crate::engines::query_result::InstantVectorElement;
+    use promql_utilities::data_model::KeyByLabelNames;
     use std::collections::HashMap;
 
     #[test]
@@ -3125,6 +3177,94 @@ mod topk_metadata_tests {
             QueryExecutionError::Native("No data found, but the operation failed".to_string()),
         ));
         assert!(matches!(native_error, Err(QueryExecutionError::Native(_))));
+    }
+
+    #[test]
+    fn grouped_topk_keeps_each_bucket_contiguous() {
+        let output_labels = KeyByLabelNames::new(vec![
+            "__name__".to_string(),
+            "instance".to_string(),
+            "job".to_string(),
+        ]);
+        let grouping_labels = KeyByLabelNames::new(vec!["job".to_string()]);
+        let mut results = vec![
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "b".to_string(),
+                    "backend".to_string(),
+                ]),
+                2.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "a".to_string(),
+                    "frontend".to_string(),
+                ]),
+                4.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "a".to_string(),
+                    "backend".to_string(),
+                ]),
+                3.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "b".to_string(),
+                    "frontend".to_string(),
+                ]),
+                1.0,
+            ),
+        ];
+
+        SimpleEngine::sort_instant_topk_results(&mut results, &output_labels, &grouping_labels)
+            .unwrap();
+
+        assert_eq!(
+            results
+                .into_iter()
+                .map(|result| (result.labels.labels, result.value))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "a".to_string(),
+                        "backend".to_string(),
+                    ],
+                    3.0,
+                ),
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "b".to_string(),
+                        "backend".to_string(),
+                    ],
+                    2.0,
+                ),
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "a".to_string(),
+                        "frontend".to_string(),
+                    ],
+                    4.0,
+                ),
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "b".to_string(),
+                        "frontend".to_string(),
+                    ],
+                    1.0,
+                ),
+            ]
+        );
     }
 }
 
