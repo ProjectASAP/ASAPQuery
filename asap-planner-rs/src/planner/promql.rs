@@ -59,12 +59,10 @@ fn aggregation_stage(
                 labels: labels.labels.clone(),
             }
         }
-        Some(promql_parser::parser::LabelModifier::Exclude(labels)) if !labels.is_empty() => {
-            QueryTimeGrouping {
-                mode: QueryTimeGroupingMode::Without,
-                labels: labels.labels.clone(),
-            }
-        }
+        Some(promql_parser::parser::LabelModifier::Exclude(labels)) => QueryTimeGrouping {
+            mode: QueryTimeGroupingMode::Without,
+            labels: labels.labels.clone(),
+        },
         _ => QueryTimeGrouping {
             mode: QueryTimeGroupingMode::All,
             labels: Vec::new(),
@@ -438,5 +436,26 @@ impl SingleQueryProcessor {
         };
 
         Ok((configs, cleanup_param))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_without_modifier_is_preserved_as_without() {
+        let expression = promql_parser::parser::parse("sum without () (requests_total)")
+            .expect("query should parse");
+        let promql_parser::parser::Expr::Aggregate(aggregate) = expression else {
+            panic!("query should parse as an aggregation");
+        };
+
+        let stage = aggregation_stage(&aggregate).expect("aggregation should be supported");
+        assert!(matches!(
+            stage.grouping.mode,
+            QueryTimeGroupingMode::Without
+        ));
+        assert!(stage.grouping.labels.is_empty());
     }
 }

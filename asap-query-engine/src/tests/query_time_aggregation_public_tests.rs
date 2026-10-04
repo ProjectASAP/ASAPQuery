@@ -312,6 +312,30 @@ mod tests {
     }
 
     #[test]
+    fn empty_without_modifier_preserves_every_input_label() {
+        let engine = engine();
+
+        assert_eq!(
+            execute(
+                &engine,
+                format!("sum without () ({ANCHOR})"),
+                stage(
+                    QueryTimeAggregationOperator::Sum,
+                    QueryTimeGroupingMode::Without,
+                    &[],
+                    None,
+                ),
+            ),
+            expected(vec![
+                (vec!["a", "api", "east"], 1.0),
+                (vec!["a", "worker", "west"], 5.0),
+                (vec!["b", "api", "east"], 3.0),
+                (vec!["b", "worker", "west"], 7.0),
+            ])
+        );
+    }
+
+    #[test]
     fn query_time_topk_breaks_ties_by_full_label_set() {
         let engine = create_engine_single_pop(
             METRIC,
