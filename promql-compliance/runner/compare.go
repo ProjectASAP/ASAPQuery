@@ -208,20 +208,29 @@ func compareInstantValues(reference, test model.Value, policy ComparisonPolicy) 
 		if !found {
 			return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q is absent from test result", key), referenceVector, testVector)
 		}
+		if err := validateOrderedValues(testGroup, policy.InstantVectorOrder.Direction); err != nil {
+			return orderedVectorDiff(fmt.Sprintf("test instant vector ordered group %q: %v", key, err), referenceVector, testVector)
+		}
 		if len(referenceGroup) != len(testGroup) {
 			return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q sample count differs: reference %d, test %d", key, len(referenceGroup), len(testGroup)), referenceVector, testVector)
 		}
-		for index := range referenceGroup {
-			left, right := referenceGroup[index], testGroup[index]
-			if left.Metric != right.Metric || left.Timestamp != right.Timestamp {
-				return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q differs at sample %d", key, index), referenceVector, testVector)
-			}
-			if !equalFloat(left.Value, right.Value, policy.ValueTolerance) {
-				return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q value differs at sample %d", key, index), referenceVector, testVector)
-			}
+		if diff := compareSampleMembership(referenceGroup, testGroup, policy.ValueTolerance); diff != "" {
+			return orderedVectorDiff(fmt.Sprintf("instant vector ordered group %q %s", key, diff), referenceVector, testVector)
 		}
 	}
 	return ""
+}
+
+func compareSampleMembership(reference, test []normalizedSample, tolerance *Tolerance) string {
+	referenceSamples := append([]normalizedSample(nil), reference...)
+	testSamples := append([]normalizedSample(nil), test...)
+	sortNormalizedSamples(referenceSamples)
+	sortNormalizedSamples(testSamples)
+	return compareNormalized(
+		normalizedValue{Type: "vector", Samples: referenceSamples},
+		normalizedValue{Type: "vector", Samples: testSamples},
+		ComparisonPolicy{ValueTolerance: tolerance},
+	)
 }
 
 func orderedVectorDiff(reason string, reference, test model.Vector) string {
@@ -245,6 +254,19 @@ func orderedVectorGroups(vector model.Vector, grouping *OrderGrouping) (map[stri
 		groups[key] = append(groups[key], normalizedSample{Metric: metricString(sample.Metric), Timestamp: int64(sample.Timestamp), Value: float64(sample.Value)})
 	}
 	return groups, nil
+}
+
+func validateOrderedValues(samples []normalizedSample, direction string) error {
+	for index := 1; index < len(samples); index++ {
+		previous, current := samples[index-1], samples[index]
+		if direction == instantOrderDescending && previous.Value < current.Value {
+			return fmt.Errorf("values are not descending at sample %d", index)
+		}
+		if direction == instantOrderAscending && previous.Value > current.Value {
+			return fmt.Errorf("values are not ascending at sample %d", index)
+		}
+	}
+	return nil
 }
 
 func orderGroupKey(metric model.Metric, grouping *OrderGrouping) string {

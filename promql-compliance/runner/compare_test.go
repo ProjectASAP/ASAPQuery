@@ -206,7 +206,7 @@ func TestCompareQueryKeepsDefaultInstantVectorComparisonOrderInsensitive(t *test
 	}
 }
 
-func TestCompareQueryRequiresFullLabelOrderForEqualInstantValues(t *testing.T) {
+func TestCompareQueryIgnoresEqualValueInstantTieOrder(t *testing.T) {
 	base := time.UnixMilli(1_700_000_000_000).UTC()
 	timestamp := model.Time(base.UnixMilli())
 	reference := model.Vector{
@@ -235,8 +235,8 @@ func TestCompareQueryRequiresFullLabelOrderForEqualInstantValues(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CompareQuery: %v", err)
 	}
-	if report.Instant[0].Comparison.Passed {
-		t.Fatal("ordered instant comparison accepted reversed equal-value labels")
+	if !report.Instant[0].Comparison.Passed {
+		t.Fatalf("ordered instant comparison rejected equal-value tie ordering: %#v", report.Instant[0].Comparison)
 	}
 }
 
