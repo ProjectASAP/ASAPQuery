@@ -7,8 +7,8 @@ use crate::config::input::ControllerConfig;
 use super::aqe_extractor::{extract_aqes, RQE};
 use super::atomic_costs::AtomicCostTable;
 use super::cost_model::CostWeights;
-use super::dataset::SeriesDataset;
 use super::greedy::greedy_assign;
+use super::label_set_facts::{LabelSetFacts, LabelSetFactsError};
 use super::solution::{OptimizerSolution, AQE};
 use super::translator::{translate, TranslationSummary};
 
@@ -74,39 +74,50 @@ pub fn run_all_exact_pipeline(
 /// No cross-AQE sharing — every deployed sketch serves exactly one AQE, even
 /// if two AQEs could share one. The Phase 3 MIP finds sharing opportunities.
 ///
-/// The dataset supplies each AQE's metric schema and label-group count before
-/// candidate selection. `arrival_rate_hz` remains a uniform placeholder until
-/// per-config scrape-rate data is available.
+/// The workload's `metrics:` hints supply the label schema; `facts` supply each
+/// AQE's group cardinality and series count.
 pub fn run_greedy_pipeline(
     config: &ControllerConfig,
-    dataset: &SeriesDataset,
+    facts: &LabelSetFacts,
     scrape_interval_ms: u64,
-    arrival_rate_hz: f64,
     atomic_cost_table: &AtomicCostTable,
-) -> Result<(StreamingConfig, InferenceConfig), super::dataset::DatasetError> {
-    dataset.validate_metric_hints(config.metrics.as_deref())?;
-    let schema = dataset.schema();
+) -> Result<(StreamingConfig, InferenceConfig), LabelSetFactsError> {
+    if config.metrics.is_none() {
+        return Err(LabelSetFactsError::MissingMetricHints);
+    }
+    let schema = config.schema_from_hints();
     let rqes = config_to_rqes(config);
     let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms);
-    let label_group_counts = dataset.profile_aqes(&aqes)?;
 
-    for (key, count) in &label_group_counts {
+    // Requirement extraction treats an unknown metric as having no labels,
+    // which would silently mis-resolve `without (...)` and plain selectors.
+    let mut unhinted: Vec<String> = aqes
+        .iter()
+        .map(|aqe| aqe.requirements.metric.clone())
+        .filter(|metric| schema.get_labels(metric).is_none())
+        .collect();
+    if !unhinted.is_empty() {
+        unhinted.sort();
+        unhinted.dedup();
+        return Err(LabelSetFactsError::MetricsWithoutHints(unhinted));
+    }
+
+    let item_facts = facts.resolve(&aqes, scrape_interval_ms)?;
+    for (key, item) in &item_facts {
         tracing::info!(
-            metric = %key.metric,
-            spatial_filter = %key.spatial_filter_normalized,
-            grouping_labels = ?key.grouping_labels.labels,
-            label_group_count = *count,
-            "optimizer dataset profile"
+            %key,
+            cardinality = item.cardinality,
+            arrival_rate_per_sec = item.arrival_rate_per_sec,
+            "optimizer label-set facts"
         );
     }
 
     let solution = greedy_assign(
         aqes,
         scrape_interval_ms,
-        arrival_rate_hz,
         atomic_cost_table,
         &CostWeights::default(),
-        &label_group_counts,
+        &item_facts,
     );
 
     Ok(finish_pipeline(solution, "greedy"))
@@ -169,25 +180,78 @@ mod tests {
         assert!(streaming.get_all_aggregation_configs().is_empty());
     }
 
+    fn with_hints(mut config: ControllerConfig, hints: &[(&str, &[&str])]) -> ControllerConfig {
+        use crate::config::input::MetricDefinition;
+
+        config.metrics = Some(
+            hints
+                .iter()
+                .map(|(metric, labels)| MetricDefinition {
+                    metric: metric.to_string(),
+                    labels: labels.iter().map(|l| l.to_string()).collect(),
+                })
+                .collect(),
+        );
+        config
+    }
+
+    // `min_over_time` keeps every label, so the grouping is the hinted [job].
+    const METRIC_FACTS: &str = r#"
+series:
+  - {metric: metric, spatial_filter: "", series_count: 4}
+groups:
+  - {metric: metric, spatial_filter: "", grouping_labels: [job], cardinality: 4}
+"#;
+
     #[test]
     fn greedy_pipeline_deploys_a_config_for_a_mergeable_aqe() {
-        let config = make_config(&[("min_over_time(metric[5m])", 60_000)]);
-        let dataset = SeriesDataset::from_reader("metric,job\nmetric,api\n".as_bytes()).unwrap();
+        let config = with_hints(
+            make_config(&[("min_over_time(metric[5m])", 60_000)]),
+            &[("metric", &["job"])],
+        );
+        let facts = LabelSetFacts::from_yaml(METRIC_FACTS).unwrap();
         let (streaming, inference) =
-            run_greedy_pipeline(&config, &dataset, 60_000, 1.0, &AtomicCostTable::default())
-                .unwrap();
+            run_greedy_pipeline(&config, &facts, 60_000, &AtomicCostTable::default()).unwrap();
         assert!(!streaming.get_all_aggregation_configs().is_empty());
         assert!(!inference.query_configs.is_empty());
     }
 
     #[test]
-    fn greedy_pipeline_fails_when_dataset_does_not_match_workload() {
+    fn greedy_pipeline_requires_metric_hints() {
         let config = make_config(&[("min_over_time(metric[5m])", 60_000)]);
-        let dataset = SeriesDataset::from_reader("metric,job\nother,api\n".as_bytes()).unwrap();
-
+        let facts = LabelSetFacts::from_yaml(METRIC_FACTS).unwrap();
         assert!(matches!(
-            run_greedy_pipeline(&config, &dataset, 60_000, 1.0, &AtomicCostTable::default()),
-            Err(super::super::dataset::DatasetError::MissingMetric(metric)) if metric == "metric"
+            run_greedy_pipeline(&config, &facts, 60_000, &AtomicCostTable::default()),
+            Err(LabelSetFactsError::MissingMetricHints)
+        ));
+    }
+
+    #[test]
+    fn greedy_pipeline_fails_when_workload_metric_has_no_hint() {
+        let config = with_hints(
+            make_config(&[
+                ("min_over_time(metric[5m])", 60_000),
+                ("max_over_time(unhinted[5m])", 60_000),
+            ]),
+            &[("metric", &["job"])],
+        );
+        let facts = LabelSetFacts::from_yaml(METRIC_FACTS).unwrap();
+        assert!(matches!(
+            run_greedy_pipeline(&config, &facts, 60_000, &AtomicCostTable::default()),
+            Err(LabelSetFactsError::MetricsWithoutHints(metrics)) if metrics == ["unhinted"]
+        ));
+    }
+
+    #[test]
+    fn greedy_pipeline_fails_when_facts_do_not_cover_workload() {
+        let config = with_hints(
+            make_config(&[("sum by (instance) (metric)", 60_000)]),
+            &[("metric", &["job", "instance"])],
+        );
+        let facts = LabelSetFacts::from_yaml(METRIC_FACTS).unwrap();
+        assert!(matches!(
+            run_greedy_pipeline(&config, &facts, 60_000, &AtomicCostTable::default()),
+            Err(LabelSetFactsError::MissingFacts(_))
         ));
     }
 

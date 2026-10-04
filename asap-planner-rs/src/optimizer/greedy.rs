@@ -5,7 +5,7 @@ use tracing::debug;
 use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
 use super::candidate_gen::enumerate_candidates_with_label_group_count;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
-use super::dataset::ProfileKey;
+use super::label_set_facts::{ItemFacts, LabelSetKey};
 use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 
 /// Greedily assign each AQE to its independently-cheapest candidate config.
@@ -14,9 +14,8 @@ use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 /// two AQEs could share one. The Phase 3 MIP finds sharing opportunities; this
 /// is the v1 baseline.
 ///
-/// `arrival_rate_hz` is the per-item arrival rate used for every candidate's IngestCost.
-/// Real per-config rates need Prometheus scrape-rate × series-count data,
-/// which isn't wired up yet — a single placeholder value is applied uniformly.
+/// `facts` supplies each AQE's group cardinality and arrival rate, keyed by
+/// its label set; every AQE must have an entry.
 ///
 /// Each candidate is costed at its own `(sketch_type, params)` via
 /// `atomic_cost_table` (see ASAPQuery#524) rather than one cost applied to
@@ -25,25 +24,22 @@ use super::solution::{AQEAssignment, OptimizerSolution, AQE};
 pub fn greedy_assign(
     aqes: Vec<AQE>,
     scrape_interval_ms: u64,
-    arrival_rate_hz: f64,
     atomic_cost_table: &AtomicCostTable,
     weights: &CostWeights,
-    label_group_counts: &HashMap<ProfileKey, u64>,
+    facts: &HashMap<LabelSetKey, ItemFacts>,
 ) -> OptimizerSolution {
     let mut solution = OptimizerSolution::empty();
 
     for aqe in aqes {
-        let profile_key = ProfileKey::from_requirements(&aqe.requirements);
-        let label_group_count = *label_group_counts.get(&profile_key).unwrap_or_else(|| {
-            panic!(
-                "missing dataset profile for metric '{}' and grouping labels {:?}",
-                aqe.requirements.metric, aqe.requirements.grouping_labels.labels
-            )
-        });
+        let key = LabelSetKey::from_requirements(&aqe.requirements);
+        let item_facts = *facts
+            .get(&key)
+            .unwrap_or_else(|| panic!("missing label-set facts for {key}"));
+        let arrival_rate_hz = item_facts.arrival_rate_per_sec;
         let candidates = enumerate_candidates_with_label_group_count(
             &aqe,
             scrape_interval_ms,
-            label_group_count,
+            item_facts.cardinality,
         );
 
         let (best, costs) = candidates
@@ -128,32 +124,34 @@ mod tests {
         }
     }
 
+    /// One group, one item/sec for every AQE's label set.
+    fn unit_facts(aqes: &[AQE]) -> HashMap<LabelSetKey, ItemFacts> {
+        aqes.iter()
+            .map(|aqe| {
+                (
+                    LabelSetKey::from_requirements(&aqe.requirements),
+                    ItemFacts {
+                        cardinality: 1,
+                        arrival_rate_per_sec: 1.0,
+                    },
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn assigns_unique_ids_to_each_deployed_config() {
         let aqes = vec![
             make_aqe(Statistic::Min, 300_000, 300_000, 1.0 / 60.0),
             make_aqe(Statistic::Max, 300_000, 300_000, 1.0 / 60.0),
         ];
+        let facts = unit_facts(&aqes);
         let solution = greedy_assign(
             aqes,
             60_000,
-            1.0,
             &AtomicCostTable::default(),
             &CostWeights::default(),
-            &HashMap::from([
-                (
-                    ProfileKey::from_requirements(
-                        &make_aqe(Statistic::Min, 300_000, 300_000, 1.0 / 60.0).requirements,
-                    ),
-                    1,
-                ),
-                (
-                    ProfileKey::from_requirements(
-                        &make_aqe(Statistic::Max, 300_000, 300_000, 1.0 / 60.0).requirements,
-                    ),
-                    1,
-                ),
-            ]),
+            &facts,
         );
 
         let mut seen_ids: StdHashMap<u64, ()> = StdHashMap::new();
@@ -186,10 +184,9 @@ mod tests {
         let solution = greedy_assign(
             vec![aqe.clone()],
             60_000,
-            1.0,
             &AtomicCostTable::default(),
             &CostWeights::default(),
-            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
+            &unit_facts(&[aqe]),
         );
         assert_eq!(solution.num_exact_fallback(), 1);
         assert!(solution.deployed_configs().is_empty());
@@ -203,10 +200,9 @@ mod tests {
         let solution = greedy_assign(
             vec![aqe.clone()],
             60_000,
-            1.0,
             &AtomicCostTable::default(),
             &CostWeights::default(),
-            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
+            &unit_facts(&[aqe]),
         );
 
         assert_eq!(solution.num_exact_fallback(), 1);
@@ -231,10 +227,9 @@ mod tests {
         let solution = greedy_assign(
             vec![aqe.clone()],
             60_000,
-            1.0,
             &table,
             &CostWeights::default(),
-            &HashMap::from([(ProfileKey::from_requirements(&aqe.requirements), 1)]),
+            &unit_facts(&[aqe]),
         );
 
         assert_eq!(solution.num_exact_fallback(), 0);

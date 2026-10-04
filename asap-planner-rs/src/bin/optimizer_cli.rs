@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use asap_planner::optimizer::{
-    load_optional_selected_atomic_cost_table, run_greedy_pipeline, AtomicCostTable, SeriesDataset,
+    load_optional_selected_atomic_cost_table, run_greedy_pipeline, AtomicCostTable, LabelSetFacts,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -19,21 +19,18 @@ use clap::Parser;
 )]
 struct Args {
     /// Path to a YAML workload config (same format as `asap-planner --input_config`).
+    /// Its `metrics:` hints are required: they supply each metric's label schema.
     #[arg(long = "input_config")]
     input_config: PathBuf,
 
-    #[arg(long = "data-ingestion-interval-ms")]
+    /// Scrape interval; also sets each series' sample rate for arrival rates.
+    #[arg(long = "data-ingestion-interval-ms", value_parser = clap::value_parser!(u64).range(1..))]
     data_ingestion_interval_ms: u64,
 
-    /// CSV series inventory used to derive metric schemas and label-group counts.
-    #[arg(long = "dataset")]
-    dataset: PathBuf,
-
-    /// Placeholder arrival rate (items/sec) applied uniformly to every candidate's
-    /// IngestCost. Real per-config rates aren't wired up yet — see the open TODOs
-    /// in .design_docs/optimizer-v1-implementation-plan.md.
-    #[arg(long = "rho", default_value = "1.0", value_parser = parse_positive_finite)]
-    rho: f64,
+    /// YAML label-set facts: `series_count` per (metric, spatial filter) and
+    /// `cardinality` per (metric, spatial filter, grouping labels).
+    #[arg(long = "label-set-facts")]
+    label_set_facts: PathBuf,
 
     /// Path to the versioned atomic-cost document sketch-bench's `atomic-costs`
     /// subcommand exports. Requires --atomic-cost-workload to select exactly
@@ -54,14 +51,6 @@ struct Args {
     verbose: u8,
 }
 
-fn parse_positive_finite(s: &str) -> Result<f64, String> {
-    let v: f64 = s.parse().map_err(|_| format!("not a valid number: {s}"))?;
-    if !v.is_finite() || v <= 0.0 {
-        return Err(format!("--rho must be a positive finite number, got {v}"));
-    }
-    Ok(v)
-}
-
 fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
@@ -75,7 +64,7 @@ fn main() -> anyhow::Result<()> {
 
     let yaml_str = std::fs::read_to_string(&args.input_config)?;
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
-    let dataset = SeriesDataset::from_path(&args.dataset)?;
+    let facts = LabelSetFacts::from_path(&args.label_set_facts)?;
 
     let atomic_cost_table = match load_optional_selected_atomic_cost_table(
         args.atomic_costs.as_deref(),
@@ -92,9 +81,8 @@ fn main() -> anyhow::Result<()> {
 
     let (streaming, inference) = run_greedy_pipeline(
         &config,
-        &dataset,
+        &facts,
         args.data_ingestion_interval_ms,
-        args.rho,
         &atomic_cost_table,
     )?;
 
