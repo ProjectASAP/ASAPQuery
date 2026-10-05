@@ -201,16 +201,19 @@ the grid as needed.
   shown for those points but marked as infeasible.
 
 An earlier version set `L_r = α × the fastest latency of r`. It was dropped:
-on `example`, α = 2 forced plans with no merging at 40× the unconstrained
+on the dropped `example` workload, α = 2 forced plans with no merging at 40× the unconstrained
 cost.
 
 ## 6. Workloads
 
+Two workloads, decided 2026-10-05. The earlier `example` (8 RQEs from
+`small_problem`) and `scaling` (random RQE batches) workloads were dropped.
+Planning-time scaling is now the replica dimension of the synthetic workload
+grid.
+
 | ID | Description | Purpose |
 | --- | --- | --- |
-| `example` | `small_problem`'s 8 RQEs (freq, quantile, cardinality, top-k; 1h–1d lookbacks; 60s/300s intervals), tolerances moved to §5 | Readable worked example; one table in the paper |
 | `synthetic` | Synthetic PromQL workload: the 10 queries in "Synthetic workload" below, over Zipf/Pareto data. Main figure. | Cost–latency trade-off across data and requirements |
-| `scaling` | Seeded random batches, `N ∈ {8, 32, 128, 512, 2048}` RQEs. Lookbacks {5m, 15m, 1h, 6h, 1d}, intervals {10s, 60s, 300s}, 4 capabilities, 3 label sets with fixed cardinality/rate. Knob: fraction of RQEs drawn from shared (capability, labels) cohorts, {0, 0.5, 1}. | Planning-time scaling; cost vs. shareability |
 | `traces` | Real-trace RQEs, one workload per dataset: Alibaba 2022, BOOM and Google 2011. Taken from `asap-tools/dataset-analysis/results/skew_summary.csv` ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)): each row's `range_s` is `S` and its `step_s` is `T`. Data parameters and accuracy targets are fit over each whole trace. | Appendix: real-trace results |
 
 ### Synthetic workload
@@ -377,7 +380,7 @@ and top-k from the lower `θ` bound. Longer samples expose worse cases (sketch-b
 
 - **`traces` gives the appendix results.** Its parameters are fit on the
   full trace.
-- **`example`, `scaling` and `synthetic`** use their generators' parameters.
+- **`synthetic`** uses its generator's parameters (§6 "Data model").
 
 Each config is benchmarked at these worst-case parameters. AutoSketch §5.2
 injects random traffic bursts into synthetic workloads to cover variation over
@@ -465,14 +468,13 @@ median of repeated runs for timings:
 
 Figures:
 
-1. Total cost by method, grouped by machine family (`example` and `scaling` at N = 128).
-2. Planning time vs. N, log–log (`scaling`).
-3. Cost vs. shareability (`scaling`).
-4. Cost vs. absolute latency SLA (`example`, `scaling`).
+1. Synthetic workload, cost vs. achieved max estimated latency, one panel per
+   cost model (main paper figure).
+2. Planning time vs. number of RQEs (synthetic, replica dimension), log–log.
+3. Cost vs. each workload-grid dimension (synthetic, one dimension at a time).
+4. Cost vs. absolute latency SLA (synthetic default workload, `traces`).
 5. Baselines under the two cost models: paired bars per workload, model A
    next to model B, each normalized to ASAP.
-6. Synthetic workload: cost vs. achieved max estimated latency, one panel per
-   cost model (main paper figure).
 
 ## 8. Who implements what, in which PR
 
@@ -483,8 +485,8 @@ Figures:
 | 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` (steady-state model), solver scaling | Merged |
 | 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
 | 2 | sketch-bench #136 | Evaluation table for the trace workloads: per (RQE, config) accuracy for AutoSketch and for ASAP at each `m`, saturation, costs | Merged |
-| 4 | sketch-bench #138 | Runner, absolute SLA, results for `example`, `scaling`, `traces` | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
-| — | sketch-bench #140 | Saturation curves at K ∈ {1e1, 1e2, 1e4, 1e6} for the synthetic workload | Draft; accuracy done, cost 197 of 240 points |
+| 4 | sketch-bench #138 | Runner, absolute SLA, results for `traces` (the `example`/`scaling` workloads are to be removed in its rebase) | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
+| — | sketch-bench #140 | Saturation curves (accuracy vs. events per sketch, N_sat, costs) at K ∈ {1e1, 1e2, 1e4, 1e6}: the synthetic workload needs these cardinalities and #130 measured only 1e3, 1e5, 1e7 | Draft; accuracy done, cost 197 of 240 points |
 | — | sketch-bench #139 | Synthetic workload: the 10 templates, PerQuery-CostAware bound by the SLA, and the workload-grid driver (dimensions in §6 "Workload grid": query mix, replicas, window set, repeat interval, `card(label_0)`, series per group, θ/a, accuracy target, SLA), with the sweep script and figures | Open; code for the fixed 67-RQE workload exists. Still to do: the grid driver, then the sweep (after #140 and the two-cost-model PR) |
 | — | sketch-bench, not yet opened | The two cost models (§4): CPU timeline, model A, model B, rerun of every experiment | Not started as a PR |
 | 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port the objective there and rerun, so the paper reports the planner that ships | Not started; waits for Milind's port |
@@ -529,7 +531,7 @@ sliding sketch per query.
   DDSketch, and taken from #131 for KLL and top-k. #131 covers `N ≤ 1e7` and
   `m ≤ 64`. A deployment needing `m > 64` (e.g. a 1-day lookback over 1-minute
   windows, `m = 1440`) is outside the measured range. Mark it as extrapolated,
-  or exclude it for KLL/top-k. Replay `example`'s chosen plans in sketch-bench once to
+  or exclude it for KLL/top-k. Replay the synthetic default workload's chosen plans in sketch-bench once to
   confirm the lookups.
 - Costs and latencies are estimates from per-operation measurements, not
   end-to-end executions. The execution-based comparison is ASAPQuery-backend
