@@ -164,15 +164,20 @@ family's model B. PerQuery-CostAware also uses
 the model being compared. AutoSketch-Adapted's plan does not depend on cost
 and is scored under both.
 - Model A is linear: the average-CPU and memory terms weighted by `a` and `b`.
-- Model B's peak is bounded linearly per RQE. In steady state, an RQE whose
-  evaluations take `latency` every `T` keeps `ceil(latency / T)` cores busy at
-  most, counting evaluations that outlast their interval and overlap
-  themselves. The MILP uses `peak ≤ ingest + Σ_r occupancy_{r,D} · z_{r,D}`
-  with these constant per-(RQE, deployment) occupancies.
-  - The bound is exact when no evaluation outlasts its interval.
-  - An earlier proxy that read only bin 0 undercounted self-overlapping
-    evaluations, about 40 per synthetic run, and caused sanity violations.
-    It was replaced (sketch-bench #141).
+- Model B's peak is bounded linearly per RQE. An RQE's **peak occupancy** is
+  the most CPU-seconds its evaluations use in any 1-second bin in steady state
+  (`peak_occupancy` in sketch-bench #141):
+  - with no self-overlap (`latency ≤ T`), its share of the firing bin,
+    `min(latency, 1 s)`; e.g. 0.4 s every 60 s gives 0.4;
+  - otherwise, the maximum over one period of the overlapping evaluations;
+    e.g. 2.5 s every 1 s gives 0.5 + 1 + 1 = 2.5 cores in bin [2, 3).
+
+  The MILP uses `peak ≤ ingest + Σ_r occupancy_{r,D} · z_{r,D}`, which is linear
+  because each (RQE, deployment) latency is a constant. It is an upper bound,
+  since RQEs may peak in different bins. It is exact when no evaluation outlasts
+  its interval: every RQE then peaks in bin 0, where all of them fire. An
+  earlier proxy that read only bin 0 undercounted self-overlapping
+  evaluations, about 40 per synthetic run, and caused sanity violations.
 - After solving, the exact peak is recomputed from the timeline and compared
   with the bound.
 
