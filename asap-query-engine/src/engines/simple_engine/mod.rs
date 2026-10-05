@@ -10,6 +10,7 @@ use crate::data_model::{
 };
 use crate::engines::query_plan::{
     NodeId, PlanOptions, QueryPlan, QueryPlanExecutionError, QueryPlanNode, QueryPlanRuntime,
+    RangeEstimateSpec, StoreReadRole, StoreReadStrategy,
 };
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{
@@ -182,6 +183,7 @@ pub struct RangeQueryExecutionContext {
     pub keys_tumbling_window_ms: Option<u64>,
 }
 
+#[cfg(feature = "native_query_legacy_test_support")]
 #[derive(Clone)]
 struct RangeQueryReads {
     values: TimestampedBucketsMap,
@@ -221,12 +223,15 @@ struct RangePipelineOutput {
 
 struct NativePlanRuntime<'a> {
     engine: &'a SimpleEngine,
-    context: &'a RangeQueryExecutionContext,
-    reads: std::cell::RefCell<Option<RangeQueryReads>>,
 }
 
 impl NativePlanRuntime<'_> {
-    fn reads(&self) -> Result<RangeQueryReads, QueryExecutionError> {
+    fn read(
+        &self,
+        query: &StoreQueryParams,
+        role: StoreReadRole,
+        strategy: &StoreReadStrategy,
+    ) -> Result<TimestampedBucketsMap, QueryExecutionError> {
         #[cfg(feature = "native_query_legacy_test_support")]
         if matches!(
             self.engine.native_range_execution_mode,
@@ -236,15 +241,31 @@ impl NativePlanRuntime<'_> {
                 "test-only native store failure".to_string(),
             ));
         }
-        if self.reads.borrow().is_none() {
-            *self.reads.borrow_mut() = Some(self.engine.read_range_query_inputs(self.context)?);
+        let data = match strategy {
+            StoreReadStrategy::WindowGrid => self
+                .engine
+                .execute_store_query(query)
+                .map_err(QueryExecutionError::Native)?,
+            StoreReadStrategy::SlidingExactCover {
+                output_timestamps,
+                lookback_ms,
+                window_size_ms,
+                bucket_step_ms,
+            } => self.engine.execute_sliding_cover_query(
+                query,
+                output_timestamps,
+                *lookback_ms,
+                *window_size_ms,
+                *bucket_step_ms,
+            )?,
+        };
+        if data.is_empty() && role == StoreReadRole::Values {
+            return Err(QueryExecutionError::NoLocalData(format!(
+                "No data found for metric: {}",
+                query.metric
+            )));
         }
-        Ok(self
-            .reads
-            .borrow()
-            .as_ref()
-            .expect("reads initialized")
-            .clone())
+        Ok(data)
     }
 }
 
@@ -259,25 +280,19 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
         inputs: &[Self::Output],
     ) -> Result<Self::Output, Self::Error> {
         match node {
-            QueryPlanNode::StoreRead { query, strategy: _ } => {
-                let reads = self.reads()?;
-                if query.aggregation_id == self.context.base.store_plan.values_query.aggregation_id
-                {
-                    Ok(NativePlanOutput::Read(reads.values))
-                } else {
-                    reads.keys.map(NativePlanOutput::Read).ok_or_else(|| {
-                        QueryExecutionError::Native(
-                            "Query plan requested missing key read".to_string(),
-                        )
-                    })
-                }
-            }
-            QueryPlanNode::ComposeWindows { .. } => match inputs {
+            QueryPlanNode::StoreRead {
+                query,
+                role,
+                strategy,
+            } => self
+                .read(query, *role, strategy)
+                .map(NativePlanOutput::Read),
+            QueryPlanNode::PrepareBuckets { .. } => match inputs {
                 [NativePlanOutput::Read(data)] => Ok(NativePlanOutput::Composed(
                     self.engine.compose_range_read(data),
                 )),
                 _ => Err(QueryExecutionError::Native(
-                    "ComposeWindows expected store data".into(),
+                    "PrepareBuckets expected store data".into(),
                 )),
             },
             QueryPlanNode::ResolveKeys { keys, .. } => match (inputs, keys) {
@@ -298,10 +313,16 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     "ResolveKeys received incompatible inputs".into(),
                 )),
             },
-            QueryPlanNode::Estimate { output_labels, .. } => match inputs {
+            QueryPlanNode::Estimate {
+                statistic,
+                query_kwargs,
+                output_labels,
+                spec,
+                ..
+            } => match inputs {
                 [NativePlanOutput::Resolved(reads)] => self
                     .engine
-                    .estimate_range_query(self.context, reads.clone())
+                    .estimate_range_query(spec, *statistic, query_kwargs, reads.clone())
                     .map(|values| NativePlanOutput::Results {
                         labels: output_labels.clone(),
                         values,
@@ -329,20 +350,14 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                 )),
             },
             QueryPlanNode::LimitTopK {
-                k, grouping_labels, ..
+                k,
+                grouping_labels,
+                row_label_order,
+                ..
             } => match inputs {
                 [NativePlanOutput::Results { labels, values }] => self
                     .engine
-                    .limit_range_topk(
-                        values,
-                        k,
-                        &SimpleEngine::topk_row_label_order(
-                            &self.context.base.metadata,
-                            &self.context.base.grouping_labels,
-                            &self.context.base.aggregated_labels,
-                        ),
-                        grouping_labels,
-                    )
+                    .limit_range_topk(values, k, row_label_order, grouping_labels)
                     .map_err(QueryExecutionError::Native)
                     .map(|values| NativePlanOutput::Results {
                         labels: labels.clone(),
@@ -1214,7 +1229,7 @@ impl SimpleEngine {
     /// bare-row topk has no named-output-label concept at all), so this
     /// falls back to the aggregation config's own `grouping_labels ++
     /// aggregated_labels` order in that case.
-    fn topk_row_label_order(
+    pub(crate) fn topk_row_label_order(
         metadata: &QueryMetadata,
         grouping_labels: &KeyByLabelNames,
         aggregated_labels: &KeyByLabelNames,
@@ -2489,7 +2504,10 @@ impl SimpleEngine {
         enable_topk_formatting: bool,
         query_time_aggregations: &[asap_types::query_config::QueryTimeAggregation],
     ) -> Result<RangePipelineOutput, QueryExecutionError> {
-        Self::reject_off_grid_sliding_counter_query(context)?;
+        Self::reject_off_grid_sliding_counter_query(
+            &RangeEstimateSpec::from(context),
+            context.base.metadata.statistic_to_compute,
+        )?;
         #[cfg(feature = "native_query_legacy_test_support")]
         if matches!(
             self.native_range_execution_mode,
@@ -2539,11 +2557,7 @@ impl SimpleEngine {
         )
         .map_err(QueryExecutionError::Native)?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
-        let runtime = NativePlanRuntime {
-            engine: self,
-            context,
-            reads: std::cell::RefCell::new(None),
-        };
+        let runtime = NativePlanRuntime { engine: self };
         match plan.execute(&runtime).map_err(|error| match error {
             QueryPlanExecutionError::InvalidPlan(reason) => QueryExecutionError::Native(reason),
             QueryPlanExecutionError::Node { source, .. } => source,
@@ -2565,8 +2579,11 @@ impl SimpleEngine {
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         let reads = self.read_range_query_inputs(context)?;
+        let estimate_spec = RangeEstimateSpec::from(context);
         let mut results = self.estimate_range_query(
-            context,
+            &estimate_spec,
+            context.base.metadata.statistic_to_compute,
+            &context.base.metadata.query_kwargs,
             ResolvedRangeReads {
                 values: self.compose_range_read(&reads.values),
                 keys: reads
@@ -2601,6 +2618,7 @@ impl SimpleEngine {
         ))
     }
 
+    #[cfg(feature = "native_query_legacy_test_support")]
     fn read_range_query_inputs(
         &self,
         context: &RangeQueryExecutionContext,
@@ -2662,26 +2680,24 @@ impl SimpleEngine {
     }
 
     fn reject_off_grid_sliding_counter_query(
-        context: &RangeQueryExecutionContext,
+        spec: &RangeEstimateSpec,
+        statistic: Statistic,
     ) -> Result<(), QueryExecutionError> {
-        if context.window_type != WindowType::Sliding
-            || context.tumbling_window_ms == 0
-            || !matches!(
-                context.base.metadata.statistic_to_compute,
-                Statistic::Increase | Statistic::Rate
-            )
+        if spec.window_type != WindowType::Sliding
+            || spec.tumbling_window_ms == 0
+            || !matches!(statistic, Statistic::Increase | Statistic::Rate)
         {
             return Ok(());
         }
-        if let Some(&timestamp) = context
+        if let Some(&timestamp) = spec
             .output_timestamps
             .iter()
-            .find(|&&timestamp| !timestamp.is_multiple_of(context.tumbling_window_ms))
+            .find(|&&timestamp| !timestamp.is_multiple_of(spec.tumbling_window_ms))
         {
             return Err(QueryExecutionError::NoLocalData(format!(
                 "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
                  timestamp {} (grid interval {}ms)",
-                timestamp, context.tumbling_window_ms
+                timestamp, spec.tumbling_window_ms
             )));
         }
         Ok(())
@@ -2689,7 +2705,9 @@ impl SimpleEngine {
 
     fn estimate_range_query(
         &self,
-        context: &RangeQueryExecutionContext,
+        spec: &RangeEstimateSpec,
+        statistic: Statistic,
+        query_kwargs: &HashMap<String, String>,
         reads: ResolvedRangeReads,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         use crate::engines::query_result::RangeVectorElement;
@@ -2699,23 +2717,24 @@ impl SimpleEngine {
             values: ComposedRangeRead { groups: all_data },
             keys: keys_raw_data,
         } = reads;
-        let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
+        Self::reject_off_grid_sliding_counter_query(spec, statistic)?;
+        let lookback_ms = (spec.lookback_bucket_count as u64) * spec.tumbling_window_ms;
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
         // Determine accumulator type for merger selection
-        let accumulator_type = &context.base.agg_info.aggregation_type_for_value;
-        let key_accumulator_type = context.base.agg_info.aggregation_type_for_key;
+        let accumulator_type = &spec.value_aggregation_type;
+        let key_accumulator_type = spec.key_aggregation_type;
 
         // Calculate step parameters
-        let buckets_per_step = context.buckets_per_step;
-        let lookback_bucket_count = context.lookback_bucket_count;
-        let tumbling_window_ms = context.tumbling_window_ms;
-        let window_type = context.window_type;
-        let keys_lookback_ms = context.keys_lookback_ms;
-        let keys_tumbling_window_ms = context.keys_tumbling_window_ms;
-        let keys_window_type = context.keys_window_type;
-        let keys_window_size_ms = context.keys_window_size_ms;
+        let buckets_per_step = spec.buckets_per_step;
+        let lookback_bucket_count = spec.lookback_bucket_count;
+        let tumbling_window_ms = spec.tumbling_window_ms;
+        let window_type = spec.window_type;
+        let keys_lookback_ms = spec.keys_lookback_ms;
+        let keys_tumbling_window_ms = spec.keys_tumbling_window_ms;
+        let keys_window_type = spec.keys_window_type;
+        let keys_window_size_ms = spec.keys_window_size_ms;
 
         // Named distinctly from `WindowType` (Sliding/Tumbling, picks how a
         // step's window is composed from `bucket_map` below) -- this describes step-to-step overlap in
@@ -2729,9 +2748,9 @@ impl SimpleEngine {
         debug!(
             "Range query params: {} output timestamp(s) [{}..{}], tumbling_window_ms={}, \
              buckets_per_step (slide)={}, lookback_bucket_count (size)={}, mode={}",
-            context.output_timestamps.len(),
-            context.output_timestamps.first().copied().unwrap_or(0),
-            context.output_timestamps.last().copied().unwrap_or(0),
+            spec.output_timestamps.len(),
+            spec.output_timestamps.first().copied().unwrap_or(0),
+            spec.output_timestamps.last().copied().unwrap_or(0),
             tumbling_window_ms,
             buckets_per_step,
             lookback_bucket_count,
@@ -2794,8 +2813,8 @@ impl SimpleEngine {
         // group). See #582 review for collect_results_separate_keys parity.
         let groups: Vec<(GroupBucketMap, KeysSource)> = match &keys_raw_data {
             Some(keys_map) => {
-                // keys_raw_data is Some, so context.keys_lookback_ms /
-                // context.keys_tumbling_window_ms are guaranteed Some too
+                // keys_raw_data is Some, so its plan spec's key-window
+                // fields are guaranteed Some too.
                 // (both derived from the same keys_query.is_some() check in
                 // finish_range_context) -- resolved once here instead of
                 // re-unwrapped per group per step.
@@ -2881,11 +2900,7 @@ impl SimpleEngine {
         // this is actually a topk query with limiting requested -- gates
         // both the per-step sort/truncate below and nothing else, so a
         // non-topk query pays zero cost for this.
-        let row_label_order = Self::topk_row_label_order(
-            &context.base.metadata,
-            &context.base.grouping_labels,
-            &context.base.aggregated_labels,
-        );
+        let row_label_order = spec.row_label_order.clone();
 
         // Step-major: for each output timestamp, visit every group, not the
         // other way around. Required for topk correctness -- ranking a
@@ -2893,13 +2908,13 @@ impl SimpleEngine {
         // timestamp before truncating, which a group-major loop can't do
         // (#581). One loop shape for topk and non-topk alike, rather than
         // maintaining two.
-        for &current_time in &context.output_timestamps {
+        for &current_time in &spec.output_timestamps {
             let current_time_i64 = i64::try_from(current_time).map_err(|_| {
                 QueryExecutionError::Native(
                     "Output timestamp exceeds signed timestamp range".to_string(),
                 )
             })?;
-            let query_range_ms = i64::try_from(context.query_range_ms).map_err(|_| {
+            let query_range_ms = i64::try_from(spec.query_range_ms).map_err(|_| {
                 QueryExecutionError::Native(
                     "Query range exceeds signed timestamp range".to_string(),
                 )
@@ -3049,7 +3064,7 @@ impl SimpleEngine {
                     window_end,
                     tumbling_window_ms,
                     window_type,
-                    context.window_size_ms,
+                    spec.window_size_ms,
                 );
 
                 trace!(
@@ -3058,13 +3073,13 @@ impl SimpleEngine {
                     window_start,
                     window_end,
                     grid_step_ms = tumbling_window_ms,
-                    stored_window_size_ms = context.window_size_ms,
+                    stored_window_size_ms = spec.window_size_ms,
                     selected_bucket_count = window_buckets.len(),
                     "Composed query output window from stored buckets"
                 );
 
                 if window_type == WindowType::Sliding {
-                    let expected = (lookback_ms / context.window_size_ms) as usize;
+                    let expected = (lookback_ms / spec.window_size_ms) as usize;
                     if window_buckets.len() < expected {
                         debug!(
                             "Skipping incomplete Sliding value cover at t={}",
@@ -3108,11 +3123,11 @@ impl SimpleEngine {
                         Some(merged.as_ref()),
                         keys_precompute.as_deref(),
                         &fallback_key,
-                        &context.base.grouping_labels,
-                        &context.base.aggregated_labels,
+                        &spec.grouping_labels,
+                        &spec.aggregated_labels,
                         &row_label_order,
-                        &context.base.metadata.statistic_to_compute,
-                        &context.base.metadata.query_kwargs,
+                        &statistic,
+                        query_kwargs,
                         Some(&query_bounds),
                     )
                     .into_iter()
