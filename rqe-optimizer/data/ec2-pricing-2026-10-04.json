@@ -1,0 +1,34 @@
+{
+  "source": "https://b0.p.awsstatic.com/pricing/2.0/meteredUnitMaps/ec2/USD/current/ec2-ondemand-without-sec-sel/US%20East%20(N.%20Virginia)/Linux/index.json",
+  "region": "US East (N. Virginia)",
+  "operating_system": "Linux",
+  "pricing": "on-demand",
+  "publication_date": "2026-09-25T17:45:21Z",
+  "fetched": "2026-10-04",
+  "families": [
+    {
+      "family": "compute_optimized",
+      "instance_type": "c7i.xlarge",
+      "vcpu": 4,
+      "memory_gib": 8.0,
+      "usd_per_hour": 0.1785,
+      "rate_code": "D8WVCVBE32N227KA.JRTCKXETXF.6YS6EN2CT7"
+    },
+    {
+      "family": "general_purpose",
+      "instance_type": "m7i.xlarge",
+      "vcpu": 4,
+      "memory_gib": 16.0,
+      "usd_per_hour": 0.2016,
+      "rate_code": "W8MD4QK5G3J3QYWR.JRTCKXETXF.6YS6EN2CT7"
+    },
+    {
+      "family": "memory_optimized",
+      "instance_type": "r7i.xlarge",
+      "vcpu": 4,
+      "memory_gib": 32.0,
+      "usd_per_hour": 0.2646,
+      "rate_code": "PRGSWU6294SJ3Z93.JRTCKXETXF.6YS6EN2CT7"
+    }
+  ]
+}

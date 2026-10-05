@@ -152,6 +152,14 @@ impl Deployment {
         }
         Some(lookback_secs / self.window_secs)
     }
+
+    /// Instances held to serve a lookback: `x / y` open ones plus the closed
+    /// ones still inside the lookback, `(x + S) / y`.
+    pub fn retained_instance_count(&self, lookback_secs: Seconds) -> Option<u64> {
+        self.query_instance_count(lookback_secs)?;
+        self.active_instance_count()?;
+        Some((self.window_secs + lookback_secs) / self.slide_secs)
+    }
 }
 
 /// A full mapping: one deployment index (into the `deployments` slice passed

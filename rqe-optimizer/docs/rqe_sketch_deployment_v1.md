@@ -130,14 +130,14 @@ explicit on the RQE; it is never inferred from a metric name. A missing metric
 does not pass.
 
 Before mapping, prune a candidate only if another candidate can serve every
-RQE it can and is no worse in query memory, ingest CPU, and latency for each
-such RQE. This is safe because any mapping using the removed candidate can
+RQE it can and is no worse in query memory, ingest CPU, latency, and retained
+memory for each such RQE. This is safe because any mapping using the removed candidate can
 substitute the remaining one without weakening a modeled objective.
 
 Historical instances must be retained long enough to answer the RQEs assigned
-to a deployment. Retention is an execution/storage detail in v1, not a
-candidate parameter or a scored objective. After selecting a mapping, retain
-the history needed by the largest assigned query window.
+to a deployment. Retention is not a candidate parameter: a deployment retains
+the history needed by the largest assigned query window. Its memory is scored
+as retained memory (below) and priced by `minimize_cost`.
 
 ## Workload mapping
 
@@ -185,6 +185,20 @@ TCO_cpu = Σ_D ingest_cpu_D × u_D
 latency_i = Σ_{D: (i,D)∈E} latency_{i,D} × z_{i,D}
 ```
 
+`minimize_cost` instead prices the plan on one EC2 machine family `f` (vCPUs
+`vcpu_f`, memory `gib_f`, hourly price `price_f`) in fractional instances
+`n_f`, with a continuous `R_D ≥ 0` for each candidate's retained GiB:
+
+```text
+minimize  price_f × n_f
+R_D ≥ retained_gib_{i,D} × z_{i,D}               for (i, D) ∈ E
+vcpu_f × n_f ≥ TCO_cpu
+gib_f  × n_f ≥ Σ_D R_D
+```
+
+Prices come from `rqe-optimizer/data/ec2-pricing-<date>.json`, written by
+`scripts/fetch_ec2_pricing.py`. Disk is not priced.
+
 One solve needs a scalar objective, such as minimum `TCO_cpu` subject to
 `M ≤ memory_budget` and optional `latency_i ≤ latency_budget_i`. To sample the
 Pareto frontier, repeat solves over memory and latency budgets, or use a
@@ -214,6 +228,16 @@ The mapping-level memory objective is the worst individual query:
 
 ```text
 peak_query_memory = max_i query_memory_i
+```
+
+### Retained memory
+
+A deployment holds `x / y` open instances plus the closed instances still
+inside the longest lookback it serves:
+
+```text
+retained_memory = Σ_{D: u_D=1} card(D.labels) × mem_bytes(D.configuration)
+                  × (D.x + max_{i: D(i)=D} S_i) / D.y
 ```
 
 ### CPU
@@ -281,8 +305,7 @@ breakdown of `TCO_cpu`, together with the selected deployment mapping.
 - **Latency SLAs:** v1 reports per-RQE latency but does not reject a mapping
   for exceeding a target. Add optional per-RQE maximum latency as a hard
   constraint when workloads supply targets.
-- **Memory model:** merge buffers, retained-storage capacity, and concurrent
-  queries are not modeled.
+- **Memory model:** merge buffers and concurrent queries are not modeled.
 - **Static planning:** no RQE churn, replanning, or migration cost.
 - **Rollups:** v1 does not precompute merged rollups. Queries merge their
   selected base instances when they run.

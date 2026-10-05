@@ -82,6 +82,7 @@ mod tests {
     fn objectives(memory: f64, cpu: f64, latency: f64) -> Objectives {
         Objectives {
             peak_query_memory_bytes: memory,
+            retained_memory_bytes: 0.0,
             ingest_cpu_secs_per_sec: 0.0,
             merge_cpu_secs_per_sec: 0.0,
             query_cpu_secs_per_sec: 0.0,

@@ -101,8 +101,8 @@ pub fn build_all_candidates_unpruned(rqes: &[Rqe], costs: &[AtomicCostEntry]) ->
 /// This comparison is deliberately local to a capability/label-set group.
 /// Within such a group, label cardinality and arrival rate are common
 /// multipliers, so comparing per-instance query memory and
-/// `active_instances * insert_cost` is sufficient.  Query latency is checked
-/// for each RQE the dominated candidate can serve.
+/// `active_instances * insert_cost` is sufficient.  Query latency and retained
+/// memory are checked for each RQE the dominated candidate can serve.
 pub fn prune_dominated_candidates(rqes: &[Rqe], candidates: Vec<Deployment>) -> Vec<Deployment> {
     let eligibility: Vec<Vec<bool>> = candidates
         .iter()
@@ -166,8 +166,10 @@ fn candidate_dominates(
             .enumerate()
             .all(|(rqe_index, &serves)| {
                 !serves
-                    || query_latency(replacement, &rqes[rqe_index])
+                    || (query_latency(replacement, &rqes[rqe_index])
                         <= query_latency(original, &rqes[rqe_index])
+                        && retained_memory(replacement, &rqes[rqe_index])
+                            <= retained_memory(original, &rqes[rqe_index]))
             })
 }
 
@@ -193,8 +195,10 @@ fn strictly_better(
             .enumerate()
             .any(|(rqe_index, &serves)| {
                 serves
-                    && query_latency(replacement, &rqes[rqe_index])
+                    && (query_latency(replacement, &rqes[rqe_index])
                         < query_latency(original, &rqes[rqe_index])
+                        || retained_memory(replacement, &rqes[rqe_index])
+                            < retained_memory(original, &rqes[rqe_index]))
             })
 }
 
@@ -204,6 +208,15 @@ fn query_latency(deployment: &Deployment, rqe: &Rqe) -> f64 {
         .expect("candidate coverage only contains exactly tiled RQEs");
     deployment.config.query_cpu_secs
         + instances.saturating_sub(1) as f64 * deployment.config.merge_cpu_secs
+}
+
+/// Retained bytes per label group when serving `rqe`. Label cardinality is a
+/// common multiplier within a group, so it is left out.
+fn retained_memory(deployment: &Deployment, rqe: &Rqe) -> f64 {
+    deployment
+        .retained_instance_count(rqe.lookback_secs)
+        .expect("candidate coverage only contains exactly tiled RQEs") as f64
+        * deployment.config.mem_bytes_per_instance
 }
 
 pub fn eligible_deployments_for(r: &Rqe, deployments: &[Deployment]) -> Vec<usize> {
@@ -333,5 +346,37 @@ mod tests {
             prune_dominated_candidates(&[r], vec![small_window.clone(), large_window.clone()]);
 
         assert_eq!(retained, vec![large_window]);
+    }
+
+    #[test]
+    fn retains_candidate_with_lower_retained_memory() {
+        let r = rqe("r", 60, 60);
+        // Holds (60 + 60) / 60 = 2 instances of 10 bytes.
+        let whole_window = Deployment {
+            capability: Capability::Freq,
+            labels: LabelSet::new(),
+            config: AtomicCostEntry {
+                mem_bytes_per_instance: 10.0,
+                ..cost()
+            },
+            window_secs: 60,
+            slide_secs: 60,
+        };
+        // Smaller, faster sketches, but (20 + 60) / 20 = 4 of them: 24 bytes.
+        let panes = Deployment {
+            config: AtomicCostEntry {
+                mem_bytes_per_instance: 6.0,
+                query_cpu_secs: 0.5,
+                merge_cpu_secs: 0.1,
+                ..cost()
+            },
+            window_secs: 20,
+            slide_secs: 20,
+            ..whole_window.clone()
+        };
+
+        let retained = prune_dominated_candidates(&[r], vec![whole_window.clone(), panes.clone()]);
+
+        assert_eq!(retained, vec![whole_window, panes]);
     }
 }

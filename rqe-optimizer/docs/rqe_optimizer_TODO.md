@@ -31,6 +31,11 @@ implemented, what is next, and what is intentionally deferred.
   1-hour, 6-hour, and 1-day quantile RQEs to exercise those constraints.
 - A regression test confirms the MILP matches exhaustive minimum-TCO search on
   a tiny workload with shared deployment activation costs.
+- Retained memory (`(x + max S) / y` instances per active deployment) is
+  scored, and `milp::minimize_cost` minimizes the hourly price on one EC2
+  machine family in fractional instances. Prices are a committed snapshot from
+  `scripts/fetch_ec2_pricing.py`; `small_problem --milp --machine-family NAME`
+  uses it.
 
 ## Next
 
@@ -43,7 +48,7 @@ implemented, what is next, and what is intentionally deferred.
 ## Explicitly deferred
 
 - Query-result sharing across RQEs.
-- Merge buffers, retained-storage capacity, and concurrent-query memory.
+- Merge buffers and concurrent-query memory.
 - RQE churn, replanning, and migration cost.
 - Precomputed rollups; v1 merges selected base instances at query time.
 - A policy for choosing one mapping from the reported Pareto frontier.
