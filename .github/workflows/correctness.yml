@@ -110,10 +110,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install protoc
+      - name: Install protoc and HiGHS build deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y protobuf-compiler
+          sudo apt-get install -y protobuf-compiler cmake libclang-dev
 
       - name: Run sccache
         uses: mozilla-actions/sccache-action@v0.0.4

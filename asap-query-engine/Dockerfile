@@ -8,9 +8,12 @@ LABEL description="QueryEngine Rust service for SketchDB"
 
 WORKDIR /code
 
-# Required by prost-build dependencies (e.g., asap_sketchlib) during cargo build
+# protobuf-compiler: prost-build (e.g., asap_sketchlib). cmake, libclang-dev:
+# HiGHS, built through the asap_planner dependency.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
+    cmake \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the asap-common directory
