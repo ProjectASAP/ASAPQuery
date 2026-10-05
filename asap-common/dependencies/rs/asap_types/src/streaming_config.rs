@@ -58,12 +58,17 @@ impl StreamingConfig {
                 for aggregation in &query_config.aggregations {
                     let aggregation_id = aggregation.aggregation_id;
                     if let Some(num_aggregates) = aggregation.num_aggregates_to_retain {
-                        // OLD: Keep last value only (for backwards compatibility)
-                        retention_map.insert(aggregation_id, num_aggregates);
+                        retention_map
+                            .entry(aggregation_id)
+                            .and_modify(|retain| *retain = (*retain).max(num_aggregates))
+                            .or_insert(num_aggregates);
+                    }
 
-                        // NEW: Sum up num_aggregates_to_retain across all queries
-                        *read_count_threshold_map.entry(aggregation_id).or_insert(0) +=
-                            num_aggregates;
+                    if let Some(read_count_threshold) = aggregation.read_count_threshold {
+                        let threshold = read_count_threshold_map.entry(aggregation_id).or_insert(0);
+                        *threshold = threshold
+                            .checked_add(read_count_threshold)
+                            .expect("read-count threshold overflowed");
                     }
                 }
             }
@@ -136,6 +141,10 @@ impl Default for StreamingConfig {
 mod tests {
     use super::*;
     use crate::aggregation_config::AggregationConfigError;
+    use crate::aggregation_reference::AggregationReference;
+    use crate::enums::{CleanupPolicy, QueryLanguage};
+    use crate::inference_config::InferenceConfig;
+    use crate::query_config::QueryConfig;
 
     #[test]
     fn rejects_heap_config_with_invalid_sub_type() {
@@ -364,5 +373,47 @@ aggregations:
 
         StreamingConfig::from_yaml_data(&yaml, None)
             .expect("MinMax config with 'MAX' subtype must be accepted");
+    }
+
+    #[test]
+    fn shared_references_keep_the_largest_circular_buffer_retention() {
+        // A later short-range query must not reduce a shared aggregation's retention.
+        let yaml = minmax_yaml("MinMax", "max");
+        for references in [[7, 2], [2, 7]] {
+            let mut inference =
+                InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::CircularBuffer);
+            inference.query_configs = references
+                .into_iter()
+                .map(|retain| {
+                    QueryConfig::new(format!("max(metric[{retain}m])"))
+                        .add_aggregation(AggregationReference::new(1, Some(retain)))
+                })
+                .collect();
+
+            let config = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
+                .expect("shared aggregation references should load");
+
+            assert_eq!(config[1].num_aggregates_to_retain, Some(7));
+            assert_eq!(config[1].read_count_threshold, None);
+        }
+    }
+
+    #[test]
+    fn shared_references_sum_read_based_thresholds() {
+        // Each shared query consumes a read before the aggregate can be cleaned up.
+        let yaml = minmax_yaml("MinMax", "max");
+        let mut inference = InferenceConfig::new(QueryLanguage::promql, CleanupPolicy::ReadBased);
+        inference.query_configs = vec![
+            QueryConfig::new("max(metric[10m])".into())
+                .add_aggregation(AggregationReference::with_read_count_threshold(1, Some(7))),
+            QueryConfig::new("max(metric[1m])".into())
+                .add_aggregation(AggregationReference::with_read_count_threshold(1, Some(2))),
+        ];
+
+        let config = StreamingConfig::from_yaml_data(&yaml, Some(&inference))
+            .expect("shared aggregation references should load");
+
+        assert_eq!(config[1].num_aggregates_to_retain, None);
+        assert_eq!(config[1].read_count_threshold, Some(9));
     }
 }
