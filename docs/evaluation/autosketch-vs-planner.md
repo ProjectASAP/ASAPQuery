@@ -64,13 +64,12 @@ function (§4).
    and window choices as ASAP but no batching or sharing. ASAP vs. this ablation
    isolates the batch/sharing benefit; this ablation vs. AutoSketch-Adapted
    isolates the objective/window benefit.
-4. **FewestPlans** (strawman) — the ASAP MILP minimizing the number of active
-   deployments first, then cost among plans with that minimum count, under
-   the same accuracy and latency requirements.
-
-Only AutoSketch-Adapted ignores latency; the two strawmen must meet the same
+Only AutoSketch-Adapted ignores latency; PerQuery-CostAware must meet the same
 requirements as ASAP, so every point in the cost–latency figure except
 AutoSketch's is a feasible plan.
+
+A "fewest plans" strawman (minimize the number of deployments, then cost) was
+considered and dropped (decided 2026-10-05).
 
 AutoSketch-Adapted is a planner baseline, not a reproduction of the P4
 compiler: stage/page/ALU constraints are dropped. Its accuracy probes read
@@ -161,7 +160,7 @@ $/hour = n_f · price_f
 ```
 
 **Optimizing each model.** ASAP is solved separately for model A and for each
-family's model B. PerQuery-CostAware and FewestPlans (its cost stage) also use
+family's model B. PerQuery-CostAware also uses
 the model being compared. AutoSketch-Adapted's plan does not depend on cost
 and is scored under both.
 - Model A is linear: the average-CPU and memory terms weighted by `a` and `b`.
@@ -197,7 +196,7 @@ the grid as needed.
 - An RQE that no method can meet at a given SLA is excluded from every method
   at that SLA and reported by ID. Costs at different SLAs therefore cover
   different RQE sets; compare methods only at one SLA.
-- ASAP, PerQuery-CostAware and FewestPlans must meet the SLA.
+- ASAP and PerQuery-CostAware must meet the SLA.
 - AutoSketch-Adapted ignores it. Its violations are counted, and its cost is
   shown for those points but marked as infeasible.
 
@@ -350,7 +349,7 @@ The full Cartesian product is too large. The sweep is:
    - `W × card(label_0)`: sharing benefit against state size.
 
 Every workload runs every baseline (ASAP, AutoSketch-Adapted,
-PerQuery-CostAware, FewestPlans) and is priced under model A and model B for
+PerQuery-CostAware) and is priced under model A and model B for
 each family (§4). Per (workload, baseline, cost model, SLA), report:
 - $/hour, total CPU-seconds, peak CPU, retained GiB;
 - max and median estimated latency, and SLA violations;
@@ -486,7 +485,7 @@ Figures:
 | 2 | sketch-bench #136 | Evaluation table for the trace workloads: per (RQE, config) accuracy for AutoSketch and for ASAP at each `m`, saturation, costs | Merged |
 | 4 | sketch-bench #138 | Runner, absolute SLA, results for `example`, `scaling`, `traces` | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
 | — | sketch-bench #140 | Saturation curves at K ∈ {1e1, 1e2, 1e4, 1e6} for the synthetic workload | Draft; accuracy done, cost 197 of 240 points |
-| — | sketch-bench #139 | Synthetic workload: the 10 templates, FewestPlans, strawmen bound by the SLA, and the workload-grid driver (dimensions in §6 "Workload grid": query mix, replicas, window set, repeat interval, `card(label_0)`, series per group, θ/a, accuracy target, SLA), with the sweep script and figures | Open; code for the fixed 67-RQE workload exists. Still to do: the grid driver, then the sweep (after #140 and the two-cost-model PR) |
+| — | sketch-bench #139 | Synthetic workload: the 10 templates, PerQuery-CostAware bound by the SLA, and the workload-grid driver (dimensions in §6 "Workload grid": query mix, replicas, window set, repeat interval, `card(label_0)`, series per group, θ/a, accuracy target, SLA), with the sweep script and figures | Open; code for the fixed 67-RQE workload exists. Still to do: the grid driver, then the sweep (after #140 and the two-cost-model PR) |
 | — | sketch-bench, not yet opened | The two cost models (§4): CPU timeline, model A, model B, rerun of every experiment | Not started as a PR |
 | 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port the objective there and rerun, so the paper reports the planner that ships | Not started; waits for Milind's port |
 
