@@ -164,12 +164,17 @@ family's model B. PerQuery-CostAware also uses
 the model being compared. AutoSketch-Adapted's plan does not depend on cost
 and is scored under both.
 - Model A is linear: the average-CPU and memory terms weighted by `a` and `b`.
-- Model B is linear through the aligned start: the peak is in bin 0, so
-  `peak ≈ ingest + Σ_r min(latency_{r,D}, 1 s) · z_{r,D}`, where each
-  (RQE, deployment) latency is a constant.
-- After solving, the exact peak is recomputed from the timeline. Runs where it
-  exceeds the bin-0 value, e.g. an evaluation longer than its interval
-  overlapping itself, are reported.
+- Model B's peak is bounded linearly per RQE. In steady state, an RQE whose
+  evaluations take `latency` every `T` keeps `ceil(latency / T)` cores busy at
+  most, counting evaluations that outlast their interval and overlap
+  themselves. The MILP uses `peak ≤ ingest + Σ_r occupancy_{r,D} · z_{r,D}`
+  with these constant per-(RQE, deployment) occupancies.
+  - The bound is exact when no evaluation outlasts its interval.
+  - An earlier proxy that read only bin 0 undercounted self-overlapping
+    evaluations, about 40 per synthetic run, and caused sanity violations.
+    It was replaced (sketch-bench #141).
+- After solving, the exact peak is recomputed from the timeline and compared
+  with the bound.
 
 Memory is kept in both models: without it, memory-bound workloads would look
 almost free under model A.
@@ -488,9 +493,9 @@ Figures:
 | 4 | sketch-bench #138 | Runner, absolute SLA, results for `traces` (the `example`/`scaling` workloads are to be removed in its rebase) | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
 | — | sketch-bench #140 | Saturation curves (accuracy vs. events per sketch, N_sat, costs) at K ∈ {1e1, 1e2, 1e4, 1e6}: the synthetic workload needs these cardinalities and #130 measured only 1e3, 1e5, 1e7 | Draft; accuracy done, cost 197 of 240 points |
 | — | sketch-bench #139 | Synthetic workload: the 10 templates, PerQuery-CostAware bound by the SLA, and the workload-grid driver (dimensions in §6 "Workload grid": query mix, replicas, window set, repeat interval, `card(label_0)`, series per group, θ/a, accuracy target, SLA), with the sweep script and figures | Open; code for the fixed 67-RQE workload exists. Still to do: the grid driver, then the sweep (after #140 and the two-cost-model PR) |
-| — | sketch-bench, not yet opened | The two cost models (§4): CPU timeline, model A, model B, rerun of every experiment | Not started as a PR |
+| — | sketch-bench #141 (stacked on #139) | The two cost models (§4): CPU timeline, model A, model B with the per-RQE occupancy bound, `minimize_model_cost` with a per-solve time limit; the synthetic workload-grid driver (66 runs over 40 tables) and plots | Open; runs in progress |
 
-Merge order: rebase and merge #138 → #140 → #139 → two-cost-model PR.
+Merge order: #138 → #140 → #139 → #141.
 
 ## 9. Decisions
 
