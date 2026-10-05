@@ -28,12 +28,19 @@ fn build_inference_config(solution: &OptimizerSolution) -> InferenceConfig {
         let aggregation_id = assignment.aggregation_id;
         let retain = retention_count_for_assignment(&assignment.query_method);
         let agg_ref = AggregationReference::new(aggregation_id, Some(retain));
+        let key_ref = assignment.key_aggregation_id.map(|key_id| {
+            let key_retain = solution.deployed_configs()[&key_id].num_aggregates_to_retain;
+            AggregationReference::new(key_id, key_retain)
+        });
 
         for query_string in &assignment.item.query_strings {
-            inference.query_configs.push(
+            let mut query_config =
                 QueryConfig::with_plan(query_string.clone(), query_string.clone(), vec![])
-                    .add_aggregation(agg_ref.clone()),
-            );
+                    .add_aggregation(agg_ref.clone());
+            if let Some(key_ref) = &key_ref {
+                query_config = query_config.add_aggregation(key_ref.clone());
+            }
+            inference.query_configs.push(query_config);
         }
     }
 

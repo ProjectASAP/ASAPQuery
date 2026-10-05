@@ -58,6 +58,10 @@ pub struct AQEAssignment {
     /// ID of the deployed config that serves this item.
     pub aggregation_id: u64,
 
+    /// ID of the paired key aggregation, for value sketches that can't list
+    /// their own keys.
+    pub key_aggregation_id: Option<u64>,
+
     /// How this item's answer is derived from the assigned config.
     pub query_method: QueryMethod,
 

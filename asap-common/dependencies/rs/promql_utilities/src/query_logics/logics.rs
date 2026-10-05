@@ -86,12 +86,11 @@ pub fn does_precompute_operator_support_subpopulations(
         // own top-k keys via CmsHeapItem. So it supports subpopulations the
         // same way MultipleSum does: labels go in `aggregated`, not
         // `grouping` (see `set_subpopulation_labels`).
-        AggregationType::CountMinSketchWithHeap if matches!(statistic, Statistic::Topk) => true,
+        AggregationType::CountMinSketchWithHeap => true,
 
-        AggregationType::HLL => false,
-
-        // Default: not supported
-        _ => panic!("Unexpected precompute operator: {}", precompute_operator),
+        AggregationType::HLL
+        | AggregationType::SetAggregator
+        | AggregationType::DeltaSetAggregator => false,
     }
 }
 

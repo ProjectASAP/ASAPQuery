@@ -3,9 +3,9 @@ pub mod atomic_costs;
 pub mod candidate_gen;
 pub mod constants;
 pub mod cost_model;
-pub mod dataset;
 pub mod error;
 pub mod greedy;
+pub mod label_set_facts;
 pub mod pipeline;
 pub mod sketch_properties;
 pub mod solution;
@@ -17,14 +17,12 @@ pub use atomic_costs::{
     load_selected_atomic_cost_table, resolve_atomic_costs, AtomicCostEntry, AtomicCostTable,
     ExternalWorkload, WorkloadDescription,
 };
-pub use candidate_gen::{
-    enumerate_candidates, enumerate_candidates_with_label_group_count, CandidateConfig,
-};
+pub use candidate_gen::{enumerate_candidates, enumerate_candidates_with_facts, CandidateConfig};
 pub use cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
-pub use dataset::{DatasetError, ProfileKey, SeriesDataset};
 pub use error::{OptimizerError, UnservableItem};
 pub use greedy::greedy_assign;
-pub use pipeline::run_greedy_pipeline;
+pub use label_set_facts::{ItemFacts, LabelSetFacts, LabelSetFactsError, LabelSetKey, SeriesKey};
+pub use pipeline::{run_greedy_pipeline, OptimizerPipelineError};
 pub use sketch_properties::{sketch_properties, SketchProperties};
 pub use solution::{AQEAssignment, OptimizerItem, OptimizerSolution, QueryMethod};
 pub use translator::translate;

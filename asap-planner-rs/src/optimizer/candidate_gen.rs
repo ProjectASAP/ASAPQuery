@@ -10,8 +10,22 @@ use serde_json::Value;
 use super::constants::{
     CMS_DEPTHS, CMS_HEAP_SIZES, CMS_WIDTHS, HLL_PRECISIONS, HYDRA_COLS, HYDRA_K, HYDRA_ROWS, KLL_KS,
 };
+use super::label_set_facts::ItemFacts;
 use super::sketch_properties::sketch_properties;
 use super::solution::{OptimizerItem, QueryMethod};
+use crate::planner::agg_config::needs_key_aggregation;
+use crate::planner::labels::set_subpopulation_labels;
+
+/// Compatible types the optimizer never proposes. Single-group
+/// Sum/MinMax/Increase cost the same as their Multiple* twins, so only the
+/// Multiple* forms are offered. Filtered here rather than in
+/// `compatible_agg_types`, which the engine also uses to match queries to
+/// deployed configs.
+const OPTIMIZER_SKIPPED_AGG_TYPES: &[AggregationType] = &[
+    AggregationType::Sum,
+    AggregationType::MinMax,
+    AggregationType::Increase,
+];
 
 /// A candidate streaming config for one optimizer item, ready for cost evaluation.
 #[derive(Debug, Clone)]
@@ -22,9 +36,14 @@ pub struct CandidateConfig {
     pub query_method: QueryMethod,
     /// Number of retained windows used at query time (n for Merge, 1 for Direct/Subtract, 0 for Exact).
     pub n_windows: u64,
-    /// Number of distinct label groups represented by this candidate.
-    /// Subpopulation-aware sketches ignore this value during cost evaluation.
-    pub label_group_count: u64,
+    /// Sketch instances the engine creates: one per distinct value of the
+    /// config's grouping labels (1 when they are empty).
+    pub instance_count: u64,
+    /// Distinct value combinations of the item's output labels.
+    pub output_group_count: u64,
+    /// Paired key aggregation (DeltaSetAggregator) deployed alongside
+    /// `config` when the value sketch can't list its own keys.
+    pub key_config: Option<AggregationConfig>,
 }
 
 /// Enumerate all structurally valid candidate configs for an optimizer item.
@@ -33,18 +52,23 @@ pub struct CandidateConfig {
 /// {Tumbling, Sliding}. Multi-statistic items yield no candidates because a
 /// single sketch cannot serve incompatible statistics simultaneously.
 pub fn enumerate_candidates(item: &OptimizerItem, scrape_interval_ms: u64) -> Vec<CandidateConfig> {
-    enumerate_candidates_with_label_group_count(item, scrape_interval_ms, 1)
+    let one_group = ItemFacts {
+        output_group_count: 1,
+        topk_by_group_count: item.requirements.topk_by_labels.as_ref().map(|_| 1),
+        arrival_rate_per_sec: 1.0,
+    };
+    enumerate_candidates_with_facts(item, scrape_interval_ms, &one_group)
 }
 
-/// Enumerate candidates with a dataset-derived label-group count.
-pub fn enumerate_candidates_with_label_group_count(
+/// Enumerate candidates, stamping group counts from the item's label-set facts.
+pub fn enumerate_candidates_with_facts(
     item: &OptimizerItem,
     scrape_interval_ms: u64,
-    label_group_count: u64,
+    facts: &ItemFacts,
 ) -> Vec<CandidateConfig> {
     assert!(
-        label_group_count > 0,
-        "label_group_count must be greater than zero"
+        facts.output_group_count > 0,
+        "output_group_count must be greater than zero"
     );
     let mut candidates = Vec::new();
 
@@ -56,6 +80,9 @@ pub fn enumerate_candidates_with_label_group_count(
     let range_a_ms = item.requirements.data_range_ms;
 
     for &agg_type in compatible_agg_types(stat) {
+        if OPTIMIZER_SKIPPED_AGG_TYPES.contains(&agg_type) {
+            continue;
+        }
         let props = sketch_properties(agg_type);
 
         // CountMinSketchWithHeap's SUM/COUNT weighting lives in aggregation_sub_type
@@ -91,6 +118,7 @@ pub fn enumerate_candidates_with_label_group_count(
 
                     let config = build_config(
                         item,
+                        stat,
                         agg_type,
                         sub_type,
                         &params,
@@ -100,10 +128,13 @@ pub fn enumerate_candidates_with_label_group_count(
                         n,
                     );
                     candidates.push(CandidateConfig {
+                        instance_count: instance_count(&config, item, facts),
+                        key_config: needs_key_aggregation(agg_type)
+                            .then(|| build_key_config(&config, range_a_ms)),
                         config: Some(config),
                         query_method: qm,
                         n_windows: n,
-                        label_group_count,
+                        output_group_count: facts.output_group_count,
                     });
                 }
             }
@@ -111,6 +142,47 @@ pub fn enumerate_candidates_with_label_group_count(
     }
 
     candidates
+}
+
+/// The DeltaSetAggregator paired with `value`, as the legacy planner builds
+/// it: same labels, Tumbling at the value's slide (DeltaSet is only correct
+/// for non-overlapping windows), retaining enough panes to cover the query
+/// range.
+fn build_key_config(value: &AggregationConfig, range_a_ms: u64) -> AggregationConfig {
+    let pane_ms = value.slide_interval_ms;
+    AggregationConfig::new(
+        0, // placeholder; overwritten by OptimizerSolution::register_config when deployed
+        AggregationType::DeltaSetAggregator,
+        String::new(),
+        HashMap::new(),
+        value.grouping_labels.clone(),
+        value.aggregated_labels.clone(),
+        KeyByLabelNames::empty(), // rollup_labels
+        String::new(),            // original_yaml
+        pane_ms,
+        pane_ms,
+        WindowType::Tumbling,
+        value.spatial_filter.clone(),
+        value.metric.clone(),
+        Some(range_a_ms.div_ceil(pane_ms)),
+        None, // read_count_threshold
+        None, // table_name (SQL only)
+        None, // value_column (SQL only)
+    )
+}
+
+/// Instances the engine creates for `config`: its grouping labels are empty,
+/// the item's output labels, or (for `topk by`) the bucketing labels.
+fn instance_count(config: &AggregationConfig, item: &OptimizerItem, facts: &ItemFacts) -> u64 {
+    if config.grouping_labels.is_empty() {
+        1
+    } else if config.grouping_labels == item.requirements.grouping_labels {
+        facts.output_group_count
+    } else {
+        facts
+            .topk_by_group_count
+            .expect("grouping labels other than the output labels come from `topk by`")
+    }
 }
 
 /// Window candidates: (WindowType, W_ms, slide_interval_ms, n_windows).
@@ -187,6 +259,7 @@ fn determine_query_method(
 #[allow(clippy::too_many_arguments)]
 fn build_config(
     item: &OptimizerItem,
+    stat: Statistic,
     agg_type: AggregationType,
     sub_type: &str,
     params: &HashMap<String, Value>,
@@ -195,13 +268,28 @@ fn build_config(
     slide_interval: u64,
     n_windows: u64,
 ) -> AggregationConfig {
+    // Same grouping/aggregated split as the legacy planner: keyed types hold
+    // the output labels as keys inside one instance; others get one instance
+    // per group; `topk by` gets one heap per bucket.
+    let mut grouping = KeyByLabelNames::empty();
+    let mut aggregated = KeyByLabelNames::empty();
+    set_subpopulation_labels(
+        stat,
+        agg_type,
+        &item.requirements.grouping_labels,
+        item.requirements.topk_by_labels.as_ref(),
+        &mut KeyByLabelNames::empty(),
+        &mut grouping,
+        &mut aggregated,
+    );
+
     AggregationConfig::new(
         0, // placeholder; overwritten by OptimizerSolution::register_config when deployed
         agg_type,
         sub_type.to_string(),
         params.clone(),
-        item.requirements.grouping_labels.clone(),
-        KeyByLabelNames::empty(), // aggregated_labels (not needed for optimizer feasibility)
+        grouping,
+        aggregated,
         KeyByLabelNames::empty(), // rollup_labels
         String::new(),            // original_yaml
         w,
@@ -332,6 +420,38 @@ mod tests {
     }
 
     #[test]
+    fn single_group_trivial_accumulators_are_not_proposed() {
+        for (stat, skipped, kept) in [
+            (
+                Statistic::Sum,
+                AggregationType::Sum,
+                AggregationType::MultipleSum,
+            ),
+            (
+                Statistic::Min,
+                AggregationType::MinMax,
+                AggregationType::MultipleMinMax,
+            ),
+            (
+                Statistic::Increase,
+                AggregationType::Increase,
+                AggregationType::MultipleIncrease,
+            ),
+        ] {
+            let types: Vec<AggregationType> =
+                enumerate_candidates(&make_aqe(stat, 300_000, 60_000), 15_000)
+                    .into_iter()
+                    .filter_map(|c| c.config.map(|cfg| cfg.aggregation_type))
+                    .collect();
+            assert!(
+                !types.contains(&skipped),
+                "{skipped:?} must not be proposed"
+            );
+            assert!(types.contains(&kept), "{kept:?} must still be proposed");
+        }
+    }
+
+    #[test]
     fn multiple_sum_candidates_get_a_non_empty_sub_type() {
         // MultipleSum's factory now rejects an empty aggregation_sub_type (#503) --
         // the optimizer must derive "sum" for it, same as it already does for
@@ -352,15 +472,92 @@ mod tests {
         }
     }
 
-    #[test]
-    fn stamps_dataset_label_group_count_on_every_candidate() {
-        let aqe = make_aqe(Statistic::Sum, 300_000, 60_000);
-        let candidates = enumerate_candidates_with_label_group_count(&aqe, 15_000, 7);
+    fn labels(names: &[&str]) -> KeyByLabelNames {
+        KeyByLabelNames::new(names.iter().map(|n| n.to_string()).collect())
+    }
 
-        assert!(!candidates.is_empty());
-        assert!(candidates
+    fn facts(output: u64, topk_by: Option<u64>) -> ItemFacts {
+        ItemFacts {
+            output_group_count: output,
+            topk_by_group_count: topk_by,
+            arrival_rate_per_sec: 1.0,
+        }
+    }
+
+    /// Before the optimizer reused the legacy planner's label split, every
+    /// config put the output labels in `grouping_labels`, so the engine built
+    /// one keyed map/sketch per group (and one top-k heap per series).
+    #[test]
+    fn keyed_types_hold_groups_inside_one_instance_and_per_group_types_do_not() {
+        for stat in [Statistic::Sum, Statistic::Quantile] {
+            let mut aqe = make_aqe(stat, 300_000, 60_000);
+            aqe.requirements.grouping_labels = labels(&["svc"]);
+            let candidates = enumerate_candidates_with_facts(&aqe, 15_000, &facts(7, None));
+
+            for c in &candidates {
+                assert_eq!(c.output_group_count, 7);
+                let Some(cfg) = &c.config else { continue };
+                match cfg.aggregation_type {
+                    AggregationType::MultipleSum
+                    | AggregationType::CountMinSketch
+                    | AggregationType::HydraKLL => {
+                        assert!(cfg.grouping_labels.is_empty(), "{cfg:?}");
+                        assert_eq!(cfg.aggregated_labels, labels(&["svc"]));
+                        assert_eq!(c.instance_count, 1);
+                    }
+                    AggregationType::DatasketchesKLL => {
+                        assert_eq!(cfg.grouping_labels, labels(&["svc"]));
+                        assert!(cfg.aggregated_labels.is_empty());
+                        assert_eq!(c.instance_count, 7);
+                    }
+                    other => panic!("unexpected candidate type {other:?}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_cms_and_hydra_get_a_paired_tumbling_delta_set() {
+        for stat in [Statistic::Sum, Statistic::Quantile, Statistic::Topk] {
+            let mut aqe = make_aqe(stat, 600_000, 30_000);
+            aqe.requirements.grouping_labels = labels(&["svc"]);
+            for c in enumerate_candidates(&aqe, 30_000) {
+                let Some(cfg) = &c.config else { continue };
+                match (&c.key_config, needs_key_aggregation(cfg.aggregation_type)) {
+                    (Some(key), true) => {
+                        assert_eq!(key.aggregation_type, AggregationType::DeltaSetAggregator);
+                        assert_eq!(key.window_type, WindowType::Tumbling);
+                        assert_eq!(key.window_size_ms, cfg.slide_interval_ms);
+                        assert_eq!(key.grouping_labels, cfg.grouping_labels);
+                        assert_eq!(key.aggregated_labels, cfg.aggregated_labels);
+                        assert_eq!(
+                            key.num_aggregates_to_retain,
+                            Some(600_000 / cfg.slide_interval_ms)
+                        );
+                    }
+                    (None, false) => {}
+                    (key, _) => panic!("{:?} has key config {key:?}", cfg.aggregation_type),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn topk_by_gets_one_heap_per_bucket() {
+        let mut aqe = make_aqe(Statistic::Topk, 60_000, 60_000);
+        aqe.requirements.grouping_labels = labels(&["endpoint", "svc"]);
+        aqe.requirements.topk_by_labels = Some(labels(&["svc"]));
+        let candidates = enumerate_candidates_with_facts(&aqe, 15_000, &facts(100, Some(3)));
+
+        let heap = candidates
             .iter()
-            .all(|candidate| candidate.label_group_count == 7));
+            .find(|c| c.config.is_some())
+            .expect("a CMS-with-heap candidate");
+        let cfg = heap.config.as_ref().unwrap();
+        assert_eq!(cfg.grouping_labels, labels(&["svc"]));
+        assert_eq!(cfg.aggregated_labels, labels(&["endpoint"]));
+        assert_eq!(heap.instance_count, 3);
+        assert_eq!(heap.output_group_count, 100);
     }
 
     #[test]
