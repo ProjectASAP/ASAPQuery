@@ -198,6 +198,19 @@ almost free under model A.
 **Latency** — per-RQE estimate already in sketch-bench:
 `card(ℓ) · (query_cpu + (S/x − 1) · merge_cpu)`.
 
+**Units and per-operation costs.** CPU is CPU time (user + system), in
+core-seconds, measured by sketch-bench:
+- `insert_cpu`: the insert phase's CPU ÷ N, in CPU-seconds per item;
+- `merge_cpu`: merging 16 shards ÷ 15, in CPU-seconds per merge;
+- `query_cpu`: the benchmark's **whole query phase**, charged per evaluation.
+  For frequency that is every key seen; for KLL/DDSketch, 101 quantiles; for
+  cardinality, a fixed repeat count. This overstates a single-quantile query by
+  up to about 101×, equally for every method, so it inflates absolute estimated
+  latency but not the comparison (decided 2026-10-05);
+- memory: the sketch's self-reported bytes per instance, not process RSS.
+
+Loads are reported in vCPU (core-seconds per second) and totals in CPU-hours.
+
 ## 5. Constraints
 
 **Accuracy target**: one of three strictness levels, each with its own target
