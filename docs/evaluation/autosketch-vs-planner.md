@@ -189,7 +189,7 @@ Notes on the mapping:
   equivalent to `sum_over_time` over deltas.
 - The quantiles of one query, and the two operands of query 10, read the same
   stream. ASAP can serve them from one deployment; AutoSketch gets one per RQE.
-- One workload instance is the 42 RQEs above, for one (cardinality, θ or a,
+- One workload instance is the 67 RQEs above (2 spatial + 5 spatial quantiles + 5×5 temporal for queries 4, 6–9 + 5×5 for query 5 + 2×5 for query 10), for one (cardinality, θ or a,
   accuracy target, SLA) combination. The figure sweeps the accuracy target over
   {90%, 95%, 99%} and an absolute latency SLA grid. For the scalability study,
   the RQE set is replicated with distinct `label_0` filters.
