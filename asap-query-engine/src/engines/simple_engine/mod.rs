@@ -1737,11 +1737,17 @@ impl SimpleEngine {
         // restore it. Tie-broken by label for determinism, matching the
         // range engine's own topk sort (#581 stage E.3).
         if context.metadata.statistic_to_compute == Statistic::Topk {
-            Self::sort_instant_topk_results(
-                &mut results,
-                &context.metadata.query_output_labels,
+            let raw_labels = Self::topk_row_label_order(
+                &context.metadata,
                 &context.grouping_labels,
-            )?;
+                &context.aggregated_labels,
+            );
+            let result_labels = if enable_topk_formatting && context.metadata.keep_metric_name {
+                &context.metadata.query_output_labels
+            } else {
+                &raw_labels
+            };
+            Self::sort_instant_topk_results(&mut results, result_labels, &context.grouping_labels)?;
         }
 
         Ok(results)

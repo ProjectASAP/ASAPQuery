@@ -561,6 +561,114 @@ async fn e2e_nested_aggregation_preserves_plain_topk_labels() {
 }
 
 #[tokio::test]
+async fn e2e_nested_grouped_plain_topk_uses_raw_label_positions() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_grouped_plain_topk";
+    let anchor = format!("topk by (job) (3, {metric})");
+    let query = format!("sum by (job) ({anchor})");
+    let mut config = make_agg_config_full(
+        21,
+        metric,
+        AggregationType::CountMinSketchWithHeap,
+        "count",
+        1_000,
+        0,
+        vec!["job"],
+        vec!["instance"],
+    );
+    config.parameters.insert("depth".to_string(), json!(3_u64));
+    config
+        .parameters
+        .insert("width".to_string(), json!(128_u64));
+    config
+        .parameters
+        .insert("heapsize".to_string(), json!(16_u64));
+    let samples = [
+        ("backend", "a", 3),
+        ("backend", "b", 2),
+        ("backend", "c", 1),
+        ("backend", "d", 1),
+    ]
+    .into_iter()
+    .flat_map(|(job, instance, count)| {
+        std::iter::repeat_with(move || {
+            make_timeseries(
+                metric,
+                vec![("job", job), ("instance", instance)],
+                1_000,
+                1.0,
+            )
+        })
+        .take(count)
+    })
+    .chain(std::iter::once(make_timeseries(metric, vec![], 3_000, 0.0)))
+    .collect();
+    let scenario = NativeDagScenario {
+        port: 19427,
+        metric,
+        query: &query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples,
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, query) = scenario
+        .build_engine_with_plan(
+            &anchor,
+            vec![QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Sum,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::By,
+                    labels: vec!["job".to_string()],
+                },
+                parameter: None,
+            }],
+        )
+        .await;
+
+    let (_, instant) = engine
+        .handle_query_promql(query.clone(), 1.0)
+        .expect("instant query should execute locally")
+        .expect("instant query should return a result");
+    let QueryResult::Vector(instant) = instant else {
+        panic!("instant query should return a vector");
+    };
+    assert_eq!(
+        instant
+            .values
+            .into_iter()
+            .map(|value| (value.labels.labels, value.value))
+            .collect::<Vec<_>>(),
+        vec![(vec!["backend".to_string()], 6.0)]
+    );
+
+    let (_, range) = engine
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("range query should execute locally")
+        .expect("range query should return a result");
+    let QueryResult::Matrix(range) = range else {
+        panic!("range query should return a matrix");
+    };
+    assert_eq!(
+        range
+            .values
+            .into_iter()
+            .map(|value| {
+                (
+                    value.labels.labels,
+                    value.samples.last().expect("range sample").value,
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![(vec!["backend".to_string()], 6.0)]
+    );
+}
+
+#[tokio::test]
 async fn e2e_nested_topk_preserves_plain_topk_metric_name() {
     use asap_types::query_config::{
         QueryTimeAggregationOperator, QueryTimeAggregationParameter, QueryTimeGrouping,

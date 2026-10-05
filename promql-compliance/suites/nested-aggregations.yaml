@@ -35,6 +35,12 @@ queries:
     expr: "topk by (job) (3, sum by (job, instance) (data))"
     instant_offsets_seconds: *evaluation_offsets
     range: *evaluation_range
+  # A bare-selector TopK keeps __name__ until final formatting. The outer
+  # aggregation makes the native path execute that raw TopK result first.
+  - name: bare-topk-by-job-then-sum
+    expr: "sum by (job) (topk by (job) (3, data))"
+    instant_offsets_seconds: *evaluation_offsets
+    range: *evaluation_range
   - name: one-stage-quantile-0-5
     expr: "quantile by (job) (0.5, sum by (job, instance) (data))"
     instant_offsets_seconds: *evaluation_offsets
