@@ -286,6 +286,16 @@ def generate(
         if not rows:
             skipped.append(f"{dataset}/{query_id}/{range_}: no recommendation")
             continue
+        # Experiment names carry no family, and sketch-bench emits one row per
+        # family per query kind, so a query id with both a keys and a values
+        # form has a CMS and a KLL row; the second would replace the first.
+        planner_rows = [r for r in rows if r["family"] in PLANNER_FAMILIES]
+        if len(planner_rows) > 1:
+            families = ", ".join(r["family"] for r in planner_rows)
+            raise ValueError(
+                f"{dataset}/{query_id}/{range_}: more than one planner family "
+                f"({families})"
+            )
         for row in rows:
             if row["family"] not in PLANNER_FAMILIES:
                 skipped.append(

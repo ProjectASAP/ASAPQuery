@@ -177,6 +177,45 @@ class GenerateTest(unittest.TestCase):
         self.assertEqual(configs, {})
         self.assertIn("does not meet the target", skipped[0])
 
+    def test_two_planner_families_for_one_query_raises(self):
+        # Experiment names carry no family, so the second row used to silently
+        # replace the first's config.
+        with self.assertRaisesRegex(ValueError, "google_2011/cpu_by_job_id/instant"):
+            rsc.generate(
+                [
+                    recommendation(
+                        "google_2011",
+                        "cpu_by_job_id",
+                        "instant",
+                        "cms",
+                        "rows=3 cols=4096",
+                    ),
+                    recommendation(
+                        "google_2011", "cpu_by_job_id", "instant", "kll", "k=200"
+                    ),
+                ],
+                [("google_2011", "cpu_by_job_id", "instant")],
+                "/traces",
+            )
+
+    def test_two_planner_families_for_unselected_query_are_ignored(self):
+        # rt_p99_by_msname has keys and values forms, so sketch-bench emits CMS
+        # and KLL rows for it; that must not block the selected queries.
+        configs, _ = rsc.generate(
+            self.recommendations
+            + [
+                recommendation(
+                    "alibaba_v2022", "rt_p99_by_msname", "5m", "cms", "rows=3 cols=4096"
+                ),
+                recommendation(
+                    "alibaba_v2022", "rt_p99_by_msname", "5m", "kll", "k=200"
+                ),
+            ],
+            [("google_2011", "cpu_by_job_id", "5m")],
+            "/traces",
+        )
+        self.assertEqual(len(configs), 2)
+
 
 class ComposeGeneratedConfigTest(unittest.TestCase):
     def test_recommended_config_overrides_config_yaml_sketch_parameters(self):
