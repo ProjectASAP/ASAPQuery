@@ -27,8 +27,9 @@ deferred (§10); for those, ClickHouse has no equivalent sketch.
 |---|---|
 | Data plane | ASAPQuery `query_engine_rust`, via `experiment_run_clickhouse.py`. Not ASAPQuery-backend |
 | Plan source | The sketch-bench MILP via `asap-planner --planner milp` ([#753](https://github.com/ProjectASAP/ASAPQuery/issues/753), Milind). The planner's `streaming_config.yaml` **is** the plan. No separate plan file |
-| Optimizer objective | `minimize_cost` for the `general_purpose` EC2 family, until model A is in code. Every arm is measured and priced under model A |
-| Quantile sketch | DDSketch on both sides: ClickHouse `quantilesDD(α, …)`; ASAPQuery `DDSketch` (to be added, [#787](https://github.com/ProjectASAP/ASAPQuery/issues/787), Zeying). The optimizer's quantile candidates are limited to `dd` |
+| Optimizer objective | `minimize_cost` for the `general_purpose` EC2 family, until model A is in code |
+| Cost reporting | One run per arm, priced two ways from the same CPU/memory timeline: usage-based (model A) and peak-provisioned EC2 (model B) (§6) |
+| Quantile sketch | DDSketch on both sides: ClickHouse `quantilesDD(α, …)`; ASAPQuery `DDSketch` ([#792](https://github.com/ProjectASAP/ASAPQuery/pull/792), part of [#787](https://github.com/ProjectASAP/ASAPQuery/issues/787)). The optimizer's quantile candidates are limited to `dd` |
 | KLL | Appendix only: the optimizer may choose KLL, and ClickHouse uses its closest substitute |
 | ClickHouse bars | Exact MV, and MV + sketch state. Plain ClickHouse is the accuracy reference (in a table, not a bar) |
 | Key tracker (`DeltaSetAggregator`) | Not needed for quantile plans. For the later frequency/top-k pass: if it is still required, it is deployed, measured and reported as ASAP's cost. Milind is checking whether it can be removed, and a cost-table row is being added separately |
@@ -159,10 +160,23 @@ runner: one run per arm × trial, paced feeders, resource caps, monitors
 | Query CPU | process CPU over the query phase | same |
 | Accuracy | Rank error vs the reference, per quantile (as in #784). Target: 95% | same |
 
-**Cost** uses model A from the AutoSketch plan: `$/h = a·avg vCPU + b·GiB`,
-with `a ≈ 0.0368` and `b ≈ 0.00364` (2026-10-04 EC2 fit), over measured ingest +
-query CPU and retained-state memory. Raw CPU-seconds and bytes are reported
-too, as is the planner's estimated cost next to the measured one.
+**Cost.** Each arm runs once. The monitor samples the system's CPU and
+memory every second, and that one timeline is priced two ways, using the cost
+models of the AutoSketch plan:
+
+- **Usage-based (model A).** Total CPU = the area under the CPU curve
+  (CPU-seconds), divided by the run length to give average vCPU. Then
+  `$/h = a·avg vCPU + b·GiB`, with `a ≈ 0.0368` and `b ≈ 0.00364` (2026-10-04
+  EC2 fit) and the average retained-state memory.
+- **Peak-provisioned (model B).** Take the peak of the CPU curve and peak
+  memory, and buy enough instances of one EC2 family to cover both:
+  `n_f = max(peak vCPU / vCPU_f, peak GiB / GiB_f)`, `$/h = n_f · price_f`.
+  This is reported for c7i, m7i and r7i.
+
+Model A shows the work each system does. Model B shows what it costs to
+provision for the bursts when queries fire on top of ingest. Raw CPU-seconds,
+peaks and bytes are reported too, as is the planner's estimated cost next to
+the measured one.
 
 **Fairness:**
 - Same node type: `c6320`, 2× E5-2683 v3, 56 threads, 251 GB.
@@ -195,8 +209,8 @@ It checks:
 | 2 | Paced feeder (Remote Write and ClickHouse INSERT, one per system) | Zeying | — |
 | 3 | Translator: `streaming_config.yaml` → ClickHouse `init.sql` + per-arm SQL | Zeying | — |
 | 4 | Runner: per-arm modes, feeder ingest, caps, `system.parts` collection, `config/experiment_type/clickhouse.yaml` | Zeying | 2 |
-| 5 | Post-processing: ClickHouse and precompute paths in `compare_costs.py`, model-A pricing, figure | Zeying | 4 |
-| 6 | DDSketch in ASAPQuery (the DD slice of #762 + #787) | Zeying | #762 |
+| 5 | Post-processing: ClickHouse and precompute paths in `compare_costs.py`, model A and model B pricing from the monitor timeline, figure | Zeying | 4 |
+| 6 | DDSketch in ASAPQuery (the DD slice of #762 + #787) | Zeying | Draft PR #792 |
 | 7 | `asap-planner --planner milp` with quantiles limited to `dd` | Milind | #753 |
 | 8 | Key-tracker removal check, and its cost-table row (for the later frequency/top-k pass) | Milind | — |
 
