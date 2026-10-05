@@ -14,6 +14,8 @@ This can use an example. Code comments should not include git history, or issue 
   scope names used in this repo's PR history (`precompute`, `query-engine`,
   `planner`, `asap-tools`, `sql-parser`, `deps`, etc.) rather than inventing
   new ones.
+- **Never amend commits unless the user explicitly asks.** Always create a
+  new commit instead.
 
 # Code design and test coverage
 
