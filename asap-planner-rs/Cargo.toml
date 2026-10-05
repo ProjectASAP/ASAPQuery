@@ -41,6 +41,7 @@ indexmap.workspace = true
 chrono.workspace = true
 promql-parser = "0.5.0"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
+rqe-optimizer = { git = "https://github.com/ProjectASAP/sketch-bench", branch = "main" }
 
 [dev-dependencies]
 tempfile = "3.20"

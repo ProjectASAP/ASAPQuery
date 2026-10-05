@@ -5,9 +5,11 @@ LABEL description="ASAP Planner (Rust) for SketchDB"
 
 WORKDIR /code
 
-# Required by prost-build dependencies during cargo build
+# protobuf-compiler: prost-build. cmake, libclang-dev: HiGHS (rqe-optimizer's MILP solver).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     protobuf-compiler \
+    cmake \
+    libclang-dev \
     && rm -rf /var/lib/apt/lists/*
 
 COPY asap-common ./asap-common
@@ -42,6 +44,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libssl3 \
     zlib1g \
+    libstdc++6 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /app/input /app/output
