@@ -9,7 +9,8 @@ use crate::config::input::ControllerConfig;
 use crate::error::ControllerError;
 use crate::generator::{
     build_aggregation_entry, build_queries_yaml, key_by_labels_to_yaml, GeneratorOutput,
-    PuntedQuery, KEY_AGGREGATIONS, KEY_CLEANUP_POLICY, KEY_METRICS, KEY_NAME, KEY_QUERIES,
+    PuntedQuery, QueryPlanEntry, KEY_AGGREGATIONS, KEY_CLEANUP_POLICY, KEY_METRICS, KEY_NAME,
+    KEY_QUERIES,
 };
 use crate::planner::agg_config::IntermediateAggConfig;
 use crate::planner::promql::{BinaryArm, SingleQueryProcessor};
@@ -57,8 +58,8 @@ pub fn generate_plan(
 
     // Deduplication map: identifying_key -> (agg_config, assigned_id_placeholder)
     let mut dedup_map: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
-    // query_string -> Vec<(key, cleanup_param)>
-    let mut query_keys_map: IndexMap<String, Vec<(String, Option<u64>)>> = IndexMap::new();
+    // query_string -> physical anchor and query-time execution pipeline
+    let mut query_plan_map: IndexMap<String, QueryPlanEntry> = IndexMap::new();
 
     let mut punted_queries: Vec<PuntedQuery> = Vec::new();
     let mut windowing_errors: Vec<String> = Vec::new();
@@ -97,7 +98,10 @@ pub fn generate_plan(
                             keys_for_query.push((key.clone(), cleanup_param));
                             dedup_map.entry(key).or_insert(config);
                         }
-                        query_keys_map.insert(query_string.clone(), keys_for_query);
+                        query_plan_map.insert(
+                            query_string.clone(),
+                            QueryPlanEntry::fully_planned(query_string.clone(), keys_for_query),
+                        );
                     }
                     Err(ControllerError::UnknownMetric(ref metric)) => {
                         tracing::warn!(
@@ -110,6 +114,38 @@ pub fn generate_plan(
                         windowing_errors.push(format!("query '{query_string}': {error}"));
                     }
                     Err(e) => return Err(e),
+                }
+            } else if let Some(nested_plan) = processor.nested_aggregation_plan() {
+                let anchor_processor =
+                    processor.make_arm_processor(nested_plan.planned_subquery.clone());
+                match anchor_processor.get_streaming_aggregation_configs() {
+                    Ok((configs, cleanup_param)) => {
+                        let mut aggregation_keys = Vec::new();
+                        for config in configs {
+                            let key = config.identifying_key();
+                            aggregation_keys.push((key.clone(), cleanup_param));
+                            dedup_map.entry(key).or_insert(config);
+                        }
+                        query_plan_map.insert(
+                            query_string.clone(),
+                            QueryPlanEntry {
+                                aggregation_keys,
+                                planned_subquery: nested_plan.planned_subquery,
+                                query_time_aggregations: nested_plan.query_time_aggregations,
+                            },
+                        );
+                    }
+                    Err(ControllerError::UnknownMetric(ref metric)) => {
+                        tracing::warn!(
+                            query = %query_string,
+                            metric = %metric,
+                            "skipping query referencing unknown metric"
+                        );
+                    }
+                    Err(ControllerError::Windowing(error)) => {
+                        windowing_errors.push(format!("query '{query_string}': {error}"));
+                    }
+                    Err(error) => return Err(error),
                 }
             } else {
                 let mut pending_dedup_map = IndexMap::new();
@@ -124,7 +160,9 @@ pub fn generate_plan(
                     // Binary arithmetic: register each leaf arm in dedup_map and query_keys_map
                     for (arm_query, keys_for_arm) in arm_entries {
                         // Use `entry` so a standalone query that duplicates an arm wins
-                        query_keys_map.entry(arm_query).or_insert(keys_for_arm);
+                        query_plan_map.entry(arm_query.clone()).or_insert_with(|| {
+                            QueryPlanEntry::fully_planned(arm_query, keys_for_arm)
+                        });
                     }
                 }
             }
@@ -149,14 +187,14 @@ pub fn generate_plan(
 
     // Build inference_config YAML
     let inference_yaml =
-        build_inference_yaml(cleanup_policy, &query_keys_map, &id_map, &metric_schema)?;
+        build_inference_yaml(cleanup_policy, &query_plan_map, &id_map, &metric_schema)?;
 
     Ok(GeneratorOutput {
         punted_queries,
         streaming_yaml,
         inference_yaml,
         aggregation_count: dedup_map.len(),
-        query_count: query_keys_map.len(),
+        query_count: query_plan_map.len(),
     })
 }
 
@@ -283,7 +321,7 @@ fn build_streaming_yaml(
 
 fn build_inference_yaml(
     cleanup_policy: CleanupPolicy,
-    query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
+    query_plan_map: &IndexMap<String, QueryPlanEntry>,
     id_map: &HashMap<String, u32>,
     metric_schema: &asap_types::PromQLSchema,
 ) -> Result<YamlValue, ControllerError> {
@@ -293,7 +331,7 @@ fn build_inference_yaml(
         YamlValue::String(cleanup_policy.to_string()),
     );
 
-    let queries = build_queries_yaml(cleanup_policy, query_keys_map, id_map);
+    let queries = build_queries_yaml(cleanup_policy, query_plan_map, id_map);
 
     // Build metrics section
     let mut metrics_map = serde_yaml::Mapping::new();

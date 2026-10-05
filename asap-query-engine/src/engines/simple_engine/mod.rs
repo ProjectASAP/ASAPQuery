@@ -208,7 +208,15 @@ enum NativePlanOutput {
     Read(TimestampedBucketsMap),
     Composed(ComposedRangeRead),
     Resolved(ResolvedRangeReads),
-    Results(Vec<crate::engines::query_result::RangeVectorElement>),
+    Results {
+        labels: KeyByLabelNames,
+        values: Vec<crate::engines::query_result::RangeVectorElement>,
+    },
+}
+
+struct RangePipelineOutput {
+    labels: KeyByLabelNames,
+    values: Vec<crate::engines::query_result::RangeVectorElement>,
 }
 
 struct NativePlanRuntime<'a> {
@@ -290,22 +298,43 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     "ResolveKeys received incompatible inputs".into(),
                 )),
             },
-            QueryPlanNode::Estimate { .. } => match inputs {
+            QueryPlanNode::Estimate { output_labels, .. } => match inputs {
                 [NativePlanOutput::Resolved(reads)] => self
                     .engine
                     .estimate_range_query(self.context, reads.clone())
-                    .map(NativePlanOutput::Results),
+                    .map(|values| NativePlanOutput::Results {
+                        labels: output_labels.clone(),
+                        values,
+                    }),
                 _ => Err(QueryExecutionError::Native(
                     "Estimate expected resolved reads".into(),
+                )),
+            },
+            QueryPlanNode::AggregateVector {
+                aggregation,
+                input_labels,
+                ..
+            } => match inputs {
+                [NativePlanOutput::Results { values, .. }] => {
+                    crate::engines::query_time_aggregation::apply_range_pipeline(
+                        input_labels.clone(),
+                        values.clone(),
+                        std::slice::from_ref(aggregation),
+                    )
+                    .map(|(labels, values)| NativePlanOutput::Results { labels, values })
+                    .map_err(QueryExecutionError::Native)
+                }
+                _ => Err(QueryExecutionError::Native(
+                    "AggregateVector expected estimates".into(),
                 )),
             },
             QueryPlanNode::LimitTopK {
                 k, grouping_labels, ..
             } => match inputs {
-                [NativePlanOutput::Results(results)] => self
+                [NativePlanOutput::Results { labels, values }] => self
                     .engine
                     .limit_range_topk(
-                        results,
+                        values,
                         k,
                         &SimpleEngine::topk_row_label_order(
                             &self.context.base.metadata,
@@ -315,7 +344,10 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                         grouping_labels,
                     )
                     .map_err(QueryExecutionError::Native)
-                    .map(NativePlanOutput::Results),
+                    .map(|values| NativePlanOutput::Results {
+                        labels: labels.clone(),
+                        values,
+                    }),
                 _ => Err(QueryExecutionError::Native(
                     "LimitTopK expected estimates".into(),
                 )),
@@ -325,10 +357,12 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                 metric,
                 ..
             } => match inputs {
-                [NativePlanOutput::Results(results)] => Ok(NativePlanOutput::Results(
-                    self.engine
-                        .format_range_results(results, *include_metric_name, metric),
-                )),
+                [NativePlanOutput::Results { labels, values }] => Ok(NativePlanOutput::Results {
+                    labels: labels.clone(),
+                    values: self
+                        .engine
+                        .format_range_results(values, *include_metric_name, metric),
+                }),
                 _ => Err(QueryExecutionError::Native(
                     "result node expected estimates".into(),
                 )),
@@ -1483,6 +1517,53 @@ impl SimpleEngine {
             .then_with(|| a_labels.cmp(b_labels))
     }
 
+    fn sort_instant_topk_results(
+        results: &mut [InstantVectorElement],
+        output_labels: &KeyByLabelNames,
+        grouping_labels: &KeyByLabelNames,
+    ) -> Result<(), QueryExecutionError> {
+        let grouping_positions = grouping_labels
+            .labels
+            .iter()
+            .map(|label| {
+                output_labels
+                    .labels
+                    .iter()
+                    .position(|candidate| candidate == label)
+                    .ok_or_else(|| {
+                        QueryExecutionError::Native(format!(
+                            "Topk grouping label '{label}' is absent from output"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for result in results.iter() {
+            if grouping_positions
+                .iter()
+                .any(|position| result.labels.labels.get(*position).is_none())
+            {
+                return Err(QueryExecutionError::Native(
+                    "Topk result labels do not match the configured output schema".to_string(),
+                ));
+            }
+        }
+        results.sort_by(|left, right| {
+            for position in &grouping_positions {
+                let order = left.labels.labels[*position].cmp(&right.labels.labels[*position]);
+                if !order.is_eq() {
+                    return order;
+                }
+            }
+            Self::cmp_topk_value_desc(
+                left.value,
+                &left.labels.labels,
+                right.value,
+                &right.labels.labels,
+            )
+        });
+        Ok(())
+    }
+
     /// Returns the required `k` parameter for a Topk query.
     ///
     /// PromQL context construction validates this before execution, but the
@@ -1625,11 +1706,14 @@ impl SimpleEngine {
                 ))
             })?;
 
-        let range_results = self.execute_observed_range_query_pipeline(
-            &range_context,
-            enable_topk_limiting,
-            enable_topk_formatting,
-        )?;
+        let range_results = self
+            .execute_observed_range_query_pipeline(
+                &range_context,
+                enable_topk_limiting,
+                enable_topk_formatting,
+                &[],
+            )?
+            .values;
 
         let mut results: Vec<InstantVectorElement> = range_results
             .into_iter()
@@ -1653,9 +1737,17 @@ impl SimpleEngine {
         // restore it. Tie-broken by label for determinism, matching the
         // range engine's own topk sort (#581 stage E.3).
         if context.metadata.statistic_to_compute == Statistic::Topk {
-            results.sort_by(|a, b| {
-                Self::cmp_topk_value_desc(a.value, &a.labels.labels, b.value, &b.labels.labels)
-            });
+            let raw_labels = Self::topk_row_label_order(
+                &context.metadata,
+                &context.grouping_labels,
+                &context.aggregated_labels,
+            );
+            let result_labels = if enable_topk_formatting && context.metadata.keep_metric_name {
+                &context.metadata.query_output_labels
+            } else {
+                &raw_labels
+            };
+            Self::sort_instant_topk_results(&mut results, result_labels, &context.grouping_labels)?;
         }
 
         Ok(results)
@@ -2395,18 +2487,29 @@ impl SimpleEngine {
         context: &RangeQueryExecutionContext,
         enable_topk_limiting: bool,
         enable_topk_formatting: bool,
-    ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
+        query_time_aggregations: &[asap_types::query_config::QueryTimeAggregation],
+    ) -> Result<RangePipelineOutput, QueryExecutionError> {
         Self::reject_off_grid_sliding_counter_query(context)?;
         #[cfg(feature = "native_query_legacy_test_support")]
         if matches!(
             self.native_range_execution_mode,
             NativeRangeExecutionMode::Legacy
         ) {
-            return self.execute_legacy_range_query_pipeline(
-                context,
-                enable_topk_limiting,
-                enable_topk_formatting,
-            );
+            if !query_time_aggregations.is_empty() {
+                return Err(QueryExecutionError::Native(
+                    "Legacy range execution does not support query-time aggregations".to_string(),
+                ));
+            }
+            return self
+                .execute_legacy_range_query_pipeline(
+                    context,
+                    enable_topk_limiting,
+                    enable_topk_formatting,
+                )
+                .map(|values| RangePipelineOutput {
+                    labels: context.base.metadata.query_output_labels.clone(),
+                    values,
+                });
         }
         #[cfg(feature = "native_query_legacy_test_support")]
         let plan = if matches!(
@@ -2421,6 +2524,7 @@ impl SimpleEngine {
                     limit_topk: enable_topk_limiting,
                     format_output: enable_topk_formatting,
                 },
+                query_time_aggregations,
             )
             .map_err(QueryExecutionError::Native)?
         };
@@ -2431,6 +2535,7 @@ impl SimpleEngine {
                 limit_topk: enable_topk_limiting,
                 format_output: enable_topk_formatting,
             },
+            query_time_aggregations,
         )
         .map_err(QueryExecutionError::Native)?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
@@ -2443,7 +2548,9 @@ impl SimpleEngine {
             QueryPlanExecutionError::InvalidPlan(reason) => QueryExecutionError::Native(reason),
             QueryPlanExecutionError::Node { source, .. } => source,
         })? {
-            NativePlanOutput::Results(results) => Ok(results),
+            NativePlanOutput::Results { labels, values } => {
+                Ok(RangePipelineOutput { labels, values })
+            }
             _ => Err(QueryExecutionError::Native(
                 "Query plan root did not produce results".to_string(),
             )),
@@ -3044,6 +3151,9 @@ impl SimpleEngine {
 #[cfg(test)]
 mod topk_metadata_tests {
     use super::{QueryExecutionError, SimpleEngine};
+    use crate::data_model::KeyByLabelValues;
+    use crate::engines::query_result::InstantVectorElement;
+    use promql_utilities::data_model::KeyByLabelNames;
     use std::collections::HashMap;
 
     #[test]
@@ -3073,6 +3183,94 @@ mod topk_metadata_tests {
             QueryExecutionError::Native("No data found, but the operation failed".to_string()),
         ));
         assert!(matches!(native_error, Err(QueryExecutionError::Native(_))));
+    }
+
+    #[test]
+    fn grouped_topk_keeps_each_bucket_contiguous() {
+        let output_labels = KeyByLabelNames::new(vec![
+            "__name__".to_string(),
+            "instance".to_string(),
+            "job".to_string(),
+        ]);
+        let grouping_labels = KeyByLabelNames::new(vec!["job".to_string()]);
+        let mut results = vec![
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "b".to_string(),
+                    "backend".to_string(),
+                ]),
+                2.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "a".to_string(),
+                    "frontend".to_string(),
+                ]),
+                4.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "a".to_string(),
+                    "backend".to_string(),
+                ]),
+                3.0,
+            ),
+            InstantVectorElement::new(
+                KeyByLabelValues::new_with_labels(vec![
+                    "ordered_data".to_string(),
+                    "b".to_string(),
+                    "frontend".to_string(),
+                ]),
+                1.0,
+            ),
+        ];
+
+        SimpleEngine::sort_instant_topk_results(&mut results, &output_labels, &grouping_labels)
+            .unwrap();
+
+        assert_eq!(
+            results
+                .into_iter()
+                .map(|result| (result.labels.labels, result.value))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "a".to_string(),
+                        "backend".to_string(),
+                    ],
+                    3.0,
+                ),
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "b".to_string(),
+                        "backend".to_string(),
+                    ],
+                    2.0,
+                ),
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "a".to_string(),
+                        "frontend".to_string(),
+                    ],
+                    4.0,
+                ),
+                (
+                    vec![
+                        "ordered_data".to_string(),
+                        "b".to_string(),
+                        "frontend".to_string(),
+                    ],
+                    1.0,
+                ),
+            ]
+        );
     }
 }
 

@@ -10,6 +10,7 @@ use super::{
 };
 use crate::data_model::{AggregationIdInfo, KeyByLabelValues, QueryConfig, SchemaConfig};
 use crate::engines::query_result::{InstantVectorElement, QueryResult, RangeVectorElement};
+use crate::engines::query_time_aggregation::{apply_instant_pipeline, pipeline_supports_labels};
 use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
@@ -278,11 +279,12 @@ impl SimpleEngine {
         &self,
         arm_ast: &promql_parser::parser::Expr,
         query_config: &QueryConfig,
+        planned_subquery: &str,
         time: f64,
     ) -> Option<QueryExecutionContext> {
         let query_time = Self::convert_query_time_to_data_time(time);
 
-        let match_result = self.find_matching_controller_pattern(arm_ast, &query_config.query)?;
+        let match_result = self.find_matching_controller_pattern(arm_ast, planned_subquery)?;
 
         let agg_info = self
             .get_aggregation_id_info(query_config)
@@ -293,7 +295,7 @@ impl SimpleEngine {
             .ok()?;
 
         self.build_promql_execution_context_tail(
-            &query_config.query,
+            planned_subquery,
             &match_result,
             query_time,
             agg_info,
@@ -435,7 +437,15 @@ impl SimpleEngine {
             Expr::Paren(paren) => self.resolve_arm_leaf_context(&paren.expr, time),
             other => {
                 let config = self.find_query_config_promql_structural(other)?;
-                let ctx = self.build_query_execution_context_from_ast(other, &config, time)?;
+                if !config.query_time_aggregations.is_empty() {
+                    return None;
+                }
+                let ctx = self.build_query_execution_context_from_ast(
+                    other,
+                    &config,
+                    &config.planned_subquery,
+                    time,
+                )?;
                 let label_names =
                     binary_matching_label_names(ctx.metadata.query_output_labels.labels.clone());
                 Some((ctx, label_names))
@@ -759,7 +769,8 @@ impl SimpleEngine {
             // unformatted intermediate label representation until after the
             // arithmetic operation.
             let Some(results) = Self::map_local_execution_outcome(
-                self.execute_observed_range_query_pipeline(&ctx, true, false),
+                self.execute_observed_range_query_pipeline(&ctx, true, false, &[])
+                    .map(|output| output.values),
             )?
             else {
                 return Ok(None);
@@ -802,13 +813,15 @@ impl SimpleEngine {
         }
         // Binary arms need Topk limiting, but not final presentation formatting.
         let Some(lhs_results) = Self::map_local_execution_outcome(
-            self.execute_observed_range_query_pipeline(&lhs_ctx, true, false),
+            self.execute_observed_range_query_pipeline(&lhs_ctx, true, false, &[])
+                .map(|output| output.values),
         )?
         else {
             return Ok(None);
         };
         let Some(rhs_results) = Self::map_local_execution_outcome(
-            self.execute_observed_range_query_pipeline(&rhs_ctx, true, false),
+            self.execute_observed_range_query_pipeline(&rhs_ctx, true, false, &[])
+                .map(|output| output.values),
         )?
         else {
             return Ok(None);
@@ -1111,6 +1124,56 @@ impl SimpleEngine {
             return result;
         }
 
+        if let Some(config) = self.find_query_config(&query) {
+            if !config.query_time_aggregations.is_empty() {
+                let anchor_ast = match promql_parser::parser::parse(&config.planned_subquery) {
+                    Ok(ast) => ast,
+                    Err(error) => {
+                        return Err(QueryExecutionError::Native(format!(
+                            "configured query-time aggregation anchor does not parse: {error}"
+                        )));
+                    }
+                };
+                let Some(context) = self.build_query_execution_context_from_ast(
+                    &anchor_ast,
+                    &config,
+                    &config.planned_subquery,
+                    time,
+                ) else {
+                    return Ok(None);
+                };
+                let anchor_metric = context.metric.clone();
+                let Some((anchor_labels, anchor_result)) =
+                    self.execute_context_result(context, true, false)?
+                else {
+                    return Ok(None);
+                };
+                if !pipeline_supports_labels(&anchor_labels, &config.query_time_aggregations)
+                    .map_err(QueryExecutionError::Native)?
+                {
+                    return Ok(None);
+                }
+                let QueryResult::Vector(mut anchor_values) = anchor_result else {
+                    return Ok(None);
+                };
+                if anchor_labels.labels.first().map(String::as_str) == Some(METRIC_NAME_LABEL) {
+                    for value in &mut anchor_values.values {
+                        Self::prepend_metric_name(&anchor_metric, &mut value.labels);
+                    }
+                }
+                let (labels, values) = apply_instant_pipeline(
+                    anchor_labels,
+                    anchor_values.values,
+                    &config.query_time_aggregations,
+                )
+                .map_err(QueryExecutionError::Native)?;
+                return Ok(Some((
+                    labels,
+                    QueryResult::vector(values, Self::convert_query_time_to_data_time(time)),
+                )));
+            }
+        }
+
         let Some(context) = self.build_query_execution_context_from_parsed(&ast, &query, time)
         else {
             return Ok(None);
@@ -1374,6 +1437,50 @@ impl SimpleEngine {
             return result;
         }
 
+        if let Some(config) = self.find_query_config(&query) {
+            if !config.query_time_aggregations.is_empty() {
+                let anchor_ast = match promql_parser::parser::parse(&config.planned_subquery) {
+                    Ok(ast) => ast,
+                    Err(error) => {
+                        return Err(QueryExecutionError::Native(format!(
+                            "configured query-time aggregation anchor does not parse: {error}"
+                        )));
+                    }
+                };
+                let Some(anchor_context) = self.build_query_execution_context_from_ast(
+                    &anchor_ast,
+                    &config,
+                    &config.planned_subquery,
+                    end,
+                ) else {
+                    return Ok(None);
+                };
+                let Some(context) = self.finish_range_context(anchor_context, start, end, step)
+                else {
+                    return Ok(None);
+                };
+                if !pipeline_supports_labels(
+                    &context.base.metadata.query_output_labels,
+                    &config.query_time_aggregations,
+                )
+                .map_err(QueryExecutionError::Native)?
+                {
+                    return Ok(None);
+                }
+                let Some(output) =
+                    Self::map_local_execution_outcome(self.execute_observed_range_query_pipeline(
+                        &context,
+                        true,
+                        false,
+                        &config.query_time_aggregations,
+                    ))?
+                else {
+                    return Ok(None);
+                };
+                return Ok(Some((output.labels, QueryResult::matrix(output.values))));
+            }
+        }
+
         let Some(context) =
             self.build_range_query_execution_context_from_parsed(&ast, &query, start, end, step)
         else {
@@ -1384,7 +1491,8 @@ impl SimpleEngine {
         // instant's handle_query_promql -- both flags are no-ops unless this
         // query's statistic is Topk.
         let Some(results): Option<Vec<RangeVectorElement>> = Self::map_local_execution_outcome(
-            self.execute_observed_range_query_pipeline(&context, true, true),
+            self.execute_observed_range_query_pipeline(&context, true, true, &[])
+                .map(|output| output.values),
         )?
         else {
             return Ok(None);
@@ -1472,6 +1580,10 @@ mod topk_pipeline_tests {
     use crate::stores::simple_map_store::SimpleMapStore;
     use crate::stores::Store;
     use crate::utils::http::convert_query_result_to_prometheus;
+    use asap_types::query_config::{
+        QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
     use promql_utilities::data_model::KeyByLabelNames;
     use promql_utilities::query_logics::enums::Statistic;
     use std::collections::{HashMap, HashSet};
@@ -1742,6 +1854,115 @@ mod topk_pipeline_tests {
         for pair in wire_values.windows(2) {
             assert!(pair[0] >= pair[1]);
         }
+    }
+
+    #[test]
+    fn nested_sum_applies_topk_anchor_before_its_outer_aggregation() {
+        let (engine, store) = build_topk_engine();
+        let nested_query = "sum(topk(3, transfer_events))";
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec!["srcip".to_string()]),
+            )),
+            query_configs: vec![
+                QueryConfig::with_plan(
+                    nested_query.to_string(),
+                    TOPK_QUERY.replace("10", "3"),
+                    vec![QueryTimeAggregation {
+                        operator: QueryTimeAggregationOperator::Sum,
+                        grouping: QueryTimeGrouping {
+                            mode: QueryTimeGroupingMode::All,
+                            labels: Vec::new(),
+                        },
+                        parameter: None,
+                    }],
+                )
+                .add_aggregation(AggregationReference::new(AGG_ID, None)),
+                QueryConfig::new("topk(3, transfer_events)".to_string())
+                    .add_aggregation(AggregationReference::new(AGG_ID, None)),
+            ],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        let context = engine
+            .build_query_execution_context_promql(
+                "topk(3, transfer_events)".to_string(),
+                QUERY_TIME,
+            )
+            .expect("topk anchor should build a context");
+        let window = &context.store_plan.values_query;
+        let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
+        for i in 1..=15u64 {
+            sketch.inner.update(&format!("10.0.0.{i}"), (i * 10) as f64);
+        }
+        store
+            .insert_precomputed_output(
+                PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID),
+                Box::new(sketch),
+            )
+            .expect("insert should succeed");
+
+        let (_, result) = engine
+            .handle_query_promql(nested_query.to_string(), QUERY_TIME)
+            .expect("nested query should not fail")
+            .expect("nested query should execute locally");
+        let QueryResult::Vector(vector) = result else {
+            panic!("nested instant query should return a vector");
+        };
+        assert_eq!(vector.values.len(), 1);
+        assert_eq!(vector.values[0].value, 420.0);
+
+        let (_, result) = engine
+            .handle_range_query_promql(nested_query.to_string(), QUERY_TIME - 1.0, QUERY_TIME, 1.0)
+            .expect("nested range query should not fail")
+            .expect("nested range query should execute locally");
+        let QueryResult::Matrix(matrix) = result else {
+            panic!("nested range query should return a matrix");
+        };
+        let end_sample = matrix
+            .values
+            .iter()
+            .flat_map(|element| &element.samples)
+            .find(|sample| sample.timestamp == (QUERY_TIME * 1_000.0) as u64)
+            .expect("range result should contain the end timestamp");
+        assert_eq!(end_sample.value, 420.0);
+    }
+
+    #[test]
+    fn nested_range_no_local_data_remains_a_prometheus_fallback() {
+        let (engine, _store) = build_topk_engine();
+        let nested_query = "sum(topk(3, transfer_events))";
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                METRIC.to_string(),
+                KeyByLabelNames::new(vec!["srcip".to_string()]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                nested_query.to_string(),
+                "topk(3, transfer_events)".to_string(),
+                vec![QueryTimeAggregation {
+                    operator: QueryTimeAggregationOperator::Sum,
+                    grouping: QueryTimeGrouping {
+                        mode: QueryTimeGroupingMode::All,
+                        labels: Vec::new(),
+                    },
+                    parameter: None,
+                }],
+            )
+            .add_aggregation(AggregationReference::new(AGG_ID, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+
+        assert!(matches!(
+            engine.handle_range_query_promql(
+                nested_query.to_string(),
+                QUERY_TIME - 1.0,
+                QUERY_TIME,
+                1.0,
+            ),
+            Ok(None)
+        ));
     }
 
     /// A topk leaf wrapped in an arithmetic binary expr (`topk(10, ...) + 0`)

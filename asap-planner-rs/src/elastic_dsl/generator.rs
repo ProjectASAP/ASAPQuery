@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use crate::config::input::ElasticDSLControllerConfig;
 use crate::error::ControllerError;
 use crate::generator::{
-    build_aggregation_entry, build_queries_yaml, GeneratorOutput, KEY_AGGREGATIONS,
+    build_aggregation_entry, build_queries_yaml, GeneratorOutput, QueryPlanEntry, KEY_AGGREGATIONS,
     KEY_CLEANUP_POLICY, KEY_NAME, KEY_QUERIES,
 };
 use crate::planner::agg_config::IntermediateAggConfig;
@@ -82,8 +82,8 @@ pub fn generate_elastic_plan(
 
     // Dedup map: identifying_key -> IntermediateAggConfig
     let mut dedup_map: IndexMap<String, IntermediateAggConfig> = IndexMap::new();
-    // query_string -> Vec<(key, cleanup_param)>
-    let mut query_keys_map: IndexMap<String, Vec<(String, Option<u64>)>> = IndexMap::new();
+    // query_string -> explicit physical query plan
+    let mut query_plan_map: IndexMap<String, QueryPlanEntry> = IndexMap::new();
     // index -> schema builder derived from the queries targeting that index
     let mut index_schema_builders: IndexMap<String, ElasticIndexSchemaBuilder> = IndexMap::new();
 
@@ -127,7 +127,10 @@ pub fn generate_elastic_plan(
                 keys_for_query.push((key.clone(), cleanup_param));
                 dedup_map.entry(key).or_insert(config_item);
             }
-            query_keys_map.insert(query_string.clone(), keys_for_query);
+            query_plan_map.insert(
+                query_string.clone(),
+                QueryPlanEntry::fully_planned(query_string.clone(), keys_for_query),
+            );
         }
     }
 
@@ -140,7 +143,7 @@ pub fn generate_elastic_plan(
     let streaming_yaml = build_elastic_streaming_yaml(&dedup_map, &id_map)?;
     let inference_yaml = build_elastic_inference_yaml(
         cleanup_policy,
-        &query_keys_map,
+        &query_plan_map,
         &id_map,
         &index_schema_builders,
     )?;
@@ -150,7 +153,7 @@ pub fn generate_elastic_plan(
         streaming_yaml,
         inference_yaml,
         aggregation_count: dedup_map.len(),
-        query_count: query_keys_map.len(),
+        query_count: query_plan_map.len(),
     })
 }
 
@@ -174,7 +177,7 @@ fn build_elastic_streaming_yaml(
 
 fn build_elastic_inference_yaml(
     cleanup_policy: CleanupPolicy,
-    query_keys_map: &IndexMap<String, Vec<(String, Option<u64>)>>,
+    query_plan_map: &IndexMap<String, QueryPlanEntry>,
     id_map: &HashMap<String, u32>,
     index_schema_builders: &IndexMap<String, ElasticIndexSchemaBuilder>,
 ) -> Result<YamlValue, ControllerError> {
@@ -191,7 +194,7 @@ fn build_elastic_inference_yaml(
     );
     root.insert(
         YamlValue::String(KEY_QUERIES.to_string()),
-        YamlValue::Sequence(build_queries_yaml(cleanup_policy, query_keys_map, id_map)),
+        YamlValue::Sequence(build_queries_yaml(cleanup_policy, query_plan_map, id_map)),
     );
     root.insert(
         YamlValue::String("indices".to_string()),

@@ -35,7 +35,8 @@ fn build_inference_config(solution: &OptimizerSolution) -> InferenceConfig {
 
         for query_string in &assignment.item.query_strings {
             let mut query_config =
-                QueryConfig::new(query_string.clone()).add_aggregation(agg_ref.clone());
+                QueryConfig::with_plan(query_string.clone(), query_string.clone(), vec![])
+                    .add_aggregation(agg_ref.clone());
             if let Some(key_ref) = &key_ref {
                 query_config = query_config.add_aggregation(key_ref.clone());
             }

@@ -1,4 +1,8 @@
 use asap_types::enums::CleanupPolicy;
+use asap_types::query_config::{
+    QueryTimeAggregation, QueryTimeAggregationOperator, QueryTimeAggregationParameter,
+    QueryTimeGrouping, QueryTimeGroupingMode,
+};
 use asap_types::query_requirements::build_query_requirements_promql;
 use asap_types::PromQLSchema;
 use promql_utilities::ast_matching::PromQLMatchResult;
@@ -25,6 +29,75 @@ pub enum BinaryArm {
     Query(String),
     /// A scalar literal (e.g. `100` in `rate(x[5m]) * 100`).
     Scalar(f64),
+}
+
+/// The supported physical subquery and the aggregation stages evaluated after it.
+#[derive(Debug, Clone)]
+pub struct NestedAggregationPlan {
+    pub planned_subquery: String,
+    pub query_time_aggregations: Vec<QueryTimeAggregation>,
+}
+
+fn aggregation_stage(
+    aggregate: &promql_parser::parser::AggregateExpr,
+) -> Option<QueryTimeAggregation> {
+    let operator = match aggregate.op.to_string().as_str() {
+        "sum" => QueryTimeAggregationOperator::Sum,
+        "count" => QueryTimeAggregationOperator::Count,
+        "avg" => QueryTimeAggregationOperator::Avg,
+        "min" => QueryTimeAggregationOperator::Min,
+        "max" => QueryTimeAggregationOperator::Max,
+        "quantile" => QueryTimeAggregationOperator::Quantile,
+        "topk" => QueryTimeAggregationOperator::Topk,
+        _ => return None,
+    };
+
+    let grouping = match &aggregate.modifier {
+        Some(promql_parser::parser::LabelModifier::Include(labels)) if !labels.is_empty() => {
+            QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::By,
+                labels: labels.labels.clone(),
+            }
+        }
+        Some(promql_parser::parser::LabelModifier::Exclude(labels)) => QueryTimeGrouping {
+            mode: QueryTimeGroupingMode::Without,
+            labels: labels.labels.clone(),
+        },
+        _ => QueryTimeGrouping {
+            mode: QueryTimeGroupingMode::All,
+            labels: Vec::new(),
+        },
+    };
+
+    let parameter = match operator {
+        QueryTimeAggregationOperator::Topk => {
+            let promql_parser::parser::Expr::NumberLiteral(number) = aggregate.param.as_deref()?
+            else {
+                return None;
+            };
+            if number.val <= 0.0 || number.val.fract() != 0.0 {
+                return None;
+            }
+            Some(QueryTimeAggregationParameter::Integer(number.val as u64))
+        }
+        QueryTimeAggregationOperator::Quantile => {
+            let promql_parser::parser::Expr::NumberLiteral(number) = aggregate.param.as_deref()?
+            else {
+                return None;
+            };
+            if !number.val.is_finite() || !(0.0..=1.0).contains(&number.val) {
+                return None;
+            }
+            Some(QueryTimeAggregationParameter::Float(number.val))
+        }
+        _ => None,
+    };
+
+    Some(QueryTimeAggregation {
+        operator,
+        grouping,
+        parameter,
+    })
 }
 
 /// Convert an AST expression to a `BinaryArm`. Scalar literals become
@@ -161,6 +234,33 @@ impl SingleQueryProcessor {
             self.cleanup_policy,
             self.windowing.clone(),
         )
+    }
+
+    /// Find the largest existing planner-supported subtree below outer
+    /// aggregations and serialize the peeled stages in execution order.
+    pub fn nested_aggregation_plan(&self) -> Option<NestedAggregationPlan> {
+        let mut expression = promql_parser::parser::parse(&self.query).ok()?;
+        let mut outer_to_inner_stages = Vec::new();
+
+        loop {
+            let promql_parser::parser::Expr::Aggregate(aggregate) = expression else {
+                return None;
+            };
+            outer_to_inner_stages.push(aggregation_stage(&aggregate)?);
+            expression = *aggregate.expr;
+
+            let planned_subquery = format!("{}", expression);
+            if self
+                .make_arm_processor(planned_subquery.clone())
+                .is_supported()
+            {
+                outer_to_inner_stages.reverse();
+                return Some(NestedAggregationPlan {
+                    planned_subquery,
+                    query_time_aggregations: outer_to_inner_stages,
+                });
+            }
+        }
     }
 
     /// Check if query should be processed (supported pattern)
@@ -339,5 +439,38 @@ impl SingleQueryProcessor {
         };
 
         Ok((configs, cleanup_param))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_without_modifier_is_preserved_as_without() {
+        let expression = promql_parser::parser::parse("sum without () (requests_total)")
+            .expect("query should parse");
+        let promql_parser::parser::Expr::Aggregate(aggregate) = expression else {
+            panic!("query should parse as an aggregation");
+        };
+
+        let stage = aggregation_stage(&aggregate).expect("aggregation should be supported");
+        assert!(matches!(
+            stage.grouping.mode,
+            QueryTimeGroupingMode::Without
+        ));
+        assert!(stage.grouping.labels.is_empty());
+    }
+
+    #[test]
+    fn invalid_query_time_parameters_are_not_planned() {
+        for query in ["topk(0, requests_total)", "quantile(1.1, requests_total)"] {
+            let expression = promql_parser::parser::parse(query).expect("query should parse");
+            let promql_parser::parser::Expr::Aggregate(aggregate) = expression else {
+                panic!("query should parse as an aggregation");
+            };
+
+            assert!(aggregation_stage(&aggregate).is_none(), "{query}");
+        }
     }
 }

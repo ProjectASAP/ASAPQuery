@@ -7,7 +7,7 @@ use std::io::BufReader;
 use crate::aggregation_reference::AggregationReference;
 use crate::enums::{CleanupPolicy, QueryLanguage};
 use crate::promql_schema::PromQLSchema;
-use crate::query_config::QueryConfig;
+use crate::query_config::{QueryConfig, QueryTimeAggregation};
 use elastic_dsl_utilities::{ElasticIndexSchema, ElasticMappingSchema};
 use promql_utilities::data_model::KeyByLabelNames;
 use sql_utilities::sqlhelper::{SQLSchema, Table};
@@ -250,6 +250,18 @@ impl InferenceConfig {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| anyhow::anyhow!("Missing query field"))?
                     .to_string();
+                let planned_subquery = query_data
+                    .get("planned_subquery")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| anyhow::anyhow!("Missing planned_subquery field"))?
+                    .to_string();
+                let query_time_aggregations = query_data
+                    .get("query_time_aggregations")
+                    .ok_or_else(|| anyhow::anyhow!("Missing query_time_aggregations field"))
+                    .and_then(|value| {
+                        serde_yaml::from_value::<Vec<QueryTimeAggregation>>(value.clone())
+                            .map_err(anyhow::Error::from)
+                    })?;
 
                 let aggregations = if let Some(aggregations_data) =
                     query_data.get("aggregations").and_then(|v| v.as_sequence())
@@ -290,7 +302,12 @@ impl InferenceConfig {
                     Vec::new()
                 };
 
-                let config = QueryConfig::new(query).with_aggregations(aggregations);
+                let config =
+                    QueryConfig::with_plan(query, planned_subquery, query_time_aggregations)
+                        .with_aggregations(aggregations);
+                config
+                    .validate_execution_plan()
+                    .map_err(|error| anyhow::anyhow!("Invalid query execution plan: {error}"))?;
                 configs.push(config);
             }
             configs
@@ -298,5 +315,79 @@ impl InferenceConfig {
             Vec::new()
         };
         Ok(query_configs)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_a_query_without_a_planned_subquery() {
+        let data: Value = serde_yaml::from_str(
+            r#"
+cleanup_policy:
+  name: no_cleanup
+metrics: {}
+queries:
+  - query: "sum(metric)"
+    query_time_aggregations: []
+    aggregations: []
+"#,
+        )
+        .unwrap();
+
+        let error = InferenceConfig::from_yaml_data(&data, QueryLanguage::promql)
+            .expect_err("query plans must name their planned subquery");
+
+        assert!(error.to_string().contains("planned_subquery"));
+    }
+
+    #[test]
+    fn rejects_a_query_without_a_query_time_pipeline() {
+        let data: Value = serde_yaml::from_str(
+            r#"
+cleanup_policy:
+  name: no_cleanup
+metrics: {}
+queries:
+  - query: "sum(metric)"
+    planned_subquery: "sum(metric)"
+    aggregations: []
+"#,
+        )
+        .unwrap();
+
+        let error = InferenceConfig::from_yaml_data(&data, QueryLanguage::promql)
+            .expect_err("query plans must declare their query-time pipeline");
+
+        assert!(error.to_string().contains("query_time_aggregations"));
+    }
+
+    #[test]
+    fn rejects_an_invalid_query_time_aggregation() {
+        let data: Value = serde_yaml::from_str(
+            r#"
+cleanup_policy:
+  name: no_cleanup
+metrics: {}
+queries:
+  - query: "quantile(1.5, sum(metric))"
+    planned_subquery: "sum(metric)"
+    query_time_aggregations:
+      - operator: quantile
+        grouping:
+          mode: all
+          labels: []
+        parameter: 1.5
+    aggregations: []
+"#,
+        )
+        .unwrap();
+
+        let error = InferenceConfig::from_yaml_data(&data, QueryLanguage::promql)
+            .expect_err("invalid pipeline parameters must fail during config loading");
+
+        assert!(error.to_string().contains("quantile"));
     }
 }

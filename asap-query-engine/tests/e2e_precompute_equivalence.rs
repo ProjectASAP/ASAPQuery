@@ -16,6 +16,7 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use asap_types::query_config::QueryTimeAggregation;
 use query_engine_rust::data_model::{
     AggregationReference, InferenceConfig, PromQLSchema, QueryConfig, SchemaConfig, StreamingConfig,
 };
@@ -260,6 +261,16 @@ struct NativeDagScenario<'a> {
 
 impl NativeDagScenario<'_> {
     async fn build_engine(self) -> (SimpleEngine, String) {
+        let planned_subquery = self.query.to_string();
+        self.build_engine_with_plan(&planned_subquery, Vec::new())
+            .await
+    }
+
+    async fn build_engine_with_plan(
+        self,
+        planned_subquery: &str,
+        query_time_aggregations: Vec<QueryTimeAggregation>,
+    ) -> (SimpleEngine, String) {
         let aggregation_ids: Vec<u64> = self
             .aggregation_configs
             .iter()
@@ -305,7 +316,11 @@ impl NativeDagScenario<'_> {
         }
 
         let query_config = aggregation_ids.into_iter().fold(
-            QueryConfig::new(self.query.to_string()),
+            QueryConfig::with_plan(
+                self.query.to_string(),
+                planned_subquery.to_string(),
+                query_time_aggregations,
+            ),
             |config, aggregation_id| {
                 config.add_aggregation(AggregationReference::new(aggregation_id, None))
             },
@@ -360,6 +375,557 @@ fn assert_range_results_match(
         serde_json::to_value(Some(dag)).unwrap(),
         serde_json::to_value(Some(legacy)).unwrap()
     );
+}
+
+#[tokio::test]
+async fn e2e_nested_topk_executes_after_its_planned_sum_anchor() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeAggregationParameter, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_topk_requests";
+    let anchor = "sum by (job) (nested_topk_requests)";
+    let scenario = NativeDagScenario {
+        port: 19417,
+        metric,
+        query: "topk(1, sum by (job) (nested_topk_requests))",
+        aggregation_configs: vec![make_agg_config(
+            17,
+            metric,
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec!["job"],
+        )],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples: vec![
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 1_000, 2.0),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "b")], 1_000, 3.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "c")],
+                1_000,
+                9.0,
+            ),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 3_000, 0.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "c")],
+                3_000,
+                0.0,
+            ),
+        ],
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+
+    let (engine, query) = scenario
+        .build_engine_with_plan(
+            anchor,
+            vec![QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Topk,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::All,
+                    labels: Vec::new(),
+                },
+                parameter: Some(QueryTimeAggregationParameter::Integer(1)),
+            }],
+        )
+        .await;
+    let Some((_, result)) = engine
+        .handle_query_promql(query, 1.0)
+        .expect("nested query should execute through the planned anchor")
+    else {
+        panic!("nested query should execute through the planned anchor");
+    };
+    let QueryResult::Vector(vector) = result else {
+        panic!("instant query should return a vector");
+    };
+
+    assert_eq!(vector.values.len(), 1);
+    assert_eq!(
+        vector.values[0].labels.labels,
+        vec!["worker"],
+        "nested topk result: {:?}",
+        vector.values
+    );
+    assert_eq!(vector.values[0].value, 9.0);
+}
+
+#[tokio::test]
+async fn e2e_nested_aggregation_preserves_plain_topk_labels() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_plain_topk_labels";
+    let anchor = format!("topk(3, {metric})");
+    let query = format!("sum by (srcip) ({anchor})");
+    let mut config = make_agg_config_full(
+        19,
+        metric,
+        AggregationType::CountMinSketchWithHeap,
+        "count",
+        1_000,
+        0,
+        vec![],
+        vec!["srcip"],
+    );
+    config.parameters.insert("depth".to_string(), json!(3_u64));
+    config
+        .parameters
+        .insert("width".to_string(), json!(128_u64));
+    config
+        .parameters
+        .insert("heapsize".to_string(), json!(16_u64));
+    let samples = [
+        ("10.0.0.1", 5),
+        ("10.0.0.2", 4),
+        ("10.0.0.3", 3),
+        ("10.0.0.4", 2),
+    ]
+    .into_iter()
+    .flat_map(|(srcip, count)| {
+        std::iter::repeat_with(move || make_timeseries(metric, vec![("srcip", srcip)], 1_000, 1.0))
+            .take(count)
+    })
+    .chain(std::iter::once(make_timeseries(metric, vec![], 3_000, 0.0)))
+    .collect();
+    let scenario = NativeDagScenario {
+        port: 19425,
+        metric,
+        query: &query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["srcip".to_string()],
+        samples,
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, query) = scenario
+        .build_engine_with_plan(
+            &anchor,
+            vec![QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Sum,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::By,
+                    labels: vec!["srcip".to_string()],
+                },
+                parameter: None,
+            }],
+        )
+        .await;
+
+    let expected = vec![
+        (vec!["10.0.0.1".to_string()], 5.0),
+        (vec!["10.0.0.2".to_string()], 4.0),
+        (vec!["10.0.0.3".to_string()], 3.0),
+    ];
+    let (_, instant) = engine
+        .handle_query_promql(query.clone(), 1.0)
+        .expect("instant query should execute locally")
+        .expect("instant query should return a result");
+    let QueryResult::Vector(instant) = instant else {
+        panic!("instant query should return a vector");
+    };
+    assert_eq!(
+        instant
+            .values
+            .into_iter()
+            .map(|value| (value.labels.labels, value.value))
+            .collect::<Vec<_>>(),
+        expected
+    );
+
+    let (_, range) = engine
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("range query should execute locally")
+        .expect("range query should return a result");
+    let QueryResult::Matrix(range) = range else {
+        panic!("range query should return a matrix");
+    };
+    assert_eq!(
+        range
+            .values
+            .into_iter()
+            .map(|value| {
+                (
+                    value.labels.labels,
+                    value.samples.last().expect("range sample").value,
+                )
+            })
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+#[tokio::test]
+async fn e2e_nested_grouped_plain_topk_uses_raw_label_positions() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeGrouping, QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_grouped_plain_topk";
+    let anchor = format!("topk by (job) (3, {metric})");
+    let query = format!("sum by (job) ({anchor})");
+    let mut config = make_agg_config_full(
+        21,
+        metric,
+        AggregationType::CountMinSketchWithHeap,
+        "count",
+        1_000,
+        0,
+        vec!["job"],
+        vec!["instance"],
+    );
+    config.parameters.insert("depth".to_string(), json!(3_u64));
+    config
+        .parameters
+        .insert("width".to_string(), json!(128_u64));
+    config
+        .parameters
+        .insert("heapsize".to_string(), json!(16_u64));
+    let samples = [
+        ("backend", "a", 3),
+        ("backend", "b", 2),
+        ("backend", "c", 1),
+        ("backend", "d", 1),
+    ]
+    .into_iter()
+    .flat_map(|(job, instance, count)| {
+        std::iter::repeat_with(move || {
+            make_timeseries(
+                metric,
+                vec![("job", job), ("instance", instance)],
+                1_000,
+                1.0,
+            )
+        })
+        .take(count)
+    })
+    .chain(std::iter::once(make_timeseries(metric, vec![], 3_000, 0.0)))
+    .collect();
+    let scenario = NativeDagScenario {
+        port: 19427,
+        metric,
+        query: &query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples,
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, query) = scenario
+        .build_engine_with_plan(
+            &anchor,
+            vec![QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Sum,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::By,
+                    labels: vec!["job".to_string()],
+                },
+                parameter: None,
+            }],
+        )
+        .await;
+
+    let (_, instant) = engine
+        .handle_query_promql(query.clone(), 1.0)
+        .expect("instant query should execute locally")
+        .expect("instant query should return a result");
+    let QueryResult::Vector(instant) = instant else {
+        panic!("instant query should return a vector");
+    };
+    assert_eq!(
+        instant
+            .values
+            .into_iter()
+            .map(|value| (value.labels.labels, value.value))
+            .collect::<Vec<_>>(),
+        vec![(vec!["backend".to_string()], 6.0)]
+    );
+
+    let (_, range) = engine
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("range query should execute locally")
+        .expect("range query should return a result");
+    let QueryResult::Matrix(range) = range else {
+        panic!("range query should return a matrix");
+    };
+    assert_eq!(
+        range
+            .values
+            .into_iter()
+            .map(|value| {
+                (
+                    value.labels.labels,
+                    value.samples.last().expect("range sample").value,
+                )
+            })
+            .collect::<Vec<_>>(),
+        vec![(vec!["backend".to_string()], 6.0)]
+    );
+}
+
+#[tokio::test]
+async fn e2e_nested_topk_preserves_plain_topk_metric_name() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeAggregationParameter, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_plain_topk_metric_name";
+    let anchor = format!("topk(3, {metric})");
+    let query = format!("topk(1, {anchor})");
+    let mut config = make_agg_config_full(
+        20,
+        metric,
+        AggregationType::CountMinSketchWithHeap,
+        "count",
+        1_000,
+        0,
+        vec![],
+        vec!["srcip"],
+    );
+    config.parameters.insert("depth".to_string(), json!(3_u64));
+    config
+        .parameters
+        .insert("width".to_string(), json!(128_u64));
+    config
+        .parameters
+        .insert("heapsize".to_string(), json!(16_u64));
+    let samples = [("10.0.0.1", 5), ("10.0.0.2", 4), ("10.0.0.3", 3)]
+        .into_iter()
+        .flat_map(|(srcip, count)| {
+            std::iter::repeat_with(move || {
+                make_timeseries(metric, vec![("srcip", srcip)], 1_000, 1.0)
+            })
+            .take(count)
+        })
+        .chain(std::iter::once(make_timeseries(metric, vec![], 3_000, 0.0)))
+        .collect();
+    let scenario = NativeDagScenario {
+        port: 19426,
+        metric,
+        query: &query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["srcip".to_string()],
+        samples,
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, query) = scenario
+        .build_engine_with_plan(
+            &anchor,
+            vec![QueryTimeAggregation {
+                operator: QueryTimeAggregationOperator::Topk,
+                grouping: QueryTimeGrouping {
+                    mode: QueryTimeGroupingMode::All,
+                    labels: Vec::new(),
+                },
+                parameter: Some(QueryTimeAggregationParameter::Integer(1)),
+            }],
+        )
+        .await;
+
+    let expected_labels = vec![metric.to_string(), "10.0.0.1".to_string()];
+    let (_, instant) = engine
+        .handle_query_promql(query.clone(), 1.0)
+        .expect("instant query should execute locally")
+        .expect("instant query should return a result");
+    let QueryResult::Vector(instant) = instant else {
+        panic!("instant query should return a vector");
+    };
+    assert_eq!(instant.values.len(), 1);
+    assert_eq!(instant.values[0].labels.labels, expected_labels);
+    assert_eq!(instant.values[0].value, 5.0);
+
+    let (_, range) = engine
+        .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+        .expect("range query should execute locally")
+        .expect("range query should return a result");
+    let QueryResult::Matrix(range) = range else {
+        panic!("range query should return a matrix");
+    };
+    assert_eq!(range.values.len(), 1);
+    assert_eq!(range.values[0].labels.labels, expected_labels);
+    assert_eq!(
+        range.values[0].samples.last().expect("range sample").value,
+        5.0
+    );
+}
+
+#[tokio::test]
+async fn e2e_nested_aggregation_operator_matrix_executes_instant_and_range() {
+    use asap_types::query_config::{
+        QueryTimeAggregationOperator, QueryTimeAggregationParameter, QueryTimeGrouping,
+        QueryTimeGroupingMode,
+    };
+
+    let metric = "nested_operator_matrix";
+    let anchor = "sum by (job) (nested_operator_matrix)";
+    let scenario = NativeDagScenario {
+        port: 19418,
+        metric,
+        query: anchor,
+        aggregation_configs: vec![make_agg_config(
+            18,
+            metric,
+            AggregationType::Sum,
+            "",
+            1_000,
+            0,
+            vec!["job"],
+        )],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
+        samples: vec![
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 1_000, 2.0),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "b")], 1_000, 3.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "c")],
+                1_000,
+                9.0,
+            ),
+            make_timeseries(metric, vec![("job", "api"), ("instance", "a")], 3_000, 0.0),
+            make_timeseries(
+                metric,
+                vec![("job", "worker"), ("instance", "c")],
+                3_000,
+                0.0,
+            ),
+        ],
+        evaluation_time_seconds: 1.0,
+        base_interval_ms: 1_000,
+    };
+    let (engine, _) = scenario.build_engine().await;
+    let operators = [
+        (
+            "sum",
+            QueryTimeAggregationOperator::Sum,
+            None,
+            vec![(vec![], 14.0)],
+        ),
+        (
+            "count",
+            QueryTimeAggregationOperator::Count,
+            None,
+            vec![(vec![], 2.0)],
+        ),
+        (
+            "avg",
+            QueryTimeAggregationOperator::Avg,
+            None,
+            vec![(vec![], 7.0)],
+        ),
+        (
+            "min",
+            QueryTimeAggregationOperator::Min,
+            None,
+            vec![(vec![], 5.0)],
+        ),
+        (
+            "max",
+            QueryTimeAggregationOperator::Max,
+            None,
+            vec![(vec![], 9.0)],
+        ),
+        (
+            "quantile",
+            QueryTimeAggregationOperator::Quantile,
+            Some(QueryTimeAggregationParameter::Float(0.75)),
+            vec![(vec![], 8.0)],
+        ),
+        (
+            "topk",
+            QueryTimeAggregationOperator::Topk,
+            Some(QueryTimeAggregationParameter::Integer(3)),
+            vec![(vec!["worker"], 9.0), (vec!["api"], 5.0)],
+        ),
+    ];
+
+    for (name, operator, parameter, expected) in operators {
+        let stage = QueryTimeAggregation {
+            operator,
+            grouping: QueryTimeGrouping {
+                mode: QueryTimeGroupingMode::All,
+                labels: Vec::new(),
+            },
+            parameter,
+        };
+        let query = match name {
+            "quantile" => format!("quantile(0.75, {anchor})"),
+            "topk" => format!("topk(3, {anchor})"),
+            _ => format!("{name}({anchor})"),
+        };
+        engine.update_inference_config(InferenceConfig {
+            schema: SchemaConfig::PromQL(PromQLSchema::new().add_metric(
+                metric.to_string(),
+                promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![
+                    "instance".to_string(),
+                    "job".to_string(),
+                ]),
+            )),
+            query_configs: vec![QueryConfig::with_plan(
+                query.clone(),
+                anchor.to_string(),
+                vec![stage],
+            )
+            .add_aggregation(AggregationReference::new(18, None))],
+            cleanup_policy: CleanupPolicy::NoCleanup,
+        });
+        let Some((_, instant)) = engine
+            .handle_query_promql(query.clone(), 1.0)
+            .unwrap_or_else(|error| panic!("instant {name}: {error}"))
+        else {
+            panic!("instant {name} returned no local result");
+        };
+        let QueryResult::Vector(instant) = instant else {
+            panic!("instant {name} should return a vector");
+        };
+        let instant_values: Vec<(Vec<String>, f64)> = instant
+            .values
+            .into_iter()
+            .map(|value| (value.labels.labels, value.value))
+            .collect();
+        let expected: Vec<(Vec<String>, f64)> = expected
+            .into_iter()
+            .map(|(labels, value)| (labels.into_iter().map(str::to_string).collect(), value))
+            .collect();
+        assert_eq!(instant_values, expected, "instant {name}");
+
+        let range_expected = if name == "topk" {
+            vec![
+                (vec!["api".to_string()], 5.0),
+                (vec!["worker".to_string()], 9.0),
+            ]
+        } else {
+            expected.clone()
+        };
+
+        let Some((_, range)) = engine
+            .handle_range_query_promql(query, 1.0, 2.0, 1.0)
+            .unwrap_or_else(|error| panic!("range {name}: {error}"))
+        else {
+            panic!("range {name} returned no local result");
+        };
+        let QueryResult::Matrix(range) = range else {
+            panic!("range {name} should return a matrix");
+        };
+        let range_values: Vec<(Vec<String>, f64)> = range
+            .values
+            .into_iter()
+            .map(|value| {
+                let sample = value
+                    .samples
+                    .last()
+                    .expect("range result should have a final sample");
+                (value.labels.labels, sample.value)
+            })
+            .collect();
+        assert_eq!(range_values, range_expected, "range {name}");
+    }
 }
 
 #[tokio::test]
