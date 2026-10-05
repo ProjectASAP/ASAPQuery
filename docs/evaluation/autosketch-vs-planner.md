@@ -158,8 +158,13 @@ evaluation alignments:
 - **staggered:** each RQE first fires at a deterministic pseudo-random offset in
   `[0, T_r)`, the typical case (Prometheus spreads rule-group evaluations).
 
-Plans are optimized for the aligned case only; staggered prices the same plans
-by simulation, so the methods' order there is reported but not guaranteed.
+Each alignment is solved separately. Staggered offsets are integers, so the
+timeline repeats with period `P = lcm(T_r)` (300 s for the synthetic intervals),
+and the staggered peak is exact and linear:
+`peak ≥ ingest + Σ_(r,D) occ_{r,D}(b) · z_{r,D}` for every bin `b` in `[0, P)`,
+where `occ_{r,D}(b)` is the constant CPU-seconds RQE `r` uses in bin `b` with
+deployment `D`'s latency, including self-overlap. If `P` exceeds 86,400 s, the
+aligned plan is priced under staggered instead, and flagged.
 
 Per family `f`:
 
