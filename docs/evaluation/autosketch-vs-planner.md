@@ -101,9 +101,11 @@ Mem   = Σ_active D  Mem_D
 In the MILP the `max` is linear: `Mem_D ≥ coef(r, D) · z_{r,D}` for each
 eligible `r`.
 
-**Price per machine family** — for family `f` with `vCPU_f`, `GiB_f` and
+**Price per machine family (steady state, implemented in sketch-bench #137)** — for family `f` with `vCPU_f`, `GiB_f` and
 on-demand `price_f` ($/hour), the plan needs a fractional instance count
-`n_f ≥ CPU / vCPU_f` and `n_f ≥ Mem / GiB_f`; cost is `price_f · n_f`. This
+`n_f ≥ CPU / vCPU_f` and `n_f ≥ Mem / GiB_f`; cost is `price_f · n_f`. Here
+`CPU` is the steady-state average. The two cost models below replace it in the
+reported results. This
 adds one continuous variable and two constraints, and needs no arbitrary split
 of an instance's price between CPU and memory. Families:
 
@@ -122,13 +124,65 @@ not change the result.
 ASAP is solved once per family. AutoSketch-Adapted's plan does not depend on
 the family; it is scored under each family's cost.
 
+### Two cost models per experiment run
+
+The average CPU hides that query load is bursty: ingest is continuous, but
+query and merge work arrives at each evaluation. Every run is therefore priced
+two ways, from one simulated CPU timeline.
+
+**CPU timeline.**
+- Simulate 24 hours in 1-second bins.
+- Every RQE first evaluates at `t = 0`, then every `T_r`. This aligned start
+  is the worst case.
+- Each evaluation occupies one core for its estimated latency, starting when
+  it fires. Work longer than 1 s spills into later bins.
+- `CPU(bin)` = ingest rate + busy-core time overlapping the bin.
+
+From the timeline:
+- **total CPU-seconds** = the area under the curve, `Σ_bins CPU(bin) · 1 s`;
+- **peak CPU** = `max_bin CPU(bin)`, in vCPU.
+
+**Model A — usage-based (pay for what is used).**
+
+```text
+$/hour = a · (total CPU-seconds / 24 h) + b · Mem_GiB
+```
+
+`a` ($/vCPU-hour) and `b` ($/GiB-hour) are a least-squares fit of
+`vCPU · a + GiB · b = price` over c7i.xlarge, m7i.xlarge and r7i.xlarge: about
+a = 0.0368 and b = 0.00364 with the 2026-10-04 prices. Model A does not depend
+on the machine family.
+
+**Model B — peak-provisioned (buy machines for the peak).** Per family `f`:
+
+```text
+n_f    = max(peak CPU / vCPU_f, Mem_GiB / GiB_f)
+$/hour = n_f · price_f
+```
+
+**Optimizing each model.** ASAP is solved separately for model A and for each
+family's model B. PerQuery-CostAware and FewestPlans (its cost stage) also use
+the model being compared. AutoSketch-Adapted's plan does not depend on cost
+and is scored under both.
+- Model A is linear: the average-CPU and memory terms weighted by `a` and `b`.
+- Model B is linear through the aligned start: the peak is in bin 0, so
+  `peak ≈ ingest + Σ_r min(latency_{r,D}, 1 s) · z_{r,D}`, where each
+  (RQE, deployment) latency is a constant.
+- After solving, the exact peak is recomputed from the timeline. Runs where it
+  exceeds the bin-0 value, e.g. an evaluation longer than its interval
+  overlapping itself, are reported.
+
+Memory is kept in both models: without it, memory-bound workloads would look
+almost free under model A.
+
 **Latency** — per-RQE estimate already in sketch-bench:
 `card(ℓ) · (query_cpu + (S/x − 1) · merge_cpu)`.
 
 ## 5. Constraints
 
-**Accuracy target 95%**, mapped per capability to the metrics the cost table
-already records:
+**Accuracy target**, swept over {90%, 95%, 99%} in the synthetic workload
+(95% elsewhere). A target `p` maps to error ≤ `1 − p` and to precision ≥ `p`.
+The 95% case, per capability, using the metrics the cost table already records:
 
 | Capability | Metric | Constraint |
 | --- | --- | --- |
@@ -137,11 +191,19 @@ already records:
 | Cardinality | relative error | ≤ 0.05 |
 | TopK | precision@k | ≥ 0.95 |
 
-**Latency** — per-RQE limit `L_r = α · min latency over r's eligible
-deployments`, swept over `α ∈ {1.5, 2, 5, ∞}`. Using a multiple of the
-fastest option keeps every point feasible for ASAP and makes the bound bind.
-AutoSketch-Adapted ignores it; its violations are counted and reported, and its
-cost is shown for those points but marked as infeasible.
+**Latency** — one absolute SLA applies to every RQE, swept over
+{0.01, 0.1, 1, 10, 100, 1000} ms and no limit. The synthetic workload extends
+the grid as needed.
+- An RQE that no method can meet at a given SLA is excluded from every method
+  at that SLA and reported by ID. Costs at different SLAs therefore cover
+  different RQE sets; compare methods only at one SLA.
+- ASAP, PerQuery-CostAware and FewestPlans must meet the SLA.
+- AutoSketch-Adapted ignores it. Its violations are counted, and its cost is
+  shown for those points but marked as infeasible.
+
+An earlier version set `L_r = α × the fastest latency of r`. It was dropped:
+on `example`, α = 2 forced plans with no merging at 40× the unconstrained
+cost.
 
 ## 6. Workloads
 
@@ -271,8 +333,8 @@ inputs (§9 Q2).
 
 ## 7. Metrics and figures
 
-Reported per (workload, method, machine family, α), median of 10 runs for
-timings:
+Reported per (workload, method, cost model and machine family, latency SLA),
+median of repeated runs for timings:
 
 - **Planning time.** Reported in two parts, because the two planners spend
   their time differently:
@@ -288,8 +350,10 @@ timings:
     pass over the grid, shared by all RQEs and reusable across workloads. It is
     reported once, next to how many RQEs it served.
   - The paper's figure shows search + benchmark per method, stacked.
-- **Total cost** ($/hour) and its breakdown: ingest CPU, query + merge CPU,
-  memory, and which resource binds `n_f`.
+- **Total cost** ($/hour) under **model A** and under **model B** for each
+  family, with its inputs: total CPU-seconds, peak CPU, retained GiB, and
+  which resource binds `n_f` in model B. Baselines are compared under each
+  model separately, each normalized to ASAP under the same model.
 - **Estimated query latency and latency SLA violations** per method.
   - Estimated latency per RQE: `card(ℓ) · (query_cpu + (S/x − 1) · merge_cpu)` (§4). Report its maximum and median over the RQEs, plus the per-RQE values in the raw output.
   - SLA violations: the number of RQEs whose estimated latency exceeds the SLA. Only AutoSketch-Adapted can have any, since the other methods are constrained.
@@ -303,20 +367,27 @@ Figures:
 2. Planning time vs. N, log–log (`scaling`).
 3. Cost vs. shareability (`scaling`).
 4. Cost vs. absolute latency SLA (`example`, `scaling`).
+5. Baselines under the two cost models: paired bars per workload, model A
+   next to model B, each normalized to ASAP.
+6. Synthetic workload: cost vs. achieved max estimated latency, one panel per
+   cost model (main paper figure).
 
 ## 8. Who implements what, in which PR
 
-| # | Repo | Change | Owner |
+| # | Repo / PR | Scope | Status (2026-10-05) |
 | --- | --- | --- | --- |
-| this | ASAPQuery | This plan (`docs/evaluation/autosketch-vs-planner.md`) | Zeying |
-| 1 | sketch-bench | `rqe-optimizer`: retained-memory term in `objectives.rs`; `milp::minimize_cost` with per-family price (§4); committed EC2 pricing JSON; dominance pruning also compares retained memory, so it cannot drop a candidate that is cheaper under the new objective. Tests: brute-force agreement on the tiny workload, as `#129` already does for CPU. | Zeying, coordinated with Milind since he is porting `milp.rs` |
-| 2 | sketch-bench | Evaluation table (§6, "Benchmark input"): for the wider config grid at the worst-case parameters of each dataset, export each point's saturated error, `N_sat`, its saturation curve, and costs at `N_sat`, from #130's `study_saturation.py` outputs. For KLL and top-k, add the merged-curve values per `m` from #131. Keep the worst accuracy across inputs. Also keep each curve's value at every checkpoint, which AutoSketch's lookup at `n(S, ℓ)` needs. Record benchmark wall time per point (needed for §7). Lookups follow §6: ASAP uses saturated values with `m = S/x`; AutoSketch uses the curve value at `n(S, ℓ)`. Committed table. | Zeying |
-| 3 | sketch-bench | `rqe-optimizer/src/autosketch.rs`: Algorithm 4 ported from ASAPQuery-backend `autosketch_comparison.rs`, generalized from the CMS width/depth grid to each variant's measured parameter axes; one dedicated `Deployment` per RQE. Tests: picks the smallest feasible config on a grid; never shares; its window adapter output is eligible under `candidates::is_eligible`. | Zeying |
-| 4 | sketch-bench | `rqe-optimizer/examples/autosketch_vs_asap.rs` (`example`/`scaling` generators, all three methods, JSON output) and `scripts/plot_autosketch_vs_asap.py`; committed results and figures | Zeying |
-| 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port PR 1's objective there and rerun PR 4 against it, so the paper reports the planner that ships | Zeying + Milind |
+| this | ASAPQuery #777 | This plan | Draft, updated as decisions change |
+| — | sketch-bench #130, #131 | Saturation curves at K ∈ {1e3, 1e5, 1e7}; accuracy after merging `m` shards | Merged |
+| 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` (steady-state model), solver scaling | Merged |
+| 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
+| 2 | sketch-bench #136 | Evaluation table for the trace workloads: per (RQE, config) accuracy for AutoSketch and for ASAP at each `m`, saturation, costs | In review |
+| 4 | sketch-bench #138 | Runner, absolute SLA, results for `example`, `scaling`, `traces` | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
+| — | sketch-bench #140 | Saturation curves at K ∈ {1e1, 1e2, 1e4, 1e6} for the synthetic workload | Draft; accuracy done, cost 197 of 240 points |
+| — | sketch-bench #139 | Synthetic workload (67 RQEs), FewestPlans, strawmen bound by the SLA | Open; final sweep pending #140 |
+| — | sketch-bench, not yet opened | The two cost models (§4): CPU timeline, model A, model B, rerun of every experiment | Not started as a PR |
+| 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port the objective there and rerun, so the paper reports the planner that ships | Not started; waits for Milind's port |
 
-PRs 1 and 2 are independent; 3 depends on 2 for a meaningful grid only; 4
-depends on 1–3.
+Merge order: #136 → rebase and merge #138 → #140 → #139 → two-cost-model PR.
 
 ## 9. Decisions
 
