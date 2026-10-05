@@ -255,20 +255,75 @@ Mapping notes:
   (`count_over_time`/`sum_over_time`/`quantile_over_time`/`increase`/`rate`),
   `TemporalAgg SpatialAgg*`, and `AnyAgg <binaryOp> AnyAgg`.
 
-#### Data
+#### Data model
 
-- Series carry `label_0`, plus an `instance` label: `s` series per `label_0`
-  value. `card(label_0)` and `s` are workload dimensions below.
-- Every series is scraped every 10 ms (100 samples/s), so the total rate is
-  `λ = 100 · s · card(label_0)` samples/s. The volume is chosen so that even
-  the smallest windows hold enough samples for a sketch; points still below
-  `N_sat` are flagged.
-- Key weights for frequency and top-k follow Zipf θ; quantile values follow
-  Pareto a.
-- Saturation curves cover K ∈ {1e1, …, 1e7} (#130, #140), all measured, never
-  interpolated. A per-series query has K = `s · card(label_0)` keys. Points with
-  K above 1e7 are clamped to the largest measured K and flagged as
-  extrapolated.
+There is one metric, `data`. A **series** is one combination of label values.
+Three labels matter:
+
+| Label | Values | Role |
+|---|---|---|
+| `label_0` | `C = card(label_0)` values | The grouping label: what `by (label_0)` aggregates by |
+| `instance` | `s` values per `label_0` value | Distinguishes the series inside a group. `s` = series per group |
+| `label_1` | `r` values, one per replica | Only for replicas (workload grid): replica `i` filters `{label_1="v_i"}` and reads its own disjoint series. With `r = 1` it is absent |
+
+So a replica has `C · s` series, and the workload has `r · C · s`. Every series
+emits one sample every 10 ms (100 samples/s), so one replica's stream carries
+`λ = 100 · C · s` samples/s.
+
+Sample values:
+- **Frequency and top-k:** the value is the weight being summed. The total
+  weight of the keys follows Zipf θ. The key is the `label_0` value for
+  `by (label_0)` templates and the series for per-series templates.
+- **Quantiles:** values are drawn from Pareto a.
+
+**Only two cardinalities matter.** Queries aggregate by `label_0` or per
+series, never by another label. So any other label (a second instance-like
+label, a `label_2`, ...) only multiplies the number of series in each group,
+and is equivalent to a larger `s`. The model therefore has two independent
+cardinality knobs:
+- `C`: groups;
+- `s`: series per group, the product of the cardinalities of all non-grouping
+  labels.
+
+`label_1`'s cardinality equals `r` and is covered by the replica dimension.
+Giving every label the same cardinality `c` would tie the knobs together
+(`C = c`, `s = c^(L−1)` for `L` labels). It was rejected: `s` explodes (c = 1e3
+with three labels gives 1e9 series, far beyond the measured K ≤ 1e7), and the
+effects of more groups and of more series per group could no longer be told
+apart. No template groups by `label_1`, keeping the template set as given.
+
+**How a template becomes sketch input.** A frequency or top-k sketch holds the
+groups as keys inside one sketch. A quantile sketch is one sketch per group.
+
+| Template kind | Sketch instances per deployment | Keys per sketch | Events per sketch per window |
+|---|---|---|---|
+| `sum`/`topk by (label_0)` (1, 2, 7, 8, 9) | 1 | `C` | `100 · C · s · S` |
+| `quantile by (q, label_0)` (3) | `C` | — | `100 · s · S` |
+| per-series `sum_over_time`/`rate` (4, 6) | 1 | `C · s` | `100 · C · s · S` |
+| per-series `quantile_over_time` (5, 10) | `C · s` | — | `100 · S` |
+
+**Example.** `C = 3` (`label_0` ∈ {a, b, c}), `s = 2` (`instance` ∈ {i1, i2}),
+`r = 1`: six series, `data{label_0="a", instance="i1"}` through
+`data{label_0="c", instance="i2"}`, emitting 600 samples/s in total.
+- `sum by (label_0) (data)`, `S = 1 s`: one CMS with keys a, b, c; each second
+  it absorbs 600 weighted updates, 200 per key.
+- `quantile by (0.99, label_0) (data)`: three KLL sketches, one per group, each
+  absorbing 200 values per second.
+- `sum_over_time(data[1m])`: one CMS with six keys, one per series, absorbing
+  36,000 updates per minute.
+- `quantile_over_time(0.99, data[1m])`: six KLL sketches, 6,000 values each per
+  minute.
+
+**Modeling choice for spatial templates.** A spatial template evaluates every
+1 s over every sample of the last second (`S = T = 1 s`). PromQL's instant
+semantics would read only each series' latest sample. Aggregating the whole
+second is what a sketch maintained over a 1-second window answers. The
+difference is noted wherever spatial results are reported.
+
+Saturation curves cover K ∈ {1e1, …, 1e7} (#130, #140), all measured and
+never interpolated. Per-series templates have K = `C · s`; points above 1e7 are
+clamped to the largest measured K and flagged as extrapolated. Points whose
+events per sketch fall below `N_sat` are flagged as unsaturated.
 
 #### Workload grid
 
@@ -280,8 +335,8 @@ Each dimension has a default (bold). A workload fixes every dimension.
 | Number of RQEs: replicas `r` | **1**, 2, 4, 8, 16, 32, 64 | Each replica adds a filter `{label_1="v_i"}` selecting a disjoint subset of series, so it reads its own streams. Total RQEs = `r · (n_spatial + n_temporal·|W|)` |
 | Lookback window set `W` | {1h}; {1m, 1h}; {1m, 10m, 1h}; **{1m, 10m, 1h, 6h, 24h}** | Overlapping windows over the same stream: the main sharing opportunity |
 | Temporal repeat interval `T` | 10 s, **1 m**, 5 m | Recurrence: query and merge work vs. ingest |
-| Group cardinality `card(label_0)` | 1e1, 1e2, **1e3**, 1e4, 1e5, 1e6 | Sketch instances per deployment, keys per sketch |
-| Series per group `s` (aggregated series cardinality) | 1, 10, **100**, 1000 | Series aggregated per group: events per group for spatial queries, keys for per-series queries |
+| Groups `C = card(label_0)` | 1e1, 1e2, **1e3**, 1e4, 1e5, 1e6 | Keys per frequency sketch; quantile sketches per `by (label_0)` deployment |
+| Series per group `s` (product of the non-grouping label cardinalities) | 1, 10, **100**, 1000 | Events per group for spatial templates; keys and sketch instances for per-series templates |
 | Key skew θ / value tail a | θ ∈ {0, 0.5, **1.0**, 1.5, 2.0}; a ∈ {1.1, **2**, 3} | Sketch size needed for the accuracy target |
 | Accuracy target | 90%, **95%**, 99% | §5 |
 | Latency SLA | the §5 grid, **no limit** | §5 |
