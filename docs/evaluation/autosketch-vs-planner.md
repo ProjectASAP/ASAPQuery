@@ -33,7 +33,7 @@ interval) and sums the results; the planner is invoked once for the batch.
 | Measured per-operation costs (`AtomicCostEntry`: memory/instance, insert/merge/query CPU, accuracy) | sketch-bench `scripts/export_rqe_optimizer_costs.sh` | Merged; 18 rows, 2 configs per sketch variant. |
 | Saturation study: error vs. `N`, `N_sat`, cost per config and shape | sketch-bench [#130](https://github.com/ProjectASAP/sketch-bench/pull/130) | Merged. Source of the saturated lookup (§6). |
 | Accuracy after merging `m` shards (KLL, top-k) | sketch-bench [#131](https://github.com/ProjectASAP/sketch-bench/pull/131) | Merged 2026-10-05 (`bd644fe`). Source of KLL/top-k lookups when `m > 1`. |
-| Moving the MILP into ASAPQuery's planner | ASAPQuery `asap-planner-rs/src/optimizer/` (Milind; related: [#776](https://github.com/ProjectASAP/ASAPQuery/pull/776), [#725](https://github.com/ProjectASAP/ASAPQuery/pull/725)) | In progress. The evaluation does not wait for it (§8, PR 5). |
+| Moving the MILP into ASAPQuery's planner | ASAPQuery `asap-planner-rs/src/optimizer/` (Milind; related: [#776](https://github.com/ProjectASAP/ASAPQuery/pull/776), [#725](https://github.com/ProjectASAP/ASAPQuery/pull/725)) | Out of scope: the evaluation uses sketch-bench `rqe-optimizer` and is not rerun on `asap-planner-rs`. |
 
 No AutoSketch implementation exists in sketch-bench or in this repository.
 
@@ -489,7 +489,6 @@ Figures:
 | — | sketch-bench #140 | Saturation curves (accuracy vs. events per sketch, N_sat, costs) at K ∈ {1e1, 1e2, 1e4, 1e6}: the synthetic workload needs these cardinalities and #130 measured only 1e3, 1e5, 1e7 | Draft; accuracy done, cost 197 of 240 points |
 | — | sketch-bench #139 | Synthetic workload: the 10 templates, PerQuery-CostAware bound by the SLA, and the workload-grid driver (dimensions in §6 "Workload grid": query mix, replicas, window set, repeat interval, `card(label_0)`, series per group, θ/a, accuracy target, SLA), with the sweep script and figures | Open; code for the fixed 67-RQE workload exists. Still to do: the grid driver, then the sweep (after #140 and the two-cost-model PR) |
 | — | sketch-bench, not yet opened | The two cost models (§4): CPU timeline, model A, model B, rerun of every experiment | Not started as a PR |
-| 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port the objective there and rerun, so the paper reports the planner that ships | Not started; waits for Milind's port |
 
 Merge order: rebase and merge #138 → #140 → #139 → two-cost-model PR.
 
