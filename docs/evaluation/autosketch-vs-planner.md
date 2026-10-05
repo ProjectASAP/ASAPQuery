@@ -147,12 +147,12 @@ cost is shown for those points but marked as infeasible.
 
 | ID | Description | Purpose |
 | --- | --- | --- |
-| W0 | `small_problem`'s 8 RQEs (freq, quantile, cardinality, top-k; 1h–1d lookbacks; 60s/300s intervals), tolerances moved to §5 | Readable worked example; one table in the paper |
-| WS | Synthetic PromQL workload: the 10 queries in "Synthetic workload" below, over Zipf/Pareto data. Main figure. | Cost–latency trade-off across data and requirements |
-| W1 | Seeded synthetic batches, `N ∈ {8, 32, 128, 512, 2048}` RQEs. Lookbacks {5m, 15m, 1h, 6h, 1d}, intervals {10s, 60s, 300s}, 4 capabilities, 3 label sets with fixed cardinality/rate. Knob: fraction of RQEs drawn from shared (capability, labels) cohorts, {0, 0.5, 1}. | Planning-time scaling; cost vs. shareability |
-| W2 | Real-trace RQEs, one workload per dataset: Alibaba 2022, BOOM and Google 2011. Taken from `asap-tools/dataset-analysis/results/skew_summary.csv` ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)): each row's `range_s` is `S` and its `step_s` is `T`. Data parameters and accuracy targets are fit over each whole trace. | Reported results |
+| `example` | `small_problem`'s 8 RQEs (freq, quantile, cardinality, top-k; 1h–1d lookbacks; 60s/300s intervals), tolerances moved to §5 | Readable worked example; one table in the paper |
+| `synthetic` | Synthetic PromQL workload: the 10 queries in "Synthetic workload" below, over Zipf/Pareto data. Main figure. | Cost–latency trade-off across data and requirements |
+| `scaling` | Seeded random batches, `N ∈ {8, 32, 128, 512, 2048}` RQEs. Lookbacks {5m, 15m, 1h, 6h, 1d}, intervals {10s, 60s, 300s}, 4 capabilities, 3 label sets with fixed cardinality/rate. Knob: fraction of RQEs drawn from shared (capability, labels) cohorts, {0, 0.5, 1}. | Planning-time scaling; cost vs. shareability |
+| `traces` | Real-trace RQEs, one workload per dataset: Alibaba 2022, BOOM and Google 2011. Taken from `asap-tools/dataset-analysis/results/skew_summary.csv` ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)): each row's `range_s` is `S` and its `step_s` is `T`. Data parameters and accuracy targets are fit over each whole trace. | Appendix: real-trace results |
 
-### Synthetic workload (WS)
+### Synthetic workload
 
 **Data.**
 - Series carry `label_0`, with cardinality in {10^1, …, 10^6}, and an
@@ -211,9 +211,9 @@ and top-k from the lower `θ` bound. Longer samples expose worse cases (sketch-b
 `docs/saturation_conclusions.md`, conclusions 1–5). Fitting follows ASAPQuery
 #746 and sketch-bench `scripts/recommend_config.py`.
 
-- **W2 (trace) gives the reported results.** Its parameters are fit on the
+- **`traces` gives the appendix results.** Its parameters are fit on the
   full trace.
-- **W0/W1 (synthetic)** use their generators' parameters.
+- **`example`, `scaling` and `synthetic`** use their generators' parameters.
 
 Each config is benchmarked at these worst-case parameters. AutoSketch §5.2
 injects random traffic bursts into synthetic workloads to cover variation over
@@ -297,10 +297,10 @@ timings:
 
 Figures:
 
-1. Total cost by method, grouped by machine family (W0 and W1 at N = 128).
-2. Planning time vs. N, log–log (W1).
-3. Cost vs. shareability (W1).
-4. Cost vs. latency limit α (W0, W1).
+1. Total cost by method, grouped by machine family (`example` and `scaling` at N = 128).
+2. Planning time vs. N, log–log (`scaling`).
+3. Cost vs. shareability (`scaling`).
+4. Cost vs. absolute latency SLA (`example`, `scaling`).
 
 ## 8. Who implements what, in which PR
 
@@ -310,7 +310,7 @@ Figures:
 | 1 | sketch-bench | `rqe-optimizer`: retained-memory term in `objectives.rs`; `milp::minimize_cost` with per-family price (§4); committed EC2 pricing JSON; dominance pruning also compares retained memory, so it cannot drop a candidate that is cheaper under the new objective. Tests: brute-force agreement on the tiny workload, as `#129` already does for CPU. | Zeying, coordinated with Milind since he is porting `milp.rs` |
 | 2 | sketch-bench | Evaluation table (§6, "Benchmark input"): for the wider config grid at the worst-case parameters of each dataset, export each point's saturated error, `N_sat`, its saturation curve, and costs at `N_sat`, from #130's `study_saturation.py` outputs. For KLL and top-k, add the merged-curve values per `m` from #131. Keep the worst accuracy across inputs. Also keep each curve's value at every checkpoint, which AutoSketch's lookup at `n(S, ℓ)` needs. Record benchmark wall time per point (needed for §7). Lookups follow §6: ASAP uses saturated values with `m = S/x`; AutoSketch uses the curve value at `n(S, ℓ)`. Committed table. Depends on #131 for KLL/top-k. | Zeying |
 | 3 | sketch-bench | `rqe-optimizer/src/autosketch.rs`: Algorithm 4 ported from ASAPQuery-backend `autosketch_comparison.rs`, generalized from the CMS width/depth grid to each variant's measured parameter axes; one dedicated `Deployment` per RQE. Tests: picks the smallest feasible config on a grid; never shares; its window adapter output is eligible under `candidates::is_eligible`. | Zeying |
-| 4 | sketch-bench | `rqe-optimizer/examples/autosketch_vs_asap.rs` (W0/W1 generators, all three methods, JSON output) and `scripts/plot_autosketch_vs_asap.py`; committed results and figures | Zeying |
+| 4 | sketch-bench | `rqe-optimizer/examples/autosketch_vs_asap.rs` (`example`/`scaling` generators, all three methods, JSON output) and `scripts/plot_autosketch_vs_asap.py`; committed results and figures | Zeying |
 | 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port PR 1's objective there and rerun PR 4 against it, so the paper reports the planner that ships | Zeying + Milind |
 
 PRs 1 and 2 are independent; 3 depends on 2 for a meaningful grid only; 4
@@ -354,7 +354,7 @@ sliding sketch per query.
   DDSketch, and taken from #131 for KLL and top-k. #131 covers `N ≤ 1e7` and
   `m ≤ 64`. A deployment needing `m > 64` (e.g. a 1-day lookback over 1-minute
   windows, `m = 1440`) is outside the measured range. Mark it as extrapolated,
-  or exclude it for KLL/top-k. Replay W0's chosen plans in sketch-bench once to
+  or exclude it for KLL/top-k. Replay `example`'s chosen plans in sketch-bench once to
   confirm the lookups.
 - Costs and latencies are estimates from per-operation measurements, not
   end-to-end executions. The execution-based comparison is ASAPQuery-backend
