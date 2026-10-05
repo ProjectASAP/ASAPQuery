@@ -290,7 +290,9 @@ timings:
   - The paper's figure shows search + benchmark per method, stacked.
 - **Total cost** ($/hour) and its breakdown: ingest CPU, query + merge CPU,
   memory, and which resource binds `n_f`.
-- **Latency SLA violations** per method.
+- **Estimated query latency and latency SLA violations** per method.
+  - Estimated latency per RQE: `card(ℓ) · (query_cpu + (S/x − 1) · merge_cpu)` (§4). Report its maximum and median over the RQEs, plus the per-RQE values in the raw output.
+  - SLA violations: the number of RQEs whose estimated latency exceeds the SLA. Only AutoSketch-Adapted can have any, since the other methods are constrained.
 - **Estimated accuracy** per RQE (all methods meet it on single-instance
   measurements by construction).
 - Active deployments and total sketch instances.
