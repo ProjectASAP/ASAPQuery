@@ -216,45 +216,93 @@ cost.
 
 ### Synthetic workload
 
-**Data.**
-- Series carry `label_0`, with cardinality in {10^1, …, 10^6}, and an
-  `instance` label with 100 values per `label_0` value.
-- Each series is scraped every 10 ms, i.e. 100 samples per second, so
-  `λ = 100 · 100 · card(label_0)` samples/s.
-- The data volume is chosen so that even the smallest windows hold enough
-  samples for a sketch (1e4 per group for 1 s spatial queries, 6e3 per series
-  for 1 m temporal ones). Points that still fall below `N_sat` are flagged.
-- Key weights for frequency and top-k follow Zipf θ ∈ {0, 0.5, 1.0, 1.5, 2.0}.
-  Values for quantiles follow Pareto a ∈ {1.1, 2, 3}.
-- The saturation curves are extended to K ∈ {1e1, 1e2, 1e4, 1e6} by
-  measuring, not by interpolation.
+The synthetic workload is the paper's main experiment. It builds many
+workloads from a fixed set of PromQL query templates by sweeping the workload
+dimensions below, and runs every planning baseline on each workload.
 
-**Queries.** Each spatial query repeats every 1 s, with `S = T = 1 s`, so each
-evaluation reads the last second. Each temporal query repeats every 1 m, with
-`S = T_range ∈ {1m, 10m, 1h, 6h, 24h}`.
+#### Query templates
 
-| # | Query | Capability | Grouping |
-|---|---|---|---|
-| 1 | `sum by (label_0) (data)` | Freq | `label_0` |
-| 2 | `topk by (3, label_0) (data)` | TopK | `label_0` |
-| 3 | `quantile by (q, label_0) (data)`, q ∈ {.5, .75, .9, .95, .99} | Quantile | per `label_0` group |
-| 4 | `sum_over_time(data[T])` | Freq | per series |
-| 5 | `quantile_over_time(q, data[T])`, same five q | Quantile | per series |
-| 6 | `rate(data[T])` | Freq over per-series increments | per series |
-| 7 | `sum by (label_0) (rate(data[T]))` | Freq over increments | `label_0` |
-| 8 | `sum by (label_0) (sum_over_time(data[T]))` | Freq | `label_0` |
-| 9 | `topk by (3, label_0) (rate(data[T]))` | TopK over increments | `label_0` |
-| 10 | `quantile_over_time(0.9, data[T]) / quantile_over_time(0.5, data[T])` | Two Quantile RQEs | per series |
+These exercise every summary type the planner supports: frequency, top-k and
+quantile, spatial and temporal aggregation, and a binary operator. Each spatial
+template repeats every 1 s and reads the last second (`S = T = 1 s`). Each
+temporal template repeats every `T` (default 1 m) and reads `S = T_range`, one
+RQE per lookback window in the window set `W` (§ workload grid).
 
-Notes on the mapping:
+| # | PromQL | Capability | Grouping | RQEs per replica |
+|---|---|---|---|---|
+| 1 | `sum by (label_0) (data)` | Freq | `label_0` | 1 |
+| 2 | `topk by (3, label_0) (data)` | TopK | `label_0` | 1 |
+| 3 | `quantile by (q, label_0) (data)`, q ∈ {0.5, 0.75, 0.9, 0.95, 0.99} | Quantile | per `label_0` group | 5 |
+| 4 | `sum_over_time(data[T])` | Freq | per series | \|W\| |
+| 5 | `quantile_over_time(q, data[T])`, same five q | Quantile | per series | 5·\|W\| |
+| 6 | `rate(data[T])` | Freq over per-series increments | per series | \|W\| |
+| 7 | `sum by (label_0) (rate(data[T]))` | Freq over increments | `label_0` | \|W\| |
+| 8 | `sum by (label_0) (sum_over_time(data[T]))` | Freq | `label_0` | \|W\| |
+| 9 | `topk by (3, label_0) (rate(data[T]))` | TopK over increments | `label_0` | \|W\| |
+| 10 | `quantile_over_time(0.9, data[T]) / quantile_over_time(0.5, data[T])` | Two Quantile RQEs | per series | 2·\|W\| |
+
+With all ten templates, one replica has `7 + 12·|W|` RQEs: 67 for the default
+five windows.
+
+Mapping notes:
 - `rate`/`increase` are modeled as a frequency sum of per-series increments,
   equivalent to `sum_over_time` over deltas.
-- The quantiles of one query, and the two operands of query 10, read the same
-  stream. ASAP can serve them from one deployment; AutoSketch gets one per RQE.
-- One workload instance is the 67 RQEs above (2 spatial + 5 spatial quantiles + 5×5 temporal for queries 4, 6–9 + 5×5 for query 5 + 2×5 for query 10), for one (cardinality, θ or a,
-  accuracy target, SLA) combination. The figure sweeps the accuracy target over
-  {90%, 95%, 99%} and an absolute latency SLA grid. For the scalability study,
-  the RQE set is replicated with distinct `label_0` filters.
+- The quantiles of one template, and the two operands of template 10, read the
+  same stream. ASAP can serve them from one deployment; AutoSketch gets one
+  deployment per RQE.
+- Templates come from the planner's supported query classes: `SpatialAgg`
+  (`count`/`sum`/`quantile`/`topk by`), `TemporalAgg`
+  (`count_over_time`/`sum_over_time`/`quantile_over_time`/`increase`/`rate`),
+  `TemporalAgg SpatialAgg*`, and `AnyAgg <binaryOp> AnyAgg`.
+
+#### Data
+
+- Series carry `label_0`, plus an `instance` label: `s` series per `label_0`
+  value. `card(label_0)` and `s` are workload dimensions below.
+- Every series is scraped every 10 ms (100 samples/s), so the total rate is
+  `λ = 100 · s · card(label_0)` samples/s. The volume is chosen so that even
+  the smallest windows hold enough samples for a sketch; points still below
+  `N_sat` are flagged.
+- Key weights for frequency and top-k follow Zipf θ; quantile values follow
+  Pareto a.
+- Saturation curves cover K ∈ {1e1, …, 1e7} (#130, #140), all measured, never
+  interpolated. A per-series query has K = `s · card(label_0)` keys. Points with
+  K above 1e7 are clamped to the largest measured K and flagged as
+  extrapolated.
+
+#### Workload grid
+
+Each dimension has a default (bold). A workload fixes every dimension.
+
+| Dimension | Values | What it varies |
+|---|---|---|
+| Query mix (templates) | **all 10**; spatial only {1, 2, 3}; temporal only {4–10}; frequency only {1, 4, 6, 7, 8}; quantile only {3, 5, 10}; top-k only {2, 9} | Summary types, and how much can be shared |
+| Number of RQEs: replicas `r` | **1**, 2, 4, 8, 16, 32, 64 | Each replica adds a filter `{label_1="v_i"}` selecting a disjoint subset of series, so it reads its own streams. Total RQEs = `r · (n_spatial + n_temporal·|W|)` |
+| Lookback window set `W` | {1h}; {1m, 1h}; {1m, 10m, 1h}; **{1m, 10m, 1h, 6h, 24h}** | Overlapping windows over the same stream: the main sharing opportunity |
+| Temporal repeat interval `T` | 10 s, **1 m**, 5 m | Recurrence: query and merge work vs. ingest |
+| Group cardinality `card(label_0)` | 1e1, 1e2, **1e3**, 1e4, 1e5, 1e6 | Sketch instances per deployment, keys per sketch |
+| Series per group `s` (aggregated series cardinality) | 1, 10, **100**, 1000 | Series aggregated per group: events per group for spatial queries, keys for per-series queries |
+| Key skew θ / value tail a | θ ∈ {0, 0.5, **1.0**, 1.5, 2.0}; a ∈ {1.1, **2**, 3} | Sketch size needed for the accuracy target |
+| Accuracy target | 90%, **95%**, 99% | §5 |
+| Latency SLA | the §5 grid, **no limit** | §5 |
+
+The full Cartesian product is too large. The sweep is:
+1. **Default workload.** Every baseline, every SLA, every cost model.
+2. **One dimension at a time.** Vary each dimension over its values with the
+   others at their defaults.
+3. **Two interactions:**
+   - `r × s`: scale, with planning time against total RQEs;
+   - `W × card(label_0)`: sharing benefit against state size.
+
+Every workload runs every baseline (ASAP, AutoSketch-Adapted,
+PerQuery-CostAware, FewestPlans) and is priced under model A and model B for
+each family (§4). Per (workload, baseline, cost model, SLA), report:
+- $/hour, total CPU-seconds, peak CPU, retained GiB;
+- max and median estimated latency, and SLA violations;
+- active deployments and sketch instances;
+- planning time (AutoSketch: search plus charged benchmark time);
+- RQEs excluded by the SLA or unservable, and counts of unsaturated or
+  extrapolated lookups.
 
 ### Benchmark input
 
@@ -383,7 +431,7 @@ Figures:
 | 2 | sketch-bench #136 | Evaluation table for the trace workloads: per (RQE, config) accuracy for AutoSketch and for ASAP at each `m`, saturation, costs | Merged |
 | 4 | sketch-bench #138 | Runner, absolute SLA, results for `example`, `scaling`, `traces` | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
 | — | sketch-bench #140 | Saturation curves at K ∈ {1e1, 1e2, 1e4, 1e6} for the synthetic workload | Draft; accuracy done, cost 197 of 240 points |
-| — | sketch-bench #139 | Synthetic workload (67 RQEs), FewestPlans, strawmen bound by the SLA | Open; final sweep pending #140 |
+| — | sketch-bench #139 | Synthetic workload: the 10 templates, FewestPlans, strawmen bound by the SLA, and the workload-grid driver (dimensions in §6 "Workload grid": query mix, replicas, window set, repeat interval, `card(label_0)`, series per group, θ/a, accuracy target, SLA), with the sweep script and figures | Open; code for the fixed 67-RQE workload exists. Still to do: the grid driver, then the sweep (after #140 and the two-cost-model PR) |
 | — | sketch-bench, not yet opened | The two cost models (§4): CPU timeline, model A, model B, rerun of every experiment | Not started as a PR |
 | 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port the objective there and rerun, so the paper reports the planner that ships | Not started; waits for Milind's port |
 
