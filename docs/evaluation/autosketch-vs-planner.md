@@ -1,6 +1,6 @@
 # Evaluation plan: AutoSketch vs. the ASAPQuery planner (paper §6.3)
 
-Status: plan, no results yet. The design decisions are settled in §9.
+Status: `traces` results are in sketch-bench #141; the synthetic sweep is running. The design decisions are settled in §9.
 
 ## 1. Question
 
@@ -30,12 +30,12 @@ interval) and sums the results; the planner is invoked once for the batch.
 | Earlier protocol (E1–E3, end-to-end execution) | ASAPQuery-backend `docs/evaluation/autosketch-comparison.md` ([#545](https://github.com/ProjectASAP/ASAPQuery-backend/pull/545)) | Merged. Execution-based; this plan is planner-level and uses estimated costs instead. |
 | Top-K dashboard comparison | ASAPQuery-backend [#602](https://github.com/ProjectASAP/ASAPQuery-backend/pull/602) | Closed, not merged. |
 | RQE deployment MILP (HiGHS): candidates `(capability, config, labels, x, y)`, sharing, latency bounds, minimum-CPU objective | sketch-bench `rqe-optimizer/` ([#129](https://github.com/ProjectASAP/sketch-bench/pull/129)) | Merged 2026-10-04. **This is the planner we evaluate for now.** |
-| Measured per-operation costs (`AtomicCostEntry`: memory/instance, insert/merge/query CPU, accuracy) | sketch-bench `scripts/export_rqe_optimizer_costs.sh` | Merged; 18 rows, 2 configs per sketch variant. |
+| Measured per-operation costs (`AtomicCostEntry`: memory/instance, insert/merge/query CPU, accuracy) | sketch-bench `scripts/export_rqe_optimizer_costs.sh` | Merged; 18 rows. Superseded for this evaluation by the saturation tables (#130, #136, #140). |
 | Saturation study: error vs. `N`, `N_sat`, cost per config and shape | sketch-bench [#130](https://github.com/ProjectASAP/sketch-bench/pull/130) | Merged. Source of the saturated lookup (§6). |
 | Accuracy after merging `m` shards (KLL, top-k) | sketch-bench [#131](https://github.com/ProjectASAP/sketch-bench/pull/131) | Merged 2026-10-05 (`bd644fe`). Source of KLL/top-k lookups when `m > 1`. |
 | Moving the MILP into ASAPQuery's planner | ASAPQuery `asap-planner-rs/src/optimizer/` (Milind; related: [#776](https://github.com/ProjectASAP/ASAPQuery/pull/776), [#725](https://github.com/ProjectASAP/ASAPQuery/pull/725)) | Out of scope: the evaluation uses sketch-bench `rqe-optimizer` and is not rerun on `asap-planner-rs`. |
 
-No AutoSketch implementation exists in sketch-bench or in this repository.
+AutoSketch-Adapted is implemented in sketch-bench `rqe-optimizer/src/autosketch.rs` (#135).
 
 ## 3. Methods compared
 
@@ -44,8 +44,8 @@ label-set cardinalities and arrival rates, and are scored by the same cost
 function (§4).
 
 1. **ASAP** — sketch-bench `rqe-optimizer` MILP over the whole batch, with
-   accuracy and latency constraints, minimizing the §4 cost for one machine
-   family.
+   accuracy and latency constraints, solved separately for each cost model
+   (§4).
 2. **AutoSketch-Adapted** — Algorithm 4 run independently per RQE:
    - search space: the measured configs of the RQE's capability families
      (`Capability::families()`);
@@ -88,8 +88,7 @@ CPU = Σ_active D  λ(ℓ_D) · (x_D / y_D) · insert_cpu_D                     
     + Σ_r  card(ℓ_r) · (query_cpu_D(r) + (S_r / x_D(r) − 1) · merge_cpu_D(r)) / T_r   (query + merge)
 ```
 
-**Memory** — new. Today's objective tracks peak per-query memory, not retained
-state. Retained state of an active deployment `D` holds `x/y` open instances
+**Memory** — retained state (sketch-bench #137). Retained state of an active deployment `D` holds `x/y` open instances
 plus the closed instances needed by the longest lookback it serves:
 
 ```text
@@ -120,8 +119,6 @@ the AWS Pricing API (us-east-1, Linux, on-demand), committed as
 edited by hand. Since `n_f` is fractional, instance size within a family does
 not change the result.
 
-ASAP is solved once per family. AutoSketch-Adapted's plan does not depend on
-the family; it is scored under each family's cost.
 
 ### Two cost models per experiment run
 
@@ -203,16 +200,20 @@ almost free under model A.
 
 ## 5. Constraints
 
-**Accuracy target**, swept over {90%, 95%, 99%} in the synthetic workload
-(95% elsewhere). A target `p` maps to error ≤ `1 − p` and to precision ≥ `p`.
-The 95% case, per capability, using the metrics the cost table already records:
+**Accuracy target**: one of three strictness levels, each with its own target
+per capability. The default level matches the `traces` targets from ASAPQuery's
+dataset analysis. The synthetic workload sweeps all three; `traces` uses its
+fitted targets.
 
-| Capability | Metric | Constraint |
-| --- | --- | --- |
-| Freq | relative error | ≤ 0.05 |
-| Quantile | rank error | ≤ 0.05 |
-| Cardinality | relative error | ≤ 0.05 |
-| TopK | precision@k | ≥ 0.95 |
+| Level | Freq (ARE) | Quantile (rank error) | TopK (precision@k) | Cardinality (relative error) |
+| --- | --- | --- | --- | --- |
+| loose | ≤ 0.10 | ≤ 0.02 | ≥ 0.90 | ≤ 0.05 |
+| **default** | **≤ 0.05** | **≤ 0.01** | **≥ 0.95** | **≤ 0.02** |
+| strict | ≤ 0.01 | ≤ 0.005 | ≥ 0.99 | ≤ 0.01 |
+
+An earlier version mapped one percentage `p` to error ≤ `1 − p` for every
+capability. It was dropped (2026-10-05): at 95% it allowed quantile rank error
+0.05, so a p99 query could return the p94 value.
 
 **Latency** — one absolute SLA applies to every RQE, swept over
 {0.01, 0.1, 1, 10, 100, 1000} ms and no limit. The synthetic workload extends
@@ -364,7 +365,7 @@ Each dimension has a default (bold). A workload fixes every dimension.
 | Groups `C = card(label_0)` | 1e1, 1e2, **1e3**, 1e4, 1e5, 1e6 | Keys per frequency sketch; quantile sketches per `by (label_0)` deployment |
 | Series per group `s` (product of the non-grouping label cardinalities) | 1, 10, **100**, 1000 | Events per group for spatial templates; keys and sketch instances for per-series templates |
 | Key skew θ / value tail a | θ ∈ {0, 0.5, **1.0**, 1.5, 2.0}; a ∈ {1.1, **2**, 3} | Sketch size needed for the accuracy target |
-| Accuracy target | 90%, **95%**, 99% | §5 |
+| Accuracy target (strictness) | loose, **default**, strict | §5 |
 | Latency SLA | the §5 grid, **no limit** | §5 |
 
 The full Cartesian product is too large. The sweep is:
@@ -387,10 +388,10 @@ each family (§4). Per (workload, baseline, cost model, SLA), report:
 
 ### Benchmark input
 
-The cost table used for the evaluation needs a wider grid than today's two
-configs per variant, otherwise Algorithm 4's neighbor search has nothing to
-search: CMS/Count Sketch depth {2..8} × width {256..8192}, KLL k
-{50..800}, DD α {0.005..0.05}, HLL precision {10..16}.
+Configurations come from the saturation study's grid (#130, #140): CMS,
+Count Sketch and CMS-heap top-k with rows ∈ {3, 5} and cols 256–16384 (rows = 5
+costs scaled from rows = 3), KLL k ∈ {50, 200, 800}, DDSketch α 0.005–0.05, HLL
+`lg_k` ∈ {10, 12, 14}.
 
 #### Data parameters, shared by both methods
 
@@ -470,14 +471,16 @@ median of repeated runs for timings:
   - *Search time:* AutoSketch is the sum over RQEs of Algorithm 4 wall time,
     using table lookups. ASAP is candidate generation, dominance pruning and
     MILP solve.
-  - *Benchmark time:* AutoSketch benchmarks every probed (config, input size)
-    per RQE, as in the paper (§5.2, Exp#9: 1–2 minutes per config, about
-    6.5 minutes per application). We charge `Σ_r Σ_probes t_bench(config,
-    n(S_r, ℓ_r))`, where `t_bench` is sketch-bench's measured wall time for
-    that point over all benchmark inputs; probes already charged for the same
-    (config, size) are not charged again. ASAP's benchmark time is one profiling
-    pass over the grid, shared by all RQEs and reusable across workloads. It is
-    reported once, next to how many RQEs it served.
+  - *Benchmark time:* AutoSketch benchmarks every probed configuration, as in
+    the paper (§5.2, Exp#9: 1–2 minutes per config, about 6.5 minutes per
+    application). Reported two ways, per distinct probed (config, input size):
+    - a **lower bound**, `n · insert_cpu + query_cpu`, the CPU to insert the
+      input once and run one query phase;
+    - a **paper-rate estimate**, 60 s per distinct probe.
+  - *ASAP's one-time profiling:* the wall time of the sketch-bench saturation
+    runs that produced its tables (#130, #131, #140). It is shared by all RQEs
+    and reusable across workloads, so it is reported once, plus amortized per
+    RQE served.
   - The paper's figure shows search + benchmark per method, stacked.
 - **Total cost** ($/hour) under **model A** and under **model B** for each
   family, with its inputs: total CPU-seconds, peak CPU, retained GiB, and
@@ -486,8 +489,8 @@ median of repeated runs for timings:
 - **Estimated query latency and latency SLA violations** per method.
   - Estimated latency per RQE: `card(ℓ) · (query_cpu + (S/x − 1) · merge_cpu)` (§4). Report its maximum and median over the RQEs, plus the per-RQE values in the raw output.
   - SLA violations: the number of RQEs whose estimated latency exceeds the SLA. Only AutoSketch-Adapted can have any, since the other methods are constrained.
-- **Estimated accuracy** per RQE (all methods meet it on single-instance
-  measurements by construction).
+- **Estimated accuracy** per RQE: every method meets its target under its own
+  lookup rule (§6, "Benchmark input").
 - Active deployments and total sketch instances.
 
 Figures:
@@ -506,13 +509,13 @@ Figures:
 | --- | --- | --- | --- |
 | this | ASAPQuery #777 | This plan | Draft, updated as decisions change |
 | — | sketch-bench #130, #131 | Saturation curves at K ∈ {1e3, 1e5, 1e7}; accuracy after merging `m` shards | Merged |
-| 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` (steady-state model), solver scaling | Merged |
+| 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost`, solver scaling | Merged |
 | 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
-| 2 | sketch-bench #136 | Evaluation table for the trace workloads: per (RQE, config) accuracy for AutoSketch and for ASAP at each `m`, saturation, costs | Merged |
-| 4 | sketch-bench #138 | Runner, absolute SLA, results for `traces` (the `example`/`scaling` workloads are to be removed in its rebase) | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
-| — | sketch-bench #140 | Saturation curves (accuracy vs. events per sketch, N_sat, costs) at K ∈ {1e1, 1e2, 1e4, 1e6}: the synthetic workload needs these cardinalities and #130 measured only 1e3, 1e5, 1e7 | Draft; accuracy done, cost 197 of 240 points |
-| — | sketch-bench #139 | Synthetic workload: the 10 templates, PerQuery-CostAware bound by the SLA, and the workload-grid driver (dimensions in §6 "Workload grid": query mix, replicas, window set, repeat interval, `card(label_0)`, series per group, θ/a, accuracy target, SLA), with the sweep script and figures | Open; code for the fixed 67-RQE workload exists. Still to do: the grid driver, then the sweep (after #140 and the two-cost-model PR) |
-| — | sketch-bench #141 (stacked on #139) | The two cost models (§4): CPU timeline, model A, model B with the per-RQE occupancy bound, `minimize_model_cost` with a per-solve time limit; the synthetic workload-grid driver (66 runs over 40 tables) and plots | Open; runs in progress |
+| 2 | sketch-bench #136 | Evaluation table for the trace workloads | Merged |
+| 4 | sketch-bench #138 | Runner and absolute SLA for `traces` (rebased on main; `example`/`scaling` removed) | Open |
+| — | sketch-bench #140 | Saturation curves at K ∈ {1e1, 1e2, 1e4, 1e6} for the synthetic workload | Draft; 62 cost points re-measured serially after the parallel run failed the 10% consistency check |
+| — | sketch-bench #139 | Synthetic workload: 10 templates, PerQuery-CostAware bound by the SLA | Open |
+| — | sketch-bench #141 | Two cost models (model A; model B aligned and staggered, both solved), strictness levels, workload-grid driver, `traces` results | Open; synthetic sweep and scale study running |
 
 Merge order: #138 → #140 → #139 → #141.
 
@@ -553,15 +556,17 @@ sliding sketch per query.
   the plans.** It is exact by construction for CMS, Count Sketch, HLL and
   DDSketch, and taken from #131 for KLL and top-k. #131 covers `N ≤ 1e7` and
   `m ≤ 64`. A deployment needing `m > 64` (e.g. a 1-day lookback over 1-minute
-  windows, `m = 1440`) is outside the measured range. Mark it as extrapolated,
-  or exclude it for KLL/top-k. Replay the synthetic default workload's chosen plans in sketch-bench once to
+  windows, `m = 1440`) is outside the measured range: it is ineligible for KLL
+  and top-k, and allowed for the exact-merge sketches. Replay the synthetic default workload's chosen plans in sketch-bench once to
   confirm the lookups.
 - Costs and latencies are estimates from per-operation measurements, not
   end-to-end executions. The execution-based comparison is ASAPQuery-backend
   #545/#547.
 - AutoSketch-Adapted's deployments (`x = S`, `y = gcd(S, T)`) are in the ASAP
   candidate set (`candidates.rs` generates every divisor of `S` as a window and
-  `gcd(x, T)` as a slide). So when its plan meets the latency bounds, the ASAP
-  MILP can choose the same deployments and pay for shared ones once; ASAP's
-  cost is never higher. The result to report is the size of the gap and where it comes
+  `gcd(x, T)` as a slide). So when its plan meets the latency bounds and its
+  configurations also pass ASAP's lookup rule (the two rules differ on
+  saturation, §6), the ASAP MILP can choose the same deployments and pay for
+  shared ones once; ASAP's cost is never higher. The sanity check reports any
+  case where this does not hold. The result to report is the size of the gap and where it comes
   from, not that a gap exists.
