@@ -8,6 +8,7 @@
 //!
 //! Every number the algorithm uses is caller-supplied -- no constants here.
 
+pub mod autosketch;
 pub mod candidates;
 pub mod enumerate;
 pub mod milp;
