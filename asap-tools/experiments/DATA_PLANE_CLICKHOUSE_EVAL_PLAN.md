@@ -52,8 +52,11 @@ deferred (§10); for those, ClickHouse has no equivalent sketch.
 - θ = 1.1 (Zipf key weights) is fixed for the later frequency/top-k pass. It
   has no effect on the quantile-only pass, because every series emits at the
   same rate.
-- Generation is seeded. The ClickHouse and ASAPQuery feeders read the same
-  JSONL file `{ts, label_0, instance, value}`.
+- The data is generated on the fly by the paced feeder
+  ([#793](https://github.com/ProjectASAP/ASAPQuery/pull/793)), with no dataset
+  file. Each value is a hash of `(seed, series, sample index)`, so the ClickHouse
+  and ASAPQuery feeders send identical data. A file would be about 9e8 rows
+  (~50 GB) per workload at 1e6 series × 900 s.
 
 ### 3.2 Queries
 
@@ -122,7 +125,7 @@ for another's MV maintenance.
 ## 5. Pipeline per workload
 
 ```
-generator ──► data.jsonl + SQL files + planner input
+workload generator ──► SQL files + planner input + feeder flags (C, s, seed)
                        │
 asap-planner --planner milp ──► streaming_config.yaml + inference_config.yaml   (the plan)
                        │
@@ -135,13 +138,20 @@ runner: one run per arm × trial, paced feeders, resource caps, monitors
   each aggregation's type, `parameters`, `labels.grouping`, `windowSizeMs` and
   `windowType`/slide. From it, the translator writes the MV DDL and the queries
   that read the MVs. Both systems therefore deploy one plan.
-- **Paced feeders.** There are two identical feeder processes, one per system
-  under test, started on the same clock. Each one sends every second's rows:
-  ASAPQuery receives them over Prometheus Remote Write, and ClickHouse via
-  `INSERT … FORMAT JSONEachRow`. Each feeder runs on its own 2 cores, outside
-  both caps. The existing bulk paths (JSON ingest, `_load_json_batched`) do not
-  pace. `batch_delay_ms` in `json_ingest.rs` is a fixed sleep and is not
-  exposed in `engine_config.rs`.
+- **Paced feeders** (`asap-tools/data-sources/paced-feeder`,
+  [#793](https://github.com/ProjectASAP/ASAPQuery/pull/793)). There is one
+  feeder process per system under test, both run with the same workload flags,
+  and each runs on its own 2 cores outside the caps. Every second it sends that
+  second's rows:
+  - ASAPQuery gets them over Prometheus Remote Write (50k rows per request,
+    under axum's 2 MB body limit);
+  - ClickHouse gets them via `INSERT … FORMAT RowBinary` (100k rows per
+    request), its efficient native path, just as Remote Write is ASAPQuery's.
+    JSONEachRow would have charged ClickHouse for JSON parsing.
+
+  Measured pinned to 2 cores, both sinks hold 1e6 rows/s with no tick over
+  1 s; the feeder uses 0.15 cores (ClickHouse) and 0.34 cores (Remote Write).
+  The existing bulk paths (JSON ingest, `_load_json_batched`) do not pace.
 - **Runner.** It extends `experiment_run_clickhouse.py`:
   - one mode per arm;
   - a feeder-driven ingest phase in place of the bulk load;
@@ -199,14 +209,15 @@ It checks:
 - 0 fallbacks;
 - exact-MV results equal the reference exactly;
 - DD accuracy is within target on both sides;
-- the feeders hold 1e6 samples/s under the cap (workloads 3 and 4).
+- the systems absorb 1e6 samples/s under their caps (workloads 3 and 4). The
+  feeders themselves are already shown to keep up at that rate.
 
 ## 8. Work items
 
 | # | Item | Owner | Depends on |
 |---|---|---|---|
-| 1 | Data + workload generator: JSONL (Pareto a, `C`, `s`, 1 sample/s), SQL files, planner input | Zeying | — |
-| 2 | Paced feeder (Remote Write and ClickHouse INSERT, one per system) | Zeying | — |
+| 1 | Workload generator: SQL files, planner input and feeder flags per workload | Zeying | — |
+| 2 | Paced feeder with on-the-fly data generation (Remote Write and ClickHouse RowBinary) | Zeying | Draft PR #793 |
 | 3 | Translator: `streaming_config.yaml` → ClickHouse `init.sql` + per-arm SQL | Zeying | — |
 | 4 | Runner: per-arm modes, feeder ingest, caps, `system.parts` collection, `config/experiment_type/clickhouse.yaml` | Zeying | 2 |
 | 5 | Post-processing: ClickHouse and precompute paths in `compare_costs.py`, model A and model B pricing from the monitor timeline, figure | Zeying | 4 |
