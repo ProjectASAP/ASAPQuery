@@ -389,9 +389,9 @@ each family (§4). Per (workload, baseline, cost model, SLA), report:
 ### Benchmark input
 
 Configurations come from the saturation study's grid (#130, #140): CMS,
-Count Sketch and CMS-heap top-k with rows ∈ {3, 5} and cols 256–16384 (rows = 5
-costs scaled from rows = 3), KLL k ∈ {50, 200, 800}, DDSketch α 0.005–0.05, HLL
-`lg_k` ∈ {10, 12, 14}.
+Count Sketch and CMS-heap top-k with rows ∈ {3, 5} and cols ∈ {256, 1024,
+4096, 16384} (rows = 5 costs scaled from rows = 3), KLL k ∈ {50, 200, 800},
+DDSketch α ∈ {0.005, 0.01, 0.02, 0.05}, HLL `lg_k` ∈ {12, 14, 16}.
 
 #### Data parameters, shared by both methods
 
