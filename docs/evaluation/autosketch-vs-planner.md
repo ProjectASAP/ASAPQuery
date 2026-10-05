@@ -149,19 +149,9 @@ $/hour = a · (total CPU-seconds / 24 h) + b · Mem_GiB
 a = 0.0368 and b = 0.00364 with the 2026-10-04 prices. Model A does not depend
 on the machine family.
 
-**Model B — peak-provisioned (buy machines for the peak).** Reported for two
-evaluation alignments:
-- **aligned:** every RQE first fires at `t = 0`, the worst case;
-- **staggered:** each RQE first fires at a deterministic pseudo-random offset in
-  `[0, T_r)`, the typical case (Prometheus spreads rule-group evaluations).
-
-Each alignment is solved separately. Staggered offsets are integers, so the
-timeline repeats with period `P = lcm(T_r)` (300 s for the synthetic intervals),
-and the staggered peak is exact and linear:
-`peak ≥ ingest + Σ_(r,D) occ_{r,D}(b) · z_{r,D}` for every bin `b` in `[0, P)`,
-where `occ_{r,D}(b)` is the constant CPU-seconds RQE `r` uses in bin `b` with
-deployment `D`'s latency, including self-overlap. If `P` exceeds 86,400 s, the
-aligned plan is priced under staggered instead, and flagged.
+**Model B — peak-provisioned (buy machines for the peak).** Every RQE first
+fires at `t = 0` and then every `T_r` (aligned starts, the worst case). A
+staggered-start variant was considered and dropped (decided 2026-10-05).
 
 Per family `f`:
 
@@ -528,7 +518,7 @@ Figures:
 | 4 | sketch-bench #138 | Runner and absolute SLA for `traces` (rebased on main; `example`/`scaling` removed) | Open |
 | — | sketch-bench #140 | Saturation curves at K ∈ {1e1, 1e2, 1e4, 1e6} for the synthetic workload | Draft; 62 cost points re-measured serially after the parallel run failed the 10% consistency check |
 | — | sketch-bench #139 | Synthetic workload: 10 templates, PerQuery-CostAware bound by the SLA | Open |
-| — | sketch-bench #141 | Two cost models (model A; model B aligned and staggered, both solved), strictness levels, workload-grid driver, `traces` results | Open; synthetic sweep and scale study running |
+| — | sketch-bench #141 | Two cost models (model A; model B with aligned starts), strictness levels, workload-grid driver, `traces` results | Open; synthetic sweep and scale study running |
 
 Merge order: #138 → #140 → #139 → #141.
 
