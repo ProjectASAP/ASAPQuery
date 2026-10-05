@@ -1701,6 +1701,78 @@ async fn e2e_grouped_quantile_preserves_output_label_shape() {
     );
 }
 
+/// A grouped quantile served by a DDSketch aggregation: samples flow through
+/// remote write and precompute into one DDSketch per group, and each returned
+/// quantile stays within the sketch's relative-accuracy bound.
+#[tokio::test]
+async fn e2e_grouped_quantile_over_ddsketch_is_within_alpha() {
+    let port = 19421u16;
+    let metric = "dd_latency";
+    let query = "quantile by (job) (0.9, dd_latency)";
+    let alpha = 0.01;
+    let mut config = make_agg_config(
+        17,
+        metric,
+        AggregationType::DDSketch,
+        "",
+        1_000,
+        0,
+        vec!["job"],
+    );
+    config.parameters.insert("alpha".to_string(), json!(alpha));
+
+    // Each group gets 1..=100 (scaled per group) inside the (1s, 2s] window,
+    // plus one later sample to close the window.
+    let groups = [("frontend", 1.0), ("backend", 10.0)];
+    let samples = groups
+        .iter()
+        .flat_map(|&(job, scale)| {
+            (1..=100)
+                .map(move |i| {
+                    make_timeseries(metric, vec![("job", job)], 1_000 + 5 * i, scale * i as f64)
+                })
+                .chain(std::iter::once(make_timeseries(
+                    metric,
+                    vec![("job", job)],
+                    3_500,
+                    scale,
+                )))
+        })
+        .collect();
+    let (engine, query) = NativeDagScenario {
+        port,
+        metric,
+        query,
+        aggregation_configs: vec![config],
+        schema_labels: vec!["job".to_string()],
+        samples,
+        evaluation_time_seconds: 2.0,
+        base_interval_ms: 1_000,
+    }
+    .build_engine()
+    .await;
+
+    let (_, result) = engine
+        .handle_query_promql(query, 2.0)
+        .expect("DDSketch quantile should execute")
+        .expect("DDSketch quantile should match the configured aggregation");
+    let QueryResult::Vector(vector) = result else {
+        panic!("expected instant vector result");
+    };
+    assert_eq!(vector.values.len(), groups.len());
+    for element in vector.values {
+        let job = element.labels.labels[0].as_str();
+        let scale = groups.iter().find(|(g, _)| *g == job).unwrap().1;
+        // The 0.9 quantile of scale * {1..=100} is scale * 90.
+        let truth = scale * 90.0;
+        assert!(
+            (element.value - truth).abs() / truth <= alpha,
+            "{job}: estimate {} vs truth {truth}",
+            element.value
+        );
+    }
+}
+
 /// Sliding precomputes keep their existing exact-cover composition while
 /// samples on every slide boundary move to the pane ending at that boundary.
 /// The shared 6s boundary must be counted once, not once per stored window.

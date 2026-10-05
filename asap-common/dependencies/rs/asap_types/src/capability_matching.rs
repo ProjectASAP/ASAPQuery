@@ -39,7 +39,11 @@ pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
         Statistic::Min | Statistic::Max => {
             &[AggregationType::MinMax, AggregationType::MultipleMinMax]
         }
-        Statistic::Quantile => &[AggregationType::DatasketchesKLL, AggregationType::HydraKLL],
+        Statistic::Quantile => &[
+            AggregationType::DatasketchesKLL,
+            AggregationType::DDSketch,
+            AggregationType::HydraKLL,
+        ],
         Statistic::Rate | Statistic::Increase => {
             &[AggregationType::Increase, AggregationType::MultipleIncrease]
         }
@@ -474,6 +478,11 @@ mod tests {
                 .parameters
                 .insert("precision".to_string(), serde_json::Value::from(14));
         }
+        if config.aggregation_type == AggregationType::DDSketch {
+            config
+                .parameters
+                .insert("alpha".to_string(), serde_json::Value::from(0.01));
+        }
         config
     }
 
@@ -676,6 +685,25 @@ mod tests {
             &req("lat", &[Statistic::Quantile], 300_000, &[], ""),
         );
         assert_eq!(result.unwrap().aggregation_id_for_value, 3);
+    }
+
+    #[test]
+    fn quantile_matches_ddsketch() {
+        let configs = single_config(make_config(
+            4,
+            "lat",
+            "DDSketch",
+            "",
+            300_000,
+            "tumbling",
+            &[],
+            "",
+        ));
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("lat", &[Statistic::Quantile], 300_000, &[], ""),
+        );
+        assert_eq!(result.unwrap().aggregation_id_for_value, 4);
     }
 
     #[test]

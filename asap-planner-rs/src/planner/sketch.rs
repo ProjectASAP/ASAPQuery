@@ -9,6 +9,7 @@ const DEFAULT_CMS_DEPTH: u64 = 3;
 const DEFAULT_CMS_WIDTH: u64 = 1024;
 const DEFAULT_CMS_HEAP_MULT: u64 = 4;
 const DEFAULT_KLL_K: u64 = 500;
+const DEFAULT_DDSKETCH_ALPHA: f64 = 0.01;
 const DEFAULT_HYDRA_ROW: u64 = 3;
 const DEFAULT_HYDRA_COL: u64 = 1024;
 const DEFAULT_HYDRA_K: u64 = 20;
@@ -98,6 +99,16 @@ pub fn build_sketch_parameters(
             Ok(m)
         }
 
+        AggregationType::DDSketch => {
+            let alpha = sketch_params
+                .and_then(|p| p.ddsketch.as_ref())
+                .map(|p| p.alpha)
+                .unwrap_or(DEFAULT_DDSKETCH_ALPHA);
+            let mut m = HashMap::new();
+            m.insert("alpha".to_string(), serde_json::json!(alpha));
+            Ok(m)
+        }
+
         AggregationType::HLL => {
             let precision = sketch_params
                 .and_then(|p| p.hll.as_ref())
@@ -174,4 +185,30 @@ pub fn build_sketch_parameters_from_promql(
         topk_count_events,
         sketch_params,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::input::DDSketchParams;
+
+    #[test]
+    fn ddsketch_uses_default_alpha_without_override() {
+        let params =
+            build_sketch_parameters(AggregationType::DDSketch, "", None, None, None).unwrap();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params["alpha"], serde_json::json!(DEFAULT_DDSKETCH_ALPHA));
+    }
+
+    #[test]
+    fn ddsketch_alpha_override_is_applied() {
+        let overrides = SketchParameterOverrides {
+            ddsketch: Some(DDSketchParams { alpha: 0.02 }),
+            ..Default::default()
+        };
+        let params =
+            build_sketch_parameters(AggregationType::DDSketch, "", None, None, Some(&overrides))
+                .unwrap();
+        assert_eq!(params["alpha"], serde_json::json!(0.02));
+    }
 }

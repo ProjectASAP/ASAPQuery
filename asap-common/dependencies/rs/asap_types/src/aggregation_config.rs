@@ -40,6 +40,13 @@ pub enum AggregationConfigError {
         aggregation_id: u64,
         aggregation_type: AggregationType,
     },
+    #[error(
+        "aggregation {aggregation_id} (DDSketch) parameter 'alpha' must be a number in (0, 1), got {value:?}"
+    )]
+    InvalidAlpha {
+        aggregation_id: u64,
+        value: Option<Value>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -85,6 +92,7 @@ impl AggregationConfig {
     pub fn validate(&self) -> Result<(), AggregationConfigError> {
         self.mode().map(|_| ())?;
         self.validate_hll_precision()?;
+        self.validate_ddsketch_alpha()?;
         Ok(())
     }
 
@@ -99,6 +107,22 @@ impl AggregationConfig {
                 reason,
             },
         )
+    }
+
+    /// DDSketch needs a relative-accuracy `alpha` strictly between 0 and 1;
+    /// `asap_sketchlib::DDSketch::new` panics on anything else.
+    fn validate_ddsketch_alpha(&self) -> Result<(), AggregationConfigError> {
+        if self.aggregation_type != AggregationType::DDSketch {
+            return Ok(());
+        }
+        let value = self.parameters.get("alpha");
+        match value.and_then(Value::as_f64) {
+            Some(alpha) if alpha > 0.0 && alpha < 1.0 => Ok(()),
+            _ => Err(AggregationConfigError::InvalidAlpha {
+                aggregation_id: self.aggregation_id,
+                value: value.cloned(),
+            }),
+        }
     }
 
     fn validate_hll_precision(&self) -> Result<(), AggregationConfigError> {

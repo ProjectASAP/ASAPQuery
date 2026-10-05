@@ -1,9 +1,9 @@
 use crate::data_model::{AggregateCore, AggregationType, KeyByLabelValues, Measurement};
 use crate::precompute_operators::{
-    CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DatasketchesKLLAccumulator,
-    DeltaSetAggregatorAccumulator, HllAccumulator, HydraKllSketchAccumulator, IncreaseAccumulator,
-    MinMaxAccumulator, MultipleIncreaseAccumulator, MultipleMinMaxAccumulator,
-    MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator,
+    CountMinSketchAccumulator, CountMinSketchWithHeapAccumulator, DDSketchAccumulator,
+    DatasketchesKLLAccumulator, DeltaSetAggregatorAccumulator, HllAccumulator,
+    HydraKllSketchAccumulator, IncreaseAccumulator, MinMaxAccumulator, MultipleIncreaseAccumulator,
+    MultipleMinMaxAccumulator, MultipleSumAccumulator, SetAggregatorAccumulator, SumAccumulator,
 };
 use asap_types::aggregation_config::AggregationConfig;
 use asap_types::aggregation_mode::{AggregationMode, CountMode, MinMaxMode};
@@ -296,6 +296,50 @@ impl AccumulatorUpdater for KllAccumulatorUpdater {
     fn memory_usage_bytes(&self) -> usize {
         // KLL sketch size is hard to estimate precisely; use a rough estimate
         std::mem::size_of::<DatasketchesKLLAccumulator>() + 4096
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DDSketchAccumulatorUpdater
+// ---------------------------------------------------------------------------
+
+pub struct DDSketchAccumulatorUpdater {
+    acc: DDSketchAccumulator,
+    alpha: f64,
+}
+
+impl DDSketchAccumulatorUpdater {
+    pub fn new(alpha: f64) -> Self {
+        Self {
+            acc: DDSketchAccumulator::new(alpha),
+            alpha,
+        }
+    }
+}
+
+impl AccumulatorUpdater for DDSketchAccumulatorUpdater {
+    fn update_single(&mut self, value: f64, _timestamp_ms: i64) {
+        self.acc.update(value);
+    }
+
+    fn update_keyed(&mut self, _key: &KeyByLabelValues, value: f64, timestamp_ms: i64) {
+        self.update_single(value, timestamp_ms);
+    }
+
+    impl_accumulator_methods!(acc);
+
+    fn reset(&mut self) {
+        self.acc = DDSketchAccumulator::new(self.alpha);
+    }
+
+    fn is_keyed(&self) -> bool {
+        false
+    }
+
+    fn memory_usage_bytes(&self) -> usize {
+        // One u64 counter per bucket in the dense store.
+        std::mem::size_of::<DDSketchAccumulator>()
+            + std::mem::size_of_val(self.acc.inner.store_counts())
     }
 }
 
@@ -820,6 +864,13 @@ fn kll_k_param(config: &AggregationConfig) -> Result<u16, String> {
         .ok_or_else(|| "KLL config missing required parameter (tried: K, k)".to_string())
 }
 
+/// Extract the DDSketch relative-accuracy `alpha` parameter.
+fn ddsketch_alpha_param(config: &AggregationConfig) -> f64 {
+    config.parameters["alpha"]
+        .as_f64()
+        .expect("validation guarantees an alpha in (0, 1)")
+}
+
 /// Extract `(row_num, col_num)` for CMS / HydraKLL configs.
 ///
 /// Accepts the planner-canonical `depth`/`width` names first, then falls back
@@ -918,6 +969,9 @@ pub fn create_accumulator_updater(
         AggregationType::DatasketchesKLL => {
             Ok(Box::new(KllAccumulatorUpdater::new(kll_k_param(config)?)))
         }
+        AggregationType::DDSketch => Ok(Box::new(DDSketchAccumulatorUpdater::new(
+            ddsketch_alpha_param(config),
+        ))),
         AggregationType::MultipleSum => Ok(Box::new(MultipleSumAccumulatorUpdater::new(
             count_events(config),
         ))),
@@ -1129,6 +1183,7 @@ mod tests {
             };
         for (agg_type, sub_type, params) in [
             (AggregationType::DatasketchesKLL, "", kll_params_required()),
+            (AggregationType::DDSketch, "", ddsketch_params_required()),
             (
                 AggregationType::CountMinSketch,
                 "sum",
@@ -1443,6 +1498,83 @@ mod tests {
         let mut p = std::collections::HashMap::new();
         p.insert("K".to_string(), serde_json::json!(200_u64));
         p
+    }
+
+    fn ddsketch_params_required() -> std::collections::HashMap<String, serde_json::Value> {
+        std::collections::HashMap::from([("alpha".to_string(), serde_json::json!(0.01))])
+    }
+
+    fn ddsketch_config(
+        params: std::collections::HashMap<String, serde_json::Value>,
+    ) -> AggregationConfig {
+        AggregationConfig::new(
+            7,
+            AggregationType::DDSketch,
+            String::new(),
+            params,
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            promql_utilities::data_model::key_by_label_names::KeyByLabelNames::new(vec![]),
+            String::new(),
+            60_000,
+            0,
+            WindowType::Tumbling,
+            "m".to_string(),
+            "m".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn test_ddsketch_updater_via_factory_uses_configured_alpha() {
+        let config = ddsketch_config(std::collections::HashMap::from([(
+            "alpha".to_string(),
+            serde_json::json!(0.02),
+        )]));
+        let mut updater = create_accumulator_updater(&config).unwrap();
+        assert!(!updater.is_keyed());
+        for i in 1..=100 {
+            updater.update_single(i as f64, i * 1000);
+        }
+        let acc = updater.take_accumulator();
+        let dd = acc
+            .as_any()
+            .downcast_ref::<DDSketchAccumulator>()
+            .expect("AggregationType::DDSketch → DDSketchAccumulator");
+        assert_eq!(dd.alpha(), 0.02);
+        assert_eq!(dd.count(), 100);
+    }
+
+    #[test]
+    fn test_ddsketch_updater_reset_clears_state() {
+        let mut updater = DDSketchAccumulatorUpdater::new(0.01);
+        for i in 1..=50 {
+            updater.update_single(i as f64, 0);
+        }
+        updater.reset();
+        let acc = updater.take_accumulator();
+        let dd = acc.as_any().downcast_ref::<DDSketchAccumulator>().unwrap();
+        assert_eq!(dd.count(), 0);
+        assert_eq!(dd.alpha(), 0.01);
+    }
+
+    #[test]
+    fn test_ddsketch_missing_or_invalid_alpha_returns_err() {
+        for params in [
+            std::collections::HashMap::new(),
+            std::collections::HashMap::from([("alpha".to_string(), serde_json::json!(0.0))]),
+            std::collections::HashMap::from([("alpha".to_string(), serde_json::json!(1.0))]),
+            std::collections::HashMap::from([("alpha".to_string(), serde_json::json!("0.01"))]),
+        ] {
+            let config = ddsketch_config(params.clone());
+            assert!(
+                create_accumulator_updater(&config).is_err(),
+                "params {params:?} must be rejected"
+            );
+        }
     }
 
     fn cms_params_required() -> std::collections::HashMap<String, serde_json::Value> {

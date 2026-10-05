@@ -23,6 +23,8 @@ pub fn sketch_properties(t: AggregationType) -> SketchProperties {
         AggregationType::Increase => p(true, false, false),
         AggregationType::MinMax => p(true, false, false),
         AggregationType::DatasketchesKLL => p(true, false, false),
+        // Bucket counts could be subtracted, but the accumulator only merges.
+        AggregationType::DDSketch => p(true, false, false),
         AggregationType::MultipleSum => p(true, true, true),
         AggregationType::MultipleIncrease => p(true, false, true),
         AggregationType::MultipleMinMax => p(true, false, true),

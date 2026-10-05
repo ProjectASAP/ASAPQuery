@@ -173,6 +173,8 @@ pub struct SketchParameterOverrides {
     pub count_min_sketch_with_heap: Option<CmsHeapParams>,
     #[serde(rename = "DatasketchesKLL")]
     pub datasketches_kll: Option<KllParams>,
+    #[serde(rename = "DDSketch")]
+    pub ddsketch: Option<DDSketchParams>,
     #[serde(rename = "HydraKLL")]
     pub hydra_kll: Option<HydraParams>,
     #[serde(rename = "HLL")]
@@ -196,6 +198,11 @@ pub struct CmsHeapParams {
 pub struct KllParams {
     #[serde(rename = "K")]
     pub k: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DDSketchParams {
+    pub alpha: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
