@@ -141,8 +141,51 @@ cost is shown for those points but marked as infeasible.
 | ID | Description | Purpose |
 | --- | --- | --- |
 | W0 | `small_problem`'s 8 RQEs (freq, quantile, cardinality, top-k; 1h–1d lookbacks; 60s/300s intervals), tolerances moved to §5 | Readable worked example; one table in the paper |
+| WS | Synthetic PromQL workload: the 10 queries in "Synthetic workload" below, over Zipf/Pareto data. Main figure. | Cost–latency trade-off across data and requirements |
 | W1 | Seeded synthetic batches, `N ∈ {8, 32, 128, 512, 2048}` RQEs. Lookbacks {5m, 15m, 1h, 6h, 1d}, intervals {10s, 60s, 300s}, 4 capabilities, 3 label sets with fixed cardinality/rate. Knob: fraction of RQEs drawn from shared (capability, labels) cohorts, {0, 0.5, 1}. | Planning-time scaling; cost vs. shareability |
 | W2 | Real-trace RQEs, one workload per dataset: Alibaba 2022, BOOM and Google 2011. Taken from `asap-tools/dataset-analysis/results/skew_summary.csv` ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)): each row's `range_s` is `S` and its `step_s` is `T`. Data parameters and accuracy targets are fit over each whole trace. | Reported results |
+
+### Synthetic workload (WS)
+
+**Data.**
+- Series carry `label_0`, with cardinality in {10^1, …, 10^6}, and an
+  `instance` label with 100 values per `label_0` value.
+- Each series is scraped every 10 ms, i.e. 100 samples per second, so
+  `λ = 100 · 100 · card(label_0)` samples/s.
+- The data volume is chosen so that even the smallest windows hold enough
+  samples for a sketch (1e4 per group for 1 s spatial queries, 6e3 per series
+  for 1 m temporal ones). Points that still fall below `N_sat` are flagged.
+- Key weights for frequency and top-k follow Zipf θ ∈ {0, 0.5, 1.0, 1.5, 2.0}.
+  Values for quantiles follow Pareto a ∈ {1.1, 2, 3}.
+- The saturation curves are extended to K ∈ {1e1, 1e2, 1e4, 1e6} by
+  measuring, not by interpolation.
+
+**Queries.** Each spatial query repeats every 1 s, with `S = T = 1 s`, so each
+evaluation reads the last second. Each temporal query repeats every 1 m, with
+`S = T_range ∈ {1m, 10m, 1h, 6h, 24h}`.
+
+| # | Query | Capability | Grouping |
+|---|---|---|---|
+| 1 | `sum by (label_0) (data)` | Freq | `label_0` |
+| 2 | `topk by (3, label_0) (data)` | TopK | `label_0` |
+| 3 | `quantile by (q, label_0) (data)`, q ∈ {.5, .75, .9, .95, .99} | Quantile | per `label_0` group |
+| 4 | `sum_over_time(data[T])` | Freq | per series |
+| 5 | `quantile_over_time(q, data[T])`, same five q | Quantile | per series |
+| 6 | `rate(data[T])` | Freq over per-series increments | per series |
+| 7 | `sum by (label_0) (rate(data[T]))` | Freq over increments | `label_0` |
+| 8 | `sum by (label_0) (sum_over_time(data[T]))` | Freq | `label_0` |
+| 9 | `topk by (3, label_0) (rate(data[T]))` | TopK over increments | `label_0` |
+| 10 | `quantile_over_time(0.9, data[T]) / quantile_over_time(0.5, data[T])` | Two Quantile RQEs | per series |
+
+Notes on the mapping:
+- `rate`/`increase` are modeled as a frequency sum of per-series increments,
+  equivalent to `sum_over_time` over deltas.
+- The quantiles of one query, and the two operands of query 10, read the same
+  stream. ASAP can serve them from one deployment; AutoSketch gets one per RQE.
+- One workload instance is the 42 RQEs above, for one (cardinality, θ or a,
+  accuracy target, SLA) combination. The figure sweeps the accuracy target over
+  {90%, 95%, 99%} and an absolute latency SLA grid. For the scalability study,
+  the RQE set is replicated with distinct `label_0` filters.
 
 ### Benchmark input
 
