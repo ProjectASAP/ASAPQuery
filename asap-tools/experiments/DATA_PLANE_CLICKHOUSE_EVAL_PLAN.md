@@ -1,373 +1,228 @@
 # Evaluation plan: ASAPQuery data plane vs ClickHouse with MVs and summaries
 
-Status: **draft for discussion**, no results yet. Backs the paper subsection
-"ASAP's data plane". Companion to the planner-level plan in
+Status: **design settled, implementation not started**. Backs the paper
+subsection "ASAP's data plane". The data model follows the synthetic workload in
 `docs/evaluation/autosketch-vs-planner.md` (branch
-`docs/autosketch-vs-planner-eval`), whose synthetic data model this plan reuses.
-
-The data plane under test is **ASAPQuery's** precompute engine and query
-engine (`asap-query-engine`, run as `query_engine_rust`), driven by
-`asap-tools/experiments/experiment_run_clickhouse.py`.
+`docs/autosketch-vs-planner-eval`), narrowed as described in §3.
 
 ## 1. Question
 
-Fix a dataset and a query workload. Run the planner once and get its set of
-summary-based plans. Deploy that **same** plan set two ways:
+Fix a dataset and a query workload, and let the planner choose its
+summary-based plan. Deploy that **same** plan two ways:
 
-1. **ASAPQuery**: the precompute engine builds the planned summaries, and the
-   query engine answers SQL from them.
-2. **ClickHouse**: the closest equivalent ClickHouse can express, which is
-   materialized views (MVs) over the raw table that store ClickHouse's built-in
-   aggregate states.
+1. **ASAPQuery**: the precompute engine and query engine (`query_engine_rust`).
+2. **ClickHouse**: materialized views (MVs) over the raw table, with exact
+   states or ClickHouse's own sketch states.
 
-How much cheaper and faster is (1) than (2), at what accuracy?
+How much cheaper and faster is (1) than (2), at the same accuracy target?
 
-The planner is held fixed, so this isolates the data plane. ClickHouse cannot
-deploy MVs or summaries automatically, so the harness translates each plan.
-Where ClickHouse cannot express a planned summary, the translation records the
-reason. That list becomes the paper's "ClickHouse may not support it" point:
+The first pass covers **quantile queries only**, with **DDSketch on both
+sides**: the same algorithm and the same relative-accuracy parameter α. Only
+the data plane differs between them. The frequency and top-k templates are
+deferred (§10); for those, ClickHouse has no equivalent sketch.
 
-- (a) the sketch is not implemented: Count-Min, KLL;
-- (b) the sketch's parameters are not configurable: `quantilesState`'s
-  reservoir is fixed at 8192, `uniqHLL12` is fixed at 12 bits, and `topK`'s
-  load factor is fixed.
+## 2. Decisions
 
-## 2. What exists today
-
-Checked on `main` @ `52821e0`.
-
-### 2.1 `experiment_run_clickhouse.py`
-
-This is a single-node runner (`num_nodes=1`; `node_offset` picks the node).
-
-1. rsync the JSONL dataset to the node and start ClickHouse in Docker
-   (`ClickHouseService`).
-2. **Load the data once** (`ClickHouseDataLoaderService`), under an ingest
-   monitor that samples the `clickhouse` process. With
-   `dataset.init_sql_file` set, that SQL owns all DDL, *including MVs*. It runs
-   before the load, so the MVs fill on insert.
-3. Loop over the modes in `experiment_params.experiment` (`[{mode, server}]`).
-
-   **`sketchdb`:**
-   - `generate_sql_planner_input` builds the planner input.
-   - `asap-planner` runs in SQL mode and writes `streaming_config.yaml` +
-     `inference_config.yaml`.
-   - `query_engine_rust` starts. It ingests the **same JSONL file**
-     (`ingest_json_config`), builds summaries, and forwards unsupported
-     queries to ClickHouse.
-   - After `flow.steady_state_wait`, the query client runs against `:8088`
-     under one continuous monitor that covers ingest + query, with per-thread
-     attribution (`pc-worker` threads = precompute).
-
-   **Any other mode** (`baseline`, `baseline_mv`, `baseline_sketch` or
-   `baseline_mv_sketch`, defined in `constants.py`): the query client runs
-   against ClickHouse `:8123` with that mode's SQL file.
-4. rsync the results back.
-
-`query_groups[i].sql_file` is a dict keyed by mode. `sketchdb` always reuses
-`baseline`'s SQL text so the engine can pattern-match it.
-
-The mode names, per-mode SQL and MV-capable init SQL already exist. Nothing
-generates the MV DDL or the MV-targeted SQL.
-
-### 2.2 SQL shapes ASAPQuery serves
-
-From `sql_utilities` (`sqlpattern_matcher.rs`, `sqlhelper.rs`):
-- `SUM`, `COUNT`, `AVG`, `MIN`, `MAX` and `QUANTILE`, with `GROUP BY` labels
-  over a `WHERE ts BETWEEN …` window;
-- `COUNT(DISTINCT col)`, normalised to `CARDINALITY` and served by HLL;
-- top-k as `ORDER BY SUM|COUNT(..) DESC LIMIT k`, served by
-  `CountMinSketchWithHeap`;
-- nested subqueries (spatial-of-temporal).
-
-There is no `rate`/`increase` and no binary operator between aggregates.
-
-Example of the shape the engine matches (from the deleted
-`clickhouse_quantile_queries.sql`):
-
-```sql
-SELECT quantile(0.95)(v1) FROM h2o_groupby
-WHERE timestamp BETWEEN '2024-01-01 00:00:00' AND '2024-01-01 00:00:10'
-GROUP BY id1, id2;
-```
-
-### 2.3 Planner: sketch-bench `rqe-optimizer`
-
-The plan comes from **sketch-bench `rqe-optimizer`**, the MILP used in the
-AutoSketch plan (checked at sketch-bench `964ccb5`). The `sketchdb` mode
-currently runs `asap-planner`'s hardcoded SQL generator instead, so the runner
-needs to bypass it (§5).
-
-What `rqe-optimizer` provides today:
-- **A library, not a CLI.** RQEs and label sets are built in Rust
-  (`examples/small_problem.rs`), and `milp::minimize_cost` solves them.
-- **Input:**
-  - `Rqe {capability, lookback S, interval T, labels, accuracy metric/tolerance}`;
-  - `LabelSetInfo {cardinality, arrival_rate}`;
-  - the measured `AtomicCostTable` from `scripts/export_rqe_optimizer_costs.sh`.
-- **Output:** a `Mapping` from each RQE to a
-  `Deployment {capability, labels, config: AtomicCostEntry, window x, slide y}`.
-  `config.sketch` is a sketch-bench variant, and `config.sketch_config` holds
-  its parameters. It is not written to a file.
-- **Capabilities:** `Freq`, `Quantile`, `Cardinality` and `TopK`. Exact
-  Sum/MinMax are not capabilities.
-
-Mapping its variants to ASAPQuery `aggregationType`s:
-
-| `rqe-optimizer` variant | ASAPQuery `aggregationType` | Status |
-|---|---|---|
-| `cms-fastpath-vector2d` `{rows, cols}` | `CountMinSketch` `{depth, width}` | ok |
-| `cms-heap-topk-fastpath-vector2d` `{rows, cols}` | `CountMinSketchWithHeap` `{depth, width, heap}` | ok |
-| `kll-percall` `{k}` | `DatasketchesKLL` `{K}` (per group via `labels.grouping`) | ok |
-| `hll` `{precision}` | `HLL` | ok |
-| `countsketch-fastpath-vector2d`, `dd`, `univmon-cardinality` | none | **Exclude from candidates.** ASAPQuery can't deploy them |
-
-The optimizer's costs are measured on sketch-bench's implementations, not
-ASAPQuery's. The plan's *estimated* cost is reported next to the *measured* one,
-and the gap between them is a result in its own right.
-
-### 2.4 Gaps
-
-| Gap | Impact |
+| # | Decision |
 |---|---|
-| `config/experiment_type/clickhouse.yaml` is used in the runner docstring but was never committed | Can't run from a clean checkout |
-| `execution-utilities/benchmark/generate_queries.py` was deleted in #404 | No SQL workload generator |
-| The MV init SQL examples (`netflow_init.sql`, `quantile_demo/init.sql`) are referenced in comments but absent | No template for the MV arms |
-| No Zipf/Pareto **JSONL** generator. The fake exporter's Zipf is Prometheus-only, with a fixed α=1.01 | Can't sweep skew or cardinality |
-| Data loads once per run, then the modes loop | MV maintenance would be charged to *every* ClickHouse mode, and `baseline` inserts would slow down. Run each arm separately (§4) |
-| `sketchdb` requires the ClickHouse raw load for fallback | Report ASAP's cost without it, and require 0 fallbacks |
-| No way to feed an externally chosen plan to `sketchdb`: it always runs `asap-planner` | Needed to deploy the `rqe-optimizer` plan |
-| `rqe-optimizer` has no workload-file input or plan-file output | Needed to drive it from the sweep |
-| `post_experiment/single_experiment/compare_costs.py` keys on the Prometheus process | Needs ClickHouse and precompute paths |
-| `cloudlab_setup/single_node/constants.sh` assumes `/scratch` | These nodes use `/mydata` (§9) |
+| Data plane | ASAPQuery `query_engine_rust`, via `experiment_run_clickhouse.py`. Not ASAPQuery-backend |
+| Plan source | The sketch-bench MILP via `asap-planner --planner milp` ([#753](https://github.com/ProjectASAP/ASAPQuery/issues/753), Milind). The planner's `streaming_config.yaml` **is** the plan. No separate plan file |
+| Optimizer objective | `minimize_cost` for the `general_purpose` EC2 family, until model A is in code. Every arm is measured and priced under model A |
+| Quantile sketch | DDSketch on both sides: ClickHouse `quantilesDD(α, …)`; ASAPQuery `DDSketch` (to be added, [#787](https://github.com/ProjectASAP/ASAPQuery/issues/787), Zeying). The optimizer's quantile candidates are limited to `dd` |
+| KLL | Appendix only: the optimizer may choose KLL, and ClickHouse uses its closest substitute |
+| ClickHouse bars | Exact MV, and MV + sketch state. Plain ClickHouse is the accuracy reference (in a table, not a bar) |
+| Key tracker (`DeltaSetAggregator`) | Not needed for quantile plans. For the later frequency/top-k pass: if it is still required, it is deployed, measured and reported as ASAP's cost. Milind is checking whether it can be removed, and a cost-table row is being added separately |
+| Ingest | Paced at the workload's arrival rate, with queries running during ingest |
+| Rate | **1 sample/s per series**, so the total rate is `C·s` samples/s |
+| Fixed data parameters | θ = 1.1, Pareto a = 1.5, accuracy target 95%. Not swept |
+| Templates | Quantile only (§3.2). Per group in the main figure; per series in the appendix |
+| Run length | 15 min of event time per run (largest W = 10 min), plus one 1 h run of the default workload |
+| Resources | 16 cores / 64 GiB cap per system under test. The feeder and fallback ClickHouse get separate cores |
+| Pilot | Run now with ASAPQuery on KLL from today's `asap-planner`, to debug the plumbing; not reported. Rerun once DD and `--planner milp` land |
 
 ## 3. Workload
 
 ### 3.1 Data
 
-The data model is the one in `autosketch-vs-planner.md` §6, written as JSONL
-for both systems. ASAPQuery's JSON ingest and ClickHouse's loader read the
-**same file**.
+- One metric with labels `label_0` (`C` groups) and `instance` (`s` series per
+  group), so there are `C·s` time series.
+- Every series emits **one sample per second** of event time.
+- Values are drawn from **Pareto a = 1.5**.
+- θ = 1.1 (Zipf key weights) is fixed for the later frequency/top-k pass. It
+  has no effect on the quantile-only pass, because every series emits at the
+  same rate.
+- Generation is seeded. The ClickHouse and ASAPQuery feeders read the same
+  JSONL file `{ts, label_0, instance, value}`.
 
-- Rows are `{ts, label_0, instance, value}`.
-- `label_0` takes `C` values (the groups). `instance` takes `s` values per
-  group.
-- Each series emits 100 samples/s of event time.
-- Frequency and top-k: the weight of each key follows Zipf θ.
-- Quantiles: values follow Pareto a.
-- Generation is seeded, so every arm and trial reads identical bytes.
+### 3.2 Queries
 
-Event time is replayed, not real time: generate a fixed span (default 2 h of
-event time) and let each system ingest as fast as it can. Ingest throughput is
-reported separately.
+Each query repeats every `T = 1 min` (a refreshing dashboard panel) over the
+last `W`, with q ∈ {0.5, 0.75, 0.9, 0.95, 0.99}:
 
-### 3.2 Query templates (SQL)
+```sql
+-- per group (main figure)
+SELECT label_0, quantiles(0.5, 0.75, 0.9, 0.95, 0.99)(value) FROM data
+WHERE ts BETWEEN now() - W AND now() GROUP BY label_0;
 
-These are the AutoSketch plan's templates that ASAPQuery's SQL path can serve
-(§2.2), plus count-distinct, which SQL adds. `W` is the window, and queries
-repeat every `T` over the span.
+-- per series (appendix)
+... GROUP BY label_0, instance;
+```
 
-| # | SQL (per window) | `rqe-optimizer` RQE (capability, labels) | Mirrors AutoSketch template |
-|---|---|---|---|
-| 1 | `SUM(value) … GROUP BY label_0` | Freq, `{label_0}` → CMS | 1, 8 |
-| 2 | `label_0, SUM(value) … GROUP BY label_0 ORDER BY 2 DESC LIMIT 3` | TopK, `{label_0}` → CMS with heap | 2 |
-| 3 | `quantile(q)(value) … GROUP BY label_0`, q ∈ {0.5, 0.75, 0.9, 0.95, 0.99} | Quantile, `{label_0}` → KLL per group | 3 |
-| 4 | `SUM(value) … GROUP BY label_0, instance` | Freq, `{label_0, instance}` → CMS | 4 |
-| 5 | `quantile(q)(value) … GROUP BY label_0, instance`, same q | Quantile, `{label_0, instance}` → KLL per series | 5 |
-| 6 | `COUNT(DISTINCT instance) … GROUP BY label_0` | Cardinality, `{label_0}` → HLL | none (SQL-only) |
+The ASAPQuery SQL path matches these shapes (`QUANTILE` with `GROUP BY` labels
+over a `WHERE ts BETWEEN …` window). The five quantiles read one stream, so a
+single deployment serves all of them.
 
-Each template is one RQE per window in `W`, repeating every `T`. Quantiles of
-one template share a stream, so the optimizer can serve all five from one
-deployment.
+Values per sketch per window are `s·W` per group and `W` per series. With the
+defaults (s = 100, W = 1 min), that is 6,000 per group and 60 per series. This
+is why per series is in the appendix: sketches that small mostly measure
+per-sketch overhead, not summarization.
 
-Dropped, because ASAPQuery SQL cannot express them: AutoSketch templates 6, 7
-and 9 (`rate`), and 10 (a ratio of two quantiles). The earlier `MAX` control is
-also dropped: `rqe-optimizer` has no MinMax capability, so it would not come
-from the plan.
+### 3.3 Workloads
 
-### 3.3 Grid
+One dimension is varied at a time, around the default:
 
-One dimension at a time around the bold defaults:
+| # | Varied | Value | C | s | W | Series | Rate (samples/s) |
+|---|---|---|---|---|---|---|---|
+| 1 | default | — | 1e3 | 100 | 1 m | 1e5 | 1e5 |
+| 2 | C | 1e2 | 1e2 | 100 | 1 m | 1e4 | 1e4 |
+| 3 | C | 1e4 | 1e4 | 100 | 1 m | 1e6 | 1e6 |
+| 4 | C | 1e5 | 1e5 | **10** | 1 m | 1e6 | 1e6 |
+| 5 | s | 1 | 1e3 | 1 | 1 m | 1e3 | 1e3 |
+| 6 | s | 10 | 1e3 | 10 | 1 m | 1e4 | 1e4 |
+| 7 | W | 10 s | 1e3 | 100 | 10 s | 1e5 | 1e5 |
+| 8 | W | 10 m | 1e3 | 100 | 10 m | 1e5 | 1e5 |
 
-| Dimension | Values |
-|---|---|
-| Query mix | **all 6**, frequency only {1, 4}, quantile only {3, 5}, top-k only {2} |
-| `C` | 1e2, **1e3**, 1e4, 1e5 |
-| `s` | 1, 10, **100** |
-| θ / a | θ ∈ {0, 0.5, **1.0**, 1.5}; a ∈ {1.1, **2**, 3} |
-| Window `W` / repeat `T` | {10 s}, **{1 m}**, {10 m}; `T = W` (tumbling) |
-| Accuracy target | 90%, **95%**, 99% |
+Workload 4 uses s = 10, which caps every workload at 1e6 series and 1e6
+samples/s.
 
 ## 4. Arms
 
-All arms see the same rows and the same plan set. **Each arm is a separate
-runner invocation** (`experiment=[<one mode>]`), with its own `init_sql_file`,
-so ingest cost isn't cross-charged.
+Each arm is a **separate run**, with its own data feed and DDL, so no arm pays
+for another's MV maintenance.
 
-| Arm (runner mode) | Init SQL | Role |
+| Arm | Deployed | Role |
 |---|---|---|
-| `baseline` | raw `MergeTree` only | Exact reference and accuracy ground truth |
-| `baseline_mv` | raw + MVs with exact states (`sumState`, `countState`, `maxState`, `quantilesExactState`, `uniqExactState`, per-key `sumState` for top-k) | "MVs without summaries" |
-| `baseline_mv_sketch` | raw + MVs with the closest summary state (table below) | **Main ClickHouse point** |
-| `sketchdb` | raw only (for fallback) | **ASAPQuery**. Must report 0 fallbacks |
+| Reference | ClickHouse raw `MergeTree`, no MVs | Accuracy ground truth (table) |
+| Exact MV | MV keyed by `(toStartOfInterval(ts, x), label_0)`, storing `quantilesExactState(...)(value)` | Bar 1: what MVs alone buy |
+| Sketch MV | Same MV layout, storing `quantilesDDState(α, ...)(value)` with the plan's α | Bar 2: ClickHouse's best summary option |
+| ASAPQuery | `streaming_config.yaml` from `asap-planner --planner milp`, with `DDSketch(α)` | Bar 3 |
 
-Each MV is keyed by `(toStartOfInterval(ts, W), group-by labels)`. The
-`baseline_mv*` SQL files query the MV target tables with the `-Merge`
-combinators. Every mode's `sql_file` entry in `query_groups[i].sql_file`
-covers the same logical query.
+- **MV layout.** The MV's interval `x` and slide come from the plan's window
+  and slide. ClickHouse queries merge the panes inside `W` with
+  `quantilesExactMerge` / `quantilesDDMerge`.
+- **ASAPQuery's fallback ClickHouse is empty.** Any query that falls back fails
+  loudly instead of being answered by ClickHouse, so "0 fallbacks" is checked
+  by construction. That ClickHouse runs on its own 2 cores / 4 GiB and is not
+  counted in ASAP's cost.
+- **ClickHouse version.** The image is pinned to ≥ 24.1, for `quantileDD`. The
+  pilot checks that `quantilesDD` works with `-State`/`-Merge` in an
+  `AggregatingMergeTree` MV.
 
-Plan → ClickHouse mapping for `baseline_mv_sketch`:
+## 5. Pipeline per workload
 
-| Planned summary | ClickHouse state | Gap reported |
-|---|---|---|
-| KLL (`DatasketchesKLL`) | `quantilesState(levels)(v)` (reservoir 8192) or `quantilesTDigestState` | No KLL. Size/accuracy cannot be set |
-| CountMin (`CountMinSketch`) | none: exact `sumState` per key | Not implemented. State is one row per key, not `d×w` |
-| CountMin with heap | `topKWeightedState(k)` (Filtered Space-Saving) | No CMS. The load factor cannot be set |
-| HLL | `uniqHLL12State` or `uniqCombinedState(p)` | `uniqHLL12` is fixed at 12 bits. `uniqCombined` lets you set p |
+```
+generator ──► data.jsonl + SQL files + planner input
+                       │
+asap-planner --planner milp ──► streaming_config.yaml + inference_config.yaml   (the plan)
+                       │
+translator ──► ClickHouse init.sql (raw + MVs) and per-arm SQL
+                       │
+runner: one run per arm × trial, paced feeders, resource caps, monitors
+```
 
-The translator emits every row of this table. A "none" row becomes an exact
-state, and it is counted and listed under the figure.
-
-## 5. Plan source and deployment
-
-The pipeline for one (dataset, workload) point:
-
-1. **Workload → RQEs.** From the template set, `W`, `T`, `C`, `s` and the
-   accuracy target, emit `workload.json`:
-   - one RQE per (template, window);
-   - one label set per grouping, with `cardinality` (`C`, or `C·s`) and
-     `arrival_rate` (`100·C·s`/s at the replay rate).
-
-   Accuracy metrics follow `small_problem.rs`:
-   - `are_top100` for Freq;
-   - `mean_rank_err` for Quantile;
-   - `relative_error` for Cardinality;
-   - `precision_at_k` (a floor) for TopK.
-2. **Solve.** A new `rqe-optimizer` binary (in sketch-bench) reads
-   `workload.json` and the `AtomicCostTable`, with the candidate families
-   restricted to the ASAPQuery-deployable variants (§2.3). It runs
-   the objective chosen in D1a and writes `plan.json`:
-   - per deployment: capability, labels, sketch variant + `sketch_config`,
-     `x`, `y`, and the RQEs it serves;
-   - the MILP's estimated CPU, memory and $/h.
-3. **Translate** (new, in this repo). `plan.json` is the single source for
-   every arm:
-   - ASAPQuery `streaming_config.yaml`: one aggregation per deployment, with
-     `aggregationType`/`parameters` from §2.3, `labels.grouping`,
-     `windowSizeMs = x` and `windowType` tumbling if `x = y`, else sliding with
-     slide `y`;
-   - `inference_config.yaml`: each RQE's SQL → its aggregation ID;
-   - the ClickHouse `init.sql` for `baseline_mv` and `baseline_mv_sketch`
-     (§4), plus the per-mode SQL files.
-
-   The two systems therefore cannot drift apart.
-4. **Deploy.** Add a runner option (e.g. `controller.plan_dir=…`) that skips
-   `asap-planner` in `sketchdb` mode and rsyncs the translated configs into
-   `controller_output/`. Everything after that stays as it is.
-
-**Check before building:** whether `query_engine_rust` accepts sliding windows
-(`x ≠ y`) for every summary type from SQL. If not, constrain the optimizer to
-`y = x` and note it.
-
-`sketchdb` ingests by itself from the JSONL. Its cost excludes the ClickHouse
-raw load, which exists only for fallback. Every RQE counted as served must show
-0 forwards to ClickHouse, taken from the query-engine logs.
+- **Translator.** It reads ASAPQuery's `streaming_config.yaml`, which gives
+  each aggregation's type, `parameters`, `labels.grouping`, `windowSizeMs` and
+  `windowType`/slide. From it, the translator writes the MV DDL and the queries
+  that read the MVs. Both systems therefore deploy one plan.
+- **Paced feeders.** There are two identical feeder processes, one per system
+  under test, started on the same clock. Each one sends every second's rows:
+  ASAPQuery receives them over Prometheus Remote Write, and ClickHouse via
+  `INSERT … FORMAT JSONEachRow`. Each feeder runs on its own 2 cores, outside
+  both caps. The existing bulk paths (JSON ingest, `_load_json_batched`) do not
+  pace. `batch_delay_ms` in `json_ingest.rs` is a fixed sleep and is not
+  exposed in `engine_config.rs`.
+- **Runner.** It extends `experiment_run_clickhouse.py`:
+  - one mode per arm;
+  - a feeder-driven ingest phase in place of the bulk load;
+  - CPU/memory caps (`docker --cpuset-cpus/--memory` for ClickHouse,
+    `taskset` + a memory cgroup for `query_engine_rust`);
+  - collection of MV bytes from `system.parts`.
 
 ## 6. Metrics
 
-| Metric | ClickHouse arms | `sketchdb` |
+| Metric | ClickHouse arms | ASAPQuery |
 |---|---|---|
-| Ingest CPU (core-s), including MV/summary maintenance | `monitor_output_ingest.json` (`clickhouse` process) | `pc-worker` threads in `monitor_output.json` |
-| Retained state bytes | `system.parts.bytes_on_disk` + `primary_key_bytes_in_memory` for the MV target tables (raw table reported separately) | query-engine store size (to add if not already exported) |
-| RSS (steady and peak) | process | process |
-| Query latency p50/p95/p99 | prometheus-client per query (`analyze_latencies.py`) | same |
-| Query CPU | monitor during the query phase | same |
-| Accuracy | vs `baseline` (`calculate_fidelity.py --exact_experiment_mode baseline`): rank error for quantiles (as in #784), relative error for sums, recall@k for top-k, relative error for distinct counts | same |
+| Ingest CPU (core-s), including MV/summary maintenance | `clickhouse` process | `pc-worker` threads |
+| Retained state | `system.parts.bytes_on_disk` + `primary_key_bytes_in_memory` for MV tables (raw table reported separately) | Store size |
+| RSS (steady state and peak) | process | process |
+| Query latency p50/p95/p99 | per query, client-side | same |
+| Query CPU | process CPU over the query phase | same |
+| Accuracy | Rank error vs the reference, per quantile (as in #784). Target: 95% | same |
 
-**Cost.** Use the AutoSketch plan's **model A**
-(`$/h = a·avg vCPU + b·GiB`, with `a ≈ 0.0368` and `b ≈ 0.00364` from the
-2026-10-04 EC2 fit) over measured ingest + query CPU and retained state memory.
-This keeps the planner and data-plane sections in the same units. Report raw
-CPU-seconds and bytes as well.
+**Cost** uses model A from the AutoSketch plan: `$/h = a·avg vCPU + b·GiB`,
+with `a ≈ 0.0368` and `b ≈ 0.00364` (2026-10-04 EC2 fit), over measured ingest +
+query CPU and retained-state memory. Raw CPU-seconds and bytes are reported
+too, as is the planner's estimated cost next to the measured one.
 
-**Fairness**
-- Same node type: `c6320` (2× E5-2683 v3, 56 threads, 251 GB).
-- ClickHouse and `query_engine_rust` get the same cores and memory cap
-  (`docker --cpuset-cpus/--memory` and `taskset`/cgroup).
-- ClickHouse image pinned by tag or digest (`dataset.clickhouse_image_tag`),
-  not `latest`.
-- Query cache off (`use_query_cache=0`). The first query pass is a discarded
-  warm-up.
+**Fairness:**
+- Same node type: `c6320`, 2× E5-2683 v3, 56 threads, 251 GB.
+- Same cap for each system under test.
+- Query cache off. The first query pass is discarded as warm-up.
 - 3 trials per point. Report the median, with min/max error bars.
 
-## 7. Open decisions
+## 7. Run count and time
 
-- **D0: data plane.** Decided: ASAPQuery `query_engine_rust`
-  (`experiment_run_clickhouse.py` `sketchdb`).
-- **D1: plan source.** Decided: sketch-bench `rqe-optimizer` (§2.3, §5).
-- **D1a: the optimizer objective.** At sketch-bench `964ccb5`, `rqe-optimizer`
-  offers `minimize_tco` (minimum steady-state CPU) and `minimize_cost(family)`
-  (fractional EC2 instances of one family, from #137). The model A and model B
-  objectives in the AutoSketch plan are not in the code yet. Proposal: use
-  `minimize_cost` with `general_purpose` now, and switch to model A when it
-  lands. Every arm is still measured and priced under model A.
-- **D2:** keep `baseline_mv` as an extra bar, or show only `baseline_mv_sketch`.
-- **D3:** the ClickHouse quantile state, `quantilesState` or
-  `quantilesTDigestState`. Report the one closest to ASAP in accuracy, and put
-  the other in the appendix.
-- **D4:** whether to add `rate` or a quantile ratio to the ASAPQuery SQL path,
-  to cover all 10 AutoSketch templates.
+| Set | Runs | Time each | Wall time on 3 nodes |
+|---|---|---|---|
+| Main: 8 workloads × 4 arms × 3 trials, 15 min span | 96 | ~25 min | ~13 h |
+| 1 h span, default workload, 4 arms × 3 trials | 12 | ~70 min | ~5 h |
+| Appendix: per-series queries, default workload, 4 arms × 3 trials | 12 | ~25 min | ~2 h |
+| Appendix: KLL plan, default workload, 4 arms × 3 trials | 12 | ~25 min | ~2 h |
+| **Total** | **132** | | **~22 h** |
 
-## 8. Work items (each a small PR)
+The pilot (the default workload, 4 arms, 1 trial) comes before all of these.
+It checks:
+- 0 fallbacks;
+- exact-MV results equal the reference exactly;
+- DD accuracy is within target on both sides;
+- the feeders hold 1e6 samples/s under the cap (workloads 3 and 4).
 
-1. Data generator: seeded JSONL with Zipf θ weights and Pareto a values over
-   `(C, s)`, plus a test on the empirical rank-frequency slope.
-2. Workload generator for templates 1–6 over the grid. It emits both the SQL
-   files (replacing the deleted `generate_queries.py`) and `workload.json` for
-   `rqe-optimizer`, and includes a differential test against ClickHouse on a
-   small `C, s`.
-3. **sketch-bench PR:** an `rqe-optimizer` binary with
-   `workload.json` + cost table → `plan.json`, plus a flag restricting the
-   candidate families.
-4. Plan translator: `plan.json` in; the ASAPQuery configs and the ClickHouse
-   `init.sql` + per-mode SQL out. It logs every unsupported mapping.
-5. Runner:
-   - commit `config/experiment_type/clickhouse.yaml`;
-   - add `controller.plan_dir` to skip `asap-planner` and deploy the
-     translated configs;
-   - collect MV bytes from `system.parts` after the load.
-6. Post-processing: ClickHouse and precompute paths in `compare_costs.py`,
-   model-A pricing, and the figure script.
-7. Sweep driver that fans out (workload, arm, trial) across node1–3.
+## 8. Work items
 
-## 9. Cluster and run procedure
+| # | Item | Owner | Depends on |
+|---|---|---|---|
+| 1 | Data + workload generator: JSONL (Pareto a, `C`, `s`, 1 sample/s), SQL files, planner input | Zeying | — |
+| 2 | Paced feeder (Remote Write and ClickHouse INSERT, one per system) | Zeying | — |
+| 3 | Translator: `streaming_config.yaml` → ClickHouse `init.sql` + per-arm SQL | Zeying | — |
+| 4 | Runner: per-arm modes, feeder ingest, caps, `system.parts` collection, `config/experiment_type/clickhouse.yaml` | Zeying | 2 |
+| 5 | Post-processing: ClickHouse and precompute paths in `compare_costs.py`, model-A pricing, figure | Zeying | 4 |
+| 6 | DDSketch in ASAPQuery (the DD slice of #762 + #787) | Zeying | #762 |
+| 7 | `asap-planner --planner milp` with quantiles limited to `dd` | Milind | #753 |
+| 8 | Key-tracker removal check, and its cost-table row (for the later frequency/top-k pass) | Milind | — |
+
+Items 1–5 can start now, and the pilot runs on today's `asap-planner` (KLL).
+The main runs need items 6 and 7.
+
+## 9. Cluster
 
 CloudLab experiment `scratch2.cloudmigration-pg0.clemson.cloudlab.us`.
-`node1`–`node3` run 3 configs in parallel (`node_offset` 1/2/3,
-`num_nodes=1`). `node1` is also the orchestrator.
+`node1`–`node3` run in parallel (`node_offset` 1/2/3, `num_nodes=1`), and
+`node1` is also the orchestrator.
 
-Setup:
-1. `/mydata` (845 GB ext4) is already mounted, world-writable, on node1–3. The
-   setup scripts expect `/scratch`, so symlink it or make the root volume
-   configurable.
-2. `deploy_from_scratch.sh` without its storage step: Docker, the Rust
-   toolchain, and `cargo build --release` for `asap-query-engine` and
-   `asap-planner-rs`, plus sketch-bench (`rqe-optimizer`, and the cost table
-   from `scripts/export_rqe_optimizer_costs.sh`).
-3. The orchestrator needs SSH to `node{1,2,3}.<suffix>`, including itself.
-4. Generate datasets once into `/mydata/datasets/`. The runner rsyncs them.
+- `/mydata` (845 GB ext4) is mounted and world-writable on all three nodes.
+  The setup scripts expect `/scratch`, so add a symlink or make the root volume
+  configurable.
+- Install Docker and the Rust toolchain, and build `asap-query-engine` and
+  `asap-planner-rs` in release mode (`deploy_from_scratch.sh`, minus its
+  storage step).
+- The orchestrator needs SSH to `node{1,2,3}.<suffix>`, including itself.
 
-Order:
-1. **Pilot**: the default workload with `C=1e3`, `s=10`, all 4 arms, 1 trial.
-   Check:
-   - 0 fallbacks in `sketchdb`;
-   - exact MV results equal `baseline`;
-   - accuracy is within target.
-2. **Sweep**: the §3.3 dimensions one at a time
-   (3+3+2+5+2+2 = 17 non-default points + default = 18 workloads),
-   × 4 arms × 3 trials = **216 runs**. Allowing about 15 min per run, that is
-   about 18 h on 3 nodes.
-3. **Figure**: grouped bars of model-A $/h and p95 latency per workload, with
-   `sketchdb` ÷ `baseline_mv_sketch` annotated (the "up to X×" numbers). Each
-   bar carries its accuracy, and the plans ClickHouse can't express are listed
-   under the figure.
+## 10. Later passes (out of scope here)
+
+- **Frequency and top-k templates.** Matching sketches where ClickHouse has
+  them (HLL ↔ `uniqCombined(p)`). Where it has none (Count-Min, CMS-heap vs
+  `topKWeighted`), the bars are labeled "no ClickHouse equivalent", and a top-k
+  sketch MV that misses precision@k is shown with that marked.
+- **`rate` and quantile-ratio templates.** These need ASAPQuery SQL support.
+- **The connection between ASAPQuery's planner and the ILP** belongs to #753,
+  not to this evaluation.
