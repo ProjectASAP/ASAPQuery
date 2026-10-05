@@ -59,11 +59,18 @@ function (§4).
    - no sharing: every RQE gets its own deployment, even when two RQEs pick an
      identical one, so ingest and memory are paid per RQE;
    - latency is ignored during search, then checked after.
-3. **PerQuery-CostAware** (ablation) — the ASAP MILP solved on each RQE alone,
-   without latency bounds, and the results summed. It uses the same objective
+3. **PerQuery-CostAware** (strawman) — the ASAP MILP solved on each RQE alone,
+   with the same accuracy and latency requirements, and the results summed. It uses the same objective
    and window choices as ASAP but no batching or sharing. ASAP vs. this ablation
    isolates the batch/sharing benefit; this ablation vs. AutoSketch-Adapted
    isolates the objective/window benefit.
+4. **FewestPlans** (strawman) — the ASAP MILP minimizing the number of active
+   deployments first, then cost among plans with that minimum count, under
+   the same accuracy and latency requirements.
+
+Only AutoSketch-Adapted ignores latency; the two strawmen must meet the same
+requirements as ASAP, so every point in the cost–latency figure except
+AutoSketch's is a feasible plan.
 
 AutoSketch-Adapted is a planner baseline, not a reproduction of the P4
 compiler: stage/page/ALU constraints are dropped. Its accuracy probes read
