@@ -85,5 +85,7 @@ fn exact_accumulator(aggregation_type: AggregationType) -> bool {
             | AggregationType::MultipleIncrease
             | AggregationType::MinMax
             | AggregationType::MultipleMinMax
+            | AggregationType::SetAggregator
+            | AggregationType::DeltaSetAggregator
     )
 }
