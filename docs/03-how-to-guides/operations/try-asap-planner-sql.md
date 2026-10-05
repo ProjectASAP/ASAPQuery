@@ -46,9 +46,10 @@ For each table:
 
 ### `controller_options`
 
-`accuracy_sla` and `latency_sla` are required by the config schema but not currently used by
-the planner's decision logic — any numeric values are fine (e.g. the placeholders in the
-example above).
+`accuracy_sla` must be in `(0, 1]`; candidates must meet it using their benchmarked
+per-family accuracy measurement. `latency_sla` is a maximum estimated query CPU time in
+seconds; `0.0` leaves latency unconstrained. A query is rejected if no candidate meets both
+constraints.
 
 ### Choosing `repetition_delay` and `--data-ingestion-interval`
 

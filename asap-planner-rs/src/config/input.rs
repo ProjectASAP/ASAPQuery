@@ -4,7 +4,6 @@ use asap_types::streaming_config::StreamingConfig;
 use asap_types::PromQLSchema;
 use promql_utilities::data_model::KeyByLabelNames;
 use serde::{Deserialize, Deserializer};
-use tracing::warn;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,22 +31,6 @@ pub struct ControllerConfig {
 }
 
 impl ControllerConfig {
-    /// Warn if any query group has both SLAs at 0.0 (the serde Default),
-    /// which indicates `controller_options` was omitted from the config.
-    pub fn warn_default_slas(&self) {
-        for qg in &self.query_groups {
-            let opts = &qg.controller_options;
-            if opts.accuracy_sla == 0.0 && opts.latency_sla == 0.0 {
-                warn!(
-                    query_group_id = ?qg.id,
-                    "controller_options not set in query group; \
-                     accuracy_sla=0.0 and latency_sla=0.0 will be used — \
-                     add controller_options to your config"
-                );
-            }
-        }
-    }
-
     /// Build a `PromQLSchema` from the `metrics` hints in this config.
     /// Returns an empty schema if no hints are present.
     pub fn schema_from_hints(&self) -> PromQLSchema {
@@ -68,7 +51,6 @@ pub struct QueryGroup {
     pub queries: Vec<String>,
     #[serde(deserialize_with = "deserialize_positive_u64")]
     pub repetition_delay_ms: u64,
-    #[serde(default)]
     pub controller_options: ControllerOptions,
     /// Per-group step override (ms). Falls back to `RuntimeOptions::step_ms` when None.
     #[serde(default)]
@@ -80,21 +62,37 @@ pub struct QueryGroup {
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct ControllerOptions {
-    #[serde(deserialize_with = "deserialize_finite_f64")]
+    #[serde(deserialize_with = "deserialize_accuracy_sla")]
     pub accuracy_sla: f64,
-    #[serde(deserialize_with = "deserialize_finite_f64")]
+    #[serde(deserialize_with = "deserialize_non_negative_f64")]
     pub latency_sla: f64,
 }
 
-fn deserialize_finite_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+fn deserialize_accuracy_sla<'de, D>(deserializer: D) -> Result<f64, D::Error>
 where
     D: Deserializer<'de>,
 {
     let value = f64::deserialize(deserializer)?;
-    if value.is_finite() {
+    if value.is_finite() && value > 0.0 && value <= 1.0 {
         Ok(value)
     } else {
-        Err(serde::de::Error::custom("must be a finite number"))
+        Err(serde::de::Error::custom(
+            "accuracy_sla must be finite and in (0, 1]",
+        ))
+    }
+}
+
+fn deserialize_non_negative_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = f64::deserialize(deserializer)?;
+    if value.is_finite() && value >= 0.0 {
+        Ok(value)
+    } else {
+        Err(serde::de::Error::custom(
+            "latency_sla must be finite and non-negative",
+        ))
     }
 }
 
@@ -258,7 +256,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rejects_non_finite_controller_slas() {
+    fn rejects_invalid_controller_slas() {
         let yaml = r#"
 query_groups:
   - queries: [sum(metric)]
@@ -272,7 +270,7 @@ query_groups:
             .expect_err("non-finite SLA values must be rejected")
             .to_string();
 
-        assert!(error.contains("must be a finite number"));
+        assert!(error.contains("accuracy_sla must be finite and in (0, 1]"));
     }
 
     #[test]
@@ -290,6 +288,43 @@ query_groups:
         let options = &config.query_groups[0].controller_options;
         assert_eq!(options.accuracy_sla, 0.99);
         assert_eq!(options.latency_sla, 1.0);
+    }
+
+    #[test]
+    fn rejects_zero_accuracy_and_negative_latency_slas() {
+        let zero_accuracy = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.0
+      latency_sla: 0.0
+"#;
+        let error = serde_yaml::from_str::<ControllerConfig>(zero_accuracy)
+            .expect_err("zero accuracy SLA must be rejected")
+            .to_string();
+        assert!(error.contains("accuracy_sla must be finite and in (0, 1]"));
+
+        let negative_latency = zero_accuracy
+            .replace("accuracy_sla: 0.0", "accuracy_sla: 0.99")
+            .replace("latency_sla: 0.0", "latency_sla: -1.0");
+        let error = serde_yaml::from_str::<ControllerConfig>(&negative_latency)
+            .expect_err("negative latency SLA must be rejected")
+            .to_string();
+        assert!(error.contains("latency_sla must be finite and non-negative"));
+    }
+
+    #[test]
+    fn rejects_query_groups_without_controller_options() {
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+"#;
+        let error = serde_yaml::from_str::<ControllerConfig>(yaml)
+            .expect_err("controller options are required")
+            .to_string();
+        assert!(error.contains("controller_options"));
     }
 
     #[test]

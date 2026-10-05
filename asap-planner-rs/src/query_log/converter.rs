@@ -1,6 +1,8 @@
 use asap_types::enums::CleanupPolicy;
 
-use crate::config::input::{AggregateCleanupConfig, ControllerConfig, QueryGroup};
+use crate::config::input::{
+    AggregateCleanupConfig, ControllerConfig, ControllerOptions, QueryGroup,
+};
 
 use super::frequency::{InstantQueryInfo, RangeQueryInfo};
 
@@ -11,6 +13,15 @@ pub fn to_controller_config(
     instants: Vec<InstantQueryInfo>,
     ranges: Vec<RangeQueryInfo>,
 ) -> ControllerConfig {
+    to_controller_config_with_options(instants, ranges, ControllerOptions::default())
+}
+
+/// Build a `ControllerConfig` from extracted queries with shared SLA requirements.
+pub fn to_controller_config_with_options(
+    instants: Vec<InstantQueryInfo>,
+    ranges: Vec<RangeQueryInfo>,
+    controller_options: ControllerOptions,
+) -> ControllerConfig {
     let mut query_groups: Vec<QueryGroup> = Vec::new();
 
     for info in instants {
@@ -18,7 +29,7 @@ pub fn to_controller_config(
             id: None,
             queries: vec![info.query],
             repetition_delay_ms: info.repetition_delay_ms,
-            controller_options: Default::default(),
+            controller_options: controller_options.clone(),
             step_ms: None,
             range_duration_ms: None,
         });
@@ -29,7 +40,7 @@ pub fn to_controller_config(
             id: None,
             queries: vec![info.query],
             repetition_delay_ms: info.repetition_delay_ms,
-            controller_options: Default::default(),
+            controller_options: controller_options.clone(),
             step_ms: Some(info.step_ms),
             range_duration_ms: Some(info.range_duration_ms),
         });

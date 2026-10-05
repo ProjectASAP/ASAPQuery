@@ -39,7 +39,6 @@ impl Controller {
                 .validate()
                 .map_err(ControllerError::PlannerError)?;
         }
-        config.warn_default_slas();
         let all_queries: Vec<String> = config
             .query_groups
             .iter()
@@ -81,7 +80,6 @@ impl Controller {
                 .validate()
                 .map_err(ControllerError::PlannerError)?;
         }
-        config.warn_default_slas();
         Ok(Self {
             config,
             schema,
@@ -101,7 +99,6 @@ impl Controller {
                 .validate()
                 .map_err(ControllerError::PlannerError)?;
         }
-        config.warn_default_slas();
         Ok(Self {
             config,
             schema,

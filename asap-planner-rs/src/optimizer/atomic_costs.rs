@@ -87,6 +87,13 @@ pub struct AtomicCostEntry {
 
 pub type AtomicCostTable = Vec<AtomicCostEntry>;
 
+/// Costs and benchmarked accuracy measurements resolved for one candidate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedAtomicCosts {
+    pub costs: AtomicCosts,
+    pub query_accuracy: BTreeMap<String, f64>,
+}
+
 /// Parse a standalone JSON workload selector. The selector is the exact
 /// `profiles[].workload` value copied from the benchmark artifact, making the
 /// selected empirical input explicit in an offline planning run.
@@ -254,8 +261,23 @@ pub fn resolve_atomic_costs(
     params: &HashMap<String, Value>,
     n_grouping_labels: usize,
 ) -> Option<AtomicCosts> {
+    resolve_atomic_costs_with_accuracy(table, agg_type, params, n_grouping_labels)
+        .map(|resolved| resolved.costs)
+}
+
+/// Resolve empirical costs together with the measurements used for SLA eligibility.
+pub fn resolve_atomic_costs_with_accuracy(
+    table: &AtomicCostTable,
+    agg_type: AggregationType,
+    params: &HashMap<String, Value>,
+    n_grouping_labels: usize,
+) -> Option<ResolvedAtomicCosts> {
     if agg_type == AggregationType::CountMinSketchWithHeap {
-        return resolve_cms_heap_costs(table, params, &CmsHeapCostAssumptions::default());
+        return resolve_cms_heap_costs_with_accuracy(
+            table,
+            params,
+            &CmsHeapCostAssumptions::default(),
+        );
     }
 
     if let Some(value_bytes) = trivial_value_bytes(agg_type) {
@@ -263,11 +285,14 @@ pub fn resolve_atomic_costs(
             ?agg_type,
             "no sketch-bench CPU data for this family; using stub CPU costs and analytical memory"
         );
-        return Some(AtomicCosts {
-            mem_bytes_per_instance: (n_grouping_labels as f64 * LABEL_VALUE_CODE_BYTES
-                + value_bytes)
-                * HASH_TABLE_SLACK,
-            ..AtomicCosts::default()
+        return Some(ResolvedAtomicCosts {
+            costs: AtomicCosts {
+                mem_bytes_per_instance: (n_grouping_labels as f64 * LABEL_VALUE_CODE_BYTES
+                    + value_bytes)
+                    * HASH_TABLE_SLACK,
+                ..AtomicCosts::default()
+            },
+            query_accuracy: BTreeMap::new(),
         });
     }
 
@@ -276,20 +301,26 @@ pub fn resolve_atomic_costs(
             ?agg_type,
             "no sketch-bench atomic-cost data for this family; using the flat AtomicCosts stub"
         );
-        return Some(AtomicCosts::default());
+        return Some(ResolvedAtomicCosts {
+            costs: AtomicCosts::default(),
+            query_accuracy: BTreeMap::new(),
+        });
     };
 
     let expected_config = serde_json::json!({ "algorithm": sketch, "params": sketch_params });
     table
         .iter()
         .find(|e| e.sketch == sketch && e.sketch_config == expected_config)
-        .map(|entry| AtomicCosts {
-            mem_bytes_per_instance: entry.mem_bytes_per_instance,
-            insert_cpu_secs: entry.insert_cpu_secs,
-            merge_cpu_secs: entry.merge_cpu_secs,
-            subtract_cpu_secs: SUBTRACT_CPU_SECS,
-            query_cpu_secs: entry.query_cpu_secs,
-            exact_query_cpu_secs: EXACT_QUERY_CPU_SECS,
+        .map(|entry| ResolvedAtomicCosts {
+            costs: AtomicCosts {
+                mem_bytes_per_instance: entry.mem_bytes_per_instance,
+                insert_cpu_secs: entry.insert_cpu_secs,
+                merge_cpu_secs: entry.merge_cpu_secs,
+                subtract_cpu_secs: SUBTRACT_CPU_SECS,
+                query_cpu_secs: entry.query_cpu_secs,
+                exact_query_cpu_secs: EXACT_QUERY_CPU_SECS,
+            },
+            query_accuracy: entry.query_accuracy.clone(),
         })
 }
 
@@ -346,11 +377,20 @@ impl CmsHeapCostAssumptions {
 /// malformed. The caller then drops this candidate, leaving the always-feasible
 /// EXACT candidate available. TODO(#651): turn these temporary warning paths
 /// into hard errors once sketch-bench sweeps cover the candidate grid.
+#[cfg(test)]
 fn resolve_cms_heap_costs(
     table: &AtomicCostTable,
     params: &HashMap<String, Value>,
     assumptions: &CmsHeapCostAssumptions,
 ) -> Option<AtomicCosts> {
+    resolve_cms_heap_costs_with_accuracy(table, params, assumptions).map(|resolved| resolved.costs)
+}
+
+fn resolve_cms_heap_costs_with_accuracy(
+    table: &AtomicCostTable,
+    params: &HashMap<String, Value>,
+    assumptions: &CmsHeapCostAssumptions,
+) -> Option<ResolvedAtomicCosts> {
     assumptions.validate();
 
     let agg_type = AggregationType::CountMinSketchWithHeap;
@@ -431,7 +471,10 @@ fn resolve_cms_heap_costs(
         "cms-with-heap atomic cost measurement"
     );
 
-    Some(costs)
+    Some(ResolvedAtomicCosts {
+        costs,
+        query_accuracy: entry.query_accuracy.clone(),
+    })
 }
 
 fn require_u64(params: &HashMap<String, Value>, key: &str, agg_type: AggregationType) -> u64 {

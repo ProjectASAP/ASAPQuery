@@ -204,6 +204,10 @@ You should see a line like:
 INFO query_tracker: planner succeeded — streaming aggregations: N, inference queries: M, punted: P
 ```
 
+Set `query_tracker.accuracy_sla` and `query_tracker.latency_sla` in
+`config/engine_config.yaml` to control the SLAs applied to every inferred query.
+Accuracy must be in `(0, 1]`; latency is in estimated CPU seconds and `0.0` is unconstrained.
+
 From this point on, check the routing in the logs:
 
 ```bash

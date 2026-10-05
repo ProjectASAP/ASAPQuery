@@ -125,33 +125,53 @@ pub fn query_cost(
     weights: &CostWeights,
 ) -> f64 {
     let Some(agg_config) = &candidate.config else {
-        return costs.exact_query_cpu_secs * weights.query_cpu; // EXACT: raw query at query time.
+        return estimated_query_cpu_secs(item, candidate, costs) * weights.query_cpu;
+    };
+
+    let units = stored_units(candidate, agg_config.aggregation_type);
+    let (cpu, mem) = match &candidate.query_method {
+        QueryMethod::Direct => (
+            estimated_query_cpu_secs(item, candidate, costs),
+            units * costs.mem_bytes_per_instance,
+        ),
+        QueryMethod::Merge { num_windows } => (
+            estimated_query_cpu_secs(item, candidate, costs),
+            *num_windows as f64 * units * costs.mem_bytes_per_instance,
+        ),
+        QueryMethod::Subtract => (
+            estimated_query_cpu_secs(item, candidate, costs),
+            2.0 * units * costs.mem_bytes_per_instance,
+        ), // candidate_gen only ever pairs Exact with config=None, already handled above.
+    };
+
+    weights.query_cpu * cpu + weights.query_mem * mem
+}
+
+/// Estimated CPU seconds for a single query, excluding objective weights and memory.
+pub fn estimated_query_cpu_secs(
+    item: &OptimizerItem,
+    candidate: &CandidateConfig,
+    costs: &AtomicCosts,
+) -> f64 {
+    let Some(agg_config) = &candidate.config else {
+        return costs.exact_query_cpu_secs;
     };
 
     let units = stored_units(candidate, agg_config.aggregation_type);
     let props = sketch_properties(agg_config.aggregation_type);
     let read_cpu = reads_per_query(item, candidate) * costs.query_cpu_secs;
 
-    let (cpu, mem) = match &candidate.query_method {
-        QueryMethod::Direct => (read_cpu, units * costs.mem_bytes_per_instance),
+    match &candidate.query_method {
+        QueryMethod::Direct => read_cpu,
         QueryMethod::Merge { num_windows } => {
             debug_assert!(props.mergeable);
-            let merges = (*num_windows).saturating_sub(1) as f64;
-            (
-                units * merges * costs.merge_cpu_secs + read_cpu,
-                *num_windows as f64 * units * costs.mem_bytes_per_instance,
-            )
+            units * (*num_windows).saturating_sub(1) as f64 * costs.merge_cpu_secs + read_cpu
         }
         QueryMethod::Subtract => {
             debug_assert!(props.subtractable);
-            (
-                units * (costs.merge_cpu_secs + costs.subtract_cpu_secs) + read_cpu,
-                2.0 * units * costs.mem_bytes_per_instance,
-            )
-        } // candidate_gen only ever pairs Exact with config=None, already handled above.
-    };
-
-    weights.query_cpu * cpu + weights.query_mem * mem
+            units * (costs.merge_cpu_secs + costs.subtract_cpu_secs) + read_cpu
+        }
+    }
 }
 
 /// Units of `mem_bytes_per_instance` held per window; also scales

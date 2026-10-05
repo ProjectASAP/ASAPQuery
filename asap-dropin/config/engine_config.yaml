@@ -21,3 +21,5 @@ ingest:
 query_tracker:
   enabled: true
   observation_window_secs: 60
+  accuracy_sla: 0.99
+  latency_sla: 0.0

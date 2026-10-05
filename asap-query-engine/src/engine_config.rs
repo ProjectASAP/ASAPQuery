@@ -19,6 +19,22 @@ pub fn check_config(config: &EngineConfig) -> Result<(), String> {
         return Err("query_tracker.enabled=true requires backend.type=prometheus".into());
     }
 
+    if config.query_tracker.enabled
+        && (!config.query_tracker.accuracy_sla.is_finite()
+            || config.query_tracker.accuracy_sla <= 0.0
+            || config.query_tracker.accuracy_sla > 1.0)
+    {
+        return Err("query_tracker.accuracy_sla must be finite and in (0, 1] when enabled".into());
+    }
+
+    if config.query_tracker.enabled
+        && (!config.query_tracker.latency_sla.is_finite() || config.query_tracker.latency_sla < 0.0)
+    {
+        return Err(
+            "query_tracker.latency_sla must be finite and non-negative when enabled".into(),
+        );
+    }
+
     Ok(())
 }
 
@@ -344,6 +360,8 @@ impl Default for PrecomputeSettings {
 pub struct QueryTrackerSettings {
     pub enabled: bool,
     pub observation_window_secs: u64,
+    pub accuracy_sla: f64,
+    pub latency_sla: f64,
 }
 
 impl Default for QueryTrackerSettings {
@@ -351,6 +369,8 @@ impl Default for QueryTrackerSettings {
         Self {
             enabled: false,
             observation_window_secs: 100,
+            accuracy_sla: 0.0,
+            latency_sla: 0.0,
         }
     }
 }
@@ -643,6 +663,8 @@ backend:
   type: "clickhouse"
 query_tracker:
   enabled: true
+  accuracy_sla: 0.99
+  latency_sla: 0.0
 "#;
         let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
         assert!(check_config(&config).is_err());
@@ -660,6 +682,8 @@ backend:
   type: "prometheus"
 query_tracker:
   enabled: true
+  accuracy_sla: 0.99
+  latency_sla: 0.0
 "#;
         let config: EngineConfig = Figment::new().merge(Yaml::string(yaml)).extract().unwrap();
         assert!(check_config(&config).is_ok());

@@ -3,6 +3,7 @@ pub mod atomic_costs;
 pub mod candidate_gen;
 pub mod constants;
 pub mod cost_model;
+mod eligibility;
 pub mod error;
 pub mod greedy;
 pub mod label_set_facts;

@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use asap_planner::query_log::{infer_queries, to_controller_config, LogEntry};
+use asap_planner::config::input::ControllerOptions;
+use asap_planner::query_log::{infer_queries, to_controller_config_with_options, LogEntry};
 use asap_types::inference_config::InferenceConfig;
 use asap_types::streaming_config::StreamingConfig;
 use chrono::{DateTime, Utc};
@@ -18,6 +19,10 @@ pub struct QueryTrackerConfig {
     pub observation_window_secs: u64,
     /// Data ingestion interval (ms), passed through to `infer_queries`.
     pub data_ingestion_interval_ms: u64,
+    /// Accuracy required for every query inferred from observed traffic.
+    pub accuracy_sla: f64,
+    /// Query CPU latency limit for every inferred query; zero is unconstrained.
+    pub latency_sla: f64,
 }
 
 pub struct QueryTracker {
@@ -137,7 +142,14 @@ impl QueryTracker {
 
         // Build ControllerConfig, including current configs as context for the planner.
         // NOTE: existing_* fields are wired through but the planner does not yet act on them.
-        let mut controller_config = to_controller_config(instants, ranges);
+        let mut controller_config = to_controller_config_with_options(
+            instants,
+            ranges,
+            ControllerOptions {
+                accuracy_sla: tracker.config.accuracy_sla,
+                latency_sla: tracker.config.latency_sla,
+            },
+        );
         controller_config.existing_streaming_config =
             Some((*tracker.streaming_config.read().unwrap().clone()).clone());
         controller_config.existing_inference_config =
@@ -229,6 +241,8 @@ mod tests {
         let tracker = make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
             data_ingestion_interval_ms: 15_000,
+            accuracy_sla: 0.99,
+            latency_sla: 0.0,
         });
         tracker.record_instant("rate(http_requests_total[5m])", 1700000000.0);
         tracker.record_instant("rate(http_requests_total[5m])", 1700000060.0);
@@ -243,6 +257,8 @@ mod tests {
         let tracker = make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
             data_ingestion_interval_ms: 15_000,
+            accuracy_sla: 0.99,
+            latency_sla: 0.0,
         });
         tracker.record_range(
             "rate(http_requests_total[5m])",
@@ -261,6 +277,8 @@ mod tests {
         let tracker = Arc::new(make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
             data_ingestion_interval_ms: 15_000,
+            accuracy_sla: 0.99,
+            latency_sla: 0.0,
         }));
 
         // Record enough entries for infer_queries to produce results (need >=2 per query).
@@ -290,6 +308,8 @@ mod tests {
         let tracker = Arc::new(make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
             data_ingestion_interval_ms: 15_000,
+            accuracy_sla: 0.99,
+            latency_sla: 0.0,
         }));
 
         let mock_client = Arc::new(MockPlannerClient::new());
@@ -309,6 +329,8 @@ mod tests {
         let tracker = Arc::new(make_tracker(QueryTrackerConfig {
             observation_window_secs: 600,
             data_ingestion_interval_ms: 15_000,
+            accuracy_sla: 0.99,
+            latency_sla: 0.0,
         }));
 
         // Record enough for infer_queries to produce results.
@@ -401,6 +423,8 @@ mod tests {
             QueryTrackerConfig {
                 observation_window_secs: 600,
                 data_ingestion_interval_ms: 15_000,
+                accuracy_sla: 0.99,
+                latency_sla: 0.0,
             },
             sc,
             ic,
@@ -432,5 +456,9 @@ mod tests {
             config.existing_inference_config.is_some(),
             "existing_inference_config must be populated from the shared ref"
         );
+        assert!(config.query_groups.iter().all(|group| {
+            group.controller_options.accuracy_sla == 0.99
+                && group.controller_options.latency_sla == 0.0
+        }));
     }
 }

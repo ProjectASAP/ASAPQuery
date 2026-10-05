@@ -316,6 +316,8 @@ async fn main() -> Result<()> {
         let tracker_config = QueryTrackerConfig {
             observation_window_secs: config.query_tracker.observation_window_secs,
             data_ingestion_interval_ms: config.data_ingestion_interval_ms,
+            accuracy_sla: config.query_tracker.accuracy_sla,
+            latency_sla: config.query_tracker.latency_sla,
         };
         let runtime_options = asap_planner::RuntimeOptions {
             data_ingestion_interval_ms: config.data_ingestion_interval_ms,

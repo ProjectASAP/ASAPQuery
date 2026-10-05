@@ -1,8 +1,9 @@
 use tracing::debug;
 
-use super::atomic_costs::{resolve_atomic_costs, AtomicCostTable};
+use super::atomic_costs::{resolve_atomic_costs_with_accuracy, AtomicCostTable};
 use super::candidate_gen::enumerate_candidates_with_facts;
 use super::cost_model::{ingest_cost, query_cost, total_cost_rate, AtomicCosts, CostWeights};
+use super::eligibility::satisfies_slas;
 use super::error::{OptimizerError, UnservableItem};
 use super::label_set_facts::ItemFacts;
 use super::solution::{AQEAssignment, OptimizerItem, OptimizerSolution};
@@ -39,22 +40,35 @@ pub fn greedy_assign(
         let arrival_rate_hz = item_facts.arrival_rate_per_sec;
         let candidates = enumerate_candidates_with_facts(&aqe, scrape_interval_ms, item_facts);
 
-        let Some((best, costs)) = candidates
+        let candidates_with_costs: Vec<_> = candidates
             .into_iter()
             .filter_map(|c| {
                 // EXACT (config: None) always costs at the flat stub — it has
                 // no sketch_type/params for the table to key on.
-                let costs = match &c.config {
-                    None => AtomicCosts::default(),
-                    Some(cfg) => resolve_atomic_costs(
+                let resolved = match &c.config {
+                    None => super::atomic_costs::ResolvedAtomicCosts {
+                        costs: AtomicCosts::default(),
+                        query_accuracy: Default::default(),
+                    },
+                    Some(cfg) => resolve_atomic_costs_with_accuracy(
                         atomic_cost_table,
                         cfg.aggregation_type,
                         &cfg.parameters,
                         aqe.requirements.grouping_labels.len(),
                     )?,
                 };
-                let cost = total_cost_rate(&aqe, &c, arrival_rate_hz, &costs, weights);
-                Some((c, costs, cost))
+                Some((c, resolved))
+            })
+            .collect();
+        let had_candidate_before_slas = !candidates_with_costs.is_empty();
+
+        let Some((best, costs)) = candidates_with_costs
+            .into_iter()
+            .filter(|(candidate, resolved)| satisfies_slas(&aqe, candidate, resolved))
+            .map(|(candidate, resolved)| {
+                let cost =
+                    total_cost_rate(&aqe, &candidate, arrival_rate_hz, &resolved.costs, weights);
+                (candidate, resolved.costs, cost)
             })
             // total_cmp (not partial_cmp().unwrap()) so a stray NaN cost can't panic.
             .min_by(|(_, _, a), (_, _, b)| a.total_cmp(b))
@@ -67,7 +81,11 @@ pub fn greedy_assign(
                 t_repeat_ms: aqe.t_repeat_ms,
                 accuracy_sla: aqe.accuracy_sla,
                 latency_sla: aqe.latency_sla,
-                reason: "no candidate remained after structural and atomic-cost filters".into(),
+                reason: if had_candidate_before_slas {
+                    "no candidate satisfies accuracy_sla or latency_sla".into()
+                } else {
+                    "no candidate remained after structural and atomic-cost filters".into()
+                },
             });
             continue;
         };
@@ -258,6 +276,63 @@ mod tests {
                 .aggregation_type,
             AggregationType::CountMinSketchWithHeap
         );
+    }
+
+    #[test]
+    fn cms_heap_candidate_must_meet_accuracy_and_latency_slas() {
+        let table = vec![AtomicCostEntry {
+            sketch: "cms-heap-topk-regularpath-vector2d".into(),
+            sketch_config: serde_json::json!({
+                "algorithm": "cms-heap-topk-regularpath-vector2d",
+                "params": { "rows": 3, "cols": 512 }
+            }),
+            mem_bytes_per_instance: 1.0,
+            insert_cpu_secs: 0.0,
+            merge_cpu_secs: 0.0,
+            query_cpu_secs: 8.0,
+            query_accuracy: std::collections::BTreeMap::from([("recall_at_k".into(), 0.99)]),
+        }];
+        let mut aqe = make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0);
+        aqe.accuracy_sla = 0.99;
+        aqe.latency_sla = 1_000.0;
+        let solution = greedy_assign(
+            vec![aqe.clone()],
+            60_000,
+            &table,
+            &CostWeights::default(),
+            &unit_facts(&[aqe.clone()]),
+        )
+        .expect("candidate meeting both SLAs should be selected");
+        assert_eq!(solution.assignments.len(), 1);
+
+        aqe.accuracy_sla = 0.995;
+        let error = greedy_assign(
+            vec![aqe.clone()],
+            60_000,
+            &table,
+            &CostWeights::default(),
+            &unit_facts(&[aqe.clone()]),
+        )
+        .expect_err("candidate below the accuracy SLA must be rejected");
+        let OptimizerError::UnservableItems { items } = error else {
+            panic!("expected SLA eligibility error");
+        };
+        assert_eq!(
+            items[0].reason,
+            "no candidate satisfies accuracy_sla or latency_sla"
+        );
+
+        aqe.accuracy_sla = 0.99;
+        aqe.latency_sla = 0.000_001;
+        let error = greedy_assign(
+            vec![aqe.clone()],
+            60_000,
+            &table,
+            &CostWeights::default(),
+            &unit_facts(&[aqe]),
+        )
+        .expect_err("candidate above the latency SLA must be rejected");
+        assert!(matches!(error, OptimizerError::UnservableItems { .. }));
     }
 
     /// A grouped query served by CMS needs a key aggregation the engine can

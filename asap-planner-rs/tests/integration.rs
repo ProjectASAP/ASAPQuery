@@ -823,6 +823,9 @@ query_groups:
     queries:
       - "rate(http_requests_total[5m])"
     repetition_delay_ms: 300000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 0.0
 metrics:
   - metric: "http_requests_total"
     labels: ["instance"]
@@ -842,6 +845,9 @@ query_groups:
     queries:
       - "rate(http_requests_total[5m])"
     repetition_delay_ms: 300000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 0.0
 metrics:
   - metric: "http_requests_total"
     labels: ["instance"]
@@ -876,6 +882,9 @@ query_groups:
     queries:
       - "rate(http_requests_total[5m])"
     repetition_delay_ms: 300000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 0.0
 "#,
     )
     .unwrap();
@@ -906,6 +915,9 @@ query_groups:
       - "sum by (hint_label) (hinted_metric)"
       - "rate(unhinted_metric[5m])"
     repetition_delay_ms: 300000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 0.0
 metrics:
   - metric: "hinted_metric"
     labels: ["hint_label"]
@@ -937,6 +949,9 @@ query_groups:
     queries:
       - "rate(http_requests_total[5m])"
     repetition_delay_ms: 300000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 0.0
 "#,
     )
     .unwrap();
