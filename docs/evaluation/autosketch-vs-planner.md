@@ -380,14 +380,14 @@ Figures:
 | — | sketch-bench #130, #131 | Saturation curves at K ∈ {1e3, 1e5, 1e7}; accuracy after merging `m` shards | Merged |
 | 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` (steady-state model), solver scaling | Merged |
 | 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
-| 2 | sketch-bench #136 | Evaluation table for the trace workloads: per (RQE, config) accuracy for AutoSketch and for ASAP at each `m`, saturation, costs | In review |
+| 2 | sketch-bench #136 | Evaluation table for the trace workloads: per (RQE, config) accuracy for AutoSketch and for ASAP at each `m`, saturation, costs | Merged |
 | 4 | sketch-bench #138 | Runner, absolute SLA, results for `example`, `scaling`, `traces` | Open; needs a rebase on main and an AutoSketch rerun with #135's final search |
 | — | sketch-bench #140 | Saturation curves at K ∈ {1e1, 1e2, 1e4, 1e6} for the synthetic workload | Draft; accuracy done, cost 197 of 240 points |
 | — | sketch-bench #139 | Synthetic workload (67 RQEs), FewestPlans, strawmen bound by the SLA | Open; final sweep pending #140 |
 | — | sketch-bench, not yet opened | The two cost models (§4): CPU timeline, model A, model B, rerun of every experiment | Not started as a PR |
 | 5 | ASAPQuery | After the MILP lands in `asap-planner-rs`: port the objective there and rerun, so the paper reports the planner that ships | Not started; waits for Milind's port |
 
-Merge order: #136 → rebase and merge #138 → #140 → #139 → two-cost-model PR.
+Merge order: rebase and merge #138 → #140 → #139 → two-cost-model PR.
 
 ## 9. Decisions
 
