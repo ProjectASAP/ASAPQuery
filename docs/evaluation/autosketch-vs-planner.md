@@ -152,7 +152,16 @@ $/hour = a · (total CPU-seconds / 24 h) + b · Mem_GiB
 a = 0.0368 and b = 0.00364 with the 2026-10-04 prices. Model A does not depend
 on the machine family.
 
-**Model B — peak-provisioned (buy machines for the peak).** Per family `f`:
+**Model B — peak-provisioned (buy machines for the peak).** Reported for two
+evaluation alignments:
+- **aligned:** every RQE first fires at `t = 0`, the worst case;
+- **staggered:** each RQE first fires at a deterministic pseudo-random offset in
+  `[0, T_r)`, the typical case (Prometheus spreads rule-group evaluations).
+
+Plans are optimized for the aligned case only; staggered prices the same plans
+by simulation, so the methods' order there is reported but not guaranteed.
+
+Per family `f`:
 
 ```text
 n_f    = max(peak CPU / vCPU_f, Mem_GiB / GiB_f)
