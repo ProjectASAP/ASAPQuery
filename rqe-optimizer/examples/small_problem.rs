@@ -339,7 +339,37 @@ fn print_plan_cost(label: &str, plan_cost: &PlanCost) {
     }
 }
 
+/// Flag parsing above only looks up known names, so a typo would be ignored
+/// silently; reject anything unrecognized instead.
+fn reject_unknown_args() {
+    const SWITCHES: &[&str] = &[
+        "--allow-undeployable-families",
+        "--candidates-only",
+        "--milp",
+        "--streaming",
+    ];
+    const WITH_VALUE: &[&str] = &[
+        "--cost-dir",
+        "--latency-sla",
+        "--print-candidates",
+        "--print-first",
+        "--progress-every",
+        "--sample-mappings",
+        "--w-cpu",
+        "--w-mem",
+    ];
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if WITH_VALUE.contains(&arg.as_str()) {
+            args.next();
+        } else if !SWITCHES.contains(&arg.as_str()) {
+            panic!("unknown argument: {arg}");
+        }
+    }
+}
+
 fn main() {
+    reject_unknown_args();
     let candidates_only = std::env::args().any(|arg| arg == "--candidates-only");
     let mut raqes = raqes();
     apply_latency_slas(&mut raqes);
