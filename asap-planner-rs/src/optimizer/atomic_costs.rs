@@ -83,6 +83,12 @@ pub struct AtomicCostEntry {
     pub merge_cpu_secs: f64,
     pub query_cpu_secs: f64,
     pub query_accuracy: BTreeMap<String, f64>,
+    /// The conditions sketch-bench measured the row under (items, keys and
+    /// value range per instance, merge operand size, distribution;
+    /// sketch-bench#147). Carried opaquely, like a synthetic workload
+    /// description; absent in tables written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_at: Option<Value>,
 }
 
 pub type AtomicCostTable = Vec<AtomicCostEntry>;
@@ -572,6 +578,23 @@ mod tests {
         assert!(serde_json::from_str::<AtomicCostEntry>(json).is_err());
     }
 
+    /// sketch-bench#147 adds `measured_at`; it loads, and older rows without
+    /// it still do. Other unknown fields are still refused.
+    #[test]
+    fn atomic_cost_entry_accepts_optional_measured_at() {
+        let base = r#""sketch":"kll-percall","sketch_config":null,"mem_bytes_per_instance":1.0,"insert_cpu_secs":1.0,"merge_cpu_secs":1.0,"query_cpu_secs":1.0,"query_accuracy":{}"#;
+        let with = format!(
+            r#"{{{base},"measured_at":{{"items_per_instance":1000000,"keys_per_instance":100000,"value_range":[1.0,100000.0],"merge_operand_items":62500,"distribution":{{"kind":"zipf","skewness":1.1,"population_size":100000,"seed":42}}}}}}"#
+        );
+        let entry: AtomicCostEntry = serde_json::from_str(&with).unwrap();
+        assert_eq!(entry.measured_at.unwrap()["items_per_instance"], 1_000_000);
+        let without: AtomicCostEntry = serde_json::from_str(&format!("{{{base}}}")).unwrap();
+        assert!(without.measured_at.is_none());
+        assert!(
+            serde_json::from_str::<AtomicCostEntry>(&format!(r#"{{{base},"other":1}}"#)).is_err()
+        );
+    }
+
     #[test]
     fn optional_loader_rejects_an_unselected_document() {
         let document = tempfile::NamedTempFile::new().unwrap();
@@ -594,6 +617,7 @@ mod tests {
             merge_cpu_secs: 4.5e-4,
             query_cpu_secs: 7.8e-8,
             query_accuracy: BTreeMap::new(),
+            measured_at: None,
         }
     }
 
@@ -616,6 +640,7 @@ mod tests {
             merge_cpu_secs: 4.0,
             query_cpu_secs: 8.0,
             query_accuracy: BTreeMap::new(),
+            measured_at: None,
         }
     }
 
@@ -792,6 +817,7 @@ mod tests {
             merge_cpu_secs: 2.76e-4,
             query_cpu_secs: 1.23e-4,
             query_accuracy: BTreeMap::new(),
+            measured_at: None,
         }];
         let hll_params = HashMap::from([("precision".to_string(), Value::from(14u64))]);
         assert!(resolve_atomic_costs(&hll_table, AggregationType::HLL, &hll_params, 0).is_some());
@@ -804,6 +830,7 @@ mod tests {
             merge_cpu_secs: 1.0e-3,
             query_cpu_secs: 1.6e-4,
             query_accuracy: BTreeMap::new(),
+            measured_at: None,
         }];
         let kll_params = HashMap::from([("K".to_string(), Value::from(200u64))]);
         assert!(
