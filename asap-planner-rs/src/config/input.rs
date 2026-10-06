@@ -226,6 +226,7 @@ pub struct HllParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SQLControllerConfig {
     pub query_groups: Vec<SQLQueryGroup>,
     pub tables: Vec<TableDefinition>,
@@ -235,6 +236,7 @@ pub struct SQLControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SQLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -252,6 +254,7 @@ pub struct TableDefinition {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElasticDSLControllerConfig {
     pub query_groups: Vec<ElasticDSLQueryGroup>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
@@ -259,6 +262,7 @@ pub struct ElasticDSLControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElasticDSLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -323,8 +327,7 @@ query_groups:
         );
     }
 
-    // The unitless `latency_sla` key was never enforced; reject it so stale
-    // configs fail loudly instead of silently losing their latency limit.
+    // Reject the unitless `latency_sla` key so it can't be silently ignored.
     #[test]
     fn rejects_legacy_latency_sla_key() {
         let yaml = r#"
@@ -355,6 +358,40 @@ query_groups:
 
         let error = serde_yaml::from_str::<ControllerConfig>(yaml)
             .expect_err("unknown query group key must be rejected")
+            .to_string();
+        assert!(
+            error.contains("unknown field `controler_options`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sql_and_elastic_configs_reject_unknown_group_keys() {
+        let sql = r#"
+tables: []
+query_groups:
+  - queries: ["SELECT 1"]
+    repetition_delay_ms: 60000
+    latency_sla: 1.0
+    controller_options:
+      accuracy_sla: 0.99
+"#;
+        let error = serde_yaml::from_str::<SQLControllerConfig>(sql)
+            .expect_err("unknown SQL group key must be rejected")
+            .to_string();
+        assert!(error.contains("unknown field `latency_sla`"), "{error}");
+
+        let elastic = r#"
+query_groups:
+  - queries: ["{}"]
+    repetition_delay_ms: 60000
+    index: i
+    time_field: t
+    controler_options:
+      accuracy_sla: 0.99
+"#;
+        let error = serde_yaml::from_str::<ElasticDSLControllerConfig>(elastic)
+            .expect_err("unknown Elastic group key must be rejected")
             .to_string();
         assert!(
             error.contains("unknown field `controler_options`"),

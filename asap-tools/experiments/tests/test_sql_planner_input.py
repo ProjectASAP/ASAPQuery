@@ -7,13 +7,13 @@ import unittest
 import yaml
 from omegaconf import OmegaConf
 
-from experiment_utils.config import DEFAULT_LATENCY_SLA_MS, generate_sql_planner_input
+from experiment_utils.config import generate_sql_planner_input
 
 
 class ControllerOptionKeysTest(unittest.TestCase):
     def test_unknown_controller_option_is_rejected(self):
-        # A stale `latency_sla` used to be dropped here, so the planner ran
-        # with no latency limit and never saw the bad key.
+        # Unknown keys must fail here: dropping them would hide them from the
+        # planner's strict parse.
         groups = [
             {
                 "sql_file": "unused.sql",
@@ -65,11 +65,16 @@ class LatencySlaMsTest(unittest.TestCase):
             "latency_sla_ms"
         )
 
-    def test_omitted_latency_sla_ms_uses_default(self):
-        self.assertEqual(
-            self._planner_latency({"accuracy_sla": 0.99}),
-            float(DEFAULT_LATENCY_SLA_MS),
-        )
+    def test_omitted_latency_sla_ms_means_no_limit(self):
+        # Same meaning as the PromQL path and the planner.
+        self.assertIsNone(self._planner_latency({"accuracy_sla": 0.99}))
+
+    def test_invalid_latency_sla_ms_is_rejected(self):
+        for bad in [0, -5, float("inf"), float("nan"), True, "1000"]:
+            with self.subTest(bad=bad), self.assertRaisesRegex(
+                ValueError, "latency_sla_ms"
+            ):
+                self._planner_latency({"accuracy_sla": 0.99, "latency_sla_ms": bad})
 
     def test_explicit_latency_sla_ms_is_kept(self):
         self.assertEqual(
