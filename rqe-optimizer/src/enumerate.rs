@@ -2,7 +2,7 @@
 //!
 //! A mapping is one deployment choice per RQE (§4's only constraint is
 //! `Σ_D x_{i,D} = 1`; `y_D` is derived). No RQE is eligible outside its own
-//! `(capability, labels)` group, so choices are independent and the search
+//! `(capability, metric, grouping_labels)` group, so choices are independent and the search
 //! space is exactly the cartesian product of the per-RQE eligible lists --
 //! nothing to prune against. Sharing falls out when two choices land on the
 //! same index.
@@ -107,8 +107,9 @@ pub fn for_each_mapping_while(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::candidates::build_all_candidates;
-    use crate::{AtomicCostEntry, Capability, LabelSet};
+    use crate::candidates;
+    use crate::test_support::{facts, METRIC};
+    use crate::{AtomicCostEntry, Capability, Deployment, LabelSet};
     use std::collections::BTreeMap;
 
     fn cost(sketch: &str) -> AtomicCostEntry {
@@ -125,13 +126,18 @@ mod tests {
         }
     }
 
+    fn build_all_candidates(rqes: &[Rqe], costs: &[AtomicCostEntry]) -> Vec<Deployment> {
+        candidates::build_all_candidates(rqes, costs, &facts(1, 1))
+    }
+
     fn rqe(id: &str, interval: u64, lookback: u64) -> Rqe {
         Rqe {
             id: id.to_string(),
             capability: Capability::TopK,
             lookback_secs: lookback,
             interval_secs: interval,
-            labels: LabelSet::new(),
+            metric: METRIC.into(),
+            grouping_labels: LabelSet::new(),
             accuracy_metric: "err".to_string(),
             accuracy_tolerance: 1.0,
             accuracy_direction: crate::AccuracyDirection::LowerIsBetter,

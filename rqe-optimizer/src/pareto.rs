@@ -1,6 +1,6 @@
-//! Non-dominated filtering for `(peak memory, TCO CPU, per-RQE latency)`.
+//! Non-dominated filtering for `(CPU, memory, per-RQE latency)`.
 
-use crate::{objectives::Objectives, Mapping};
+use crate::{analytical_cost_model::PlanCost, Mapping};
 
 fn dominates(a: &[f64], b: &[f64]) -> bool {
     let mut strict = false;
@@ -15,12 +15,9 @@ fn dominates(a: &[f64], b: &[f64]) -> bool {
     strict
 }
 
-fn objective_vector(objectives: &Objectives) -> Vec<f64> {
-    let mut vector = vec![
-        objectives.peak_query_memory_bytes,
-        objectives.tco_cpu_secs_per_sec,
-    ];
-    vector.extend(&objectives.query_latency_secs);
+fn pareto_vector(plan_cost: &PlanCost) -> Vec<f64> {
+    let mut vector = vec![plan_cost.cpu_secs_per_sec(), plan_cost.memory_bytes()];
+    vector.extend(&plan_cost.query_latency_secs);
     vector
 }
 
@@ -28,7 +25,7 @@ fn objective_vector(objectives: &Objectives) -> Vec<f64> {
 #[derive(Debug, Clone)]
 pub struct ParetoEntry {
     pub mapping: Mapping,
-    pub objectives: Objectives,
+    pub plan_cost: PlanCost,
 }
 
 /// Retains only non-dominated mappings while a streaming enumerator visits
@@ -45,20 +42,20 @@ impl ParetoFront {
 
     /// Consider one scored mapping. Returns true when it remains on the
     /// frontier. Equal objective vectors are both retained.
-    pub fn consider(&mut self, mapping: &Mapping, objectives: Objectives) -> bool {
-        let candidate = objective_vector(&objectives);
+    pub fn consider(&mut self, mapping: &Mapping, plan_cost: PlanCost) -> bool {
+        let candidate = pareto_vector(&plan_cost);
         if self
             .entries
             .iter()
-            .any(|entry| dominates(&objective_vector(&entry.objectives), &candidate))
+            .any(|entry| dominates(&pareto_vector(&entry.plan_cost), &candidate))
         {
             return false;
         }
         self.entries
-            .retain(|entry| !dominates(&candidate, &objective_vector(&entry.objectives)));
+            .retain(|entry| !dominates(&candidate, &pareto_vector(&entry.plan_cost)));
         self.entries.push(ParetoEntry {
             mapping: mapping.clone(),
-            objectives,
+            plan_cost,
         });
         true
     }
@@ -68,25 +65,28 @@ impl ParetoFront {
     }
 }
 
-pub fn pareto_front(objs: &[Objectives]) -> Vec<usize> {
-    let vectors: Vec<Vec<f64>> = objs.iter().map(objective_vector).collect();
-    (0..objs.len())
-        .filter(|&i| !(0..objs.len()).any(|j| j != i && dominates(&vectors[j], &vectors[i])))
+pub fn pareto_front(plan_costs: &[PlanCost]) -> Vec<usize> {
+    let vectors: Vec<Vec<f64>> = plan_costs.iter().map(pareto_vector).collect();
+    (0..plan_costs.len())
+        .filter(|&i| !(0..plan_costs.len()).any(|j| j != i && dominates(&vectors[j], &vectors[i])))
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analytical_cost_model::PhaseCost;
 
-    fn objectives(memory: f64, cpu: f64, latency: f64) -> Objectives {
-        Objectives {
-            peak_query_memory_bytes: memory,
-            retained_memory_bytes: 0.0,
-            ingest_cpu_secs_per_sec: 0.0,
-            merge_cpu_secs_per_sec: 0.0,
-            query_cpu_secs_per_sec: 0.0,
-            tco_cpu_secs_per_sec: cpu,
+    fn plan_cost(memory: f64, cpu: f64, latency: f64) -> PlanCost {
+        let phase = PhaseCost {
+            cpu_secs_per_sec: cpu,
+            memory_bytes: memory,
+        };
+        PlanCost {
+            ingest: phase,
+            merge: PhaseCost::default(),
+            query: PhaseCost::default(),
+            storage: PhaseCost::default(),
             query_latency_secs: vec![latency],
         }
     }
@@ -94,9 +94,9 @@ mod tests {
     #[test]
     fn incremental_front_discards_dominated_mappings() {
         let mut front = ParetoFront::new();
-        assert!(front.consider(&vec![0], objectives(10.0, 10.0, 10.0)));
-        assert!(!front.consider(&vec![1], objectives(20.0, 20.0, 20.0)));
-        assert!(front.consider(&vec![2], objectives(5.0, 5.0, 5.0)));
+        assert!(front.consider(&vec![0], plan_cost(10.0, 10.0, 10.0)));
+        assert!(!front.consider(&vec![1], plan_cost(20.0, 20.0, 20.0)));
+        assert!(front.consider(&vec![2], plan_cost(5.0, 5.0, 5.0)));
         assert_eq!(front.entries().len(), 1);
         assert_eq!(front.entries()[0].mapping, vec![2]);
     }

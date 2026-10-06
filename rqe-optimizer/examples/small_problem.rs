@@ -9,9 +9,9 @@
 //! no translation layer, since `rqe_optimizer::Deployment` embeds
 //! `AtomicCostEntry` directly.
 //!
-//! Every other number this example uses (RQE definitions, label-set
-//! cardinality/arrival-rate) lives in the two tables below (`label_sets`,
-//! `rqes`) and nowhere else in this file.
+//! Every other number this example uses (RQE definitions, metric labels,
+//! cardinalities and scrape intervals) lives in the two tables below
+//! (`facts`, `rqes`) and nowhere else in this file.
 //!
 //! Run: `scripts/export_rqe_optimizer_costs.sh` once. Do not run this example
 //! with no mode flag on a large workload: eager mode retains every feasible
@@ -20,25 +20,25 @@
 //! `--candidates-only` to inspect candidate pruning safely, without starting
 //! mapping enumeration. Streaming mode logs progress every one million
 //! mappings by default; pass `--progress-every N` to change that interval or
-//! `--print-first N` to display example mappings. `--milp` solves the
-//! minimum-TCO model without enumerating mappings. Repeat
-//! `--latency-limit RQE_ID=SECONDS` to impose MILP latency bounds. Add
-//! `--machine-family NAME` (`compute_optimized`, `general_purpose`,
-//! `memory_optimized`) to minimize that EC2 family's hourly price instead.
+//! `--print-first N` to display example mappings. `--milp` minimizes
+//! `w_cpu · CPU + w_mem · memory GiB` without enumerating mappings; set the
+//! weights with `--w-cpu X --w-mem Y` (default 1 and 0). Repeat
+//! `--latency-limit RQE_ID=SECONDS` to impose MILP latency bounds.
 //! `--sample-mappings N` prints N feasible mappings and exits.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
 
+use rqe_optimizer::analytical_cost_model::{score, PlanCost};
 use rqe_optimizer::candidates::{
     build_all_candidates, build_all_candidates_unpruned, eligible_deployments_for,
 };
 use rqe_optimizer::enumerate::{brute_force, for_each_mapping, for_each_mapping_while, unservable};
-use rqe_optimizer::milp::{minimize_cost, minimize_tco, MilpBounds};
-use rqe_optimizer::objectives::{score, MachineFamily};
+use rqe_optimizer::milp::{minimize, MilpBounds, Objective};
 use rqe_optimizer::pareto::{pareto_front, ParetoFront};
 use rqe_optimizer::{
-    AccuracyDirection, AtomicCostTable, Capability, LabelSet, LabelSetInfo, LabelSetTable, Rqe,
+    validate_facts, AccuracyDirection, AtomicCostTable, Capability, LabelSet, MetricFacts, Rqe,
+    WorkloadFacts,
 };
 
 /// Accuracy metric keys the real comparators actually report (checked
@@ -57,22 +57,9 @@ const CARDINALITY_ERR: &str = "relative_error";
 const TOPK_PRECISION: &str = "precision_at_k";
 
 const COST_TABLE_PATH: &str = "out/rqe_atomic_costs.json";
-const EC2_PRICING: &str = include_str!("../data/ec2-pricing-2026-10-04.json");
 
-fn machine_family() -> Option<MachineFamily> {
-    let args: Vec<_> = std::env::args().collect();
-    let name = args
-        .windows(2)
-        .find(|pair| pair[0] == "--machine-family")
-        .map(|pair| pair[1].clone())?;
-    let families = MachineFamily::from_pricing_json(EC2_PRICING).expect("committed snapshot");
-    Some(
-        families
-            .into_iter()
-            .find(|family| family.family == name)
-            .unwrap_or_else(|| panic!("unknown --machine-family: {name}")),
-    )
-}
+const REQUESTS: &str = "http_requests_total";
+const DURATION: &str = "http_request_duration_seconds";
 
 fn label_set(names: &[&str]) -> LabelSet {
     names.iter().map(|s| s.to_string()).collect()
@@ -89,36 +76,39 @@ fn load_cost_table() -> AtomicCostTable {
         .unwrap_or_else(|e| panic!("{COST_TABLE_PATH} isn't a valid AtomicCostTable: {e}"))
 }
 
-fn label_sets() -> LabelSetTable {
-    let mut t = LabelSetTable::new();
-    // labels                    cardinality  arrival_rate (items/sec)
-    t.insert(
-        label_set(&["service", "endpoint"]),
-        LabelSetInfo {
-            cardinality: 50,
-            arrival_rate_per_sec: 2_000.0,
-        },
-    );
-    t.insert(
-        label_set(&["service"]),
-        LabelSetInfo {
-            cardinality: 5,
-            arrival_rate_per_sec: 2_000.0,
-        },
-    );
-    t
+/// Both metrics: 5 services × 10 endpoints × 600 pods = 30,000 series
+/// scraped every 15 s, so `λ` = 2,000 samples/sec each.
+fn facts() -> WorkloadFacts {
+    let http_metric_facts = || MetricFacts {
+        labels: label_set(&["service", "endpoint", "pod"]),
+        scrape_interval_secs: 15,
+        cardinality: [
+            (label_set(&["service"]), 5),
+            (label_set(&["service", "endpoint"]), 50),
+            (label_set(&["service", "endpoint", "pod"]), 30_000),
+        ]
+        .into(),
+    };
+    [
+        (REQUESTS.to_string(), http_metric_facts()),
+        (DURATION.to_string(), http_metric_facts()),
+    ]
+    .into()
 }
 
 fn rqes() -> Vec<Rqe> {
     let se = label_set(&["service", "endpoint"]);
     let s = label_set(&["service"]);
+    let requests = || REQUESTS.to_string();
+    let duration = || DURATION.to_string();
     vec![
         Rqe {
             id: "req_rate_1h".to_string(),
             capability: Capability::RateOrIncrease,
             lookback_secs: 3_600,
             interval_secs: 60,
-            labels: se.clone(),
+            metric: requests(),
+            grouping_labels: se.clone(),
             accuracy_metric: RATE_ERR.to_string(),
             accuracy_tolerance: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -128,7 +118,8 @@ fn rqes() -> Vec<Rqe> {
             capability: Capability::RateOrIncrease,
             lookback_secs: 86_400,
             interval_secs: 60,
-            labels: se.clone(),
+            metric: requests(),
+            grouping_labels: se.clone(),
             accuracy_metric: RATE_ERR.to_string(),
             accuracy_tolerance: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -138,7 +129,8 @@ fn rqes() -> Vec<Rqe> {
             capability: Capability::RateOrIncrease,
             lookback_secs: 3_600,
             interval_secs: 300,
-            labels: se.clone(),
+            metric: requests(),
+            grouping_labels: se.clone(),
             accuracy_metric: RATE_ERR.to_string(),
             accuracy_tolerance: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -148,7 +140,8 @@ fn rqes() -> Vec<Rqe> {
             capability: Capability::Quantile,
             lookback_secs: 3_600,
             interval_secs: 60,
-            labels: se.clone(),
+            metric: duration(),
+            grouping_labels: se.clone(),
             accuracy_metric: RANK_ERR.to_string(),
             accuracy_tolerance: 0.05,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -158,7 +151,8 @@ fn rqes() -> Vec<Rqe> {
             capability: Capability::Quantile,
             lookback_secs: 21_600,
             interval_secs: 300,
-            labels: se.clone(),
+            metric: duration(),
+            grouping_labels: se.clone(),
             accuracy_metric: RANK_ERR.to_string(),
             accuracy_tolerance: 0.05,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -168,7 +162,8 @@ fn rqes() -> Vec<Rqe> {
             capability: Capability::Quantile,
             lookback_secs: 86_400,
             interval_secs: 60,
-            labels: se.clone(),
+            metric: duration(),
+            grouping_labels: se.clone(),
             accuracy_metric: RANK_ERR.to_string(),
             accuracy_tolerance: 0.05,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -178,7 +173,8 @@ fn rqes() -> Vec<Rqe> {
             capability: Capability::Cardinality,
             lookback_secs: 3_600,
             interval_secs: 60,
-            labels: s.clone(),
+            metric: requests(),
+            grouping_labels: s.clone(),
             accuracy_metric: CARDINALITY_ERR.to_string(),
             accuracy_tolerance: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -192,7 +188,8 @@ fn rqes() -> Vec<Rqe> {
             capability: Capability::TopK,
             lookback_secs: 3_600,
             interval_secs: 60,
-            labels: se.clone(),
+            metric: requests(),
+            grouping_labels: se.clone(),
             accuracy_metric: TOPK_PRECISION.to_string(),
             accuracy_tolerance: 0.9,
             accuracy_direction: AccuracyDirection::HigherIsBetter,
@@ -236,10 +233,11 @@ fn print_mapping(
 
 fn print_candidate(candidate_number: usize, deployment: &rqe_optimizer::Deployment) {
     println!(
-        "candidate {candidate_number}: {} {} labels={:?} (x={}s, y={}s)",
+        "candidate {candidate_number}: {} {} {} by {:?} (x={}s, y={}s)",
         deployment.config.sketch,
         deployment.config.sketch_config,
-        deployment.labels,
+        deployment.metric,
+        deployment.grouping_labels,
         deployment.window_secs,
         deployment.slide_secs,
     );
@@ -269,15 +267,50 @@ fn latency_bounds(rqes: &[Rqe]) -> Vec<Option<f64>> {
     bounds
 }
 
+fn weight_flag(name: &str, default: f64) -> f64 {
+    let args: Vec<_> = std::env::args().collect();
+    match args.iter().position(|arg| arg == name) {
+        Some(index) => args
+            .get(index + 1)
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| *value >= 0.0)
+            .unwrap_or_else(|| panic!("{name} requires a non-negative number")),
+        None => default,
+    }
+}
+
+fn print_plan_cost(label: &str, plan_cost: &PlanCost) {
+    println!(
+        "{label}: cpu={:.3e} cpu-sec/sec, memory={:.1}MB",
+        plan_cost.cpu_secs_per_sec(),
+        plan_cost.memory_bytes() / 1e6,
+    );
+    for (phase, cost) in [
+        ("ingest", &plan_cost.ingest),
+        ("merge", &plan_cost.merge),
+        ("query", &plan_cost.query),
+        ("storage", &plan_cost.storage),
+    ] {
+        println!(
+            "    {phase:<7} cpu={:.3e} memory={:.1}MB",
+            cost.cpu_secs_per_sec,
+            cost.memory_bytes / 1e6,
+        );
+    }
+}
+
 fn main() {
     let candidates_only = std::env::args().any(|arg| arg == "--candidates-only");
     let rqes = rqes();
     let cost_table = load_cost_table();
-    let label_sets = label_sets();
+    let facts = facts();
+    if let Err(problems) = validate_facts(&rqes, &facts) {
+        panic!("invalid workload facts: {problems:#?}");
+    }
 
     let unpruned_count =
-        candidates_only.then(|| build_all_candidates_unpruned(&rqes, &cost_table).len());
-    let deployments = build_all_candidates(&rqes, &cost_table);
+        candidates_only.then(|| build_all_candidates_unpruned(&rqes, &cost_table, &facts).len());
+    let deployments = build_all_candidates(&rqes, &cost_table, &facts);
     println!(
         "{} RQEs, {} candidate deployments (from {} real cost-table rows)",
         rqes.len(),
@@ -342,36 +375,21 @@ fn main() {
 
     if std::env::args().any(|arg| arg == "--milp") {
         let bounds = MilpBounds {
-            max_peak_query_memory_bytes: None,
             max_query_latency_secs: latency_bounds(&rqes),
         };
-        let family = machine_family();
-        let solution = match &family {
-            Some(family) => minimize_cost(&rqes, &deployments, &label_sets, &bounds, family),
-            None => minimize_tco(&rqes, &deployments, &label_sets, &bounds),
-        }
-        .expect("small_problem MILP should be feasible");
-        if let Some(family) = &family {
-            println!(
-                "MILP minimum-cost solution on {}: ${:.4}/hour, {:.4} instances, \
-                 retained_mem={:.0}MB",
-                family.family,
-                family.usd_per_hour(&solution.objectives),
-                family.instances(&solution.objectives),
-                solution.objectives.retained_memory_bytes / 1e6,
-            );
-        }
+        let objective = Objective::AUCCost {
+            w_cpu: weight_flag("--w-cpu", 1.0),
+            w_mem: weight_flag("--w-mem", 0.0),
+        };
+        let solution = minimize(&rqes, &deployments, &facts, &bounds, objective)
+            .expect("small_problem MILP should be feasible");
         println!(
-            "MILP solution: peak_query_mem={:.0}MB, ingest={:.3e}, \
-             merge={:.3e}, query={:.3e}, total={:.3e} cpu-sec/sec",
-            solution.objectives.peak_query_memory_bytes / 1e6,
-            solution.objectives.ingest_cpu_secs_per_sec,
-            solution.objectives.merge_cpu_secs_per_sec,
-            solution.objectives.query_cpu_secs_per_sec,
-            solution.objectives.tco_cpu_secs_per_sec,
+            "MILP solution for {objective:?}: {:.3e}",
+            objective.value(&solution.plan_cost)
         );
+        print_plan_cost("  totals", &solution.plan_cost);
         print_mapping(1, &solution.mapping, &rqes, &deployments);
-        for (rqe, latency) in rqes.iter().zip(&solution.objectives.query_latency_secs) {
+        for (rqe, latency) in rqes.iter().zip(&solution.plan_cost.query_latency_secs) {
             println!("  {}: query_latency={latency:.3e} sec", rqe.id);
         }
         return;
@@ -384,7 +402,7 @@ fn main() {
         let started = Instant::now();
         let mut processed = 0_u64;
         let mapping_count = for_each_mapping(&rqes, &deployments, |mapping| {
-            front.consider(mapping, score(&rqes, &deployments, mapping, &label_sets));
+            front.consider(mapping, score(&rqes, &deployments, mapping, &facts));
             processed += 1;
             if processed <= print_first {
                 print_mapping(processed, mapping, &rqes, &deployments);
@@ -413,29 +431,23 @@ fn main() {
     let mappings = brute_force(&rqes, &deployments);
     println!("{} feasible full mappings", mappings.len());
 
-    let objectives: Vec<_> = mappings
+    let plan_costs: Vec<_> = mappings
         .iter()
-        .map(|m| score(&rqes, &deployments, m, &label_sets))
+        .map(|m| score(&rqes, &deployments, m, &facts))
         .collect();
-    let front = pareto_front(&objectives);
+    let front = pareto_front(&plan_costs);
     println!("{} on the Pareto front\n", front.len());
 
     let mut front = front;
     front.sort_unstable();
     for &i in &front {
-        let obj = &objectives[i];
+        let plan_cost = &plan_costs[i];
         let distinct_deployments: BTreeSet<usize> = mappings[i].iter().copied().collect();
-        println!(
-            "mapping {i}: {} deployments, peak_query_mem={:.0}MB, ingest={:.3e}, \
-             merge={:.3e}, query={:.3e}, total={:.3e} cpu-sec/sec",
-            distinct_deployments.len(),
-            obj.peak_query_memory_bytes / 1e6,
-            obj.ingest_cpu_secs_per_sec,
-            obj.merge_cpu_secs_per_sec,
-            obj.query_cpu_secs_per_sec,
-            obj.tco_cpu_secs_per_sec,
+        print_plan_cost(
+            &format!("mapping {i}: {} deployments", distinct_deployments.len()),
+            plan_cost,
         );
-        for (rqe, latency) in rqes.iter().zip(&obj.query_latency_secs) {
+        for (rqe, latency) in rqes.iter().zip(&plan_cost.query_latency_secs) {
             let rqe_id = &rqe.id;
             println!("    {rqe_id}: query_latency={latency:.3e} sec");
         }

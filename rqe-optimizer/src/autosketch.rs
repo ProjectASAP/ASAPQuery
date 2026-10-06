@@ -72,7 +72,8 @@ pub fn plan(
             let (window_secs, slide_secs) = window_adapter(rqe);
             Deployment {
                 capability: rqe.capability,
-                labels: rqe.labels.clone(),
+                metric: rqe.metric.clone(),
+                grouping_labels: rqe.grouping_labels.clone(),
                 config: costs[s.selected.expect("unservable RQEs returned above")].clone(),
                 window_secs,
                 slide_secs,
@@ -320,9 +321,10 @@ impl Rng {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analytical_cost_model::{score, PhaseCost};
     use crate::candidates::is_eligible;
-    use crate::objectives::score;
-    use crate::{AccuracyDirection, Capability, LabelSet, LabelSetInfo, LabelSetTable};
+    use crate::test_support::{facts, METRIC};
+    use crate::{AccuracyDirection, Capability, LabelSet};
     use std::collections::BTreeSet;
 
     const ERR: &str = "err";
@@ -355,7 +357,8 @@ mod tests {
             capability: Capability::TopK,
             lookback_secs: lookback,
             interval_secs: interval,
-            labels: LabelSet::new(),
+            metric: METRIC.into(),
+            grouping_labels: LabelSet::new(),
             accuracy_metric: ERR.into(),
             accuracy_tolerance: tolerance,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
@@ -409,18 +412,15 @@ mod tests {
         assert_eq!(plan.deployments[0], plan.deployments[1]);
         assert_eq!(plan.mapping, vec![0, 1]);
 
-        let labels: LabelSetTable = BTreeMap::from([(
-            LabelSet::new(),
-            LabelSetInfo {
-                cardinality: 1,
-                arrival_rate_per_sec: 10.0,
-            },
-        )]);
-        let both = score(&rqes, &plan.deployments, &plan.mapping, &labels);
-        let one = score(&rqes[..1], &plan.deployments[..1], &vec![0], &labels);
+        let facts = facts(1, 10);
+        let both = score(&rqes, &plan.deployments, &plan.mapping, &facts);
+        let one = score(&rqes[..1], &plan.deployments[..1], &vec![0], &facts);
         assert_eq!(
-            both.ingest_cpu_secs_per_sec,
-            2.0 * one.ingest_cpu_secs_per_sec
+            both.ingest,
+            PhaseCost {
+                cpu_secs_per_sec: 2.0 * one.ingest.cpu_secs_per_sec,
+                memory_bytes: 2.0 * one.ingest.memory_bytes,
+            }
         );
     }
 
