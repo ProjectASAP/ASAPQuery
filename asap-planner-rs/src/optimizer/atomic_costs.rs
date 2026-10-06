@@ -1,14 +1,8 @@
 //! The atomic-cost table exported by sketch-bench (sketch-bench#30,
 //! `scripts/export_atomic_costs.sh`), and the (sketch_type, params) lookup
 //! that resolves a candidate's [`AtomicCosts`] from it.
-//!
-//! `AtomicCostEntry`/`AtomicCostTable` are a deliberate duplicate of
-//! sketch-bench's `aqpbm_core::atomic_costs` types, not a shared dependency —
-//! see ASAPQuery#524 and sketch-bench#30 for why. Keep the two in sync by
-//! hand; `atomic_cost_entry_deserializes_sketch_benchs_documented_shape`
-//! below is a canary for drift.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::path::Path;
 
 use promql_utilities::query_logics::enums::AggregationType;
@@ -73,25 +67,7 @@ pub struct ExternalWorkload {
     pub timestamp_unit: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AtomicCostEntry {
-    pub sketch: String,
-    pub sketch_config: Value,
-    pub mem_bytes_per_instance: f64,
-    pub insert_cpu_secs: f64,
-    pub merge_cpu_secs: f64,
-    pub query_cpu_secs: f64,
-    pub query_accuracy: BTreeMap<String, f64>,
-    /// The conditions sketch-bench measured the row under (items, keys and
-    /// value range per instance, merge operand size, distribution;
-    /// sketch-bench#147). Carried opaquely, like a synthetic workload
-    /// description; absent in tables written before it existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub measured_at: Option<Value>,
-}
-
-pub type AtomicCostTable = Vec<AtomicCostEntry>;
+pub use rqe_optimizer::{AtomicCostEntry, AtomicCostTable};
 
 /// Parse a standalone JSON workload selector. The selector is the exact
 /// `profiles[].workload` value copied from the benchmark artifact, making the
@@ -472,6 +448,8 @@ fn valid_cost_entry(entry: &AtomicCostEntry) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -578,8 +556,7 @@ mod tests {
         assert!(serde_json::from_str::<AtomicCostEntry>(json).is_err());
     }
 
-    /// sketch-bench#147 adds `measured_at`; it loads, and older rows without
-    /// it still do. Other unknown fields are still refused.
+    /// Rows with `measured_at` load, and older rows without it still do.
     #[test]
     fn atomic_cost_entry_accepts_optional_measured_at() {
         let base = r#""sketch":"kll-percall","sketch_config":null,"mem_bytes_per_instance":1.0,"insert_cpu_secs":1.0,"merge_cpu_secs":1.0,"query_cpu_secs":1.0,"query_accuracy":{}"#;
@@ -587,12 +564,9 @@ mod tests {
             r#"{{{base},"measured_at":{{"items_per_instance":1000000,"keys_per_instance":100000,"value_range":[1.0,100000.0],"merge_operand_items":62500,"distribution":{{"kind":"zipf","skewness":1.1,"population_size":100000,"seed":42}}}}}}"#
         );
         let entry: AtomicCostEntry = serde_json::from_str(&with).unwrap();
-        assert_eq!(entry.measured_at.unwrap()["items_per_instance"], 1_000_000);
+        assert_eq!(entry.measured_at.unwrap().items_per_instance, 1_000_000);
         let without: AtomicCostEntry = serde_json::from_str(&format!("{{{base}}}")).unwrap();
         assert!(without.measured_at.is_none());
-        assert!(
-            serde_json::from_str::<AtomicCostEntry>(&format!(r#"{{{base},"other":1}}"#)).is_err()
-        );
     }
 
     #[test]
@@ -617,6 +591,7 @@ mod tests {
             merge_cpu_secs: 4.5e-4,
             query_cpu_secs: 7.8e-8,
             query_accuracy: BTreeMap::new(),
+            merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }
     }
@@ -640,6 +615,7 @@ mod tests {
             merge_cpu_secs: 4.0,
             query_cpu_secs: 8.0,
             query_accuracy: BTreeMap::new(),
+            merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }
     }
@@ -650,15 +626,6 @@ mod tests {
             ("width".to_string(), Value::from(width)),
             ("heapsize".to_string(), Value::from(heap_size)),
         ])
-    }
-
-    #[test]
-    fn atomic_cost_entry_deserializes_sketch_benchs_documented_shape() {
-        // Pinned against the current sketch-bench atomic-cost entry shape.
-        let json = r#"{"sketch":"cms-fastpath-vector2d","sketch_config":{"algorithm":"cms-fastpath-vector2d","params":{"cols":1024,"rows":3}},"mem_bytes_per_instance":12288.0,"insert_cpu_secs":8.484689139741214e-9,"merge_cpu_secs":0.00045364040539336466,"query_cpu_secs":7.799774697708031e-8,"query_accuracy":{"relative_error":0.01}}"#;
-        let entry: AtomicCostEntry = serde_json::from_str(json).expect("documented shape parses");
-        assert_eq!(entry.sketch, "cms-fastpath-vector2d");
-        assert_eq!(entry.mem_bytes_per_instance, 12288.0);
     }
 
     #[test]
@@ -817,6 +784,7 @@ mod tests {
             merge_cpu_secs: 2.76e-4,
             query_cpu_secs: 1.23e-4,
             query_accuracy: BTreeMap::new(),
+            merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }];
         let hll_params = HashMap::from([("precision".to_string(), Value::from(14u64))]);
@@ -830,6 +798,7 @@ mod tests {
             merge_cpu_secs: 1.0e-3,
             query_cpu_secs: 1.6e-4,
             query_accuracy: BTreeMap::new(),
+            merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }];
         let kll_params = HashMap::from([("K".to_string(), Value::from(200u64))]);
