@@ -136,6 +136,7 @@ impl Default for StreamingConfig {
 mod tests {
     use super::*;
     use crate::aggregation_config::AggregationConfigError;
+    use promql_utilities::query_logics::enums::AggregationType;
 
     #[test]
     fn rejects_heap_config_with_invalid_sub_type() {
@@ -364,5 +365,61 @@ aggregations:
 
         StreamingConfig::from_yaml_data(&yaml, None)
             .expect("MinMax config with 'MAX' subtype must be accepted");
+    }
+
+    fn ddsketch_yaml(parameters_yaml: &str) -> Value {
+        serde_yaml::from_str(&format!(
+            r#"
+aggregations:
+  - aggregationId: 1
+    aggregationType: DDSketch
+    aggregationSubType: ''
+    parameters:
+      {parameters_yaml}
+    labels:
+      grouping: [label_0]
+      aggregated: []
+      rollup: [instance]
+    metric: data
+    windowSizeMs: 60000
+    slideIntervalMs: 60000
+    windowType: tumbling
+    spatialFilter: ''
+"#
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn accepts_ddsketch_config_with_alpha() {
+        let config = StreamingConfig::from_yaml_data(&ddsketch_yaml("alpha: 0.01"), None)
+            .expect("DDSketch config with alpha in (0, 1) must load");
+        let agg = config.get_aggregation_config(1).unwrap();
+        assert_eq!(agg.aggregation_type, AggregationType::DDSketch);
+        assert_eq!(agg.parameters["alpha"], serde_json::json!(0.01));
+    }
+
+    #[test]
+    fn rejects_ddsketch_config_with_missing_or_out_of_range_alpha() {
+        for parameters in [
+            "{}",
+            "alpha: 0",
+            "alpha: 1",
+            "alpha: -0.1",
+            r#"alpha: "0.01""#,
+        ] {
+            let error = StreamingConfig::from_yaml_data(&ddsketch_yaml(parameters), None)
+                .expect_err("DDSketch config without a valid alpha must be rejected");
+            assert!(
+                matches!(
+                    error.downcast_ref::<AggregationConfigError>(),
+                    Some(AggregationConfigError::InvalidAlpha {
+                        aggregation_id: 1,
+                        ..
+                    })
+                ),
+                "parameters {parameters}: unexpected error {error}"
+            );
+        }
     }
 }

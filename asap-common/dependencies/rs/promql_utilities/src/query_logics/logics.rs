@@ -68,7 +68,8 @@ pub fn does_precompute_operator_support_subpopulations(
         AggregationType::Increase
         | AggregationType::MinMax
         | AggregationType::Sum
-        | AggregationType::DatasketchesKLL => false,
+        | AggregationType::DatasketchesKLL
+        | AggregationType::DDSketch => false,
 
         // Multi-key operators
         AggregationType::MultipleIncrease

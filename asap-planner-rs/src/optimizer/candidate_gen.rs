@@ -25,6 +25,8 @@ const OPTIMIZER_SKIPPED_AGG_TYPES: &[AggregationType] = &[
     AggregationType::Sum,
     AggregationType::MinMax,
     AggregationType::Increase,
+    // No parameter grid or cost rows yet.
+    AggregationType::DDSketch,
 ];
 
 /// A candidate streaming config for one optimizer item, ready for cost evaluation.

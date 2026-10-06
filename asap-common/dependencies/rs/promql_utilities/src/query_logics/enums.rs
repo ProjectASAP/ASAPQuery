@@ -278,6 +278,7 @@ pub enum AggregationType {
     Increase,
     MinMax,
     DatasketchesKLL,
+    DDSketch,
     // ---------- multi-population (keyed) ----------
     MultipleSum,
     MultipleIncrease,
@@ -298,6 +299,7 @@ impl AggregationType {
             AggregationType::Increase => "Increase",
             AggregationType::MinMax => "MinMax",
             AggregationType::DatasketchesKLL => "DatasketchesKLL",
+            AggregationType::DDSketch => "DDSketch",
             AggregationType::MultipleSum => "MultipleSum",
             AggregationType::MultipleIncrease => "MultipleIncrease",
             AggregationType::MultipleMinMax => "MultipleMinMax",
@@ -362,6 +364,7 @@ impl FromStr for AggregationType {
             "Increase" => Ok(AggregationType::Increase),
             "MinMax" => Ok(AggregationType::MinMax),
             "DatasketchesKLL" => Ok(AggregationType::DatasketchesKLL),
+            "DDSketch" => Ok(AggregationType::DDSketch),
             "MultipleSum" => Ok(AggregationType::MultipleSum),
             "MultipleIncrease" => Ok(AggregationType::MultipleIncrease),
             "MultipleMinMax" => Ok(AggregationType::MultipleMinMax),
@@ -380,6 +383,7 @@ impl FromStr for AggregationType {
             "DatasketchesKLLAccumulator" | "KLL" | "kll" | "datasketches_kll" => {
                 Ok(AggregationType::DatasketchesKLL)
             }
+            "DDSketchAccumulator" | "ddsketch" | "dd" => Ok(AggregationType::DDSketch),
             "MultipleSumAccumulator" | "multiple_sum" => Ok(AggregationType::MultipleSum),
             "MultipleIncreaseAccumulator" | "multiple_increase" => {
                 Ok(AggregationType::MultipleIncrease)

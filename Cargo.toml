@@ -35,9 +35,10 @@ sql_utilities = { path = "asap-common/dependencies/rs/sql_utilities" }
 asap_types = { path = "asap-common/dependencies/rs/asap_types" }
 elastic_dsl_utilities = { path = "asap-common/dependencies/rs/elastic_dsl_utilities" }
 asap_planner = { path = "asap-planner-rs" }
-# Pin past crates.io 0.2.2 to pick up the CMS estimate i32::MAX clamp fix
-# (ProjectASAP/asap_sketchlib#76). Revert to a published version once released.
-asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", rev = "94d76f6b772a33e82991ac284355800053ad30bf" }
+# Pin past the published releases to pick up the CMS estimate i32::MAX clamp fix
+# and DDSketch's zero bucket and negative store. Revert to a published version
+# once released.
+asap_sketchlib = { git = "https://github.com/ProjectASAP/asap_sketchlib", rev = "5158bf232894e8f816f906dc535677b56bd81d5a" }
 indexmap = { version = "2.0", features = ["serde"] }
 
 [profile.release]

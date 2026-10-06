@@ -4067,7 +4067,8 @@ mod merge_accumulators_regression_tests_596 {
     use crate::engines::simple_engine::SimpleEngine;
     use crate::engines::window_merger::{NaiveMerger, WindowMerger};
     use crate::precompute_operators::{
-        AccumulatorError, CountMinSketchAccumulator, DatasketchesKLLAccumulator, SumAccumulator,
+        AccumulatorError, CountMinSketchAccumulator, DDSketchAccumulator,
+        DatasketchesKLLAccumulator, SumAccumulator,
     };
     use crate::stores::{Store, TimestampedBucketsMap};
     use crate::tests::test_utilities::{
@@ -4274,6 +4275,44 @@ mod merge_accumulators_regression_tests_596 {
             naive_kll.inner.count() as usize,
             "SimpleEngine::merge_accumulators and NaiveMerger must agree on total merged count"
         );
+    }
+
+    #[test]
+    fn merge_accumulators_naive_merger_and_oracle_agree_on_ddsketch_batch() {
+        let boxes: Vec<Box<dyn AggregateCore>> = (0..3)
+            .map(|chunk| {
+                let mut dd = DDSketchAccumulator::new(0.01);
+                for i in 1..=100 {
+                    dd.update((chunk * 100 + i) as f64);
+                }
+                Box::new(dd) as Box<dyn AggregateCore>
+            })
+            .collect();
+
+        let oracle = oracle_sequential_fold(&boxes);
+        let engine_result = test_engine()
+            .merge_accumulators(boxes.to_vec())
+            .expect("SimpleEngine::merge_accumulators should merge a same-typed DDSketch batch");
+        let naive_result = naive_merger_result(boxes.to_vec())
+            .expect("NaiveMerger should merge a same-typed DDSketch batch");
+
+        let as_dd = |acc: &dyn AggregateCore| {
+            acc.as_any()
+                .downcast_ref::<DDSketchAccumulator>()
+                .unwrap()
+                .clone()
+        };
+        let (oracle, engine, naive) = (
+            as_dd(oracle.as_ref()),
+            as_dd(engine_result.as_ref()),
+            as_dd(naive_result.as_ref()),
+        );
+        assert_eq!(engine.count(), oracle.count());
+        assert_eq!(naive.count(), oracle.count());
+        for q in [0.0, 0.5, 0.99, 1.0] {
+            assert_eq!(engine.get_quantile(q), oracle.get_quantile(q), "q={q}");
+            assert_eq!(naive.get_quantile(q), oracle.get_quantile(q), "q={q}");
+        }
     }
 
     // ---- Property 2: fold order / non-commutativity ----
