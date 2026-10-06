@@ -154,7 +154,7 @@ mod tests {
     fn scores_overlapping_ingest_and_non_overlapping_query_merges() {
         let labels = LabelSet::new();
         let config = AtomicCostEntry {
-            sketch: "cms-fastpath-vector2d".into(),
+            sketch: "cms-heap-topk-fastpath-vector2d".into(),
             sketch_config: serde_json::json!(null),
             mem_bytes_per_instance: 10.0,
             insert_cpu_secs: 2.0,
@@ -163,7 +163,7 @@ mod tests {
             query_accuracy: BTreeMap::from([("err".into(), 0.0)]),
         };
         let deployment = Deployment {
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             labels: labels.clone(),
             config,
             window_secs: 20,
@@ -171,7 +171,7 @@ mod tests {
         };
         let rqe = Rqe {
             id: "r".into(),
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             lookback_secs: 60,
             interval_secs: 30,
             labels: labels.clone(),
@@ -199,10 +199,10 @@ mod tests {
     fn shared_deployment_retains_for_its_longest_lookback() {
         let labels = LabelSet::new();
         let deployment = Deployment {
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             labels: labels.clone(),
             config: AtomicCostEntry {
-                sketch: "cms-fastpath-vector2d".into(),
+                sketch: "cms-heap-topk-fastpath-vector2d".into(),
                 sketch_config: serde_json::json!(null),
                 mem_bytes_per_instance: 10.0,
                 insert_cpu_secs: 1.0,
@@ -215,7 +215,7 @@ mod tests {
         };
         let rqe = |lookback_secs| Rqe {
             id: "r".into(),
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             lookback_secs,
             interval_secs: 10,
             labels: labels.clone(),

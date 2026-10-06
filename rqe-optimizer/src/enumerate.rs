@@ -128,7 +128,7 @@ mod tests {
     fn rqe(id: &str, interval: u64, lookback: u64) -> Rqe {
         Rqe {
             id: id.to_string(),
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             lookback_secs: lookback,
             interval_secs: interval,
             labels: LabelSet::new(),
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn two_rqes_can_share_one_deployment() {
         let rqes = vec![rqe("a", 60, 3_600), rqe("b", 60, 3_600)];
-        let table = vec![cost("cms-fastpath-vector2d")];
+        let table = vec![cost("cms-heap-topk-fastpath-vector2d")];
         let deployments = build_all_candidates(&rqes, &table);
 
         assert!(unservable(&rqes, &deployments).is_empty());
@@ -165,7 +165,7 @@ mod tests {
     #[test]
     fn streaming_visits_the_same_mappings_as_eager_enumeration() {
         let rqes = vec![rqe("a", 60, 3_600), rqe("b", 60, 3_600)];
-        let deployments = build_all_candidates(&rqes, &[cost("cms-fastpath-vector2d")]);
+        let deployments = build_all_candidates(&rqes, &[cost("cms-heap-topk-fastpath-vector2d")]);
         let eager = brute_force(&rqes, &deployments);
         let mut streamed = Vec::new();
         let count = for_each_mapping(&rqes, &deployments, |mapping| {
@@ -178,7 +178,7 @@ mod tests {
     #[test]
     fn streaming_can_stop_after_a_fixed_number_of_mappings() {
         let rqes = vec![rqe("a", 60, 3_600), rqe("b", 60, 3_600)];
-        let deployments = build_all_candidates(&rqes, &[cost("cms-fastpath-vector2d")]);
+        let deployments = build_all_candidates(&rqes, &[cost("cms-heap-topk-fastpath-vector2d")]);
         let mut sampled = Vec::new();
         let result = for_each_mapping_while(&rqes, &deployments, |mapping| {
             sampled.push(mapping.clone());

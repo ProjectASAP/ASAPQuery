@@ -42,20 +42,14 @@ use rqe_optimizer::{
 };
 
 /// Accuracy metric keys the real comparators actually report (checked
-/// against `aqpbm-core/src/accuracy/{frequency,quantile,cardinality}.rs`,
-/// via `curve.rs`'s `error_curve` for frequency). These three are
-/// lower-is-better errors; each RQE below pairs its metric with the matching
+/// against `aqpbm-core/src/accuracy/{aggregate,quantile,cardinality}.rs`).
+/// These three are lower-is-better errors; each RQE below pairs its metric with the matching
 /// [`AccuracyDirection`] so the comparison can't be applied the wrong way
 /// round.
 ///
-/// Frequency uses `are_top100` (mean relative error on the 100 heaviest
-/// keys), not `relative_error_mean`/`are_all`: those average over every
-/// probed key including the long zipf tail, where relative error is
-/// inherently unstable (dividing by a near-zero true count) and the real
-/// numbers came back in the tens-to-hundreds, not a fraction -- useless as a
-/// bound. `req_rate_*`'s use case (request rate by service+endpoint) cares
-/// about the heavily-trafficked keys, which `are_top100` actually measures.
-const FREQ_ERR: &str = "are_top100";
+/// Request rate is served by an exact counter accumulator, so its error
+/// should be zero; the bound is there to reject anything that isn't.
+const RATE_ERR: &str = "relative_error";
 const RANK_ERR: &str = "mean_rank_err";
 const CARDINALITY_ERR: &str = "relative_error";
 /// Top-k's metric is the odd one out: a *score*, not an error, so its
@@ -121,31 +115,31 @@ fn rqes() -> Vec<Rqe> {
     vec![
         Rqe {
             id: "req_rate_1h".to_string(),
-            capability: Capability::Freq,
+            capability: Capability::RateOrIncrease,
             lookback_secs: 3_600,
             interval_secs: 60,
             labels: se.clone(),
-            accuracy_metric: FREQ_ERR.to_string(),
+            accuracy_metric: RATE_ERR.to_string(),
             accuracy_tolerance: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
         },
         Rqe {
             id: "req_rate_1d".to_string(),
-            capability: Capability::Freq,
+            capability: Capability::RateOrIncrease,
             lookback_secs: 86_400,
             interval_secs: 60,
             labels: se.clone(),
-            accuracy_metric: FREQ_ERR.to_string(),
+            accuracy_metric: RATE_ERR.to_string(),
             accuracy_tolerance: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
         },
         Rqe {
             id: "req_rate_5m_tick".to_string(),
-            capability: Capability::Freq,
+            capability: Capability::RateOrIncrease,
             lookback_secs: 3_600,
             interval_secs: 300,
             labels: se.clone(),
-            accuracy_metric: FREQ_ERR.to_string(),
+            accuracy_metric: RATE_ERR.to_string(),
             accuracy_tolerance: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
         },

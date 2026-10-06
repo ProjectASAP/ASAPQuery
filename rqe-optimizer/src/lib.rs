@@ -30,7 +30,10 @@ pub type LabelSet = BTreeSet<String>;
 /// capability scope is encoded; widening it means editing that match arm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Capability {
-    Freq,
+    SumOrCount,
+    Min,
+    Max,
+    RateOrIncrease,
     Quantile,
     Cardinality,
     TopK,
@@ -44,7 +47,13 @@ impl Capability {
     /// an unmeasured name here is harmless, it just matches no row.
     pub fn families(self) -> &'static [&'static str] {
         match self {
-            Capability::Freq => &["cms-fastpath-vector2d", "countsketch-fastpath-vector2d"],
+            // Exact multi-subpopulation accumulators, not sketches. Sum also
+            // serves count (sum of 1s). Min and max are separate, so a min
+            // query never lands on, or shares, a max accumulator.
+            Capability::SumOrCount => &["exact-sum"],
+            Capability::Min => &["exact-min"],
+            Capability::Max => &["exact-max"],
+            Capability::RateOrIncrease => &["exact-increase"],
             Capability::Quantile => &["kll-percall", "dd"],
             // univmon-cardinality is registered under KeyedCardinality in
             // sketch-bench, but its ground truth (`KeyedCardinalityGT`) is
@@ -52,7 +61,11 @@ impl Capability {
             // count, same target as HLL. Second candidate, not a second
             // capability.
             Capability::Cardinality => &["hll", "univmon-cardinality"],
-            Capability::TopK => &["cms-heap-topk-fastpath-vector2d"],
+            Capability::TopK => &[
+                "cms-heap-topk-fastpath-vector2d",
+                "countsketch-heap-topk-fastpath-vector2d",
+                "univmon-topk",
+            ],
         }
     }
 }

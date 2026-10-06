@@ -329,9 +329,9 @@ mod tests {
 
     fn cms(rows: u64, cols: u64) -> AtomicCostEntry {
         AtomicCostEntry {
-            sketch: "cms-fastpath-vector2d".into(),
+            sketch: "cms-heap-topk-fastpath-vector2d".into(),
             sketch_config: serde_json::json!({
-                "algorithm": "cms-fastpath-vector2d",
+                "algorithm": "cms-heap-topk-fastpath-vector2d",
                 "params": {"rows": rows, "cols": cols},
             }),
             mem_bytes_per_instance: (rows * cols * 4) as f64,
@@ -352,7 +352,7 @@ mod tests {
     fn rqe(id: &str, lookback: Seconds, interval: Seconds, tolerance: f64) -> Rqe {
         Rqe {
             id: id.into(),
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             lookback_secs: lookback,
             interval_secs: interval,
             labels: LabelSet::new(),
@@ -503,7 +503,7 @@ mod tests {
     fn chooses_the_cheaper_variant() {
         let mut costs = grid(&[2, 3], &[256, 512]);
         let mut cs = cms(2, 256);
-        cs.sketch = "countsketch-fastpath-vector2d".into();
+        cs.sketch = "countsketch-heap-topk-fastpath-vector2d".into();
         cs.mem_bytes_per_instance = 100.0;
         costs.push(cs);
         let r = rqe("r", 3_600, 60, 0.01);
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn lhs_samples_take_distinct_values_on_every_axis() {
         let costs = grid(&[1, 2, 3, 4], &[64, 128, 256, 512, 1024]);
-        let g = Grid::new("cms-fastpath-vector2d", &costs).unwrap();
+        let g = Grid::new("cms-heap-topk-fastpath-vector2d", &costs).unwrap();
         for seed in 0..10 {
             let samples = g.lhs(seed);
             assert_eq!(samples.len(), 4);

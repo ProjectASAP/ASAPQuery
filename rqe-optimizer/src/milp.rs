@@ -267,10 +267,10 @@ mod tests {
 
     fn deployment(insert_cpu_secs: f64, memory: f64, query_cpu_secs: f64) -> Deployment {
         Deployment {
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             labels: LabelSet::new(),
             config: AtomicCostEntry {
-                sketch: "cms-fastpath-vector2d".into(),
+                sketch: "cms-heap-topk-fastpath-vector2d".into(),
                 sketch_config: serde_json::json!(null),
                 mem_bytes_per_instance: memory,
                 insert_cpu_secs,
@@ -286,7 +286,7 @@ mod tests {
     fn rqe() -> Rqe {
         Rqe {
             id: "r".into(),
-            capability: Capability::Freq,
+            capability: Capability::TopK,
             lookback_secs: 60,
             interval_secs: 60,
             labels: LabelSet::new(),
