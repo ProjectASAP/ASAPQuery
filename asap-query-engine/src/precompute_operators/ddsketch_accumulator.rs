@@ -14,8 +14,9 @@ use promql_utilities::query_logics::enums::Statistic;
 /// implementation sketch-bench measures for the planner's cost table.
 ///
 /// `alpha` is the relative-accuracy bound: a returned quantile `x̂` of a true
-/// value `x` satisfies `|x̂ - x| <= alpha * |x|`. Negative values go
-/// to a mirrored store and zeros to a zero bucket; non-finite inputs are dropped.
+/// value `x` satisfies `|x̂ - x| <= alpha * |x|`. Negative values go to a
+/// mirrored store, and zeros and magnitudes too small to index go to a zero
+/// bucket. Non-finite values and magnitudes too large to index are dropped.
 #[derive(Clone, Debug)]
 pub struct DDSketchAccumulator {
     pub inner: DDSketch,
