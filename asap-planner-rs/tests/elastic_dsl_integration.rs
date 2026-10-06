@@ -28,6 +28,7 @@ query_groups:
     repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
+      latency_sla_ms: 1000
 aggregate_cleanup:
   policy: read_based
 "#,
@@ -389,6 +390,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
+      latency_sla_ms: 1000
   - id: 2
     index: other_metrics
     time_field: "timestamp"
@@ -427,6 +429,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
+      latency_sla_ms: 1000
 aggregate_cleanup:
   policy: read_based
 "#;

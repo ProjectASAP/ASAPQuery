@@ -332,7 +332,8 @@ type plannerQueryGroup struct {
 }
 
 type plannerController struct {
-	AccuracySLA float64 `yaml:"accuracy_sla"`
+	AccuracySLA  float64 `yaml:"accuracy_sla"`
+	LatencySLAMs float64 `yaml:"latency_sla_ms"`
 }
 
 type plannerMetric struct {
@@ -376,7 +377,7 @@ func writeGeneratedConfigs(directory string, fixture seeder.Fixture, suite Suite
 		}
 		group := plannerQueryGroup{
 			ID: index + 1, Queries: []string{query.Expr}, RepetitionDelayMS: repetitionDelayMS,
-			ControllerOptions: plannerController{AccuracySLA: 0.99},
+			ControllerOptions: plannerController{AccuracySLA: 0.99, LatencySLAMs: 1000},
 		}
 		if query.Range != nil {
 			stepMS := int(query.Range.StepSeconds * float64(time.Second/time.Millisecond))

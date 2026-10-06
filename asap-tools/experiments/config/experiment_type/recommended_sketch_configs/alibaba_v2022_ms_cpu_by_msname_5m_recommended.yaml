@@ -35,6 +35,7 @@ experiment_params:
       starting_delay: 390
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
   metrics:
   - metric: alibaba_microservice_cpu_usage
     labels:

@@ -12,6 +12,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.95
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT MIN(cpu_usage) FROM metrics_table
@@ -21,6 +22,7 @@ query_groups:
     repetition_delay_ms: 120000
     controller_options:
       accuracy_sla: 0.95
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT MIN(cpu_usage) FROM metrics_table

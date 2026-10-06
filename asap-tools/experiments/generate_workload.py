@@ -433,7 +433,7 @@ def get_base_config() -> Dict:
                     "query_time_offset": 10,
                     "starting_delay": 60,
                 },
-                "controller_options": {"accuracy_sla": 0.99},
+                "controller_options": {"accuracy_sla": 0.99, "latency_sla_ms": 1000},
             }
         ],
         "metrics": [

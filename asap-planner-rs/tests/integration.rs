@@ -125,12 +125,14 @@ query_groups:
     repetition_delay_ms: 65000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
   - id: 2
     queries:
       - "rate(http_requests_total[55s])"
     repetition_delay_ms: 55000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         http_requests_schema(),
         default_opts(),
@@ -163,6 +165,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         http_requests_schema(),
         default_opts(),
@@ -238,6 +241,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         http_requests_schema(),
         default_opts(),
@@ -274,6 +278,7 @@ query_groups:
     step_ms: 80000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         http_requests_schema(),
         default_opts(),
@@ -301,6 +306,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         http_requests_schema(),
         default_opts(),
@@ -674,6 +680,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         http_requests_schema(),
         default_opts(),
@@ -724,6 +731,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         http_requests_schema(),
         default_opts(),
@@ -897,6 +905,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 aggregate_cleanup:
   policy: "not_a_real_policy"
 "#;
@@ -919,6 +928,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#;
     let c =
         Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts()).unwrap();
@@ -938,12 +948,14 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
   - id: 2
     queries:
       - "rate(http_requests_total[5m])"
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#;
     let c =
         Controller::from_yaml_with_schema(yaml, http_requests_schema(), default_opts()).unwrap();
@@ -964,6 +976,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#;
     // Schema only knows about http_requests_total, not unknown_metric.
     let c =
@@ -1271,12 +1284,14 @@ query_groups:
     repetition_delay_ms: 65000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
   - id: 2
     queries:
       - "rate(errors_total[55s]) / rate(requests_total[55s])"
     repetition_delay_ms: 55000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         binary_arithmetic_schema(),
         default_opts(),
@@ -1311,6 +1326,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#,
         binary_arithmetic_schema(),
         default_opts(),

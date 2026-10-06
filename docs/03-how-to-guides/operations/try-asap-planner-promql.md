@@ -23,6 +23,7 @@ query_groups:
     repetition_delay_ms: 300000      # ms between repeats of this query
     controller_options:
       accuracy_sla: 0.95
+      latency_sla_ms: 1000
     queries:
       - "sum by (job) (rate(http_requests_total[5m]))"
 aggregate_cleanup:

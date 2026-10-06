@@ -15,6 +15,8 @@ from experiment_utils.providers.factory import create_provider
 
 # Keys the planner's `ControllerOptions` accepts.
 CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
+# Per-query latency ceiling sent to the planner when a SQL query group omits one.
+DEFAULT_LATENCY_SLA_MS = 1000
 
 
 def validate_basic_config(
@@ -863,7 +865,7 @@ def generate_sql_planner_input(
         query_groups: ListConfig of query group dicts.
             Each entry must have ``sql_file``, ``repetition_delay_ms``, and
             ``controller_options`` (``accuracy_sla``, optional
-            ``latency_sla_ms``).
+            ``latency_sla_ms`` defaulting to ``DEFAULT_LATENCY_SLA_MS``).
         dataset_cfg: DictConfig with ``table``/``name``, and ``precompute``
             sub-config (``timestamp_col``, ``value_col``, ``label_cols``).
         sketch_parameters: Optional DictConfig/dict mirroring ``config.yaml``'s
@@ -922,9 +924,10 @@ def generate_sql_planner_input(
         planner_ctrl_opts = {
             "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),
         }
-        # Omitted latency_sla_ms means no latency limit in the planner.
-        if ctrl_opts.get("latency_sla_ms") is not None:
-            planner_ctrl_opts["latency_sla_ms"] = float(ctrl_opts["latency_sla_ms"])
+        # An explicit null means no latency limit, as in the planner.
+        latency_sla_ms = ctrl_opts.get("latency_sla_ms", DEFAULT_LATENCY_SLA_MS)
+        if latency_sla_ms is not None:
+            planner_ctrl_opts["latency_sla_ms"] = float(latency_sla_ms)
         planner_query_groups.append(
             {
                 "id": idx + 1,

@@ -25,6 +25,7 @@ query_groups:
     repetition_delay: 300            # seconds between repeats of this query
     controller_options:
       accuracy_sla: 0.95
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT avg(cpu_usage) FROM metrics_table

@@ -175,6 +175,7 @@ query_groups:
     repetition_delay_ms: {interval_ms}
     controller_options:
       accuracy_sla: 0.99
+      latency_sla_ms: 1000
 "#
     );
     let planner = Controller::from_yaml_with_schema(

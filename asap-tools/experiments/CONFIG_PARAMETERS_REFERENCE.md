@@ -515,7 +515,7 @@ These parameters come from the `experiment_type` config group and are prefixed w
 
 #### `experiment_params.query_groups[].controller_options.latency_sla_ms` (float, optional)
 - **Description**: Maximum modeled query latency in milliseconds
-- **Default**: omitted (no latency limit)
+- **Default**: `1000` for SQL experiments (`DEFAULT_LATENCY_SLA_MS` in `experiment_utils/config.py`); for PromQL experiments, omitted means no latency limit
 - **Range**: finite and > 0
 - **Example**: `250`
 - **Usage**: Intended as a hard ceiling on query latency for the planner. Not yet enforced: plans are not rejected for exceeding it.
