@@ -291,6 +291,25 @@ Mapping notes:
   (`count_over_time`/`sum_over_time`/`quantile_over_time`/`increase`/`rate`),
   `TemporalAgg SpatialAgg*`, and `AnyAgg <binaryOp> AnyAgg`.
 
+#### Dashboard template set
+
+A second template set models an SLO / monitoring dashboard, latency-quantile
+heavy, with Grafana's usual time ranges. Window set
+`W_d = {1m, 5m, 15m, 1h, 6h, 24h}`; temporal templates repeat every 1 m (the
+dashboard refresh); spatial ones keep `S = T = 1 s`.
+
+| # | PromQL | Capability | Grouping | RQEs per replica |
+|---|---|---|---|---|
+| D1 | `quantile_over_time(q, data[w])`, q ∈ {0.5, 0.9, 0.99}, w ∈ `W_d` | Quantile | per series | 18 |
+| D2 | `quantile by (q, label_0) (data)`, q ∈ {0.5, 0.9, 0.99} | Quantile | per `label_0` group | 3 |
+| D3 | `sum by (label_0) (rate(data[w]))`, w ∈ `W_d` | Freq over increments | `label_0` | 6 |
+| D4 | `topk by (3, label_0) (rate(data[w]))`, w ∈ {5m, 1h} | TopK over increments | `label_0` | 2 |
+| D5 | `quantile_over_time(0.99, data[w]) / quantile_over_time(0.5, data[w])`, w ∈ {5m, 1h} | Two Quantile RQEs | per series | 4 |
+
+33 RQEs per replica. D1's quantiles share one stream across overlapping
+windows; D5 repeats D1's p99/p50 at 5m and 1h; D3 and D4 share the
+`label_0` increment stream. top-k uses k = 3, the k sketch-bench measures.
+
 #### Data model
 
 There is one metric, `data`. A **series** is one combination of label values.
@@ -369,6 +388,8 @@ Each dimension has a default (bold). A workload fixes every dimension.
 |---|---|---|
 | Query mix (templates) | **all 10**; spatial only {1, 2, 3}; temporal only {4–10}; frequency only {1, 4, 6, 7, 8}; quantile only {3, 5, 10}; top-k only {2, 9} | Summary types, and how much can be shared |
 | Number of RQEs: replicas `r` | **1**, 2, 4, 8, 16, 32, 64 | Each replica adds a filter `{label_1="v_i"}` selecting a disjoint subset of series, so it reads its own streams. Total RQEs = `r · (n_spatial + n_temporal·|W|)` |
+| Replica mode | disjoint (each replica filters `{label_1="v_i"}` and reads its own series; planning-time control); **shared** (every replica reads the same stream with a seeded random subset of 3 windows, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99}, and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated): many users or dashboards over the same metrics | How the sharing benefit grows with the number of queries |
+| Template set | the 10 templates; **dashboard** (above) | Workload realism |
 | Lookback window set `W` | {1h}; {1m, 1h}; {1m, 10m, 1h}; **{1m, 10m, 1h, 6h, 24h}** | Overlapping windows over the same stream: the main sharing opportunity |
 | Temporal repeat interval `T` | 10 s, **1 m**, 5 m | Recurrence: query and merge work vs. ingest |
 | Groups `C = card(label_0)` | 1e1, 1e2, **1e3**, 1e4, 1e5, 1e6 | Keys per frequency sketch; quantile sketches per `by (label_0)` deployment |
