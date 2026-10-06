@@ -3,6 +3,7 @@ Configuration validation and management utilities for experiments.
 Contains functions for validating configs, generating controller configs, etc.
 """
 
+import math
 import os
 import copy
 import yaml
@@ -12,6 +13,9 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 import constants
 from experiment_utils.providers.factory import create_provider
+
+# Keys the planner's `ControllerOptions` accepts.
+CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
 
 
 def validate_basic_config(
@@ -412,6 +416,13 @@ def generate_controller_client_configs(
         controller_only_config = {
             k: v for k, v in full_config.items() if k in CONTROLLER_ALLOWED_KEYS
         }
+        # Only the query client reads `client_options`; any other unknown group
+        # key reaches the planner and is rejected there.
+        if "query_groups" in controller_only_config:
+            controller_only_config["query_groups"] = [
+                {k: v for k, v in group.items() if k != "client_options"}
+                for group in controller_only_config["query_groups"]
+            ]
         with open(
             os.path.join(
                 output_dir, "{}_controller_input.yaml".format(experiment_mode["mode"])
@@ -829,6 +840,22 @@ def generate_clickhouse_client_configs(
     return modes
 
 
+def _positive_latency_sla_ms(value: Any, idx: int) -> float:
+    """Fail at generation time rather than on the remote planner."""
+    # bool is an int subclass; `true` would otherwise become 1.0.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"query_groups[{idx}].controller_options.latency_sla_ms must be a "
+            f"number, got {value!r}"
+        )
+    if not (math.isfinite(value) and value > 0):
+        raise ValueError(
+            f"query_groups[{idx}].controller_options.latency_sla_ms must be "
+            f"finite and > 0, got {value!r}"
+        )
+    return float(value)
+
+
 def generate_sql_planner_input(
     query_groups: Any,
     dataset_cfg: Any,
@@ -853,7 +880,8 @@ def generate_sql_planner_input(
     Args:
         query_groups: ListConfig of query group dicts.
             Each entry must have ``sql_file``, ``repetition_delay_ms``, and
-            ``controller_options`` (``accuracy_sla``, ``latency_sla``).
+            ``controller_options`` (``accuracy_sla``, optional
+            ``latency_sla_ms``; omitted or null means no latency limit).
         dataset_cfg: DictConfig with ``table``/``name``, and ``precompute``
             sub-config (``timestamp_col``, ``value_col``, ``label_cols``).
         sketch_parameters: Optional DictConfig/dict mirroring ``config.yaml``'s
@@ -886,6 +914,15 @@ def generate_sql_planner_input(
 
     planner_query_groups = []
     for idx, group in enumerate(groups_list):
+        ctrl_opts = dict(group.get("controller_options") or {})
+        # Dropping an unknown key here would hide it from the planner's strict parse.
+        unknown = set(ctrl_opts) - CONTROLLER_OPTION_KEYS
+        if unknown:
+            raise ValueError(
+                f"query_groups[{idx}].controller_options has unknown keys "
+                f"{sorted(unknown)}; allowed: {sorted(CONTROLLER_OPTION_KEYS)}"
+            )
+
         sql_file = group.get("sql_file")
         if not sql_file:
             raise ValueError(f"query_groups[{idx}] missing 'sql_file'")
@@ -900,16 +937,21 @@ def generate_sql_planner_input(
         if not queries:
             raise ValueError(f"No SQL statements found in {sql_file!r}")
 
-        ctrl_opts = dict(group.get("controller_options") or {})
+        planner_ctrl_opts = {
+            "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),
+        }
+        # Omitted or null means no latency limit, as in the planner.
+        latency_sla_ms = ctrl_opts.get("latency_sla_ms")
+        if latency_sla_ms is not None:
+            planner_ctrl_opts["latency_sla_ms"] = _positive_latency_sla_ms(
+                latency_sla_ms, idx
+            )
         planner_query_groups.append(
             {
                 "id": idx + 1,
                 "repetition_delay_ms": int(group.get("repetition_delay_ms", 0)),
                 "queries": queries,
-                "controller_options": {
-                    "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),
-                    "latency_sla": float(ctrl_opts.get("latency_sla", 100.0)),
-                },
+                "controller_options": planner_ctrl_opts,
             }
         )
 

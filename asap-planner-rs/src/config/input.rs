@@ -32,16 +32,16 @@ pub struct ControllerConfig {
 }
 
 impl ControllerConfig {
-    /// Warn if any query group has both SLAs at 0.0 (the serde Default),
-    /// which indicates `controller_options` was omitted from the config.
+    /// Warn if any query group still has the serde-default SLAs, which
+    /// indicates `controller_options` was omitted from the config.
     pub fn warn_default_slas(&self) {
         for qg in &self.query_groups {
             let opts = &qg.controller_options;
-            if opts.accuracy_sla == 0.0 && opts.latency_sla == 0.0 {
+            if opts.accuracy_sla == 0.0 && opts.latency_sla_ms.is_none() {
                 warn!(
                     query_group_id = ?qg.id,
                     "controller_options not set in query group; \
-                     accuracy_sla=0.0 and latency_sla=0.0 will be used — \
+                     accuracy_sla=0.0 and no latency_sla_ms limit will be used — \
                      add controller_options to your config"
                 );
             }
@@ -63,6 +63,7 @@ impl ControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -79,11 +80,13 @@ pub struct QueryGroup {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ControllerOptions {
     #[serde(deserialize_with = "deserialize_finite_f64")]
     pub accuracy_sla: f64,
-    #[serde(deserialize_with = "deserialize_finite_f64")]
-    pub latency_sla: f64,
+    /// Maximum modeled query latency in milliseconds; `None` means no limit.
+    #[serde(default, deserialize_with = "deserialize_optional_positive_f64")]
+    pub latency_sla_ms: Option<f64>,
 }
 
 fn deserialize_finite_f64<'de, D>(deserializer: D) -> Result<f64, D::Error>
@@ -95,6 +98,18 @@ where
         Ok(value)
     } else {
         Err(serde::de::Error::custom("must be a finite number"))
+    }
+}
+
+fn deserialize_optional_positive_f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match Option::<f64>::deserialize(deserializer)? {
+        Some(value) if !(value.is_finite() && value > 0.0) => Err(serde::de::Error::custom(
+            "must be a finite number greater than zero",
+        )),
+        value => Ok(value),
     }
 }
 
@@ -218,6 +233,7 @@ pub struct HllParams {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SQLControllerConfig {
     pub query_groups: Vec<SQLQueryGroup>,
     pub tables: Vec<TableDefinition>,
@@ -227,6 +243,7 @@ pub struct SQLControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SQLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -244,6 +261,7 @@ pub struct TableDefinition {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElasticDSLControllerConfig {
     pub query_groups: Vec<ElasticDSLQueryGroup>,
     pub sketch_parameters: Option<SketchParameterOverrides>,
@@ -251,6 +269,7 @@ pub struct ElasticDSLControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ElasticDSLQueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -272,7 +291,6 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: .nan
-      latency_sla: .inf
 "#;
 
         let error = serde_yaml::from_str::<ControllerConfig>(yaml)
@@ -290,13 +308,126 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
-      latency_sla: 1.0
+      latency_sla_ms: 250.0
 "#;
 
         let config: ControllerConfig = serde_yaml::from_str(yaml).unwrap();
         let options = &config.query_groups[0].controller_options;
         assert_eq!(options.accuracy_sla, 0.99);
-        assert_eq!(options.latency_sla, 1.0);
+        assert_eq!(options.latency_sla_ms, Some(250.0));
+    }
+
+    #[test]
+    fn omitted_latency_sla_ms_means_no_limit() {
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+"#;
+
+        let config: ControllerConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            config.query_groups[0].controller_options.latency_sla_ms,
+            None
+        );
+    }
+
+    // Reject the unitless `latency_sla` key so it can't be silently ignored.
+    #[test]
+    fn rejects_legacy_latency_sla_key() {
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla: 1.0
+"#;
+
+        let error = serde_yaml::from_str::<ControllerConfig>(yaml)
+            .expect_err("legacy latency_sla key must be rejected")
+            .to_string();
+        assert!(error.contains("unknown field `latency_sla`"), "{error}");
+    }
+
+    #[test]
+    fn rejects_misspelled_controller_options() {
+        // A typo would otherwise drop the whole SLA block to its defaults.
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controler_options:
+      accuracy_sla: 0.99
+"#;
+
+        let error = serde_yaml::from_str::<ControllerConfig>(yaml)
+            .expect_err("unknown query group key must be rejected")
+            .to_string();
+        assert!(
+            error.contains("unknown field `controler_options`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn sql_and_elastic_configs_reject_unknown_group_keys() {
+        let sql = r#"
+tables: []
+query_groups:
+  - queries: ["SELECT 1"]
+    repetition_delay_ms: 60000
+    latency_sla: 1.0
+    controller_options:
+      accuracy_sla: 0.99
+"#;
+        let error = serde_yaml::from_str::<SQLControllerConfig>(sql)
+            .expect_err("unknown SQL group key must be rejected")
+            .to_string();
+        assert!(error.contains("unknown field `latency_sla`"), "{error}");
+
+        let elastic = r#"
+query_groups:
+  - queries: ["{}"]
+    repetition_delay_ms: 60000
+    index: i
+    time_field: t
+    controler_options:
+      accuracy_sla: 0.99
+"#;
+        let error = serde_yaml::from_str::<ElasticDSLControllerConfig>(elastic)
+            .expect_err("unknown Elastic group key must be rejected")
+            .to_string();
+        assert!(
+            error.contains("unknown field `controler_options`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_non_positive_or_non_finite_latency_sla_ms() {
+        for bad in ["0.0", "-5.0", ".inf", ".nan"] {
+            let yaml = format!(
+                r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controller_options:
+      accuracy_sla: 0.99
+      latency_sla_ms: {bad}
+"#
+            );
+
+            let error = serde_yaml::from_str::<ControllerConfig>(&yaml)
+                .expect_err("invalid latency_sla_ms must be rejected")
+                .to_string();
+            assert!(
+                error.contains("must be a finite number greater than zero"),
+                "{bad}: {error}"
+            );
+        }
     }
 
     #[test]

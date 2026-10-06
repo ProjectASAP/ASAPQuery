@@ -24,6 +24,6 @@ pub struct UnservableItem {
     pub data_range_ms: u64,
     pub t_repeat_ms: u64,
     pub accuracy_sla: f64,
-    pub latency_sla: f64,
+    pub latency_sla_ms: Option<f64>,
     pub reason: String,
 }

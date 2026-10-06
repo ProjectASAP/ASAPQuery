@@ -85,7 +85,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - "{query}"
 aggregate_cleanup:
@@ -123,7 +123,7 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - "{query}"
 aggregate_cleanup:
@@ -192,7 +192,7 @@ query_groups:
     repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         {query}
@@ -642,7 +642,7 @@ query_groups:
     repetition_delay_ms: {t_repeat_ms}
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         {query}
@@ -771,7 +771,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT MIN(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
@@ -779,7 +779,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT MAX(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
@@ -812,7 +812,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
@@ -846,7 +846,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         {q}
@@ -854,7 +854,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         {q}
@@ -883,7 +883,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY datacenter
@@ -891,7 +891,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         SELECT SUM(cpu_usage) FROM metrics_table WHERE time BETWEEN DATEADD(s, -600, NOW()) AND NOW() GROUP BY datacenter
@@ -975,7 +975,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         {q}
@@ -1006,7 +1006,7 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
+      latency_sla_ms: 1000
     queries:
       - >-
         {q}

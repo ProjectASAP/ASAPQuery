@@ -66,7 +66,7 @@ pub fn greedy_assign(
                 data_range_ms: aqe.requirements.data_range_ms,
                 t_repeat_ms: aqe.t_repeat_ms,
                 accuracy_sla: aqe.accuracy_sla,
-                latency_sla: aqe.latency_sla,
+                latency_sla_ms: aqe.latency_sla_ms,
                 reason: "no candidate remained after structural and atomic-cost filters".into(),
             });
             continue;
@@ -139,7 +139,7 @@ mod tests {
             query_frequency_hz: freq_hz,
             t_repeat_ms: min_t,
             accuracy_sla: 0.0,
-            latency_sla: 0.0,
+            latency_sla_ms: None,
         }
     }
 
@@ -196,7 +196,7 @@ mod tests {
             query_frequency_hz: 1.0 / 60.0,
             t_repeat_ms: 60_000,
             accuracy_sla: 0.0,
-            latency_sla: 0.0,
+            latency_sla_ms: None,
         };
         let error = greedy_assign(
             vec![aqe.clone()],

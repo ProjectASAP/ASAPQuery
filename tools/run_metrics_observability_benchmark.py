@@ -165,7 +165,7 @@ def make_workload(queries, path, scrape_ms, repeat_ms):
             {
                 "id": 1,
                 "repetition_delay_ms": repeat_ms,
-                "controller_options": {"accuracy_sla": 0.95, "latency_sla": 100.0},
+                "controller_options": {"accuracy_sla": 0.95, "latency_sla_ms": 1000},
                 "queries": [
                     entry["query"]
                     for entry in queries

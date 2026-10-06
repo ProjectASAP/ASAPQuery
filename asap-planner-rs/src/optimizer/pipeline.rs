@@ -104,7 +104,7 @@ fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
                 query_string: q.clone(),
                 t_repeat_ms: qg.repetition_delay_ms,
                 accuracy_sla: qg.controller_options.accuracy_sla,
-                latency_sla: qg.controller_options.latency_sla,
+                latency_sla_ms: qg.controller_options.latency_sla_ms,
             })
         })
         .collect()

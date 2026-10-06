@@ -61,7 +61,7 @@ fn main() -> anyhow::Result<()> {
                 query_string: q.clone(),
                 t_repeat_ms: qg.repetition_delay_ms,
                 accuracy_sla: qg.controller_options.accuracy_sla,
-                latency_sla: qg.controller_options.latency_sla,
+                latency_sla_ms: qg.controller_options.latency_sla_ms,
             })
         })
         .collect();
@@ -71,13 +71,13 @@ fn main() -> anyhow::Result<()> {
 
     for (i, aqe) in aqes.iter().enumerate() {
         println!(
-            "\n--- Item #{i}: metric={} stat={:?} range={}ms T={}ms accuracy_sla={} latency_sla={} freq={:.4}Hz ---",
+            "\n--- Item #{i}: metric={} stat={:?} range={}ms T={}ms accuracy_sla={} latency_sla_ms={:?} freq={:.4}Hz ---",
             aqe.requirements.metric,
             aqe.requirements.statistics,
             aqe.requirements.data_range_ms,
             aqe.t_repeat_ms,
             aqe.accuracy_sla,
-            aqe.latency_sla,
+            aqe.latency_sla_ms,
             aqe.query_frequency_hz,
         );
         println!("  queries: {:?}", aqe.query_strings);

@@ -20,7 +20,7 @@ pub struct RQE {
     pub query_string: String,
     pub t_repeat_ms: u64,
     pub accuracy_sla: f64,
-    pub latency_sla: f64,
+    pub latency_sla_ms: Option<f64>,
 }
 
 /// Stable key for merging identical optimizer demand.
@@ -36,7 +36,7 @@ struct OptimizerItemKey {
     topk_by_labels: Option<KeyByLabelNames>,
     t_repeat_ms: u64,
     accuracy_sla_bits: u64,
-    latency_sla_bits: u64,
+    latency_sla_ms_bits: Option<u64>,
 }
 
 impl OptimizerItemKey {
@@ -51,7 +51,7 @@ impl OptimizerItemKey {
             topk_by_labels: req.topk_by_labels.clone(),
             t_repeat_ms: rqe.t_repeat_ms,
             accuracy_sla_bits: normalized_f64_bits(rqe.accuracy_sla),
-            latency_sla_bits: normalized_f64_bits(rqe.latency_sla),
+            latency_sla_ms_bits: rqe.latency_sla_ms.map(normalized_f64_bits),
         }
     }
 }
@@ -110,7 +110,7 @@ pub fn extract_aqes(
                 query_frequency_hz,
                 t_repeat_ms: key.t_repeat_ms,
                 accuracy_sla: f64::from_bits(key.accuracy_sla_bits),
-                latency_sla: f64::from_bits(key.latency_sla_bits),
+                latency_sla_ms: key.latency_sla_ms_bits.map(f64::from_bits),
             },
         )
         .collect())
@@ -236,7 +236,7 @@ mod tests {
             query_string: query.to_string(),
             t_repeat_ms: t_ms,
             accuracy_sla: 0.0,
-            latency_sla: 0.0,
+            latency_sla_ms: None,
         }
     }
 
@@ -310,9 +310,23 @@ mod tests {
     }
 
     #[test]
+    fn different_latency_slas_become_distinct_items() {
+        let unlimited = rqe("sum_over_time(metric[5m])", 60_000);
+        let mut fast = rqe("sum_over_time(metric[5m])", 60_000);
+        fast.latency_sla_ms = Some(100.0);
+        let mut slow = rqe("sum_over_time(metric[5m])", 60_000);
+        slow.latency_sla_ms = Some(1_000.0);
+
+        let items = extract_aqes(&[unlimited, fast, slow], &empty_schema(), 15_000).unwrap();
+        let mut slas: Vec<_> = items.iter().map(|item| item.latency_sla_ms).collect();
+        slas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(slas, vec![None, Some(100.0), Some(1_000.0)]);
+    }
+
+    #[test]
     fn signed_zero_slas_merge_into_one_item() {
         let mut negative_zero = rqe("sum_over_time(metric[5m])", 60_000);
-        negative_zero.latency_sla = -0.0;
+        negative_zero.accuracy_sla = -0.0;
         let items = extract_aqes(
             &[negative_zero, rqe("sum_over_time(metric[5m])", 60_000)],
             &empty_schema(),
