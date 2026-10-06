@@ -237,6 +237,7 @@ mod tests {
             merge_cpu_secs: 0.0,
             query_cpu_secs: 0.0,
             query_accuracy: std::collections::BTreeMap::new(),
+            measured_at: None,
         }];
         let aqe = make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0);
         let solution = greedy_assign(
@@ -275,6 +276,7 @@ mod tests {
             merge_cpu_secs: 0.0,
             query_cpu_secs: 0.0,
             query_accuracy: std::collections::BTreeMap::new(),
+            measured_at: None,
         }];
         let mut aqe = make_aqe(Statistic::Sum, 60_000, 60_000, 1.0 / 60.0);
         aqe.requirements.grouping_labels = KeyByLabelNames::new(vec!["svc".into()]);
