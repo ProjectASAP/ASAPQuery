@@ -5,7 +5,7 @@
 //!
 //! Cost data is real, not fabricated: `scripts/export_rqe_optimizer_costs.sh`
 //! measures it via `sketch-bench`/`aqpbm-cli` and writes
-//! `out/rqe_atomic_costs.json`, an `AtomicCostTable` loaded here verbatim --
+//! `DIR/rqe_atomic_costs.json`, an `AtomicCostTable` loaded here verbatim --
 //! no translation layer, since `rqe_optimizer::Deployment` embeds
 //! `AtomicCostEntry` directly.
 //!
@@ -13,7 +13,8 @@
 //! cardinalities and scrape intervals) lives in the two tables below
 //! (`facts`, `raqes`) and nowhere else in this file.
 //!
-//! Run: `scripts/export_rqe_optimizer_costs.sh` once. Do not run this example
+//! Run: `scripts/export_rqe_optimizer_costs.sh DIR` once, then pass
+//! `--cost-dir DIR` (required) to this example. Do not run this example
 //! with no mode flag on a large workload: eager mode retains every feasible
 //! mapping and can exhaust memory. Use `--milp`, `--candidates-only`, or
 //! `--sample-mappings N` instead. Add
@@ -58,7 +59,7 @@ const CARDINALITY_ERR: &str = "relative_error";
 /// tolerance below is a floor and its direction is `HigherIsBetter`.
 const TOPK_PRECISION: &str = "precision_at_k";
 
-const COST_TABLE_PATH: &str = "out/rqe_atomic_costs.json";
+const COST_TABLE_FILE: &str = "rqe_atomic_costs.json";
 
 const REQUESTS: &str = "http_requests_total";
 const DURATION: &str = "http_request_duration_seconds";
@@ -68,14 +69,27 @@ fn label_set(names: &[&str]) -> LabelSet {
 }
 
 fn load_cost_table() -> AtomicCostTable {
-    let raw = std::fs::read_to_string(COST_TABLE_PATH).unwrap_or_else(|e| {
+    let args: Vec<_> = std::env::args().collect();
+    let cost_dir = args
+        .iter()
+        .position(|arg| arg == "--cost-dir")
+        .map(|index| {
+            args.get(index + 1)
+                .unwrap_or_else(|| panic!("--cost-dir requires a directory"))
+        })
+        .unwrap_or_else(|| {
+            panic!("--cost-dir DIR is required (a directory written by scripts/export_rqe_optimizer_costs.sh)")
+        });
+    let path = std::path::Path::new(cost_dir).join(COST_TABLE_FILE);
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "couldn't read {COST_TABLE_PATH} ({e}) -- run \
-             `scripts/export_rqe_optimizer_costs.sh` first to generate it"
+            "couldn't read {} ({e}) -- run \
+             `scripts/export_rqe_optimizer_costs.sh {cost_dir}` first to generate it",
+            path.display()
         )
     });
     serde_json::from_str(&raw)
-        .unwrap_or_else(|e| panic!("{COST_TABLE_PATH} isn't a valid AtomicCostTable: {e}"))
+        .unwrap_or_else(|e| panic!("{} isn't a valid AtomicCostTable: {e}", path.display()))
 }
 
 /// Both metrics: 5 services × 10 endpoints × 600 pods = 30,000 series
