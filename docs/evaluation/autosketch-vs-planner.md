@@ -30,9 +30,9 @@ interval) and sums the results; the planner is invoked once for the batch.
 | Earlier protocol (E1–E3, end-to-end execution) | ASAPQuery-backend `docs/evaluation/autosketch-comparison.md` ([#545](https://github.com/ProjectASAP/ASAPQuery-backend/pull/545)) | Merged. Execution-based; this plan is planner-level and uses estimated costs instead. |
 | Top-K dashboard comparison | ASAPQuery-backend [#602](https://github.com/ProjectASAP/ASAPQuery-backend/pull/602) | Closed, not merged. |
 | RQE deployment MILP (HiGHS): candidates `(capability, config, labels, x, y)`, sharing, latency bounds | sketch-bench `rqe-optimizer/` ([#129](https://github.com/ProjectASAP/sketch-bench/pull/129)); per-phase cost model and weighted objective [#145](https://github.com/ProjectASAP/sketch-bench/pull/145); exact accumulators and top-k families [#144](https://github.com/ProjectASAP/sketch-bench/pull/144) | Merged. **This is the planner we evaluate.** |
-| Measured per-operation costs (`AtomicCostEntry`: memory/instance, insert/merge/query CPU, accuracy) | sketch-bench `scripts/export_rqe_optimizer_costs.sh` | Merged. **The cost table this evaluation reads** (§6). Each row records its measurement conditions (`measured_at`, #155) and accuracy after merging (#154); a sweep over items per instance is #157. |
-| Saturation study: error vs. `N`, `N_sat`, cost per config and shape | sketch-bench [#130](https://github.com/ProjectASAP/sketch-bench/pull/130) | Merged. Background for how error and cost depend on `N`; no longer read by the evaluation. |
-| Accuracy after merging `m` shards | sketch-bench [#131](https://github.com/ProjectASAP/sketch-bench/pull/131), carried into the cost table by [#154](https://github.com/ProjectASAP/sketch-bench/pull/154) | Merged. Read when a deployment merges `m = S/x > 1` windows. |
+| Measured per-operation costs (`AtomicCostEntry`: memory/instance, insert/merge/query CPU, accuracy) | sketch-bench `scripts/export_rqe_optimizer_costs.sh` | Merged. **Source of CPU and memory** (§6), and of exact accumulators' rows. Each row records its measurement conditions (`measured_at`, #155). Sketch rows' accuracy is not read from it (#156 Q9). |
+| Saturation study: error vs. `N`, `N_sat`, cost per config and shape | sketch-bench [#130](https://github.com/ProjectASAP/sketch-bench/pull/130) | Merged. **Source of sketch accuracy**: the planner reads the error curve at each instance's item count (#156). |
+| Accuracy after merging `m` shards | sketch-bench [#131](https://github.com/ProjectASAP/sketch-bench/pull/131), carried into the cost table by [#154](https://github.com/ProjectASAP/sketch-bench/pull/154) | Merged. Merge penalties for KLL and top-k are a follow-up ([#158](https://github.com/ProjectASAP/sketch-bench/issues/158)); until then #156 requires every merged pane to be saturated. |
 | Moving the MILP into ASAPQuery's planner | ASAPQuery `asap-planner-rs/src/optimizer/` (Milind; related: [#776](https://github.com/ProjectASAP/ASAPQuery/pull/776), [#725](https://github.com/ProjectASAP/ASAPQuery/pull/725)) | Out of scope: the evaluation uses sketch-bench `rqe-optimizer` and is not rerun on `asap-planner-rs`. |
 
 AutoSketch-Adapted is implemented in sketch-bench `rqe-optimizer/src/autosketch.rs` (#135).
@@ -139,19 +139,23 @@ per capability. The default level matches the `traces` targets from ASAPQuery's
 dataset analysis. The synthetic workload sweeps all three; `traces` uses its
 fitted targets.
 
-| Level | Quantile (rank error) | TopK (precision@k) |
-| --- | --- | --- |
-| loose | ≤ 0.02 | ≥ 0.90 |
-| **default** | **≤ 0.01** | **≥ 0.95** |
-| strict | ≤ 0.005 | ≥ 0.99 |
+| Level | Quantile, KLL (rank error) | Quantile, DDSketch (value relative error) | TopK (precision@k) |
+| --- | --- | --- | --- |
+| loose | ≤ 0.02 | ≤ 0.02 | ≥ 0.90 |
+| **default** | **≤ 0.01** | **≤ 0.01** | **≥ 0.95** |
+| strict | ≤ 0.005 | ≤ 0.005 | ≥ 0.99 |
+
+Each sketch is scored in the metric its guarantee is stated in (#156 Q9):
+KLL in rank error, DDSketch in value relative error `|x̃ − x_q| / |x_q|`
+(sketch-bench #162). DDSketch is not deployable by default, so its column only
+applies with `--allow-undeployable-families`.
 
 Sum and increase are served by exact accumulators, so their error is 0 and
 every level is met. Strictness therefore matters only for quantile and top-k
 RQEs. No template asks for cardinality.
 
-A deployment that merges `m = S/x` windows must meet the target at both
-measured merge counts bracketing `m` (count 1 is the single instance), as
-`rqe-optimizer` checks it (#154).
+How the accuracy of a deployment is read, including when it merges windows,
+is §6 "Reading accuracy and cost".
 
 An earlier version mapped one percentage `p` to error ≤ `1 − p` for every
 capability. It was dropped (2026-10-05): at 95% it allowed quantile rank error
@@ -218,12 +222,13 @@ ingests decides whether a sketch is worth it:
 | `by (job)`, temporal (7, 8; D3) | J = 10 | 1.8e8 to 1.7e10 | exact accumulator |
 | top-k over `label_0` (2, 9; D4) | 1 | `λ · S`: 1.8e9 to 1.7e11, over 1e4 keys | top-k sketch (CMS-heap) |
 
-The cost table is measured at 1e5 to 1e8 items per instance (sketch-bench
-#157). Exact accumulators keep constant state and a constant per-item cost, so
-their size does not matter. Every quantile sketch falls inside the measured
-range. Top-k sketches exceed it and read the 1e8 measurement: CMS-heap's
-per-item CPU and memory do not depend on `N` (sketch-bench #130), and Zipf
-s = 1.1 keys have saturated by then.
+Exact accumulators keep constant state and a constant per-item cost, so their
+size does not matter. Sketch accuracy is read from the saturation curve at the
+instance's item count (§6 "Reading accuracy and cost"). Every quantile sketch
+falls inside the curves' range (1e3 to 1e8 items). Top-k sketches exceed it;
+#156 reads the error at the largest measured N when the point has saturated
+there, which Zipf s = 1.1 keys do. CMS-heap's per-item CPU and memory do not
+depend on `N` (sketch-bench #130).
 
 **Modeling choice for spatial templates.** A spatial template evaluates every
 1 s over every sample of the last second (`S = T = 1 s`). PromQL's instant
@@ -446,21 +451,34 @@ in the planner's micro-benchmarks:
 
 ### Benchmark input
 
-Every method reads the cost table from sketch-bench
-`scripts/export_rqe_optimizer_costs.sh`, the same table the planner reads.
-Deployable rows: exact sum, min, max and increase; KLL k ∈ {200, 500}; HLL
-`lg_k` ∈ {12, 14}; CMS-heap top-k with rows ∈ {3, 5}, cols = 2048 and heap
-∈ {100, 200, 300}, each scored at every `k` up to its heap. DDSketch,
-CountSketch-heap and UnivMon are measured but not deployable by default.
+Two sketch-bench measurements feed every method, per sketch-bench #156:
 
-The table is exported with `CARDINALITY=10000`, the workload's key count, and
-measured at 1e5 to 1e8 items per instance (#157).
+- **Accuracy of sketch rows:** the saturation curves (`saturation.csv`,
+  `saturation_curve.csv`), error vs. items `N` per (config, data shape). The
+  planner reads them through `--saturation-dir`.
+- **CPU and memory, and exact rows:** the cost table from
+  `scripts/export_rqe_optimizer_costs.sh`, exported with `CARDINALITY=10000`,
+  the workload's key count.
+
+Sketch configs are the saturation grid's (#156 Q4): KLL k ∈ {50, 200, 800},
+HLL `lg_k` ∈ {12, 14, 16}, CMS-heap top-k with rows ∈ {3, 5}, cols ∈ {256,
+1024, 4096, 16384}. A sketch config with no curve is not eligible.
+DDSketch, CountSketch-heap and UnivMon are not deployable by default.
+
+**A saturation run at the synthetic workload's data shape.** The grid has no
+point at θ = 1.1 and K = 1e4, measures quantiles on Pareto data, and scores
+top-k only at k = 32. The synthetic workload therefore needs one targeted run
+of `scripts/study_saturation.py` at its own data, so every lookup lands on a
+measured point instead of the worst of the bracketing grid points (#156 Q8):
+- Zipf s = 1.1 over 10,000 keys, the same data as the cost table;
+- KLL and DDSketch on the Zipf ranks, DDSketch in value relative error (#162);
+- CMS-heap with heap ∈ {100, 200, 300}, each scored at every `k` ∈ {100, 200,
+  300} up to its heap;
+- `N` up to 1e9 for top-k, 1e8 for the quantile sketches.
 
 **Exact accumulators** have no saturation point: their answer is exact at any
 size. They are still benchmarked for cost, on the grouped column specs
-(200,000 rows, about 9,900 groups), and priced per group. The sweep over items
-per instance (#157) includes them, so their per-group cost is read at the
-workload's size like every other row's.
+(200,000 rows, about 9,900 groups), and priced per group.
 
 #### Data parameters, shared by both methods
 
@@ -474,8 +492,9 @@ from the lower `θ` bound. Longer samples expose worse cases (sketch-bench
 
 - **`traces` gives the appendix results.** Its parameters are fit on the
   full trace.
-- **`synthetic`** uses the cost table's own data, Zipf s = 1.1 over 10,000
-  keys (§6 "Data model and scale").
+- **`synthetic`** uses its own fixed data, Zipf s = 1.1 over 10,000 keys
+  (§6 "Data model and scale"): `data_shape` = (θ = 1.1, K = 1e4), quantiles on
+  the Zipf ranks.
 
 Each config is benchmarked at these worst-case parameters. AutoSketch §5.2
 injects random traffic bursts into synthetic workloads to cover variation over
@@ -489,22 +508,28 @@ A window of length `S` on grouping labels `G` holds about
 n(S, G) = λ · S / card(G)   items per instance
 ```
 
-#### Reading the table at the workload's size
+#### Reading accuracy and cost
 
-Each row records the size it was measured at (`measured_at`, #155). Until the
-size sweep (#157) lands, every row is read at its measured size and the
-points whose instance size differs are flagged. With the sweep:
+Accuracy follows sketch-bench #156. With `n(S, G)` the items one instance holds
+and `m = S/x` the windows a query merges:
 
-- **ASAP** reads each deployment's row at its own instance size,
-  `λ · x / card(G)` items per window. When it merges `m = S/x` windows, the
-  accuracy check uses the measured merge counts bracketing `m` (#154); merge
-  error is not monotone in `m`, so both must pass.
-- **AutoSketch** never merges (`x = S`). It reads the row at its window's size,
-  `λ · S / card(G)`, and accepts a config if the target holds there, as the
-  paper's benchmark-then-accept loop does. It configures once, before
-  deployment (§9 Q2).
-- **Exact accumulators** meet every target at every size; only their cost is
-  read at the size.
+- **No merge (`m = 1`):** the error is the curve's value at `n(S, G)`.
+  Between checkpoints, the worse of the two neighbours; below 1,000 items, not
+  eligible; above the largest measured `N`, that `N`'s value if the point has
+  saturated, else not eligible (#156 Q6).
+- **Merging (`m > 1`):** every pane, `n(x, G)` items, must reach `N_sat`; the
+  error is then read at `n(S, G)` as above (#156 Q11). CMS, CountSketch, HLL and
+  DDSketch merge exactly, so this is their single-sketch error. KLL and top-k
+  lose accuracy when merged; that penalty is the follow-up #158.
+- **Top-k:** precision is read at the RQE's `k` from the curve of the
+  deployment's heap size, so a heap-300 deployment serves k = 100, 200 and 300.
+- **AutoSketch** never merges (`x = S`): the same lookup with `m = 1` at its
+  window's size, `n(S, G)` (#156 Q12). It configures once, before deployment
+  (§9 Q2).
+- **Exact accumulators** have zero error at every size.
+
+CPU and memory come from the cost table at the configs' measured size;
+per-item costs are flat in `N` (sketch-bench #130).
 
 ## 7. Metrics and figures
 
@@ -554,14 +579,15 @@ Figures:
 | --- | --- | --- | --- |
 | this | ASAPQuery #777 | This plan | Draft, updated as decisions change |
 | — | sketch-bench #144, #145 | Exact accumulators and top-k families; per-phase cost model and weighted objective | Merged |
-| — | sketch-bench #151, #152, #154, #155 | Cost-table fixes, value range, accuracy after merging, `measured_at` (#147) | Merged |
-| — | sketch-bench #157 | Sweep items per instance; re-export the cost table | Open |
-| — | sketch-bench (to open) | Top-k for this workload: heap size as a parameter, precision scored at k ∈ {100, 200, 300}; `rqe-optimizer` RQEs carry `k`, and a heap-`K` deployment serves `k ≤ K`; export at `CARDINALITY=10000`, 1e5–1e8 items | Not started |
+| — | sketch-bench #151, #152, #154, #155 | Cost-table fixes, value range, accuracy after merging, `measured_at` (#147) | Merged; #154's merge rule is replaced by #156 |
+| — | sketch-bench #156, #162, #158 | Accuracy from the saturation curves at n(T) with `data_shape`; DDSketch in value relative error; merge penalties | Open; #156 blocked on #162 |
+| — | sketch-bench #157 | Re-export the cost table (grid configs, `CARDINALITY=10000`); per-item CPU and memory vs. size | Open; its accuracy part is covered by #156 |
+| — | sketch-bench (to open) | Top-k for this workload: heap size as a parameter, precision scored at k ∈ {100, 200, 300}; `rqe-optimizer` RQEs carry `k`, and a heap-`K` deployment serves `k ≤ K`; the targeted saturation run at θ = 1.1, K = 1e4 (§6) | Not started |
 | — | sketch-bench #130, #131 | Saturation curves; accuracy after merging `m` shards | Merged; background |
 | 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` | Merged; superseded by #145 |
 | 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
 | 2 | sketch-bench #136 | Evaluation table for the trace workloads | Merged |
-| 4 | sketch-bench #138, #139, #140, #141 | Runner, synthetic workload, saturation at K = 1e1–1e6, two cost models and grid driver | Open; to be reworked onto #145's objective, the cost table and the reduced grid. #140 is no longer needed for the comparison |
+| 4 | sketch-bench #138, #139, #140, #141 | Runner, synthetic workload, saturation at K = 1e1–1e6, two cost models and grid driver | Open; to be reworked onto #145's objective, #156's lookup and the reduced grid. #140's K = 1e4 points are superseded for the synthetic workload by the targeted run (§6) |
 
 ## 9. Decisions
 
@@ -599,12 +625,10 @@ were dropped (2026-10-06).
 
 ## 10. Known limitations
 
-- **Merged accuracy comes from shard-merge measurements, not from replaying
-  the plans.** The cost table measures it at `m` ∈ {4, 16, 64, 256, 1024} over
-  one benchmark stream (#154). A deployment needing more (e.g. a 1-day
-  lookback over 1-minute windows, `m = 1440`) reads the 1024 measurement.
-  Replay the synthetic default workload's chosen plans in sketch-bench once to
-  confirm.
+- **Merged accuracy is read, not replayed.** Exact for CMS, CountSketch, HLL
+  and DDSketch; for KLL and top-k the merge penalty is ignored until #158, with
+  every pane required to be saturated. Replay the synthetic default workload's
+  chosen plans in sketch-bench once to confirm.
 - Costs and latencies are estimates from per-operation measurements, not
   end-to-end executions. The execution-based comparison is ASAPQuery-backend
   #545/#547.
