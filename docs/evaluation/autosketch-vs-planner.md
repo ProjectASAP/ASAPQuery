@@ -91,7 +91,7 @@ has lookback `S` and repeat interval `T`. Per-instance costs are measured
 | --- | --- | --- |
 | Ingest | `λ · (x/y) · c_ins` | `card(G) · m · x/y` (open windows) |
 | Merge | `card(G) · (S/x − 1) · c_mrg / T` | `card(G) · m` (one accumulator per group), 0 when `S = x` |
-| Query | `card(G) · c_qry / T` | `card(G) · 8 B`; top-k `card(G) · 32 · 16 B` |
+| Query | `card(G) · c_qry / T` | `card(G) · 8 B`; top-k `k · 16 B` |
 | Storage | 0 | `card(G) · m · ((max S − x)/y + 1)` (closed windows) |
 
 Ingest and storage are paid once per active deployment; merge and query once
@@ -188,29 +188,70 @@ The synthetic workload is the paper's main experiment. It builds many
 workloads from a fixed set of PromQL query templates by sweeping the workload
 dimensions below, and runs every planning baseline on each workload.
 
+#### Data model and scale
+
+The data model is fixed: the comparison varies the queries and requirements,
+not the data. There is one metric, `data`, with two labels:
+
+| Label | Cardinality | Role |
+|---|---|---|
+| `label_0` | **C = 1e4** | Identifies the series (one series per value). The top-k key |
+| `job` | **J = 10** | Coarse grouping: every series belongs to one job, so each job has `C/J` = 1,000 series |
+
+| Quantity | Value |
+|---|---|
+| Series | C = 10,000 |
+| Samples per series | 200 per second (one every 5 ms) |
+| Stream rate `λ` | 2e6 samples/s; 2e5 per job |
+| Values | Zipf s = 1.1 over 10,000 keys: the cost table's data (sketch-bench `export_rqe_optimizer_costs.sh` with `CARDINALITY=10000`). Quantile sketches see the Zipf ranks as values; a top-k key's total over a window follows the same Zipf law |
+| Lookback windows `W` | {15m, 1h, 6h, 24h}: at least 15 minutes, so every per-series summary sees at least 1e5 items |
+| Repeat interval `T` | 1 m for temporal templates; spatial templates read and repeat every 1 s |
+
+**Summaries and their input size.** Every deployment keeps one summary per
+group of its grouping labels (one per window). The number of items one summary
+ingests decides whether a sketch is worth it:
+
+| Grouping | Summaries per window | Items per summary | Kind |
+|---|---|---|---|
+| per series, temporal (templates 4, 5, 6, 10; D1, D5) | C = 1e4 | `200 · S`: 1.8e5 (15m) to 1.7e7 (24h) | exact accumulator or quantile sketch |
+| `by (job)`, spatial, `S` = 1 s (1, 3; D2) | J = 10 | `2e5 · S` = 2e5 | exact accumulator or quantile sketch |
+| `by (job)`, temporal (7, 8; D3) | J = 10 | 1.8e8 to 1.7e10 | exact accumulator |
+| top-k over `label_0` (2, 9; D4) | 1 | `λ · S`: 1.8e9 to 1.7e11, over 1e4 keys | top-k sketch (CMS-heap) |
+
+The cost table is measured at 1e5 to 1e8 items per instance (sketch-bench
+#157). Exact accumulators keep constant state and a constant per-item cost, so
+their size does not matter. Every quantile sketch falls inside the measured
+range. Top-k sketches exceed it and read the 1e8 measurement: CMS-heap's
+per-item CPU and memory do not depend on `N` (sketch-bench #130), and Zipf
+s = 1.1 keys have saturated by then.
+
+**Modeling choice for spatial templates.** A spatial template evaluates every
+1 s over every sample of the last second (`S = T = 1 s`). PromQL's instant
+semantics would read only each series' latest sample. Aggregating the whole
+second is what a summary maintained over a 1-second window answers.
+
 #### Query templates
 
 These exercise every capability the templates need: sum, rate/increase, top-k
-and quantile, spatial and temporal aggregation, and a binary operator. Each spatial
-template repeats every 1 s and reads the last second (`S = T = 1 s`). Each
-temporal template repeats every `T` (default 1 m) and reads `S = T_range`, one
-RQE per lookback window in the window set `W` (§ workload grid).
+and quantile, spatial and temporal aggregation, and a binary operator. Each
+template expands into one RQE per window `w ∈ W`, per quantile `q` and per
+`k ∈ {100, 200, 300}`.
 
-| # | PromQL | Capability | Grouping | RQEs per replica |
+| # | PromQL | Capability | Grouping | RQEs |
 |---|---|---|---|---|
-| 1 | `sum by (label_0) (data)` | SumOrCount | `label_0` | 1 |
-| 2 | `topk by (3, label_0) (data)` | TopK | `label_0` | 1 |
-| 3 | `quantile by (q, label_0) (data)`, q ∈ {0.5, 0.75, 0.9, 0.95, 0.99} | Quantile | per `label_0` group | 5 |
-| 4 | `sum_over_time(data[T])` | SumOrCount | per series | \|W\| |
-| 5 | `quantile_over_time(q, data[T])`, same five q | Quantile | per series | 5·\|W\| |
-| 6 | `rate(data[T])` | RateOrIncrease | per series | \|W\| |
-| 7 | `sum by (label_0) (rate(data[T]))` | RateOrIncrease | `label_0` | \|W\| |
-| 8 | `sum by (label_0) (sum_over_time(data[T]))` | SumOrCount | `label_0` | \|W\| |
-| 9 | `topk by (3, label_0) (rate(data[T]))` | TopK over per-series increases | `label_0` | \|W\| |
-| 10 | `quantile_over_time(0.9, data[T]) / quantile_over_time(0.5, data[T])` | Two Quantile RQEs | per series | 2·\|W\| |
+| 1 | `sum by (job) (data)` | SumOrCount | `job` | 1 |
+| 2 | `topk(k, sum by (label_0) (sum_over_time(data[w])))` | TopK | none; keys `label_0` | 3·\|W\| = 12 |
+| 3 | `quantile by (job) (q, data)`, q ∈ {0.5, 0.75, 0.9, 0.95, 0.99} | Quantile | `job` | 5 |
+| 4 | `sum_over_time(data[w])` | SumOrCount | per series | 4 |
+| 5 | `quantile_over_time(q, data[w])`, same five q | Quantile | per series | 20 |
+| 6 | `rate(data[w])` | RateOrIncrease | per series | 4 |
+| 7 | `sum by (job) (rate(data[w]))` | RateOrIncrease | `job` | 4 |
+| 8 | `sum by (job) (sum_over_time(data[w]))` | SumOrCount | `job` | 4 |
+| 9 | `topk(k, sum by (label_0) (rate(data[w])))` | TopK over per-series increases | none; keys `label_0` | 12 |
+| 10 | `quantile_over_time(0.9, data[w]) / quantile_over_time(0.5, data[w])` | Two Quantile RQEs | per series | 8 |
 
-With all ten templates, one replica has `7 + 12·|W|` RQEs: 67 for the default
-five windows.
+74 RQEs per replica. Template 10's operands are the same RQEs as template 5's
+q = 0.9 and q = 0.5, so 66 are distinct.
 
 Mapping notes:
 - Capabilities are `rqe-optimizer`'s (#144). Sum and rate/increase are their
@@ -220,106 +261,149 @@ Mapping notes:
 - An exact accumulator has one configuration, so AutoSketch has nothing to
   search for sum and increase RQEs. There, ASAP differs from it only by window
   choice and sharing.
+- Top-k ranks each `label_0` key's total over the window: the heavy hitters
+  among 1e4 keys. A top-k sketch with heap capacity `K` serves every RQE with
+  `k ≤ K` on the same stream and window, so ASAP can serve k = 100, 200 and 300
+  from one heap-300 deployment; AutoSketch configures each RQE with its own
+  heap.
 - The quantiles of one template, and the two operands of template 10, read the
   same stream. ASAP can serve them from one deployment; AutoSketch gets one
   deployment per RQE.
 - Templates come from the planner's supported query classes: `SpatialAgg`
-  (`count`/`sum`/`quantile`/`topk by`), `TemporalAgg`
+  (`count`/`sum`/`quantile`/`topk`), `TemporalAgg`
   (`count_over_time`/`sum_over_time`/`quantile_over_time`/`increase`/`rate`),
-  `TemporalAgg SpatialAgg*`, and `AnyAgg <binaryOp> AnyAgg`.
+  `TemporalAgg SpatialAgg*`, and `AnyAgg <binaryOp> AnyAgg`. Every query below
+  is checked with `promql-parser`.
+
+<details>
+<summary>Every query of the 10-template set (70 queries, 74 RQEs)</summary>
+
+| # | Template | PromQL | Capability | Grouping | `S` | `T` | RQEs |
+|---|---|---|---|---|---|---|---|
+| 1 | 1 | `sum by (job) (data)` | SumOrCount | job | 1s | 1s | 1 |
+| 2 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
+| 3 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
+| 4 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
+| 5 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
+| 6 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
+| 7 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
+| 8 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
+| 9 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
+| 10 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
+| 11 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
+| 12 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
+| 13 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
+| 14 | 3 | `quantile by (job) (0.5, data)` | Quantile | job | 1s | 1s | 1 |
+| 15 | 3 | `quantile by (job) (0.75, data)` | Quantile | job | 1s | 1s | 1 |
+| 16 | 3 | `quantile by (job) (0.9, data)` | Quantile | job | 1s | 1s | 1 |
+| 17 | 3 | `quantile by (job) (0.95, data)` | Quantile | job | 1s | 1s | 1 |
+| 18 | 3 | `quantile by (job) (0.99, data)` | Quantile | job | 1s | 1s | 1 |
+| 19 | 4 | `sum_over_time(data[15m])` | SumOrCount | series | 15m | 1m | 1 |
+| 20 | 4 | `sum_over_time(data[1h])` | SumOrCount | series | 1h | 1m | 1 |
+| 21 | 4 | `sum_over_time(data[6h])` | SumOrCount | series | 6h | 1m | 1 |
+| 22 | 4 | `sum_over_time(data[24h])` | SumOrCount | series | 24h | 1m | 1 |
+| 23 | 5 | `quantile_over_time(0.5, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 24 | 5 | `quantile_over_time(0.5, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 25 | 5 | `quantile_over_time(0.5, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 26 | 5 | `quantile_over_time(0.5, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 27 | 5 | `quantile_over_time(0.75, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 28 | 5 | `quantile_over_time(0.75, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 29 | 5 | `quantile_over_time(0.75, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 30 | 5 | `quantile_over_time(0.75, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 31 | 5 | `quantile_over_time(0.9, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 32 | 5 | `quantile_over_time(0.9, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 33 | 5 | `quantile_over_time(0.9, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 34 | 5 | `quantile_over_time(0.9, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 35 | 5 | `quantile_over_time(0.95, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 36 | 5 | `quantile_over_time(0.95, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 37 | 5 | `quantile_over_time(0.95, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 38 | 5 | `quantile_over_time(0.95, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 39 | 5 | `quantile_over_time(0.99, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 40 | 5 | `quantile_over_time(0.99, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 41 | 5 | `quantile_over_time(0.99, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 42 | 5 | `quantile_over_time(0.99, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 43 | 6 | `rate(data[15m])` | RateOrIncrease | series | 15m | 1m | 1 |
+| 44 | 6 | `rate(data[1h])` | RateOrIncrease | series | 1h | 1m | 1 |
+| 45 | 6 | `rate(data[6h])` | RateOrIncrease | series | 6h | 1m | 1 |
+| 46 | 6 | `rate(data[24h])` | RateOrIncrease | series | 24h | 1m | 1 |
+| 47 | 7 | `sum by (job) (rate(data[15m]))` | RateOrIncrease | job | 15m | 1m | 1 |
+| 48 | 7 | `sum by (job) (rate(data[1h]))` | RateOrIncrease | job | 1h | 1m | 1 |
+| 49 | 7 | `sum by (job) (rate(data[6h]))` | RateOrIncrease | job | 6h | 1m | 1 |
+| 50 | 7 | `sum by (job) (rate(data[24h]))` | RateOrIncrease | job | 24h | 1m | 1 |
+| 51 | 8 | `sum by (job) (sum_over_time(data[15m]))` | SumOrCount | job | 15m | 1m | 1 |
+| 52 | 8 | `sum by (job) (sum_over_time(data[1h]))` | SumOrCount | job | 1h | 1m | 1 |
+| 53 | 8 | `sum by (job) (sum_over_time(data[6h]))` | SumOrCount | job | 6h | 1m | 1 |
+| 54 | 8 | `sum by (job) (sum_over_time(data[24h]))` | SumOrCount | job | 24h | 1m | 1 |
+| 55 | 9 | `topk(100, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 56 | 9 | `topk(100, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 57 | 9 | `topk(100, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
+| 58 | 9 | `topk(100, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
+| 59 | 9 | `topk(200, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 60 | 9 | `topk(200, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 61 | 9 | `topk(200, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
+| 62 | 9 | `topk(200, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
+| 63 | 9 | `topk(300, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 64 | 9 | `topk(300, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 65 | 9 | `topk(300, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
+| 66 | 9 | `topk(300, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
+| 67 | 10 | `quantile_over_time(0.9, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
+| 68 | 10 | `quantile_over_time(0.9, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
+| 69 | 10 | `quantile_over_time(0.9, data[6h]) / quantile_over_time(0.5, data[6h])` | 2 × Quantile | series | 6h | 1m | 2 |
+| 70 | 10 | `quantile_over_time(0.9, data[24h]) / quantile_over_time(0.5, data[24h])` | 2 × Quantile | series | 24h | 1m | 2 |
+
+</details>
 
 #### Dashboard template set
 
 A second template set models an SLO / monitoring dashboard, latency-quantile
-heavy, with Grafana's usual time ranges. Window set
-`W_d = {1m, 5m, 15m, 1h, 6h, 24h}`; temporal templates repeat every 1 m (the
-dashboard refresh); spatial ones keep `S = T = 1 s`.
+heavy, refreshed every 1 m, over the same windows `W`.
 
-| # | PromQL | Capability | Grouping | RQEs per replica |
+| # | PromQL | Capability | Grouping | RQEs |
 |---|---|---|---|---|
-| D1 | `quantile_over_time(q, data[w])`, q ∈ {0.5, 0.9, 0.99}, w ∈ `W_d` | Quantile | per series | 18 |
-| D2 | `quantile by (q, label_0) (data)`, q ∈ {0.5, 0.9, 0.99} | Quantile | per `label_0` group | 3 |
-| D3 | `sum by (label_0) (rate(data[w]))`, w ∈ `W_d` | RateOrIncrease | `label_0` | 6 |
-| D4 | `topk by (3, label_0) (rate(data[w]))`, w ∈ {5m, 1h} | TopK over per-series increases | `label_0` | 2 |
-| D5 | `quantile_over_time(0.99, data[w]) / quantile_over_time(0.5, data[w])`, w ∈ {5m, 1h} | Two Quantile RQEs | per series | 4 |
+| D1 | `quantile_over_time(q, data[w])`, q ∈ {0.5, 0.9, 0.99} | Quantile | per series | 12 |
+| D2 | `quantile by (job) (q, data)`, q ∈ {0.5, 0.9, 0.99} | Quantile | `job` | 3 |
+| D3 | `sum by (job) (rate(data[w]))` | RateOrIncrease | `job` | 4 |
+| D4 | `topk(k, sum by (label_0) (rate(data[w])))`, w ∈ {15m, 1h} | TopK over per-series increases | none; keys `label_0` | 6 |
+| D5 | `quantile_over_time(0.99, data[w]) / quantile_over_time(0.5, data[w])`, w ∈ {15m, 1h} | Two Quantile RQEs | per series | 4 |
 
-33 RQEs per replica. D1's quantiles share one stream across overlapping
-windows; D5 repeats D1's p99/p50 at 5m and 1h; D3 and D4 share the
-`label_0` increment stream. top-k uses k = 3, the k sketch-bench measures.
+29 RQEs per replica; D5's operands repeat D1's, so 25 are distinct. D1's
+quantiles share one stream across overlapping windows; D3 and D4 share the
+increase stream.
 
-#### Data model
+<details>
+<summary>Every query of the dashboard set (27 queries, 29 RQEs)</summary>
 
-There is one metric, `data`. A **series** is one combination of label values.
-Three labels matter:
+| # | Template | PromQL | Capability | Grouping | `S` | `T` | RQEs |
+|---|---|---|---|---|---|---|---|
+| 1 | D1 | `quantile_over_time(0.5, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 2 | D1 | `quantile_over_time(0.5, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 3 | D1 | `quantile_over_time(0.5, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 4 | D1 | `quantile_over_time(0.5, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 5 | D1 | `quantile_over_time(0.9, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 6 | D1 | `quantile_over_time(0.9, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 7 | D1 | `quantile_over_time(0.9, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 8 | D1 | `quantile_over_time(0.9, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 9 | D1 | `quantile_over_time(0.99, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 10 | D1 | `quantile_over_time(0.99, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 11 | D1 | `quantile_over_time(0.99, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 12 | D1 | `quantile_over_time(0.99, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 13 | D2 | `quantile by (job) (0.5, data)` | Quantile | job | 1s | 1s | 1 |
+| 14 | D2 | `quantile by (job) (0.9, data)` | Quantile | job | 1s | 1s | 1 |
+| 15 | D2 | `quantile by (job) (0.99, data)` | Quantile | job | 1s | 1s | 1 |
+| 16 | D3 | `sum by (job) (rate(data[15m]))` | RateOrIncrease | job | 15m | 1m | 1 |
+| 17 | D3 | `sum by (job) (rate(data[1h]))` | RateOrIncrease | job | 1h | 1m | 1 |
+| 18 | D3 | `sum by (job) (rate(data[6h]))` | RateOrIncrease | job | 6h | 1m | 1 |
+| 19 | D3 | `sum by (job) (rate(data[24h]))` | RateOrIncrease | job | 24h | 1m | 1 |
+| 20 | D4 | `topk(100, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 21 | D4 | `topk(100, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 22 | D4 | `topk(200, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 23 | D4 | `topk(200, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 24 | D4 | `topk(300, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 25 | D4 | `topk(300, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 26 | D5 | `quantile_over_time(0.99, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
+| 27 | D5 | `quantile_over_time(0.99, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
 
-| Label | Values | Role |
-|---|---|---|
-| `label_0` | `C = card(label_0)` values | The grouping label: what `by (label_0)` aggregates by |
-| `instance` | `s` values per `label_0` value | Distinguishes the series inside a group. `s` = series per group |
-
-
-There are `C · s` series. Replicas (workload grid) read the same stream, so
-they add RQEs, not series. Every series emits one sample every 10 ms
-(100 samples/s), so the stream carries `λ = 100 · C · s` samples/s.
-
-Sample values:
-- **Sum and increase:** exact, so the value distribution does not affect cost
-  or accuracy.
-- **Top-k and quantiles:** the data the cost table is measured on: Zipf
-  s = 1.1 over a population of 100,000 keys (sketch-bench
-  `export_rqe_optimizer_costs.sh`). Top-k ranks the keys by weight; quantile
-  sketches (KLL, DDSketch) are measured on the Zipf ranks as values. The
-  workload uses the same distribution, so the table needs no separate run for
-  it.
-
-**Only two cardinalities matter.** Queries aggregate by `label_0` or per
-series, never by another label. So any other label (a second instance-like
-label, a `label_2`, ...) only multiplies the number of series in each group,
-and is equivalent to a larger `s`. The model therefore has two independent
-cardinality knobs:
-- `C`: groups;
-- `s`: series per group, the product of the cardinalities of all non-grouping
-  labels.
-
-Giving every label the same cardinality `c` would tie the knobs together
-(`C = c`, `s = c^(L−1)` for `L` labels). It was rejected: `s` explodes (c = 1e3
-with three labels gives 1e9 series, far beyond the measured K ≤ 1e7), and the
-effects of more groups and of more series per group could no longer be told
-apart.
-
-**How a template becomes sketch input.** Every deployment keeps one instance
-per group of its grouping labels `G` (`card(G)` instances per window), as in
-#145's cost model.
-
-| Template kind | Instances per window | Kind of instance | Items per instance per window |
-|---|---|---|---|
-| `sum`/`rate by (label_0)` (1, 7, 8) | `C` | exact accumulator | `100 · s · S` |
-| `topk by (label_0)` (2, 9) | `C` | top-k sketch over the group's `s` series | `100 · s · S` |
-| `quantile by (q, label_0)` (3) | `C` | quantile sketch | `100 · s · S` |
-| per-series `sum_over_time`/`rate` (4, 6) | `C · s` | exact accumulator | `100 · S` |
-| per-series `quantile_over_time` (5, 10) | `C · s` | quantile sketch | `100 · S` |
-
-**Example.** `C = 3` (`label_0` ∈ {a, b, c}), `s = 2` (`instance` ∈ {i1, i2}):
-six series, `data{label_0="a", instance="i1"}` through
-`data{label_0="c", instance="i2"}`, emitting 600 samples/s in total.
-- `sum by (label_0) (data)`, `S = 1 s`: three exact sums, one per group, each
-  absorbing 200 values per second.
-- `quantile by (0.99, label_0) (data)`: three KLL sketches, one per group, each
-  absorbing 200 values per second.
-- `sum_over_time(data[1m])`: six exact sums, one per series, 6,000 values each
-  per minute.
-- `quantile_over_time(0.99, data[1m])`: six KLL sketches, 6,000 values each per
-  minute.
-
-**Modeling choice for spatial templates.** A spatial template evaluates every
-1 s over every sample of the last second (`S = T = 1 s`). PromQL's instant
-semantics would read only each series' latest sample. Aggregating the whole
-second is what a sketch maintained over a 1-second window answers. The
-difference is noted wherever spatial results are reported.
-
-Items per instance, `100 · s · S` or `100 · S`, generally differ from the
-benchmark's. How costs and accuracy are read at that size is §6
-"Benchmark input".
+</details>
 
 #### Workload grid
 
@@ -328,13 +412,12 @@ keeps only what changes the comparison with AutoSketch.
 
 | Dimension | Values | What it varies |
 |---|---|---|
-| Template set | **dashboard**; the 10 templates (with `W` = {1m, 10m, 1h, 6h, 24h}, `T` = 1 m) | Workload realism, and which capabilities appear |
-| Replicas `r` | **1**, 8, 64 | Every replica reads the same stream with a seeded random subset of 3 windows, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated. Many users or dashboards over the same metrics: how the sharing benefit and planning time grow with the number of RQEs |
-| Groups `C = card(label_0)` | 1e2, **1e3**, 1e4 | Instances per deployment and items per instance |
+| Template set | **dashboard**; the 10 templates | Workload realism, and which capabilities appear |
+| Replicas `r` | **1**, 8, 64 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99}, a `k` from {100, 200, 300} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated. Many users or dashboards over the same metrics: how the sharing benefit and planning time grow with the number of RQEs |
 | Accuracy target (strictness) | loose, **default**, strict | What AutoSketch optimizes for (§5) |
 | Latency SLA | the §5 grid, **no limit** | §5 |
 
-Fixed: `s = 100`; data Zipf s = 1.1 over 100,000 keys (§6 "Data model").
+The data model is fixed (§6 "Data model and scale"); no grid dimension changes the data.
 
 The sweep is the default workload, then each dimension varied alone with the
 others at their defaults. Every workload runs every baseline (ASAP,
@@ -355,19 +438,23 @@ that shows sharing.
 These dimensions describe the planner, not its gap to AutoSketch. They belong
 in the planner's micro-benchmarks:
 - query mix (spatial only, temporal only, one capability at a time);
-- lookback window set `W` ({1h} to {1m, 10m, 1h, 6h, 24h});
+- lookback window set `W`, including windows under 15 minutes;
 - repeat interval `T` (10 s, 1 m, 5 m);
-- series per group `s` (1 to 1000);
+- data scale: `C`, `J` and the sample rate;
 - data distribution (key skew, value tail);
-- interactions `r × s` and `W × C`.
+- interactions such as `r × C` and `W × C`.
 
 ### Benchmark input
 
 Every method reads the cost table from sketch-bench
 `scripts/export_rqe_optimizer_costs.sh`, the same table the planner reads.
 Deployable rows: exact sum, min, max and increase; KLL k ∈ {200, 500}; HLL
-`lg_k` ∈ {12, 14}; CMS-heap top-k with rows ∈ {3, 5}, cols = 2048. DDSketch,
+`lg_k` ∈ {12, 14}; CMS-heap top-k with rows ∈ {3, 5}, cols = 2048 and heap
+∈ {100, 200, 300}, each scored at every `k` up to its heap. DDSketch,
 CountSketch-heap and UnivMon are measured but not deployable by default.
+
+The table is exported with `CARDINALITY=10000`, the workload's key count, and
+measured at 1e5 to 1e8 items per instance (#157).
 
 **Exact accumulators** have no saturation point: their answer is exact at any
 size. They are still benchmarked for cost, on the grouped column specs
@@ -387,8 +474,8 @@ from the lower `θ` bound. Longer samples expose worse cases (sketch-bench
 
 - **`traces` gives the appendix results.** Its parameters are fit on the
   full trace.
-- **`synthetic`** uses the cost table's own data, Zipf s = 1.1 over 100,000
-  keys (§6 "Data model").
+- **`synthetic`** uses the cost table's own data, Zipf s = 1.1 over 10,000
+  keys (§6 "Data model and scale").
 
 Each config is benchmarked at these worst-case parameters. AutoSketch §5.2
 injects random traffic bursts into synthetic workloads to cover variation over
@@ -469,6 +556,7 @@ Figures:
 | — | sketch-bench #144, #145 | Exact accumulators and top-k families; per-phase cost model and weighted objective | Merged |
 | — | sketch-bench #151, #152, #154, #155 | Cost-table fixes, value range, accuracy after merging, `measured_at` (#147) | Merged |
 | — | sketch-bench #157 | Sweep items per instance; re-export the cost table | Open |
+| — | sketch-bench (to open) | Top-k for this workload: heap size as a parameter, precision scored at k ∈ {100, 200, 300}; `rqe-optimizer` RQEs carry `k`, and a heap-`K` deployment serves `k ≤ K`; export at `CARDINALITY=10000`, 1e5–1e8 items | Not started |
 | — | sketch-bench #130, #131 | Saturation curves; accuracy after merging `m` shards | Merged; background |
 | 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` | Merged; superseded by #145 |
 | 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
