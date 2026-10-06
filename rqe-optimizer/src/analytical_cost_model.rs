@@ -28,7 +28,7 @@ pub const OUTPUT_BYTES_PER_TOPK_ENTRY: f64 = 16.0;
 /// Top-k entries per group: the heap size every top-k cost row was measured
 /// at (sketch-bench's `CMS_HEAP_TOP_K`).
 // ponytail: fixed k. A large k needs `k` on the RAQE and a benchmark that
-// varies the heap, whose memory the export leaves out.
+// varies the heap.
 pub const TOPK_ENTRIES: f64 = 32.0;
 
 /// One phase's resource use.
