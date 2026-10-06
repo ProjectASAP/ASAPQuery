@@ -1701,9 +1701,11 @@ async fn e2e_grouped_quantile_preserves_output_label_shape() {
     );
 }
 
-/// A grouped quantile served by a DDSketch aggregation: samples flow through
-/// remote write and precompute into one DDSketch per group, and each returned
-/// quantile stays within the sketch's relative-accuracy bound.
+/// A grouped quantile served by a DDSketch aggregation: samples from two
+/// instances per job flow through remote write and precompute into one
+/// DDSketch per group, and each returned quantile stays within the sketch's
+/// relative-accuracy bound. Zeros are part of the population, so a sketch
+/// that dropped them would answer outside the bound.
 #[tokio::test]
 async fn e2e_grouped_quantile_over_ddsketch_is_within_alpha() {
     let port = 19421u16;
@@ -1721,30 +1723,38 @@ async fn e2e_grouped_quantile_over_ddsketch_is_within_alpha() {
     );
     config.parameters.insert("alpha".to_string(), json!(alpha));
 
-    // Each group gets 1..=100 (scaled per group) inside the (1s, 2s] window,
-    // plus one later sample to close the window.
+    // Inside the (1s, 2s] window, instance "a" sends scale * 1..=50 and "b"
+    // sends scale * 51..=100, and each sends ten zeros. Samples go in time
+    // order across instances, since the watermark is per group, and one later
+    // sample per series closes the window.
     let groups = [("frontend", 1.0), ("backend", 10.0)];
-    let samples = groups
-        .iter()
-        .flat_map(|&(job, scale)| {
-            (1..=100)
-                .map(move |i| {
-                    make_timeseries(metric, vec![("job", job)], 1_000 + 5 * i, scale * i as f64)
-                })
-                .chain(std::iter::once(make_timeseries(
-                    metric,
-                    vec![("job", job)],
-                    3_500,
-                    scale,
-                )))
-        })
-        .collect();
+    let instances = [("a", 1), ("b", 51)];
+    let mut samples = Vec::new();
+    for (job, scale) in groups {
+        for i in 0..50 {
+            for (instance, first) in instances {
+                let value = scale * (first + i) as f64;
+                let labels = vec![("job", job), ("instance", instance)];
+                samples.push(make_timeseries(metric, labels, 1_005 + 5 * i, value));
+            }
+        }
+        for j in 0..10 {
+            for (instance, _) in instances {
+                let labels = vec![("job", job), ("instance", instance)];
+                samples.push(make_timeseries(metric, labels, 1_600 + j, 0.0));
+            }
+        }
+        for (instance, _) in instances {
+            let labels = vec![("job", job), ("instance", instance)];
+            samples.push(make_timeseries(metric, labels, 3_500, scale));
+        }
+    }
     let (engine, query) = NativeDagScenario {
         port,
         metric,
         query,
         aggregation_configs: vec![config],
-        schema_labels: vec!["job".to_string()],
+        schema_labels: vec!["instance".to_string(), "job".to_string()],
         samples,
         evaluation_time_seconds: 2.0,
         base_interval_ms: 1_000,
@@ -1763,8 +1773,9 @@ async fn e2e_grouped_quantile_over_ddsketch_is_within_alpha() {
     for element in vector.values {
         let job = element.labels.labels[0].as_str();
         let scale = groups.iter().find(|(g, _)| *g == job).unwrap().1;
-        // The 0.9 quantile of scale * {1..=100} is scale * 90.
-        let truth = scale * 90.0;
+        // 120 values: 20 zeros, then scale * 1..=100. Rank ceil(0.9 * 120) = 108
+        // is scale * 88; without the zeros it would be scale * 90.
+        let truth = scale * 88.0;
         assert!(
             (element.value - truth).abs() / truth <= alpha,
             "{job}: estimate {} vs truth {truth}",
