@@ -15,7 +15,7 @@
 // ponytail: a family with one fixed-size instance for all groups (HydraKLL,
 // sketch-bench#142) needs a per-family shape so it isn't multiplied by card(G).
 
-use crate::{Capability, Deployment, Mapping, Rqe, WorkloadFacts};
+use crate::{secs, Capability, Deployment, Mapping, Raqe, WorkloadFacts};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
@@ -27,7 +27,7 @@ pub const OUTPUT_BYTES_PER_VALUE: f64 = 8.0;
 pub const OUTPUT_BYTES_PER_TOPK_ENTRY: f64 = 16.0;
 /// Top-k entries per group: the heap size every top-k cost row was measured
 /// at (sketch-bench's `CMS_HEAP_TOP_K`).
-// ponytail: fixed k. A large k needs `k` on the RQE and a benchmark that
+// ponytail: fixed k. A large k needs `k` on the RAQE and a benchmark that
 // varies the heap, whose memory the export leaves out.
 pub const TOPK_ENTRIES: f64 = 32.0;
 
@@ -50,14 +50,14 @@ impl std::ops::AddAssign for PhaseCost {
 pub struct PlanCost {
     /// Paid once per active deployment.
     pub ingest: PhaseCost,
-    /// Paid per RQE; memory as if every query runs at once.
+    /// Paid per RAQE; memory as if every query runs at once.
     pub merge: PhaseCost,
-    /// Paid per RQE; memory as if every query runs at once.
+    /// Paid per RAQE; memory as if every query runs at once.
     pub query: PhaseCost,
     /// Paid once per active deployment, sized for its longest lookback.
     pub storage: PhaseCost,
-    /// Index-aligned with the input RQE slice; display IDs need not be unique.
-    pub query_latency_secs: Vec<f64>,
+    /// Index-aligned with the input RAQE slice; display IDs need not be unique.
+    pub query_latency_ms: Vec<f64>,
 }
 
 impl PlanCost {
@@ -88,9 +88,9 @@ fn open_window_count(deployment: &Deployment) -> f64 {
 }
 
 /// `L / x`: windows merged per query.
-fn merged_window_count(rqe: &Rqe, deployment: &Deployment) -> f64 {
+fn merged_window_count(raqe: &Raqe, deployment: &Deployment) -> f64 {
     deployment
-        .query_instance_count(rqe.lookback_secs)
+        .query_instance_count(raqe.lookback_ms)
         .expect("only eligible pairs are costed") as f64
 }
 
@@ -110,19 +110,19 @@ pub(crate) fn ingest(deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCos
 /// CPU `card(G) · (L/x − 1) · c_mrg / T`; memory `card(G) · m`, one
 /// accumulator per group. A direct query (`L == x`) merges nothing and costs
 /// neither.
-pub(crate) fn merge(rqe: &Rqe, deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
+pub(crate) fn merge(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
     let groups = group_count(deployment, facts);
-    let merges_per_group = merged_window_count(rqe, deployment) - 1.0;
+    let merges_per_group = merged_window_count(raqe, deployment) - 1.0;
     PhaseCost {
         cpu_secs_per_sec: groups * merges_per_group * deployment.config.merge_cpu_secs
-            / rqe.interval_secs as f64,
-        memory_bytes: groups * merge_memory_per_group(rqe, deployment),
+            / secs(raqe.interval_ms),
+        memory_bytes: groups * merge_memory_per_group(raqe, deployment),
     }
 }
 
 /// One accumulator if the query merges at all.
-pub(crate) fn merge_memory_per_group(rqe: &Rqe, deployment: &Deployment) -> f64 {
-    if merged_window_count(rqe, deployment) > 1.0 {
+pub(crate) fn merge_memory_per_group(raqe: &Raqe, deployment: &Deployment) -> f64 {
+    if merged_window_count(raqe, deployment) > 1.0 {
         deployment.config.mem_bytes_per_instance
     } else {
         0.0
@@ -130,43 +130,44 @@ pub(crate) fn merge_memory_per_group(rqe: &Rqe, deployment: &Deployment) -> f64 
 }
 
 /// CPU `card(G) · c_qry / T`; memory `card(G) ·` output bytes per group.
-pub(crate) fn query(rqe: &Rqe, deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
+pub(crate) fn query(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
     let groups = group_count(deployment, facts);
-    let output_bytes_per_group = match rqe.capability {
+    let output_bytes_per_group = match raqe.capability {
         Capability::TopK => TOPK_ENTRIES * OUTPUT_BYTES_PER_TOPK_ENTRY,
         _ => OUTPUT_BYTES_PER_VALUE,
     };
     PhaseCost {
-        cpu_secs_per_sec: groups * deployment.config.query_cpu_secs / rqe.interval_secs as f64,
+        cpu_secs_per_sec: groups * deployment.config.query_cpu_secs / secs(raqe.interval_ms),
         memory_bytes: groups * output_bytes_per_group,
     }
 }
 
-/// Closed windows kept to answer `rqe`: `card(G) · m · ((L − x)/y + 1)`.
-pub(crate) fn storage_bytes(rqe: &Rqe, deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
+/// Closed windows kept to answer `raqe`: `card(G) · m · ((L − x)/y + 1)`.
+pub(crate) fn storage_bytes(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
     let closed_windows = deployment
-        .closed_instance_count(rqe.lookback_secs)
+        .closed_instance_count(raqe.lookback_ms)
         .expect("only eligible pairs are costed") as f64;
     group_count(deployment, facts) * deployment.config.mem_bytes_per_instance * closed_windows
 }
 
-/// Serial CPU time of one query: `card(G) · (c_qry + (L/x − 1) · c_mrg)`.
-pub(crate) fn query_latency_secs(rqe: &Rqe, deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
-    let merges_per_group = merged_window_count(rqe, deployment) - 1.0;
-    group_count(deployment, facts)
+/// Serial CPU time of one query, in ms: `card(G) · (c_qry + (L/x − 1) · c_mrg)`.
+pub(crate) fn query_latency_ms(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
+    let merges_per_group = merged_window_count(raqe, deployment) - 1.0;
+    1000.0
+        * group_count(deployment, facts)
         * (deployment.config.query_cpu_secs + merges_per_group * deployment.config.merge_cpu_secs)
 }
 
 pub fn score(
-    rqes: &[Rqe],
+    raqes: &[Raqe],
     deployments: &[Deployment],
     mapping: &Mapping,
     facts: &WorkloadFacts,
 ) -> PlanCost {
     assert_eq!(
         mapping.len(),
-        rqes.len(),
-        "mapping must have one deployment per RQE"
+        raqes.len(),
+        "mapping must have one deployment per RAQE"
     );
     let active_deployments: BTreeSet<usize> = mapping.iter().copied().collect();
     let mut ingest_cost = PhaseCost::default();
@@ -177,18 +178,18 @@ pub fn score(
     let mut storage_bytes_by_deployment: BTreeMap<usize, f64> = BTreeMap::new();
     let mut merge_cost = PhaseCost::default();
     let mut query_cost = PhaseCost::default();
-    let query_latency_secs = rqes
+    let query_latency_ms = raqes
         .iter()
         .zip(mapping)
-        .map(|(rqe, &deployment_index)| {
+        .map(|(raqe, &deployment_index)| {
             let deployment = &deployments[deployment_index];
             let stored = storage_bytes_by_deployment
                 .entry(deployment_index)
                 .or_default();
-            *stored = stored.max(storage_bytes(rqe, deployment, facts));
-            merge_cost += merge(rqe, deployment, facts);
-            query_cost += query(rqe, deployment, facts);
-            query_latency_secs(rqe, deployment, facts)
+            *stored = stored.max(storage_bytes(raqe, deployment, facts));
+            merge_cost += merge(raqe, deployment, facts);
+            query_cost += query(raqe, deployment, facts);
+            query_latency_ms(raqe, deployment, facts)
         })
         .collect();
 
@@ -200,22 +201,27 @@ pub fn score(
             cpu_secs_per_sec: 0.0,
             memory_bytes: storage_bytes_by_deployment.values().sum(),
         },
-        query_latency_secs,
+        query_latency_ms,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{deployment, facts, rqe};
+    use crate::test_support::{deployment, facts, raqe};
 
     #[test]
     fn scores_each_phase() {
         // 4 groups and 7 samples/sec. Window 20 s sliding by 10 s: 2 open
         // windows. Lookback 60 s every 30 s: 3 windows merged, and
         // (60 − 20)/10 + 1 = 5 closed windows stored.
-        let deployment = deployment(10.0, 2.0, 3.0, 5.0, 20, 10);
-        let result = score(&[rqe(60, 30)], &[deployment], &vec![0], &facts(4, 7));
+        let deployment = deployment(10.0, 2.0, 3.0, 5.0, 20_000, 10_000);
+        let result = score(
+            &[raqe(60_000, 30_000)],
+            &[deployment],
+            &vec![0],
+            &facts(4, 7),
+        );
 
         assert_eq!(result.ingest.cpu_secs_per_sec, 28.0); // 7 × 2 × 2
         assert_eq!(result.ingest.memory_bytes, 80.0); // 4 × 10 × 2
@@ -225,29 +231,34 @@ mod tests {
         assert_eq!(result.query.memory_bytes, 2048.0); // 4 × 32 × 16
         assert_eq!(result.storage.cpu_secs_per_sec, 0.0);
         assert_eq!(result.storage.memory_bytes, 200.0); // 4 × 10 × 5
-        assert_eq!(result.query_latency_secs, vec![44.0]); // 4 × (5 + 2 × 3)
+        assert_eq!(result.query_latency_ms, vec![44_000.0]); // 4 × (5 + 2 × 3) s
         assert!((result.cpu_secs_per_sec() - (28.0 + 44.0 / 30.0)).abs() < 1e-12);
         assert_eq!(result.memory_bytes(), 80.0 + 40.0 + 2048.0 + 200.0);
     }
 
     #[test]
     fn a_direct_query_stores_one_closed_window_and_never_merges() {
-        let deployment = deployment(10.0, 1.0, 1.0, 1.0, 60, 60);
-        let result = score(&[rqe(60, 60)], &[deployment], &vec![0], &facts(1, 1));
+        let deployment = deployment(10.0, 1.0, 1.0, 1.0, 60_000, 60_000);
+        let result = score(
+            &[raqe(60_000, 60_000)],
+            &[deployment],
+            &vec![0],
+            &facts(1, 1),
+        );
         assert_eq!(result.storage.memory_bytes, 10.0);
         assert_eq!(result.merge, PhaseCost::default());
     }
 
     #[test]
     fn shared_deployment_stores_for_its_longest_lookback() {
-        let deployment = deployment(10.0, 1.0, 1.0, 1.0, 10, 10);
-        let rqes = [rqe(60, 10), rqe(600, 10)];
-        let result = score(&rqes, &[deployment], &vec![0, 0], &facts(2, 2));
+        let deployment = deployment(10.0, 1.0, 1.0, 1.0, 10_000, 10_000);
+        let raqes = [raqe(60_000, 10_000), raqe(600_000, 10_000)];
+        let result = score(&raqes, &[deployment], &vec![0, 0], &facts(2, 2));
         // 2 groups × 10 bytes × ((600 − 10)/10 + 1) closed windows.
         assert_eq!(result.storage.memory_bytes, 1200.0);
-        // Ingest is paid once; merge once per RQE.
+        // Ingest is paid once; merge once per RAQE.
         assert_eq!(result.ingest.cpu_secs_per_sec, 2.0);
-        // Two RQEs × 2 groups × 10 bytes.
+        // Two RAQEs × 2 groups × 10 bytes.
         assert_eq!(result.merge.memory_bytes, 2.0 * 2.0 * 10.0);
     }
 }

@@ -1,10 +1,10 @@
 //! Candidate generation and eligibility (§3).
 
 use crate::analytical_cost_model::merge_memory_per_group;
-use crate::{AtomicCostEntry, Capability, Deployment, LabelSet, Rqe, Seconds, WorkloadFacts};
+use crate::{AtomicCostEntry, Capability, Deployment, LabelSet, Millis, Raqe, WorkloadFacts};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub fn gcd(a: Seconds, b: Seconds) -> Seconds {
+pub fn gcd(a: Millis, b: Millis) -> Millis {
     if b == 0 {
         a
     } else {
@@ -12,7 +12,7 @@ pub fn gcd(a: Seconds, b: Seconds) -> Seconds {
     }
 }
 
-fn divisors(value: Seconds) -> Vec<Seconds> {
+fn divisors(value: Millis) -> Vec<Millis> {
     let mut out = Vec::new();
     let mut factor = 1;
     while factor <= value / factor {
@@ -31,7 +31,7 @@ fn divisors(value: Seconds) -> Vec<Seconds> {
 /// The gcd of every non-empty subset of `values`, in one pass without listing
 /// subsets: `gcd(A ∪ {v}) = gcd(gcd(A), v)`, so each new value extends every
 /// gcd found so far.
-fn subset_gcds(values: impl IntoIterator<Item = Seconds>) -> BTreeSet<Seconds> {
+fn subset_gcds(values: impl IntoIterator<Item = Millis>) -> BTreeSet<Millis> {
     let mut gcds = BTreeSet::new();
     for value in values {
         let extended: Vec<_> = gcds.iter().map(|&found| gcd(found, value)).collect();
@@ -44,9 +44,10 @@ fn subset_gcds(values: impl IntoIterator<Item = Seconds>) -> BTreeSet<Seconds> {
 /// Windows and slides are multiples of the metric's scrape interval: anything
 /// finer only splits one scrape's samples.
 fn candidate_deployments(
-    group: &[&Rqe],
+    group: &[&Raqe],
     costs: &[AtomicCostEntry],
-    scrape_interval_secs: Seconds,
+    scrape_interval_ms: Millis,
+    allow_undeployable_families: bool,
 ) -> Vec<Deployment> {
     if group.is_empty() {
         return Vec::new();
@@ -54,33 +55,35 @@ fn candidate_deployments(
     let capability = group[0].capability;
     let windows = group
         .iter()
-        .flat_map(|r| divisors(r.lookback_secs))
-        .filter(|window_secs| window_secs.is_multiple_of(scrape_interval_secs))
+        .flat_map(|r| divisors(r.lookback_ms / scrape_interval_ms))
+        .map(|scrapes| scrapes * scrape_interval_ms)
         .collect::<BTreeSet<_>>();
     let mut deployments = Vec::new();
-    for window_secs in windows {
-        // gcd(x, T) is the largest slide that serves an RQE. For RQEs sharing a
+    for window_ms in windows {
+        // gcd(x, T) is the largest slide that serves an RAQE. For RAQEs sharing a
         // deployment, the gcd of theirs is strictly better than any finer
         // slide that serves them all. Any subset might share.
         let slides = subset_gcds(
             group
                 .iter()
-                .filter(|r| r.lookback_secs % window_secs == 0)
-                .map(|r| gcd(window_secs, r.interval_secs)),
+                .filter(|r| r.lookback_ms % window_ms == 0)
+                .map(|r| gcd(window_ms, r.interval_ms)),
         );
-        for config in costs
-            .iter()
-            .filter(|c| capability.families().contains(&c.sketch.as_str()))
-        {
-            for &slide_secs in &slides {
-                if slide_secs.is_multiple_of(scrape_interval_secs) {
+        for config in costs.iter().filter(|c| {
+            capability
+                .candidate_families(allow_undeployable_families)
+                .any(|family| family == c.sketch)
+        }) {
+            for &slide_ms in &slides {
+                if slide_ms.is_multiple_of(scrape_interval_ms) {
                     deployments.push(Deployment {
                         capability,
                         metric: group[0].metric.clone(),
+                        spatial_filter: group[0].spatial_filter.clone(),
                         grouping_labels: group[0].grouping_labels.clone(),
                         config: config.clone(),
-                        window_secs,
-                        slide_secs,
+                        window_ms,
+                        slide_ms,
                     });
                 }
             }
@@ -89,12 +92,17 @@ fn candidate_deployments(
     deployments
 }
 
+/// Configurations come from [`Capability::candidate_families`].
 pub fn build_all_candidates(
-    rqes: &[Rqe],
+    raqes: &[Raqe],
     costs: &[AtomicCostEntry],
     facts: &WorkloadFacts,
+    allow_undeployable_families: bool,
 ) -> Vec<Deployment> {
-    prune_dominated_candidates(rqes, build_all_candidates_unpruned(rqes, costs, facts))
+    prune_dominated_candidates(
+        raqes,
+        build_all_candidates_unpruned(raqes, costs, facts, allow_undeployable_families),
+    )
 }
 
 /// Generate the complete v1 candidate set before dominance pruning.
@@ -102,21 +110,32 @@ pub fn build_all_candidates(
 /// The public optimizer entry point is [`build_all_candidates`]. This helper
 /// exists so diagnostics can report exactly how much safe pruning removed.
 pub fn build_all_candidates_unpruned(
-    rqes: &[Rqe],
+    raqes: &[Raqe],
     costs: &[AtomicCostEntry],
     facts: &WorkloadFacts,
+    allow_undeployable_families: bool,
 ) -> Vec<Deployment> {
-    let mut groups: BTreeMap<(Capability, &str, &LabelSet), Vec<&Rqe>> = BTreeMap::new();
-    for rqe in rqes {
+    let mut groups: BTreeMap<(Capability, &str, &str, &LabelSet), Vec<&Raqe>> = BTreeMap::new();
+    for raqe in raqes {
         groups
-            .entry((rqe.capability, &rqe.metric, &rqe.grouping_labels))
+            .entry((
+                raqe.capability,
+                &raqe.metric,
+                &raqe.spatial_filter,
+                &raqe.grouping_labels,
+            ))
             .or_default()
-            .push(rqe);
+            .push(raqe);
     }
     groups
         .iter()
-        .flat_map(|(&(_, metric, _), group)| {
-            candidate_deployments(group, costs, facts[metric].scrape_interval_secs)
+        .flat_map(|(&(_, metric, _, _), group)| {
+            candidate_deployments(
+                group,
+                costs,
+                facts[metric].scrape_interval_ms,
+                allow_undeployable_families,
+            )
         })
         .collect()
 }
@@ -124,15 +143,20 @@ pub fn build_all_candidates_unpruned(
 /// Remove a candidate only when another candidate can replace it in every
 /// mapping without making any modeled objective worse.
 ///
-/// This comparison is deliberately local to a (capability, metric, grouping)
-/// group, where `card(G)`, arrival rate and query output size are common
+/// This comparison is deliberately local to a (capability, metric,
+/// spatial_filter, grouping) group, where `card(G)`, arrival rate and query output size are common
 /// multipliers. So it compares ingest CPU and memory per group, then latency
-/// (merge and query CPU), merge memory and stored memory for each RQE the
+/// (merge and query CPU), merge memory and stored memory for each RAQE the
 /// dominated candidate can serve.
-pub fn prune_dominated_candidates(rqes: &[Rqe], candidates: Vec<Deployment>) -> Vec<Deployment> {
+pub fn prune_dominated_candidates(raqes: &[Raqe], candidates: Vec<Deployment>) -> Vec<Deployment> {
     let eligibility: Vec<Vec<bool>> = candidates
         .iter()
-        .map(|candidate| rqes.iter().map(|rqe| is_eligible(rqe, candidate)).collect())
+        .map(|candidate| {
+            raqes
+                .iter()
+                .map(|raqe| is_eligible(raqe, candidate))
+                .collect()
+        })
         .collect();
 
     candidates
@@ -148,7 +172,7 @@ pub fn prune_dominated_candidates(rqes: &[Rqe], candidates: Vec<Deployment>) -> 
                     &eligibility[other_index],
                     candidate,
                     &eligibility[candidate_index],
-                    rqes,
+                    raqes,
                 ) {
                     Dominance::StrictlyBetter => true,
                     // The earlier of two identical candidates wins, so a tie
@@ -168,17 +192,18 @@ enum Dominance {
     NotDominating,
 }
 
-/// Whether `replacement` can stand in for `original`: it serves every RQE
+/// Whether `replacement` can stand in for `original`: it serves every RAQE
 /// `original` serves and is no worse on any cost.
 fn dominance(
     replacement: &Deployment,
     replacement_coverage: &[bool],
     original: &Deployment,
     original_coverage: &[bool],
-    rqes: &[Rqe],
+    raqes: &[Raqe],
 ) -> Dominance {
     let same_group = replacement.capability == original.capability
         && replacement.metric == original.metric
+        && replacement.spatial_filter == original.spatial_filter
         && replacement.grouping_labels == original.grouping_labels;
     let covers_original = original_coverage
         .iter()
@@ -193,22 +218,22 @@ fn dominance(
         (ingest_cpu(replacement), ingest_cpu(original)),
         (ingest_memory(replacement), ingest_memory(original)),
     ];
-    for (rqe, _) in rqes
+    for (raqe, _) in raqes
         .iter()
         .zip(original_coverage)
         .filter(|(_, &serves)| serves)
     {
         costs.push((
-            query_latency(replacement, rqe),
-            query_latency(original, rqe),
+            query_latency(replacement, raqe),
+            query_latency(original, raqe),
         ));
         costs.push((
-            merge_memory_per_group(rqe, replacement),
-            merge_memory_per_group(rqe, original),
+            merge_memory_per_group(raqe, replacement),
+            merge_memory_per_group(raqe, original),
         ));
         costs.push((
-            stored_memory(replacement, rqe),
-            stored_memory(original, rqe),
+            stored_memory(replacement, raqe),
+            stored_memory(original, raqe),
         ));
     }
 
@@ -248,23 +273,23 @@ fn ingest_memory(deployment: &Deployment) -> f64 {
     open_window_count(deployment) * deployment.config.mem_bytes_per_instance
 }
 
-fn query_latency(deployment: &Deployment, rqe: &Rqe) -> f64 {
+fn query_latency(deployment: &Deployment, raqe: &Raqe) -> f64 {
     let instances = deployment
-        .query_instance_count(rqe.lookback_secs)
-        .expect("candidate coverage only contains exactly tiled RQEs");
+        .query_instance_count(raqe.lookback_ms)
+        .expect("candidate coverage only contains exactly tiled RAQEs");
     deployment.config.query_cpu_secs
         + instances.saturating_sub(1) as f64 * deployment.config.merge_cpu_secs
 }
 
-/// Closed-window bytes per group when serving `rqe`.
-fn stored_memory(deployment: &Deployment, rqe: &Rqe) -> f64 {
+/// Closed-window bytes per group when serving `raqe`.
+fn stored_memory(deployment: &Deployment, raqe: &Raqe) -> f64 {
     deployment
-        .closed_instance_count(rqe.lookback_secs)
-        .expect("candidate coverage only contains exactly tiled RQEs") as f64
+        .closed_instance_count(raqe.lookback_ms)
+        .expect("candidate coverage only contains exactly tiled RAQEs") as f64
         * deployment.config.mem_bytes_per_instance
 }
 
-pub fn eligible_deployments_for(r: &Rqe, deployments: &[Deployment]) -> Vec<usize> {
+pub fn eligible_deployments_for(r: &Raqe, deployments: &[Deployment]) -> Vec<usize> {
     deployments
         .iter()
         .enumerate()
@@ -273,15 +298,16 @@ pub fn eligible_deployments_for(r: &Rqe, deployments: &[Deployment]) -> Vec<usiz
         .collect()
 }
 
-pub fn is_eligible(r: &Rqe, d: &Deployment) -> bool {
+pub fn is_eligible(r: &Raqe, d: &Deployment) -> bool {
     r.capability == d.capability
         && r.metric == d.metric
+        && r.spatial_filter == d.spatial_filter
         && r.grouping_labels == d.grouping_labels
-        && d.window_secs != 0
-        && d.slide_secs != 0
-        && d.window_secs.is_multiple_of(d.slide_secs)
-        && r.lookback_secs.is_multiple_of(d.window_secs)
-        && r.interval_secs.is_multiple_of(d.slide_secs)
+        && d.window_ms != 0
+        && d.slide_ms != 0
+        && d.window_ms.is_multiple_of(d.slide_ms)
+        && r.lookback_ms.is_multiple_of(d.window_ms)
+        && r.interval_ms.is_multiple_of(d.slide_ms)
         && r.accuracy_ok_for(&d.config)
 }
 
@@ -291,17 +317,19 @@ mod tests {
     use crate::test_support::{facts, METRIC};
     use crate::{AccuracyDirection, LabelSet};
     use std::collections::BTreeMap;
-    fn rqe(id: &str, lookback: Seconds, interval: Seconds) -> Rqe {
-        Rqe {
+    fn raqe(id: &str, lookback: Millis, interval: Millis) -> Raqe {
+        Raqe {
             id: id.into(),
             capability: Capability::TopK,
-            lookback_secs: lookback,
-            interval_secs: interval,
+            lookback_ms: lookback,
+            interval_ms: interval,
             metric: METRIC.into(),
+            spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
             accuracy_metric: "err".into(),
-            accuracy_tolerance: 1.0,
+            accuracy_sla: 1.0,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         }
     }
     fn cost() -> AtomicCostEntry {
@@ -317,32 +345,50 @@ mod tests {
     }
     #[test]
     fn shared_slide_comes_from_subset_gcd_not_all_divisors() {
-        let rqes = vec![rqe("a", 60, 20), rqe("b", 60, 30)];
-        let candidates = build_all_candidates(&rqes, &[cost()], &facts(1, 1));
+        let raqes = vec![raqe("a", 60_000, 20_000), raqe("b", 60_000, 30_000)];
+        let candidates = build_all_candidates(&raqes, &[cost()], &facts(1, 1), false);
         let slides: BTreeSet<_> = candidates
             .iter()
-            .filter(|d| d.window_secs == 60)
-            .map(|d| d.slide_secs)
+            .filter(|d| d.window_ms == 60_000)
+            .map(|d| d.slide_ms)
             .collect();
-        assert_eq!(slides, BTreeSet::from([10, 20, 30]));
+        assert_eq!(slides, BTreeSet::from([10_000, 20_000, 30_000]));
     }
     #[test]
     fn windows_and_slides_are_multiples_of_the_scrape_interval() {
-        let rqes = vec![rqe("a", 60, 20), rqe("b", 60, 30)];
+        let raqes = vec![raqe("a", 60_000, 20_000), raqe("b", 60_000, 30_000)];
         let mut facts = facts(1, 1);
-        facts.get_mut(METRIC).unwrap().scrape_interval_secs = 15;
-        let candidates = build_all_candidates_unpruned(&rqes, &[cost()], &facts);
+        facts.get_mut(METRIC).unwrap().scrape_interval_ms = 15_000;
+        let candidates = build_all_candidates_unpruned(&raqes, &[cost()], &facts, false);
         assert!(!candidates.is_empty());
         // Without the filter, windows 1..60 and slides 10/20 would appear.
         assert!(candidates
             .iter()
-            .all(|d| d.window_secs % 15 == 0 && d.slide_secs % 15 == 0));
+            .all(|d| d.window_ms % 15_000 == 0 && d.slide_ms % 15_000 == 0));
     }
     #[test]
+    fn different_spatial_filters_never_share_a_deployment() {
+        let unfiltered = raqe("a", 60_000, 60_000);
+        let filtered = Raqe {
+            spatial_filter: r#"{job="api"}"#.into(),
+            ..raqe("b", 60_000, 60_000)
+        };
+        let candidates = build_all_candidates(
+            &[unfiltered.clone(), filtered.clone()],
+            &[cost()],
+            &facts(1, 1),
+            false,
+        );
+        assert!(candidates
+            .iter()
+            .all(|d| is_eligible(&unfiltered, d) != is_eligible(&filtered, d)));
+    }
+
+    #[test]
     fn a_min_query_is_only_offered_the_min_accumulator() {
-        let r = Rqe {
+        let r = Raqe {
             capability: Capability::Min,
-            ..rqe("r", 60, 60)
+            ..raqe("r", 60_000, 60_000)
         };
         let named = |sketch: &str| AtomicCostEntry {
             sketch: sketch.into(),
@@ -352,52 +398,74 @@ mod tests {
             &[r],
             &[named("exact-min"), named("exact-max")],
             &facts(1, 1),
+            false,
         );
         assert!(!candidates.is_empty());
         assert!(candidates.iter().all(|d| d.config.sketch == "exact-min"));
     }
 
     #[test]
+    fn undeployable_families_are_candidates_only_when_allowed() {
+        let r = Raqe {
+            capability: Capability::Quantile,
+            ..raqe("r", 60_000, 60_000)
+        };
+        let named = |sketch: &str| AtomicCostEntry {
+            sketch: sketch.into(),
+            ..cost()
+        };
+        let costs = [named("kll-percall"), named("dd")];
+        let candidates =
+            build_all_candidates(std::slice::from_ref(&r), &costs, &facts(1, 1), false);
+        assert!(!candidates.is_empty());
+        assert!(candidates.iter().all(|d| d.config.sketch == "kll-percall"));
+        let all = build_all_candidates_unpruned(&[r], &costs, &facts(1, 1), true);
+        assert!(all.iter().any(|d| d.config.sketch == "dd"));
+    }
+
+    #[test]
     fn eligibility_requires_exact_non_overlapping_tiling() {
-        let r = rqe("r", 600, 180);
+        let r = raqe("r", 600_000, 180_000);
         let d = Deployment {
             capability: Capability::TopK,
             metric: METRIC.into(),
+            spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
             config: cost(),
-            window_secs: 120,
-            slide_secs: 60,
+            window_ms: 120_000,
+            slide_ms: 60_000,
         };
         assert!(is_eligible(&r, &d));
         assert!(!is_eligible(
             &r,
             &Deployment {
-                window_secs: 128,
+                window_ms: 128_000,
                 ..d.clone()
             }
         ));
         assert!(!is_eligible(
             &r,
             &Deployment {
-                slide_secs: 70,
+                slide_ms: 70_000,
                 ..d
             }
         ));
     }
 
     #[test]
-    fn prunes_finer_slide_when_the_coarser_slide_serves_the_same_rqe() {
-        let r = rqe("r", 60, 60);
+    fn prunes_finer_slide_when_the_coarser_slide_serves_the_same_raqe() {
+        let r = raqe("r", 60_000, 60_000);
         let coarse = Deployment {
             capability: Capability::TopK,
             metric: METRIC.into(),
+            spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
             config: cost(),
-            window_secs: 60,
-            slide_secs: 60,
+            window_ms: 60_000,
+            slide_ms: 60_000,
         };
         let fine = Deployment {
-            slide_secs: 30,
+            slide_ms: 30_000,
             ..coarse.clone()
         };
 
@@ -408,19 +476,20 @@ mod tests {
 
     #[test]
     fn retains_candidate_with_lower_query_latency() {
-        let r = rqe("r", 60, 60);
+        let r = raqe("r", 60_000, 60_000);
         let cost = cost();
         let large_window = Deployment {
             capability: Capability::TopK,
             metric: METRIC.into(),
+            spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
             config: cost.clone(),
-            window_secs: 60,
-            slide_secs: 60,
+            window_ms: 60_000,
+            slide_ms: 60_000,
         };
         let small_window = Deployment {
-            window_secs: 30,
-            slide_secs: 30,
+            window_ms: 30_000,
+            slide_ms: 30_000,
             ..large_window.clone()
         };
 
@@ -432,18 +501,19 @@ mod tests {
 
     #[test]
     fn retains_candidate_with_lower_stored_memory() {
-        let r = rqe("r", 60, 60);
+        let r = raqe("r", 60_000, 60_000);
         // Stores (60 − 60) / 60 + 1 = 1 closed instance of 10 bytes.
         let whole_window = Deployment {
             capability: Capability::TopK,
             metric: METRIC.into(),
+            spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
             config: AtomicCostEntry {
                 mem_bytes_per_instance: 10.0,
                 ..cost()
             },
-            window_secs: 60,
-            slide_secs: 60,
+            window_ms: 60_000,
+            slide_ms: 60_000,
         };
         // Smaller, faster sketches, but (60 − 20) / 20 + 1 = 3 of them: 18 bytes.
         let panes = Deployment {
@@ -453,8 +523,8 @@ mod tests {
                 merge_cpu_secs: 0.1,
                 ..cost()
             },
-            window_secs: 20,
-            slide_secs: 20,
+            window_ms: 20_000,
+            slide_ms: 20_000,
             ..whole_window.clone()
         };
 
@@ -465,18 +535,19 @@ mod tests {
 
     #[test]
     fn retains_direct_query_candidate_that_never_merges() {
-        let r = rqe("r", 60, 60);
+        let r = raqe("r", 60_000, 60_000);
         // x == L: no merge, so no merge memory.
         let direct = Deployment {
             capability: Capability::TopK,
             metric: METRIC.into(),
+            spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
             config: AtomicCostEntry {
                 mem_bytes_per_instance: 10.0,
                 ..cost()
             },
-            window_secs: 60,
-            slide_secs: 60,
+            window_ms: 60_000,
+            slide_ms: 60_000,
         };
         // Smaller and cheaper on every other cost, but merges two windows,
         // holding a 4-byte accumulator per group.
@@ -487,8 +558,8 @@ mod tests {
                 merge_cpu_secs: 0.1,
                 ..cost()
             },
-            window_secs: 30,
-            slide_secs: 30,
+            window_ms: 30_000,
+            slide_ms: 30_000,
             ..direct.clone()
         };
 

@@ -1,4 +1,4 @@
-//! Non-dominated filtering for `(CPU, memory, per-RQE latency)`.
+//! Non-dominated filtering for `(CPU, memory, per-RAQE latency)`.
 
 use crate::{analytical_cost_model::PlanCost, Mapping};
 
@@ -17,7 +17,7 @@ fn dominates(a: &[f64], b: &[f64]) -> bool {
 
 fn pareto_vector(plan_cost: &PlanCost) -> Vec<f64> {
     let mut vector = vec![plan_cost.cpu_secs_per_sec(), plan_cost.memory_bytes()];
-    vector.extend(&plan_cost.query_latency_secs);
+    vector.extend(&plan_cost.query_latency_ms);
     vector
 }
 
@@ -87,7 +87,7 @@ mod tests {
             merge: PhaseCost::default(),
             query: PhaseCost::default(),
             storage: PhaseCost::default(),
-            query_latency_secs: vec![latency],
+            query_latency_ms: vec![latency],
         }
     }
 

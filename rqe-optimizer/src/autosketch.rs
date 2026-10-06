@@ -5,23 +5,23 @@
 //! fixed CMS width/depth grid to each variant's measured parameter axes.
 //!
 //! AutoSketch plans one query at a time, never shares state across queries,
-//! and constrains accuracy only. So every RQE is searched independently,
+//! and constrains accuracy only. So every RAQE is searched independently,
 //! gets its own deployment, and latency is not considered.
 //!
 //! One extension over the paper: AutoSketch's compiler maps an operator to one
 //! sketch algorithm and tunes its parameters, while this search covers every
-//! variant serving the RQE's capability and keeps the cheapest, so it chooses
-//! from the same sketches as the MILP.
+//! deployable variant serving the RAQE's capability and keeps the cheapest,
+//! so it chooses from the same sketches as the MILP.
 
 use crate::candidates::gcd;
-use crate::{AtomicCostEntry, Deployment, Mapping, Rqe, Seconds};
+use crate::{AtomicCostEntry, Deployment, Mapping, Millis, Raqe};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
-/// One RQE's search. `selected` and `probes` index into the cost table.
+/// One RAQE's search. `selected` and `probes` index into the cost table.
 #[derive(Debug, Clone)]
-pub struct RqeSearch {
-    pub rqe_id: String,
+pub struct RaqeSearch {
+    pub raqe_id: String,
     /// Smallest feasible configuration found; `None` means unservable.
     pub selected: Option<usize>,
     /// Distinct configurations whose accuracy was evaluated, in order.
@@ -29,78 +29,90 @@ pub struct RqeSearch {
     pub search_wall_secs: f64,
 }
 
-/// A whole-workload plan: one dedicated deployment per RQE, so identical
-/// choices are still paid for once per RQE, and the identity mapping.
+/// A whole-workload plan: one dedicated deployment per RAQE, so identical
+/// choices are still paid for once per RAQE, and the identity mapping.
 #[derive(Debug, Clone)]
 pub struct AutoSketchPlan {
     pub deployments: Vec<Deployment>,
     pub mapping: Mapping,
-    pub searches: Vec<RqeSearch>,
+    pub searches: Vec<RaqeSearch>,
 }
 
 /// One sliding sketch per query window: `x = S`, `y = T`, or `gcd(S, T)`
 /// when `T` does not divide `S`, so the window still tiles into slides.
-pub fn window_adapter(rqe: &Rqe) -> (Seconds, Seconds) {
-    (rqe.lookback_secs, gcd(rqe.lookback_secs, rqe.interval_secs))
+pub fn window_adapter(raqe: &Raqe) -> (Millis, Millis) {
+    (raqe.lookback_ms, gcd(raqe.lookback_ms, raqe.interval_ms))
 }
 
-/// Search every RQE independently. `accuracy` is the benchmark oracle: the
-/// measured metric named by `rqe.accuracy_metric` for a configuration, or
-/// `None` when it was not measured. Returns the IDs of unservable RQEs.
+/// Search every RAQE independently. `accuracy` is the benchmark oracle: the
+/// measured metric named by `raqe.accuracy_metric` for a configuration, or
+/// `None` when it was not measured. Returns the IDs of unservable RAQEs.
+/// `allow_undeployable_families` as in
+/// [`crate::Capability::candidate_families`].
 pub fn plan(
-    rqes: &[Rqe],
+    raqes: &[Raqe],
     costs: &[AtomicCostEntry],
     seed: u64,
-    mut accuracy: impl FnMut(&Rqe, &AtomicCostEntry) -> Option<f64>,
+    allow_undeployable_families: bool,
+    mut accuracy: impl FnMut(&Raqe, &AtomicCostEntry) -> Option<f64>,
 ) -> Result<AutoSketchPlan, Vec<String>> {
-    let searches: Vec<_> = rqes
+    let searches: Vec<_> = raqes
         .iter()
-        .map(|rqe| search(rqe, costs, seed, &mut accuracy))
+        .map(|raqe| {
+            search(
+                raqe,
+                costs,
+                seed,
+                allow_undeployable_families,
+                &mut accuracy,
+            )
+        })
         .collect();
     let unservable: Vec<_> = searches
         .iter()
         .filter(|s| s.selected.is_none())
-        .map(|s| s.rqe_id.clone())
+        .map(|s| s.raqe_id.clone())
         .collect();
     if !unservable.is_empty() {
         return Err(unservable);
     }
-    let deployments = rqes
+    let deployments = raqes
         .iter()
         .zip(&searches)
-        .map(|(rqe, s)| {
-            let (window_secs, slide_secs) = window_adapter(rqe);
+        .map(|(raqe, s)| {
+            let (window_ms, slide_ms) = window_adapter(raqe);
             Deployment {
-                capability: rqe.capability,
-                metric: rqe.metric.clone(),
-                grouping_labels: rqe.grouping_labels.clone(),
-                config: costs[s.selected.expect("unservable RQEs returned above")].clone(),
-                window_secs,
-                slide_secs,
+                capability: raqe.capability,
+                metric: raqe.metric.clone(),
+                spatial_filter: raqe.spatial_filter.clone(),
+                grouping_labels: raqe.grouping_labels.clone(),
+                config: costs[s.selected.expect("unservable RAQEs returned above")].clone(),
+                window_ms,
+                slide_ms,
             }
         })
         .collect();
     Ok(AutoSketchPlan {
         deployments,
-        mapping: (0..rqes.len()).collect(),
+        mapping: (0..raqes.len()).collect(),
         searches,
     })
 }
 
-/// Algorithm 4 for one RQE: LHS seeds per sketch variant, then
+/// Algorithm 4 for one RAQE: LHS seeds per sketch variant, then
 /// feasibility-directed neighbor search with the paper's pruning and
 /// stopping rules. Minimizes memory per instance, then insert CPU.
 pub fn search(
-    rqe: &Rqe,
+    raqe: &Raqe,
     costs: &[AtomicCostEntry],
     seed: u64,
-    mut accuracy: impl FnMut(&Rqe, &AtomicCostEntry) -> Option<f64>,
-) -> RqeSearch {
+    allow_undeployable_families: bool,
+    mut accuracy: impl FnMut(&Raqe, &AtomicCostEntry) -> Option<f64>,
+) -> RaqeSearch {
     let started = Instant::now();
-    let grids: Vec<Grid> = rqe
+    let grids: Vec<Grid> = raqe
         .capability
-        .families()
-        .iter()
+        .candidate_families(allow_undeployable_families)
         .filter_map(|variant| Grid::new(variant, costs))
         .collect();
 
@@ -132,8 +144,8 @@ pub fn search(
             continue;
         }
         probes.push(index);
-        let feasible = accuracy(rqe, &costs[index])
-            .is_some_and(|value| value.is_finite() && rqe.accuracy_ok(value));
+        let feasible = accuracy(raqe, &costs[index])
+            .is_some_and(|value| value.is_finite() && raqe.accuracy_ok(value));
         evaluated.insert(index, feasible);
         if feasible && best.is_none_or(|b| cheaper(index, b)) {
             best = Some(index);
@@ -163,8 +175,8 @@ pub fn search(
         }
     }
 
-    RqeSearch {
-        rqe_id: rqe.id.clone(),
+    RaqeSearch {
+        raqe_id: raqe.id.clone(),
         selected: best,
         probes,
         search_wall_secs: started.elapsed().as_secs_f64(),
@@ -351,27 +363,29 @@ mod tests {
             .collect()
     }
 
-    fn rqe(id: &str, lookback: Seconds, interval: Seconds, tolerance: f64) -> Rqe {
-        Rqe {
+    fn raqe(id: &str, lookback: Millis, interval: Millis, tolerance: f64) -> Raqe {
+        Raqe {
             id: id.into(),
             capability: Capability::TopK,
-            lookback_secs: lookback,
-            interval_secs: interval,
+            lookback_ms: lookback,
+            interval_ms: interval,
             metric: METRIC.into(),
+            spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
             accuracy_metric: ERR.into(),
-            accuracy_tolerance: tolerance,
+            accuracy_sla: tolerance,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         }
     }
 
-    fn table_accuracy(rqe: &Rqe, config: &AtomicCostEntry) -> Option<f64> {
-        config.query_accuracy.get(&rqe.accuracy_metric).copied()
+    fn table_accuracy(raqe: &Raqe, config: &AtomicCostEntry) -> Option<f64> {
+        config.query_accuracy.get(&raqe.accuracy_metric).copied()
     }
 
-    fn cheapest_feasible(rqe: &Rqe, costs: &[AtomicCostEntry]) -> usize {
+    fn cheapest_feasible(raqe: &Raqe, costs: &[AtomicCostEntry]) -> usize {
         (0..costs.len())
-            .filter(|&i| rqe.accuracy_ok_for(&costs[i]))
+            .filter(|&i| raqe.accuracy_ok_for(&costs[i]))
             .min_by(|&a, &b| compare_resources(&costs[a], &costs[b]))
             .unwrap()
     }
@@ -381,8 +395,8 @@ mod tests {
         let costs = grid(&[1, 2, 3], &[100, 200, 400, 800]);
         // Needs rows * cols >= 1000: rows=3 cols=400 (1200 counters) is the
         // smallest; rows=2 cols=800 and rows=3 cols=800 also pass.
-        let r = rqe("r", 3_600, 60, 1.0 / 1_000.0);
-        let found = search(&r, &costs, 7, table_accuracy);
+        let r = raqe("r", 3_600_000, 60_000, 1.0 / 1_000.0);
+        let found = search(&r, &costs, 7, false, table_accuracy);
         assert_eq!(found.selected, Some(cheapest_feasible(&r, &costs)));
     }
 
@@ -391,8 +405,8 @@ mod tests {
         let rows: Vec<u64> = (1..=8).collect();
         let cols: Vec<u64> = (0..8).map(|i| 64 << i).collect();
         let costs = grid(&rows, &cols);
-        let r = rqe("r", 3_600, 60, 1.0 / 2_000.0);
-        let found = search(&r, &costs, 42, table_accuracy);
+        let r = raqe("r", 3_600_000, 60_000, 1.0 / 2_000.0);
+        let found = search(&r, &costs, 42, false, table_accuracy);
         assert!(found.selected.is_some());
         assert!(
             found.probes.len() < costs.len(),
@@ -406,15 +420,18 @@ mod tests {
     #[test]
     fn never_shares_identical_choices() {
         let costs = grid(&[2, 3], &[256, 512]);
-        let rqes = vec![rqe("a", 3_600, 60, 0.01), rqe("b", 3_600, 60, 0.01)];
-        let plan = plan(&rqes, &costs, 1, table_accuracy).unwrap();
+        let raqes = vec![
+            raqe("a", 3_600_000, 60_000, 0.01),
+            raqe("b", 3_600_000, 60_000, 0.01),
+        ];
+        let plan = plan(&raqes, &costs, 1, false, table_accuracy).unwrap();
         assert_eq!(plan.deployments.len(), 2);
         assert_eq!(plan.deployments[0], plan.deployments[1]);
         assert_eq!(plan.mapping, vec![0, 1]);
 
         let facts = facts(1, 10);
-        let both = score(&rqes, &plan.deployments, &plan.mapping, &facts);
-        let one = score(&rqes[..1], &plan.deployments[..1], &vec![0], &facts);
+        let both = score(&raqes, &plan.deployments, &plan.mapping, &facts);
+        let one = score(&raqes[..1], &plan.deployments[..1], &vec![0], &facts);
         assert_eq!(
             both.ingest,
             PhaseCost {
@@ -428,24 +445,27 @@ mod tests {
     fn adapted_window_is_eligible() {
         let costs = grid(&[2, 3], &[256, 512]);
         // T divides S, and T does not divide S (gcd slide).
-        let rqes = vec![rqe("tiled", 3_600, 60, 0.01), rqe("gcd", 3_600, 280, 0.01)];
-        let plan = plan(&rqes, &costs, 1, table_accuracy).unwrap();
-        assert_eq!(window_adapter(&rqes[0]), (3_600, 60));
-        assert_eq!(window_adapter(&rqes[1]), (3_600, 40));
-        for (r, d) in rqes.iter().zip(&plan.deployments) {
+        let raqes = vec![
+            raqe("tiled", 3_600_000, 60_000, 0.01),
+            raqe("gcd", 3_600_000, 280_000, 0.01),
+        ];
+        let plan = plan(&raqes, &costs, 1, false, table_accuracy).unwrap();
+        assert_eq!(window_adapter(&raqes[0]), (3_600_000, 60_000));
+        assert_eq!(window_adapter(&raqes[1]), (3_600_000, 40_000));
+        for (r, d) in raqes.iter().zip(&plan.deployments) {
             assert!(is_eligible(r, d), "{} not eligible", r.id);
         }
     }
 
     #[test]
-    fn reports_unservable_rqe() {
+    fn reports_unservable_raqe() {
         let costs = grid(&[2, 3], &[256, 512]);
-        let rqes = vec![
-            rqe("ok", 3_600, 60, 0.01),
-            rqe("too_strict", 3_600, 60, 1e-9),
+        let raqes = vec![
+            raqe("ok", 3_600_000, 60_000, 0.01),
+            raqe("too_strict", 3_600_000, 60_000, 1e-9),
         ];
         assert_eq!(
-            plan(&rqes, &costs, 1, table_accuracy).unwrap_err(),
+            plan(&raqes, &costs, 1, false, table_accuracy).unwrap_err(),
             vec!["too_strict".to_string()]
         );
     }
@@ -453,8 +473,8 @@ mod tests {
     #[test]
     fn missing_measurement_is_infeasible() {
         let costs = grid(&[2, 3], &[256, 512]);
-        let r = rqe("r", 3_600, 60, 0.01);
-        let found = search(&r, &costs, 1, |_, _| None);
+        let r = raqe("r", 3_600_000, 60_000, 0.01);
+        let found = search(&r, &costs, 1, false, |_, _| None);
         assert_eq!(found.selected, None);
         assert_eq!(found.probes.len(), costs.len());
     }
@@ -471,10 +491,10 @@ mod tests {
         }
     }
 
-    fn quantile_rqe(tolerance: f64) -> Rqe {
-        Rqe {
+    fn quantile_raqe(tolerance: f64) -> Raqe {
+        Raqe {
             capability: Capability::Quantile,
-            ..rqe("q", 3_600, 60, tolerance)
+            ..raqe("q", 3_600_000, 60_000, tolerance)
         }
     }
 
@@ -484,9 +504,9 @@ mod tests {
         // because the seed is measured. A feasible seed shrinks to k = 5 and
         // stops; an infeasible one grows to k = 6 and stops.
         let costs: Vec<_> = (1..=10).map(kll).collect();
-        let r = quantile_rqe(1.0 / 6.0);
+        let r = quantile_raqe(1.0 / 6.0);
         for seed in 0..20 {
-            let found = search(&r, &costs, seed, table_accuracy);
+            let found = search(&r, &costs, seed, false, table_accuracy);
             let ks: Vec<u64> = found.probes.iter().map(|&i| i as u64 + 1).collect();
             assert_eq!(found.selected, Some(5), "seed {seed}: {ks:?}");
             let s = ks[0];
@@ -501,13 +521,14 @@ mod tests {
 
     #[test]
     fn chooses_the_cheaper_variant() {
+        // countsketch-heap isn't deployable, so this needs the study flag.
         let mut costs = grid(&[2, 3], &[256, 512]);
         let mut cs = cms(2, 256);
         cs.sketch = "countsketch-heap-topk-fastpath-vector2d".into();
         cs.mem_bytes_per_instance = 100.0;
         costs.push(cs);
-        let r = rqe("r", 3_600, 60, 0.01);
-        let found = search(&r, &costs, 3, table_accuracy);
+        let r = raqe("r", 3_600_000, 60_000, 0.01);
+        let found = search(&r, &costs, 3, true, table_accuracy);
         assert_eq!(found.selected, Some(costs.len() - 1));
     }
 
@@ -521,11 +542,11 @@ mod tests {
                 c
             })
             .collect();
-        let r = Rqe {
+        let r = Raqe {
             accuracy_direction: AccuracyDirection::HigherIsBetter,
-            ..quantile_rqe(0.95)
+            ..quantile_raqe(0.95)
         };
-        let found = search(&r, &costs, 11, table_accuracy);
+        let found = search(&r, &costs, 11, false, table_accuracy);
         assert_eq!(found.selected, Some(4)); // k = 5: 0.95
     }
 

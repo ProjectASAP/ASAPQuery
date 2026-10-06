@@ -9,9 +9,9 @@
 //! no translation layer, since `rqe_optimizer::Deployment` embeds
 //! `AtomicCostEntry` directly.
 //!
-//! Every other number this example uses (RQE definitions, metric labels,
+//! Every other number this example uses (RAQE definitions, metric labels,
 //! cardinalities and scrape intervals) lives in the two tables below
-//! (`facts`, `rqes`) and nowhere else in this file.
+//! (`facts`, `raqes`) and nowhere else in this file.
 //!
 //! Run: `scripts/export_rqe_optimizer_costs.sh` once. Do not run this example
 //! with no mode flag on a large workload: eager mode retains every feasible
@@ -23,8 +23,10 @@
 //! `--print-first N` to display example mappings. `--milp` minimizes
 //! `w_cpu · CPU + w_mem · memory GiB` without enumerating mappings; set the
 //! weights with `--w-cpu X --w-mem Y` (default 1 and 0). Repeat
-//! `--latency-limit RQE_ID=SECONDS` to impose MILP latency bounds.
+//! `--latency-sla RAQE_ID=MS` to impose MILP latency SLAs.
 //! `--sample-mappings N` prints N feasible mappings and exits.
+//! `--allow-undeployable-families` also plans with measured families
+//! ASAPQuery can't deploy (dd, univmon-*, countsketch-heap).
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -34,16 +36,16 @@ use rqe_optimizer::candidates::{
     build_all_candidates, build_all_candidates_unpruned, eligible_deployments_for,
 };
 use rqe_optimizer::enumerate::{brute_force, for_each_mapping, for_each_mapping_while, unservable};
-use rqe_optimizer::milp::{minimize, MilpBounds, Objective};
+use rqe_optimizer::milp::{minimize, Objective};
 use rqe_optimizer::pareto::{pareto_front, ParetoFront};
 use rqe_optimizer::{
-    validate_facts, AccuracyDirection, AtomicCostTable, Capability, LabelSet, MetricFacts, Rqe,
+    validate_facts, AccuracyDirection, AtomicCostTable, Capability, LabelSet, MetricFacts, Raqe,
     WorkloadFacts,
 };
 
 /// Accuracy metric keys the real comparators actually report (checked
 /// against `aqpbm-core/src/accuracy/{aggregate,quantile,cardinality}.rs`).
-/// These three are lower-is-better errors; each RQE below pairs its metric with the matching
+/// These three are lower-is-better errors; each RAQE below pairs its metric with the matching
 /// [`AccuracyDirection`] so the comparison can't be applied the wrong way
 /// round.
 ///
@@ -81,7 +83,7 @@ fn load_cost_table() -> AtomicCostTable {
 fn facts() -> WorkloadFacts {
     let http_metric_facts = || MetricFacts {
         labels: label_set(&["service", "endpoint", "pod"]),
-        scrape_interval_secs: 15,
+        scrape_interval_ms: 15_000,
         cardinality: [
             (label_set(&["service"]), 5),
             (label_set(&["service", "endpoint"]), 50),
@@ -96,103 +98,119 @@ fn facts() -> WorkloadFacts {
     .into()
 }
 
-fn rqes() -> Vec<Rqe> {
+fn raqes() -> Vec<Raqe> {
     let se = label_set(&["service", "endpoint"]);
     let s = label_set(&["service"]);
     let requests = || REQUESTS.to_string();
     let duration = || DURATION.to_string();
     vec![
-        Rqe {
+        Raqe {
             id: "req_rate_1h".to_string(),
             capability: Capability::RateOrIncrease,
-            lookback_secs: 3_600,
-            interval_secs: 60,
+            lookback_ms: 3_600_000,
+            interval_ms: 60_000,
             metric: requests(),
+            spatial_filter: String::new(),
             grouping_labels: se.clone(),
             accuracy_metric: RATE_ERR.to_string(),
-            accuracy_tolerance: 0.1,
+            accuracy_sla: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         },
-        Rqe {
+        Raqe {
             id: "req_rate_1d".to_string(),
             capability: Capability::RateOrIncrease,
-            lookback_secs: 86_400,
-            interval_secs: 60,
+            lookback_ms: 86_400_000,
+            interval_ms: 60_000,
             metric: requests(),
+            spatial_filter: String::new(),
             grouping_labels: se.clone(),
             accuracy_metric: RATE_ERR.to_string(),
-            accuracy_tolerance: 0.1,
+            accuracy_sla: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         },
-        Rqe {
+        Raqe {
             id: "req_rate_5m_tick".to_string(),
             capability: Capability::RateOrIncrease,
-            lookback_secs: 3_600,
-            interval_secs: 300,
+            lookback_ms: 3_600_000,
+            interval_ms: 300_000,
             metric: requests(),
+            spatial_filter: String::new(),
             grouping_labels: se.clone(),
             accuracy_metric: RATE_ERR.to_string(),
-            accuracy_tolerance: 0.1,
+            accuracy_sla: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         },
-        Rqe {
+        Raqe {
             id: "latency_p99_1h".to_string(),
             capability: Capability::Quantile,
-            lookback_secs: 3_600,
-            interval_secs: 60,
+            lookback_ms: 3_600_000,
+            interval_ms: 60_000,
             metric: duration(),
+            spatial_filter: String::new(),
             grouping_labels: se.clone(),
             accuracy_metric: RANK_ERR.to_string(),
-            accuracy_tolerance: 0.05,
+            accuracy_sla: 0.05,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         },
-        Rqe {
+        Raqe {
             id: "latency_p99_6h_tick".to_string(),
             capability: Capability::Quantile,
-            lookback_secs: 21_600,
-            interval_secs: 300,
+            lookback_ms: 21_600_000,
+            interval_ms: 300_000,
             metric: duration(),
+            spatial_filter: String::new(),
             grouping_labels: se.clone(),
             accuracy_metric: RANK_ERR.to_string(),
-            accuracy_tolerance: 0.05,
+            accuracy_sla: 0.05,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         },
-        Rqe {
+        Raqe {
             id: "latency_p99_1d".to_string(),
             capability: Capability::Quantile,
-            lookback_secs: 86_400,
-            interval_secs: 60,
+            lookback_ms: 86_400_000,
+            interval_ms: 60_000,
             metric: duration(),
+            spatial_filter: String::new(),
             grouping_labels: se.clone(),
             accuracy_metric: RANK_ERR.to_string(),
-            accuracy_tolerance: 0.05,
+            accuracy_sla: 0.05,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         },
-        Rqe {
+        Raqe {
             id: "distinct_services_1h".to_string(),
             capability: Capability::Cardinality,
-            lookback_secs: 3_600,
-            interval_secs: 60,
+            lookback_ms: 3_600_000,
+            interval_ms: 60_000,
             metric: requests(),
+            spatial_filter: String::new(),
             grouping_labels: s.clone(),
             accuracy_metric: CARDINALITY_ERR.to_string(),
-            accuracy_tolerance: 0.1,
+            accuracy_sla: 0.1,
             accuracy_direction: AccuracyDirection::LowerIsBetter,
+            latency_sla_ms: None,
         },
         // The higher-is-better case: 0.9 is a *floor* on precision@k, not a
         // ceiling on error. Served by cms-heap, whose measured precision is
         // 1.0 at both configs under the zipf workload (it was 0.0 at both
         // under uniform -- top-k is meaningless without real skew).
-        Rqe {
+        Raqe {
             id: "top_endpoints_1h".to_string(),
             capability: Capability::TopK,
-            lookback_secs: 3_600,
-            interval_secs: 60,
+            lookback_ms: 3_600_000,
+            interval_ms: 60_000,
             metric: requests(),
+            spatial_filter: String::new(),
             grouping_labels: se.clone(),
             accuracy_metric: TOPK_PRECISION.to_string(),
-            accuracy_tolerance: 0.9,
+            accuracy_sla: 0.9,
             accuracy_direction: AccuracyDirection::HigherIsBetter,
+            latency_sla_ms: None,
         },
     ]
 }
@@ -214,57 +232,65 @@ fn positive_integer_flag(name: &str, default: u64) -> u64 {
 fn print_mapping(
     mapping_number: u64,
     mapping: &[usize],
-    rqes: &[Rqe],
+    raqes: &[Raqe],
     deployments: &[rqe_optimizer::Deployment],
 ) {
     println!("mapping {mapping_number}:");
-    for (rqe, &deployment_index) in rqes.iter().zip(mapping) {
+    for (raqe, &deployment_index) in raqes.iter().zip(mapping) {
         let deployment = &deployments[deployment_index];
         println!(
-            "  {} -> {} {} (x={}s, y={}s)",
-            rqe.id,
+            "  {} -> {} {} (x={}ms, y={}ms)",
+            raqe.id,
             deployment.config.sketch,
             deployment.config.sketch_config,
-            deployment.window_secs,
-            deployment.slide_secs,
+            deployment.window_ms,
+            deployment.slide_ms,
         );
     }
 }
 
 fn print_candidate(candidate_number: usize, deployment: &rqe_optimizer::Deployment) {
     println!(
-        "candidate {candidate_number}: {} {} {} by {:?} (x={}s, y={}s)",
+        "candidate {candidate_number}: {} {} {} by {:?} (x={}ms, y={}ms)",
         deployment.config.sketch,
         deployment.config.sketch_config,
         deployment.metric,
         deployment.grouping_labels,
-        deployment.window_secs,
-        deployment.slide_secs,
+        deployment.window_ms,
+        deployment.slide_ms,
     );
 }
 
-fn latency_bounds(rqes: &[Rqe]) -> Vec<Option<f64>> {
+/// Only `--milp` enforces latency SLAs, so every other mode rejects the flag.
+/// `--candidates-only` and `--sample-mappings` run before the MILP branch.
+fn apply_latency_slas(raqes: &mut [Raqe]) {
     let args: Vec<_> = std::env::args().collect();
-    let mut bounds = vec![None; rqes.len()];
-    for pair in args.windows(2).filter(|pair| pair[0] == "--latency-limit") {
-        let (id, seconds) = pair[1]
+    let has = |flag: &str| args.iter().any(|arg| arg == flag);
+    assert!(
+        !has("--latency-sla")
+            || (has("--milp") && !has("--candidates-only") && !has("--sample-mappings")),
+        "--latency-sla is only enforced with --milp, without --candidates-only or --sample-mappings"
+    );
+    for pair in args.windows(2).filter(|pair| pair[0] == "--latency-sla") {
+        let (id, ms) = pair[1]
             .split_once('=')
-            .unwrap_or_else(|| panic!("--latency-limit expects RQE_ID=SECONDS"));
-        let seconds = seconds
+            .unwrap_or_else(|| panic!("--latency-sla expects RAQE_ID=MS"));
+        let ms = ms
             .parse::<f64>()
             .ok()
-            .filter(|value| *value > 0.0)
-            .unwrap_or_else(|| panic!("latency limit must be a positive number of seconds"));
-        let index = rqes
-            .iter()
-            .position(|rqe| rqe.id == id)
-            .unwrap_or_else(|| panic!("unknown RQE in --latency-limit: {id}"));
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or_else(|| {
+                panic!("latency SLA must be a finite positive number of milliseconds")
+            });
+        let raqe = raqes
+            .iter_mut()
+            .find(|raqe| raqe.id == id)
+            .unwrap_or_else(|| panic!("unknown RAQE in --latency-sla: {id}"));
         assert!(
-            bounds[index].replace(seconds).is_none(),
-            "duplicate latency limit for {id}"
+            raqe.latency_sla_ms.replace(ms).is_none(),
+            "duplicate latency SLA for {id}"
         );
     }
-    bounds
 }
 
 fn weight_flag(name: &str, default: f64) -> f64 {
@@ -301,19 +327,22 @@ fn print_plan_cost(label: &str, plan_cost: &PlanCost) {
 
 fn main() {
     let candidates_only = std::env::args().any(|arg| arg == "--candidates-only");
-    let rqes = rqes();
+    let mut raqes = raqes();
+    apply_latency_slas(&mut raqes);
     let cost_table = load_cost_table();
     let facts = facts();
-    if let Err(problems) = validate_facts(&rqes, &facts) {
+    if let Err(problems) = validate_facts(&raqes, &facts) {
         panic!("invalid workload facts: {problems:#?}");
     }
 
-    let unpruned_count =
-        candidates_only.then(|| build_all_candidates_unpruned(&rqes, &cost_table, &facts).len());
-    let deployments = build_all_candidates(&rqes, &cost_table, &facts);
+    let allow_undeployable = std::env::args().any(|arg| arg == "--allow-undeployable-families");
+    let unpruned_count = candidates_only.then(|| {
+        build_all_candidates_unpruned(&raqes, &cost_table, &facts, allow_undeployable).len()
+    });
+    let deployments = build_all_candidates(&raqes, &cost_table, &facts, allow_undeployable);
     println!(
-        "{} RQEs, {} candidate deployments (from {} real cost-table rows)",
-        rqes.len(),
+        "{} RAQEs, {} candidate deployments (from {} real cost-table rows)",
+        raqes.len(),
         deployments.len(),
         cost_table.len(),
     );
@@ -325,9 +354,9 @@ fn main() {
             unpruned_count - deployments.len(),
         );
         let mut possible_mappings = Some(1_u64);
-        for rqe in &rqes {
-            let eligible = eligible_deployments_for(rqe, &deployments);
-            println!("  {}: {} eligible deployments", rqe.id, eligible.len());
+        for raqe in &raqes {
+            let eligible = eligible_deployments_for(raqe, &deployments);
+            println!("  {}: {} eligible deployments", raqe.id, eligible.len());
             possible_mappings = possible_mappings.and_then(|count| {
                 count.checked_mul(eligible.len().try_into().expect("usize fits in u64"))
             });
@@ -347,7 +376,7 @@ fn main() {
         return;
     }
 
-    let missing = unservable(&rqes, &deployments);
+    let missing = unservable(&raqes, &deployments);
     if !missing.is_empty() {
         println!("unservable (no eligible deployment): {missing:?}");
         return;
@@ -356,9 +385,9 @@ fn main() {
     let sample_mappings = positive_integer_flag("--sample-mappings", 0);
     if sample_mappings > 0 {
         let mut printed = 0;
-        let result = for_each_mapping_while(&rqes, &deployments, |mapping| {
+        let result = for_each_mapping_while(&raqes, &deployments, |mapping| {
             printed += 1;
-            print_mapping(printed, mapping, &rqes, &deployments);
+            print_mapping(printed, mapping, &raqes, &deployments);
             printed < sample_mappings
         });
         println!(
@@ -374,23 +403,20 @@ fn main() {
     }
 
     if std::env::args().any(|arg| arg == "--milp") {
-        let bounds = MilpBounds {
-            max_query_latency_secs: latency_bounds(&rqes),
-        };
         let objective = Objective::AUCCost {
             w_cpu: weight_flag("--w-cpu", 1.0),
             w_mem: weight_flag("--w-mem", 0.0),
         };
-        let solution = minimize(&rqes, &deployments, &facts, &bounds, objective)
+        let solution = minimize(&raqes, &deployments, &facts, objective)
             .expect("small_problem MILP should be feasible");
         println!(
             "MILP solution for {objective:?}: {:.3e}",
             objective.value(&solution.plan_cost)
         );
         print_plan_cost("  totals", &solution.plan_cost);
-        print_mapping(1, &solution.mapping, &rqes, &deployments);
-        for (rqe, latency) in rqes.iter().zip(&solution.plan_cost.query_latency_secs) {
-            println!("  {}: query_latency={latency:.3e} sec", rqe.id);
+        print_mapping(1, &solution.mapping, &raqes, &deployments);
+        for (raqe, latency) in raqes.iter().zip(&solution.plan_cost.query_latency_ms) {
+            println!("  {}: query_latency={latency:.3e} ms", raqe.id);
         }
         return;
     }
@@ -401,11 +427,11 @@ fn main() {
         let print_first = positive_integer_flag("--print-first", 0);
         let started = Instant::now();
         let mut processed = 0_u64;
-        let mapping_count = for_each_mapping(&rqes, &deployments, |mapping| {
-            front.consider(mapping, score(&rqes, &deployments, mapping, &facts));
+        let mapping_count = for_each_mapping(&raqes, &deployments, |mapping| {
+            front.consider(mapping, score(&raqes, &deployments, mapping, &facts));
             processed += 1;
             if processed <= print_first {
-                print_mapping(processed, mapping, &rqes, &deployments);
+                print_mapping(processed, mapping, &raqes, &deployments);
             }
             if processed.is_multiple_of(progress_every) {
                 let elapsed_secs = started.elapsed().as_secs_f64();
@@ -428,12 +454,12 @@ fn main() {
         "WARNING: eager mode will retain every feasible mapping. For larger workloads, use --milp, \
          --candidates-only, or --sample-mappings N instead."
     );
-    let mappings = brute_force(&rqes, &deployments);
+    let mappings = brute_force(&raqes, &deployments);
     println!("{} feasible full mappings", mappings.len());
 
     let plan_costs: Vec<_> = mappings
         .iter()
-        .map(|m| score(&rqes, &deployments, m, &facts))
+        .map(|m| score(&raqes, &deployments, m, &facts))
         .collect();
     let front = pareto_front(&plan_costs);
     println!("{} on the Pareto front\n", front.len());
@@ -447,9 +473,9 @@ fn main() {
             &format!("mapping {i}: {} deployments", distinct_deployments.len()),
             plan_cost,
         );
-        for (rqe, latency) in rqes.iter().zip(&plan_cost.query_latency_secs) {
-            let rqe_id = &rqe.id;
-            println!("    {rqe_id}: query_latency={latency:.3e} sec");
+        for (raqe, latency) in raqes.iter().zip(&plan_cost.query_latency_ms) {
+            let raqe_id = &raqe.id;
+            println!("    {raqe_id}: query_latency={latency:.3e} ms");
         }
     }
 }

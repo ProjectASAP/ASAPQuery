@@ -5,12 +5,12 @@ implemented, what is next, and what is intentionally deferred.
 
 ## Done in v1
 
-- Sliding deployments use `(capability, configuration, metric, G, x, y)`,
+- Sliding deployments use `(capability, configuration, metric, spatial_filter, G, x, y)`,
   where `x` is window size and `y` is slide.
 - Workload facts are per metric: full label set, scrape interval, and
   cardinality per label set. The arrival rate is derived from them, and
   `validate_facts` reports bad facts up front.
-- Eligibility enforces capability, metric, grouping, alignment, and the RQE's
+- Eligibility enforces capability, metric, spatial filter, grouping, alignment, and the RQE's
   measured `accuracy_metric` constraint.
 - Candidate generation uses legal windows and subset gcds of query intervals,
   keeping only multiples of the scrape interval. A deployment may serve
