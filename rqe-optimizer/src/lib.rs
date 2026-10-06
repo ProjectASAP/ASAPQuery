@@ -385,6 +385,7 @@ pub(crate) mod test_support {
                 merge_cpu_secs: merge,
                 query_cpu_secs: query,
                 query_accuracy: BTreeMap::from([("err".into(), 0.0)]),
+                measured_at: None,
             },
             window_ms,
             slide_ms,

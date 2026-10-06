@@ -354,6 +354,7 @@ mod tests {
             query_cpu_secs: 1e-6,
             // Error falls with width and depth, so feasibility is monotone.
             query_accuracy: BTreeMap::from([(ERR.into(), 1.0 / (rows * cols) as f64)]),
+            measured_at: None,
         }
     }
 
@@ -488,6 +489,7 @@ mod tests {
             merge_cpu_secs: 1e-6,
             query_cpu_secs: 1e-6,
             query_accuracy: BTreeMap::from([(ERR.into(), 1.0 / k as f64)]),
+            measured_at: None,
         }
     }
 

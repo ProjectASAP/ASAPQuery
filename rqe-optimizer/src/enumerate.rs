@@ -126,6 +126,7 @@ mod tests {
             merge_cpu_secs: 1.0,
             query_cpu_secs: 1.0,
             query_accuracy,
+            measured_at: None,
         }
     }
 
