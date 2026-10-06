@@ -1708,7 +1708,7 @@ async fn e2e_grouped_quantile_preserves_output_label_shape() {
 /// that dropped them would answer outside the bound.
 #[tokio::test]
 async fn e2e_grouped_quantile_over_ddsketch_is_within_alpha() {
-    let port = 19421u16;
+    let port = 19428u16;
     let metric = "dd_latency";
     let query = "quantile by (job) (0.9, dd_latency)";
     let alpha = 0.01;

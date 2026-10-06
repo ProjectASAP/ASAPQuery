@@ -337,9 +337,10 @@ impl AccumulatorUpdater for DDSketchAccumulatorUpdater {
     }
 
     fn memory_usage_bytes(&self) -> usize {
-        // One u64 counter per bucket in the dense store.
+        // One u64 counter per bucket in the positive and negative dense stores.
         std::mem::size_of::<DDSketchAccumulator>()
             + std::mem::size_of_val(self.acc.inner.store_counts())
+            + std::mem::size_of_val(self.acc.inner.negative_store_counts())
     }
 }
 

@@ -25,7 +25,7 @@ const OPTIMIZER_SKIPPED_AGG_TYPES: &[AggregationType] = &[
     AggregationType::Sum,
     AggregationType::MinMax,
     AggregationType::Increase,
-    // No parameter grid or cost rows yet; the optimizer side lands with #762.
+    // No parameter grid or cost rows yet.
     AggregationType::DDSketch,
 ];
 

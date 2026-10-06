@@ -13,8 +13,8 @@ use promql_utilities::query_logics::enums::Statistic;
 /// DDSketch accumulator — wraps `asap_sketchlib::DDSketch`, the same
 /// implementation sketch-bench measures for the planner's cost table.
 ///
-/// `alpha` is the relative-accuracy bound: a returned quantile is within a
-/// factor of `(1 + alpha) / (1 - alpha)` of the true value. Negative values go
+/// `alpha` is the relative-accuracy bound: a returned quantile `x̂` of a true
+/// value `x` satisfies `|x̂ - x| <= alpha * |x|`. Negative values go
 /// to a mirrored store and zeros to a zero bucket; non-finite inputs are dropped.
 #[derive(Clone, Debug)]
 pub struct DDSketchAccumulator {
