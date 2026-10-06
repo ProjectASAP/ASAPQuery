@@ -185,18 +185,24 @@ and is scored under both.
 Memory is kept in both models: without it, memory-bound workloads would look
 almost free under model A.
 
-**Latency** — per-RQE estimate already in sketch-bench:
-`card(ℓ) · (query_cpu + (S/x − 1) · merge_cpu)`.
+**Latency** — per-RQE estimate:
+`card(ℓ) · (q_r · query_cpu_per_query + (S/x − 1) · merge_cpu)`, the
+evaluation's CPU time run serially on one core (an upper bound; parallel
+execution across sketch instances would reduce it proportionally). `q_r` is
+the number of sketch queries one evaluation issues per instance:
+`by (label_0)` frequency: `C` point queries; per-series frequency: `C · s`;
+top-k: 1; quantile: 1 per requested quantile; `traces` key queries: the
+window's key count, value queries: 1.
 
 **Units and per-operation costs.** CPU is CPU time (user + system), in
 core-seconds, measured by sketch-bench:
 - `insert_cpu`: the insert phase's CPU ÷ N, in CPU-seconds per item;
 - `merge_cpu`: merging 16 shards ÷ 15, in CPU-seconds per merge;
-- `query_cpu`: the benchmark's **whole query phase**, charged per evaluation.
-  For frequency that is every key seen; for KLL/DDSketch, 101 quantiles; for
-  cardinality, a fixed repeat count. This overstates a single-quantile query by
-  up to about 101×, equally for every method, so it inflates absolute estimated
-  latency but not the comparison (decided 2026-10-05);
+- `query_cpu_per_query`: the benchmark's query-phase CPU ÷ the number of
+  queries in the phase, charged `q_r` times per instance per evaluation. An
+  earlier version charged the whole query phase per evaluation; it overstated
+  single-quantile queries about 101× and made estimated latencies around
+  200 s, so it was replaced (decided 2026-10-06);
 - memory: the sketch's self-reported bytes per instance, not process RSS.
 
 Loads are reported in vCPU (core-seconds per second) and totals in CPU-hours.
@@ -477,8 +483,10 @@ median of repeated runs for timings:
   - *Benchmark time:* AutoSketch benchmarks every probed configuration, as in
     the paper (§5.2, Exp#9: 1–2 minutes per config, about 6.5 minutes per
     application). Reported two ways, per distinct probed (config, input size):
-    - a **lower bound**, `n · insert_cpu + query_cpu`, the CPU to insert the
-      input once and run one query phase;
+    - a **lower bound**, `N_bench · insert_cpu_per_item + one query phase`
+      with `N_bench = 1e8`, the size sketch-bench benchmarks at. The paper
+      also benchmarks a fixed-size representative workload, not the query
+      window's full data;
     - a **paper-rate estimate**, 60 s per distinct probe.
   - *ASAP's one-time profiling:* the wall time of the sketch-bench saturation
     runs that produced its tables (#130, #131, #140). It is shared by all RQEs
