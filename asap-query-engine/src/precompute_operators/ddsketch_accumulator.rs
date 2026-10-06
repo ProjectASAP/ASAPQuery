@@ -14,8 +14,8 @@ use promql_utilities::query_logics::enums::Statistic;
 /// implementation sketch-bench measures for the planner's cost table.
 ///
 /// `alpha` is the relative-accuracy bound: a returned quantile is within a
-/// factor of `(1 + alpha) / (1 - alpha)` of the true value. DDSketch indexes
-/// positive values only, so zero, negative and non-finite inputs are dropped.
+/// factor of `(1 + alpha) / (1 - alpha)` of the true value. Negative values go
+/// to a mirrored store and zeros to a zero bucket; non-finite inputs are dropped.
 #[derive(Clone, Debug)]
 pub struct DDSketchAccumulator {
     pub inner: DDSketch,
@@ -192,14 +192,16 @@ mod tests {
     }
 
     #[test]
-    fn non_positive_values_are_dropped() {
+    fn zero_and_negative_values_are_counted() {
         let mut dd = DDSketchAccumulator::new(ALPHA);
-        dd.update(0.0);
         dd.update(-5.0);
+        dd.update(0.0);
         dd.update(f64::NAN);
         dd.update(42.0);
-        assert_eq!(dd.count(), 1);
-        assert!(rel_err(dd.get_quantile(0.5), 42.0) <= ALPHA);
+        assert_eq!(dd.count(), 3);
+        assert_eq!(dd.get_quantile(0.0), -5.0);
+        assert_eq!(dd.get_quantile(0.5), 0.0);
+        assert_eq!(dd.get_quantile(1.0), 42.0);
     }
 
     #[test]
