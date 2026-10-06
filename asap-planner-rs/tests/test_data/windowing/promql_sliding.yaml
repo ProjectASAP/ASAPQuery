@@ -9,13 +9,11 @@ query_groups:
     repetition_delay_ms: 60000
     controller_options:
       accuracy_sla: 0.99
-      latency_sla: 1.0
   - id: 2
     queries:
       - "rate(http_requests_total[2m])"
     repetition_delay_ms: 120000
     controller_options:
       accuracy_sla: 0.99
-      latency_sla: 1.0
 aggregate_cleanup:
   policy: "read_based"

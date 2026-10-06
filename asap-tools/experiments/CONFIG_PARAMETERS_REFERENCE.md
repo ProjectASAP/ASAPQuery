@@ -513,12 +513,12 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Example**: `0.95`
 - **Usage**: Quality assurance for approximate query results
 
-#### `experiment_params.query_groups[].controller_options.latency_sla` (float, optional)
-- **Description**: Latency SLA in seconds
-- **Default**: `1`
-- **Range**: 0.1-60.0 seconds
-- **Example**: `2`
-- **Usage**: Performance requirement for query response time
+#### `experiment_params.query_groups[].controller_options.latency_sla_ms` (float, optional)
+- **Description**: Maximum modeled query latency in milliseconds
+- **Default**: omitted (no latency limit)
+- **Range**: finite and > 0
+- **Example**: `250`
+- **Usage**: Hard ceiling on query latency for the planner
 
 ### Metrics Configuration
 

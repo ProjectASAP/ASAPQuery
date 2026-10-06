@@ -23,7 +23,6 @@ query_groups:
     repetition_delay_ms: 300000      # ms between repeats of this query
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
     queries:
       - "sum by (job) (rate(http_requests_total[5m]))"
 aggregate_cleanup:
@@ -43,8 +42,11 @@ auto-infer label sets per metric.
 
 ### `controller_options`
 
-`accuracy_sla` and `latency_sla` are required by the config schema but not currently used by
-the planner's decision logic — any numeric values are fine (e.g. the placeholders above).
+`accuracy_sla` is required by the config schema but not currently used by the planner's
+decision logic — any numeric value is fine (e.g. the placeholder above).
+
+`latency_sla_ms` is optional: the maximum modeled query latency in milliseconds (must be
+finite and > 0). Omit it for no latency limit.
 
 ### Choosing `repetition_delay_ms` and `--data-ingestion-interval-ms`
 

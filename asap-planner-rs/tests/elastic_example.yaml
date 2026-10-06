@@ -30,6 +30,5 @@ query_groups:
     repetition_delay_ms: 300000
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 1.0
 aggregate_cleanup:
   policy: read_based

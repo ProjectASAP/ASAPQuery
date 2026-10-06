@@ -763,7 +763,6 @@ query_groups:
       query_time_offset: 0
     controller_options:
       accuracy_sla: 0.99
-      latency_sla: 1.0
 
 servers:
   - name: prometheus

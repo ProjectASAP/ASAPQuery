@@ -853,7 +853,8 @@ def generate_sql_planner_input(
     Args:
         query_groups: ListConfig of query group dicts.
             Each entry must have ``sql_file``, ``repetition_delay_ms``, and
-            ``controller_options`` (``accuracy_sla``, ``latency_sla``).
+            ``controller_options`` (``accuracy_sla``, optional
+            ``latency_sla_ms``).
         dataset_cfg: DictConfig with ``table``/``name``, and ``precompute``
             sub-config (``timestamp_col``, ``value_col``, ``label_cols``).
         sketch_parameters: Optional DictConfig/dict mirroring ``config.yaml``'s
@@ -901,15 +902,18 @@ def generate_sql_planner_input(
             raise ValueError(f"No SQL statements found in {sql_file!r}")
 
         ctrl_opts = dict(group.get("controller_options") or {})
+        planner_ctrl_opts = {
+            "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),
+        }
+        # Omitted latency_sla_ms means no latency limit in the planner.
+        if ctrl_opts.get("latency_sla_ms") is not None:
+            planner_ctrl_opts["latency_sla_ms"] = float(ctrl_opts["latency_sla_ms"])
         planner_query_groups.append(
             {
                 "id": idx + 1,
                 "repetition_delay_ms": int(group.get("repetition_delay_ms", 0)),
                 "queries": queries,
-                "controller_options": {
-                    "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),
-                    "latency_sla": float(ctrl_opts.get("latency_sla", 100.0)),
-                },
+                "controller_options": planner_ctrl_opts,
             }
         )
 

@@ -26,8 +26,9 @@ pub struct OptimizerItem {
     /// Required accuracy for every RQE contributing to this item.
     pub accuracy_sla: f64,
 
-    /// Required query latency for every RQE contributing to this item.
-    pub latency_sla: f64,
+    /// Maximum query latency (ms) for every RQE contributing to this item;
+    /// `None` means no limit.
+    pub latency_sla_ms: Option<f64>,
 }
 
 /// How an optimizer item is answered from its assigned streaming config.

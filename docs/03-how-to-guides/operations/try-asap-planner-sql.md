@@ -25,7 +25,6 @@ query_groups:
     repetition_delay: 300            # seconds between repeats of this query
     controller_options:
       accuracy_sla: 0.95
-      latency_sla: 100.0
     queries:
       - >-
         SELECT avg(cpu_usage) FROM metrics_table
@@ -46,9 +45,11 @@ For each table:
 
 ### `controller_options`
 
-`accuracy_sla` and `latency_sla` are required by the config schema but not currently used by
-the planner's decision logic — any numeric values are fine (e.g. the placeholders in the
-example above).
+`accuracy_sla` is required by the config schema but not currently used by the planner's
+decision logic — any numeric value is fine (e.g. the placeholder in the example above).
+
+`latency_sla_ms` is optional: the maximum modeled query latency in milliseconds (must be
+finite and > 0). Omit it for no latency limit.
 
 ### Choosing `repetition_delay` and `--data-ingestion-interval`
 

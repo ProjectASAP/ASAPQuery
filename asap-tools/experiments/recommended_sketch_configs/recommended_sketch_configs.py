@@ -238,7 +238,7 @@ def build_experiment_config(
                     "query_time_offset": 10,
                     "starting_delay": starting_delay,
                 },
-                "controller_options": {"accuracy_sla": 0.99, "latency_sla": 1},
+                "controller_options": {"accuracy_sla": 0.99},
             }
         ],
         "metrics": [

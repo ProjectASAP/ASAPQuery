@@ -60,7 +60,6 @@ query_groups:
     starting_delay: 70
   controller_options:
     accuracy_sla: 0.99
-    latency_sla: 1
 
 metrics:
   - metric: "alibaba_node_cpu_usage"

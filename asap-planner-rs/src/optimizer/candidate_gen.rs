@@ -408,7 +408,7 @@ mod tests {
             query_frequency_hz: 1.0 / 60.0,
             t_repeat_ms: min_t,
             accuracy_sla: 0.0,
-            latency_sla: 0.0,
+            latency_sla_ms: None,
         }
     }
 
