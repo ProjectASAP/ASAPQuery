@@ -1,11 +1,8 @@
 //! Plans a workload with sketch-bench's rqe-optimizer MILP: converts the
 //! workload config into `Raqe`s and solves for the cheapest deployments.
 
-use std::cmp::Ordering;
-
 use promql_utilities::query_logics::enums::Statistic;
 use rqe_optimizer::candidates::{build_all_candidates, eligible_deployments_for};
-use rqe_optimizer::enumerate::unservable;
 use rqe_optimizer::milp::{minimize, MilpSolution, Objective};
 use rqe_optimizer::{
     validate_facts, AccuracyDirection, AtomicCostEntry, Capability, Deployment, LabelSet, Raqe,
@@ -32,6 +29,11 @@ pub enum MilpError {
     AccuracySlaOutOfRange { query: String, accuracy_sla: f64 },
     #[error("invalid MILP inputs:\n{}", .0.join("\n"))]
     InvalidInputs(Vec<String>),
+    #[error("query {query:?} needs one statistic, got {statistics:?}")]
+    MultipleStatistics {
+        query: String,
+        statistics: Vec<Statistic>,
+    },
     #[error("no eligible deployment for raqes: {0:?}")]
     Unservable(Vec<String>),
     #[error("MILP solve failed: {0}")]
@@ -52,14 +54,14 @@ pub fn solve_milp(
         cost_rows = costs.len(),
         "milp: built candidates"
     );
-    for (raqe, eligible) in workload
-        .raqes
-        .iter()
-        .map(|r| (r, eligible_deployments_for(r, &deployments)))
-    {
-        tracing::debug!(raqe = %raqe.id, eligible = eligible.len(), "milp: eligible deployments");
+    let mut missing = Vec::new();
+    for raqe in &workload.raqes {
+        let eligible = eligible_deployments_for(raqe, &deployments).len();
+        tracing::debug!(raqe = %raqe.id, eligible, "milp: eligible deployments");
+        if eligible == 0 {
+            missing.push(raqe.id.clone());
+        }
     }
-    let missing = unservable(&workload.raqes, &deployments);
     if !missing.is_empty() {
         return Err(MilpError::Unservable(missing));
     }
@@ -98,18 +100,14 @@ pub fn build_milp_workload(
         (&a.query_strings, a.t_repeat_ms)
             .cmp(&(&b.query_strings, b.t_repeat_ms))
             .then(a.accuracy_sla.total_cmp(&b.accuracy_sla))
-            .then(
-                a.latency_sla_ms
-                    .partial_cmp(&b.latency_sla_ms)
-                    .unwrap_or(Ordering::Equal),
-            )
+            .then(latency_key(a).total_cmp(&latency_key(b)))
     });
 
     let mut raqes = Vec::new();
     let mut raqe_items = Vec::new();
     for (index, item) in items.iter().enumerate() {
         let raqe = item_to_raqe(item)?;
-        let count = occurrence_count(item);
+        let count = item.occurrences;
         tracing::debug!(
             item = index,
             queries = ?item.query_strings,
@@ -129,7 +127,8 @@ pub fn build_milp_workload(
         );
         for k in 0..count {
             raqes.push(Raqe {
-                id: format!("{}#{k}", raqe.id),
+                // The item index keeps ids unique across T and SLAs.
+                id: format!("{index}:{}#{k}", raqe.id),
                 ..raqe.clone()
             });
             raqe_items.push(index);
@@ -150,16 +149,19 @@ pub fn build_milp_workload(
     })
 }
 
-/// `query_frequency_hz` is `count * 1000 / t_repeat_ms`.
-fn occurrence_count(item: &OptimizerItem) -> usize {
-    (item.query_frequency_hz * item.t_repeat_ms as f64 / 1000.0).round() as usize
+/// No limit sorts last.
+fn latency_key(item: &OptimizerItem) -> f64 {
+    item.latency_sla_ms.unwrap_or(f64::INFINITY)
 }
 
 fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
     let req = &item.requirements;
     let query = item.query_strings.join(" | ");
     let [statistic] = req.statistics.as_slice() else {
-        panic!("optimizer item {query:?} must have exactly one statistic after the avg rewrite");
+        return Err(MilpError::MultipleStatistics {
+            query,
+            statistics: req.statistics.clone(),
+        });
     };
     let capability = capability(*statistic);
     if !(0.0..=1.0).contains(&item.accuracy_sla) {
@@ -310,7 +312,27 @@ metrics:
         assert_eq!(w.items.len(), 1);
         assert_eq!(w.raqe_items, vec![0, 0]);
         let ids: Vec<_> = w.raqes.iter().map(|r| r.id.as_str()).collect();
-        assert_eq!(ids, vec![format!("{query}#0"), format!("{query}#1")]);
+        assert_eq!(ids, vec![format!("0:{query}#0"), format!("0:{query}#1")]);
+    }
+
+    #[test]
+    fn same_query_at_different_cadences_gets_distinct_ids() {
+        let query = "sum by (job) (http_requests_total)";
+        let slow = group(query, 0.99).replace("60000", "120000");
+        let w = workload(&(group(query, 0.99) + &slow));
+        assert_eq!(w.raqes.len(), 2);
+        assert_ne!(w.raqes[0].id, w.raqes[1].id);
+    }
+
+    #[test]
+    fn item_with_two_statistics_is_an_error_not_a_panic() {
+        let w = workload(&group("sum by (job) (http_requests_total)", 0.99));
+        let mut item = w.items[0].clone();
+        item.requirements.statistics.push(Statistic::Count);
+        assert!(matches!(
+            item_to_raqe(&item),
+            Err(MilpError::MultipleStatistics { .. })
+        ));
     }
 
     #[test]

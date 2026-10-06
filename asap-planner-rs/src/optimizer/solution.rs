@@ -20,6 +20,9 @@ pub struct OptimizerItem {
     /// hitting the sketch.
     pub query_frequency_hz: f64,
 
+    /// Leaf occurrences merged into this item, across all RQEs.
+    pub occurrences: usize,
+
     /// Repetition interval for every RQE contributing to this item, in ms.
     pub t_repeat_ms: u64,
 

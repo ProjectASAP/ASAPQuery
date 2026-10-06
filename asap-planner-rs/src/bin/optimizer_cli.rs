@@ -7,8 +7,9 @@
 use std::path::PathBuf;
 
 use asap_planner::optimizer::{
-    build_milp_workload, load_optional_selected_atomic_cost_table, load_workload_facts,
-    run_greedy_pipeline, solve_milp, AtomicCostTable, LabelSetFacts,
+    build_milp_workload, load_flat_atomic_cost_table, load_optional_selected_atomic_cost_table,
+    load_workload_facts, run_greedy_pipeline, solve_milp, AtomicCostTable, LabelSetFacts,
+    LabelSetFactsError,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -31,7 +32,11 @@ struct Args {
 
     /// Greedy only. YAML label-set facts: `series_count` per (metric, spatial
     /// filter) and `cardinality` per (metric, spatial filter, grouping labels).
-    #[arg(long = "label-set-facts", required_unless_present = "milp")]
+    #[arg(
+        long = "label-set-facts",
+        required_unless_present = "milp",
+        conflicts_with = "milp"
+    )]
     label_set_facts: Option<PathBuf>,
 
     /// Greedy: the versioned atomic-cost document sketch-bench's
@@ -69,11 +74,11 @@ struct Args {
     workload_facts: Option<PathBuf>,
 
     /// MILP only. Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
-    #[arg(long = "w-cpu", requires = "milp")]
+    #[arg(long = "w-cpu", requires = "milp", value_parser = parse_weight)]
     w_cpu: Option<f64>,
 
     /// MILP only. Objective weight on memory GiB. Default: rqe-optimizer's.
-    #[arg(long = "w-mem", requires = "milp")]
+    #[arg(long = "w-mem", requires = "milp", value_parser = parse_weight)]
     w_mem: Option<f64>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -145,8 +150,21 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Objective weights must be finite and non-negative: a negative weight
+/// rewards cost, and NaN poisons every coefficient.
+fn parse_weight(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(w) if w.is_finite() && w >= 0.0 => Ok(w),
+        Ok(w) => Err(format!("must be finite and >= 0, got {w}")),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
-    let hints = config.metrics.as_deref().unwrap_or_default();
+    config.warn_default_slas();
+    let Some(hints) = config.metrics.as_deref() else {
+        return Err(LabelSetFactsError::MissingMetricHints.into());
+    };
     let facts = load_workload_facts(
         args.workload_facts
             .as_deref()
@@ -154,12 +172,11 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
         hints,
         args.data_ingestion_interval_ms,
     )?;
-    let costs_path = args
-        .atomic_costs
-        .as_deref()
-        .expect("clap requires --atomic-costs with --milp");
-    let costs: AtomicCostTable = serde_json::from_str(&std::fs::read_to_string(costs_path)?)
-        .map_err(|e| anyhow::anyhow!("parsing cost table {}: {e}", costs_path.display()))?;
+    let costs = load_flat_atomic_cost_table(
+        args.atomic_costs
+            .as_deref()
+            .expect("clap requires --atomic-costs with --milp"),
+    )?;
     let Objective::AUCCost { w_cpu, w_mem } = Objective::default();
     let objective = Objective::AUCCost {
         w_cpu: args.w_cpu.unwrap_or(w_cpu),
@@ -216,4 +233,18 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_weight;
+
+    #[test]
+    fn weights_must_be_finite_and_non_negative() {
+        assert_eq!(parse_weight("0.5"), Ok(0.5));
+        assert_eq!(parse_weight("0"), Ok(0.0));
+        for bad in ["-1", "NaN", "inf", "x"] {
+            assert!(parse_weight(bad).is_err(), "{bad}");
+        }
+    }
 }

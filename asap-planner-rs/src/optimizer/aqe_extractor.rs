@@ -67,7 +67,8 @@ pub fn extract_aqes(
     metric_schema: &PromQLSchema,
     scrape_interval_ms: u64,
 ) -> Result<Vec<OptimizerItem>, OptimizerError> {
-    let mut acc: HashMap<OptimizerItemKey, (QueryRequirements, Vec<String>, f64)> = HashMap::new();
+    let mut acc: HashMap<OptimizerItemKey, (QueryRequirements, Vec<String>, usize)> =
+        HashMap::new();
 
     for rqe in rqes {
         if rqe.t_repeat_ms == 0 {
@@ -82,13 +83,11 @@ pub fn extract_aqes(
             match extract_requirements(&leaf, metric_schema, scrape_interval_ms) {
                 Ok(req) => {
                     let key = OptimizerItemKey::from_rqe(&req, rqe);
-                    let entry = acc.entry(key).or_insert_with(|| (req, Vec::new(), 0.0));
+                    let entry = acc.entry(key).or_insert_with(|| (req, Vec::new(), 0));
                     if !entry.1.contains(&leaf) {
                         entry.1.push(leaf);
                     }
-                    // query_frequency_hz must stay in Hz (queries per real second)
-                    // regardless of t_repeat_ms's internal unit — 1000.0 / ms, not 1.0 / ms.
-                    entry.2 += 1000.0 / rqe.t_repeat_ms as f64;
+                    entry.2 += 1;
                 }
                 Err(reason) => {
                     return Err(OptimizerError::UnsupportedLeaf {
@@ -104,10 +103,12 @@ pub fn extract_aqes(
     Ok(acc
         .into_iter()
         .map(
-            |(key, (requirements, query_strings, query_frequency_hz))| OptimizerItem {
+            |(key, (requirements, query_strings, occurrences))| OptimizerItem {
                 requirements,
                 query_strings,
-                query_frequency_hz,
+                // Hz (queries per real second): 1000.0 / ms, not 1.0 / ms.
+                query_frequency_hz: occurrences as f64 * 1000.0 / key.t_repeat_ms as f64,
+                occurrences,
                 t_repeat_ms: key.t_repeat_ms,
                 accuracy_sla: f64::from_bits(key.accuracy_sla_bits),
                 latency_sla_ms: key.latency_sla_ms_bits.map(f64::from_bits),

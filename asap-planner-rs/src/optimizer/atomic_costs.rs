@@ -435,6 +435,27 @@ fn require<'a>(
     })
 }
 
+/// Load the flat cost table `export_rqe_optimizer_costs.sh` writes, for the
+/// MILP. Unlike the greedy loader, an invalid row is an error, not dropped.
+pub fn load_flat_atomic_cost_table(path: &Path) -> anyhow::Result<AtomicCostTable> {
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::anyhow!("reading cost table {}: {e}", path.display()))?;
+    let table: AtomicCostTable = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::anyhow!("parsing cost table {}: {e}", path.display()))?;
+    let invalid: Vec<String> = table
+        .iter()
+        .filter(|entry| !valid_cost_entry(entry))
+        .map(|entry| format!("{} {}", entry.sketch, entry.sketch_config))
+        .collect();
+    if !invalid.is_empty() {
+        anyhow::bail!(
+            "cost table {} has non-finite or negative costs in rows: {invalid:?}",
+            path.display()
+        );
+    }
+    Ok(table)
+}
+
 fn valid_cost_entry(entry: &AtomicCostEntry) -> bool {
     [
         entry.mem_bytes_per_instance,
@@ -554,6 +575,21 @@ mod tests {
     fn atomic_cost_entry_requires_query_accuracy() {
         let json = r#"{"sketch":"kll-percall","sketch_config":null,"mem_bytes_per_instance":1.0,"insert_cpu_secs":1.0,"merge_cpu_secs":1.0,"query_cpu_secs":1.0}"#;
         assert!(serde_json::from_str::<AtomicCostEntry>(json).is_err());
+    }
+
+    #[test]
+    fn flat_loader_rejects_non_finite_or_negative_costs() {
+        let row = |insert: &str| {
+            format!(
+                r#"{{"sketch":"hll","sketch_config":null,"mem_bytes_per_instance":1.0,"insert_cpu_secs":{insert},"merge_cpu_secs":1.0,"query_cpu_secs":1.0,"query_accuracy":{{}}}}"#
+            )
+        };
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), format!("[{}]", row("1e-7"))).unwrap();
+        assert_eq!(load_flat_atomic_cost_table(file.path()).unwrap().len(), 1);
+        std::fs::write(file.path(), format!("[{},{}]", row("1e-7"), row("-1.0"))).unwrap();
+        let err = load_flat_atomic_cost_table(file.path()).unwrap_err();
+        assert!(err.to_string().contains("negative"), "{err}");
     }
 
     /// Rows with `measured_at` load, and older rows without it still do.
