@@ -199,8 +199,11 @@ An RAQE `r_i` is eligible for a candidate `D` when:
 
 1. `cap_i = D.capability`, `metric_i = D.metric` and `G_i = D.G`.
 2. `D.x % D.y = 0`, `S_i % D.x = 0`, and `T_i % D.y = 0`.
-3. `D.configuration` contains a measured value for `accuracy_metric_i` that clears
-   `tol_i` in `direction_i`.
+3. `D.configuration` has a measured `accuracy_metric_i` that clears `tol_i` in
+   `direction_i` at both measured merge counts bracketing the query's
+   `S_i / D.x` windows (count 1 is the single-instance accuracy; beyond the
+   largest measured count, the largest). Merge accuracy is not monotone in the
+   count, so neither bracket alone is conservative.
 
 For lower-is-better metrics, passing means `measured <= tol_i`. For
 higher-is-better metrics, passing means `measured >= tol_i`. Direction is
@@ -390,9 +393,11 @@ each phase's CPU and memory, together with the selected deployment mapping.
 
 ## v1 scope and TODOs
 
-- **Accuracy after merging:** v1 uses the measured, single-instance accuracy
-  of a configuration. Measure or model merged accuracy before relying on a
-  selected mapping as truly accuracy-feasible.
+- **Accuracy after merging:** measured at 4, 16, 64, 256 and 1024 merged
+  shards of one fixed stream (eligibility rule 3). Queries folding more than
+  1024 windows read the 1024 measurement, and the stream size is the
+  benchmark's, not `λ · S_i / card(G)`; the size sweep in sketch-bench#147
+  covers that.
 - **Query-result sharing:** v1 charges every RAQE its own query and merge CPU.
   Revisit when RAQE semantics and execution timing identify safe reuse cases.
 - **Latency SLAs:** the MILP takes optional per-RAQE latency bounds; the

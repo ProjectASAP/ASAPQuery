@@ -318,7 +318,7 @@ pub fn is_eligible(r: &Raqe, d: &Deployment) -> bool {
         && d.window_ms.is_multiple_of(d.slide_ms)
         && r.lookback_ms.is_multiple_of(d.window_ms)
         && r.interval_ms.is_multiple_of(d.slide_ms)
-        && r.accuracy_ok_for(&d.config)
+        && r.accuracy_ok_for(&d.config, r.lookback_ms / d.window_ms)
 }
 
 #[cfg(test)]
@@ -351,8 +351,37 @@ mod tests {
             merge_cpu_secs: 1.0,
             query_cpu_secs: 1.0,
             query_accuracy: BTreeMap::from([("err".into(), 0.1)]),
+            merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }
+    }
+    #[test]
+    fn eligibility_checks_accuracy_at_the_queries_merge_count() {
+        let mut config = cost();
+        let err = |v: f64| BTreeMap::from([("err".into(), v)]);
+        // Error is not monotone in the count: 16 is worse than 4 and 64.
+        config.merge_accuracy = BTreeMap::from([(4, err(0.2)), (16, err(2.0)), (64, err(0.3))]);
+        let at_window = |window_ms| Deployment {
+            capability: Capability::TopK,
+            metric: METRIC.into(),
+            spatial_filter: String::new(),
+            grouping_labels: LabelSet::new(),
+            config: config.clone(),
+            window_ms,
+            slide_ms: window_ms,
+        };
+        let r = raqe("a", 60_000, 60_000);
+        // One window reads query_accuracy; 2 reads 1 and 4; 4 reads 4 alone.
+        assert!(is_eligible(&r, &at_window(60_000)));
+        assert!(is_eligible(&r, &at_window(30_000)));
+        assert!(is_eligible(&r, &at_window(15_000)));
+        // 12 and 20 merges bracket the bad count 16 from either side; 60
+        // reads 16 and 64, so it fails too even though 64 alone passes.
+        assert!(!is_eligible(&r, &at_window(5_000)));
+        assert!(!is_eligible(&r, &at_window(3_000)));
+        assert!(!is_eligible(&r, &at_window(1_000)));
+        // Past the largest count reads only 64.
+        assert!(is_eligible(&r, &at_window(500)));
     }
     #[test]
     fn shared_slide_comes_from_subset_gcd_not_all_divisors() {
