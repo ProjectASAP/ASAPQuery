@@ -91,7 +91,7 @@ has lookback `S` and repeat interval `T`. Per-instance costs are measured
 | --- | --- | --- |
 | Ingest | `λ · (x/y) · c_ins` | `card(G) · m · x/y` (open windows) |
 | Merge | `card(G) · (S/x − 1) · c_mrg / T` | `card(G) · m` (one accumulator per group), 0 when `S = x` |
-| Query | `card(G) · c_qry / T` | `card(G) · 8 B`; top-k `k · 16 B` |
+| Query | `card(G) · c_qry / T` | `card(G) · 8 B`; top-k `32 · 16 B` |
 | Storage | 0 | `card(G) · m · ((max S − x)/y + 1)` (closed windows) |
 
 Ingest and storage are paid once per active deployment; merge and query once
@@ -239,24 +239,24 @@ second is what a summary maintained over a 1-second window answers.
 
 These exercise every capability the templates need: sum, rate/increase, top-k
 and quantile, spatial and temporal aggregation, and a binary operator. Each
-template expands into one RQE per window `w ∈ W`, per quantile `q` and per
-`k ∈ {100, 200, 300}`.
+template expands into one RQE per window `w ∈ W` and per quantile `q`. Top-k
+uses k = 32.
 
 | # | PromQL | Capability | Grouping | RQEs |
 |---|---|---|---|---|
 | 1 | `sum by (job) (data)` | SumOrCount | `job` | 1 |
-| 2 | `topk(k, sum by (label_0) (sum_over_time(data[w])))` | TopK | none; keys `label_0` | 3·\|W\| = 12 |
+| 2 | `topk(32, sum by (label_0) (sum_over_time(data[w])))` | TopK | none; keys `label_0` | 4 |
 | 3 | `quantile by (job) (q, data)`, q ∈ {0.5, 0.75, 0.9, 0.95, 0.99} | Quantile | `job` | 5 |
 | 4 | `sum_over_time(data[w])` | SumOrCount | per series | 4 |
 | 5 | `quantile_over_time(q, data[w])`, same five q | Quantile | per series | 20 |
 | 6 | `rate(data[w])` | RateOrIncrease | per series | 4 |
 | 7 | `sum by (job) (rate(data[w]))` | RateOrIncrease | `job` | 4 |
 | 8 | `sum by (job) (sum_over_time(data[w]))` | SumOrCount | `job` | 4 |
-| 9 | `topk(k, sum by (label_0) (rate(data[w])))` | TopK over per-series increases | none; keys `label_0` | 12 |
+| 9 | `topk(32, sum by (label_0) (rate(data[w])))` | TopK over per-series increases | none; keys `label_0` | 4 |
 | 10 | `quantile_over_time(0.9, data[w]) / quantile_over_time(0.5, data[w])` | Two Quantile RQEs | per series | 8 |
 
-74 RQEs per replica. Template 10's operands are the same RQEs as template 5's
-q = 0.9 and q = 0.5, so 66 are distinct.
+58 RQEs per replica. Template 10's operands are the same RQEs as template 5's
+q = 0.9 and q = 0.5, so 50 are distinct.
 
 Mapping notes:
 - Capabilities are `rqe-optimizer`'s (#144). Sum and rate/increase are their
@@ -267,10 +267,8 @@ Mapping notes:
   search for sum and increase RQEs. There, ASAP differs from it only by window
   choice and sharing.
 - Top-k ranks each `label_0` key's total over the window: the heavy hitters
-  among 1e4 keys. A top-k sketch with heap capacity `K` serves every RQE with
-  `k ≤ K` on the same stream and window, so ASAP can serve k = 100, 200 and 300
-  from one heap-300 deployment; AutoSketch configures each RQE with its own
-  heap.
+  among 1e4 keys. k = 32 is the heap size sketch-bench measures top-k at
+  (`CMS_HEAP_TOP_K`), so every top-k RQE reads a measured curve.
 - The quantiles of one template, and the two operands of template 10, read the
   same stream. ASAP can serve them from one deployment; AutoSketch gets one
   deployment per RQE.
@@ -281,80 +279,64 @@ Mapping notes:
   is checked with `promql-parser`.
 
 <details>
-<summary>Every query of the 10-template set (70 queries, 74 RQEs)</summary>
+<summary>Every query of the 10-template set (54 queries, 58 RQEs)</summary>
 
 | # | Template | PromQL | Capability | Grouping | `S` | `T` | RQEs |
 |---|---|---|---|---|---|---|---|
 | 1 | 1 | `sum by (job) (data)` | SumOrCount | job | 1s | 1s | 1 |
-| 2 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
-| 3 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
-| 4 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
-| 5 | 2 | `topk(100, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
-| 6 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
-| 7 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
-| 8 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
-| 9 | 2 | `topk(200, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
-| 10 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
-| 11 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
-| 12 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
-| 13 | 2 | `topk(300, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
-| 14 | 3 | `quantile by (job) (0.5, data)` | Quantile | job | 1s | 1s | 1 |
-| 15 | 3 | `quantile by (job) (0.75, data)` | Quantile | job | 1s | 1s | 1 |
-| 16 | 3 | `quantile by (job) (0.9, data)` | Quantile | job | 1s | 1s | 1 |
-| 17 | 3 | `quantile by (job) (0.95, data)` | Quantile | job | 1s | 1s | 1 |
-| 18 | 3 | `quantile by (job) (0.99, data)` | Quantile | job | 1s | 1s | 1 |
-| 19 | 4 | `sum_over_time(data[15m])` | SumOrCount | series | 15m | 1m | 1 |
-| 20 | 4 | `sum_over_time(data[1h])` | SumOrCount | series | 1h | 1m | 1 |
-| 21 | 4 | `sum_over_time(data[6h])` | SumOrCount | series | 6h | 1m | 1 |
-| 22 | 4 | `sum_over_time(data[24h])` | SumOrCount | series | 24h | 1m | 1 |
-| 23 | 5 | `quantile_over_time(0.5, data[15m])` | Quantile | series | 15m | 1m | 1 |
-| 24 | 5 | `quantile_over_time(0.5, data[1h])` | Quantile | series | 1h | 1m | 1 |
-| 25 | 5 | `quantile_over_time(0.5, data[6h])` | Quantile | series | 6h | 1m | 1 |
-| 26 | 5 | `quantile_over_time(0.5, data[24h])` | Quantile | series | 24h | 1m | 1 |
-| 27 | 5 | `quantile_over_time(0.75, data[15m])` | Quantile | series | 15m | 1m | 1 |
-| 28 | 5 | `quantile_over_time(0.75, data[1h])` | Quantile | series | 1h | 1m | 1 |
-| 29 | 5 | `quantile_over_time(0.75, data[6h])` | Quantile | series | 6h | 1m | 1 |
-| 30 | 5 | `quantile_over_time(0.75, data[24h])` | Quantile | series | 24h | 1m | 1 |
-| 31 | 5 | `quantile_over_time(0.9, data[15m])` | Quantile | series | 15m | 1m | 1 |
-| 32 | 5 | `quantile_over_time(0.9, data[1h])` | Quantile | series | 1h | 1m | 1 |
-| 33 | 5 | `quantile_over_time(0.9, data[6h])` | Quantile | series | 6h | 1m | 1 |
-| 34 | 5 | `quantile_over_time(0.9, data[24h])` | Quantile | series | 24h | 1m | 1 |
-| 35 | 5 | `quantile_over_time(0.95, data[15m])` | Quantile | series | 15m | 1m | 1 |
-| 36 | 5 | `quantile_over_time(0.95, data[1h])` | Quantile | series | 1h | 1m | 1 |
-| 37 | 5 | `quantile_over_time(0.95, data[6h])` | Quantile | series | 6h | 1m | 1 |
-| 38 | 5 | `quantile_over_time(0.95, data[24h])` | Quantile | series | 24h | 1m | 1 |
-| 39 | 5 | `quantile_over_time(0.99, data[15m])` | Quantile | series | 15m | 1m | 1 |
-| 40 | 5 | `quantile_over_time(0.99, data[1h])` | Quantile | series | 1h | 1m | 1 |
-| 41 | 5 | `quantile_over_time(0.99, data[6h])` | Quantile | series | 6h | 1m | 1 |
-| 42 | 5 | `quantile_over_time(0.99, data[24h])` | Quantile | series | 24h | 1m | 1 |
-| 43 | 6 | `rate(data[15m])` | RateOrIncrease | series | 15m | 1m | 1 |
-| 44 | 6 | `rate(data[1h])` | RateOrIncrease | series | 1h | 1m | 1 |
-| 45 | 6 | `rate(data[6h])` | RateOrIncrease | series | 6h | 1m | 1 |
-| 46 | 6 | `rate(data[24h])` | RateOrIncrease | series | 24h | 1m | 1 |
-| 47 | 7 | `sum by (job) (rate(data[15m]))` | RateOrIncrease | job | 15m | 1m | 1 |
-| 48 | 7 | `sum by (job) (rate(data[1h]))` | RateOrIncrease | job | 1h | 1m | 1 |
-| 49 | 7 | `sum by (job) (rate(data[6h]))` | RateOrIncrease | job | 6h | 1m | 1 |
-| 50 | 7 | `sum by (job) (rate(data[24h]))` | RateOrIncrease | job | 24h | 1m | 1 |
-| 51 | 8 | `sum by (job) (sum_over_time(data[15m]))` | SumOrCount | job | 15m | 1m | 1 |
-| 52 | 8 | `sum by (job) (sum_over_time(data[1h]))` | SumOrCount | job | 1h | 1m | 1 |
-| 53 | 8 | `sum by (job) (sum_over_time(data[6h]))` | SumOrCount | job | 6h | 1m | 1 |
-| 54 | 8 | `sum by (job) (sum_over_time(data[24h]))` | SumOrCount | job | 24h | 1m | 1 |
-| 55 | 9 | `topk(100, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 56 | 9 | `topk(100, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 57 | 9 | `topk(100, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
-| 58 | 9 | `topk(100, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
-| 59 | 9 | `topk(200, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 60 | 9 | `topk(200, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 61 | 9 | `topk(200, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
-| 62 | 9 | `topk(200, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
-| 63 | 9 | `topk(300, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 64 | 9 | `topk(300, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 65 | 9 | `topk(300, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
-| 66 | 9 | `topk(300, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
-| 67 | 10 | `quantile_over_time(0.9, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
-| 68 | 10 | `quantile_over_time(0.9, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
-| 69 | 10 | `quantile_over_time(0.9, data[6h]) / quantile_over_time(0.5, data[6h])` | 2 × Quantile | series | 6h | 1m | 2 |
-| 70 | 10 | `quantile_over_time(0.9, data[24h]) / quantile_over_time(0.5, data[24h])` | 2 × Quantile | series | 24h | 1m | 2 |
+| 2 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[15m])))` | TopK | — (keys: label_0) | 15m | 1m | 1 |
+| 3 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[1h])))` | TopK | — (keys: label_0) | 1h | 1m | 1 |
+| 4 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[6h])))` | TopK | — (keys: label_0) | 6h | 1m | 1 |
+| 5 | 2 | `topk(32, sum by (label_0) (sum_over_time(data[24h])))` | TopK | — (keys: label_0) | 24h | 1m | 1 |
+| 6 | 3 | `quantile by (job) (0.5, data)` | Quantile | job | 1s | 1s | 1 |
+| 7 | 3 | `quantile by (job) (0.75, data)` | Quantile | job | 1s | 1s | 1 |
+| 8 | 3 | `quantile by (job) (0.9, data)` | Quantile | job | 1s | 1s | 1 |
+| 9 | 3 | `quantile by (job) (0.95, data)` | Quantile | job | 1s | 1s | 1 |
+| 10 | 3 | `quantile by (job) (0.99, data)` | Quantile | job | 1s | 1s | 1 |
+| 11 | 4 | `sum_over_time(data[15m])` | SumOrCount | series | 15m | 1m | 1 |
+| 12 | 4 | `sum_over_time(data[1h])` | SumOrCount | series | 1h | 1m | 1 |
+| 13 | 4 | `sum_over_time(data[6h])` | SumOrCount | series | 6h | 1m | 1 |
+| 14 | 4 | `sum_over_time(data[24h])` | SumOrCount | series | 24h | 1m | 1 |
+| 15 | 5 | `quantile_over_time(0.5, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 16 | 5 | `quantile_over_time(0.5, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 17 | 5 | `quantile_over_time(0.5, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 18 | 5 | `quantile_over_time(0.5, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 19 | 5 | `quantile_over_time(0.75, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 20 | 5 | `quantile_over_time(0.75, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 21 | 5 | `quantile_over_time(0.75, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 22 | 5 | `quantile_over_time(0.75, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 23 | 5 | `quantile_over_time(0.9, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 24 | 5 | `quantile_over_time(0.9, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 25 | 5 | `quantile_over_time(0.9, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 26 | 5 | `quantile_over_time(0.9, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 27 | 5 | `quantile_over_time(0.95, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 28 | 5 | `quantile_over_time(0.95, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 29 | 5 | `quantile_over_time(0.95, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 30 | 5 | `quantile_over_time(0.95, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 31 | 5 | `quantile_over_time(0.99, data[15m])` | Quantile | series | 15m | 1m | 1 |
+| 32 | 5 | `quantile_over_time(0.99, data[1h])` | Quantile | series | 1h | 1m | 1 |
+| 33 | 5 | `quantile_over_time(0.99, data[6h])` | Quantile | series | 6h | 1m | 1 |
+| 34 | 5 | `quantile_over_time(0.99, data[24h])` | Quantile | series | 24h | 1m | 1 |
+| 35 | 6 | `rate(data[15m])` | RateOrIncrease | series | 15m | 1m | 1 |
+| 36 | 6 | `rate(data[1h])` | RateOrIncrease | series | 1h | 1m | 1 |
+| 37 | 6 | `rate(data[6h])` | RateOrIncrease | series | 6h | 1m | 1 |
+| 38 | 6 | `rate(data[24h])` | RateOrIncrease | series | 24h | 1m | 1 |
+| 39 | 7 | `sum by (job) (rate(data[15m]))` | RateOrIncrease | job | 15m | 1m | 1 |
+| 40 | 7 | `sum by (job) (rate(data[1h]))` | RateOrIncrease | job | 1h | 1m | 1 |
+| 41 | 7 | `sum by (job) (rate(data[6h]))` | RateOrIncrease | job | 6h | 1m | 1 |
+| 42 | 7 | `sum by (job) (rate(data[24h]))` | RateOrIncrease | job | 24h | 1m | 1 |
+| 43 | 8 | `sum by (job) (sum_over_time(data[15m]))` | SumOrCount | job | 15m | 1m | 1 |
+| 44 | 8 | `sum by (job) (sum_over_time(data[1h]))` | SumOrCount | job | 1h | 1m | 1 |
+| 45 | 8 | `sum by (job) (sum_over_time(data[6h]))` | SumOrCount | job | 6h | 1m | 1 |
+| 46 | 8 | `sum by (job) (sum_over_time(data[24h]))` | SumOrCount | job | 24h | 1m | 1 |
+| 47 | 9 | `topk(32, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 48 | 9 | `topk(32, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 49 | 9 | `topk(32, sum by (label_0) (rate(data[6h])))` | TopK over increases | — (keys: label_0) | 6h | 1m | 1 |
+| 50 | 9 | `topk(32, sum by (label_0) (rate(data[24h])))` | TopK over increases | — (keys: label_0) | 24h | 1m | 1 |
+| 51 | 10 | `quantile_over_time(0.9, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
+| 52 | 10 | `quantile_over_time(0.9, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
+| 53 | 10 | `quantile_over_time(0.9, data[6h]) / quantile_over_time(0.5, data[6h])` | 2 × Quantile | series | 6h | 1m | 2 |
+| 54 | 10 | `quantile_over_time(0.9, data[24h]) / quantile_over_time(0.5, data[24h])` | 2 × Quantile | series | 24h | 1m | 2 |
 
 </details>
 
@@ -368,15 +350,15 @@ heavy, refreshed every 1 m, over the same windows `W`.
 | D1 | `quantile_over_time(q, data[w])`, q ∈ {0.5, 0.9, 0.99} | Quantile | per series | 12 |
 | D2 | `quantile by (job) (q, data)`, q ∈ {0.5, 0.9, 0.99} | Quantile | `job` | 3 |
 | D3 | `sum by (job) (rate(data[w]))` | RateOrIncrease | `job` | 4 |
-| D4 | `topk(k, sum by (label_0) (rate(data[w])))`, w ∈ {15m, 1h} | TopK over per-series increases | none; keys `label_0` | 6 |
+| D4 | `topk(32, sum by (label_0) (rate(data[w])))`, w ∈ {15m, 1h} | TopK over per-series increases | none; keys `label_0` | 2 |
 | D5 | `quantile_over_time(0.99, data[w]) / quantile_over_time(0.5, data[w])`, w ∈ {15m, 1h} | Two Quantile RQEs | per series | 4 |
 
-29 RQEs per replica; D5's operands repeat D1's, so 25 are distinct. D1's
+25 RQEs per replica; D5's operands repeat D1's, so 21 are distinct. D1's
 quantiles share one stream across overlapping windows; D3 and D4 share the
 increase stream.
 
 <details>
-<summary>Every query of the dashboard set (27 queries, 29 RQEs)</summary>
+<summary>Every query of the dashboard set (23 queries, 25 RQEs)</summary>
 
 | # | Template | PromQL | Capability | Grouping | `S` | `T` | RQEs |
 |---|---|---|---|---|---|---|---|
@@ -399,14 +381,10 @@ increase stream.
 | 17 | D3 | `sum by (job) (rate(data[1h]))` | RateOrIncrease | job | 1h | 1m | 1 |
 | 18 | D3 | `sum by (job) (rate(data[6h]))` | RateOrIncrease | job | 6h | 1m | 1 |
 | 19 | D3 | `sum by (job) (rate(data[24h]))` | RateOrIncrease | job | 24h | 1m | 1 |
-| 20 | D4 | `topk(100, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 21 | D4 | `topk(100, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 22 | D4 | `topk(200, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 23 | D4 | `topk(200, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 24 | D4 | `topk(300, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
-| 25 | D4 | `topk(300, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
-| 26 | D5 | `quantile_over_time(0.99, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
-| 27 | D5 | `quantile_over_time(0.99, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
+| 20 | D4 | `topk(32, sum by (label_0) (rate(data[15m])))` | TopK over increases | — (keys: label_0) | 15m | 1m | 1 |
+| 21 | D4 | `topk(32, sum by (label_0) (rate(data[1h])))` | TopK over increases | — (keys: label_0) | 1h | 1m | 1 |
+| 22 | D5 | `quantile_over_time(0.99, data[15m]) / quantile_over_time(0.5, data[15m])` | 2 × Quantile | series | 15m | 1m | 2 |
+| 23 | D5 | `quantile_over_time(0.99, data[1h]) / quantile_over_time(0.5, data[1h])` | 2 × Quantile | series | 1h | 1m | 2 |
 
 </details>
 
@@ -418,7 +396,7 @@ keeps only what changes the comparison with AutoSketch.
 | Dimension | Values | What it varies |
 |---|---|---|
 | Template set | **dashboard**; the 10 templates | Workload realism, and which capabilities appear |
-| Replicas `r` | **1**, 8, 64 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99}, a `k` from {100, 200, 300} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated. Many users or dashboards over the same metrics: how the sharing benefit and planning time grow with the number of RQEs |
+| Replicas `r` | **1**, 8, 64 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated. Many users or dashboards over the same metrics: how the sharing benefit and planning time grow with the number of RQEs |
 | Accuracy target (strictness) | loose, **default**, strict | What AutoSketch optimizes for (§5) |
 | Latency SLA | the §5 grid, **no limit** | §5 |
 
@@ -466,14 +444,13 @@ HLL `lg_k` ∈ {12, 14, 16}, CMS-heap top-k with rows ∈ {3, 5}, cols ∈ {256,
 DDSketch, CountSketch-heap and UnivMon are not deployable by default.
 
 **A saturation run at the synthetic workload's data shape.** The grid has no
-point at θ = 1.1 and K = 1e4, measures quantiles on Pareto data, and scores
-top-k only at k = 32. The synthetic workload therefore needs one targeted run
+point at θ = 1.1 and K = 1e4, and measures quantiles on Pareto data. The synthetic
+workload therefore needs one targeted run
 of `scripts/study_saturation.py` at its own data, so every lookup lands on a
 measured point instead of the worst of the bracketing grid points (#156 Q8):
 - Zipf s = 1.1 over 10,000 keys, the same data as the cost table;
 - KLL and DDSketch on the Zipf ranks, DDSketch in value relative error (#162);
-- CMS-heap with heap ∈ {100, 200, 300}, each scored at every `k` ∈ {100, 200,
-  300} up to its heap;
+- CMS-heap at its measured heap, k = 32;
 - `N` up to 1e9 for top-k, 1e8 for the quantile sketches.
 
 **Exact accumulators** have no saturation point: their answer is exact at any
@@ -521,8 +498,8 @@ and `m = S/x` the windows a query merges:
   error is then read at `n(S, G)` as above (#156 Q11). CMS, CountSketch, HLL and
   DDSketch merge exactly, so this is their single-sketch error. KLL and top-k
   lose accuracy when merged; that penalty is the follow-up #158.
-- **Top-k:** precision is read at the RQE's `k` from the curve of the
-  deployment's heap size, so a heap-300 deployment serves k = 100, 200 and 300.
+- **Top-k:** `precision_at_k` at k = 32, the heap size every top-k config is
+  measured at.
 - **AutoSketch** never merges (`x = S`): the same lookup with `m = 1` at its
   window's size, `n(S, G)` (#156 Q12). It configures once, before deployment
   (§9 Q2).
@@ -582,7 +559,7 @@ Figures:
 | — | sketch-bench #151, #152, #154, #155 | Cost-table fixes, value range, accuracy after merging, `measured_at` (#147) | Merged; #154's merge rule is replaced by #156 |
 | — | sketch-bench #156, #162, #158 | Accuracy from the saturation curves at n(T) with `data_shape`; DDSketch in value relative error; merge penalties | Open; #156 blocked on #162 |
 | — | sketch-bench #157 | Re-export the cost table (grid configs, `CARDINALITY=10000`); per-item CPU and memory vs. size | Open; its accuracy part is covered by #156 |
-| — | sketch-bench (to open) | Top-k for this workload: heap size as a parameter, precision scored at k ∈ {100, 200, 300}; `rqe-optimizer` RQEs carry `k`, and a heap-`K` deployment serves `k ≤ K`; the targeted saturation run at θ = 1.1, K = 1e4 (§6) | Not started |
+| — | sketch-bench (to open) | The targeted saturation run at θ = 1.1, K = 1e4 with quantiles on the Zipf ranks (§6) | Not started |
 | — | sketch-bench #130, #131 | Saturation curves; accuracy after merging `m` shards | Merged; background |
 | 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` | Merged; superseded by #145 |
 | 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
