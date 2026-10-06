@@ -15,7 +15,7 @@
 // ponytail: a family with one fixed-size instance for all groups (HydraKLL,
 // sketch-bench#142) needs a per-family shape so it isn't multiplied by card(G).
 
-use crate::{secs, Capability, Deployment, Mapping, Raqe, WorkloadFacts};
+use crate::{secs, Capability, Deployment, Mapping, Millis, Raqe, WorkloadFacts};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
@@ -30,6 +30,9 @@ pub const OUTPUT_BYTES_PER_TOPK_ENTRY: f64 = 16.0;
 // ponytail: fixed k. A large k needs `k` on the RAQE and a benchmark that
 // varies the heap.
 pub const TOPK_ENTRIES: f64 = 32.0;
+/// Bytes per DDSketch bucket: one `u64` count, as sketch-bench's
+/// `dd_footprint` counts them.
+pub const DD_BYTES_PER_BUCKET: f64 = 8.0;
 
 /// One phase's resource use.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -80,6 +83,37 @@ fn group_count(deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
     facts[&deployment.metric].cardinality[&deployment.grouping_labels] as f64
 }
 
+/// `m`: memory of one instance holding `span_ms` of one group's samples: a
+/// window `x`, or the lookback `L` for a query's merge accumulator.
+/// DDSketch on a metric with a known value range holds one store (values are
+/// positive) of [`dd_bucket_count`] buckets, capped by the values it holds,
+/// `λ · span / card(G)`, as `dd_footprint` caps them by count. The range is the metric's, so this is
+/// an upper bound for a group whose own values span less. Every other row,
+/// and DDSketch without a range, keeps the measured size.
+pub(crate) fn instance_memory_bytes(
+    deployment: &Deployment,
+    facts: &WorkloadFacts,
+    span_ms: Millis,
+) -> f64 {
+    let config = &deployment.config;
+    let metric = &facts[&deployment.metric];
+    let alpha = config.sketch_config["params"]["alpha"].as_f64();
+    match (config.sketch.as_str(), metric.value_range, alpha) {
+        ("dd", Some((lo, hi)), Some(alpha)) => {
+            let values =
+                metric.arrival_rate_per_sec() * secs(span_ms) / group_count(deployment, facts);
+            dd_bucket_count(lo, hi, alpha).min(values.ceil().max(1.0)) * DD_BYTES_PER_BUCKET
+        }
+        _ => config.mem_bytes_per_instance,
+    }
+}
+
+/// Buckets DDSketch needs for values in `[lo, hi]` at relative accuracy
+/// `alpha`: `⌊ln(hi/lo) / ln((1+α)/(1−α))⌋ + 1`, as `dd_footprint` counts them.
+pub(crate) fn dd_bucket_count(lo: f64, hi: f64, alpha: f64) -> f64 {
+    ((hi / lo).ln() / ((1.0 + alpha) / (1.0 - alpha)).ln()).floor() + 1.0
+}
+
 /// `x / y`: windows each sample is inserted into.
 fn open_window_count(deployment: &Deployment) -> f64 {
     deployment
@@ -102,7 +136,7 @@ pub(crate) fn ingest(deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCos
             * open_windows
             * deployment.config.insert_cpu_secs,
         memory_bytes: group_count(deployment, facts)
-            * deployment.config.mem_bytes_per_instance
+            * instance_memory_bytes(deployment, facts, deployment.window_ms)
             * open_windows,
     }
 }
@@ -116,14 +150,18 @@ pub(crate) fn merge(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts)
     PhaseCost {
         cpu_secs_per_sec: groups * merges_per_group * deployment.config.merge_cpu_secs
             / secs(raqe.interval_ms),
-        memory_bytes: groups * merge_memory_per_group(raqe, deployment),
+        memory_bytes: groups * merge_memory_per_group(raqe, deployment, facts),
     }
 }
 
-/// One accumulator if the query merges at all.
-pub(crate) fn merge_memory_per_group(raqe: &Raqe, deployment: &Deployment) -> f64 {
+/// One accumulator if the query merges at all, holding the whole lookback.
+pub(crate) fn merge_memory_per_group(
+    raqe: &Raqe,
+    deployment: &Deployment,
+    facts: &WorkloadFacts,
+) -> f64 {
     if merged_window_count(raqe, deployment) > 1.0 {
-        deployment.config.mem_bytes_per_instance
+        instance_memory_bytes(deployment, facts, raqe.lookback_ms)
     } else {
         0.0
     }
@@ -147,7 +185,9 @@ pub(crate) fn storage_bytes(raqe: &Raqe, deployment: &Deployment, facts: &Worklo
     let closed_windows = deployment
         .closed_instance_count(raqe.lookback_ms)
         .expect("only eligible pairs are costed") as f64;
-    group_count(deployment, facts) * deployment.config.mem_bytes_per_instance * closed_windows
+    group_count(deployment, facts)
+        * instance_memory_bytes(deployment, facts, deployment.window_ms)
+        * closed_windows
 }
 
 /// Serial CPU time of one query, in ms: `card(G) · (c_qry + (L/x − 1) · c_mrg)`.
@@ -209,6 +249,57 @@ pub fn score(
 mod tests {
     use super::*;
     use crate::test_support::{deployment, facts, raqe};
+
+    #[test]
+    fn dd_bucket_count_is_log_range_over_log_gamma() {
+        // alpha = 1/3 gives gamma = 2: buckets [1, 2), [2, 4), ... up to 1000.
+        assert_eq!(dd_bucket_count(1.0, 1000.0, 1.0 / 3.0), 10.0);
+        assert_eq!(dd_bucket_count(5.0, 5.0, 0.01), 1.0);
+        // 1 ms to 60 s at 1%: ln(60000) / ln(1.01 / 0.99) = 550.1.
+        assert_eq!(dd_bucket_count(0.001, 60.0, 0.01), 551.0);
+    }
+
+    #[test]
+    fn dd_memory_comes_from_the_value_range_when_known() {
+        let mut dd = deployment(1_000.0, 0.0, 0.0, 0.0, 60_000, 60_000);
+        dd.config.sketch = "dd".into();
+        dd.config.sketch_config = serde_json::json!({"params": {"alpha": 1.0 / 3.0}});
+        let mut ranged = facts(1, 1);
+        ranged
+            .get_mut(crate::test_support::METRIC)
+            .unwrap()
+            .value_range = Some((1.0, 1000.0));
+
+        let window = |d: &Deployment| d.window_ms;
+        assert_eq!(instance_memory_bytes(&dd, &ranged, window(&dd)), 80.0); // 10 buckets × 8 B
+        assert_eq!(ingest(&dd, &ranged).memory_bytes, 80.0);
+
+        // 1 sample/sec into a 5 s window: 5 values, fewer than the 10 buckets.
+        let short = Deployment {
+            window_ms: 5_000,
+            slide_ms: 5_000,
+            ..dd.clone()
+        };
+        assert_eq!(ingest(&short, &ranged).memory_bytes, 40.0);
+        // A 15 s query folds 3 windows: its accumulator holds 15 values, so
+        // the 10-bucket range is the cap again, not the window's 5.
+        assert_eq!(
+            merge(&raqe(15_000, 15_000), &short, &ranged).memory_bytes,
+            80.0
+        );
+        assert_eq!(
+            merge(&raqe(10_000, 10_000), &short, &ranged).memory_bytes,
+            80.0
+        );
+
+        // No range, or not DDSketch: the measured size.
+        assert_eq!(
+            instance_memory_bytes(&dd, &facts(1, 1), window(&dd)),
+            1_000.0
+        );
+        let cms = deployment(1_000.0, 0.0, 0.0, 0.0, 60_000, 60_000);
+        assert_eq!(instance_memory_bytes(&cms, &ranged, window(&cms)), 1_000.0);
+    }
 
     #[test]
     fn scores_each_phase() {

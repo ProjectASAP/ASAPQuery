@@ -1,6 +1,6 @@
 //! Candidate generation and eligibility (§3).
 
-use crate::analytical_cost_model::merge_memory_per_group;
+use crate::analytical_cost_model::{instance_memory_bytes, merge_memory_per_group};
 use crate::{AtomicCostEntry, Capability, Deployment, LabelSet, Millis, Raqe, WorkloadFacts};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -101,6 +101,7 @@ pub fn build_all_candidates(
 ) -> Vec<Deployment> {
     prune_dominated_candidates(
         raqes,
+        facts,
         build_all_candidates_unpruned(raqes, costs, facts, allow_undeployable_families),
     )
 }
@@ -148,7 +149,11 @@ pub fn build_all_candidates_unpruned(
 /// multipliers. So it compares ingest CPU and memory per group, then latency
 /// (merge and query CPU), merge memory and stored memory for each RAQE the
 /// dominated candidate can serve.
-pub fn prune_dominated_candidates(raqes: &[Raqe], candidates: Vec<Deployment>) -> Vec<Deployment> {
+pub fn prune_dominated_candidates(
+    raqes: &[Raqe],
+    facts: &WorkloadFacts,
+    candidates: Vec<Deployment>,
+) -> Vec<Deployment> {
     let eligibility: Vec<Vec<bool>> = candidates
         .iter()
         .map(|candidate| {
@@ -173,6 +178,7 @@ pub fn prune_dominated_candidates(raqes: &[Raqe], candidates: Vec<Deployment>) -
                     candidate,
                     &eligibility[candidate_index],
                     raqes,
+                    facts,
                 ) {
                     Dominance::StrictlyBetter => true,
                     // The earlier of two identical candidates wins, so a tie
@@ -200,6 +206,7 @@ fn dominance(
     original: &Deployment,
     original_coverage: &[bool],
     raqes: &[Raqe],
+    facts: &WorkloadFacts,
 ) -> Dominance {
     let same_group = replacement.capability == original.capability
         && replacement.metric == original.metric
@@ -216,7 +223,10 @@ fn dominance(
     // Each pair is (replacement's cost, original's cost).
     let mut costs = vec![
         (ingest_cpu(replacement), ingest_cpu(original)),
-        (ingest_memory(replacement), ingest_memory(original)),
+        (
+            ingest_memory(replacement, facts),
+            ingest_memory(original, facts),
+        ),
     ];
     for (raqe, _) in raqes
         .iter()
@@ -228,12 +238,12 @@ fn dominance(
             query_latency(original, raqe),
         ));
         costs.push((
-            merge_memory_per_group(raqe, replacement),
-            merge_memory_per_group(raqe, original),
+            merge_memory_per_group(raqe, replacement, facts),
+            merge_memory_per_group(raqe, original, facts),
         ));
         costs.push((
-            stored_memory(replacement, raqe),
-            stored_memory(original, raqe),
+            stored_memory(replacement, raqe, facts),
+            stored_memory(original, raqe, facts),
         ));
     }
 
@@ -269,8 +279,8 @@ fn ingest_cpu(deployment: &Deployment) -> f64 {
 
 /// Open-window bytes per group. `card(G)` is a common multiplier within a
 /// group, so it is left out.
-fn ingest_memory(deployment: &Deployment) -> f64 {
-    open_window_count(deployment) * deployment.config.mem_bytes_per_instance
+fn ingest_memory(deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
+    open_window_count(deployment) * instance_memory_bytes(deployment, facts, deployment.window_ms)
 }
 
 fn query_latency(deployment: &Deployment, raqe: &Raqe) -> f64 {
@@ -282,11 +292,11 @@ fn query_latency(deployment: &Deployment, raqe: &Raqe) -> f64 {
 }
 
 /// Closed-window bytes per group when serving `raqe`.
-fn stored_memory(deployment: &Deployment, raqe: &Raqe) -> f64 {
+fn stored_memory(deployment: &Deployment, raqe: &Raqe, facts: &WorkloadFacts) -> f64 {
     deployment
         .closed_instance_count(raqe.lookback_ms)
         .expect("candidate coverage only contains exactly tiled RAQEs") as f64
-        * deployment.config.mem_bytes_per_instance
+        * instance_memory_bytes(deployment, facts, deployment.window_ms)
 }
 
 pub fn eligible_deployments_for(r: &Raqe, deployments: &[Deployment]) -> Vec<usize> {
@@ -469,7 +479,7 @@ mod tests {
             ..coarse.clone()
         };
 
-        let retained = prune_dominated_candidates(&[r], vec![fine, coarse.clone()]);
+        let retained = prune_dominated_candidates(&[r], &facts(1, 1), vec![fine, coarse.clone()]);
 
         assert_eq!(retained, vec![coarse]);
     }
@@ -493,8 +503,11 @@ mod tests {
             ..large_window.clone()
         };
 
-        let retained =
-            prune_dominated_candidates(&[r], vec![small_window.clone(), large_window.clone()]);
+        let retained = prune_dominated_candidates(
+            &[r],
+            &facts(1, 1),
+            vec![small_window.clone(), large_window.clone()],
+        );
 
         assert_eq!(retained, vec![large_window]);
     }
@@ -528,7 +541,11 @@ mod tests {
             ..whole_window.clone()
         };
 
-        let retained = prune_dominated_candidates(&[r], vec![whole_window.clone(), panes.clone()]);
+        let retained = prune_dominated_candidates(
+            &[r],
+            &facts(1, 1),
+            vec![whole_window.clone(), panes.clone()],
+        );
 
         assert_eq!(retained, vec![whole_window, panes]);
     }
@@ -563,7 +580,8 @@ mod tests {
             ..direct.clone()
         };
 
-        let retained = prune_dominated_candidates(&[r], vec![direct.clone(), halves.clone()]);
+        let retained =
+            prune_dominated_candidates(&[r], &facts(1, 1), vec![direct.clone(), halves.clone()]);
 
         assert_eq!(retained, vec![direct, halves]);
     }

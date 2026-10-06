@@ -122,6 +122,9 @@ pub struct MetricFacts {
     /// `card(X)`: distinct value combinations of each label set `X` in use.
     /// Must include `labels` itself, whose cardinality is the series count.
     pub cardinality: BTreeMap<LabelSet, u64>,
+    /// `(lo, hi)`: smallest and largest positive sample value, if known.
+    /// Sizes DDSketch; without it, DDSketch keeps the measured memory.
+    pub value_range: Option<(f64, f64)>,
 }
 
 impl MetricFacts {
@@ -168,6 +171,13 @@ pub fn validate_facts(raqes: &[Raqe], facts: &WorkloadFacts) -> Result<(), Vec<S
                 "{id}: lookback {} ms and interval {} ms must be multiples of the {scrape_ms} ms scrape interval",
                 raqe.lookback_ms, raqe.interval_ms
             ));
+        }
+        if let Some((lo, hi)) = metric_facts.value_range {
+            if !(lo > 0.0 && hi >= lo && hi.is_finite()) {
+                problems.insert(format!(
+                    "{metric}: value range ({lo}, {hi}) needs 0 < lo <= hi < inf"
+                ));
+            }
         }
         if !grouping.is_subset(all_labels) {
             problems.insert(format!(
@@ -332,6 +342,7 @@ pub(crate) mod test_support {
                 labels: labels.clone(),
                 scrape_interval_ms: 1_000,
                 cardinality: BTreeMap::from([(LabelSet::new(), groups), (labels, series)]),
+                value_range: None,
             },
         )])
     }
@@ -432,6 +443,7 @@ mod tests {
                     (labels(&["service"]), 5),
                     (labels(&["service", "endpoint"]), 50),
                 ]),
+                value_range: None,
             },
         )]);
         let r = Raqe {
@@ -449,6 +461,7 @@ mod tests {
                 labels: labels(&["service"]),
                 scrape_interval_ms: 0,
                 cardinality: BTreeMap::from([(labels(&["service"]), 0)]),
+                value_range: Some((0.0, 1.0)),
             },
         )]);
         let raqes = [
@@ -477,7 +490,8 @@ mod tests {
         assert!(has("cardinality of {\"service\"} is 0"));
         assert!(has("filtered: spatial filters are not supported"));
         assert!(has("filtered: latency SLA NaN ms is not positive"));
-        assert_eq!(problems.len(), 7, "{problems:?}");
+        assert!(has("value range (0, 1) needs 0 < lo <= hi < inf"));
+        assert_eq!(problems.len(), 8, "{problems:?}");
     }
 
     #[test]
@@ -510,6 +524,7 @@ mod tests {
                     (labels(&["service"]), 60),
                     (labels(&["service", "endpoint"]), 50),
                 ]),
+                value_range: None,
             },
         )]);
         let r = Raqe {

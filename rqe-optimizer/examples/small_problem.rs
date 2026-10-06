@@ -93,9 +93,10 @@ fn load_cost_table() -> AtomicCostTable {
 }
 
 /// Both metrics: 5 services × 10 endpoints × 600 pods = 30,000 series
-/// scraped every 15 s, so `λ` = 2,000 samples/sec each.
+/// scraped every 15 s, so `λ` = 2,000 samples/sec each. Durations range from
+/// 1 ms to 60 s, which sizes DDSketch.
 fn facts() -> WorkloadFacts {
-    let http_metric_facts = || MetricFacts {
+    let http_metric_facts = |value_range| MetricFacts {
         labels: label_set(&["service", "endpoint", "pod"]),
         scrape_interval_ms: 15_000,
         cardinality: [
@@ -104,10 +105,11 @@ fn facts() -> WorkloadFacts {
             (label_set(&["service", "endpoint", "pod"]), 30_000),
         ]
         .into(),
+        value_range,
     };
     [
-        (REQUESTS.to_string(), http_metric_facts()),
-        (DURATION.to_string(), http_metric_facts()),
+        (REQUESTS.to_string(), http_metric_facts(None)),
+        (DURATION.to_string(), http_metric_facts(Some((0.001, 60.0)))),
     ]
     .into()
 }

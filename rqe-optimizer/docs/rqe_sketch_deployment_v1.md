@@ -57,6 +57,8 @@ For each metric, the caller provides `MetricFacts`:
 - `scrape_interval`: every series yields one sample per scrape.
 - `card(X)`: distinct value combinations of each label set `X` in use,
   including `labels` itself (the raw series count).
+- `value_range` (optional): `(lo, hi)`, the smallest and largest positive
+  sample value, with `0 < lo <= hi`. It sizes DDSketch (see below).
 
 The arrival rate is derived as follows (not provided by the user):
 
@@ -283,7 +285,12 @@ For deployment `D` serving RAQE `i`:
 - `a_D = x / y`: open windows; each sample is inserted into `a_D` instances of its group.
 - `S_i`, `T_i`: RAQE `i`'s lookback and interval.
 - `n_i = S_i / x`: windows merged per query.
-- `m`: memory per instance, measured.
+- `m`: memory per instance, measured. For DDSketch on a metric with a
+  `value_range`, `m = (floor(ln(hi / lo) / ln((1 + alpha) / (1 - alpha))) + 1) × 8`
+  bytes instead: one bucket count per `gamma`-power in the range, capped by
+  the values one instance sees (`λ · x / card(G)` for a window, `λ · L / card(G)`
+  for a query's merge accumulator), as sketch-bench's `dd_footprint` counts them. The range is the metric's, so `m` is an upper
+  bound for a group whose own values span less.
 - `c_ins`: CPU per insert, measured.
 - `c_mrg`: CPU per pairwise merge, measured.
 - `c_qry`: CPU per query of one instance, measured.
@@ -330,9 +337,11 @@ not scale.
 
 Quantile sketches have no keys, but are not strictly fixed either: KLL grows
 slowly with the number of values inserted (about `k × log(n / k)`), and
-DDSketch with the range of values. The model treats them as Fixed at the size
+DDSketch with the range of values. The model treats KLL as Fixed at the size
 the export measured (1,000,000 values per instance), so it misstates instances
-that see far fewer or far more values.
+that see far fewer or far more values. DDSketch is sized from the metric's
+`value_range` when given (capped by values per instance), else from the
+measured size.
 
 The model uses one formula, `card(G) × m`, which is right for both cells in
 use:
