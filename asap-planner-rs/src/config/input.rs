@@ -63,6 +63,7 @@ impl ControllerConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct QueryGroup {
     pub id: Option<u32>,
     pub queries: Vec<String>,
@@ -339,6 +340,26 @@ query_groups:
             .expect_err("legacy latency_sla key must be rejected")
             .to_string();
         assert!(error.contains("unknown field `latency_sla`"), "{error}");
+    }
+
+    #[test]
+    fn rejects_misspelled_controller_options() {
+        // A typo would otherwise drop the whole SLA block to its defaults.
+        let yaml = r#"
+query_groups:
+  - queries: [sum(metric)]
+    repetition_delay_ms: 60000
+    controler_options:
+      accuracy_sla: 0.99
+"#;
+
+        let error = serde_yaml::from_str::<ControllerConfig>(yaml)
+            .expect_err("unknown query group key must be rejected")
+            .to_string();
+        assert!(
+            error.contains("unknown field `controler_options`"),
+            "{error}"
+        );
     }
 
     #[test]

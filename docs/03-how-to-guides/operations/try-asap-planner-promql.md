@@ -46,7 +46,7 @@ auto-infer label sets per metric.
 decision logic — any numeric value is fine (e.g. the placeholder above).
 
 `latency_sla_ms` is optional: the maximum modeled query latency in milliseconds (must be
-finite and > 0). Omit it for no latency limit.
+finite and > 0). Omit it for no latency limit. The planner does not enforce it yet.
 
 ### Choosing `repetition_delay_ms` and `--data-ingestion-interval-ms`
 

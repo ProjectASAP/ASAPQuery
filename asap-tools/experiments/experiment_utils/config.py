@@ -13,6 +13,9 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 import constants
 from experiment_utils.providers.factory import create_provider
 
+# Keys the planner's `ControllerOptions` accepts.
+CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
+
 
 def validate_basic_config(
     cfg: DictConfig,
@@ -412,6 +415,12 @@ def generate_controller_client_configs(
         controller_only_config = {
             k: v for k, v in full_config.items() if k in CONTROLLER_ALLOWED_KEYS
         }
+        # Only the query client reads `client_options`; any other unknown group
+        # key reaches the planner and is rejected there.
+        controller_only_config["query_groups"] = [
+            {k: v for k, v in group.items() if k != "client_options"}
+            for group in controller_only_config.get("query_groups", [])
+        ]
         with open(
             os.path.join(
                 output_dir, "{}_controller_input.yaml".format(experiment_mode["mode"])
@@ -887,6 +896,15 @@ def generate_sql_planner_input(
 
     planner_query_groups = []
     for idx, group in enumerate(groups_list):
+        ctrl_opts = dict(group.get("controller_options") or {})
+        # Dropping an unknown key here would hide it from the planner's strict parse.
+        unknown = set(ctrl_opts) - CONTROLLER_OPTION_KEYS
+        if unknown:
+            raise ValueError(
+                f"query_groups[{idx}].controller_options has unknown keys "
+                f"{sorted(unknown)}; allowed: {sorted(CONTROLLER_OPTION_KEYS)}"
+            )
+
         sql_file = group.get("sql_file")
         if not sql_file:
             raise ValueError(f"query_groups[{idx}] missing 'sql_file'")
@@ -901,7 +919,6 @@ def generate_sql_planner_input(
         if not queries:
             raise ValueError(f"No SQL statements found in {sql_file!r}")
 
-        ctrl_opts = dict(group.get("controller_options") or {})
         planner_ctrl_opts = {
             "accuracy_sla": float(ctrl_opts.get("accuracy_sla", 0.95)),
         }

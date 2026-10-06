@@ -757,7 +757,7 @@ The framework validates configurations at runtime using `experiment_utils/config
    - `client_options.repetitions`: Number of repetitions
    - `client_options.starting_delay`: Warmup period
    - `controller_options.accuracy_sla`: Accuracy threshold
-   - `controller_options.latency_sla_ms` (optional): Maximum modeled query latency in milliseconds; omit for no limit
+   - `controller_options.latency_sla_ms` (optional): Maximum modeled query latency in milliseconds; omit for no limit. Not yet enforced by the planner
 
 2. **exporters** - Must have:
    - `exporter_list`: Dictionary of exporter configs

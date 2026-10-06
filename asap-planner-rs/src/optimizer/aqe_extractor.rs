@@ -310,6 +310,20 @@ mod tests {
     }
 
     #[test]
+    fn different_latency_slas_become_distinct_items() {
+        let unlimited = rqe("sum_over_time(metric[5m])", 60_000);
+        let mut fast = rqe("sum_over_time(metric[5m])", 60_000);
+        fast.latency_sla_ms = Some(100.0);
+        let mut slow = rqe("sum_over_time(metric[5m])", 60_000);
+        slow.latency_sla_ms = Some(1_000.0);
+
+        let items = extract_aqes(&[unlimited, fast, slow], &empty_schema(), 15_000).unwrap();
+        let mut slas: Vec<_> = items.iter().map(|item| item.latency_sla_ms).collect();
+        slas.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        assert_eq!(slas, vec![None, Some(100.0), Some(1_000.0)]);
+    }
+
+    #[test]
     fn signed_zero_slas_merge_into_one_item() {
         let mut negative_zero = rqe("sum_over_time(metric[5m])", 60_000);
         negative_zero.accuracy_sla = -0.0;

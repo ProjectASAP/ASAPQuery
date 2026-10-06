@@ -49,7 +49,7 @@ For each table:
 decision logic — any numeric value is fine (e.g. the placeholder in the example above).
 
 `latency_sla_ms` is optional: the maximum modeled query latency in milliseconds (must be
-finite and > 0). Omit it for no latency limit.
+finite and > 0). Omit it for no latency limit. The planner does not enforce it yet.
 
 ### Choosing `repetition_delay` and `--data-ingestion-interval`
 

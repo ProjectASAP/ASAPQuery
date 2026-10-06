@@ -518,7 +518,7 @@ These parameters come from the `experiment_type` config group and are prefixed w
 - **Default**: omitted (no latency limit)
 - **Range**: finite and > 0
 - **Example**: `250`
-- **Usage**: Hard ceiling on query latency for the planner
+- **Usage**: Intended as a hard ceiling on query latency for the planner. Not yet enforced: plans are not rejected for exceeding it.
 
 ### Metrics Configuration
 
