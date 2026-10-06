@@ -179,7 +179,7 @@ grid.
 
 | ID | Description | Purpose |
 | --- | --- | --- |
-| `synthetic` | Synthetic PromQL workload: the 10 queries in "Synthetic workload" below, over Zipf/Pareto data. Main figure. | Cost–latency trade-off across data and requirements |
+| `synthetic` | Synthetic PromQL workload: the 10 queries in "Synthetic workload" below, over Zipf data. Main figure. | Cost–latency trade-off across data and requirements |
 | `traces` | Real-trace RQEs, one workload per dataset: Alibaba 2022, BOOM and Google 2011. Taken from `asap-tools/dataset-analysis/results/skew_summary.csv` ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)): each row's `range_s` is `S` and its `step_s` is `T`. Data parameters and accuracy targets are fit over each whole trace. | Appendix: real-trace results |
 
 ### Synthetic workload
@@ -265,9 +265,12 @@ they add RQEs, not series. Every series emits one sample every 10 ms
 Sample values:
 - **Sum and increase:** exact, so the value distribution does not affect cost
   or accuracy.
-- **Top-k:** the value is the weight; the series' total weights within a group
-  follow Zipf θ.
-- **Quantiles:** values are drawn from Pareto a.
+- **Top-k and quantiles:** the data the cost table is measured on: Zipf
+  s = 1.1 over a population of 100,000 keys (sketch-bench
+  `export_rqe_optimizer_costs.sh`). Top-k ranks the keys by weight; quantile
+  sketches (KLL, DDSketch) are measured on the Zipf ranks as values. The
+  workload uses the same distribution, so the table needs no separate run for
+  it.
 
 **Only two cardinalities matter.** Queries aggregate by `label_0` or per
 series, never by another label. So any other label (a second instance-like
@@ -331,7 +334,7 @@ keeps only what changes the comparison with AutoSketch.
 | Accuracy target (strictness) | loose, **default**, strict | What AutoSketch optimizes for (§5) |
 | Latency SLA | the §5 grid, **no limit** | §5 |
 
-Fixed: `s = 100`, θ = 1.0, a = 2.
+Fixed: `s = 100`; data Zipf s = 1.1 over 100,000 keys (§6 "Data model").
 
 The sweep is the default workload, then each dimension varied alone with the
 others at their defaults. Every workload runs every baseline (ASAP,
@@ -355,7 +358,7 @@ in the planner's micro-benchmarks:
 - lookback window set `W` ({1h} to {1m, 10m, 1h, 6h, 24h});
 - repeat interval `T` (10 s, 1 m, 5 m);
 - series per group `s` (1 to 1000);
-- key skew θ and value tail a;
+- data distribution (key skew, value tail);
 - interactions `r × s` and `W × C`.
 
 ### Benchmark input
@@ -384,7 +387,8 @@ from the lower `θ` bound. Longer samples expose worse cases (sketch-bench
 
 - **`traces` gives the appendix results.** Its parameters are fit on the
   full trace.
-- **`synthetic`** uses its generator's parameters (§6 "Data model").
+- **`synthetic`** uses the cost table's own data, Zipf s = 1.1 over 100,000
+  keys (§6 "Data model").
 
 Each config is benchmarked at these worst-case parameters. AutoSketch §5.2
 injects random traffic bursts into synthetic workloads to cover variation over
