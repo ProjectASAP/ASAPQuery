@@ -52,6 +52,28 @@ impl DDSketchAccumulator {
     fn merge_inner(&mut self, other: &DDSketchAccumulator) -> Result<(), String> {
         self.inner.merge(&other.inner)
     }
+
+    /// Merges a batch in place into one copy of the first sketch, instead of
+    /// cloning the running result at every step as `merge_with` does.
+    pub fn merge_multiple(
+        accumulators: &[Box<dyn AggregateCore>],
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let mut dds = accumulators.iter().map(|acc| {
+            acc.as_any()
+                .downcast_ref::<DDSketchAccumulator>()
+                .ok_or_else(|| {
+                    format!(
+                        "Cannot merge DDSketchAccumulator with {}",
+                        acc.get_accumulator_type()
+                    )
+                })
+        });
+        let mut merged = dds.next().ok_or("No accumulators to merge")??.clone();
+        for dd in dds {
+            merged.merge_inner(dd?)?;
+        }
+        Ok(merged)
+    }
 }
 
 impl SerializableToSink for DDSketchAccumulator {
@@ -253,6 +275,39 @@ mod tests {
             .downcast_ref::<DDSketchAccumulator>()
             .unwrap();
         assert_eq!(via_trait.get_quantile(0.5), whole.get_quantile(0.5));
+    }
+
+    #[test]
+    fn merge_multiple_equals_single_sketch_and_rejects_bad_batches() {
+        let mut whole = DDSketchAccumulator::new(ALPHA);
+        let mut parts: Vec<Box<dyn AggregateCore>> = Vec::new();
+        for chunk in 0..4 {
+            let mut part = DDSketchAccumulator::new(ALPHA);
+            for i in 1..=250 {
+                let value = (chunk * 250 + i) as f64;
+                whole.update(value);
+                part.update(value);
+            }
+            parts.push(Box::new(part));
+        }
+        let merged = DDSketchAccumulator::merge_multiple(&parts).unwrap();
+        assert_eq!(merged.count(), whole.count());
+        for q in [0.0, 0.5, 0.99, 1.0] {
+            assert_eq!(merged.get_quantile(q), whole.get_quantile(q), "q={q}");
+        }
+        // The batch merge leaves its inputs untouched.
+        let first = parts[0]
+            .as_any()
+            .downcast_ref::<DDSketchAccumulator>()
+            .unwrap();
+        assert_eq!(first.count(), 250);
+
+        assert!(DDSketchAccumulator::merge_multiple(&[]).is_err());
+        parts.push(Box::new(DDSketchAccumulator::new(0.02)));
+        assert!(DDSketchAccumulator::merge_multiple(&parts).is_err());
+        parts.pop();
+        parts.push(Box::new(crate::precompute_operators::SumAccumulator::new()));
+        assert!(DDSketchAccumulator::merge_multiple(&parts).is_err());
     }
 
     #[test]

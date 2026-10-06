@@ -3,7 +3,7 @@
 //! (`NaiveMerger::merge_all`), so the two stay behaviorally identical.
 //!
 //! Tries a batch merge for accumulator types that support one (currently
-//! `DatasketchesKLL` and `CountMinSketch`), falling back to a sequential
+//! `DatasketchesKLL`, `DDSketch` and `CountMinSketch`), falling back to a sequential
 //! pairwise fold otherwise or if the batch merge itself fails. The fold
 //! aborts on the first `merge_with` error instead of skipping it, so a
 //! caller can't get a silently-partial merge back as `Ok`.
@@ -11,6 +11,7 @@
 use crate::data_model::{AggregateCore, AggregationType};
 use crate::precompute_operators::count_min_sketch_accumulator::CountMinSketchAccumulator;
 use crate::precompute_operators::datasketches_kll_accumulator::DatasketchesKLLAccumulator;
+use crate::precompute_operators::ddsketch_accumulator::DDSketchAccumulator;
 use tracing::warn;
 
 /// Precondition: `accumulators` is non-empty. Callers already special-case
@@ -32,6 +33,14 @@ pub(crate) fn merge_accumulators_batch(
 
     if accumulator_type == AggregationType::DatasketchesKLL {
         match DatasketchesKLLAccumulator::merge_multiple(accumulators) {
+            Ok(merged) => return Ok(Box::new(merged)),
+            Err(e) => warn!(
+                "Batch merge failed: {}. Falling back to sequential merge.",
+                e
+            ),
+        }
+    } else if accumulator_type == AggregationType::DDSketch {
+        match DDSketchAccumulator::merge_multiple(accumulators) {
             Ok(merged) => return Ok(Box::new(merged)),
             Err(e) => warn!(
                 "Batch merge failed: {}. Falling back to sequential merge.",
