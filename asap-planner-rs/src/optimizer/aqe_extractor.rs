@@ -125,16 +125,6 @@ fn normalized_f64_bits(value: f64) -> u64 {
     }
 }
 
-/// Euclidean GCD. `num-integer` is not in the workspace; this two-liner is
-/// sufficient and avoids a dependency.
-pub(super) fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
-    }
-}
-
 /// Recursively decompose a PromQL expression into non-binary leaf queries.
 ///
 /// Binary arithmetic expressions (e.g. `rate(a[5m]) / rate(b[5m])`) are split
