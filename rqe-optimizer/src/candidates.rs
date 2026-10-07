@@ -2,8 +2,8 @@
 
 use crate::analytical_cost_model;
 use crate::{
-    has_heap, heap_capacity, heap_needed, Accuracy, AtomicCostEntry, Capability, Deployment,
-    LabelSet, MetricFacts, Millis, Raqe, WorkloadFacts, KEY_TRACKER_FAMILY,
+    config_topk_k, has_heap, heap_capacity, heap_needed, Accuracy, AtomicCostEntry, Capability,
+    Deployment, LabelSet, MetricFacts, Millis, Raqe, WorkloadFacts, KEY_TRACKER_FAMILY,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -108,12 +108,17 @@ fn candidate_deployments(
                 .filter(|r| r.lookback_ms % window_ms == 0)
                 .map(|r| gcd(window_ms, r.interval_ms)),
         );
-        // A heap family keeps one candidate per heap a RAQE on this window
-        // needs, m · k for its m = L / x merged windows, priced by
+        // A heap family keeps one candidate per (heap, k) a RAQE on this
+        // window needs, m · k for its m = L / x merged windows, priced by
         // interpolating the measured heap sizes. Other rows are used as they are.
-        let heaps: BTreeSet<u64> = group
+        let heaps: BTreeSet<(u64, u64)> = group
             .iter()
-            .filter_map(|r| heap_needed(r.lookback_ms, window_ms))
+            .filter_map(|r| {
+                Some((
+                    heap_needed(r.lookback_ms, window_ms, r.topk_k())?,
+                    r.topk_k(),
+                ))
+            })
             .collect();
         let configs: Vec<AtomicCostEntry> = family_rows
             .iter()
@@ -121,10 +126,12 @@ fn candidate_deployments(
             .map(|c| (*c).clone())
             .chain(heap_rows.values().flat_map(|rows| {
                 // Needs that one measured row serves collapse onto it.
-                let by_heap: BTreeMap<u64, AtomicCostEntry> = heaps
+                let by_heap: BTreeMap<(u64, u64), AtomicCostEntry> = heaps
                     .iter()
-                    .filter_map(|&heap| at_heap(rows, heap))
-                    .filter_map(|entry| Some((heap_capacity(&entry)?, entry)))
+                    .filter_map(|&(heap, k)| heap_row(rows, heap, k))
+                    .filter_map(|entry| {
+                        Some(((heap_capacity(&entry)?, config_topk_k(&entry)), entry))
+                    })
                     .collect();
                 by_heap.into_values()
             }))
@@ -158,6 +165,14 @@ fn candidate_deployments(
     deployments
 }
 
+/// Whether `capability` asks for a top-k list.
+pub(crate) fn is_topk(capability: Capability) -> bool {
+    matches!(
+        capability,
+        Capability::TopKByValue | Capability::TopKByCount
+    )
+}
+
 /// A heap family's rows, by family and counter shape (every param but
 /// `heap`), then by heap capacity.
 pub(crate) fn heap_rows_by_shape<'a>(
@@ -187,6 +202,32 @@ pub(crate) fn heap_rows_by_shape<'a>(
         }
     }
     out
+}
+
+/// `rows` (one family and counter shape, by heap) priced for a top-`k`
+/// answer needing `heap`: at `heap`, but never below the smallest measured
+/// heap (nothing is extrapolated below it). The config names its heap
+/// explicitly and its `topk_k`, so the deployed sketch answers `k` with the
+/// heap that was priced. The MILP's candidates and AutoSketch both price
+/// heaps here.
+pub(crate) fn heap_row(
+    rows: &BTreeMap<u64, &AtomicCostEntry>,
+    heap: u64,
+    k: u64,
+) -> Option<AtomicCostEntry> {
+    let (&smallest, _) = rows.first_key_value()?;
+    let heap = heap.max(smallest);
+    let mut entry = at_heap(rows, heap)?;
+    // The priced heap, explicit: with no `heap`, a `topk_k` below it would
+    // read (and build) as a heap of `k`.
+    let priced = heap_capacity(&entry)?;
+    let params = entry.sketch_config["params"].as_object_mut()?;
+    params.insert("heap".into(), priced.into());
+    params.remove("topk_k");
+    if let Some(k) = crate::topk_k_param(k) {
+        params.insert("topk_k".into(), k.into());
+    }
+    Some(entry)
 }
 
 /// `rows` (one family and counter shape, by heap) priced at `heap`: each
@@ -472,9 +513,10 @@ pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &A
         && (!properties.one_fixed_size_sketch_for_all_groups
             || measured_at_group_count(&d.config, facts[&d.metric].cardinality[&d.grouping_labels]))
         && heap_capacity(&d.config).is_none_or(|heap| {
-            d.heap_needed(r.lookback_ms)
+            d.heap_needed(r.lookback_ms, r.topk_k())
                 .is_some_and(|need| heap >= need)
         })
+        && (!is_topk(r.capability) || crate::serves_topk_k(&d.config, r.topk_k()))
         && r.meets_sla(&d.config.sketch, accuracy(r, d))
 }
 
@@ -482,7 +524,7 @@ pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &A
 mod tests {
     use super::*;
     use crate::test_support::{facts, measured_at, metric_of, perfect_accuracy, METRIC};
-    use crate::{table_accuracy, LabelSet};
+    use crate::{table_accuracy, LabelSet, TOPK_K};
     use std::collections::BTreeMap;
     fn raqe(id: &str, lookback: Millis, interval: Millis) -> Raqe {
         Raqe {
@@ -495,6 +537,7 @@ mod tests {
             grouping_labels: LabelSet::new(),
             accuracy_sla: 0.5,
             latency_sla_ms: None,
+            topk_k: None,
         }
     }
     fn cost() -> AtomicCostEntry {
@@ -588,6 +631,97 @@ mod tests {
             .unwrap();
         assert!(is_eligible(&raqes[0], d, &facts(1, 1), &table_accuracy));
         assert!(!is_eligible(&raqes[1], d, &facts(1, 1), &table_accuracy));
+    }
+
+    /// A top-10 RAQE needs m · 10: its heaps follow its own k, and a heap
+    /// built for k = 10 doesn't serve a k = 32 RAQE at the same merges.
+    #[test]
+    fn a_heap_candidate_follows_each_raqes_k() {
+        let ten = Raqe {
+            topk_k: Some(10),
+            ..raqe("ten", 240_000, 60_000)
+        };
+        let raqes = vec![ten.clone(), raqe("b", 240_000, 60_000)];
+        let rows = [heap_row(32), heap_row(128), heap_row(512)];
+        let candidates = build_all_candidates_unpruned(&raqes, &rows, &facts(1, 1), false);
+        let at = |heap| {
+            candidates
+                .iter()
+                .find(|d| d.window_ms == 60_000 && heap_capacity(&d.config) == Some(heap))
+                .unwrap()
+        };
+        // x = 60 s merges 4: k = 10 needs 40, k = 32 needs 128.
+        assert_eq!(config_topk_k(&at(40).config), 10);
+        assert_eq!(config_topk_k(&at(128).config), TOPK_K);
+        assert!(is_eligible(&ten, at(40), &facts(1, 1), &table_accuracy));
+        assert!(!is_eligible(
+            &raqes[1],
+            at(40),
+            &facts(1, 1),
+            &table_accuracy
+        ));
+        assert!(is_eligible(
+            &raqes[1],
+            at(128),
+            &facts(1, 1),
+            &table_accuracy
+        ));
+    }
+
+    /// A k below the smallest measured heap prices at that heap, never
+    /// extrapolated below it, and the config carries its `topk_k`.
+    #[test]
+    fn a_small_k_is_floored_at_the_smallest_measured_heap() {
+        let rows = [heap_row(32), heap_row(128)];
+        let refs: Vec<&AtomicCostEntry> = rows.iter().collect();
+        let by_shape = heap_rows_by_shape(&refs);
+        let shape = by_shape.values().next().unwrap();
+        let entry = super::heap_row(shape, 10, 10).unwrap();
+        assert_eq!(heap_capacity(&entry), Some(32));
+        assert_eq!(config_topk_k(&entry), 10);
+        assert_eq!(
+            entry.mem_bytes_per_instance,
+            heap_row(32).mem_bytes_per_instance
+        );
+    }
+
+    /// A floor row measured with its heap implicit at k = 32 keeps that heap
+    /// explicit once it serves a smaller k, so its capacity is the priced 32.
+    #[test]
+    fn the_floored_heap_is_explicit() {
+        let mut implicit = heap_row(32);
+        implicit.sketch_config = serde_json::json!({"params": {"rows": 3, "cols": 256}});
+        let larger = heap_row(128);
+        let rows = BTreeMap::from([(32, &implicit), (128, &larger)]);
+        let entry = super::heap_row(&rows, 10, 10).unwrap();
+        assert_eq!(entry.sketch_config["params"]["heap"], 32);
+        assert_eq!(heap_capacity(&entry), Some(32));
+        assert_eq!(config_topk_k(&entry), 10);
+    }
+
+    /// UnivMon's top-k answers TOPK_K only: a top-10 RAQE can't use it.
+    #[test]
+    fn univmon_topk_serves_only_topk_k() {
+        let univmon = Deployment {
+            config: AtomicCostEntry {
+                sketch: "univmon-topk".into(),
+                ..cost()
+            },
+            capability: Capability::TopKByValue,
+            metric: METRIC.into(),
+            spatial_filter: String::new(),
+            grouping_labels: LabelSet::new(),
+            window_ms: 60_000,
+            slide_ms: 60_000,
+            key_tracker: None,
+        };
+        let r = raqe("r", 60_000, 60_000);
+        let ten = Raqe {
+            topk_k: Some(10),
+            ..r.clone()
+        };
+        assert!(is_eligible(&r, &univmon, &facts(1, 1), &table_accuracy));
+        assert!(!is_eligible(&ten, &univmon, &facts(1, 1), &table_accuracy));
     }
 
     #[test]

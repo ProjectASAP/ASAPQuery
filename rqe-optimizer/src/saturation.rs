@@ -21,8 +21,9 @@ use std::path::Path;
 use crate::autosketch::window_adapter;
 use crate::theory;
 use crate::{
-    accuracy_key, family_properties, has_heap, heap_capacity, table_accuracy, AccuracyDirection,
-    AtomicCostEntry, Capability, Deployment, LabelSet, MetricFacts, Raqe, WorkloadFacts, TOPK_K,
+    accuracy_key, family_properties, has_heap, heap_capacity, params_topk_k, table_accuracy,
+    AccuracyDirection, AtomicCostEntry, Capability, Deployment, LabelSet, MetricFacts, Raqe,
+    WorkloadFacts, TOPK_K,
 };
 use aqpbm_core::MeasuredShape;
 
@@ -447,7 +448,19 @@ impl SaturationCurves {
         let metric_facts = &facts[&deployment.metric];
         let grouping = &deployment.grouping_labels;
         let shape = metric_facts.data_shape.get(grouping)?;
-        let points = self.bracketing_points(&deployment.config, shape)?;
+        let k = raqe.topk_k();
+        let base = with_topk_k(&config_params(&deployment.config)?, TOPK_K);
+        // A heap top-k reads the curves at the RAQE's k, else at the next
+        // larger measured k whose curves bracket the shape (harder); past every
+        // such k, the guarantee at k, no better than the largest bracketing k.
+        let (points, past_measured_k) = if has_heap(&deployment.config.sketch) {
+            self.curves_at_k(&deployment.config.sketch, &base, k, shape)?
+        } else {
+            (
+                self.bracketing_points(&deployment.config.sketch, &base, shape)?,
+                false,
+            )
+        };
         let covered = items_per_group(metric_facts, grouping, raqe.lookback_ms);
         let (_, direction) = accuracy_key(&deployment.config.sketch);
         let merges = if merges_lossily(&deployment.config.sketch) {
@@ -456,7 +469,7 @@ impl SaturationCurves {
             // merged heaps are taken to still hold the true top k.
             match (
                 heap_capacity(&deployment.config),
-                deployment.heap_needed(raqe.lookback_ms),
+                deployment.heap_needed(raqe.lookback_ms, k),
             ) {
                 (Some(heap), Some(need)) if heap >= need => 1,
                 _ => merges,
@@ -464,16 +477,35 @@ impl SaturationCurves {
         } else {
             1
         };
-        let params = config_params(&deployment.config)?;
+        // The guarantee is at the RAQE's own k.
+        let params = with_topk_k(&base, k);
         let mut worst: Option<(f64, AccuracySource)> = None;
         for point in points {
-            let found = match point.merged_error_at(merges, covered, direction) {
+            let measured = (!past_measured_k)
+                .then(|| point.merged_error_at(merges, covered, direction))
+                .flatten();
+            let found = match measured {
                 Some(error) => (error, AccuracySource::Measured),
-                None if covered >= point.first_measured_n(merges)? => {
+                // Past every measured k as well as past the curve: the
+                // guarantee at k, within the curves' N range as everywhere
+                // else, and no better than what was measured.
+                None if past_measured_k || covered >= point.first_measured_n(merges)? => {
+                    if covered < point.first_measured_n(merges)? {
+                        return None;
+                    }
                     let bound =
                         theory::bound(&deployment.config.sketch, &params, point.shape, merges)?;
-                    // No better than the last measurement it extends.
-                    let error = match point.last_measured_error(merges, direction) {
+                    // No better than the measurement it extends: past every k,
+                    // the largest k's at this N (else its last); past the
+                    // curve, its last.
+                    let floor = if past_measured_k {
+                        point
+                            .merged_error_at(merges, covered, direction)
+                            .or_else(|| point.last_measured_error(merges, direction))
+                    } else {
+                        point.last_measured_error(merges, direction)
+                    };
+                    let error = match floor {
                         Some(last) => worse(bound, last, direction),
                         None => bound,
                     };
@@ -607,15 +639,15 @@ impl SaturationCurves {
     /// bracketing point is missing.
     fn bracketing_points(
         &self,
-        config: &AtomicCostEntry,
+        sketch: &str,
+        params: &BTreeMap<String, f64>,
         shape: &DataShape,
     ) -> Option<Vec<&GridPoint>> {
-        let params = config_params(config)?;
         let points: Vec<&GridPoint> = self
             .points_by_sketch
-            .get(&config.sketch)?
+            .get(sketch)?
             .iter()
-            .filter(|point| point.params == params)
+            .filter(|point| &point.params == params)
             .collect();
         let quantile = points.first()?.distinct_keys().is_none();
         let shape_params = if quantile {
@@ -640,6 +672,58 @@ impl SaturationCurves {
             .collect();
         (bracketing.len() == shape_params.len() * keys.len()).then_some(bracketing)
     }
+}
+
+impl SaturationCurves {
+    /// The grid points a top-`k` answer of `sketch` with `base` params reads
+    /// on `shape`: those of the smallest measured k at or above `k` whose
+    /// curves bracket `shape`, with `false`; else those of the largest k that
+    /// brackets it, with `true` (only the guarantee at `k` applies, floored
+    /// by them). `None` when no k's curves bracket `shape`.
+    fn curves_at_k(
+        &self,
+        sketch: &str,
+        base: &BTreeMap<String, f64>,
+        k: u64,
+        shape: &DataShape,
+    ) -> Option<(Vec<&GridPoint>, bool)> {
+        let measured: BTreeSet<u64> = self
+            .points_by_sketch
+            .get(sketch)?
+            .iter()
+            .filter(|point| same_but_topk_k(&point.params, base))
+            .map(|point| params_topk_k(point.params.get("topk_k").copied()))
+            .collect();
+        let bracket_at = |at: u64| self.bracketing_points(sketch, &with_topk_k(base, at), shape);
+        if let Some(points) = measured.range(k..).find_map(|&at| bracket_at(at)) {
+            return Some((points, false));
+        }
+        measured
+            .iter()
+            .rev()
+            .find_map(|&at| bracket_at(at))
+            .map(|points| (points, true))
+    }
+}
+
+/// Whether `a` and `b` name the same config, `topk_k` aside.
+fn same_but_topk_k(a: &BTreeMap<String, f64>, b: &BTreeMap<String, f64>) -> bool {
+    let rest = |m: &BTreeMap<String, f64>| m.iter().filter(|(name, _)| *name != "topk_k").count();
+    rest(a) == rest(b)
+        && a.iter()
+            .filter(|(name, _)| *name != "topk_k")
+            .all(|(name, value)| b.get(name) == Some(value))
+}
+
+/// `params` keyed at top-k `k`: a `topk_k` entry unless `k` is [`TOPK_K`],
+/// which the grid and cost rows leave implicit.
+fn with_topk_k(params: &BTreeMap<String, f64>, k: u64) -> BTreeMap<String, f64> {
+    let mut params = params.clone();
+    params.remove("topk_k");
+    if let Some(k) = crate::topk_k_param(k) {
+        params.insert("topk_k".to_string(), k as f64);
+    }
+    params
 }
 
 /// Items one group receives in `window_ms`: series per group times scrapes
@@ -1061,6 +1145,94 @@ mod tests {
         assert!((point.last_measured_error(100, higher).unwrap() - 0.8).abs() < 1e-12);
     }
 
+    /// A top-k answer reads the curve at its k, else the next larger
+    /// measured k; past every measured k, only the guarantee at k.
+    #[test]
+    fn a_topk_answer_reads_the_curve_at_its_k() {
+        // The fixture's curves are at k = 32; add the same config at k = 100,
+        // 0.2 lower in precision.
+        let mut curves = curves();
+        let at_100: Vec<GridPoint> = curves.points_by_sketch[TOPK]
+            .iter()
+            .map(|p| {
+                let mut p = p.clone();
+                p.params.insert("topk_k".into(), 100.0);
+                p.curve.iter_mut().for_each(|c| c.1 -= 0.2);
+                p
+            })
+            .collect();
+        curves
+            .points_by_sketch
+            .get_mut(TOPK)
+            .unwrap()
+            .extend(at_100);
+        // 10 series × 1e4 s = 1e5 items on θ = 1.2, K = 1e3: k = 32 reads 0.9.
+        let facts = workload(10, shape(1.2, 1e3));
+        let read = |k| {
+            let r = Raqe {
+                topk_k: Some(k),
+                ..topk_raqe(10_000_000)
+            };
+            let mut d = deployment(TOPK, 10_000_000);
+            d.config.sketch_config["params"]["heap"] = (k.max(TOPK_K)).into();
+            curves.accuracy_with_source(&r, &d, &facts)
+        };
+        let close = |got: Option<(f64, AccuracySource)>, want: f64, source| {
+            let (v, s) = got.unwrap();
+            assert!((v - want).abs() < 1e-12 && s == source, "{v} {s:?}");
+        };
+        close(read(32), 0.9, AccuracySource::Measured);
+        // k = 10 isn't measured: the next larger, 32.
+        close(read(10), 0.9, AccuracySource::Measured);
+        // k = 50 reads k = 100's curve.
+        close(read(50), 0.7, AccuracySource::Measured);
+        close(read(100), 0.7, AccuracySource::Measured);
+        // k = 200: past every measured k, the guarantee at 200, no better than
+        // k = 100's measured 0.7.
+        let (value, source) = read(200).unwrap();
+        assert_eq!(source, AccuracySource::Theory);
+        assert!(value <= 0.7 + 1e-12, "{value}");
+    }
+
+    /// A larger k whose curves don't bracket the shape is skipped: the
+    /// answer falls to the guarantee, floored by a k that does bracket it.
+    #[test]
+    fn a_k_whose_curves_miss_the_shape_falls_to_the_guarantee() {
+        // k = 100 measured at K = 1e3 only; the shape below needs K = 1e3..1e5.
+        let mut curves = curves();
+        let at_100: Vec<GridPoint> = curves.points_by_sketch[TOPK]
+            .iter()
+            .filter(|p| p.distinct_keys() == Some(1e3))
+            .map(|p| {
+                let mut p = p.clone();
+                p.params.insert("topk_k".into(), 100.0);
+                p
+            })
+            .collect();
+        curves
+            .points_by_sketch
+            .get_mut(TOPK)
+            .unwrap()
+            .extend(at_100);
+        let facts = workload(10, shape(1.2, 1e4));
+        let r = Raqe {
+            topk_k: Some(50),
+            ..topk_raqe(10_000_000)
+        };
+        let mut d = deployment(TOPK, 10_000_000);
+        d.config.sketch_config["params"]["heap"] = 50.into();
+        let (_, source) = curves.accuracy_with_source(&r, &d, &facts).unwrap();
+        assert_eq!(source, AccuracySource::Theory);
+    }
+
+    /// A top-`k` RAQE merged from m windows needs a heap of m·k.
+    #[test]
+    fn the_heap_needed_is_merges_times_k() {
+        assert_eq!(crate::heap_needed(60_000, 15_000, 10), Some(40));
+        assert_eq!(crate::heap_needed(60_000, 15_000, TOPK_K), Some(4 * TOPK_K));
+        assert_eq!(crate::heap_needed(60_000, 7_000, 10), None);
+    }
+
     #[test]
     fn exact_accumulators_keep_the_cost_table_value() {
         let r = topk_raqe(1_000_000);
@@ -1169,6 +1341,57 @@ mod tests {
             ..exact
         };
         assert_eq!(check(&[misnamed]).mismatched.len(), 1);
+    }
+
+    /// Each top-k k is its own grid: k = 32 on θ 1.0 and k = 10 on θ 1.2
+    /// are each a full cross, though their union isn't, and load accepts them.
+    /// A hole within one k is still refused.
+    #[test]
+    fn the_full_cross_is_checked_per_k() {
+        let write = |tag: &str, points: &[String]| {
+            let dir = std::env::temp_dir().join(format!("rqe-k-{tag}-{}", std::process::id()));
+            let header = "family,sketch,config,dist,param,cardinality";
+            for run in RUN_DIRS {
+                std::fs::create_dir_all(dir.join(run)).unwrap();
+                let summary: String = points
+                    .iter()
+                    .map(|p| format!("{p},1000,0.9,precision_at_k\n"))
+                    .collect();
+                let curve: String = points.iter().map(|p| format!("{p},1000,0.9,0\n")).collect();
+                std::fs::write(
+                    dir.join(run).join("saturation.csv"),
+                    format!("{header},n_sat,final_error,error_metric\n{summary}"),
+                )
+                .unwrap();
+                std::fs::write(
+                    dir.join(run).join("saturation_curve.csv"),
+                    format!("{header},n,seed_mean_error,seed_se\n{curve}"),
+                )
+                .unwrap();
+            }
+            let loaded = SaturationCurves::load(&dir).map(|_| ());
+            std::fs::remove_dir_all(&dir).unwrap();
+            loaded
+        };
+        let point = |config: &str, shape: &str| format!("topk,{TOPK},{config},zipf,{shape}");
+        let per_k = [
+            point("rows=3 cols=1024", "1.0,1000"),
+            point("rows=3 cols=1024", "1.0,100000"),
+            point("rows=3 cols=1024 topk_k=10", "1.2,1000"),
+            point("rows=3 cols=1024 topk_k=10", "1.2,100000"),
+        ];
+        write("ok", &per_k).expect("each k is a full cross");
+        let holed = [
+            per_k[0].clone(),
+            per_k[1].clone(),
+            point("rows=3 cols=1024 topk_k=10", "1.0,1000"),
+            point("rows=3 cols=1024 topk_k=10", "1.2,100000"),
+        ];
+        let err = write("hole", &holed).unwrap_err().to_string();
+        assert!(
+            err.contains("topk_k") && err.contains("full cross"),
+            "{err}"
+        );
     }
 
     #[test]

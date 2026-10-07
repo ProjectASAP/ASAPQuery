@@ -240,16 +240,20 @@ lookback: series per group times scrapes per lookback.
   last N, the merged answer has no accuracy either (#158).
   `SaturationCurves::load` refuses a study with no merge curves for a
   candidate KLL sketch.
-- Heap top-k (CMS-heap, CountSketch-heap) keeps a heap of `m · k` in a
-  deployment answering from `m = S_i / D.x` merged windows (`k = 32`, the
-  answered and graded `k`; `m = 1` gives `k`). Candidates carry one heap per
-  distinct `m` among the RAQEs on a window, and a RAQE is eligible only where
-  the heap holds its `m · k`. Such a merged answer reads as one sketch: the
+- A top-k RAQE asks for its own `k` (`Raqe::topk_k`, default 32). Heap
+  top-k (CMS-heap, CountSketch-heap) keeps a heap of `m · k` in a deployment
+  answering from `m = S_i / D.x` merged windows (`m = 1` gives `k`).
+  Candidates carry one heap per distinct `m · k` among the RAQEs on a window,
+  and a RAQE is eligible only where the heap holds its `m · k`. Such a merged answer reads as one sketch: the
   plain curve, then the guarantee fallback. It assumes the merged heaps still
   hold the true top `k`; it is not a guarantee. So heap top-k needs no merge
   curves. Costs come from the cost table's rows at heaps 32, 128, 512 and
   2048 (`heap=`), linear in the heap between them and past them. Curves are
-  measured at a heap of `k`, and larger heaps read the same curve.
+  measured per `k` (`topk_k=` in the config; 10, 32 and 100 by default) at a
+  heap of `k`, and larger heaps read the same curve. A RAQE reads the curve
+  at its `k`, else at the next larger measured `k` (harder); past every
+  measured `k`, only the guarantee at its `k`. Its query outputs `k`
+  entries per group.
 - Where the study measured nothing for a bracketing point at or above its
   first N (past an unsaturated curve, past the measured merge counts or N,
   or with no merge curve), the accuracy falls back to the algorithm's
@@ -413,7 +417,7 @@ Memory per window is instances × instance size:
 
 | | Fixed | PerKey |
 |---|---|---|
-| **PerGroup** | `card(G) × m`: CMS, CountSketch, KLL, DDSketch, HLL, UnivMon, top-k (heap fixed at k = 32) | `card(G) × m × keys_per_group / measured_keys`: none yet (e.g. an exact top-k map) |
+| **PerGroup** | `card(G) × m`: CMS, CountSketch, KLL, DDSketch, HLL, UnivMon, top-k (heap `m · k`) | `card(G) × m × keys_per_group / measured_keys`: none yet (e.g. an exact top-k map) |
 | **Shared** | `m`: HydraKLL and other Hydra sketches | `m × card(G) / measured_keys`: exact sum, min, max, increase (one value per group, so keys = groups) |
 
 The same factor scales merge and query CPU. Insert CPU is per sample and does

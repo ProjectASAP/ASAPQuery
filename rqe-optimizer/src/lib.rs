@@ -128,13 +128,13 @@ pub const DEPLOYABLE_FAMILIES: &[&str] = &[
 /// deployment pays for alongside its sketch. Never a candidate on its own.
 pub const KEY_TRACKER_FAMILY: &str = "exact-delta-set";
 
-/// The `k` every top-k RAQE asks for, and the heap capacity of a row that
-/// sets no `heap` (sketch-bench's `TOPK_K`).
+/// The `k` a top-k RAQE asks for when it sets no [`Raqe::topk_k`], and the
+/// heap capacity of a row that sets no `heap` (sketch-bench's `TOPK_K`).
 pub const TOPK_K: u64 = 32;
 
 /// Top-k families whose heap capacity is a config knob (sketch-bench's
 /// `heap=`). A deployment answering from `m` merged windows keeps a heap of
-/// `m · TOPK_K`, so the merged heaps still hold the true top `k`
+/// `m · k`, so the merged heaps still hold the true top `k`
 /// (approximately: a working assumption, not a guarantee).
 pub fn has_heap(sketch: &str) -> bool {
     matches!(
@@ -144,22 +144,62 @@ pub fn has_heap(sketch: &str) -> bool {
 }
 
 /// The heap a heap top-k deployment with `window_ms` windows needs to serve
-/// `lookback_ms`: `m · k` for its `m` merged windows, or `None` when the
-/// lookback isn't whole windows. [`Deployment::heap_needed`] for a built one.
-pub fn heap_needed(lookback_ms: Millis, window_ms: Millis) -> Option<u64> {
+/// a top-`k` RAQE over `lookback_ms`: `m · k` for its `m` merged windows, or
+/// `None` when the lookback isn't whole windows. [`Deployment::heap_needed`]
+/// for a built one.
+pub fn heap_needed(lookback_ms: Millis, window_ms: Millis, k: u64) -> Option<u64> {
     if window_ms == 0 || !lookback_ms.is_multiple_of(window_ms) {
         return None;
     }
-    Some(lookback_ms / window_ms * TOPK_K)
+    (lookback_ms / window_ms).checked_mul(k)
 }
 
-/// A heap family's capacity: its `heap` param, else [`TOPK_K`]. `None` for
-/// other families.
+/// The `k` a top-k `topk_k` param names, in any JSON form (10 or 10.0):
+/// absent means [`TOPK_K`]. The one decoding of the knob, as sketch-bench's
+/// `answered_k` reads it.
+pub fn params_topk_k(topk_k: Option<f64>) -> u64 {
+    topk_k.map_or(TOPK_K, |k| k.round() as u64)
+}
+
+/// The `topk_k` param that encodes `k`: none at [`TOPK_K`], which rows and
+/// curves leave implicit, else `k`. The one encoding of the knob.
+pub fn topk_k_param(k: u64) -> Option<u64> {
+    (k != TOPK_K).then_some(k)
+}
+
+/// The `k` a top-k cost row or deployment's `topk_k` param names.
+pub fn config_topk_k(config: &AtomicCostEntry) -> u64 {
+    params_topk_k(config.sketch_config["params"]["topk_k"].as_f64())
+}
+
+/// The `k` a top-k config answers: a heap family's `topk_k`; a fixed-k
+/// family (UnivMon's top-k) answers [`TOPK_K`] only.
+pub fn answered_k(config: &AtomicCostEntry) -> u64 {
+    if has_heap(&config.sketch) {
+        config_topk_k(config)
+    } else {
+        TOPK_K
+    }
+}
+
+/// Whether `config` can answer a top-`k` query: a heap family answering at
+/// least `k` (cut to `k`), or a fixed-k family at exactly its `k`.
+pub fn serves_topk_k(config: &AtomicCostEntry, k: u64) -> bool {
+    if has_heap(&config.sketch) {
+        config_topk_k(config) >= k
+    } else {
+        k == TOPK_K
+    }
+}
+
+/// A heap family's capacity: its `heap` param, else its `k` (sketch-bench's
+/// default). `None` for other families.
 pub fn heap_capacity(config: &AtomicCostEntry) -> Option<u64> {
     has_heap(&config.sketch).then(|| {
         let heap = &config.sketch_config["params"]["heap"];
         // A number in any JSON form (128, 128.0); absent is k.
-        heap.as_f64().map_or(TOPK_K, |h| h.round() as u64)
+        heap.as_f64()
+            .map_or_else(|| config_topk_k(config), |h| h.round() as u64)
     })
 }
 
@@ -383,9 +423,17 @@ pub struct Raqe {
     /// Hard ceiling on modeled query latency; `None` for no limit. Only the
     /// MILP enforces it.
     pub latency_sla_ms: Option<f64>,
+    /// A top-k RAQE's `k`; `None` means [`TOPK_K`]. Ignored for other
+    /// capabilities.
+    pub topk_k: Option<u64>,
 }
 
 impl Raqe {
+    /// The `k` this RAQE asks for: its [`Raqe::topk_k`], else [`TOPK_K`].
+    pub fn topk_k(&self) -> u64 {
+        self.topk_k.unwrap_or(TOPK_K)
+    }
+
     /// Whether `accuracy`, in `sketch`'s [`accuracy_key`], clears the SLA.
     /// Unknown or non-finite never passes. The MILP's eligibility and the
     /// AutoSketch baseline both decide here.
@@ -483,8 +531,8 @@ impl Deployment {
     /// The heap a heap top-k deployment needs to serve `lookback_ms`: `m · k`
     /// for its `m` merged windows. `None` when the lookback isn't whole
     /// windows.
-    pub fn heap_needed(&self, lookback_ms: Millis) -> Option<u64> {
-        heap_needed(lookback_ms, self.window_ms)
+    pub fn heap_needed(&self, lookback_ms: Millis, k: u64) -> Option<u64> {
+        heap_needed(lookback_ms, self.window_ms, k)
     }
 
     /// Closed instances kept to serve a lookback: those wholly inside it,
@@ -568,6 +616,7 @@ pub(crate) mod test_support {
             grouping_labels: LabelSet::new(),
             accuracy_sla: 0.5,
             latency_sla_ms: None,
+            topk_k: None,
         }
     }
 

@@ -155,6 +155,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: se.clone(),
             accuracy_sla: 0.1,
             latency_sla_ms: None,
+            topk_k: None,
         },
         Raqe {
             id: "req_rate_1d".to_string(),
@@ -166,6 +167,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: se.clone(),
             accuracy_sla: 0.1,
             latency_sla_ms: None,
+            topk_k: None,
         },
         Raqe {
             id: "req_rate_5m_tick".to_string(),
@@ -177,6 +179,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: se.clone(),
             accuracy_sla: 0.1,
             latency_sla_ms: None,
+            topk_k: None,
         },
         Raqe {
             id: "latency_p99_1h".to_string(),
@@ -188,6 +191,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: se.clone(),
             accuracy_sla: 0.05,
             latency_sla_ms: None,
+            topk_k: None,
         },
         Raqe {
             id: "latency_p99_6h_tick".to_string(),
@@ -199,6 +203,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: se.clone(),
             accuracy_sla: 0.05,
             latency_sla_ms: None,
+            topk_k: None,
         },
         Raqe {
             id: "latency_p99_1d".to_string(),
@@ -210,6 +215,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: se.clone(),
             accuracy_sla: 0.05,
             latency_sla_ms: None,
+            topk_k: None,
         },
         Raqe {
             id: "distinct_services_1h".to_string(),
@@ -221,6 +227,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: s.clone(),
             accuracy_sla: 0.1,
             latency_sla_ms: None,
+            topk_k: None,
         },
         // The higher-is-better case: top-k's metric is precision@k, so 0.9 is
         // a *floor*, not a ceiling on error. Served by cms-heap, whose measured precision is
@@ -236,6 +243,7 @@ fn raqes() -> Vec<Raqe> {
             grouping_labels: se.clone(),
             accuracy_sla: 0.9,
             latency_sla_ms: None,
+            topk_k: None,
         },
     ]
 }

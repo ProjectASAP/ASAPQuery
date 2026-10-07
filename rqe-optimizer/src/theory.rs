@@ -10,8 +10,6 @@ use std::collections::BTreeMap;
 
 use aqpbm_core::MeasuredShape;
 
-use crate::analytical_cost_model::TOPK_ENTRIES;
-
 /// Confidence the bounds are stated at. Rank and relative errors are
 /// absolute, so their bounds are two-sided; CMS only overestimates, so the
 /// top-k bound is one-sided.
@@ -66,17 +64,17 @@ pub fn bound(
             let MeasuredShape::Zipf { skew, keys } = shape else {
                 return None;
             };
-            Some(topk_precision(skew, keys, rows, cols))
+            let k = crate::params_topk_k(params.get("topk_k").copied());
+            Some(topk_precision(skew, keys, rows, cols, k as usize))
         }
         _ => None,
     }
 }
 
-/// The share of the top [`TOPK_ENTRIES`] keys of Zipf(`skew`) over `keys`
-/// keys that a CMS with `rows` × `cols` keeps ranked, all at once with
-/// probability [`CONFIDENCE`] (see [`bound`]).
-fn topk_precision(skew: f64, keys: f64, rows: f64, cols: f64) -> f64 {
-    let k = TOPK_ENTRIES as usize;
+/// The share of the top `k` keys of Zipf(`skew`) over `keys` keys that a CMS
+/// with `rows` × `cols` keeps ranked, all at once with probability
+/// [`CONFIDENCE`] (see [`bound`]).
+fn topk_precision(skew: f64, keys: f64, rows: f64, cols: f64, k: usize) -> f64 {
     if keys <= k as f64 {
         return 1.0;
     }
@@ -157,6 +155,18 @@ mod tests {
         // 33rd keys of Zipf 1.1 are too close for any of them.
         assert!(wide > narrow, "{wide} {narrow}");
         assert!(wide < 1.0 && wide > 0.0, "{wide}");
+        // Fewer top keys to separate: a smaller k is easier.
+        let at_k = |k: f64| {
+            bound(
+                "cms-heap-topk-fastpath-vector2d",
+                &params(&[("rows", 3.0), ("cols", 1024.0), ("topk_k", k)]),
+                zipf,
+                1,
+            )
+            .unwrap()
+        };
+        assert!(at_k(10.0) >= at_k(100.0), "{} {}", at_k(10.0), at_k(100.0));
+        assert_eq!(at_k(32.0), topk(3.0, 1024.0, 1).unwrap());
         // Merged heaps: no guarantee.
         assert_eq!(topk(5.0, 16384.0, 4), None);
     }

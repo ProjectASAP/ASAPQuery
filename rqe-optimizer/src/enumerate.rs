@@ -160,6 +160,7 @@ mod tests {
             grouping_labels: LabelSet::new(),
             accuracy_sla: 0.5,
             latency_sla_ms: None,
+            topk_k: None,
         }
     }
 
