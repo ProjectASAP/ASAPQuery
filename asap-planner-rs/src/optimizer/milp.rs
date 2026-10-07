@@ -26,11 +26,8 @@ const SLA_EPSILON: f64 = 1e-9;
 
 #[derive(Debug, Error)]
 pub enum MilpError {
-    #[error(
-        "query groups set step_ms or range_duration_ms, which the MILP planner doesn't \
-         support yet (#800): {0:?}"
-    )]
-    RangeQueryOverrides(Vec<String>),
+    #[error("the MILP planner doesn't support these workload config fields: {0:?}")]
+    UnsupportedFields(Vec<&'static str>),
     #[error(
         "workload config has no `metrics:` hints; they are required to resolve grouping labels"
     )]
@@ -193,15 +190,17 @@ pub fn build_milp_workload(
     facts: &WorkloadFacts,
     scrape_interval_ms: u64,
 ) -> Result<MilpWorkload, MilpError> {
-    // They only size retention, which MILP configs don't set yet.
-    let range_queries: Vec<String> = config
-        .query_groups
-        .iter()
-        .filter(|qg| qg.step_ms.is_some() || qg.range_duration_ms.is_some())
-        .flat_map(|qg| qg.queries.iter().cloned())
-        .collect();
-    if !range_queries.is_empty() {
-        return Err(MilpError::RangeQueryOverrides(range_queries));
+    // The MILP chooses windows and sketch parameters itself.
+    let unsupported: Vec<&'static str> = [
+        ("windowing", config.windowing.is_some()),
+        ("sketch_parameters", config.sketch_parameters.is_some()),
+        ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(field, set)| set.then_some(field))
+    .collect();
+    if !unsupported.is_empty() {
+        return Err(MilpError::UnsupportedFields(unsupported));
     }
     let mut items = extract_hinted_items(config, scrape_interval_ms)?;
     // Stable Raqe order and ids across runs.
@@ -597,20 +596,27 @@ metrics:
         assert!(matches!(err, MilpError::InvalidInputs(_)));
     }
 
-    /// Their retention isn't modeled, so planning them would ignore them silently.
+    /// The MILP picks windows and sketch parameters itself, so these would be
+    /// dropped silently.
     #[test]
-    fn range_query_overrides_are_rejected() {
-        for field in ["step_ms: 60000", "range_duration_ms: 3600000"] {
-            let config = config(&format!(
-                "{}    {field}\n",
-                group("sum(http_requests_total)", 0.99)
-            ));
-            let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
-            assert!(
-                matches!(&err, MilpError::RangeQueryOverrides(q) if q == &["sum(http_requests_total)"]),
-                "{field}: {err}"
-            );
-        }
+    fn unsupported_config_fields_are_rejected() {
+        let mut config = config(&group("sum(http_requests_total)", 0.99));
+        config.windowing =
+            Some(serde_yaml::from_str("{type: tumbling, window_size_ms: 60000}").unwrap());
+        config.sketch_parameters = Some(Default::default());
+        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        assert!(
+            matches!(&err, MilpError::UnsupportedFields(f) if f == &["windowing", "sketch_parameters"]),
+            "{err}"
+        );
+        config.windowing = None;
+        config.sketch_parameters = None;
+        config.aggregate_cleanup = Some(serde_yaml::from_str("{}").unwrap());
+        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        assert!(
+            matches!(&err, MilpError::UnsupportedFields(f) if f == &["aggregate_cleanup"]),
+            "{err}"
+        );
     }
 
     #[test]

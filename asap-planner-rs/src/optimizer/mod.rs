@@ -13,6 +13,6 @@ pub use milp::{
     build_milp_workload, parse_weight, plan_milp, solve_milp, MilpError, MilpInputs, MilpPlan,
     MilpWorkload,
 };
-pub use milp_output::{plan_to_planner_output, reject_avg_queries, MilpOutputError};
+pub use milp_output::{plan_to_planner_output, reject_unwritable_queries, MilpOutputError};
 pub use solution::OptimizerItem;
 pub use workload_facts::{load_workload_facts, parse_workload_facts, WorkloadFactsError};

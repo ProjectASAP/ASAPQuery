@@ -1,5 +1,5 @@
 use asap_planner::optimizer::{
-    parse_weight, plan_milp, plan_to_planner_output, reject_avg_queries, MilpInputs,
+    parse_weight, plan_milp, plan_to_planner_output, reject_unwritable_queries, MilpInputs,
 };
 use asap_planner::{
     Controller, ControllerConfig, ElasticController, ElasticRuntimeOptions, RuntimeOptions,
@@ -221,16 +221,25 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
         !args.enable_punting && args.range_duration_ms == 0 && args.step_ms == 0,
         "--enable-punting, --range-duration-ms and --step-ms don't apply to --planner milp"
     );
+    anyhow::ensure!(
+        args.clickhouse_url.is_none() && args.clickhouse_database.is_none(),
+        "--clickhouse-url and --clickhouse-database don't apply to --planner milp"
+    );
     let config_path = args
         .input_config
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("--planner milp requires --input_config"))?;
-    let scrape_interval_ms = args.data_ingestion_interval_ms.ok_or_else(|| {
-        anyhow::anyhow!("--data-ingestion-interval-ms is required for PromQL mode")
-    })?;
+    let scrape_interval_ms = args
+        .data_ingestion_interval_ms
+        .ok_or_else(|| anyhow::anyhow!("--planner milp requires --data-ingestion-interval-ms"))?;
+    // Per-series sample rates divide by it.
+    anyhow::ensure!(
+        scrape_interval_ms > 0,
+        "--data-ingestion-interval-ms must be positive"
+    );
     let config: ControllerConfig = serde_yaml::from_str(&std::fs::read_to_string(config_path)?)?;
-    // Fail before solving: an avg query can't be written as a config.
-    reject_avg_queries(&config)?;
+    // Fail before solving: the plan is always written.
+    reject_unwritable_queries(&config)?;
     let plan = plan_milp(
         &config,
         &MilpInputs {
