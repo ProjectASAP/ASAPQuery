@@ -6,7 +6,7 @@ use rqe_optimizer::candidates::build_all_candidates;
 use rqe_optimizer::enumerate::unservable;
 use rqe_optimizer::milp::{minimize, MilpSolution, Objective};
 use rqe_optimizer::{
-    validate_facts, AccuracyDirection, AtomicCostEntry, Capability, LabelSet, Raqe, WorkloadFacts,
+    table_accuracy, validate_facts, AtomicCostEntry, Capability, LabelSet, Raqe, WorkloadFacts,
 };
 use thiserror::Error;
 
@@ -15,11 +15,6 @@ use crate::config::input::ControllerConfig;
 use super::pipeline::{extract_hinted_items, OptimizerPipelineError};
 use super::solution::OptimizerItem;
 
-/// `query_accuracy` keys in sketch-bench's cost export. Each is the worst case
-/// its comparator reports.
-const RELATIVE_ERROR: &str = "relative_error";
-const MAX_RANK_ERROR: &str = "max_rank_err";
-const PRECISION_AT_K: &str = "precision_at_k";
 /// Slack on accuracy tolerances so `1 - sla` rounding (`1 - 0.9 =
 /// 0.0999...98`) doesn't reject a row measured exactly at the boundary.
 const SLA_EPSILON: f64 = 1e-9;
@@ -55,8 +50,13 @@ pub fn solve_milp(
     objective: Objective,
     allow_undeployable_families: bool,
 ) -> Result<MilpSolution, MilpError> {
-    let deployments =
-        build_all_candidates(&workload.raqes, costs, facts, allow_undeployable_families);
+    let deployments = build_all_candidates(
+        &workload.raqes,
+        costs,
+        facts,
+        allow_undeployable_families,
+        &table_accuracy,
+    );
     tracing::debug!(
         candidates = deployments.len(),
         cost_rows = costs.len(),
@@ -71,12 +71,18 @@ pub fn solve_milp(
         .filter(|&(i, _)| i == 0 || workload.raqe_items[i] != workload.raqe_items[i - 1])
         .map(|(_, raqe)| raqe.clone())
         .collect();
-    let missing = unservable(&one_per_item, &deployments, facts);
+    let missing = unservable(&one_per_item, &deployments, facts, &table_accuracy);
     if !missing.is_empty() {
         return Err(MilpError::Unservable(missing));
     }
-    let solution = minimize(&workload.raqes, &deployments, facts, objective)
-        .map_err(|e| MilpError::Solver(e.to_string()))?;
+    let solution = minimize(
+        &workload.raqes,
+        &deployments,
+        facts,
+        objective,
+        &table_accuracy,
+    )
+    .map_err(|e| MilpError::Solver(e.to_string()))?;
     tracing::debug!(
         objective = objective.value(&solution.plan_cost),
         cpu_secs_per_sec = solution.plan_cost.cpu_secs_per_sec(),
@@ -129,9 +135,7 @@ pub fn build_milp_workload(
             grouping_labels = ?raqe.grouping_labels,
             lookback_ms = raqe.lookback_ms,
             interval_ms = raqe.interval_ms,
-            accuracy_metric = %raqe.accuracy_metric,
             accuracy_sla = raqe.accuracy_sla,
-            accuracy_direction = ?raqe.accuracy_direction,
             latency_sla_ms = ?raqe.latency_sla_ms,
             "milp inputs: item -> raqe"
         );
@@ -182,8 +186,7 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
             accuracy_sla: item.accuracy_sla,
         });
     }
-    let (accuracy_metric, accuracy_sla, accuracy_direction) =
-        accuracy_target(capability, item.accuracy_sla);
+    let accuracy_sla = accuracy_target(capability, item.accuracy_sla);
 
     // TopK keeps one heap per `topk by` bucket; its `grouping_labels` is the
     // output label set (every label), which would cost one heap per series.
@@ -204,9 +207,7 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
         metric: req.metric.clone(),
         spatial_filter: req.spatial_filter_normalized.clone(),
         grouping_labels,
-        accuracy_metric: accuracy_metric.to_string(),
         accuracy_sla,
-        accuracy_direction,
         latency_sla_ms: item.latency_sla_ms,
     })
 }
@@ -232,10 +233,7 @@ fn capability(statistic: Statistic, topk_count_events: Option<bool>) -> Option<C
 
 /// `accuracy_sla` is required accuracy: error metrics must stay within
 /// `1 - accuracy_sla`, and top-k precision must reach `accuracy_sla`.
-fn accuracy_target(
-    capability: Capability,
-    accuracy_sla: f64,
-) -> (&'static str, f64, AccuracyDirection) {
+fn accuracy_target(capability: Capability, accuracy_sla: f64) -> f64 {
     let max_error = 1.0 - accuracy_sla + SLA_EPSILON;
     match capability {
         Capability::Sum
@@ -243,13 +241,9 @@ fn accuracy_target(
         | Capability::Min
         | Capability::Max
         | Capability::RateOrIncrease
-        | Capability::Cardinality => (RELATIVE_ERROR, max_error, AccuracyDirection::LowerIsBetter),
-        Capability::Quantile => (MAX_RANK_ERROR, max_error, AccuracyDirection::LowerIsBetter),
-        Capability::TopKByValue | Capability::TopKByCount => (
-            PRECISION_AT_K,
-            accuracy_sla - SLA_EPSILON,
-            AccuracyDirection::HigherIsBetter,
-        ),
+        | Capability::Cardinality
+        | Capability::Quantile => max_error,
+        Capability::TopKByValue | Capability::TopKByCount => accuracy_sla - SLA_EPSILON,
     }
 }
 
@@ -265,6 +259,7 @@ pub(super) mod tests {
     const FACTS: &str = r#"
 metrics:
   - metric: http_requests_total
+    value_range: [1.0, 1000.0]
     groups:
       - labels: [instance, job]
         cardinality: 100
@@ -316,11 +311,11 @@ metrics:
 
     pub(crate) fn costs() -> Vec<AtomicCostEntry> {
         vec![
-            cost("exact-sum", &[(RELATIVE_ERROR, 0.0)]),
-            cost("kll-percall", &[(MAX_RANK_ERROR, 0.005)]),
+            cost("exact-sum", &[("relative_error", 0.0)]),
+            cost("kll-percall", &[("mean_rank_err", 0.005)]),
             cost(
                 "cms-heap-topk-fastpath-vector2d",
-                &[(PRECISION_AT_K, 0.995)],
+                &[("precision_at_k", 0.995)],
             ),
         ]
     }
@@ -341,11 +336,13 @@ metrics:
             "quantile_over_time(0.99, http_requests_total[5m])",
             0.9,
         ));
-        assert!(w.raqes[0].accuracy_ok(0.1));
-        assert!(!w.raqes[0].accuracy_ok(0.1001));
+        assert!(w.raqes[0].meets_sla("kll-percall", Some(0.1)));
+        assert!(w.raqes[0].meets_sla("dd", Some(0.1)));
+        assert!(!w.raqes[0].meets_sla("kll-percall", Some(0.1001)));
+        assert!(!w.raqes[0].meets_sla("dd", Some(0.1001)));
         let w = workload(&group("topk(5, http_requests_total)", 0.9));
-        assert!(w.raqes[0].accuracy_ok(0.9));
-        assert!(!w.raqes[0].accuracy_ok(0.8999));
+        assert!(w.raqes[0].meets_sla("cms-heap-topk-fastpath-vector2d", Some(0.9)));
+        assert!(!w.raqes[0].meets_sla("cms-heap-topk-fastpath-vector2d", Some(0.8999)));
     }
 
     #[test]
@@ -374,8 +371,6 @@ metrics:
         let r = &w.raqes[0];
         assert_eq!(r.capability, Capability::Sum);
         assert_eq!(r.grouping_labels, labels(&["job"]));
-        assert_eq!(r.accuracy_metric, RELATIVE_ERROR);
-        assert_eq!(r.accuracy_direction, AccuracyDirection::LowerIsBetter);
         assert!((r.accuracy_sla - 0.01).abs() < 1e-6);
         assert_eq!(r.interval_ms, 60_000);
         assert_eq!(r.latency_sla_ms, None);
@@ -410,14 +405,14 @@ metrics:
     }
 
     #[test]
-    fn quantile_uses_max_rank_error() {
+    fn quantile_uses_the_error_ceiling() {
         let w = workload(&group(
             "quantile_over_time(0.99, http_requests_total[5m])",
             0.99,
         ));
         let r = &w.raqes[0];
         assert_eq!(r.capability, Capability::Quantile);
-        assert_eq!(r.accuracy_metric, MAX_RANK_ERROR);
+        assert!((r.accuracy_sla - 0.01).abs() < 1e-6);
         assert_eq!(r.lookback_ms, 300_000);
     }
 
@@ -426,8 +421,6 @@ metrics:
         let w = workload(&group("topk by (job) (5, http_requests_total)", 0.9));
         let r = &w.raqes[0];
         assert_eq!(r.capability, Capability::TopKByValue);
-        assert_eq!(r.accuracy_metric, PRECISION_AT_K);
-        assert_eq!(r.accuracy_direction, AccuracyDirection::HigherIsBetter);
         assert!((r.accuracy_sla - 0.9).abs() < 1e-6);
         // Not the all-labels output set, which would cost one heap per series.
         assert_eq!(r.grouping_labels, labels(&["job"]));

@@ -1,7 +1,7 @@
 //! Externally provided workload facts for the MILP planner: per metric, the
-//! cardinality of each label set in use. The entry for all of a metric's
-//! labels is its series count. Labels come from the workload's `metrics:`
-//! hints and the scrape interval from the caller.
+//! cardinality of each label set in use and its positive value range. The
+//! entry for all of a metric's labels is its series count. Labels come from
+//! the workload's `metrics:` hints and the scrape interval from the caller.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -25,6 +25,8 @@ pub enum WorkloadFactsError {
     DuplicateMetric(String),
     #[error("metric {metric:?}: duplicate cardinality for labels {labels:?}")]
     DuplicateLabels { metric: String, labels: LabelSet },
+    #[error("metric {metric:?}: value range ({lo}, {hi}) needs 0 < lo <= hi < inf")]
+    InvalidValueRange { metric: String, lo: f64, hi: f64 },
     #[error("metric {0:?} has facts but no `metrics:` hint giving its labels")]
     MetricWithoutHint(String),
 }
@@ -39,6 +41,7 @@ struct FactsFile {
 #[serde(deny_unknown_fields)]
 struct MetricEntry {
     metric: String,
+    value_range: [f64; 2],
     groups: Vec<GroupEntry>,
 }
 
@@ -71,6 +74,14 @@ pub fn parse_workload_facts(
     let file: FactsFile = serde_yaml::from_str(yaml)?;
     let mut facts = WorkloadFacts::new();
     for entry in file.metrics {
+        let [lo, hi] = entry.value_range;
+        if !(lo > 0.0 && hi >= lo && hi.is_finite()) {
+            return Err(WorkloadFactsError::InvalidValueRange {
+                metric: entry.metric,
+                lo,
+                hi,
+            });
+        }
         let Some(hint) = hints.iter().find(|h| h.metric == entry.metric) else {
             return Err(WorkloadFactsError::MetricWithoutHint(entry.metric));
         };
@@ -98,8 +109,8 @@ pub fn parse_workload_facts(
             labels: hint.labels.iter().cloned().collect(),
             scrape_interval_ms,
             cardinality,
-            // ponytail: only sizes DDSketch, which ASAPQuery can't deploy yet.
-            value_range: None,
+            value_range: Some((lo, hi)),
+            data_shape: BTreeMap::new(),
         };
         if facts.insert(entry.metric.clone(), metric_facts).is_some() {
             return Err(WorkloadFactsError::DuplicateMetric(entry.metric));
@@ -128,6 +139,7 @@ mod tests {
         let yaml = r#"
 metrics:
   - metric: http_requests_total
+    value_range: [1.0, 1000.0]
     groups:
       - labels: [instance, job]
         cardinality: 1200
@@ -138,13 +150,14 @@ metrics:
         let m = &facts["http_requests_total"];
         assert_eq!(m.labels, labels(&["job", "instance"]));
         assert_eq!(m.scrape_interval_ms, 15_000);
+        assert_eq!(m.value_range, Some((1.0, 1000.0)));
         assert_eq!(m.cardinality[&labels(&["job", "instance"])], 1200);
         assert_eq!(m.cardinality[&labels(&["job"])], 10);
     }
 
     #[test]
     fn rejects_metric_without_hint() {
-        let yaml = "metrics:\n  - metric: other\n    groups: []\n";
+        let yaml = "metrics:\n  - metric: other\n    value_range: [1.0, 1000.0]\n    groups: []\n";
         let err = parse_workload_facts(yaml, &hints(), 15_000).unwrap_err();
         assert!(matches!(err, WorkloadFactsError::MetricWithoutHint(m) if m == "other"));
     }
@@ -154,8 +167,10 @@ metrics:
         let yaml = r#"
 metrics:
   - metric: http_requests_total
+    value_range: [1.0, 1000.0]
     groups: []
   - metric: http_requests_total
+    value_range: [1.0, 1000.0]
     groups: []
 "#;
         let err = parse_workload_facts(yaml, &hints(), 15_000).unwrap_err();
@@ -167,6 +182,7 @@ metrics:
         let yaml = r#"
 metrics:
   - metric: http_requests_total
+    value_range: [1.0, 1000.0]
     groups:
       - labels: [job, instance]
         cardinality: 1200
@@ -183,6 +199,30 @@ metrics:
         assert!(matches!(
             parse_workload_facts(yaml, &hints(), 15_000).unwrap_err(),
             WorkloadFactsError::Parse(_)
+        ));
+    }
+
+    #[test]
+    fn requires_a_positive_value_range() {
+        let missing = r#"
+metrics:
+  - metric: http_requests_total
+    groups: []
+"#;
+        assert!(matches!(
+            parse_workload_facts(missing, &hints(), 15_000),
+            Err(WorkloadFactsError::Parse(_))
+        ));
+
+        let invalid = r#"
+metrics:
+  - metric: http_requests_total
+    value_range: [0.0, 1000.0]
+    groups: []
+"#;
+        assert!(matches!(
+            parse_workload_facts(invalid, &hints(), 15_000),
+            Err(WorkloadFactsError::InvalidValueRange { .. })
         ));
     }
 }
