@@ -41,7 +41,6 @@ pub enum MilpOutputError {
     },
     #[error("sketch-bench variant dd: alpha must be finite and in (0, 1), got {alpha}")]
     InvalidDdsAlpha { alpha: f64 },
-
     #[error("query {0:?} is served by two deployments; a query string can name only one")]
     QueryOnTwoDeployments(String),
     #[error(transparent)]
@@ -241,10 +240,11 @@ fn missing_param(variant: &str, param: &'static str) -> MilpOutputError {
     }
 }
 
-/// The heap the plan priced: sketch-bench's `heap` param, `m · k` for the
-/// `m` windows a served query merges and the deployment's answered `k`
-/// (the largest its queries ask), or a measured size above it. The engine
-/// takes each query's `k` from the query itself.
+/// The heap the plan priced: sketch-bench's `heap` param, sized `m · k` for
+/// the windows the query it was built for merges (or the smallest measured
+/// heap above that). Another query sharing it may need more; the plan then
+/// priced that query's accuracy as a lossy merge, so the heap is emitted as
+/// priced. The engine takes each query's `k` from the query itself.
 fn heap_size(deployment: &Deployment) -> Result<u64, MilpOutputError> {
     rqe_optimizer::heap_capacity(&deployment.config)
         .ok_or_else(|| missing_param(&deployment.config.sketch, "heap"))
