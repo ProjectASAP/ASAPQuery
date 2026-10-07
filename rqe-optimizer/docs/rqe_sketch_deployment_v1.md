@@ -239,7 +239,17 @@ lookback: series per group times scrapes per lookback.
   (`--merge-shards-list`) up to the N it reads at: past the merge curve's
   last N, the merged answer has no accuracy either (#158).
   `SaturationCurves::load` refuses a study with no merge curves for a
-  candidate KLL or top-k sketch.
+  candidate KLL sketch.
+- Heap top-k (CMS-heap, CountSketch-heap) keeps a heap of `m · k` in a
+  deployment answering from `m = S_i / D.x` merged windows (`k = 32`, the
+  answered and graded `k`; `m = 1` gives `k`). Candidates carry one heap per
+  distinct `m` among the RAQEs on a window, and a RAQE is eligible only where
+  the heap holds its `m · k`. Such a merged answer reads as one sketch: the
+  plain curve, then the guarantee fallback. It assumes the merged heaps still
+  hold the true top `k`; it is not a guarantee. So heap top-k needs no merge
+  curves. Costs come from the cost table's rows at heaps 32, 128, 512 and
+  2048 (`heap=`), linear in the heap between them and past them. Curves are
+  measured at a heap of `k`, and larger heaps read the same curve.
 - Where the study measured nothing for a bracketing point at or above its
   first N (past an unsaturated curve, past the measured merge counts or N,
   or with no merge curve), the accuracy falls back to the algorithm's

@@ -207,10 +207,22 @@ struct Grid {
 
 impl Grid {
     fn new(variant: &str, costs: &[AtomicCostEntry]) -> Option<Grid> {
+        // Two rows at one heap (no heap and heap=k) would be two grid points
+        // for one config; the candidates' check refuses them.
+        crate::candidates::heap_rows_by_shape(
+            &costs
+                .iter()
+                .filter(|c| c.sketch == variant)
+                .collect::<Vec<_>>(),
+        );
         let rows: Vec<(usize, BTreeMap<String, f64>)> = costs
             .iter()
             .enumerate()
-            .filter(|(_, c)| c.sketch == variant)
+            // AutoSketch never merges (x = S), so a heap of k serves it; the
+            // larger heaps only cost more and aren't a search axis.
+            .filter(|(_, c)| {
+                c.sketch == variant && crate::heap_capacity(c).is_none_or(|h| h <= crate::TOPK_K)
+            })
             .map(|(i, c)| (i, numeric_params(&c.sketch_config)))
             .collect();
         if rows.is_empty() {

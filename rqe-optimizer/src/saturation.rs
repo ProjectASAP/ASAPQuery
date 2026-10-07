@@ -14,15 +14,15 @@
 //! checks that the two agree there (#171). Both come from one study run
 //! (`study_saturation.py --phase optimizer-cost`, #174).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
 use crate::autosketch::window_adapter;
 use crate::theory;
 use crate::{
-    accuracy_key, family_properties, table_accuracy, AccuracyDirection, AtomicCostEntry,
-    Capability, Deployment, LabelSet, MetricFacts, Raqe, WorkloadFacts,
+    accuracy_key, family_properties, has_heap, heap_capacity, table_accuracy, AccuracyDirection,
+    AtomicCostEntry, Capability, Deployment, LabelSet, MetricFacts, Raqe, WorkloadFacts, TOPK_K,
 };
 use aqpbm_core::MeasuredShape;
 
@@ -361,7 +361,9 @@ impl SaturationCurves {
         // accuracy.
         let mut lossy: BTreeMap<&str, bool> = BTreeMap::new();
         for (sketch, point) in points.values() {
-            if is_candidate(sketch) && merges_lossily(sketch) {
+            // Heap top-k merges as one sketch when sized m · k, so only KLL
+            // needs the curves.
+            if is_candidate(sketch) && merges_lossily(sketch) && !has_heap(sketch) {
                 *lossy.entry(sketch).or_default() |= !point.merged.is_empty();
             }
         }
@@ -419,7 +421,16 @@ impl SaturationCurves {
         let covered = items_per_group(metric_facts, grouping, raqe.lookback_ms);
         let (_, direction) = accuracy_key(&deployment.config.sketch);
         let merges = if merges_lossily(&deployment.config.sketch) {
-            deployment.query_instance_count(raqe.lookback_ms)?
+            let merges = deployment.query_instance_count(raqe.lookback_ms)?;
+            // A heap of m · k merged from m windows reads as one sketch: the
+            // merged heaps are taken to still hold the true top k.
+            match (
+                heap_capacity(&deployment.config),
+                deployment.heap_needed(raqe.lookback_ms),
+            ) {
+                (Some(heap), Some(need)) if heap >= need => 1,
+                _ => merges,
+            }
         } else {
             1
         };
@@ -494,6 +505,10 @@ impl SaturationCurves {
             let Some(points) = self.points_by_sketch.get(&row.sketch) else {
                 continue;
             };
+            // Curves are measured at a heap of k; larger heaps are cost-only.
+            if heap_capacity(row).is_some_and(|heap| heap != TOPK_K) {
+                continue;
+            }
             let params = config_params(row);
             let mut same_config = points
                 .iter()
@@ -535,6 +550,23 @@ impl SaturationCurves {
                     point.curve
                 )),
                 Some(true) => {}
+            }
+        }
+        // A heap top-k config priced at one heap only can't serve any heap
+        // above it: every merged top-k candidate would quietly vanish.
+        let mut heaps: BTreeMap<(String, String), BTreeSet<u64>> = BTreeMap::new();
+        for row in costs.iter().filter(|row| is_candidate(&row.sketch)) {
+            if let Some(heap) = heap_capacity(row) {
+                let key = (row.sketch.clone(), format!("{:?}", config_params(row)));
+                heaps.entry(key).or_default().insert(heap);
+            }
+        }
+        for ((sketch, params), measured) in heaps {
+            if measured.len() < 2 {
+                check.mismatched.push(format!(
+                    "{sketch} {params}: priced at heap {measured:?} only; rerun \
+                     study_saturation.py --phase optimizer-cost for the heap sizes"
+                ));
             }
         }
         check
@@ -601,11 +633,14 @@ fn bracket(values: impl Iterator<Item = f64>, target: f64) -> Option<Vec<f64>> {
     (above > 0 && above < values.len()).then(|| vec![values[above - 1], values[above]])
 }
 
-/// `{"params": {"rows": 3, "cols": 1024}}` → `{rows: 3, cols: 1024}`.
+/// `config`'s params, less a top-k `heap`: `{"params": {"rows": 3, "cols":
+/// 1024, "heap": 128}}` → `{rows: 3, cols: 1024}`. Curves are measured at a
+/// heap of `TOPK_K`, and a larger heap reads the same curve.
 fn config_params(config: &AtomicCostEntry) -> Option<BTreeMap<String, f64>> {
     config.sketch_config["params"]
         .as_object()?
         .iter()
+        .filter(|(name, _)| *name != "heap")
         .map(|(name, value)| Some((name.clone(), value.as_f64()?)))
         .collect()
 }
@@ -807,6 +842,42 @@ mod tests {
         assert_eq!(at(100_000), None);
     }
 
+    /// A heap of m · k merged from m windows reads as one sketch: the plain
+    /// curve, not the merge curve, and no merge curve is needed.
+    #[test]
+    fn a_heap_of_m_times_k_reads_the_plain_curve() {
+        let facts = workload(10, shape(1.2, 1e3));
+        let r = topk_raqe(10_000_000);
+        let with_heap = |window_ms, heap: u64| {
+            let mut d = deployment(TOPK, window_ms);
+            d.config.sketch_config["params"]["heap"] = heap.into();
+            d
+        };
+        let mut plain_only = curves();
+        for point in plain_only.points_by_sketch.get_mut(TOPK).unwrap() {
+            point.merged.clear();
+        }
+        // 4 windows: a heap of 4k reads the plain curve; 2k doesn't, and
+        // without a merge curve has no accuracy.
+        assert_eq!(
+            plain_only.accuracy(&r, &with_heap(2_500_000, 4 * TOPK_K), &facts),
+            Some(0.9)
+        );
+        assert_eq!(
+            plain_only.accuracy(&r, &with_heap(2_500_000, 2 * TOPK_K), &facts),
+            None
+        );
+        // With merge curves, a small heap still reads them.
+        assert!(
+            (curves()
+                .accuracy(&r, &with_heap(2_500_000, TOPK_K), &facts)
+                .unwrap()
+                - 0.88)
+                .abs()
+                < 1e-12
+        );
+    }
+
     /// Past a merge curve's last checkpoint the merged answer is unknown,
     /// even when the plain curve saturated: nothing shows the merged sketch
     /// stopped changing.
@@ -965,7 +1036,31 @@ mod tests {
 
     #[test]
     fn the_cost_table_is_a_point_on_the_curve() {
-        let check = |rows: &[AtomicCostEntry]| curves().check_cost_table(rows);
+        // Each top-k row also priced at a large heap, as the study does.
+        let check = |rows: &[AtomicCostEntry]| {
+            let mut all = rows.to_vec();
+            for row in rows.iter().filter(|row| heap_capacity(row).is_some()) {
+                let mut large = row.clone();
+                large.sketch_config["params"]["heap"] = (64 * TOPK_K).into();
+                all.push(large);
+            }
+            curves().check_cost_table(&all)
+        };
+        // Priced at one heap only: no merged top-k candidate could be built.
+        let lone = curves().check_cost_table(&[measured_row(1024, 10_000, 0.93)]);
+        assert_eq!(lone.mismatched.len(), 1, "{lone:?}");
+        assert!(lone.mismatched[0].contains("priced at heap"), "{lone:?}");
+        // A heap of k is checked like no heap; a larger heap is cost-only.
+        let with_heap = |heap: u64, precision| {
+            let mut row = measured_row(1024, 10_000, precision);
+            row.sketch_config["params"]["heap"] = heap.into();
+            row
+        };
+        assert_eq!(check(&[with_heap(TOPK_K, 0.8)]).mismatched.len(), 1);
+        assert_eq!(
+            check(&[with_heap(4 * TOPK_K, 0.8)]),
+            CostTableCheck::default()
+        );
         // θ = 1.2, K = 1e3 reads 0.95 ± 3 × 0.01 + 5% at N = 1e4.
         assert_eq!(
             check(&[measured_row(1024, 10_000, 0.93)]),
@@ -993,7 +1088,12 @@ mod tests {
         let mut other_metric = measured_row(1024, 10_000, 0.95);
         other_metric.query_accuracy = BTreeMap::from([("recall_at_k".into(), 0.95)]);
         other_metric.accuracy_metric = "recall_at_k".into();
-        assert_eq!(check(&[other_metric]).mismatched.len(), 1);
+        // (Its large-heap copy names the same wrong metric.)
+        let wrong = check(&[other_metric]).mismatched;
+        assert!(
+            !wrong.is_empty() && wrong.iter().all(|m| m.contains("recall_at_k")),
+            "{wrong:?}"
+        );
         // Sketches the study didn't run, exact ones among them, skip the
         // curve, but still name their family's metric.
         let exact = AtomicCostEntry {
@@ -1049,6 +1149,33 @@ mod tests {
         assert_eq!(points[0].curve, vec![(1e3, 0.05, 0.0), (1e9, 0.01, 0.0)]);
         assert_eq!(points[0].shape, MeasuredShape::Pareto { tail_index: 2.0 });
         assert_eq!(points[0].params, BTreeMap::from([("k".to_string(), 200.0)]));
+    }
+
+    /// Top-k merges as one sketch when its heap holds m · k, so a study needs
+    /// no merge curves for it.
+    #[test]
+    fn load_needs_no_merge_curves_for_heap_topk() {
+        let dir = std::env::temp_dir().join(format!("rqe-topk-nomerge-{}", std::process::id()));
+        let header = "family,sketch,config,dist,param,cardinality";
+        let point = format!("topk,{TOPK},rows=3 cols=1024,zipf,1.2,1000");
+        for run in RUN_DIRS {
+            std::fs::create_dir_all(dir.join(run)).unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation.csv"),
+                format!(
+                    "{header},n_sat,final_error,error_metric\n{point},1000,0.9,precision_at_k\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation_curve.csv"),
+                format!("{header},n,seed_mean_error,seed_se\n{point},1000,0.9,0\n"),
+            )
+            .unwrap();
+        }
+        let loaded = SaturationCurves::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(loaded.is_ok(), "{:?}", loaded.err());
     }
 
     /// A curve for another metric than the family's, such as DD's max error

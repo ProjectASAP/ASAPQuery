@@ -133,7 +133,8 @@ mod tests {
     fn cost(sketch: &str) -> AtomicCostEntry {
         AtomicCostEntry {
             sketch: sketch.to_string(),
-            sketch_config: serde_json::json!(null),
+            // A heap that holds any merge, so heap top-k fixtures merge freely.
+            sketch_config: serde_json::json!({"params": {"heap": 1u64 << 40}}),
             mem_bytes_per_instance: 1.0,
             insert_cpu_secs: 1.0,
             merge_cpu_secs: 1.0,

@@ -26,11 +26,10 @@ pub(crate) const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
 pub const OUTPUT_BYTES_PER_VALUE: f64 = 8.0;
 /// Query output per top-k entry: a 64-bit key hash and a count.
 pub const OUTPUT_BYTES_PER_TOPK_ENTRY: f64 = 16.0;
-/// Top-k entries per group: the heap size every top-k cost row was measured
-/// at (sketch-bench's `CMS_HEAP_TOP_K`).
-// ponytail: fixed k. A large k needs `k` on the RAQE and a benchmark that
-// varies the heap.
-pub const TOPK_ENTRIES: f64 = 32.0;
+/// Top-k entries one query outputs per group: the `k` it answers
+/// ([`crate::TOPK_K`]), whatever the heap's capacity.
+// ponytail: fixed k. A large k needs `k` on the RAQE.
+pub const TOPK_ENTRIES: f64 = crate::TOPK_K as f64;
 /// Bytes per DDSketch bucket: one `u64` count, as sketch-bench's
 /// `dd_footprint` counts them.
 pub const DD_BYTES_PER_BUCKET: f64 = 8.0;

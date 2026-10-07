@@ -128,6 +128,41 @@ pub const DEPLOYABLE_FAMILIES: &[&str] = &[
 /// deployment pays for alongside its sketch. Never a candidate on its own.
 pub const KEY_TRACKER_FAMILY: &str = "exact-delta-set";
 
+/// The `k` every top-k RAQE asks for, and the heap capacity of a row that
+/// sets no `heap` (sketch-bench's `TOPK_K`).
+pub const TOPK_K: u64 = 32;
+
+/// Top-k families whose heap capacity is a config knob (sketch-bench's
+/// `heap=`). A deployment answering from `m` merged windows keeps a heap of
+/// `m · TOPK_K`, so the merged heaps still hold the true top `k`
+/// (approximately: a working assumption, not a guarantee).
+pub fn has_heap(sketch: &str) -> bool {
+    matches!(
+        sketch,
+        "cms-heap-topk-fastpath-vector2d" | "countsketch-heap-topk-fastpath-vector2d"
+    )
+}
+
+/// The heap a heap top-k deployment with `window_ms` windows needs to serve
+/// `lookback_ms`: `m · k` for its `m` merged windows, or `None` when the
+/// lookback isn't whole windows. [`Deployment::heap_needed`] for a built one.
+pub fn heap_needed(lookback_ms: Millis, window_ms: Millis) -> Option<u64> {
+    if window_ms == 0 || !lookback_ms.is_multiple_of(window_ms) {
+        return None;
+    }
+    Some(lookback_ms / window_ms * TOPK_K)
+}
+
+/// A heap family's capacity: its `heap` param, else [`TOPK_K`]. `None` for
+/// other families.
+pub fn heap_capacity(config: &AtomicCostEntry) -> Option<u64> {
+    has_heap(&config.sketch).then(|| {
+        let heap = &config.sketch_config["params"]["heap"];
+        // A number in any JSON form (128, 128.0); absent is k.
+        heap.as_f64().map_or(TOPK_K, |h| h.round() as u64)
+    })
+}
+
 /// What a variant's algorithm can do, as opposed to what it measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FamilyProperties {
@@ -445,6 +480,13 @@ impl Deployment {
         Some(lookback_ms / self.window_ms)
     }
 
+    /// The heap a heap top-k deployment needs to serve `lookback_ms`: `m · k`
+    /// for its `m` merged windows. `None` when the lookback isn't whole
+    /// windows.
+    pub fn heap_needed(&self, lookback_ms: Millis) -> Option<u64> {
+        heap_needed(lookback_ms, self.window_ms)
+    }
+
     /// Closed instances kept to serve a lookback: those wholly inside it,
     /// which start in `[now − L, now − x]`, so `(L − x) / y + 1`.
     pub fn closed_instance_count(&self, lookback_ms: Millis) -> Option<u64> {
@@ -545,7 +587,8 @@ pub(crate) mod test_support {
             grouping_labels: LabelSet::new(),
             config: AtomicCostEntry {
                 sketch: "cms-heap-topk-fastpath-vector2d".into(),
-                sketch_config: serde_json::json!(null),
+                // A heap that holds any merge, so heap top-k fixtures merge freely.
+                sketch_config: serde_json::json!({"params": {"heap": 1u64 << 40}}),
                 mem_bytes_per_instance: memory,
                 insert_cpu_secs: insert,
                 merge_cpu_secs: merge,
@@ -595,7 +638,7 @@ mod tests {
     /// DD omits its metric when every true quantile is 0; a row without it
     /// must not pass, nor be skipped silently.
     #[test]
-    #[should_panic(expected = "dd null has no mean_relative_value_error")]
+    #[should_panic(expected = "has no mean_relative_value_error")]
     fn a_row_missing_its_familys_metric_panics() {
         let config = AtomicCostEntry {
             sketch: "dd".into(),
