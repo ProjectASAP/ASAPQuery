@@ -214,15 +214,14 @@ metrics:
             Err(WorkloadFactsError::Parse(_))
         ));
 
-        let invalid = r#"
-metrics:
-  - metric: http_requests_total
-    value_range: [0.0, 1000.0]
-    groups: []
-"#;
-        assert!(matches!(
-            parse_workload_facts(invalid, &hints(), 15_000),
-            Err(WorkloadFactsError::InvalidValueRange { .. })
-        ));
+        for value_range in ["[0.0, 1000.0]", "[2.0, 1.0]", "[1.0, .inf]"] {
+            let invalid = format!(
+                "metrics:\n  - metric: http_requests_total\n    value_range: {value_range}\n    groups: []\n"
+            );
+            assert!(matches!(
+                parse_workload_facts(&invalid, &hints(), 15_000),
+                Err(WorkloadFactsError::InvalidValueRange { .. })
+            ));
+        }
     }
 }

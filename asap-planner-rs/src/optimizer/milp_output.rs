@@ -39,6 +39,8 @@ pub enum MilpOutputError {
         variant: String,
         param: &'static str,
     },
+    #[error("sketch-bench variant dd: alpha must be finite and in (0, 1), got {alpha}")]
+    InvalidDdsAlpha { alpha: f64 },
     #[error("topk query {0:?} has no literal k")]
     TopkWithoutK(String),
     #[error("query {0:?} is served by two deployments; a query string can name only one")]
@@ -133,18 +135,12 @@ fn aggregation_config(
     let integer_param = |name: &'static str| {
         deployment.config.sketch_config["params"][name]
             .as_u64()
-            .ok_or_else(|| MilpOutputError::MissingParam {
-                variant: variant.to_string(),
-                param: name,
-            })
+            .ok_or_else(|| missing_param(variant, name))
     };
     let float_param = |name: &'static str| {
         deployment.config.sketch_config["params"][name]
             .as_f64()
-            .ok_or_else(|| MilpOutputError::MissingParam {
-                variant: variant.to_string(),
-                param: name,
-            })
+            .ok_or_else(|| missing_param(variant, name))
     };
     let (aggregation_type, sub_type, parameters) = match (variant, deployment.capability) {
         ("exact-sum", Capability::Sum) => (AggregationType::MultipleSum, "sum", vec![]),
@@ -159,11 +155,17 @@ fn aggregation_config(
             "",
             vec![("K", Value::from(integer_param("k")?))],
         ),
-        ("dd", Capability::Quantile) => (
-            AggregationType::DDSketch,
-            "",
-            vec![("alpha", Value::from(float_param("alpha")?))],
-        ),
+        ("dd", Capability::Quantile) => {
+            let alpha = float_param("alpha")?;
+            if !(alpha.is_finite() && alpha > 0.0 && alpha < 1.0) {
+                return Err(MilpOutputError::InvalidDdsAlpha { alpha });
+            }
+            (
+                AggregationType::DDSketch,
+                "",
+                vec![("alpha", Value::from(alpha))],
+            )
+        }
         ("hll", Capability::Cardinality) => (
             AggregationType::HLL,
             "",
@@ -231,6 +233,13 @@ fn aggregation_config(
         grouping_labels,
         aggregated_labels,
     })
+}
+
+fn missing_param(variant: &str, param: &'static str) -> MilpOutputError {
+    MilpOutputError::MissingParam {
+        variant: variant.to_string(),
+        param,
+    }
 }
 
 /// One heap serves every topk query on the deployment, so it is sized for
@@ -419,6 +428,24 @@ mod tests {
                 param: "alpha",
             }) if variant == "dd"
         ));
+    }
+
+    #[test]
+    fn ddsketch_plan_rejects_an_invalid_alpha() {
+        let query = "quantile_over_time(0.99, http_requests_total[5m])";
+        let config = config(&group(query, 0.99));
+        let facts = facts(&config);
+        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+
+        for alpha in [0.0, -0.01, 1.0] {
+            let costs = vec![dd_cost(json!({"alpha": alpha}))];
+            let solution =
+                solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+            assert!(matches!(
+                plan_to_planner_output(&config, &workload, &solution),
+                Err(MilpOutputError::InvalidDdsAlpha { .. })
+            ));
+        }
     }
 
     #[test]
