@@ -127,13 +127,11 @@ pub fn for_each_mapping_while(
 mod tests {
     use super::*;
     use crate::candidates;
-    use crate::test_support::{facts, METRIC};
+    use crate::test_support::{facts, perfect_accuracy, METRIC};
     use crate::{table_accuracy, AtomicCostEntry, Capability, Deployment, LabelSet};
     use std::collections::BTreeMap;
 
     fn cost(sketch: &str) -> AtomicCostEntry {
-        let mut query_accuracy = BTreeMap::new();
-        query_accuracy.insert("err".to_string(), 0.01);
         AtomicCostEntry {
             sketch: sketch.to_string(),
             sketch_config: serde_json::json!(null),
@@ -141,7 +139,7 @@ mod tests {
             insert_cpu_secs: 1.0,
             merge_cpu_secs: 1.0,
             query_cpu_secs: 1.0,
-            query_accuracy,
+            query_accuracy: perfect_accuracy(),
             merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }
@@ -160,9 +158,7 @@ mod tests {
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
-            accuracy_metric: "err".to_string(),
-            accuracy_sla: 1.0,
-            accuracy_direction: crate::AccuracyDirection::LowerIsBetter,
+            accuracy_sla: 0.5,
             latency_sla_ms: None,
         }
     }

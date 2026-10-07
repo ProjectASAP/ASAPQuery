@@ -117,6 +117,7 @@ pub const DEPLOYABLE_FAMILIES: &[&str] = &[
     "exact-max",                       // MultipleMinMax, sub_type "max"
     "exact-increase",                  // MultipleIncrease
     "kll-percall",                     // DatasketchesKLL
+    "dd",                              // DDSketch
     "hll",                             // HLL
     "cms-heap-topk-fastpath-vector2d", // CountMinSketchWithHeap
 ];
@@ -141,35 +142,46 @@ pub struct FamilyProperties {
     /// Answers without error, so its accuracy comes from the cost table
     /// rather than a saturation curve.
     pub exact: bool,
+    /// The accuracy key this variant's comparator reports, and which way it
+    /// runs. `None` only for [`KEY_TRACKER_FAMILY`], which is never checked.
+    pub accuracy: Option<(&'static str, AccuracyDirection)>,
 }
 
 /// Panics on a variant with no entry: guessing would misprice it.
+/// Accuracy keys mirror the comparator `export_rqe_optimizer_costs.sh` runs
+/// per variant.
 pub fn family_properties(variant: &str) -> FamilyProperties {
-    let one_sketch_per_group = FamilyProperties {
+    use AccuracyDirection::{HigherIsBetter, LowerIsBetter};
+    let one_sketch_per_group = |metric, direction| FamilyProperties {
         mergeable_across_windows: true,
         one_fixed_size_sketch_for_all_groups: false,
         needs_delta_set_key_tracker: false,
         exact: false,
+        accuracy: Some((metric, direction)),
+    };
+    // `relative_error` is the worst group's, not `relative_error_mean`.
+    let exact = FamilyProperties {
+        exact: true,
+        ..one_sketch_per_group("relative_error", LowerIsBetter)
     };
     match variant {
-        "exact-sum" | "exact-min" | "exact-max" | "exact-increase" | KEY_TRACKER_FAMILY => {
-            FamilyProperties {
-                exact: true,
-                ..one_sketch_per_group
-            }
-        }
-        "kll-percall"
-        | "dd"
-        | "hll"
-        | "univmon-cardinality"
-        | "cms-heap-topk-fastpath-vector2d"
+        "exact-sum" | "exact-min" | "exact-max" | "exact-increase" => exact,
+        KEY_TRACKER_FAMILY => FamilyProperties {
+            accuracy: None,
+            ..exact
+        },
+        "hll" | "univmon-cardinality" => one_sketch_per_group("relative_error", LowerIsBetter),
+        "kll-percall" => one_sketch_per_group("mean_rank_err", LowerIsBetter),
+        "dd" => one_sketch_per_group("mean_relative_value_error", LowerIsBetter),
+        "cms-heap-topk-fastpath-vector2d"
         | "countsketch-heap-topk-fastpath-vector2d"
-        | "univmon-topk" => one_sketch_per_group,
+        | "univmon-topk" => one_sketch_per_group("precision_at_k", HigherIsBetter),
         "hydra-kll" => FamilyProperties {
             mergeable_across_windows: true,
             one_fixed_size_sketch_for_all_groups: true,
             needs_delta_set_key_tracker: true,
             exact: false,
+            accuracy: Some(("mean_rank_err", LowerIsBetter)),
         },
         _ => panic!("{variant} has no FamilyProperties; add it to family_properties"),
     }
@@ -215,6 +227,23 @@ pub fn validate_facts(raqes: &[Raqe], facts: &WorkloadFacts) -> Result<(), Vec<S
         }
         if !raqe.spatial_filter.is_empty() {
             problems.insert(format!("{id}: spatial filters are not supported yet"));
+        }
+        // An SLA no candidate's metric can meet would read as "unservable"
+        // rather than bad input. Every metric is >= 0, and every
+        // higher-is-better one is a fraction (precision), so its floor is <= 1.
+        let sla = raqe.accuracy_sla;
+        let floors_a_fraction = raqe.capability.families().iter().any(|family| {
+            family_properties(family)
+                .accuracy
+                .is_some_and(|(_, direction)| direction == AccuracyDirection::HigherIsBetter)
+        });
+        let max = if floors_a_fraction {
+            1.0
+        } else {
+            f64::INFINITY
+        };
+        if !(sla.is_finite() && (0.0..=max).contains(&sla)) {
+            problems.insert(format!("{id}: accuracy SLA {sla} is outside [0, {max}]"));
         }
         if let Some(limit) = raqe.latency_sla_ms {
             if !(limit.is_finite() && limit > 0.0) {
@@ -279,9 +308,9 @@ pub fn validate_facts(raqes: &[Raqe], facts: &WorkloadFacts) -> Result<(), Vec<S
 /// (lower better); top-k reports `precision_at_k`/`recall_at_k` (higher
 /// better), so its tolerance is a floor.
 ///
-/// Named per RAQE, never inferred from the metric name: an unanticipated name
-/// would get a silent wrong default, and the failure mode is a hard
-/// constraint accepting exactly what it should reject.
+/// Named per family in [`family_properties`], never inferred from the metric
+/// name: an unanticipated name would get a silent wrong default, and the
+/// failure mode is a hard constraint accepting exactly what it should reject.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccuracyDirection {
     /// `measured <= tolerance` passes -- the metric is an error.
@@ -309,35 +338,38 @@ pub struct Raqe {
     pub spatial_filter: String,
     /// `G`: the query's group-by labels.
     pub grouping_labels: LabelSet,
-    /// Which accuracy metric to check: a saturation curve's `error_metric`,
-    /// or an exact accumulator's `AtomicCostEntry::query_accuracy` key.
-    /// Comparators name their metrics differently per capability, so the
-    /// RAQE picks.
-    pub accuracy_metric: String,
-    /// `tol_i`: hard constraint. Read as a ceiling or a floor depending on
-    /// [`Raqe::accuracy_direction`].
+    /// `tol_i`: hard constraint on each candidate's own
+    /// [accuracy metric](FamilyProperties::accuracy), a ceiling or a floor by
+    /// its direction. One number means different guarantees across metrics
+    /// (sketch-bench#172).
     pub accuracy_sla: f64,
-    pub accuracy_direction: AccuracyDirection,
     /// Hard ceiling on modeled query latency; `None` for no limit. Only the
     /// MILP enforces it.
     pub latency_sla_ms: Option<f64>,
 }
 
 impl Raqe {
-    /// The one place comparison direction is decided -- both the
-    /// candidate prefilter and eligibility route here so they can't drift.
-    pub fn accuracy_ok(&self, value: f64) -> bool {
-        match self.accuracy_direction {
-            AccuracyDirection::LowerIsBetter => value <= self.accuracy_sla,
-            AccuracyDirection::HigherIsBetter => value >= self.accuracy_sla,
-        }
+    /// Whether `accuracy`, in `sketch`'s [`accuracy_key`], clears the SLA.
+    /// Unknown or non-finite never passes. The MILP's eligibility and the
+    /// AutoSketch baseline both decide here.
+    pub fn meets_sla(&self, sketch: &str, accuracy: Option<f64>) -> bool {
+        let (_, direction) = accuracy_key(sketch);
+        accuracy.is_some_and(|value| {
+            value.is_finite()
+                && match direction {
+                    AccuracyDirection::LowerIsBetter => value <= self.accuracy_sla,
+                    AccuracyDirection::HigherIsBetter => value >= self.accuracy_sla,
+                }
+        })
     }
+}
 
-    /// Whether `accuracy` clears the SLA. Unknown or non-finite never passes.
-    /// The MILP's eligibility and the AutoSketch baseline both decide here.
-    pub fn meets_sla(&self, accuracy: Option<f64>) -> bool {
-        accuracy.is_some_and(|value| value.is_finite() && self.accuracy_ok(value))
-    }
+/// `sketch`'s [accuracy metric](FamilyProperties::accuracy) and direction.
+/// Panics for [`KEY_TRACKER_FAMILY`], which is never a candidate.
+pub fn accuracy_key(sketch: &str) -> (&'static str, AccuracyDirection) {
+    family_properties(sketch)
+        .accuracy
+        .unwrap_or_else(|| panic!("{sketch} has no accuracy metric, so it can't be a candidate"))
 }
 
 /// The accuracy `raqe` gets from a deployment, or `None` when unknown --
@@ -348,23 +380,31 @@ pub type Accuracy<'a> = dyn Fn(&Raqe, &Deployment) -> Option<f64> + 'a;
 /// The cost table's measured value after the query's `L / x` merges, which is
 /// the exact accumulators' accuracy.
 pub fn table_accuracy(raqe: &Raqe, deployment: &Deployment) -> Option<f64> {
-    table_accuracy_at(
-        raqe,
+    Some(table_accuracy_at(
         &deployment.config,
         raqe.lookback_ms / deployment.window_ms,
-    )
+    ))
 }
 
 /// The worse of `config`'s scores at the two measured counts bracketing
-/// `merges` (error is not monotone in the count). Missing at either is `None`.
-pub fn table_accuracy_at(raqe: &Raqe, config: &AtomicCostEntry, merges: u64) -> Option<f64> {
-    let [below, above] =
-        accuracy_at(config, merges).map(|scores| scores.get(&raqe.accuracy_metric).copied());
-    let (below, above) = (below?, above?);
-    Some(match raqe.accuracy_direction {
+/// `merges` (error is not monotone in the count), in its family's
+/// [`accuracy_key`]. Panics when either lacks it: the family table names
+/// the metric, so its absence means the cost export is broken.
+pub fn table_accuracy_at(config: &AtomicCostEntry, merges: u64) -> f64 {
+    let (metric, direction) = accuracy_key(&config.sketch);
+    let [below, above] = accuracy_at(config, merges).map(|scores| {
+        *scores.get(metric).unwrap_or_else(|| {
+            panic!(
+                "{} {} has no {metric}; the cost export is broken \
+                 (dd omits it when every true quantile is 0 or unanswered)",
+                config.sketch, config.sketch_config
+            )
+        })
+    });
+    match direction {
         AccuracyDirection::LowerIsBetter => below.max(above),
         AccuracyDirection::HigherIsBetter => below.min(above),
-    })
+    }
 }
 
 /// `config`'s scores at the two measured merge counts bracketing `merges`:
@@ -455,6 +495,20 @@ pub(crate) mod test_support {
 
     pub const METRIC: &str = "m";
 
+    /// Clears an SLA of 0.5 on every family's metric: errors 0, precision 1,
+    /// so a row renamed to any family stays feasible.
+    pub fn perfect_accuracy() -> BTreeMap<String, f64> {
+        [
+            "relative_error",
+            "mean_rank_err",
+            "mean_relative_value_error",
+        ]
+        .map(|metric| (metric.to_string(), 0.0))
+        .into_iter()
+        .chain([("precision_at_k".to_string(), 1.0)])
+        .collect()
+    }
+
     /// `groups` groups and `series` raw series scraped every second, so
     /// `λ = series`. Not validated: unit tests set `groups` freely.
     pub fn facts(groups: u64, series: u64) -> WorkloadFacts {
@@ -480,9 +534,7 @@ pub(crate) mod test_support {
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
-            accuracy_metric: "err".into(),
-            accuracy_sla: 1.0,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
+            accuracy_sla: 0.5,
             latency_sla_ms: None,
         }
     }
@@ -508,7 +560,7 @@ pub(crate) mod test_support {
                 insert_cpu_secs: insert,
                 merge_cpu_secs: merge,
                 query_cpu_secs: query,
-                query_accuracy: BTreeMap::from([("err".into(), 0.0)]),
+                query_accuracy: perfect_accuracy(),
                 merge_accuracy: BTreeMap::new(),
                 measured_at: None,
             },
@@ -533,6 +585,7 @@ mod tests {
         let mut config = deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config;
         let scores = |v: f64| BTreeMap::from([("err".to_string(), v)]);
         let at = |c: &AtomicCostEntry, merges| accuracy_at(c, merges).map(|s| s["err"]);
+        config.query_accuracy = scores(0.0);
         // No merge measurements: every count reads the single instance.
         assert_eq!(at(&config, 60), [0.0, 0.0]);
         config.merge_accuracy =
@@ -552,7 +605,7 @@ mod tests {
     #[test]
     fn both_brackets_must_clear_a_higher_is_better_metric() {
         let mut config = deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config;
-        let precision = |v: f64| BTreeMap::from([("p".to_string(), v)]);
+        let precision = |v: f64| BTreeMap::from([("precision_at_k".to_string(), v)]);
         config.query_accuracy = precision(1.0);
         config.merge_accuracy = BTreeMap::from([
             (4, precision(0.97)),
@@ -560,12 +613,10 @@ mod tests {
             (64, precision(1.0)),
         ]);
         let r = Raqe {
-            accuracy_metric: "p".into(),
             accuracy_sla: 0.9,
-            accuracy_direction: AccuracyDirection::HigherIsBetter,
             ..raqe(60_000, 60_000)
         };
-        let ok = |merges| table_accuracy_at(&r, &config, merges).is_some_and(|v| r.accuracy_ok(v));
+        let ok = |merges| r.meets_sla(&config.sketch, Some(table_accuracy_at(&config, merges)));
         assert!(ok(1));
         assert!(ok(4));
         assert!(!ok(8)); // [4, 16]: 16 fails
@@ -573,6 +624,40 @@ mod tests {
         assert!(!ok(32)); // [16, 64]
         assert!(ok(64));
         assert!(ok(5_000)); // beyond: [64, 64]
+    }
+
+    /// One quantile SLA: KLL is checked by rank error, DD by relative value
+    /// error, each against the same number.
+    #[test]
+    fn one_quantile_raqe_checks_each_family_by_its_own_metric() {
+        let r = Raqe {
+            capability: Capability::Quantile,
+            accuracy_sla: 0.05,
+            ..raqe(60_000, 60_000)
+        };
+        let row = |sketch: &str, metric: &str, value: f64| AtomicCostEntry {
+            sketch: sketch.into(),
+            query_accuracy: BTreeMap::from([(metric.to_string(), value)]),
+            ..deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config
+        };
+        let ok = |c: AtomicCostEntry| r.meets_sla(&c.sketch, Some(table_accuracy_at(&c, 1)));
+        assert!(ok(row("kll-percall", "mean_rank_err", 0.01)));
+        assert!(!ok(row("kll-percall", "mean_rank_err", 0.1)));
+        assert!(ok(row("dd", "mean_relative_value_error", 0.01)));
+        assert!(!ok(row("dd", "mean_relative_value_error", 0.1)));
+    }
+
+    /// DD omits its metric when every true quantile is 0; a row without it
+    /// must not pass, nor be skipped silently.
+    #[test]
+    #[should_panic(expected = "dd null has no mean_relative_value_error")]
+    fn a_row_missing_its_familys_metric_panics() {
+        let config = AtomicCostEntry {
+            sketch: "dd".into(),
+            query_accuracy: BTreeMap::from([("mean_rank_err".to_string(), 0.0)]),
+            ..deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config
+        };
+        table_accuracy_at(&config, 1);
     }
 
     #[test]
@@ -697,6 +782,34 @@ mod tests {
         assert_eq!(problems.len(), 2, "{problems:?}");
         assert!(problems[0].starts_with("unaligned: lookback 3600 ms"));
         assert!(problems[1].starts_with("zero: lookback and interval must be nonzero"));
+    }
+
+    /// No metric can meet a negative SLA, nor a precision floor above 1; an
+    /// error ceiling above 1 is merely loose.
+    #[test]
+    fn rejects_an_accuracy_sla_no_metric_can_meet() {
+        let sla = |id: &str, capability, accuracy_sla| Raqe {
+            id: id.into(),
+            capability,
+            accuracy_sla,
+            ..raqe(60_000, 60_000)
+        };
+        let raqes = [
+            sla("negative", Capability::Quantile, -0.1),
+            sla("nan", Capability::Quantile, f64::NAN),
+            sla("precision_above_1", Capability::TopKByValue, 1.5),
+            sla("loose_error", Capability::Cardinality, 1.5),
+            sla("exact_precision", Capability::TopKByValue, 1.0),
+        ];
+        let problems = validate_facts(&raqes, &test_support::facts(1, 1)).unwrap_err();
+        assert_eq!(
+            problems,
+            [
+                "nan: accuracy SLA NaN is outside [0, inf]",
+                "negative: accuracy SLA -0.1 is outside [0, inf]",
+                "precision_above_1: accuracy SLA 1.5 is outside [0, 1]",
+            ]
+        );
     }
 
     #[test]

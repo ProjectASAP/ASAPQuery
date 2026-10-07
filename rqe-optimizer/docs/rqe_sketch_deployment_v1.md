@@ -47,9 +47,7 @@ Let `R = {r_1, ..., r_n}` be the RAQE workload. Each RAQE `r_i` provides:
 | `T_i` | Query slide: how often the RAQE runs. This is the current `interval` field. |
 | `metric_i` | Metric the RAQE reads. |
 | `G_i` | Group-by label set (`grouping_labels`). |
-| `accuracy_metric_i` | Accuracy measurement to check. |
-| `tol_i` | Accuracy threshold. |
-| `direction_i` | Whether lower or higher values are better. |
+| `tol_i` | Accuracy threshold, checked against each candidate family's own metric. |
 
 For each metric, the caller provides `MetricFacts`:
 
@@ -203,8 +201,8 @@ An RAQE `r_i` is eligible for a candidate `D` when:
 
 1. `cap_i = D.capability`, `metric_i = D.metric` and `G_i = D.G`.
 2. `D.x % D.y = 0`, `S_i % D.x = 0`, and `T_i % D.y = 0`.
-3. The accuracy of `D` for `r_i` in `accuracy_metric_i` clears `tol_i` in
-   `direction_i`.
+3. The accuracy of `D` for `r_i`, in the accuracy metric of `D`'s family
+   (`family_properties`, which also gives the direction), clears `tol_i`.
 
 Exact accumulators take that accuracy from the cost table, at both measured
 merge counts bracketing the query's `S_i / D.x` windows (count 1 is the
@@ -221,7 +219,8 @@ lookback: series per group times scrapes per lookback.
   accuracy.
 - Between checkpoints, the worse neighbour. Below the first checkpoint, no
   accuracy. Past the last, the plateau if the point saturated, else none.
-- The curve's `error_metric` must be `accuracy_metric_i`.
+- The curve's `error_metric` must be the family's metric; `SaturationCurves::load`
+  refuses a curve for another metric as a stale study.
 - The window size doesn't matter: a merged answer reads the curve at the
   lookback's item count, like a single sketch. KLL and top-k merge lossily;
   their merge penalty is #158.

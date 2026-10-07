@@ -11,7 +11,7 @@ implemented, what is next, and what is intentionally deferred.
   cardinality per label set. The arrival rate is derived from them, and
   `validate_facts` reports bad facts up front.
 - Eligibility enforces capability, metric, spatial filter, grouping, alignment, and the RQE's
-  measured `accuracy_metric` constraint.
+  measured accuracy, by each family's own metric, against the RAQE's SLA.
 - Candidate generation uses legal windows and subset gcds of query intervals,
   keeping only multiples of the scrape interval. A deployment may serve
   multiple compatible RQEs.

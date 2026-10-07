@@ -18,8 +18,8 @@ use std::path::Path;
 
 use crate::autosketch::window_adapter;
 use crate::{
-    family_properties, table_accuracy, AccuracyDirection, AtomicCostEntry, Deployment, LabelSet,
-    MetricFacts, Raqe, WorkloadFacts,
+    accuracy_key, family_properties, table_accuracy, AccuracyDirection, AtomicCostEntry,
+    Capability, Deployment, LabelSet, MetricFacts, Raqe, WorkloadFacts,
 };
 use aqpbm_core::MeasuredShape;
 
@@ -152,7 +152,8 @@ pub struct SaturationCurves {
 
 impl SaturationCurves {
     /// Reads `saturation.csv` (for the saturation point) and `saturation_curve.csv` from
-    /// each of [`RUN_DIRS`] under `dir`.
+    /// each of [`RUN_DIRS`] under `dir`. Fails on a candidate family's curve
+    /// for a metric other than its [`accuracy_key`]: that study is stale.
     pub fn load(dir: &Path) -> io::Result<Self> {
         type PointKey = (String, String, String, String, String);
         let key = |row: &CsvRow| -> PointKey {
@@ -180,6 +181,18 @@ impl SaturationCurves {
                     },
                     curve: Vec::new(),
                 };
+                let sketch = row["sketch"].as_str();
+                let is_candidate = Capability::ALL
+                    .iter()
+                    .any(|capability| capability.families().contains(&sketch));
+                if is_candidate && point.error_metric != accuracy_key(sketch).0 {
+                    return Err(invalid(format!(
+                        "{run}: {sketch} curve measured {}, but the optimizer reads {}; \
+                         rerun the study",
+                        point.error_metric,
+                        accuracy_key(sketch).0
+                    )));
+                }
                 run_points.insert(key(&row), (row["sketch"].clone(), point));
             }
             for row in read_csv(&run_dir.join("saturation_curve.csv"))? {
@@ -205,8 +218,9 @@ impl SaturationCurves {
     }
 
     /// The accuracy `raqe` gets from `deployment`, or `None` when it can't be
-    /// read: no fitted [`DataShape`], a config or shape outside the grid, the
-    /// wrong metric, or too few items.
+    /// read: no fitted [`DataShape`], a config or shape outside the grid, or
+    /// too few items. [`SaturationCurves::load`] guarantees the curve's metric
+    /// is the family's.
     /// Exact accumulators keep the cost table's value. `facts` must pass
     /// [`crate::validate_facts`].
     pub fn accuracy(
@@ -223,13 +237,11 @@ impl SaturationCurves {
         let shape = metric_facts.data_shape.get(grouping)?;
         let points = self.bracketing_points(&deployment.config, shape)?;
         let covered = items_per_group(metric_facts, grouping, raqe.lookback_ms);
+        let (_, direction) = accuracy_key(&deployment.config.sketch);
         let mut worst = None;
         for point in points {
-            if point.error_metric != raqe.accuracy_metric {
-                return None;
-            }
-            let error = point.error_at(covered, raqe.accuracy_direction)?;
-            worst = Some(worst.map_or(error, |w| worse(w, error, raqe.accuracy_direction)));
+            let error = point.error_at(covered, direction)?;
+            worst = Some(worst.map_or(error, |w| worse(w, error, direction)));
         }
         worst
     }
@@ -490,8 +502,6 @@ mod tests {
     fn topk_raqe(lookback_ms: u64) -> Raqe {
         Raqe {
             capability: Capability::TopKByValue,
-            accuracy_metric: "precision_at_k".into(),
-            accuracy_direction: AccuracyDirection::HigherIsBetter,
             ..raqe(lookback_ms, lookback_ms)
         }
     }
@@ -560,19 +570,6 @@ mod tests {
     }
 
     #[test]
-    fn a_metric_the_curve_did_not_measure_has_no_accuracy() {
-        let facts = workload(10, shape(1.2, 1e3));
-        let r = Raqe {
-            accuracy_metric: "recall_at_k".into(),
-            ..topk_raqe(1_000_000)
-        };
-        assert_eq!(
-            curves().accuracy(&r, &deployment(TOPK, 1_000_000), &facts),
-            None
-        );
-    }
-
-    #[test]
     fn merged_answers_read_the_curve_at_the_lookback_count_whatever_the_window() {
         // 10 items/s: a 100 s window holds 1e3 items, below the 1e4
         // saturation point, but the 1e4 s lookback covers 1e5 items whatever
@@ -590,8 +587,10 @@ mod tests {
     #[test]
     fn exact_accumulators_keep_the_cost_table_value() {
         let r = topk_raqe(1_000_000);
-        let value = curves().accuracy(&r, &deployment("exact-sum", 1_000_000), &facts(1, 10));
-        assert_eq!(value, Some(1.0));
+        let mut d = deployment("exact-sum", 1_000_000);
+        d.config.query_accuracy = BTreeMap::from([("relative_error".into(), 0.0)]);
+        let value = curves().accuracy(&r, &d, &facts(1, 10));
+        assert_eq!(value, Some(0.0));
     }
 
     /// A top-k row measured at θ = 1.2, K = 1e3 and `items`, scoring
@@ -685,5 +684,36 @@ mod tests {
         assert_eq!(points[0].curve, vec![(1e3, 0.05, 0.0), (1e9, 0.01, 0.0)]);
         assert_eq!(points[0].shape, MeasuredShape::Pareto { tail_index: 2.0 });
         assert_eq!(points[0].params, BTreeMap::from([("k".to_string(), 200.0)]));
+    }
+
+    /// A curve for another metric than the family's, such as DD's max error
+    /// before #175, is a stale study: refused at load, whatever the lookback.
+    #[test]
+    fn load_refuses_a_curve_for_another_metric() {
+        let dir = std::env::temp_dir().join(format!("rqe-stale-{}", std::process::id()));
+        let header = "family,sketch,config,dist,param,cardinality";
+        let point = "quantile,dd,alpha=0.01,pareto,2.0,";
+        for run in RUN_DIRS {
+            std::fs::create_dir_all(dir.join(run)).unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation.csv"),
+                format!(
+                    "{header},n_sat,final_error,error_metric\n{point},1e8,0.01,max_relative_value_error\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation_curve.csv"),
+                format!("{header},n,seed_mean_error,seed_se\n"),
+            )
+            .unwrap();
+        }
+        let loaded = SaturationCurves::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let error = loaded.unwrap_err().to_string();
+        assert!(
+            error.contains("dd curve measured max_relative_value_error"),
+            "{error}"
+        );
     }
 }

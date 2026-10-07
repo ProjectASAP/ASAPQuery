@@ -365,14 +365,14 @@ pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &A
         && properties.needs_delta_set_key_tracker == d.key_tracker.is_some()
         && (!properties.one_fixed_size_sketch_for_all_groups
             || measured_at_group_count(&d.config, facts[&d.metric].cardinality[&d.grouping_labels]))
-        && r.meets_sla(accuracy(r, d))
+        && r.meets_sla(&d.config.sketch, accuracy(r, d))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{facts, METRIC};
-    use crate::{table_accuracy, AccuracyDirection, LabelSet};
+    use crate::test_support::{facts, perfect_accuracy, METRIC};
+    use crate::{table_accuracy, LabelSet};
     use std::collections::BTreeMap;
     fn raqe(id: &str, lookback: Millis, interval: Millis) -> Raqe {
         Raqe {
@@ -383,9 +383,7 @@ mod tests {
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
-            accuracy_metric: "err".into(),
-            accuracy_sla: 1.0,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
+            accuracy_sla: 0.5,
             latency_sla_ms: None,
         }
     }
@@ -397,7 +395,7 @@ mod tests {
             insert_cpu_secs: 1.0,
             merge_cpu_secs: 1.0,
             query_cpu_secs: 1.0,
-            query_accuracy: BTreeMap::from([("err".into(), 0.1)]),
+            query_accuracy: perfect_accuracy(),
             merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }
@@ -405,9 +403,13 @@ mod tests {
     #[test]
     fn eligibility_checks_accuracy_at_the_queries_merge_count() {
         let mut config = cost();
-        let err = |v: f64| BTreeMap::from([("err".into(), v)]);
-        // Error is not monotone in the count: 16 is worse than 4 and 64.
-        config.merge_accuracy = BTreeMap::from([(4, err(0.2)), (16, err(2.0)), (64, err(0.3))]);
+        let precision = |v: f64| BTreeMap::from([("precision_at_k".into(), v)]);
+        // Precision is not monotone in the count: 16 is worse than 4 and 64.
+        config.merge_accuracy = BTreeMap::from([
+            (4, precision(0.8)),
+            (16, precision(0.1)),
+            (64, precision(0.7)),
+        ]);
         let at_window = |window_ms| Deployment {
             capability: Capability::TopKByValue,
             metric: METRIC.into(),
@@ -540,15 +542,15 @@ mod tests {
 
     #[test]
     fn undeployable_families_are_candidates_only_when_allowed() {
-        let r = Raqe {
-            capability: Capability::Quantile,
-            ..raqe("r", 60_000, 60_000)
-        };
+        let r = raqe("r", 60_000, 60_000);
         let named = |sketch: &str| AtomicCostEntry {
             sketch: sketch.into(),
             ..cost()
         };
-        let costs = [named("kll-percall"), named("dd")];
+        let costs = [
+            named("cms-heap-topk-fastpath-vector2d"),
+            named("countsketch-heap-topk-fastpath-vector2d"),
+        ];
         let candidates = build_all_candidates(
             std::slice::from_ref(&r),
             &costs,
@@ -557,9 +559,13 @@ mod tests {
             &table_accuracy,
         );
         assert!(!candidates.is_empty());
-        assert!(candidates.iter().all(|d| d.config.sketch == "kll-percall"));
+        assert!(candidates
+            .iter()
+            .all(|d| d.config.sketch == "cms-heap-topk-fastpath-vector2d"));
         let all = build_all_candidates_unpruned(&[r], &costs, &facts(1, 1), true);
-        assert!(all.iter().any(|d| d.config.sketch == "dd"));
+        assert!(all
+            .iter()
+            .any(|d| d.config.sketch == "countsketch-heap-topk-fastpath-vector2d"));
     }
 
     #[test]
@@ -742,7 +748,7 @@ mod tests {
                 sketch: "hydra-kll".into(),
                 mem_bytes_per_instance: 1000.0,
                 query_accuracy: BTreeMap::from([
-                    ("err".into(), 0.1),
+                    ("mean_rank_err".into(), 0.1),
                     ("subpopulations".into(), subpopulations),
                 ]),
                 ..cost()

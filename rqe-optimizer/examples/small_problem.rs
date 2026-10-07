@@ -46,24 +46,9 @@ use rqe_optimizer::milp::{minimize, Objective};
 use rqe_optimizer::pareto::{pareto_front, ParetoFront};
 use rqe_optimizer::saturation::{DataShape, SaturationCurves};
 use rqe_optimizer::{
-    validate_facts, AccuracyDirection, AtomicCostTable, Capability, Deployment, LabelSet,
-    MetricFacts, Raqe, WorkloadFacts,
+    validate_facts, AtomicCostTable, Capability, Deployment, LabelSet, MetricFacts, Raqe,
+    WorkloadFacts,
 };
-
-/// Accuracy metric keys the real comparators actually report (checked
-/// against `aqpbm-core/src/accuracy/{aggregate,quantile,cardinality}.rs`).
-/// These three are lower-is-better errors; each RAQE below pairs its metric with the matching
-/// [`AccuracyDirection`] so the comparison can't be applied the wrong way
-/// round.
-///
-/// Request rate is served by an exact counter accumulator, so its error
-/// should be zero; the bound is there to reject anything that isn't.
-const RATE_ERR: &str = "relative_error";
-const RANK_ERR: &str = "mean_rank_err";
-const CARDINALITY_ERR: &str = "relative_error";
-/// Top-k's metric is the odd one out: a *score*, not an error, so its
-/// tolerance below is a floor and its direction is `HigherIsBetter`.
-const TOPK_PRECISION: &str = "precision_at_k";
 
 const COST_TABLE_FILE: &str = "rqe_atomic_costs.json";
 
@@ -150,6 +135,13 @@ fn data_shape(distinct_keys: f64) -> DataShape {
     }
 }
 
+/// Each RAQE's `accuracy_sla` is checked against the metric its candidate
+/// family reports (`rqe_optimizer::family_properties`): rank error for KLL,
+/// relative value error for DDSketch, relative error for the exact counter
+/// and HLL, precision@k for top-k.
+///
+/// Request rate is served by an exact counter accumulator, so its error
+/// should be zero; the bound is there to reject anything that isn't.
 fn raqes() -> Vec<Raqe> {
     let se = label_set(&["service", "endpoint"]);
     let s = label_set(&["service"]);
@@ -164,9 +156,7 @@ fn raqes() -> Vec<Raqe> {
             metric: requests(),
             spatial_filter: String::new(),
             grouping_labels: se.clone(),
-            accuracy_metric: RATE_ERR.to_string(),
             accuracy_sla: 0.1,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
             latency_sla_ms: None,
         },
         Raqe {
@@ -177,9 +167,7 @@ fn raqes() -> Vec<Raqe> {
             metric: requests(),
             spatial_filter: String::new(),
             grouping_labels: se.clone(),
-            accuracy_metric: RATE_ERR.to_string(),
             accuracy_sla: 0.1,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
             latency_sla_ms: None,
         },
         Raqe {
@@ -190,9 +178,7 @@ fn raqes() -> Vec<Raqe> {
             metric: requests(),
             spatial_filter: String::new(),
             grouping_labels: se.clone(),
-            accuracy_metric: RATE_ERR.to_string(),
             accuracy_sla: 0.1,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
             latency_sla_ms: None,
         },
         Raqe {
@@ -203,9 +189,7 @@ fn raqes() -> Vec<Raqe> {
             metric: duration(),
             spatial_filter: String::new(),
             grouping_labels: se.clone(),
-            accuracy_metric: RANK_ERR.to_string(),
             accuracy_sla: 0.05,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
             latency_sla_ms: None,
         },
         Raqe {
@@ -216,9 +200,7 @@ fn raqes() -> Vec<Raqe> {
             metric: duration(),
             spatial_filter: String::new(),
             grouping_labels: se.clone(),
-            accuracy_metric: RANK_ERR.to_string(),
             accuracy_sla: 0.05,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
             latency_sla_ms: None,
         },
         Raqe {
@@ -229,9 +211,7 @@ fn raqes() -> Vec<Raqe> {
             metric: duration(),
             spatial_filter: String::new(),
             grouping_labels: se.clone(),
-            accuracy_metric: RANK_ERR.to_string(),
             accuracy_sla: 0.05,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
             latency_sla_ms: None,
         },
         Raqe {
@@ -242,13 +222,11 @@ fn raqes() -> Vec<Raqe> {
             metric: requests(),
             spatial_filter: String::new(),
             grouping_labels: s.clone(),
-            accuracy_metric: CARDINALITY_ERR.to_string(),
             accuracy_sla: 0.1,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
             latency_sla_ms: None,
         },
-        // The higher-is-better case: 0.9 is a *floor* on precision@k, not a
-        // ceiling on error. Served by cms-heap, whose measured precision is
+        // The higher-is-better case: top-k's metric is precision@k, so 0.9 is
+        // a *floor*, not a ceiling on error. Served by cms-heap, whose measured precision is
         // 1.0 at both configs under the zipf workload (it was 0.0 at both
         // under uniform -- top-k is meaningless without real skew).
         Raqe {
@@ -259,9 +237,7 @@ fn raqes() -> Vec<Raqe> {
             metric: requests(),
             spatial_filter: String::new(),
             grouping_labels: se.clone(),
-            accuracy_metric: TOPK_PRECISION.to_string(),
             accuracy_sla: 0.9,
-            accuracy_direction: AccuracyDirection::HigherIsBetter,
             latency_sla_ms: None,
         },
     ]

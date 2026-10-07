@@ -45,9 +45,9 @@ pub fn window_adapter(raqe: &Raqe) -> (Millis, Millis) {
     (raqe.lookback_ms, gcd(raqe.lookback_ms, raqe.interval_ms))
 }
 
-/// Search every RAQE independently. `accuracy` is the benchmark oracle: the
-/// measured metric named by `raqe.accuracy_metric` for a configuration, or
-/// `None` when it was not measured. Returns the IDs of unservable RAQEs.
+/// Search every RAQE independently. `accuracy` is the benchmark oracle: a
+/// configuration's accuracy in its family's metric ([`crate::accuracy_key`]),
+/// or `None` when it was not measured. Returns the IDs of unservable RAQEs.
 /// `allow_undeployable_families` as in
 /// [`crate::Capability::candidate_families`].
 pub fn plan(
@@ -149,7 +149,7 @@ pub fn search(
             continue;
         }
         probes.push(index);
-        let feasible = raqe.meets_sla(accuracy(raqe, &costs[index]));
+        let feasible = raqe.meets_sla(&costs[index].sketch, accuracy(raqe, &costs[index]));
         evaluated.insert(index, feasible);
         if feasible && best.is_none_or(|b| cheaper(index, b)) {
             best = Some(index);
@@ -340,10 +340,8 @@ mod tests {
     use crate::analytical_cost_model::{score, PhaseCost};
     use crate::candidates::is_eligible;
     use crate::test_support::{facts, METRIC};
-    use crate::{table_accuracy_at, AccuracyDirection, Capability, LabelSet};
+    use crate::{table_accuracy_at, Capability, LabelSet};
     use std::collections::BTreeSet;
-
-    const ERR: &str = "err";
 
     fn cms(rows: u64, cols: u64) -> AtomicCostEntry {
         AtomicCostEntry {
@@ -356,8 +354,11 @@ mod tests {
             insert_cpu_secs: 1e-8 * rows as f64,
             merge_cpu_secs: 1e-6,
             query_cpu_secs: 1e-6,
-            // Error falls with width and depth, so feasibility is monotone.
-            query_accuracy: BTreeMap::from([(ERR.into(), 1.0 / (rows * cols) as f64)]),
+            // Precision rises with width and depth, so feasibility is monotone.
+            query_accuracy: BTreeMap::from([(
+                "precision_at_k".into(),
+                1.0 - 1.0 / (rows * cols) as f64,
+            )]),
             merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }
@@ -369,7 +370,8 @@ mod tests {
             .collect()
     }
 
-    fn raqe(id: &str, lookback: Millis, interval: Millis, tolerance: f64) -> Raqe {
+    /// A top-k RAQE whose precision floor is `1 - error_budget`.
+    fn raqe(id: &str, lookback: Millis, interval: Millis, error_budget: f64) -> Raqe {
         Raqe {
             id: id.into(),
             capability: Capability::TopKByValue,
@@ -378,20 +380,18 @@ mod tests {
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
-            accuracy_metric: ERR.into(),
-            accuracy_sla: tolerance,
-            accuracy_direction: AccuracyDirection::LowerIsBetter,
+            accuracy_sla: 1.0 - error_budget,
             latency_sla_ms: None,
         }
     }
 
-    fn table_accuracy(raqe: &Raqe, config: &AtomicCostEntry) -> Option<f64> {
-        config.query_accuracy.get(&raqe.accuracy_metric).copied()
+    fn table_accuracy(_: &Raqe, config: &AtomicCostEntry) -> Option<f64> {
+        Some(table_accuracy_at(config, 1))
     }
 
     fn cheapest_feasible(raqe: &Raqe, costs: &[AtomicCostEntry]) -> usize {
         (0..costs.len())
-            .filter(|&i| raqe.meets_sla(table_accuracy_at(raqe, &costs[i], 1)))
+            .filter(|&i| raqe.meets_sla(&costs[i].sketch, table_accuracy(raqe, &costs[i])))
             .min_by(|&a, &b| compare_resources(&costs[a], &costs[b]))
             .unwrap()
     }
@@ -497,16 +497,17 @@ mod tests {
             insert_cpu_secs: 1e-8,
             merge_cpu_secs: 1e-6,
             query_cpu_secs: 1e-6,
-            query_accuracy: BTreeMap::from([(ERR.into(), 1.0 / k as f64)]),
+            query_accuracy: BTreeMap::from([("mean_rank_err".into(), 1.0 / k as f64)]),
             merge_accuracy: BTreeMap::new(),
             measured_at: None,
         }
     }
 
-    fn quantile_raqe(tolerance: f64) -> Raqe {
+    fn quantile_raqe(max_rank_err: f64) -> Raqe {
         Raqe {
             capability: Capability::Quantile,
-            ..raqe("q", 3_600_000, 60_000, tolerance)
+            accuracy_sla: max_rank_err,
+            ..raqe("q", 3_600_000, 60_000, 0.0)
         }
     }
 
@@ -549,14 +550,15 @@ mod tests {
         // Precision rises with k; the target is a floor of 0.95.
         let costs: Vec<_> = (1..=10)
             .map(|k| {
-                let mut c = kll(k);
-                c.query_accuracy = BTreeMap::from([(ERR.into(), 0.9 + 0.01 * k as f64)]);
+                let mut c = cms(1, k);
+                c.query_accuracy =
+                    BTreeMap::from([("precision_at_k".into(), 0.9 + 0.01 * k as f64)]);
                 c
             })
             .collect();
         let r = Raqe {
-            accuracy_direction: AccuracyDirection::HigherIsBetter,
-            ..quantile_raqe(0.95)
+            accuracy_sla: 0.95,
+            ..raqe("r", 3_600_000, 60_000, 0.0)
         };
         let found = search(&r, &costs, 11, false, table_accuracy);
         assert_eq!(found.selected, Some(4)); // k = 5: 0.95
