@@ -42,6 +42,8 @@ pub enum MilpError {
     },
     #[error("query {query:?}: topk ranking (by value or by sample count) is unknown")]
     TopkWeightingUnknown { query: String },
+    #[error("topk query {query:?} has no literal k")]
+    TopkWithoutK { query: String },
     #[error(
         "raqe {raqe:?}: sketches serve it, but workload facts give metric {metric:?} \
          grouping {grouping:?} no `shape`"
@@ -278,6 +280,21 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
     }
     let accuracy_sla = accuracy_target(capability, item.accuracy_sla);
 
+    // A top-k Raqe asks for its query's literal k (the largest, should an
+    // item carry several), which sizes and prices the heap.
+    let topk_k = match capability {
+        Capability::TopKByValue | Capability::TopKByCount => Some(
+            item.query_strings
+                .iter()
+                .map(|q| super::milp_output::topk_k(q))
+                .try_fold(0, |max, k| Some(max.max(k?)))
+                .ok_or_else(|| MilpError::TopkWithoutK {
+                    query: query.clone(),
+                })?,
+        ),
+        _ => None,
+    };
+
     // TopK keeps one heap per `topk by` bucket; its `grouping_labels` is the
     // output label set (every label), which would cost one heap per series.
     let grouping_labels: LabelSet = match capability {
@@ -299,6 +316,7 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
         grouping_labels,
         accuracy_sla,
         latency_sla_ms: item.latency_sla_ms,
+        topk_k,
     })
 }
 
@@ -495,6 +513,23 @@ metrics:
             cap("topk(5, count_over_time(http_requests_total[1m]))"),
             Capability::TopKByCount
         );
+    }
+
+    #[test]
+    fn topk_carries_its_literal_k_and_needs_one() {
+        let w = workload(&group(
+            "topk(7, sum_over_time(http_requests_total[1m]))",
+            0.99,
+        ));
+        assert_eq!(w.raqes[0].topk_k, Some(7));
+        let mut item = w.items[0].clone();
+        item.query_strings = vec!["topk(scalar(up), http_requests_total)".into()];
+        assert!(matches!(
+            item_to_raqe(&item),
+            Err(MilpError::TopkWithoutK { .. })
+        ));
+        let sum = workload(&group("sum by (job) (http_requests_total)", 0.99));
+        assert_eq!(sum.raqes[0].topk_k, None);
     }
 
     #[test]

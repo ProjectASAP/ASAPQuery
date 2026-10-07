@@ -112,7 +112,7 @@ checksum = "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
 [[package]]
 name = "aqpbm-core"
 version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#5deb27ad6145af0f1130c9bec1cf64ac7d9ce3d9"
+source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#30e725a49c89b1c0e4957132b1c82c9bc1198724"
 dependencies = [
  "anyhow",
  "aqpbm-datagen",
@@ -128,7 +128,7 @@ dependencies = [
 [[package]]
 name = "aqpbm-datagen"
 version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#5deb27ad6145af0f1130c9bec1cf64ac7d9ce3d9"
+source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#30e725a49c89b1c0e4957132b1c82c9bc1198724"
 dependencies = [
  "rand 0.9.4",
  "rand_distr",
@@ -2388,7 +2388,7 @@ dependencies = [
 [[package]]
 name = "rqe-optimizer"
 version = "0.1.0"
-source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#5deb27ad6145af0f1130c9bec1cf64ac7d9ce3d9"
+source = "git+https://github.com/ProjectASAP/sketch-bench?branch=main#30e725a49c89b1c0e4957132b1c82c9bc1198724"
 dependencies = [
  "aqpbm-core",
  "good_lp",

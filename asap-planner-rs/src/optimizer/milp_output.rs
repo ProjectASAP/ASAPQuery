@@ -41,14 +41,7 @@ pub enum MilpOutputError {
     },
     #[error("sketch-bench variant dd: alpha must be finite and in (0, 1), got {alpha}")]
     InvalidDdsAlpha { alpha: f64 },
-    #[error("topk query {0:?} has no literal k")]
-    TopkWithoutK(String),
-    #[error("{variant}: can't size the heap for a {lookback_ms} ms lookback: {reason}")]
-    HeapSize {
-        variant: String,
-        lookback_ms: u64,
-        reason: &'static str,
-    },
+
     #[error("query {0:?} is served by two deployments; a query string can name only one")]
     QueryOnTwoDeployments(String),
     #[error(transparent)]
@@ -190,7 +183,7 @@ fn aggregation_config(
             vec![
                 ("depth", Value::from(integer_param("rows")?)),
                 ("width", Value::from(integer_param("cols")?)),
-                ("heapsize", Value::from(heap_size(deployment, items)?)),
+                ("heapsize", Value::from(heap_size(deployment)?)),
             ],
         ),
         (_, capability) => {
@@ -248,42 +241,17 @@ fn missing_param(variant: &str, param: &'static str) -> MilpOutputError {
     }
 }
 
-/// `m · k` for the most windows `m` a served query merges, so the merged
-/// heaps still hold the top k, and never below the heap the plan priced
-/// (sketch-bench's `heap` param, which can be a measured size above
-/// `m · TOPK_K`). A literal k above `TOPK_K` is one the plan doesn't price.
-fn heap_size(deployment: &Deployment, items: &[&OptimizerItem]) -> Result<u64, MilpOutputError> {
-    let variant = deployment.config.sketch.as_str();
-    let planned = rqe_optimizer::heap_capacity(&deployment.config)
-        .ok_or_else(|| missing_param(variant, "heap"))?;
-    let k = max_topk_k(items)?.max(rqe_optimizer::TOPK_K);
-    let mut heap = planned;
-    for item in items {
-        let lookback_ms = item.requirements.data_range_ms;
-        let error = |reason| MilpOutputError::HeapSize {
-            variant: variant.to_string(),
-            lookback_ms,
-            reason,
-        };
-        let m = deployment
-            .query_instance_count(lookback_ms)
-            .ok_or_else(|| error("the lookback isn't whole windows"))?;
-        heap = heap.max(m.checked_mul(k).ok_or_else(|| error("m · k overflows"))?);
-    }
-    Ok(heap)
+/// The heap the plan priced: sketch-bench's `heap` param, `m · k` for the
+/// `m` windows a served query merges and the deployment's answered `k`
+/// (the largest its queries ask), or a measured size above it. The engine
+/// takes each query's `k` from the query itself.
+fn heap_size(deployment: &Deployment) -> Result<u64, MilpOutputError> {
+    rqe_optimizer::heap_capacity(&deployment.config)
+        .ok_or_else(|| missing_param(&deployment.config.sketch, "heap"))
 }
 
-/// One heap serves every topk query on the deployment, so it is sized for
-/// the largest k.
-fn max_topk_k(items: &[&OptimizerItem]) -> Result<u64, MilpOutputError> {
-    items
-        .iter()
-        .flat_map(|item| &item.query_strings)
-        .map(|query| topk_k(query).ok_or_else(|| MilpOutputError::TopkWithoutK(query.clone())))
-        .try_fold(0, |max, k| Ok(max.max(k?)))
-}
-
-fn topk_k(query: &str) -> Option<u64> {
+/// A `topk` query's literal `k`; `None` for anything else.
+pub(crate) fn topk_k(query: &str) -> Option<u64> {
     let Ok(Expr::Aggregate(aggregate)) = promql_parser::parser::parse(query) else {
         return None;
     };
@@ -413,7 +381,7 @@ mod tests {
         assert_eq!(a.parameters["width"], json!(2048));
         assert_eq!(
             a.parameters["heapsize"],
-            json!(heap_needed(&workload, &solution, topk_value))
+            json!(planned_heap(&workload, &solution, topk_value))
         );
         assert_eq!(
             aggregation_for(&output, topk_count).aggregation_sub_type,
@@ -428,30 +396,70 @@ mod tests {
         }
     }
 
-    /// The heap `query`'s deployment needs for it: `m · TOPK_K` over the
-    /// windows its lookback merges (`Deployment::heap_needed`).
+    /// The heap `query`'s deployment needs for it: `m · k` for the windows
+    /// its lookback merges and its own `k` (`Deployment::heap_needed`).
     fn heap_needed(workload: &MilpWorkload, solution: &MilpSolution, query: &str) -> u64 {
         let i = workload
             .raqes
             .iter()
             .position(|r| r.id.contains(query))
             .unwrap_or_else(|| panic!("no raqe for {query}"));
+        let raqe = &workload.raqes[i];
         let deployment = &solution.deployments[solution.raqes[i].deployment].deployment;
         deployment
-            .heap_needed(workload.raqes[i].lookback_ms)
+            .heap_needed(raqe.lookback_ms, raqe.topk_k())
             .expect("the lookback is whole windows")
     }
 
-    /// The engine's heap is the one the plan priced (m · k for the windows it
-    /// merges), not just the query's k, so merged windows keep the top k.
+    /// The heap the plan priced for `query`'s deployment: its `heap` param.
+    fn planned_heap(workload: &MilpWorkload, solution: &MilpSolution, query: &str) -> u64 {
+        let i = workload
+            .raqes
+            .iter()
+            .position(|r| r.id.contains(query))
+            .unwrap_or_else(|| panic!("no raqe for {query}"));
+        let deployment = &solution.deployments[solution.raqes[i].deployment].deployment;
+        rqe_optimizer::heap_capacity(&deployment.config).expect("a heap top-k deployment")
+    }
+
+    /// Each top-k query plans with its own literal k, and the engine's heap is
+    /// the one the plan priced: `m · k` for the windows it merges, or the
+    /// smallest measured heap (32) that already holds it.
     #[test]
-    fn heap_is_m_times_k_for_every_query_sharing_it() {
+    fn topk_plans_with_its_own_k_and_heap_m_times_k() {
+        for (k, measured_floor) in [(10, true), (100, false)] {
+            let query = format!("topk({k}, sum_over_time(http_requests_total[1m]))");
+            let (config, workload, solution) = plan(&group(&query, 0.99));
+            assert_eq!(workload.raqes[0].topk_k, Some(k));
+            let deployment = &solution.deployments[0].deployment;
+            assert_eq!(rqe_optimizer::answered_k(&deployment.config), k);
+            let needed = heap_needed(&workload, &solution, &query);
+            let heap = planned_heap(&workload, &solution, &query);
+            if measured_floor {
+                assert_eq!(heap, rqe_optimizer::TOPK_K, "k = {k}");
+                assert!(heap >= needed);
+            } else {
+                assert_eq!(heap, needed, "k = {k}: m · k");
+            }
+            let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+            assert_eq!(
+                aggregation_for(&output, &query).parameters["heapsize"],
+                json!(heap),
+                "k = {k}"
+            );
+        }
+    }
+
+    /// Queries sharing one heap get the heap the plan priced, which holds the
+    /// largest k among them.
+    #[test]
+    fn a_shared_heap_is_the_planned_heap() {
         let small = "topk(5, sum_over_time(http_requests_total[1m]))";
         let large = "topk(10, sum_over_time(http_requests_total[1m]))";
         let (config, workload, solution) = plan(&(group(small, 0.99) + &group(large, 0.99)));
         assert_eq!(solution.deployments.len(), 1);
-        let heap = heap_needed(&workload, &solution, small);
-        assert_eq!(heap, heap_needed(&workload, &solution, large));
+        let heap = planned_heap(&workload, &solution, large);
+        assert!(heap >= heap_needed(&workload, &solution, large));
         let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
         for query in [small, large] {
             assert_eq!(
@@ -461,62 +469,16 @@ mod tests {
         }
     }
 
-    /// `query`'s planned top-k deployment, re-windowed to 15 s so its 1 m
-    /// lookback merges m = 4 windows, with the cost row's `heap`.
-    fn merging_deployment(query: &str, heap: serde_json::Value) -> (MilpWorkload, Deployment) {
-        let (_, workload, solution) = plan(&group(query, 0.99));
+    #[test]
+    fn a_heap_family_without_a_heap_is_a_missing_param() {
+        let query = "topk(5, sum_over_time(http_requests_total[1m]))";
+        let (_, _, solution) = plan(&group(query, 0.99));
         let mut deployment = solution.deployments[0].deployment.clone();
-        (deployment.window_ms, deployment.slide_ms) = (15_000, 15_000);
-        deployment.config.sketch_config["params"]["heap"] = heap;
-        (workload, deployment)
-    }
-
-    /// m comes from the lookback, not the row's heap: a measured heap of 2048
-    /// (above 4 · TOPK_K) stays the floor, and a large k needs 4 · k.
-    #[test]
-    fn heap_size_takes_m_from_the_lookback() {
-        for (k, heap) in [(5, 2048), (4096, 4 * 4096)] {
-            let query = format!("topk({k}, sum_over_time(http_requests_total[1m]))");
-            let (workload, deployment) = merging_deployment(&query, json!(2048));
-            let items: Vec<&OptimizerItem> = workload.items.iter().collect();
-            assert_eq!(heap_size(&deployment, &items).unwrap(), heap, "k = {k}");
-        }
-    }
-
-    #[test]
-    fn heap_size_reports_overflow_and_a_missing_heap() {
-        let query = "topk(4611686018427387904, sum_over_time(http_requests_total[1m]))";
-        let (workload, deployment) = merging_deployment(query, json!(2048));
-        let items: Vec<&OptimizerItem> = workload.items.iter().collect();
-        assert!(matches!(
-            heap_size(&deployment, &items),
-            Err(MilpOutputError::HeapSize {
-                reason: "m · k overflows",
-                ..
-            })
-        ));
-        let small = "topk(5, sum_over_time(http_requests_total[1m]))";
-        let (workload, mut deployment) = merging_deployment(small, json!(2048));
         deployment.config.sketch = "cms-fastpath-vector2d".into();
-        let items: Vec<&OptimizerItem> = workload.items.iter().collect();
         assert!(matches!(
-            heap_size(&deployment, &items),
+            heap_size(&deployment),
             Err(MilpOutputError::MissingParam { param: "heap", .. })
         ));
-    }
-
-    /// A k above the plan's `TOPK_K` gets `m · k`, so its merged heaps still
-    /// hold the top k.
-    #[test]
-    fn heap_scales_a_k_above_topk_k_by_the_merged_windows() {
-        let query = "topk(4096, sum_over_time(http_requests_total[1m]))";
-        let (config, workload, solution) = plan(&group(query, 0.99));
-        let m = heap_needed(&workload, &solution, query) / rqe_optimizer::TOPK_K;
-        let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
-        assert_eq!(
-            aggregation_for(&output, query).parameters["heapsize"],
-            json!(m * 4096)
-        );
     }
 
     #[test]
