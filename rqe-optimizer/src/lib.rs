@@ -70,7 +70,7 @@ impl Capability {
             Capability::Min => &["exact-min"],
             Capability::Max => &["exact-max"],
             Capability::RateOrIncrease => &["exact-increase"],
-            Capability::Quantile => &["kll-percall", "dd"],
+            Capability::Quantile => &["kll-percall", "dd", "hydra-kll"],
             // univmon-cardinality is registered under KeyedCardinality in
             // sketch-bench, but its ground truth (`KeyedCardinalityGT`) is
             // "count of keys with a nonzero total" -- plain distinct-key
@@ -110,6 +110,54 @@ pub const DEPLOYABLE_FAMILIES: &[&str] = &[
     "hll",                             // HLL
     "cms-heap-topk-fastpath-vector2d", // CountMinSketchWithHeap
 ];
+
+/// The variant every [`FamilyProperties::needs_delta_set_key_tracker`]
+/// deployment pays for alongside its sketch. Never a candidate on its own.
+pub const KEY_TRACKER_FAMILY: &str = "exact-delta-set";
+
+/// What a variant's algorithm can do, as opposed to what it measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FamilyProperties {
+    /// Windows fold into one. A family without it only serves `L == x`.
+    pub mergeable_across_windows: bool,
+    /// One sketch of fixed size holds every group: the design doc's Shared +
+    /// Fixed cell. Memory, merge and storage don't scale with `card(G)`.
+    /// Exact accumulators are Shared + PerKey and `false` here, because the
+    /// export prices them per group.
+    pub one_fixed_size_sketch_for_all_groups: bool,
+    /// The sketch can't list its groups, so a DeltaSet records which keys
+    /// each window saw, for the query to probe.
+    pub needs_delta_set_key_tracker: bool,
+}
+
+/// Panics on a variant with no entry: guessing would misprice it.
+pub fn family_properties(variant: &str) -> FamilyProperties {
+    let one_sketch_per_group = FamilyProperties {
+        mergeable_across_windows: true,
+        one_fixed_size_sketch_for_all_groups: false,
+        needs_delta_set_key_tracker: false,
+    };
+    match variant {
+        "exact-sum"
+        | "exact-min"
+        | "exact-max"
+        | "exact-increase"
+        | KEY_TRACKER_FAMILY
+        | "kll-percall"
+        | "dd"
+        | "hll"
+        | "univmon-cardinality"
+        | "cms-heap-topk-fastpath-vector2d"
+        | "countsketch-heap-topk-fastpath-vector2d"
+        | "univmon-topk" => one_sketch_per_group,
+        "hydra-kll" => FamilyProperties {
+            mergeable_across_windows: true,
+            one_fixed_size_sketch_for_all_groups: true,
+            needs_delta_set_key_tracker: true,
+        },
+        _ => panic!("{variant} has no FamilyProperties; add it to family_properties"),
+    }
+}
 
 /// Facts about one metric, given as input. RAQEs and deployments on the same
 /// metric read the same samples.
@@ -307,16 +355,24 @@ pub struct Deployment {
     pub capability: Capability,
     pub metric: String,
     pub spatial_filter: String,
-    /// `G`: one instance per group, per window.
+    /// `G`: one instance per group, per window, unless the family keeps one
+    /// for all groups.
     pub grouping_labels: LabelSet,
     pub config: AtomicCostEntry,
     /// `x`: materialized sketch-window size.
     pub window_ms: Millis,
     /// `y`: materialized sketch slide.
     pub slide_ms: Millis,
+    /// The [`KEY_TRACKER_FAMILY`] row, for a family that
+    /// [needs one](FamilyProperties::needs_delta_set_key_tracker).
+    pub key_tracker: Option<AtomicCostEntry>,
 }
 
 impl Deployment {
+    pub fn properties(&self) -> FamilyProperties {
+        family_properties(&self.config.sketch)
+    }
+
     /// Number of active overlapping instances receiving each item.
     pub fn active_instance_count(&self) -> Option<u64> {
         if self.slide_ms == 0 || !self.window_ms.is_multiple_of(self.slide_ms) {
@@ -415,6 +471,7 @@ pub(crate) mod test_support {
             },
             window_ms,
             slide_ms,
+            key_tracker: None,
         }
     }
 }
@@ -484,6 +541,16 @@ mod tests {
                 "{family} serves no capability"
             );
         }
+    }
+
+    #[test]
+    fn every_family_has_properties() {
+        for capability in Capability::ALL {
+            for family in capability.families() {
+                family_properties(family);
+            }
+        }
+        family_properties(KEY_TRACKER_FAMILY);
     }
 
     #[test]

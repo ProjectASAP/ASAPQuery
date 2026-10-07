@@ -11,7 +11,8 @@
 //! One extension over the paper: AutoSketch's compiler maps an operator to one
 //! sketch algorithm and tunes its parameters, while this search covers every
 //! deployable variant serving the RAQE's capability and keeps the cheapest,
-//! so it chooses from the same sketches as the MILP.
+//! so it chooses from the same sketches as the MILP, except those shared by
+//! all groups (sketch-bench#159).
 
 use crate::candidates::gcd;
 use crate::{AtomicCostEntry, Deployment, Mapping, Millis, Raqe};
@@ -89,6 +90,7 @@ pub fn plan(
                 config: costs[s.selected.expect("unservable RAQEs returned above")].clone(),
                 window_ms,
                 slide_ms,
+                key_tracker: None,
             }
         })
         .collect();
@@ -113,6 +115,9 @@ pub fn search(
     let grids: Vec<Grid> = raqe
         .capability
         .candidate_families(allow_undeployable_families)
+        // ponytail: ranking compares per-instance memory, which a sketch
+        // shared by all groups isn't comparable on; sketch-bench#159.
+        .filter(|variant| !crate::family_properties(variant).one_fixed_size_sketch_for_all_groups)
         .filter_map(|variant| Grid::new(variant, costs))
         .collect();
 
@@ -455,7 +460,7 @@ mod tests {
         assert_eq!(window_adapter(&raqes[0]), (3_600_000, 60_000));
         assert_eq!(window_adapter(&raqes[1]), (3_600_000, 40_000));
         for (r, d) in raqes.iter().zip(&plan.deployments) {
-            assert!(is_eligible(r, d), "{} not eligible", r.id);
+            assert!(is_eligible(r, d, &facts(1, 1)), "{} not eligible", r.id);
         }
     }
 

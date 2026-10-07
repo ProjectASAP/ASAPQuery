@@ -63,7 +63,7 @@ pub fn minimize(
 ) -> Result<MilpSolution, ResolutionError> {
     let eligible: Vec<Vec<usize>> = raqes
         .iter()
-        .map(|raqe| eligible_deployments_for(raqe, deployments))
+        .map(|raqe| eligible_deployments_for(raqe, deployments, facts))
         .collect();
     assert!(
         eligible.iter().all(|choices| !choices.is_empty()),
@@ -230,7 +230,7 @@ mod tests {
         objective: Objective,
     ) {
         let facts = facts(1, 1);
-        let best = brute_force(raqes, deployments)
+        let best = brute_force(raqes, deployments, &facts)
             .iter()
             .map(|mapping| objective.value(&score(raqes, deployments, mapping, &facts)))
             .min_by(f64::total_cmp)

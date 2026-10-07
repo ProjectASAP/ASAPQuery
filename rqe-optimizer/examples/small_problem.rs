@@ -401,7 +401,7 @@ fn main() {
         );
         let mut possible_mappings = Some(1_u64);
         for raqe in &raqes {
-            let eligible = eligible_deployments_for(raqe, &deployments);
+            let eligible = eligible_deployments_for(raqe, &deployments, &facts);
             println!("  {}: {} eligible deployments", raqe.id, eligible.len());
             possible_mappings = possible_mappings.and_then(|count| {
                 count.checked_mul(eligible.len().try_into().expect("usize fits in u64"))
@@ -422,7 +422,7 @@ fn main() {
         return;
     }
 
-    let missing = unservable(&raqes, &deployments);
+    let missing = unservable(&raqes, &deployments, &facts);
     if !missing.is_empty() {
         println!("unservable (no eligible deployment): {missing:?}");
         return;
@@ -431,7 +431,7 @@ fn main() {
     let sample_mappings = positive_integer_flag("--sample-mappings", 0);
     if sample_mappings > 0 {
         let mut printed = 0;
-        let result = for_each_mapping_while(&raqes, &deployments, |mapping| {
+        let result = for_each_mapping_while(&raqes, &deployments, &facts, |mapping| {
             printed += 1;
             print_mapping(printed, mapping, &raqes, &deployments);
             printed < sample_mappings
@@ -473,7 +473,7 @@ fn main() {
         let print_first = positive_integer_flag("--print-first", 0);
         let started = Instant::now();
         let mut processed = 0_u64;
-        let mapping_count = for_each_mapping(&raqes, &deployments, |mapping| {
+        let mapping_count = for_each_mapping(&raqes, &deployments, &facts, |mapping| {
             front.consider(mapping, score(&raqes, &deployments, mapping, &facts));
             processed += 1;
             if processed <= print_first {
@@ -500,7 +500,7 @@ fn main() {
         "WARNING: eager mode will retain every feasible mapping. For larger workloads, use --milp, \
          --candidates-only, or --sample-mappings N instead."
     );
-    let mappings = brute_force(&raqes, &deployments);
+    let mappings = brute_force(&raqes, &deployments, &facts);
     println!("{} feasible full mappings", mappings.len());
 
     let plan_costs: Vec<_> = mappings

@@ -283,7 +283,7 @@ window size, and query frequency.
 For deployment `D` serving RAQE `i`:
 
 - `lambda`: samples/sec arriving for `D`'s metric, `card(metric.labels) / scrape_interval`.
-- `card(G)`: cardinality of `G`, so the number of parallel accumulator instances per window.
+- `card(G)`: cardinality of `G`, so the number of parallel accumulator instances per window (one for a shared fixed-size sketch; see below).
 - `x`, `y`: `D`'s window and slide.
 - `a_D = x / y`: open windows; each sample is inserted into `a_D` instances of its group.
 - `S_i`, `T_i`: RAQE `i`'s lookback and interval.
@@ -346,26 +346,68 @@ that see far fewer or far more values. DDSketch is sized from the metric's
 `value_range` when given (capped by values per instance), else from the
 measured size.
 
-The model uses one formula, `card(G) × m`, which is right for both cells in
-use:
+The model uses `I × m`, where `I` is instances per window:
 
-- PerGroup + Fixed is that formula as is.
-- Shared + PerKey reduces to it because the export divides the exact
-  accumulators' memory and merge cost by `measured_keys`
+- PerGroup + Fixed: `I = card(G)`.
+- Shared + PerKey reduces to `I = card(G)` because the export divides the
+  exact accumulators' memory and merge cost by `measured_keys`
   (`groups_per_instance`), making `m` a per-group cost. Their query cost is
   already per group.
+- Shared + Fixed: `I = 1`. In code this is the family property
+  `one_fixed_size_sketch_for_all_groups`, true only for HydraKLL. It applies
+  to memory and merge; query stays `card(G) × c_qry`, one probe per group.
+  A fixed-size sketch degrades as groups grow, so it is eligible only when
+  `card(G)` is at most the `subpopulations` its row was measured at. This
+  models a sketch keyed by the joined `G` value alone; the current rows fan
+  out to every label subset (sketch-bench#165), and merging several windows
+  is not yet measured (sketch-bench#166).
 
-The other two cells are deferred until a family needs them: Shared + Fixed
-would be overpriced by `card(G)` (sketch-bench#142), and PerGroup + PerKey
-needs the key labels `K`, the metric's labels minus `G`. So for every family
-in use, nothing scales with keys below the group: a per-service top-k CMS
-costs the same however many endpoints it counts.
+PerGroup + PerKey is deferred until a family needs it: it needs the key labels
+`K`, the metric's labels minus `G`. So for every family in use, nothing scales
+with keys below the group: a per-service top-k CMS costs the same however
+many endpoints it counts.
+
+Side by side, with `G = card(G)` and `C` closed windows:
+
+| | KLL (per group) | exact-sum (per-group normalized) | HydraKLL (shared, fixed) |
+|---|---|---|---|
+| `m`, `c_mrg` in the row | one group's | whole ÷ groups | whole sketch |
+| Ingest CPU | `λ·a_D·c_ins` | `λ·a_D·c_ins` | `λ·a_D·c_ins` |
+| Ingest memory | `G·m·a_D` | `G·m·a_D` | `m·a_D` |
+| Merge CPU | `G·(n_i−1)·c_mrg/T_i` | same | `(n_i−1)·c_mrg/T_i` |
+| Merge memory | `G·m` | same | `m` |
+| Query CPU | `G·c_qry/T_i` | same | `G·c_qry/T_i` |
+| Query memory | `G ×` output bytes | same | `G ×` output bytes |
+| Storage memory | `G·m·C` | same | `m·C` |
+| Latency | `G·(c_qry + (n_i−1)·c_mrg)` | same | `(n_i−1)·c_mrg + G·c_qry` |
+
+### Family properties and key tracker
+
+Each family has properties, hardcoded by variant in `family_properties`
+(an unknown variant panics rather than getting a default):
+
+- `mergeable_across_windows`: a family without it only serves `S_i = x`.
+  Every family in use merges.
+- `one_fixed_size_sketch_for_all_groups`: the Shared + Fixed cell above.
+- `needs_delta_set_key_tracker`: the sketch can't list its groups, so a
+  DeltaSet (`exact-delta-set`) records each window's keys for the query to
+  probe. True for HydraKLL. A candidate needing one carries the DeltaSet row
+  and is dropped if the cost table has none; a deployment without its tracker
+  is never eligible. The cost table may hold at most one DeltaSet row.
+
+The tracker is priced as an exact accumulator on the same `x`, `y` and `G`,
+in every phase: ingest, merge (union of the `n_i` windows' key sets), query
+(enumerate keys) and storage. Its `m` is per key, so it adds `card(G) × m_ds`
+per window. The AutoSketch baseline skips shared fixed-size families for now
+(sketch-bench#159).
 
 Per-RAQE latency is the serial CPU time of one query:
 
 ```text
-latency_i = card(G) × (c_qry + (n_i − 1) × c_mrg)
+latency_i = card(G) × c_qry + I × (n_i − 1) × c_mrg
 ```
+
+summed over the sketch and its key tracker, if any.
 
 It is not a wall-clock SLA: it assumes no parallel execution across groups and
 no cheaper k-way merge.
