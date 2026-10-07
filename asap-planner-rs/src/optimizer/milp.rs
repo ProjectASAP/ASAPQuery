@@ -27,6 +27,11 @@ const SLA_EPSILON: f64 = 1e-9;
 #[derive(Debug, Error)]
 pub enum MilpError {
     #[error(
+        "query groups set step_ms or range_duration_ms, which the MILP planner doesn't \
+         support yet (#800): {0:?}"
+    )]
+    RangeQueryOverrides(Vec<String>),
+    #[error(
         "workload config has no `metrics:` hints; they are required to resolve grouping labels"
     )]
     MissingMetricHints,
@@ -188,6 +193,16 @@ pub fn build_milp_workload(
     facts: &WorkloadFacts,
     scrape_interval_ms: u64,
 ) -> Result<MilpWorkload, MilpError> {
+    // They only size retention, which MILP configs don't set yet.
+    let range_queries: Vec<String> = config
+        .query_groups
+        .iter()
+        .filter(|qg| qg.step_ms.is_some() || qg.range_duration_ms.is_some())
+        .flat_map(|qg| qg.queries.iter().cloned())
+        .collect();
+    if !range_queries.is_empty() {
+        return Err(MilpError::RangeQueryOverrides(range_queries));
+    }
     let mut items = extract_hinted_items(config, scrape_interval_ms)?;
     // Stable Raqe order and ids across runs.
     items.sort_by(|a, b| {
@@ -580,6 +595,22 @@ metrics:
         let config = config(&group("sum by (instance) (http_requests_total)", 0.99));
         let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
         assert!(matches!(err, MilpError::InvalidInputs(_)));
+    }
+
+    /// Their retention isn't modeled, so planning them would ignore them silently.
+    #[test]
+    fn range_query_overrides_are_rejected() {
+        for field in ["step_ms: 60000", "range_duration_ms: 3600000"] {
+            let config = config(&format!(
+                "{}    {field}\n",
+                group("sum(http_requests_total)", 0.99)
+            ));
+            let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+            assert!(
+                matches!(&err, MilpError::RangeQueryOverrides(q) if q == &["sum(http_requests_total)"]),
+                "{field}: {err}"
+            );
+        }
     }
 
     #[test]

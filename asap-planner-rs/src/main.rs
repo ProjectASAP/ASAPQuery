@@ -1,6 +1,9 @@
+use asap_planner::optimizer::{
+    parse_weight, plan_milp, plan_to_planner_output, reject_avg_queries, MilpInputs,
+};
 use asap_planner::{
-    Controller, ElasticController, ElasticRuntimeOptions, RuntimeOptions, SQLController,
-    SQLRuntimeOptions, StreamingEngine,
+    Controller, ControllerConfig, ElasticController, ElasticRuntimeOptions, RuntimeOptions,
+    SQLController, SQLRuntimeOptions, StreamingEngine,
 };
 use asap_types::enums::QueryLanguage;
 use clap::Parser;
@@ -53,6 +56,29 @@ struct Args {
     #[arg(long = "clickhouse-database", required = false)]
     clickhouse_database: Option<String>,
 
+    /// `milp` plans with sketch-bench's rqe-optimizer: PromQL with
+    /// --input_config only, labels from its `metrics:` hints.
+    #[arg(long, value_enum, default_value = "legacy")]
+    planner: PlannerArg,
+
+    /// MILP only. YAML workload facts: per metric, `cardinality` per label
+    /// set, including the set of all its labels (the series count).
+    #[arg(long = "workload-facts", required_if_eq("planner", "milp"))]
+    workload_facts: Option<PathBuf>,
+
+    /// MILP only. The flat cost table `export_rqe_optimizer_costs.sh` writes
+    /// (`rqe_atomic_costs.json`).
+    #[arg(long = "atomic-costs", required_if_eq("planner", "milp"))]
+    atomic_costs: Option<PathBuf>,
+
+    /// MILP only. Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
+    #[arg(long = "w-cpu", value_parser = parse_weight)]
+    w_cpu: Option<f64>,
+
+    /// MILP only. Objective weight on memory GiB. Default: rqe-optimizer's.
+    #[arg(long = "w-mem", value_parser = parse_weight)]
+    w_mem: Option<f64>,
+
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 }
@@ -60,6 +86,12 @@ struct Args {
 #[derive(clap::ValueEnum, Debug, Clone, Copy)]
 enum EngineArg {
     Precompute,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+enum PlannerArg {
+    Legacy,
+    Milp,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -76,6 +108,19 @@ fn main() -> anyhow::Result<()> {
     let engine = match args.streaming_engine {
         EngineArg::Precompute => StreamingEngine::Precompute,
     };
+
+    if args.planner == PlannerArg::Milp {
+        run_milp(&args)?;
+        println!("Generated configs in {}", args.output_dir.display());
+        return Ok(());
+    }
+    anyhow::ensure!(
+        args.workload_facts.is_none()
+            && args.atomic_costs.is_none()
+            && args.w_cpu.is_none()
+            && args.w_mem.is_none(),
+        "--workload-facts, --atomic-costs, --w-cpu and --w-mem require --planner milp"
+    );
 
     match args.query_language {
         QueryLanguage::promql => {
@@ -157,4 +202,51 @@ fn main() -> anyhow::Result<()> {
 
     println!("Generated configs in {}", args.output_dir.display());
     Ok(())
+}
+
+fn run_milp(args: &Args) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(args.query_language, QueryLanguage::promql),
+        "--planner milp supports only --query-language promql"
+    );
+    anyhow::ensure!(
+        args.query_log.is_none(),
+        "--planner milp needs --input_config: query logs have no `metrics:` hints"
+    );
+    anyhow::ensure!(
+        args.prometheus_url.is_none(),
+        "--planner milp takes labels from the config's `metrics:` hints, not --prometheus-url"
+    );
+    anyhow::ensure!(
+        !args.enable_punting && args.range_duration_ms == 0 && args.step_ms == 0,
+        "--enable-punting, --range-duration-ms and --step-ms don't apply to --planner milp"
+    );
+    let config_path = args
+        .input_config
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("--planner milp requires --input_config"))?;
+    let scrape_interval_ms = args.data_ingestion_interval_ms.ok_or_else(|| {
+        anyhow::anyhow!("--data-ingestion-interval-ms is required for PromQL mode")
+    })?;
+    let config: ControllerConfig = serde_yaml::from_str(&std::fs::read_to_string(config_path)?)?;
+    // Fail before solving: an avg query can't be written as a config.
+    reject_avg_queries(&config)?;
+    let plan = plan_milp(
+        &config,
+        &MilpInputs {
+            workload_facts: args
+                .workload_facts
+                .as_deref()
+                .expect("clap requires --workload-facts with --planner milp"),
+            atomic_costs: args
+                .atomic_costs
+                .as_deref()
+                .expect("clap requires --atomic-costs with --planner milp"),
+            scrape_interval_ms,
+            w_cpu: args.w_cpu,
+            w_mem: args.w_mem,
+            allow_undeployable_families: false,
+        },
+    )?;
+    plan_to_planner_output(&config, &plan.workload, &plan.solution)?.write_to_dir(&args.output_dir)
 }
