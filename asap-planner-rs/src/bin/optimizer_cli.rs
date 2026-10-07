@@ -178,10 +178,13 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
             .expect("clap requires --atomic-costs with --milp"),
     )?;
     let Objective::AUCCost { w_cpu, w_mem } = Objective::default();
-    let objective = Objective::AUCCost {
-        w_cpu: args.w_cpu.unwrap_or(w_cpu),
-        w_mem: args.w_mem.unwrap_or(w_mem),
-    };
+    let (w_cpu, w_mem) = (args.w_cpu.unwrap_or(w_cpu), args.w_mem.unwrap_or(w_mem));
+    // All-zero weights make every plan cost 0, so the solver's pick is arbitrary.
+    anyhow::ensure!(
+        w_cpu > 0.0 || w_mem > 0.0,
+        "--w-cpu and --w-mem are both 0; at least one must be positive"
+    );
+    let objective = Objective::AUCCost { w_cpu, w_mem };
     tracing::debug!(?objective, cost_rows = costs.len(), "milp: inputs loaded");
 
     let workload = build_milp_workload(config, &facts, args.data_ingestion_interval_ms)?;

@@ -20,6 +20,9 @@ use super::solution::OptimizerItem;
 const RELATIVE_ERROR: &str = "relative_error";
 const MAX_RANK_ERROR: &str = "max_rank_err";
 const PRECISION_AT_K: &str = "precision_at_k";
+/// Slack on accuracy tolerances so `1 - sla` rounding (`1 - 0.9 =
+/// 0.0999...98`) doesn't reject a row measured exactly at the boundary.
+const SLA_EPSILON: f64 = 1e-9;
 
 #[derive(Debug, Error)]
 pub enum MilpError {
@@ -217,7 +220,7 @@ fn accuracy_target(
     capability: Capability,
     accuracy_sla: f64,
 ) -> (&'static str, f64, AccuracyDirection) {
-    let max_error = 1.0 - accuracy_sla;
+    let max_error = 1.0 - accuracy_sla + SLA_EPSILON;
     match capability {
         Capability::SumOrCount
         | Capability::Min
@@ -227,7 +230,7 @@ fn accuracy_target(
         Capability::Quantile => (MAX_RANK_ERROR, max_error, AccuracyDirection::LowerIsBetter),
         Capability::TopK => (
             PRECISION_AT_K,
-            accuracy_sla,
+            accuracy_sla - SLA_EPSILON,
             AccuracyDirection::HigherIsBetter,
         ),
     }
@@ -316,6 +319,19 @@ metrics:
     }
 
     #[test]
+    fn accuracy_exactly_at_the_sla_boundary_passes() {
+        let w = workload(&group(
+            "quantile_over_time(0.99, http_requests_total[5m])",
+            0.9,
+        ));
+        assert!(w.raqes[0].accuracy_ok(0.1));
+        assert!(!w.raqes[0].accuracy_ok(0.1001));
+        let w = workload(&group("topk(5, http_requests_total)", 0.9));
+        assert!(w.raqes[0].accuracy_ok(0.9));
+        assert!(!w.raqes[0].accuracy_ok(0.8999));
+    }
+
+    #[test]
     fn same_query_at_different_cadences_gets_distinct_ids() {
         let query = "sum by (job) (http_requests_total)";
         let slow = group(query, 0.99).replace("60000", "120000");
@@ -343,7 +359,7 @@ metrics:
         assert_eq!(r.grouping_labels, labels(&["job"]));
         assert_eq!(r.accuracy_metric, RELATIVE_ERROR);
         assert_eq!(r.accuracy_direction, AccuracyDirection::LowerIsBetter);
-        assert!((r.accuracy_sla - 0.01).abs() < 1e-12);
+        assert!((r.accuracy_sla - 0.01).abs() < 1e-6);
         assert_eq!(r.interval_ms, 60_000);
         assert_eq!(r.latency_sla_ms, None);
     }
@@ -367,7 +383,7 @@ metrics:
         assert_eq!(r.capability, Capability::TopK);
         assert_eq!(r.accuracy_metric, PRECISION_AT_K);
         assert_eq!(r.accuracy_direction, AccuracyDirection::HigherIsBetter);
-        assert_eq!(r.accuracy_sla, 0.9);
+        assert!((r.accuracy_sla - 0.9).abs() < 1e-6);
         // Not the all-labels output set, which would cost one heap per series.
         assert_eq!(r.grouping_labels, labels(&["job"]));
     }
