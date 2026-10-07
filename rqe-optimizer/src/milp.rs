@@ -5,7 +5,7 @@
 
 use crate::analytical_cost_model::{self, score, PhaseCost, PlanCost, BYTES_PER_GIB};
 use crate::candidates::eligible_deployments_for;
-use crate::{Deployment, Mapping, Raqe, WorkloadFacts};
+use crate::{Accuracy, Deployment, Mapping, Raqe, WorkloadFacts};
 use good_lp::{
     default_solver, variable, Expression, ProblemVariables, ResolutionError, Solution, SolverModel,
     Variable,
@@ -80,10 +80,11 @@ pub fn minimize(
     deployments: &[Deployment],
     facts: &WorkloadFacts,
     objective: Objective,
+    accuracy: &Accuracy,
 ) -> Result<MilpSolution, ResolutionError> {
     let eligible: Vec<Vec<usize>> = raqes
         .iter()
-        .map(|raqe| eligible_deployments_for(raqe, deployments, facts))
+        .map(|raqe| eligible_deployments_for(raqe, deployments, facts, accuracy))
         .collect();
     assert!(
         eligible.iter().all(|choices| !choices.is_empty()),
@@ -274,7 +275,7 @@ mod tests {
     use crate::candidates::build_all_candidates;
     use crate::enumerate::brute_force;
     use crate::test_support::{self, facts};
-    use crate::{AtomicCostEntry, Capability};
+    use crate::{table_accuracy, AtomicCostEntry, Capability};
 
     /// Window and slide 60 s, merge 1 CPU-sec.
     fn deployment(insert_cpu_secs: f64, memory: f64, query_cpu_secs: f64) -> Deployment {
@@ -313,12 +314,13 @@ mod tests {
         objective: Objective,
     ) {
         let facts = facts(1, 1);
-        let best = brute_force(raqes, deployments, &facts)
+        let best = brute_force(raqes, deployments, &facts, &table_accuracy)
             .iter()
             .map(|mapping| objective.value(&score(raqes, deployments, mapping, &facts)))
             .min_by(f64::total_cmp)
             .expect("test workload is servable");
-        let milp = minimize(raqes, deployments, &facts, objective).expect("feasible MILP");
+        let milp = minimize(raqes, deployments, &facts, objective, &table_accuracy)
+            .expect("feasible MILP");
         let got = objective.value(&milp.plan_cost);
         assert!(
             (got - best).abs() <= 1e-9 * best,
@@ -337,9 +339,15 @@ mod tests {
             sketch: sketch.into(),
             ..deployment(1.0, 1.0, 1.0).config
         }];
-        let candidates = build_all_candidates(&raqes, &costs, &facts(1, 1), false);
-        let milp = minimize(&raqes, &candidates, &facts(1, 1), Objective::default())
-            .expect("feasible MILP");
+        let candidates = build_all_candidates(&raqes, &costs, &facts(1, 1), false, &table_accuracy);
+        let milp = minimize(
+            &raqes,
+            &candidates,
+            &facts(1, 1),
+            Objective::default(),
+            &table_accuracy,
+        )
+        .expect("feasible MILP");
         raqes.len() - milp.deployments.len()
     }
 
@@ -366,8 +374,14 @@ mod tests {
         // CPU 1 + 3/60 with latency 3, or 2 + 1/60 with latency 1.
         let deployments = vec![deployment(1.0, 20.0, 3.0), deployment(2.0, 10.0, 1.0)];
         let solve = |raqes: &[Raqe]| {
-            let milp = minimize(raqes, &deployments, &facts(1, 1), Objective::default())
-                .expect("feasible MILP");
+            let milp = minimize(
+                raqes,
+                &deployments,
+                &facts(1, 1),
+                Objective::default(),
+                &table_accuracy,
+            )
+            .expect("feasible MILP");
             chosen(&milp, &deployments)
         };
 
@@ -401,8 +415,14 @@ mod tests {
             deployment(0.05, 2.0 * BYTES_PER_GIB, 0.0),
         ];
         let solve = |objective| {
-            let milp =
-                minimize(&raqes, &deployments, &facts(1, 1), objective).expect("feasible MILP");
+            let milp = minimize(
+                &raqes,
+                &deployments,
+                &facts(1, 1),
+                objective,
+                &table_accuracy,
+            )
+            .expect("feasible MILP");
             chosen(&milp, &deployments)
         };
 
@@ -441,8 +461,14 @@ mod tests {
             deployment(tiny, tiny, 1.5e-7),
             deployment(10.0 * tiny, tiny, 0.5e-7),
         ];
-        let milp = minimize(&raqes, &deployments, &facts(1, 1), Objective::default())
-            .expect("feasible MILP");
+        let milp = minimize(
+            &raqes,
+            &deployments,
+            &facts(1, 1),
+            Objective::default(),
+            &table_accuracy,
+        )
+        .expect("feasible MILP");
         assert_eq!(chosen(&milp, &deployments), vec![1]);
         assert!(milp.plan_cost.query_latency_ms[0] <= 1e-4);
     }
@@ -458,6 +484,7 @@ mod tests {
             &[unused, shared.clone()],
             &facts(1, 1),
             Objective::default(),
+            &table_accuracy,
         )
         .expect("feasible MILP");
 

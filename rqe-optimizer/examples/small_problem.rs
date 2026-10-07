@@ -13,6 +13,11 @@
 //! cardinalities and scrape intervals) lives in the two tables below
 //! (`facts`, `raqes`) and nowhere else in this file.
 //!
+//! Sketch accuracy comes from the saturation study's curves, not the cost
+//! table (#156): pass `--saturation-dir DIR` (required), the directory
+//! holding `out_grid_1e7_cost/` and `out_1e9/` from
+//! `scripts/study_saturation.py`.
+//!
 //! Run: `scripts/export_rqe_optimizer_costs.sh DIR` once, then pass
 //! `--cost-dir DIR` (required) to this example. Do not run this example
 //! with no mode flag on a large workload: eager mode retains every feasible
@@ -39,9 +44,10 @@ use rqe_optimizer::candidates::{
 use rqe_optimizer::enumerate::{brute_force, for_each_mapping, for_each_mapping_while, unservable};
 use rqe_optimizer::milp::{minimize, Objective};
 use rqe_optimizer::pareto::{pareto_front, ParetoFront};
+use rqe_optimizer::saturation::{DataShape, SaturationCurves};
 use rqe_optimizer::{
-    validate_facts, AccuracyDirection, AtomicCostTable, Capability, LabelSet, MetricFacts, Raqe,
-    WorkloadFacts,
+    validate_facts, AccuracyDirection, AtomicCostTable, Capability, Deployment, LabelSet,
+    MetricFacts, Raqe, WorkloadFacts,
 };
 
 /// Accuracy metric keys the real comparators actually report (checked
@@ -68,19 +74,34 @@ fn label_set(names: &[&str]) -> LabelSet {
     names.iter().map(|s| s.to_string()).collect()
 }
 
-fn load_cost_table() -> AtomicCostTable {
+/// The directory after `flag`; panics with `what` when it's absent.
+fn required_dir(flag: &str, what: &str) -> String {
     let args: Vec<_> = std::env::args().collect();
-    let cost_dir = args
-        .iter()
-        .position(|arg| arg == "--cost-dir")
+    args.iter()
+        .position(|arg| arg == flag)
         .map(|index| {
             args.get(index + 1)
-                .unwrap_or_else(|| panic!("--cost-dir requires a directory"))
+                .unwrap_or_else(|| panic!("{flag} requires a directory"))
+                .clone()
         })
-        .unwrap_or_else(|| {
-            panic!("--cost-dir DIR is required (a directory written by scripts/export_rqe_optimizer_costs.sh)")
-        });
-    let path = std::path::Path::new(cost_dir).join(COST_TABLE_FILE);
+        .unwrap_or_else(|| panic!("{flag} DIR is required ({what})"))
+}
+
+fn load_saturation_curves() -> SaturationCurves {
+    let dir = required_dir(
+        "--saturation-dir",
+        "holding out_grid_1e7_cost/ and out_1e9/ from scripts/study_saturation.py",
+    );
+    SaturationCurves::load(std::path::Path::new(&dir))
+        .unwrap_or_else(|e| panic!("couldn't load saturation curves: {e}"))
+}
+
+fn load_cost_table() -> AtomicCostTable {
+    let cost_dir = required_dir(
+        "--cost-dir",
+        "a directory written by scripts/export_rqe_optimizer_costs.sh",
+    );
+    let path = std::path::Path::new(&cost_dir).join(COST_TABLE_FILE);
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "couldn't read {} ({e}) -- run \
@@ -94,7 +115,9 @@ fn load_cost_table() -> AtomicCostTable {
 
 /// Both metrics: 5 services × 10 endpoints × 600 pods = 30,000 series
 /// scraped every 15 s, so `λ` = 2,000 samples/sec each. Durations range from
-/// 1 ms to 60 s, which sizes DDSketch.
+/// 1 ms to 60 s, which sizes DDSketch. The data
+/// shapes stand in for fits over a real dataset; the worst group's keys
+/// exceed the average group's pods.
 fn facts() -> WorkloadFacts {
     let http_metric_facts = |value_range| MetricFacts {
         labels: label_set(&["service", "endpoint", "pod"]),
@@ -106,12 +129,25 @@ fn facts() -> WorkloadFacts {
         ]
         .into(),
         value_range,
+        data_shape: [
+            (label_set(&["service"]), data_shape(10_000.0)),
+            (label_set(&["service", "endpoint"]), data_shape(1_000.0)),
+        ]
+        .into(),
     };
     [
         (REQUESTS.to_string(), http_metric_facts(None)),
         (DURATION.to_string(), http_metric_facts(Some((0.001, 60.0)))),
     ]
     .into()
+}
+
+fn data_shape(distinct_keys: f64) -> DataShape {
+    DataShape {
+        zipf_s: 1.1,
+        distinct_keys,
+        tail_index: 1.5,
+    }
 }
 
 fn raqes() -> Vec<Raqe> {
@@ -249,7 +285,7 @@ fn print_mapping(
     mapping_number: u64,
     mapping: &[usize],
     raqes: &[Raqe],
-    deployments: &[rqe_optimizer::Deployment],
+    deployments: &[Deployment],
 ) {
     println!("mapping {mapping_number}:");
     for (raqe, &deployment_index) in raqes.iter().zip(mapping) {
@@ -357,6 +393,7 @@ fn reject_unknown_args() {
         "--print-first",
         "--progress-every",
         "--sample-mappings",
+        "--saturation-dir",
         "--w-cpu",
         "--w-mem",
     ];
@@ -376,16 +413,29 @@ fn main() {
     let mut raqes = raqes();
     apply_latency_slas(&mut raqes);
     let cost_table = load_cost_table();
+    let curves = load_saturation_curves();
+    let check = curves.check_cost_table(&cost_table);
+    for row in &check.unchecked {
+        eprintln!("cost table vs. saturation curves, unchecked: {row}");
+    }
+    if !check.mismatched.is_empty() {
+        panic!(
+            "the cost table disagrees with the saturation curves: {:#?}",
+            check.mismatched
+        );
+    }
     let facts = facts();
     if let Err(problems) = validate_facts(&raqes, &facts) {
         panic!("invalid workload facts: {problems:#?}");
     }
+    let accuracy = |raqe: &Raqe, deployment: &Deployment| curves.accuracy(raqe, deployment, &facts);
 
     let allow_undeployable = std::env::args().any(|arg| arg == "--allow-undeployable-families");
     let unpruned_count = candidates_only.then(|| {
         build_all_candidates_unpruned(&raqes, &cost_table, &facts, allow_undeployable).len()
     });
-    let deployments = build_all_candidates(&raqes, &cost_table, &facts, allow_undeployable);
+    let deployments =
+        build_all_candidates(&raqes, &cost_table, &facts, allow_undeployable, &accuracy);
     println!(
         "{} RAQEs, {} candidate deployments (from {} real cost-table rows)",
         raqes.len(),
@@ -401,7 +451,7 @@ fn main() {
         );
         let mut possible_mappings = Some(1_u64);
         for raqe in &raqes {
-            let eligible = eligible_deployments_for(raqe, &deployments, &facts);
+            let eligible = eligible_deployments_for(raqe, &deployments, &facts, &accuracy);
             println!("  {}: {} eligible deployments", raqe.id, eligible.len());
             possible_mappings = possible_mappings.and_then(|count| {
                 count.checked_mul(eligible.len().try_into().expect("usize fits in u64"))
@@ -422,7 +472,7 @@ fn main() {
         return;
     }
 
-    let missing = unservable(&raqes, &deployments, &facts);
+    let missing = unservable(&raqes, &deployments, &facts, &accuracy);
     if !missing.is_empty() {
         println!("unservable (no eligible deployment): {missing:?}");
         return;
@@ -431,7 +481,7 @@ fn main() {
     let sample_mappings = positive_integer_flag("--sample-mappings", 0);
     if sample_mappings > 0 {
         let mut printed = 0;
-        let result = for_each_mapping_while(&raqes, &deployments, &facts, |mapping| {
+        let result = for_each_mapping_while(&raqes, &deployments, &facts, &accuracy, |mapping| {
             printed += 1;
             print_mapping(printed, mapping, &raqes, &deployments);
             printed < sample_mappings
@@ -453,7 +503,7 @@ fn main() {
             w_cpu: weight_flag("--w-cpu", 1.0),
             w_mem: weight_flag("--w-mem", 0.0),
         };
-        let solution = minimize(&raqes, &deployments, &facts, objective)
+        let solution = minimize(&raqes, &deployments, &facts, objective, &accuracy)
             .expect("small_problem MILP should be feasible");
         println!(
             "MILP solution for {objective:?}: {:.3e}",
@@ -487,7 +537,7 @@ fn main() {
         let print_first = positive_integer_flag("--print-first", 0);
         let started = Instant::now();
         let mut processed = 0_u64;
-        let mapping_count = for_each_mapping(&raqes, &deployments, &facts, |mapping| {
+        let mapping_count = for_each_mapping(&raqes, &deployments, &facts, &accuracy, |mapping| {
             front.consider(mapping, score(&raqes, &deployments, mapping, &facts));
             processed += 1;
             if processed <= print_first {
@@ -514,7 +564,7 @@ fn main() {
         "WARNING: eager mode will retain every feasible mapping. For larger workloads, use --milp, \
          --candidates-only, or --sample-mappings N instead."
     );
-    let mappings = brute_force(&raqes, &deployments, &facts);
+    let mappings = brute_force(&raqes, &deployments, &facts, &accuracy);
     println!("{} feasible full mappings", mappings.len());
 
     let plan_costs: Vec<_> = mappings

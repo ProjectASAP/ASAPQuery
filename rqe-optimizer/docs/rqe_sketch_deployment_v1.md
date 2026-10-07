@@ -76,7 +76,11 @@ from sketch-bench runs, gives for each configuration:
 - CPU per insert;
 - CPU per query of one instance;
 - CPU per pairwise merge; and
-- measured accuracy values.
+- measured accuracy values, which only exact accumulators use (see
+  [eligibility](#candidate-deployments)).
+
+Each metric's facts also carry a fitted `data_shape` per grouping, which keys
+the saturation curves.
 
 Families are named by sketch-bench variant, not algorithm, because variants
 of the same algorithm can have different costs.
@@ -199,11 +203,37 @@ An RAQE `r_i` is eligible for a candidate `D` when:
 
 1. `cap_i = D.capability`, `metric_i = D.metric` and `G_i = D.G`.
 2. `D.x % D.y = 0`, `S_i % D.x = 0`, and `T_i % D.y = 0`.
-3. `D.configuration` has a measured `accuracy_metric_i` that clears `tol_i` in
-   `direction_i` at both measured merge counts bracketing the query's
-   `S_i / D.x` windows (count 1 is the single-instance accuracy; beyond the
-   largest measured count, the largest). Merge accuracy is not monotone in the
-   count, so neither bracket alone is conservative.
+3. The accuracy of `D` for `r_i` in `accuracy_metric_i` clears `tol_i` in
+   `direction_i`.
+
+Exact accumulators take that accuracy from the cost table, at both measured
+merge counts bracketing the query's `S_i / D.x` windows (count 1 is the
+single-instance accuracy; beyond the largest measured count, the largest).
+Merge accuracy is not monotone in the count, so the worse bracket is used.
+Sketches take it
+from the saturation study's error-vs-N curves (`SaturationCurves`, #156),
+read at the number of items one group receives over the RAQE's whole
+lookback: series per group times scrapes per lookback.
+
+- The curve is the configuration's at the metric's fitted `data_shape` for
+  `G` (zipf θ and keys `K`, or tail index `a` for quantiles). Between grid
+  points, the worst bracketing point; outside the grid, or with no fit, no
+  accuracy.
+- Between checkpoints, the worse neighbour. Below the first checkpoint, no
+  accuracy. Past the last, the plateau if the point saturated, else none.
+- The curve's `error_metric` must be `accuracy_metric_i`.
+- The window size doesn't matter: a merged answer reads the curve at the
+  lookback's item count, like a single sketch. KLL and top-k merge lossily;
+  their merge penalty is #158.
+
+The cost table's sketch accuracies are not read, but they are one point on
+each curve: a row's `measured_at` (items, Zipf θ and population, or Pareto
+`a`) is a grid point's key. `SaturationCurves::check_cost_table` reads the
+curve there and reports every row that disagrees (beyond 3 seed standard
+errors plus 5%), whose configuration is not in the grid, or whose table lacks
+the curve's `error_metric`. Rows the study has no point for (KLL: the table
+measures Zipf ranks, the study Pareto values) are reported as unchecked.
+`small_problem` refuses to plan when any row disagrees.
 
 For lower-is-better metrics, passing means `measured <= tol_i`. For
 higher-is-better metrics, passing means `measured >= tol_i`. Direction is
@@ -435,11 +465,8 @@ each phase's CPU and memory, together with the selected deployment mapping.
 
 ## v1 scope and TODOs
 
-- **Accuracy after merging:** measured at 4, 16, 64, 256 and 1024 merged
-  shards of one fixed stream (eligibility rule 3). Queries folding more than
-  1024 windows read the 1024 measurement, and the stream size is the
-  benchmark's, not `λ · S_i / card(G)`; the size sweep in sketch-bench#147
-  covers that.
+- **Accuracy after merging:** every merge reads the curve at the merged item
+  count. KLL and top-k don't model their merge penalty yet (#158).
 - **Query-result sharing:** v1 charges every RAQE its own query and merge CPU.
   Revisit when RAQE semantics and execution timing identify safe reuse cases.
 - **Latency SLAs:** the MILP takes optional per-RAQE latency bounds; the

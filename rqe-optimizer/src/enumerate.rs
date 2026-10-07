@@ -10,7 +10,9 @@
 //! An ILP would replace this module alone: `Mapping` already encodes
 //! `x_{i,D}` and `y_D`.
 
-use crate::{candidates::eligible_deployments_for, Deployment, Mapping, Raqe, WorkloadFacts};
+use crate::{
+    candidates::eligible_deployments_for, Accuracy, Deployment, Mapping, Raqe, WorkloadFacts,
+};
 
 /// RAQEs nothing in `deployments` can serve (§3.4). Surfaced separately from
 /// `brute_force`: an unservable RAQE is a modeling gap (tolerance too tight,
@@ -19,10 +21,11 @@ pub fn unservable(
     raqes: &[Raqe],
     deployments: &[Deployment],
     facts: &WorkloadFacts,
+    accuracy: &Accuracy,
 ) -> Vec<String> {
     raqes
         .iter()
-        .filter(|r| eligible_deployments_for(r, deployments, facts).is_empty())
+        .filter(|r| eligible_deployments_for(r, deployments, facts, accuracy).is_empty())
         .map(|r| r.id.clone())
         .collect()
 }
@@ -33,9 +36,10 @@ pub fn brute_force(
     raqes: &[Raqe],
     deployments: &[Deployment],
     facts: &WorkloadFacts,
+    accuracy: &Accuracy,
 ) -> Vec<Mapping> {
     let mut mappings = Vec::new();
-    for_each_mapping(raqes, deployments, facts, |mapping| {
+    for_each_mapping(raqes, deployments, facts, accuracy, |mapping| {
         mappings.push(mapping.to_vec())
     });
     mappings
@@ -48,9 +52,10 @@ pub fn for_each_mapping(
     raqes: &[Raqe],
     deployments: &[Deployment],
     facts: &WorkloadFacts,
+    accuracy: &Accuracy,
     mut visit: impl FnMut(&Mapping),
 ) -> u64 {
-    for_each_mapping_while(raqes, deployments, facts, |mapping| {
+    for_each_mapping_while(raqes, deployments, facts, accuracy, |mapping| {
         visit(mapping);
         true
     })
@@ -72,11 +77,12 @@ pub fn for_each_mapping_while(
     raqes: &[Raqe],
     deployments: &[Deployment],
     facts: &WorkloadFacts,
+    accuracy: &Accuracy,
     mut visit: impl FnMut(&Mapping) -> bool,
 ) -> EnumerationResult {
     let choices: Vec<Vec<usize>> = raqes
         .iter()
-        .map(|r| eligible_deployments_for(r, deployments, facts))
+        .map(|r| eligible_deployments_for(r, deployments, facts, accuracy))
         .collect();
 
     if choices.iter().any(|c| c.is_empty()) {
@@ -122,7 +128,7 @@ mod tests {
     use super::*;
     use crate::candidates;
     use crate::test_support::{facts, METRIC};
-    use crate::{AtomicCostEntry, Capability, Deployment, LabelSet};
+    use crate::{table_accuracy, AtomicCostEntry, Capability, Deployment, LabelSet};
     use std::collections::BTreeMap;
 
     fn cost(sketch: &str) -> AtomicCostEntry {
@@ -142,7 +148,7 @@ mod tests {
     }
 
     fn build_all_candidates(raqes: &[Raqe], costs: &[AtomicCostEntry]) -> Vec<Deployment> {
-        candidates::build_all_candidates(raqes, costs, &facts(1, 1), false)
+        candidates::build_all_candidates(raqes, costs, &facts(1, 1), false, &table_accuracy)
     }
 
     fn raqe(id: &str, interval: u64, lookback: u64) -> Raqe {
@@ -167,8 +173,8 @@ mod tests {
         let table = vec![cost("cms-heap-topk-fastpath-vector2d")];
         let deployments = build_all_candidates(&raqes, &table);
 
-        assert!(unservable(&raqes, &deployments, &facts(1, 1)).is_empty());
-        let mappings = brute_force(&raqes, &deployments, &facts(1, 1));
+        assert!(unservable(&raqes, &deployments, &facts(1, 1), &table_accuracy).is_empty());
+        let mappings = brute_force(&raqes, &deployments, &facts(1, 1), &table_accuracy);
         assert!(
             mappings.iter().any(|m| m[0] == m[1]),
             "expected at least one mapping where both identical RAQEs land on the same deployment"
@@ -182,21 +188,25 @@ mod tests {
         let deployments = build_all_candidates(&raqes, &table);
 
         assert_eq!(
-            unservable(&raqes, &deployments, &facts(1, 1)),
+            unservable(&raqes, &deployments, &facts(1, 1), &table_accuracy),
             vec!["a".to_string()]
         );
-        assert!(brute_force(&raqes, &deployments, &facts(1, 1)).is_empty());
+        assert!(brute_force(&raqes, &deployments, &facts(1, 1), &table_accuracy).is_empty());
     }
 
     #[test]
     fn streaming_visits_the_same_mappings_as_eager_enumeration() {
         let raqes = vec![raqe("a", 60_000, 3_600_000), raqe("b", 60_000, 3_600_000)];
         let deployments = build_all_candidates(&raqes, &[cost("cms-heap-topk-fastpath-vector2d")]);
-        let eager = brute_force(&raqes, &deployments, &facts(1, 1));
+        let eager = brute_force(&raqes, &deployments, &facts(1, 1), &table_accuracy);
         let mut streamed = Vec::new();
-        let count = for_each_mapping(&raqes, &deployments, &facts(1, 1), |mapping| {
-            streamed.push(mapping.clone())
-        });
+        let count = for_each_mapping(
+            &raqes,
+            &deployments,
+            &facts(1, 1),
+            &table_accuracy,
+            |mapping| streamed.push(mapping.clone()),
+        );
         assert_eq!(count as usize, eager.len());
         assert_eq!(streamed, eager);
     }
@@ -206,10 +216,16 @@ mod tests {
         let raqes = vec![raqe("a", 60_000, 3_600_000), raqe("b", 60_000, 3_600_000)];
         let deployments = build_all_candidates(&raqes, &[cost("cms-heap-topk-fastpath-vector2d")]);
         let mut sampled = Vec::new();
-        let result = for_each_mapping_while(&raqes, &deployments, &facts(1, 1), |mapping| {
-            sampled.push(mapping.clone());
-            sampled.len() < 2
-        });
+        let result = for_each_mapping_while(
+            &raqes,
+            &deployments,
+            &facts(1, 1),
+            &table_accuracy,
+            |mapping| {
+                sampled.push(mapping.clone());
+                sampled.len() < 2
+            },
+        );
 
         assert_eq!(result.visited, 2);
         assert!(!result.completed);

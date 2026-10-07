@@ -15,6 +15,7 @@ pub mod candidates;
 pub mod enumerate;
 pub mod milp;
 pub mod pareto;
+pub mod saturation;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
@@ -137,6 +138,9 @@ pub struct FamilyProperties {
     /// The sketch can't list its groups, so a DeltaSet records which keys
     /// each window saw, for the query to probe.
     pub needs_delta_set_key_tracker: bool,
+    /// Answers without error, so its accuracy comes from the cost table
+    /// rather than a saturation curve.
+    pub exact: bool,
 }
 
 /// Panics on a variant with no entry: guessing would misprice it.
@@ -145,14 +149,16 @@ pub fn family_properties(variant: &str) -> FamilyProperties {
         mergeable_across_windows: true,
         one_fixed_size_sketch_for_all_groups: false,
         needs_delta_set_key_tracker: false,
+        exact: false,
     };
     match variant {
-        "exact-sum"
-        | "exact-min"
-        | "exact-max"
-        | "exact-increase"
-        | KEY_TRACKER_FAMILY
-        | "kll-percall"
+        "exact-sum" | "exact-min" | "exact-max" | "exact-increase" | KEY_TRACKER_FAMILY => {
+            FamilyProperties {
+                exact: true,
+                ..one_sketch_per_group
+            }
+        }
+        "kll-percall"
         | "dd"
         | "hll"
         | "univmon-cardinality"
@@ -163,6 +169,7 @@ pub fn family_properties(variant: &str) -> FamilyProperties {
             mergeable_across_windows: true,
             one_fixed_size_sketch_for_all_groups: true,
             needs_delta_set_key_tracker: true,
+            exact: false,
         },
         _ => panic!("{variant} has no FamilyProperties; add it to family_properties"),
     }
@@ -182,6 +189,9 @@ pub struct MetricFacts {
     /// `(lo, hi)`: smallest and largest positive sample value, if known.
     /// Sizes DDSketch; without it, DDSketch keeps the measured memory.
     pub value_range: Option<(f64, f64)>,
+    /// Fitted data parameters per grouping `G`, for reading sketch accuracy
+    /// off the saturation curves. Without one, no sketch serves `G`.
+    pub data_shape: BTreeMap<LabelSet, saturation::DataShape>,
 }
 
 impl MetricFacts {
@@ -299,8 +309,10 @@ pub struct Raqe {
     pub spatial_filter: String,
     /// `G`: the query's group-by labels.
     pub grouping_labels: LabelSet,
-    /// Which `AtomicCostEntry::query_accuracy` key to check. Comparators
-    /// name their metrics differently per capability, so the RAQE picks.
+    /// Which accuracy metric to check: a saturation curve's `error_metric`,
+    /// or an exact accumulator's `AtomicCostEntry::query_accuracy` key.
+    /// Comparators name their metrics differently per capability, so the
+    /// RAQE picks.
     pub accuracy_metric: String,
     /// `tol_i`: hard constraint. Read as a ceiling or a floor depending on
     /// [`Raqe::accuracy_direction`].
@@ -321,17 +333,38 @@ impl Raqe {
         }
     }
 
-    /// Whether `config` measured this RAQE's metric and clears it after
-    /// `merges` windows are folded per query (`L / x`), at both measured
-    /// counts bracketing `merges` (error is not monotone in the count).
-    /// Missing is not passing.
-    pub fn accuracy_ok_for(&self, config: &AtomicCostEntry, merges: u64) -> bool {
-        accuracy_at(config, merges).iter().all(|scores| {
-            scores
-                .get(&self.accuracy_metric)
-                .is_some_and(|&v| self.accuracy_ok(v))
-        })
+    /// Whether `accuracy` clears the SLA. Unknown or non-finite never passes.
+    /// The MILP's eligibility and the AutoSketch baseline both decide here.
+    pub fn meets_sla(&self, accuracy: Option<f64>) -> bool {
+        accuracy.is_some_and(|value| value.is_finite() && self.accuracy_ok(value))
     }
+}
+
+/// The accuracy `raqe` gets from a deployment, or `None` when unknown --
+/// unknown never passes. Production uses
+/// [`saturation::SaturationCurves::accuracy`].
+pub type Accuracy<'a> = dyn Fn(&Raqe, &Deployment) -> Option<f64> + 'a;
+
+/// The cost table's measured value after the query's `L / x` merges, which is
+/// the exact accumulators' accuracy.
+pub fn table_accuracy(raqe: &Raqe, deployment: &Deployment) -> Option<f64> {
+    table_accuracy_at(
+        raqe,
+        &deployment.config,
+        raqe.lookback_ms / deployment.window_ms,
+    )
+}
+
+/// The worse of `config`'s scores at the two measured counts bracketing
+/// `merges` (error is not monotone in the count). Missing at either is `None`.
+pub fn table_accuracy_at(raqe: &Raqe, config: &AtomicCostEntry, merges: u64) -> Option<f64> {
+    let [below, above] =
+        accuracy_at(config, merges).map(|scores| scores.get(&raqe.accuracy_metric).copied());
+    let (below, above) = (below?, above?);
+    Some(match raqe.accuracy_direction {
+        AccuracyDirection::LowerIsBetter => below.max(above),
+        AccuracyDirection::HigherIsBetter => below.min(above),
+    })
 }
 
 /// `config`'s scores at the two measured merge counts bracketing `merges`:
@@ -433,6 +466,7 @@ pub(crate) mod test_support {
                 scrape_interval_ms: 1_000,
                 cardinality: BTreeMap::from([(LabelSet::new(), groups), (labels, series)]),
                 value_range: None,
+                data_shape: BTreeMap::new(),
             },
         )])
     }
@@ -531,13 +565,14 @@ mod tests {
             accuracy_direction: AccuracyDirection::HigherIsBetter,
             ..raqe(60_000, 60_000)
         };
-        assert!(r.accuracy_ok_for(&config, 1));
-        assert!(r.accuracy_ok_for(&config, 4));
-        assert!(!r.accuracy_ok_for(&config, 8)); // [4, 16]: 16 fails
-        assert!(!r.accuracy_ok_for(&config, 16));
-        assert!(!r.accuracy_ok_for(&config, 32)); // [16, 64]
-        assert!(r.accuracy_ok_for(&config, 64));
-        assert!(r.accuracy_ok_for(&config, 5_000)); // beyond: [64, 64]
+        let ok = |merges| table_accuracy_at(&r, &config, merges).is_some_and(|v| r.accuracy_ok(v));
+        assert!(ok(1));
+        assert!(ok(4));
+        assert!(!ok(8)); // [4, 16]: 16 fails
+        assert!(!ok(16));
+        assert!(!ok(32)); // [16, 64]
+        assert!(ok(64));
+        assert!(ok(5_000)); // beyond: [64, 64]
     }
 
     #[test]
@@ -593,6 +628,7 @@ mod tests {
                     (labels(&["service", "endpoint"]), 50),
                 ]),
                 value_range: None,
+                data_shape: BTreeMap::new(),
             },
         )]);
         let r = Raqe {
@@ -611,6 +647,7 @@ mod tests {
                 scrape_interval_ms: 0,
                 cardinality: BTreeMap::from([(labels(&["service"]), 0)]),
                 value_range: Some((0.0, 1.0)),
+                data_shape: BTreeMap::new(),
             },
         )]);
         let raqes = [
@@ -674,6 +711,7 @@ mod tests {
                     (labels(&["service", "endpoint"]), 50),
                 ]),
                 value_range: None,
+                data_shape: BTreeMap::new(),
             },
         )]);
         let r = Raqe {

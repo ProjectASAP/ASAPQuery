@@ -2,8 +2,8 @@
 
 use crate::analytical_cost_model;
 use crate::{
-    AtomicCostEntry, Capability, Deployment, LabelSet, MetricFacts, Millis, Raqe, WorkloadFacts,
-    KEY_TRACKER_FAMILY,
+    Accuracy, AtomicCostEntry, Capability, Deployment, LabelSet, MetricFacts, Millis, Raqe,
+    WorkloadFacts, KEY_TRACKER_FAMILY,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -138,11 +138,13 @@ pub fn build_all_candidates(
     costs: &[AtomicCostEntry],
     facts: &WorkloadFacts,
     allow_undeployable_families: bool,
+    accuracy: &Accuracy,
 ) -> Vec<Deployment> {
     prune_dominated_candidates(
         raqes,
         facts,
         build_all_candidates_unpruned(raqes, costs, facts, allow_undeployable_families),
+        accuracy,
     )
 }
 
@@ -189,10 +191,11 @@ pub fn prune_dominated_candidates(
     raqes: &[Raqe],
     facts: &WorkloadFacts,
     candidates: Vec<Deployment>,
+    accuracy: &Accuracy,
 ) -> Vec<Deployment> {
     let costs: Vec<CandidateCosts> = candidates
         .iter()
-        .map(|candidate| CandidateCosts::new(candidate, raqes, facts))
+        .map(|candidate| CandidateCosts::new(candidate, raqes, facts, accuracy))
         .collect();
 
     candidates
@@ -231,12 +234,17 @@ struct CandidateCosts {
 }
 
 impl CandidateCosts {
-    fn new(candidate: &Deployment, raqes: &[Raqe], facts: &WorkloadFacts) -> Self {
+    fn new(
+        candidate: &Deployment,
+        raqes: &[Raqe],
+        facts: &WorkloadFacts,
+        accuracy: &Accuracy,
+    ) -> Self {
         let ingest = analytical_cost_model::ingest(candidate, facts);
         let per_raqe = raqes
             .iter()
             .map(|raqe| {
-                is_eligible(raqe, candidate, facts).then(|| {
+                is_eligible(raqe, candidate, facts, accuracy).then(|| {
                     [
                         analytical_cost_model::query_latency_ms(raqe, candidate, facts),
                         analytical_cost_model::merge(raqe, candidate, facts).memory_bytes,
@@ -330,18 +338,19 @@ pub fn eligible_deployments_for(
     r: &Raqe,
     deployments: &[Deployment],
     facts: &WorkloadFacts,
+    accuracy: &Accuracy,
 ) -> Vec<usize> {
     deployments
         .iter()
         .enumerate()
-        .filter(|(_, d)| is_eligible(r, d, facts))
+        .filter(|(_, d)| is_eligible(r, d, facts, accuracy))
         .map(|(i, _)| i)
         .collect()
 }
 
 /// Whether `d` can serve `r`. Every rule lives here, so the MILP, enumeration
 /// and candidate pruning agree on what is valid.
-pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts) -> bool {
+pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &Accuracy) -> bool {
     let properties = d.properties();
     r.capability == d.capability
         && r.metric == d.metric
@@ -356,14 +365,14 @@ pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts) -> bool {
         && properties.needs_delta_set_key_tracker == d.key_tracker.is_some()
         && (!properties.one_fixed_size_sketch_for_all_groups
             || measured_at_group_count(&d.config, facts[&d.metric].cardinality[&d.grouping_labels]))
-        && r.accuracy_ok_for(&d.config, r.lookback_ms / d.window_ms)
+        && r.meets_sla(accuracy(r, d))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_support::{facts, METRIC};
-    use crate::{AccuracyDirection, LabelSet};
+    use crate::{table_accuracy, AccuracyDirection, LabelSet};
     use std::collections::BTreeMap;
     fn raqe(id: &str, lookback: Millis, interval: Millis) -> Raqe {
         Raqe {
@@ -411,21 +420,57 @@ mod tests {
         };
         let r = raqe("a", 60_000, 60_000);
         // One window reads query_accuracy; 2 reads 1 and 4; 4 reads 4 alone.
-        assert!(is_eligible(&r, &at_window(60_000), &facts(1, 1)));
-        assert!(is_eligible(&r, &at_window(30_000), &facts(1, 1)));
-        assert!(is_eligible(&r, &at_window(15_000), &facts(1, 1)));
+        assert!(is_eligible(
+            &r,
+            &at_window(60_000),
+            &facts(1, 1),
+            &table_accuracy
+        ));
+        assert!(is_eligible(
+            &r,
+            &at_window(30_000),
+            &facts(1, 1),
+            &table_accuracy
+        ));
+        assert!(is_eligible(
+            &r,
+            &at_window(15_000),
+            &facts(1, 1),
+            &table_accuracy
+        ));
         // 12 and 20 merges bracket the bad count 16 from either side; 60
         // reads 16 and 64, so it fails too even though 64 alone passes.
-        assert!(!is_eligible(&r, &at_window(5_000), &facts(1, 1)));
-        assert!(!is_eligible(&r, &at_window(3_000), &facts(1, 1)));
-        assert!(!is_eligible(&r, &at_window(1_000), &facts(1, 1)));
+        assert!(!is_eligible(
+            &r,
+            &at_window(5_000),
+            &facts(1, 1),
+            &table_accuracy
+        ));
+        assert!(!is_eligible(
+            &r,
+            &at_window(3_000),
+            &facts(1, 1),
+            &table_accuracy
+        ));
+        assert!(!is_eligible(
+            &r,
+            &at_window(1_000),
+            &facts(1, 1),
+            &table_accuracy
+        ));
         // Past the largest count reads only 64.
-        assert!(is_eligible(&r, &at_window(500), &facts(1, 1)));
+        assert!(is_eligible(
+            &r,
+            &at_window(500),
+            &facts(1, 1),
+            &table_accuracy
+        ));
     }
     #[test]
     fn shared_slide_comes_from_subset_gcd_not_all_divisors() {
         let raqes = vec![raqe("a", 60_000, 20_000), raqe("b", 60_000, 30_000)];
-        let candidates = build_all_candidates(&raqes, &[cost()], &facts(1, 1), false);
+        let candidates =
+            build_all_candidates(&raqes, &[cost()], &facts(1, 1), false, &table_accuracy);
         let slides: BTreeSet<_> = candidates
             .iter()
             .filter(|d| d.window_ms == 60_000)
@@ -457,11 +502,19 @@ mod tests {
             &[cost()],
             &facts(1, 1),
             false,
+            &table_accuracy,
         );
-        assert!(candidates
-            .iter()
-            .all(|d| is_eligible(&unfiltered, d, &facts(1, 1))
-                != is_eligible(&filtered, d, &facts(1, 1))));
+        assert!(candidates.iter().all(|d| is_eligible(
+            &unfiltered,
+            d,
+            &facts(1, 1),
+            &table_accuracy
+        ) != is_eligible(
+            &filtered,
+            d,
+            &facts(1, 1),
+            &table_accuracy
+        )));
     }
 
     #[test]
@@ -479,6 +532,7 @@ mod tests {
             &[named("exact-min"), named("exact-max")],
             &facts(1, 1),
             false,
+            &table_accuracy,
         );
         assert!(!candidates.is_empty());
         assert!(candidates.iter().all(|d| d.config.sketch == "exact-min"));
@@ -495,8 +549,13 @@ mod tests {
             ..cost()
         };
         let costs = [named("kll-percall"), named("dd")];
-        let candidates =
-            build_all_candidates(std::slice::from_ref(&r), &costs, &facts(1, 1), false);
+        let candidates = build_all_candidates(
+            std::slice::from_ref(&r),
+            &costs,
+            &facts(1, 1),
+            false,
+            &table_accuracy,
+        );
         assert!(!candidates.is_empty());
         assert!(candidates.iter().all(|d| d.config.sketch == "kll-percall"));
         let all = build_all_candidates_unpruned(&[r], &costs, &facts(1, 1), true);
@@ -516,14 +575,15 @@ mod tests {
             slide_ms: 60_000,
             key_tracker: None,
         };
-        assert!(is_eligible(&r, &d, &facts(1, 1)));
+        assert!(is_eligible(&r, &d, &facts(1, 1), &table_accuracy));
         assert!(!is_eligible(
             &r,
             &Deployment {
                 window_ms: 128_000,
                 ..d.clone()
             },
-            &facts(1, 1)
+            &facts(1, 1),
+            &table_accuracy
         ));
         assert!(!is_eligible(
             &r,
@@ -531,7 +591,8 @@ mod tests {
                 slide_ms: 70_000,
                 ..d
             },
-            &facts(1, 1)
+            &facts(1, 1),
+            &table_accuracy
         ));
     }
 
@@ -553,7 +614,12 @@ mod tests {
             ..coarse.clone()
         };
 
-        let retained = prune_dominated_candidates(&[r], &facts(1, 1), vec![fine, coarse.clone()]);
+        let retained = prune_dominated_candidates(
+            &[r],
+            &facts(1, 1),
+            vec![fine, coarse.clone()],
+            &table_accuracy,
+        );
 
         assert_eq!(retained, vec![coarse]);
     }
@@ -582,6 +648,7 @@ mod tests {
             &[r],
             &facts(1, 1),
             vec![small_window.clone(), large_window.clone()],
+            &table_accuracy,
         );
 
         assert_eq!(retained, vec![large_window]);
@@ -621,6 +688,7 @@ mod tests {
             &[r],
             &facts(1, 1),
             vec![whole_window.clone(), panes.clone()],
+            &table_accuracy,
         );
 
         assert_eq!(retained, vec![whole_window, panes]);
@@ -657,8 +725,12 @@ mod tests {
             ..direct.clone()
         };
 
-        let retained =
-            prune_dominated_candidates(&[r], &facts(1, 1), vec![direct.clone(), halves.clone()]);
+        let retained = prune_dominated_candidates(
+            &[r],
+            &facts(1, 1),
+            vec![direct.clone(), halves.clone()],
+            &table_accuracy,
+        );
 
         assert_eq!(retained, vec![direct, halves]);
     }
@@ -698,6 +770,7 @@ mod tests {
             &[hydra, tracker.clone(), tracker],
             &facts(10, 10),
             true,
+            &table_accuracy,
         );
     }
 }
