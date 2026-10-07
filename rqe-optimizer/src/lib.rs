@@ -77,7 +77,7 @@ impl Capability {
             Capability::Min => &["exact-min"],
             Capability::Max => &["exact-max"],
             Capability::RateOrIncrease => &["exact-increase"],
-            Capability::Quantile => &["kll-percall", "dd", "hydra-kll"],
+            Capability::Quantile => &["kll-percall", "dd"],
             // univmon-cardinality is registered under KeyedCardinality in
             // sketch-bench, but its ground truth (`KeyedCardinalityGT`) is
             // "count of keys with a nonzero total" -- plain distinct-key

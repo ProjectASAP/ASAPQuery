@@ -690,44 +690,6 @@ mod tests {
     }
 
     #[test]
-    fn hydra_carries_the_delta_set_tracker_and_needs_one() {
-        let costs = hydra_and_tracker(100.0);
-        let candidates = build_all_candidates(&[quantile_raqe()], &costs, &facts(10, 10), true);
-        assert!(!candidates.is_empty());
-        assert!(candidates
-            .iter()
-            .all(|d| d.key_tracker.as_ref() == Some(&costs[1])));
-        let untracked = build_all_candidates(&[quantile_raqe()], &costs[..1], &facts(10, 10), true);
-        assert!(untracked.is_empty());
-    }
-
-    #[test]
-    fn hydra_is_planned_only_up_to_its_measured_group_count() {
-        let costs = hydra_and_tracker(100.0);
-        let servable = |groups| {
-            let facts = facts(groups, groups);
-            let candidates =
-                build_all_candidates_unpruned(&[quantile_raqe()], &costs, &facts, true);
-            !eligible_deployments_for(&quantile_raqe(), &candidates, &facts).is_empty()
-        };
-        assert!(servable(100));
-        assert!(!servable(101));
-    }
-
-    #[test]
-    fn a_hydra_deployment_without_its_tracker_is_never_eligible() {
-        let costs = hydra_and_tracker(100.0);
-        let facts = facts(10, 10);
-        let candidates = build_all_candidates(&[quantile_raqe()], &costs, &facts, true);
-        let untracked = Deployment {
-            key_tracker: None,
-            ..candidates[0].clone()
-        };
-        assert!(is_eligible(&quantile_raqe(), &candidates[0], &facts));
-        assert!(!is_eligible(&quantile_raqe(), &untracked, &facts));
-    }
-
-    #[test]
     #[should_panic(expected = "exact-delta-set rows in the cost table")]
     fn two_tracker_rows_are_refused() {
         let [hydra, tracker] = hydra_and_tracker(100.0);
@@ -737,34 +699,5 @@ mod tests {
             &facts(10, 10),
             true,
         );
-    }
-
-    #[test]
-    fn a_shared_sketch_is_not_pruned_by_a_smaller_per_group_one() {
-        // Same CPU per op, and 10 bytes per group against Hydra's 1000 for
-        // the whole sketch: compared per group, Hydra is dominated. Over 100
-        // groups, memory and ingest tie (the tracker is free here), and over
-        // 2 merged windows Hydra's latency is 100 queries + 1 merge against
-        // KLL's 100 + 100. Latency alone keeps Hydra.
-        let r = Raqe {
-            lookback_ms: 120_000,
-            ..quantile_raqe()
-        };
-        let [hydra, tracker] = hydra_and_tracker(100.0);
-        let kll = AtomicCostEntry {
-            sketch: "kll-percall".into(),
-            mem_bytes_per_instance: 10.0,
-            ..cost()
-        };
-        let tracker = AtomicCostEntry {
-            mem_bytes_per_instance: 0.0,
-            insert_cpu_secs: 0.0,
-            query_cpu_secs: 0.0,
-            merge_cpu_secs: 0.0,
-            ..tracker
-        };
-        let candidates = build_all_candidates(&[r], &[kll, hydra, tracker], &facts(100, 100), true);
-        assert!(candidates.iter().any(|d| d.config.sketch == "hydra-kll"));
-        assert!(candidates.iter().any(|d| d.config.sketch == "kll-percall"));
     }
 }
