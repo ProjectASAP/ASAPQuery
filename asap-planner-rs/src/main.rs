@@ -248,5 +248,7 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
             allow_undeployable_families: false,
         },
     )?;
-    plan_to_planner_output(&config, &plan.workload, &plan.solution)?.write_to_dir(&args.output_dir)
+    plan_to_planner_output(&config, &plan.workload, &plan.solution)?
+        .write_to_dir(&args.output_dir)?;
+    Ok(())
 }

@@ -4,6 +4,7 @@ use asap_types::enums::QueryLanguage;
 use asap_types::inference_config::InferenceConfig;
 use asap_types::streaming_config::StreamingConfig;
 
+use crate::error::ControllerError;
 use crate::generator::{
     GeneratorOutput, PuntedQuery, KEY_AGGREGATIONS, KEY_AGG_SUB_TYPE, KEY_AGG_TYPE, KEY_LABELS,
     KEY_NUM_AGG_TO_RETAIN, KEY_PARAMETERS, KEY_QUERIES, KEY_QUERY, KEY_READ_COUNT_THRESHOLD,
@@ -28,14 +29,6 @@ impl PlannerOutput {
             aggregation_count: output.aggregation_count,
             query_count: output.query_count,
         }
-    }
-
-    pub(crate) fn streaming_yaml(&self) -> &YamlValue {
-        &self.streaming_yaml
-    }
-
-    pub(crate) fn inference_yaml(&self) -> &YamlValue {
-        &self.inference_yaml
     }
 
     pub fn streaming_aggregation_count(&self) -> usize {
@@ -174,9 +167,9 @@ impl PlannerOutput {
     /// Writes `streaming_config.yaml` and `inference_config.yaml`. Both are
     /// serialized first, so a failure can't leave a new streaming config next
     /// to a stale inference config.
-    pub fn write_to_dir(&self, dir: &std::path::Path) -> Result<(), anyhow::Error> {
-        let streaming = self.to_streaming_yaml_string()?;
-        let inference = self.to_inference_yaml_string()?;
+    pub fn write_to_dir(&self, dir: &std::path::Path) -> Result<(), ControllerError> {
+        let streaming = serde_yaml::to_string(&self.streaming_yaml)?;
+        let inference = serde_yaml::to_string(&self.inference_yaml)?;
         std::fs::create_dir_all(dir)?;
         std::fs::write(dir.join("streaming_config.yaml"), streaming)?;
         std::fs::write(dir.join("inference_config.yaml"), inference)?;

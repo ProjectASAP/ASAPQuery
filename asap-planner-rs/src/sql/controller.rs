@@ -90,11 +90,7 @@ impl SQLController {
 
     pub fn generate_to_dir(&self, dir: &Path) -> Result<PlannerOutput, ControllerError> {
         let output = self.generate()?;
-        std::fs::create_dir_all(dir)?;
-        let streaming_str = serde_yaml::to_string(output.streaming_yaml())?;
-        let inference_str = serde_yaml::to_string(output.inference_yaml())?;
-        std::fs::write(dir.join("streaming_config.yaml"), streaming_str)?;
-        std::fs::write(dir.join("inference_config.yaml"), inference_str)?;
+        output.write_to_dir(dir)?;
         Ok(output)
     }
 }
