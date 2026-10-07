@@ -228,9 +228,18 @@ lookback: series per group times scrapes per lookback.
   accuracy. Past the last, the plateau if the point saturated, else none.
 - The curve's `error_metric` must be the family's metric; `SaturationCurves::load`
   refuses a curve for another metric as a stale study.
-- The window size doesn't matter: a merged answer reads the curve at the
-  lookback's item count, like a single sketch. KLL and top-k merge lossily;
-  their merge penalty is #158.
+- For sketches that merge exactly, the window size doesn't matter: a merged
+  answer reads the curve at the lookback's item count, like a single sketch.
+  KLL and top-k merge lossily (#131): an answer merged from `m = S_i / D.x`
+  windows reads the study's merge curve (`saturation_merge_curve.csv`, the
+  sketch merged from `m` shards of the same items) at the lookback's item
+  count. Between measured shard counts, the worse. Past the largest
+  measured count, or without a merge curve, a merged KLL or top-k answer has
+  no accuracy: the study must measure the merge counts a workload needs
+  (`--merge-shards-list`) up to the N it reads at: past the merge curve's
+  last N, the merged answer has no accuracy either (#158).
+  `SaturationCurves::load` refuses a study with no merge curves for a
+  candidate KLL or top-k sketch.
 
 The cost table's sketch accuracies are not read, but they are one point on
 each curve: a row's `measured_at` (items, Zipf θ and population, or Pareto
@@ -473,8 +482,8 @@ each phase's CPU and memory, together with the selected deployment mapping.
 
 ## v1 scope and TODOs
 
-- **Accuracy after merging:** every merge reads the curve at the merged item
-  count. KLL and top-k don't model their merge penalty yet (#158).
+- **Accuracy after merging:** KLL and top-k are planned only up to the
+  largest shard count and N the study measured merge curves at (#158).
 - **Query-result sharing:** v1 charges every RAQE its own query and merge CPU.
   Revisit when RAQE semantics and execution timing identify safe reuse cases.
 - **Latency SLAs:** the MILP takes optional per-RAQE latency bounds; the

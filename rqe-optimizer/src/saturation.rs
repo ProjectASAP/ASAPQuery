@@ -3,10 +3,11 @@
 //! deployment's answer covers. Design decisions: #156.
 //!
 //! The curve is read at the number of items one group receives over the
-//! RAQE's whole lookback: series per group times scrapes per lookback. That
-//! holds whether the answer is one sketch or a merge of many smaller-window
-//! sketches; the window size doesn't matter.
-//! KLL and top-k merge lossily (#131); their merge penalty is #158.
+//! RAQE's whole lookback: series per group times scrapes per lookback. For
+//! sketches that merge exactly, that holds whether the answer is one sketch
+//! or a merge of many smaller-window sketches. KLL and top-k merge lossily
+//! (#131): an answer merged from `L / x` windows reads the curve of the sketch
+//! merged from that many shards (#158).
 //!
 //! The cost table's sketch accuracies are not read: each is one point on a
 //! curve, at the row's `measured_at`, and [`SaturationCurves::check_cost_table`]
@@ -56,6 +57,9 @@ struct GridPoint {
     n_sat: Option<f64>,
     /// `(n, seed_mean_error, seed_se)`, ascending in `n`.
     curve: Vec<(f64, f64, f64)>,
+    /// The same, for the sketch merged from `m` shards of the stream, keyed
+    /// by `m > 1` (`saturation_merge_curve.csv`, #131, #158).
+    merged: BTreeMap<u64, Vec<(f64, f64, f64)>>,
 }
 
 /// How far a cost-table value may sit outside the curve's range at its N:
@@ -91,7 +95,8 @@ impl GridPoint {
         let neighbours = if n < first_n {
             return None;
         } else if n >= last.0 {
-            self.n_sat?;
+            // The plateau, as in `curve_error_at`.
+            self.n_sat.filter(|&sat| sat <= last.0)?;
             [last, last]
         } else {
             let above = self
@@ -112,24 +117,69 @@ impl GridPoint {
     /// Q6 of #156: between checkpoints, the worse neighbour; below the first,
     /// unmeasured; past the last, the plateau only if the point saturated.
     fn error_at(&self, n: f64, direction: AccuracyDirection) -> Option<f64> {
-        let &(first_n, ..) = self.curve.first()?;
-        let &(last_n, last_error, _) = self.curve.last()?;
-        if n < first_n {
-            return None;
-        }
-        if n >= last_n {
-            return self.n_sat.map(|_| last_error);
-        }
-        let above = self
-            .curve
-            .partition_point(|&(checkpoint, ..)| checkpoint < n);
-        let (checkpoint, error, _) = self.curve[above];
-        if checkpoint == n {
-            Some(error)
-        } else {
-            Some(worse(error, self.curve[above - 1].1, direction))
-        }
+        curve_error_at(&self.curve, self.n_sat, n, direction)
     }
+
+    /// The error at `n` items of the sketch merged from `merges` instances:
+    /// the worse of the measured shard counts either side of `merges` (one
+    /// is the plain sketch). `None` past the largest measured count, past the
+    /// merge curve's last N, or with no merge curve: what the study didn't
+    /// measure is unknown.
+    fn merged_error_at(&self, merges: u64, n: f64, direction: AccuracyDirection) -> Option<f64> {
+        if merges <= 1 {
+            return self.error_at(n, direction);
+        }
+        let below = self.merged.range(..=merges).next_back().map(|(&m, _)| m);
+        let (&above, _) = self.merged.range(merges..).next()?;
+        // Past a merge curve's last N it has no plateau: nothing shows the
+        // merged sketch stopped changing there.
+        let at = |m: u64| match m {
+            1 => self.error_at(n, direction),
+            m => curve_error_at(&self.merged[&m], None, n, direction),
+        };
+        let below = at(below.unwrap_or(1))?;
+        Some(worse(below, at(above)?, direction))
+    }
+}
+
+/// [`GridPoint::error_at`] on any of the point's curves.
+fn curve_error_at(
+    curve: &[(f64, f64, f64)],
+    n_sat: Option<f64>,
+    n: f64,
+    direction: AccuracyDirection,
+) -> Option<f64> {
+    let &(first_n, ..) = curve.first()?;
+    let &(last_n, last_error, _) = curve.last()?;
+    if n < first_n {
+        return None;
+    }
+    if n == last_n {
+        return Some(last_error);
+    }
+    // Past the last checkpoint, the plateau if the curve saturated by then.
+    if n > last_n {
+        return n_sat.filter(|&sat| sat <= last_n).map(|_| last_error);
+    }
+    let above = curve.partition_point(|&(checkpoint, ..)| checkpoint < n);
+    let (checkpoint, error, _) = curve[above];
+    if checkpoint == n {
+        Some(error)
+    } else {
+        Some(worse(error, curve[above - 1].1, direction))
+    }
+}
+
+/// KLL and the heap top-k sketches lose accuracy when merged (#131): a
+/// merged answer reads their merge curve. The other sketches merge exactly.
+fn merges_lossily(sketch: &str) -> bool {
+    matches!(
+        sketch,
+        "kll-percall"
+            | "cms-heap-topk-fastpath-vector2d"
+            | "countsketch-heap-topk-fastpath-vector2d"
+            | "univmon-topk"
+    )
 }
 
 /// Whether some capability plans `sketch`.
@@ -163,8 +213,9 @@ pub struct SaturationCurves {
 }
 
 impl SaturationCurves {
-    /// Reads `saturation.csv` (for the saturation point) and `saturation_curve.csv` from
-    /// each of [`RUN_DIRS`] under `dir`. Fails on a candidate family's curve
+    /// Reads `saturation.csv` (for the saturation point), `saturation_curve.csv`
+    /// and, where present, `saturation_merge_curve.csv` from each of
+    /// [`RUN_DIRS`] under `dir`. Fails on a candidate family's curve
     /// for a metric other than its [`accuracy_key`]: that study is stale.
     pub fn load(dir: &Path) -> io::Result<Self> {
         type PointKey = (String, String, String, String, String);
@@ -192,6 +243,7 @@ impl SaturationCurves {
                         n => Some(parse_number(n)?),
                     },
                     curve: Vec::new(),
+                    merged: BTreeMap::new(),
                 };
                 let sketch = row["sketch"].as_str();
                 if is_candidate(sketch) && point.error_metric != accuracy_key(sketch).0 {
@@ -216,11 +268,63 @@ impl SaturationCurves {
                     parse_number(&row["seed_se"])?,
                 ));
             }
-            points.extend(run_points);
+            let merge_path = run_dir.join("saturation_merge_curve.csv");
+            if merge_path.exists() {
+                for row in read_csv(&merge_path)? {
+                    let Some((_, point)) = run_points.get_mut(&key(&row)) else {
+                        return Err(invalid(format!(
+                            "{run}: merge curve row for a point not in saturation.csv: {row:?}"
+                        )));
+                    };
+                    let shards: u64 = row["shards"]
+                        .parse()
+                        .map_err(|_| invalid(format!("{run}: shards is not a count: {row:?}")))?;
+                    if shards == 0 {
+                        return Err(invalid(format!("{run}: zero shards: {row:?}")));
+                    }
+                    if shards > 1 {
+                        point.merged.entry(shards).or_default().push((
+                            parse_number(&row["n"])?,
+                            parse_number(&row["seed_mean_error"])?,
+                            parse_number(&row["seed_se"])?,
+                        ));
+                    }
+                }
+            }
+            // A later run's point wins, but keeps an earlier run's merge
+            // curves at shard counts it didn't measure (the 1e9 run measures
+            // none).
+            for (key, (sketch, mut point)) in run_points {
+                if let Some((_, earlier)) = points.remove(&key) {
+                    for (shards, curve) in earlier.merged {
+                        point.merged.entry(shards).or_insert(curve);
+                    }
+                }
+                points.insert(key, (sketch, point));
+            }
+        }
+        // A lossy candidate sketch with no merge curve at all (a study run
+        // without --merge-shards-list for it) would leave every merged
+        // deployment of it silently without accuracy; refuse it. A single
+        // point without one (only the 1e9 run has it) just has no merged
+        // accuracy.
+        let mut lossy: BTreeMap<&str, bool> = BTreeMap::new();
+        for (sketch, point) in points.values() {
+            if is_candidate(sketch) && merges_lossily(sketch) {
+                *lossy.entry(sketch).or_default() |= !point.merged.is_empty();
+            }
+        }
+        if let Some((sketch, _)) = lossy.iter().find(|(_, &merged)| !merged) {
+            return Err(invalid(format!(
+                "no merge curves for {sketch}; rerun the study with --merge-shards-list"
+            )));
         }
         let mut points_by_sketch: BTreeMap<String, Vec<GridPoint>> = BTreeMap::new();
         for (sketch, mut point) in points.into_values() {
             point.curve.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for curve in point.merged.values_mut() {
+                curve.sort_by(|a, b| a.0.total_cmp(&b.0));
+            }
             points_by_sketch.entry(sketch).or_default().push(point);
         }
         Ok(Self { points_by_sketch })
@@ -247,9 +351,14 @@ impl SaturationCurves {
         let points = self.bracketing_points(&deployment.config, shape)?;
         let covered = items_per_group(metric_facts, grouping, raqe.lookback_ms);
         let (_, direction) = accuracy_key(&deployment.config.sketch);
+        let merges = if merges_lossily(&deployment.config.sketch) {
+            deployment.query_instance_count(raqe.lookback_ms)?
+        } else {
+            1
+        };
         let mut worst = None;
         for point in points {
-            let error = point.error_at(covered, direction)?;
+            let error = point.merged_error_at(merges, covered, direction)?;
             worst = Some(worst.map_or(error, |w| worse(w, error, direction)));
         }
         worst
@@ -481,18 +590,23 @@ mod tests {
     const TOPK: &str = "cms-heap-topk-fastpath-vector2d";
 
     /// Top-k rows=3 cols=1024 at θ ∈ {1.0, 1.2}, K ∈ {1e3, 1e5}. Precision
-    /// falls with N; θ = 1.0 is worse, and K = 1e5 never saturates.
+    /// falls with N; θ = 1.0 is worse, and K = 1e5 never saturates. Merged
+    /// from 4 shards it loses 0.02 more, from 16 shards 0.1.
     fn curves() -> SaturationCurves {
+        let curve = |offset: f64| {
+            vec![
+                (1e3, 1.0 - offset, 0.0),
+                (1e4, 0.95 - offset, 0.01),
+                (1e5, 0.9 - offset, 0.0),
+            ]
+        };
         let point = |theta: f64, keys: f64, offset: f64, n_sat: Option<f64>| GridPoint {
             params: parse_config("rows=3 cols=1024"),
             shape: MeasuredShape::Zipf { skew: theta, keys },
             error_metric: "precision_at_k".into(),
             n_sat,
-            curve: vec![
-                (1e3, 1.0 - offset, 0.0),
-                (1e4, 0.95 - offset, 0.01),
-                (1e5, 0.9 - offset, 0.0),
-            ],
+            curve: curve(offset),
+            merged: BTreeMap::from([(4, curve(offset + 0.02)), (16, curve(offset + 0.1))]),
         };
         SaturationCurves {
             points_by_sketch: BTreeMap::from([(
@@ -594,18 +708,101 @@ mod tests {
     }
 
     #[test]
-    fn merged_answers_read_the_curve_at_the_lookback_count_whatever_the_window() {
-        // 10 items/s: a 100 s window holds 1e3 items, below the 1e4
-        // saturation point, but the 1e4 s lookback covers 1e5 items whatever
-        // the window.
+    fn merged_answers_read_the_merge_curve_at_the_lookback_count() {
+        // 10 items/s: the 1e4 s lookback covers 1e5 items whatever the
+        // window; top-k reads the curve of the sketch merged from L/x.
         let facts = workload(10, shape(1.2, 1e3));
         let r = topk_raqe(10_000_000);
-        for window_ms in [100_000, 1_000_000, 10_000_000] {
-            assert_eq!(
-                curves().accuracy(&r, &deployment(TOPK, window_ms), &facts),
-                Some(0.9)
-            );
+        let at = |window_ms| curves().accuracy(&r, &deployment(TOPK, window_ms), &facts);
+        // One window: the plain curve.
+        assert_eq!(at(10_000_000), Some(0.9));
+        // 4 windows: the 4-shard curve.
+        assert!((at(2_500_000).unwrap() - 0.88).abs() < 1e-12);
+        // 10 windows sit between 4 and 16 shards: the worse, 16.
+        assert!((at(1_000_000).unwrap() - 0.8).abs() < 1e-12);
+        // 100 windows: past the largest measured count, unmeasured.
+        assert_eq!(at(100_000), None);
+    }
+
+    /// Past a merge curve's last checkpoint the merged answer is unknown,
+    /// even when the plain curve saturated: nothing shows the merged sketch
+    /// stopped changing.
+    #[test]
+    fn a_merge_curve_has_no_plateau() {
+        let point = &curves().points_by_sketch[TOPK][1];
+        let higher = AccuracyDirection::HigherIsBetter;
+        assert_eq!(point.n_sat, Some(1e4));
+        assert!((point.merged_error_at(4, 1e5, higher).unwrap() - 0.88).abs() < 1e-12);
+        assert_eq!(point.merged_error_at(4, 1e9, higher), None);
+        assert_eq!(point.error_at(1e9, higher), Some(0.9));
+    }
+
+    /// Without a merge curve, a merged top-k answer has no known accuracy;
+    /// one window still reads the plain curve.
+    #[test]
+    fn a_lossy_merge_without_a_merge_curve_is_unknown() {
+        let mut curves = curves();
+        for point in curves.points_by_sketch.get_mut(TOPK).unwrap() {
+            point.merged.clear();
         }
+        let facts = workload(10, shape(1.2, 1e3));
+        let r = topk_raqe(10_000_000);
+        assert_eq!(
+            curves.accuracy(&r, &deployment(TOPK, 1_000_000), &facts),
+            None
+        );
+        assert_eq!(
+            curves.accuracy(&r, &deployment(TOPK, 10_000_000), &facts),
+            Some(0.9)
+        );
+    }
+
+    #[test]
+    fn load_reads_merge_curves_beyond_one_shard() {
+        let dir = std::env::temp_dir().join(format!("rqe-merge-{}", std::process::id()));
+        let header = "family,sketch,config,dist,param,cardinality";
+        let point = "quantile,kll-percall,k=200,pareto,2.0,";
+        for run in RUN_DIRS {
+            std::fs::create_dir_all(dir.join(run)).unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation.csv"),
+                format!(
+                    "{header},n_sat,final_error,error_metric\n{point},1000,0.01,mean_rank_err\n"
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation_curve.csv"),
+                format!("{header},n,seed_mean_error,seed_se\n{point},1000,0.01,0\n"),
+            )
+            .unwrap();
+        }
+        // One shard is the plain curve. The later run measured only 16
+        // shards: it keeps the earlier run's 4.
+        let merge = |rows: &str| format!("{header},n,shards,seed_mean_error,seed_se\n{rows}");
+        let merge_path = |run| dir.join(run).join("saturation_merge_curve.csv");
+        std::fs::write(
+            merge_path(RUN_DIRS[0]),
+            merge(&format!("{point},1000,1,0.01,0\n{point},1000,4,0.02,0\n")),
+        )
+        .unwrap();
+        std::fs::write(
+            merge_path(RUN_DIRS[1]),
+            merge(&format!("{point},1000,16,0.03,0\n")),
+        )
+        .unwrap();
+        let loaded = SaturationCurves::load(&dir);
+        // A merged KLL with no merge curve anywhere is refused.
+        std::fs::remove_file(merge_path(RUN_DIRS[0])).unwrap();
+        std::fs::write(merge_path(RUN_DIRS[1]), merge("")).unwrap();
+        let missing = SaturationCurves::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let point = &loaded.unwrap().points_by_sketch["kll-percall"][0];
+        assert_eq!(
+            point.merged,
+            BTreeMap::from([(4, vec![(1e3, 0.02, 0.0)]), (16, vec![(1e3, 0.03, 0.0)])])
+        );
+        assert!(missing.unwrap_err().to_string().contains("no merge curve"));
     }
 
     #[test]
@@ -709,6 +906,11 @@ mod tests {
             std::fs::write(
                 dir.join(run).join("saturation_curve.csv"),
                 format!("{header},n,seed_mean_error,seed_se\n{point},1000,0.05,0\n{point},{last},0.01,0\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation_merge_curve.csv"),
+                format!("{header},n,shards,seed_mean_error,seed_se\n{point},1000,4,0.06,0\n"),
             )
             .unwrap();
         }
