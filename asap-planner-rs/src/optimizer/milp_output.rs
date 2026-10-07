@@ -1,6 +1,6 @@
 //! Turns a solved MILP plan into the planner's streaming and inference YAML.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use asap_types::enums::{CleanupPolicy, WindowType};
 use indexmap::map::Entry;
@@ -47,6 +47,19 @@ pub enum MilpOutputError {
     Generator(#[from] ControllerError),
 }
 
+/// Errors on the first avg query: its plan can be costed but not deployed.
+pub fn reject_avg_queries(config: &ControllerConfig) -> Result<(), MilpOutputError> {
+    match config
+        .query_groups
+        .iter()
+        .flat_map(|group| &group.queries)
+        .find(|query| contains_avg(query))
+    {
+        Some(query) => Err(MilpOutputError::AvgQuery(query.clone())),
+        None => Ok(()),
+    }
+}
+
 /// Streaming and inference YAML for `solution`. Aggregation ids follow the
 /// plan's deployment order, starting at 1. No cleanup policy yet, so the
 /// retained instance counts are not emitted.
@@ -55,19 +68,16 @@ pub fn plan_to_planner_output(
     workload: &MilpWorkload,
     solution: &MilpSolution,
 ) -> Result<PlannerOutput, MilpOutputError> {
-    if let Some(query) = config
-        .query_groups
-        .iter()
-        .flat_map(|group| &group.queries)
-        .find(|query| contains_avg(query))
-    {
-        return Err(MilpOutputError::AvgQuery(query.clone()));
-    }
+    reject_avg_queries(config)?;
 
     let item_of = |raqe: usize| &workload.items[workload.raqe_items[raqe]];
+    // Each item once per deployment, however many occurrences it has.
     let mut served: Vec<Vec<&OptimizerItem>> = vec![Vec::new(); solution.deployments.len()];
+    let mut seen = HashSet::new();
     for (raqe, planned) in solution.raqes.iter().enumerate() {
-        served[planned.deployment].push(item_of(raqe));
+        if seen.insert((planned.deployment, workload.raqe_items[raqe])) {
+            served[planned.deployment].push(item_of(raqe));
+        }
     }
 
     let mut aggregations: IndexMap<String, IntermediateAggConfig> = IndexMap::new();

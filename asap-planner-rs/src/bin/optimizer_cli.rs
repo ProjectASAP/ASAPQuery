@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use asap_planner::optimizer::{
     build_milp_workload, load_flat_atomic_cost_table, load_optional_selected_atomic_cost_table,
-    load_workload_facts, plan_to_planner_output, run_greedy_pipeline, solve_milp, AtomicCostTable,
-    LabelSetFacts, LabelSetFactsError,
+    load_workload_facts, plan_to_planner_output, reject_avg_queries, run_greedy_pipeline,
+    solve_milp, AtomicCostTable, LabelSetFacts, LabelSetFactsError,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -200,6 +200,10 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
     let objective = Objective::AUCCost { w_cpu, w_mem };
     tracing::debug!(?objective, cost_rows = costs.len(), "milp: inputs loaded");
 
+    // Fail before solving when the plan would be written but can't be.
+    if args.output_dir.is_some() {
+        reject_avg_queries(config)?;
+    }
     let workload = build_milp_workload(config, &facts, args.data_ingestion_interval_ms)?;
     let solution = solve_milp(
         &workload,
@@ -259,15 +263,13 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
 
     if let Some(dir) = &args.output_dir {
         let output = plan_to_planner_output(config, &workload, &solution)?;
+        // Serialize both before writing either, so a failure can't leave a
+        // new streaming config next to a stale inference config.
+        let streaming = output.to_streaming_yaml_string()?;
+        let inference = output.to_inference_yaml_string()?;
         std::fs::create_dir_all(dir)?;
-        std::fs::write(
-            dir.join("streaming_config.yaml"),
-            output.to_streaming_yaml_string()?,
-        )?;
-        std::fs::write(
-            dir.join("inference_config.yaml"),
-            output.to_inference_yaml_string()?,
-        )?;
+        std::fs::write(dir.join("streaming_config.yaml"), streaming)?;
+        std::fs::write(dir.join("inference_config.yaml"), inference)?;
         println!("\nwrote configs to {}", dir.display());
     }
     Ok(())
