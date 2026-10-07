@@ -6,7 +6,8 @@ use rqe_optimizer::candidates::build_all_candidates;
 use rqe_optimizer::enumerate::unservable;
 use rqe_optimizer::milp::{minimize, MilpSolution, Objective};
 use rqe_optimizer::{
-    validate_facts, Accuracy, AtomicCostEntry, Capability, LabelSet, Raqe, WorkloadFacts,
+    family_properties, validate_facts, Accuracy, AtomicCostEntry, Capability, LabelSet, Raqe,
+    WorkloadFacts,
 };
 use thiserror::Error;
 
@@ -41,6 +42,15 @@ pub enum MilpError {
     },
     #[error("query {query:?}: topk ranking (by value or by sample count) is unknown")]
     TopkWeightingUnknown { query: String },
+    #[error(
+        "raqe {raqe:?}: sketches serve it, but workload facts give metric {metric:?} \
+         grouping {grouping:?} no `shape`"
+    )]
+    MissingShape {
+        raqe: String,
+        metric: String,
+        grouping: LabelSet,
+    },
     #[error("no eligible deployment for raqes: {0:?}")]
     Unservable(Vec<String>),
     #[error("MILP solve failed: {0}")]
@@ -60,6 +70,7 @@ pub fn solve_milp(
     allow_undeployable_families: bool,
     accuracy: &Accuracy,
 ) -> Result<MilpSolution, MilpError> {
+    require_shapes(workload, facts, allow_undeployable_families)?;
     let deployments = build_all_candidates(
         &workload.raqes,
         costs,
@@ -95,6 +106,32 @@ pub fn solve_milp(
         "milp: solved"
     );
     Ok(solution)
+}
+
+/// A Raqe sketches may serve reads their accuracy off the curves at its
+/// grouping's `shape`; without one it could only be reported unservable.
+fn require_shapes(
+    workload: &MilpWorkload,
+    facts: &WorkloadFacts,
+    allow_undeployable_families: bool,
+) -> Result<(), MilpError> {
+    for raqe in &workload.raqes {
+        let sketch_served = raqe
+            .capability
+            .candidate_families(allow_undeployable_families)
+            .any(|family| !family_properties(family).exact);
+        let has_shape = facts
+            .get(&raqe.metric)
+            .is_some_and(|m| m.data_shape.contains_key(&raqe.grouping_labels));
+        if sketch_served && !has_shape {
+            return Err(MilpError::MissingShape {
+                raqe: raqe.id.clone(),
+                metric: raqe.metric.clone(),
+                grouping: raqe.grouping_labels.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The MILP's view of a workload.
@@ -314,10 +351,13 @@ metrics:
     groups:
       - labels: [instance, job]
         cardinality: 100
+        shape: {zipf_s: 1.1, distinct_keys: 10000, tail_index: 2.0}
       - labels: [job]
         cardinality: 10
+        shape: {zipf_s: 1.1, distinct_keys: 10000, tail_index: 2.0}
       - labels: []
         cardinality: 1
+        shape: {zipf_s: 1.1, distinct_keys: 10000, tail_index: 2.0}
 "#;
 
     pub(crate) fn config(groups: &str) -> ControllerConfig {
@@ -540,6 +580,47 @@ metrics:
             solution.deployments[0].deployment.config.sketch,
             "exact-sum"
         );
+    }
+
+    /// A sketch-served grouping without a `shape` fails by name, before
+    /// solving; an exact-only one needs none.
+    #[test]
+    fn a_sketch_served_grouping_without_a_shape_is_named() {
+        let quantile = "quantile_over_time(0.99, http_requests_total[5m])";
+        let sum = "sum by (job) (http_requests_total)";
+        let both = config(&(group(quantile, 0.99) + &group(sum, 0.99)));
+        let mut facts = facts(&both);
+        facts
+            .get_mut("http_requests_total")
+            .unwrap()
+            .data_shape
+            .clear();
+        let w = build_milp_workload(&both, &facts, SCRAPE_MS).unwrap();
+        let err = solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, MilpError::MissingShape { raqe, grouping, .. }
+                if raqe.contains(quantile) && *grouping == labels(&["instance", "job"])),
+            "{err:?}"
+        );
+        let exact_only = config(&group(sum, 0.99));
+        let w = build_milp_workload(&exact_only, &facts, SCRAPE_MS).unwrap();
+        assert!(solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy
+        )
+        .is_ok());
     }
 
     #[test]

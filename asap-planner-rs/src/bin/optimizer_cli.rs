@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+use anyhow::Context;
 use asap_planner::optimizer::{
     build_milp_workload, load_flat_atomic_cost_table, load_workload_facts, plan_to_planner_output,
     reject_avg_queries, solve_milp, MilpError,
@@ -99,7 +100,12 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
         return Err(MilpError::MissingMetricHints.into());
     };
     let facts = load_workload_facts(&args.workload_facts, hints, args.data_ingestion_interval_ms)?;
-    let curves = SaturationCurves::load(&args.saturation_dir)?;
+    let curves = SaturationCurves::load(&args.saturation_dir).with_context(|| {
+        format!(
+            "loading saturation curves from --saturation-dir {}",
+            args.saturation_dir.display()
+        )
+    })?;
     let costs = load_flat_atomic_cost_table(&args.atomic_costs)?;
     let Objective::AUCCost { w_cpu, w_mem } = Objective::default();
     let (w_cpu, w_mem) = (args.w_cpu.unwrap_or(w_cpu), args.w_mem.unwrap_or(w_mem));

@@ -30,6 +30,11 @@ pub enum WorkloadFactsError {
     DuplicateLabels { metric: String, labels: LabelSet },
     #[error("metric {metric:?}: value range ({lo}, {hi}) needs 0 < lo <= hi < inf")]
     InvalidValueRange { metric: String, lo: f64, hi: f64 },
+    #[error(
+        "metric {metric:?} labels {labels:?}: shape needs finite zipf_s >= 0, \
+         distinct_keys >= 1 and tail_index > 0"
+    )]
+    InvalidShape { metric: String, labels: LabelSet },
     #[error("metric {0:?} has facts but no `metrics:` hint giving its labels")]
     MetricWithoutHint(String),
 }
@@ -109,6 +114,20 @@ pub fn parse_workload_facts(
         for group in entry.groups {
             let labels: LabelSet = group.labels.into_iter().collect();
             if let Some(shape) = group.shape {
+                let ShapeEntry {
+                    zipf_s,
+                    distinct_keys,
+                    tail_index,
+                } = shape;
+                let finite = [zipf_s, distinct_keys, tail_index]
+                    .iter()
+                    .all(|x| x.is_finite());
+                if !(finite && zipf_s >= 0.0 && distinct_keys >= 1.0 && tail_index > 0.0) {
+                    return Err(WorkloadFactsError::InvalidShape {
+                        metric: entry.metric,
+                        labels,
+                    });
+                }
                 data_shape.insert(
                     labels.clone(),
                     DataShape {
@@ -189,6 +208,29 @@ metrics:
                 tail_index: 2.0,
             }
         );
+    }
+
+    #[test]
+    fn rejects_an_invalid_shape() {
+        for shape in [
+            "{zipf_s: -0.1, distinct_keys: 120, tail_index: 2.0}",
+            "{zipf_s: 1.1, distinct_keys: 0.5, tail_index: 2.0}",
+            "{zipf_s: 1.1, distinct_keys: 120, tail_index: 0}",
+            "{zipf_s: .inf, distinct_keys: 120, tail_index: 2.0}",
+        ] {
+            let yaml = format!(
+                "metrics:\n  - metric: http_requests_total\n    value_range: [1.0, 1000.0]\n    \
+                 groups:\n      - labels: [job]\n        cardinality: 10\n        shape: {shape}\n"
+            );
+            assert!(
+                matches!(
+                    parse_workload_facts(&yaml, &hints(), 15_000),
+                    Err(WorkloadFactsError::InvalidShape { ref metric, labels: ref got })
+                        if metric == "http_requests_total" && *got == labels(&["job"])
+                ),
+                "{shape}"
+            );
+        }
     }
 
     #[test]
