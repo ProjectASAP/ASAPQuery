@@ -287,7 +287,7 @@ fn collect_binary_leaf_entries(
     }
 }
 
-fn build_streaming_yaml(
+pub(crate) fn build_streaming_yaml(
     dedup_map: &IndexMap<String, IntermediateAggConfig>,
     id_map: &HashMap<String, u32>,
     metric_schema: &asap_types::PromQLSchema,
@@ -319,7 +319,7 @@ fn build_streaming_yaml(
     Ok(YamlValue::Mapping(root))
 }
 
-fn build_inference_yaml(
+pub(crate) fn build_inference_yaml(
     cleanup_policy: CleanupPolicy,
     query_plan_map: &IndexMap<String, QueryPlanEntry>,
     id_map: &HashMap<String, u32>,
