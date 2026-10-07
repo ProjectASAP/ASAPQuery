@@ -36,24 +36,30 @@ pub type LabelSet = BTreeSet<String>;
 /// if it is in both `families()` and [`DEPLOYABLE_FAMILIES`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Capability {
-    SumOrCount,
+    Sum,
+    Count,
     Min,
     Max,
     RateOrIncrease,
     Quantile,
     Cardinality,
-    TopK,
+    /// `topk(k, sum_over_time(x[w]))`: ranked by summed value.
+    TopKByValue,
+    /// `topk(k, count_over_time(x[w]))`: ranked by sample count.
+    TopKByCount,
 }
 
 impl Capability {
-    pub const ALL: [Capability; 7] = [
-        Capability::SumOrCount,
+    pub const ALL: [Capability; 9] = [
+        Capability::Sum,
+        Capability::Count,
         Capability::Min,
         Capability::Max,
         Capability::RateOrIncrease,
         Capability::Quantile,
         Capability::Cardinality,
-        Capability::TopK,
+        Capability::TopKByValue,
+        Capability::TopKByCount,
     ];
 
     /// `AtomicCostEntry.sketch` values serving this capability. These are
@@ -63,10 +69,11 @@ impl Capability {
     /// an unmeasured name here is harmless, it just matches no row.
     pub fn families(self) -> &'static [&'static str] {
         match self {
-            // Exact multi-subpopulation accumulators, not sketches. Sum also
-            // serves count (sum of 1s). Min and max are separate, so a min
-            // query never lands on, or shares, a max accumulator.
-            Capability::SumOrCount => &["exact-sum"],
+            // Exact multi-subpopulation accumulators, not sketches. Count is
+            // a sum of 1s, so both use `exact-sum`, but as separate
+            // capabilities they never share one accumulator. Likewise min and
+            // max, so a min query never lands on, or shares, a max one.
+            Capability::Sum | Capability::Count => &["exact-sum"],
             Capability::Min => &["exact-min"],
             Capability::Max => &["exact-max"],
             Capability::RateOrIncrease => &["exact-increase"],
@@ -77,7 +84,9 @@ impl Capability {
             // count, same target as HLL. Second candidate, not a second
             // capability.
             Capability::Cardinality => &["hll", "univmon-cardinality"],
-            Capability::TopK => &[
+            // The sketch is the same; ASAPQuery deploys the two kinds with
+            // different `count_events`, so they never share one.
+            Capability::TopKByValue | Capability::TopKByCount => &[
                 "cms-heap-topk-fastpath-vector2d",
                 "countsketch-heap-topk-fastpath-vector2d",
                 "univmon-topk",
@@ -431,7 +440,7 @@ pub(crate) mod test_support {
     pub fn raqe(lookback_ms: Millis, interval_ms: Millis) -> Raqe {
         Raqe {
             id: "r".into(),
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             lookback_ms,
             interval_ms,
             metric: METRIC.into(),
@@ -454,7 +463,7 @@ pub(crate) mod test_support {
         slide_ms: Millis,
     ) -> Deployment {
         Deployment {
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),

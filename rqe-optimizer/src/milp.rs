@@ -204,8 +204,11 @@ pub fn minimize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::candidates::build_all_candidates;
     use crate::enumerate::brute_force;
     use crate::test_support::{self, facts};
+    use crate::{AtomicCostEntry, Capability};
+    use std::collections::BTreeSet;
 
     /// Window and slide 60 s, merge 1 CPU-sec.
     fn deployment(insert_cpu_secs: f64, memory: f64, query_cpu_secs: f64) -> Deployment {
@@ -241,6 +244,41 @@ mod tests {
             (got - best).abs() <= 1e-9 * best,
             "{objective:?}: {got} vs {best}"
         );
+    }
+
+    /// Capabilities the plan serves from one deployment, solving `a` and `b`
+    /// queries at the same cadence from one `sketch` cost row.
+    fn shared_deployments(a: Capability, b: Capability, sketch: &str) -> usize {
+        let raqes = [a, b].map(|capability| Raqe {
+            capability,
+            ..raqe("r", 60_000)
+        });
+        let costs = [AtomicCostEntry {
+            sketch: sketch.into(),
+            ..deployment(1.0, 1.0, 1.0).config
+        }];
+        let candidates = build_all_candidates(&raqes, &costs, &facts(1, 1), false);
+        let milp = minimize(&raqes, &candidates, &facts(1, 1), Objective::default())
+            .expect("feasible MILP");
+        let used: BTreeSet<usize> = milp.mapping.iter().copied().collect();
+        raqes.len() - used.len()
+    }
+
+    #[test]
+    fn plan_never_serves_paired_capabilities_from_one_deployment() {
+        let pairs = [
+            (Capability::Sum, Capability::Count, "exact-sum"),
+            (
+                Capability::TopKByValue,
+                Capability::TopKByCount,
+                "cms-heap-topk-fastpath-vector2d",
+            ),
+        ];
+        for (a, b, sketch) in pairs {
+            // Sharing halves ingest, so the MILP shares whenever it may.
+            assert_eq!(shared_deployments(a, a, sketch), 1, "{a:?} twice");
+            assert_eq!(shared_deployments(a, b, sketch), 0, "{a:?} and {b:?}");
+        }
     }
 
     #[test]

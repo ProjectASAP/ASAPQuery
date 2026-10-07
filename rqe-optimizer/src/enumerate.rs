@@ -148,7 +148,7 @@ mod tests {
     fn raqe(id: &str, interval: u64, lookback: u64) -> Raqe {
         Raqe {
             id: id.to_string(),
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             lookback_ms: lookback,
             interval_ms: interval,
             metric: METRIC.into(),

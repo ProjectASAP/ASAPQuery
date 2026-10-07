@@ -373,7 +373,7 @@ mod tests {
     fn raqe(id: &str, lookback: Millis, interval: Millis, tolerance: f64) -> Raqe {
         Raqe {
             id: id.into(),
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             lookback_ms: lookback,
             interval_ms: interval,
             metric: METRIC.into(),

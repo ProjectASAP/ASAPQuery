@@ -368,7 +368,7 @@ mod tests {
     fn raqe(id: &str, lookback: Millis, interval: Millis) -> Raqe {
         Raqe {
             id: id.into(),
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             lookback_ms: lookback,
             interval_ms: interval,
             metric: METRIC.into(),
@@ -400,7 +400,7 @@ mod tests {
         // Error is not monotone in the count: 16 is worse than 4 and 64.
         config.merge_accuracy = BTreeMap::from([(4, err(0.2)), (16, err(2.0)), (64, err(0.3))]);
         let at_window = |window_ms| Deployment {
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
@@ -507,7 +507,7 @@ mod tests {
     fn eligibility_requires_exact_non_overlapping_tiling() {
         let r = raqe("r", 600_000, 180_000);
         let d = Deployment {
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
@@ -539,7 +539,7 @@ mod tests {
     fn prunes_finer_slide_when_the_coarser_slide_serves_the_same_raqe() {
         let r = raqe("r", 60_000, 60_000);
         let coarse = Deployment {
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
@@ -563,7 +563,7 @@ mod tests {
         let r = raqe("r", 60_000, 60_000);
         let cost = cost();
         let large_window = Deployment {
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
@@ -592,7 +592,7 @@ mod tests {
         let r = raqe("r", 60_000, 60_000);
         // Stores (60 − 60) / 60 + 1 = 1 closed instance of 10 bytes.
         let whole_window = Deployment {
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),
@@ -631,7 +631,7 @@ mod tests {
         let r = raqe("r", 60_000, 60_000);
         // x == L: no merge, so no merge memory.
         let direct = Deployment {
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             metric: METRIC.into(),
             spatial_filter: String::new(),
             grouping_labels: LabelSet::new(),

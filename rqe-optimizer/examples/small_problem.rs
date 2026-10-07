@@ -217,7 +217,7 @@ fn raqes() -> Vec<Raqe> {
         // under uniform -- top-k is meaningless without real skew).
         Raqe {
             id: "top_endpoints_1h".to_string(),
-            capability: Capability::TopK,
+            capability: Capability::TopKByValue,
             lookback_ms: 3_600_000,
             interval_ms: 60_000,
             metric: requests(),

@@ -197,7 +197,9 @@ pub(crate) fn merge(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts)
 pub(crate) fn query(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
     let groups = group_count(deployment, facts);
     let output_bytes_per_group = match raqe.capability {
-        Capability::TopK => TOPK_ENTRIES * OUTPUT_BYTES_PER_TOPK_ENTRY,
+        Capability::TopKByValue | Capability::TopKByCount => {
+            TOPK_ENTRIES * OUTPUT_BYTES_PER_TOPK_ENTRY
+        }
         _ => OUTPUT_BYTES_PER_VALUE,
     };
     let query_cpu_secs_per_group: f64 = priced_parts(deployment, facts)
