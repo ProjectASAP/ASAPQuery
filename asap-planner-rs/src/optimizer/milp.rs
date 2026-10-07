@@ -6,7 +6,8 @@ use rqe_optimizer::candidates::build_all_candidates;
 use rqe_optimizer::enumerate::unservable;
 use rqe_optimizer::milp::{minimize, MilpSolution, Objective};
 use rqe_optimizer::{
-    table_accuracy, validate_facts, AtomicCostEntry, Capability, LabelSet, Raqe, WorkloadFacts,
+    family_properties, validate_facts, Accuracy, AtomicCostEntry, Capability, LabelSet, Raqe,
+    WorkloadFacts,
 };
 use thiserror::Error;
 
@@ -41,6 +42,17 @@ pub enum MilpError {
     },
     #[error("query {query:?}: topk ranking (by value or by sample count) is unknown")]
     TopkWeightingUnknown { query: String },
+    #[error("topk query {query:?} has no literal k")]
+    TopkWithoutK { query: String },
+    #[error(
+        "raqe {raqe:?}: sketches serve it, but workload facts give metric {metric:?} \
+         grouping {grouping:?} no `shape`"
+    )]
+    MissingShape {
+        raqe: String,
+        metric: String,
+        grouping: LabelSet,
+    },
     #[error("no eligible deployment for raqes: {0:?}")]
     Unservable(Vec<String>),
     #[error("MILP solve failed: {0}")]
@@ -49,20 +61,24 @@ pub enum MilpError {
 
 /// The cheapest plan. Only families in sketch-bench's `DEPLOYABLE_FAMILIES`
 /// are candidates unless `allow_undeployable_families`, whose plan can be
-/// studied but not deployed.
+/// studied but not deployed. `accuracy` is what a deployment achieves for a
+/// Raqe: in production sketch-bench's saturation curves
+/// (`SaturationCurves::accuracy`).
 pub fn solve_milp(
     workload: &MilpWorkload,
     facts: &WorkloadFacts,
     costs: &[AtomicCostEntry],
     objective: Objective,
     allow_undeployable_families: bool,
+    accuracy: &Accuracy,
 ) -> Result<MilpSolution, MilpError> {
+    require_shapes(workload, facts, costs, allow_undeployable_families)?;
     let deployments = build_all_candidates(
         &workload.raqes,
         costs,
         facts,
         allow_undeployable_families,
-        &table_accuracy,
+        accuracy,
     );
     tracing::debug!(
         candidates = deployments.len(),
@@ -78,18 +94,12 @@ pub fn solve_milp(
         .filter(|&(i, _)| i == 0 || workload.raqe_items[i] != workload.raqe_items[i - 1])
         .map(|(_, raqe)| raqe.clone())
         .collect();
-    let missing = unservable(&one_per_item, &deployments, facts, &table_accuracy);
+    let missing = unservable(&one_per_item, &deployments, facts, accuracy);
     if !missing.is_empty() {
         return Err(MilpError::Unservable(missing));
     }
-    let solution = minimize(
-        &workload.raqes,
-        &deployments,
-        facts,
-        objective,
-        &table_accuracy,
-    )
-    .map_err(|e| MilpError::Solver(e.to_string()))?;
+    let solution = minimize(&workload.raqes, &deployments, facts, objective, accuracy)
+        .map_err(|e| MilpError::Solver(e.to_string()))?;
     tracing::debug!(
         objective = objective.value(&solution.plan_cost),
         cpu_secs_per_sec = solution.plan_cost.cpu_secs_per_sec(),
@@ -98,6 +108,36 @@ pub fn solve_milp(
         "milp: solved"
     );
     Ok(solution)
+}
+
+/// A Raqe a sketch family with cost rows may serve reads its accuracy off
+/// the curves at its grouping's `shape`; without one it could only be
+/// reported unservable. Families without rows are left to that path.
+fn require_shapes(
+    workload: &MilpWorkload,
+    facts: &WorkloadFacts,
+    costs: &[AtomicCostEntry],
+    allow_undeployable_families: bool,
+) -> Result<(), MilpError> {
+    for raqe in &workload.raqes {
+        let sketch_served = raqe
+            .capability
+            .candidate_families(allow_undeployable_families)
+            .any(|family| {
+                !family_properties(family).exact && costs.iter().any(|row| row.sketch == family)
+            });
+        let has_shape = facts
+            .get(&raqe.metric)
+            .is_some_and(|m| m.data_shape.contains_key(&raqe.grouping_labels));
+        if sketch_served && !has_shape {
+            return Err(MilpError::MissingShape {
+                raqe: raqe.id.clone(),
+                metric: raqe.metric.clone(),
+                grouping: raqe.grouping_labels.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The MILP's view of a workload.
@@ -240,6 +280,21 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
     }
     let accuracy_sla = accuracy_target(capability, item.accuracy_sla);
 
+    // A top-k Raqe asks for its query's literal k (the largest, should an
+    // item carry several), which sizes and prices the heap.
+    let topk_k = match capability {
+        Capability::TopKByValue | Capability::TopKByCount => Some(
+            item.query_strings
+                .iter()
+                .map(|q| super::milp_output::topk_k(q))
+                .try_fold(0, |max, k| Some(max.max(k?)))
+                .ok_or_else(|| MilpError::TopkWithoutK {
+                    query: query.clone(),
+                })?,
+        ),
+        _ => None,
+    };
+
     // TopK keeps one heap per `topk by` bucket; its `grouping_labels` is the
     // output label set (every label), which would cost one heap per series.
     let grouping_labels: LabelSet = match capability {
@@ -261,6 +316,7 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
         grouping_labels,
         accuracy_sla,
         latency_sla_ms: item.latency_sla_ms,
+        topk_k,
     })
 }
 
@@ -303,6 +359,8 @@ fn accuracy_target(capability: Capability, accuracy_sla: f64) -> f64 {
 pub(super) mod tests {
     use std::collections::BTreeMap;
 
+    pub(crate) use rqe_optimizer::table_accuracy;
+
     use super::*;
     use crate::optimizer::workload_facts::parse_workload_facts;
 
@@ -315,10 +373,13 @@ metrics:
     groups:
       - labels: [instance, job]
         cardinality: 100
+        shape: {zipf_s: 1.1, distinct_keys: 10000, tail_index: 2.0}
       - labels: [job]
         cardinality: 10
+        shape: {zipf_s: 1.1, distinct_keys: 10000, tail_index: 2.0}
       - labels: []
         cardinality: 1
+        shape: {zipf_s: 1.1, distinct_keys: 10000, tail_index: 2.0}
 "#;
 
     pub(crate) fn config(groups: &str) -> ControllerConfig {
@@ -356,8 +417,8 @@ metrics:
             merge_cpu_secs: 1e-7,
             query_cpu_secs: 1e-7,
             query_accuracy: accuracy.iter().map(|(k, v)| (k.to_string(), *v)).collect(),
-            merge_accuracy: BTreeMap::new(),
-            measured_at: None,
+            accuracy_metric: rqe_optimizer::accuracy_key(sketch).0.to_string(),
+            measured_at: crate::optimizer::atomic_costs::test_measured_at(),
         }
     }
 
@@ -365,11 +426,20 @@ metrics:
         vec![
             cost("exact-sum", &[("relative_error", 0.0)]),
             cost("kll-percall", &[("mean_rank_err", 0.005)]),
-            cost(
-                "cms-heap-topk-fastpath-vector2d",
-                &[("precision_at_k", 0.995)],
-            ),
+            topk_cost(32),
+            topk_cost(2048),
         ]
+    }
+
+    /// A top-k row at one heap size; the cost table measures several
+    /// (sketch-bench `TOPK_HEAPS`), and a deployment needs `m · k`.
+    fn topk_cost(heap: u64) -> AtomicCostEntry {
+        let mut row = cost(
+            "cms-heap-topk-fastpath-vector2d",
+            &[("precision_at_k", 0.995)],
+        );
+        row.sketch_config["params"] = serde_json::json!({"heap": heap});
+        row
     }
 
     #[test]
@@ -446,6 +516,23 @@ metrics:
     }
 
     #[test]
+    fn topk_carries_its_literal_k_and_needs_one() {
+        let w = workload(&group(
+            "topk(7, sum_over_time(http_requests_total[1m]))",
+            0.99,
+        ));
+        assert_eq!(w.raqes[0].topk_k, Some(7));
+        let mut item = w.items[0].clone();
+        item.query_strings = vec!["topk(scalar(up), http_requests_total)".into()];
+        assert!(matches!(
+            item_to_raqe(&item),
+            Err(MilpError::TopkWithoutK { .. })
+        ));
+        let sum = workload(&group("sum by (job) (http_requests_total)", 0.99));
+        assert_eq!(sum.raqes[0].topk_k, None);
+    }
+
+    #[test]
     fn topk_with_unknown_weighting_is_an_error() {
         let w = workload(&group("topk(5, http_requests_total)", 0.99));
         let mut item = w.items[0].clone();
@@ -517,13 +604,77 @@ metrics:
         let config = config(&(group(query, 0.99) + &group(query, 0.99)));
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
-        let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
+        let solution = solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap();
         assert_eq!(solution.deployments.len(), 1);
         assert_eq!(solution.raqes[0].deployment, solution.raqes[1].deployment);
         assert_eq!(
             solution.deployments[0].deployment.config.sketch,
             "exact-sum"
         );
+    }
+
+    /// A sketch-served grouping without a `shape` fails by name, before
+    /// solving; an exact-only one needs none.
+    #[test]
+    fn a_sketch_served_grouping_without_a_shape_is_named() {
+        let quantile = "quantile_over_time(0.99, http_requests_total[5m])";
+        let sum = "sum by (job) (http_requests_total)";
+        let both = config(&(group(quantile, 0.99) + &group(sum, 0.99)));
+        let mut facts = facts(&both);
+        facts
+            .get_mut("http_requests_total")
+            .unwrap()
+            .data_shape
+            .clear();
+        let w = build_milp_workload(&both, &facts, SCRAPE_MS).unwrap();
+        let err = solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, MilpError::MissingShape { raqe, grouping, .. }
+                if raqe.contains(quantile) && *grouping == labels(&["instance", "job"])),
+            "{err:?}"
+        );
+        // No sketch rows for quantiles: left to the Unservable path.
+        let exact_rows: Vec<_> = costs()
+            .into_iter()
+            .filter(|row| row.sketch == "exact-sum")
+            .collect();
+        let err = solve_milp(
+            &w,
+            &facts,
+            &exact_rows,
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap_err();
+        assert!(matches!(err, MilpError::Unservable(_)), "{err:?}");
+        let exact_only = config(&group(sum, 0.99));
+        let w = build_milp_workload(&exact_only, &facts, SCRAPE_MS).unwrap();
+        assert!(solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy
+        )
+        .is_ok());
     }
 
     #[test]
@@ -535,7 +686,15 @@ metrics:
         ));
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
-        let err = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap_err();
+        let err = solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap_err();
         assert!(matches!(err, MilpError::Unservable(ids) if ids.len() == 1));
     }
 
@@ -546,7 +705,15 @@ metrics:
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
         assert_eq!(w.raqes.len(), 2);
-        let err = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap_err();
+        let err = solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap_err();
         assert!(matches!(err, MilpError::Unservable(ids) if ids == [w.raqes[0].id.clone()]));
     }
 
@@ -558,7 +725,15 @@ metrics:
         let config = config(&groups);
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
-        let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
+        let solution = solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap();
         let chosen: BTreeMap<Capability, &str> = w
             .raqes
             .iter()
@@ -586,7 +761,15 @@ metrics:
         let caps: Vec<_> = w.raqes.iter().map(|r| r.capability).collect();
         assert_eq!(caps.len(), 2);
         assert!(caps.contains(&Capability::Sum) && caps.contains(&Capability::Count));
-        let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
+        let solution = solve_milp(
+            &w,
+            &facts,
+            &costs(),
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap();
         assert_eq!(solution.deployments.len(), 2);
     }
 
