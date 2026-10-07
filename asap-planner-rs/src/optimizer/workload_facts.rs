@@ -1,11 +1,14 @@
 //! Externally provided workload facts for the MILP planner: per metric, the
-//! cardinality of each label set in use and its positive value range. The
+//! cardinality of each label set in use, its positive value range, and, for
+//! a grouping sketches serve, its fitted data shape (which keys
+//! sketch-bench's saturation curves). The
 //! entry for all of a metric's labels is its series count. Labels come from
 //! the workload's `metrics:` hints and the scrape interval from the caller.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use rqe_optimizer::saturation::DataShape;
 use rqe_optimizer::{LabelSet, MetricFacts, Millis, WorkloadFacts};
 use serde::Deserialize;
 use thiserror::Error;
@@ -50,6 +53,22 @@ struct MetricEntry {
 struct GroupEntry {
     labels: Vec<String>,
     cardinality: u64,
+    /// The data one group's sketch sees, fitted by the caller as the worst
+    /// case over windows and groups. A grouping without one has no sketch
+    /// accuracy, so only exact accumulators serve it.
+    #[serde(default)]
+    shape: Option<ShapeEntry>,
+}
+
+/// [`DataShape`]'s fields: Zipf skew and distinct keys per group per window
+/// (frequency, top-k, cardinality), and the values' Pareto tail index
+/// (quantiles).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ShapeEntry {
+    zipf_s: f64,
+    distinct_keys: f64,
+    tail_index: f64,
 }
 
 pub fn load_workload_facts(
@@ -86,8 +105,19 @@ pub fn parse_workload_facts(
             return Err(WorkloadFactsError::MetricWithoutHint(entry.metric));
         };
         let mut cardinality = BTreeMap::new();
+        let mut data_shape = BTreeMap::new();
         for group in entry.groups {
             let labels: LabelSet = group.labels.into_iter().collect();
+            if let Some(shape) = group.shape {
+                data_shape.insert(
+                    labels.clone(),
+                    DataShape {
+                        zipf_s: shape.zipf_s,
+                        distinct_keys: shape.distinct_keys,
+                        tail_index: shape.tail_index,
+                    },
+                );
+            }
             if cardinality
                 .insert(labels.clone(), group.cardinality)
                 .is_some()
@@ -103,6 +133,7 @@ pub fn parse_workload_facts(
             labels = ?hint.labels,
             scrape_interval_ms,
             cardinality = ?cardinality,
+            data_shape = ?data_shape,
             "workload facts: metric"
         );
         let metric_facts = MetricFacts {
@@ -110,7 +141,7 @@ pub fn parse_workload_facts(
             scrape_interval_ms,
             cardinality,
             value_range: Some((lo, hi)),
-            data_shape: BTreeMap::new(),
+            data_shape,
         };
         if facts.insert(entry.metric.clone(), metric_facts).is_some() {
             return Err(WorkloadFactsError::DuplicateMetric(entry.metric));
@@ -132,6 +163,32 @@ mod tests {
 
     fn labels(names: &[&str]) -> LabelSet {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_group_with_a_shape_keys_the_curves() {
+        let yaml = r#"
+metrics:
+  - metric: http_requests_total
+    value_range: [1.0, 1000.0]
+    groups:
+      - labels: [instance, job]
+        cardinality: 1200
+      - labels: [job]
+        cardinality: 10
+        shape: {zipf_s: 1.1, distinct_keys: 120, tail_index: 2.0}
+"#;
+        let facts = parse_workload_facts(yaml, &hints(), 15_000).unwrap();
+        let shapes = &facts["http_requests_total"].data_shape;
+        assert_eq!(shapes.len(), 1);
+        assert_eq!(
+            shapes[&labels(&["job"])],
+            DataShape {
+                zipf_s: 1.1,
+                distinct_keys: 120.0,
+                tail_index: 2.0,
+            }
+        );
     }
 
     #[test]

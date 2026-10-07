@@ -10,6 +10,7 @@ use asap_planner::optimizer::{
 use asap_planner::ControllerConfig;
 use clap::Parser;
 use rqe_optimizer::milp::Objective;
+use rqe_optimizer::saturation::SaturationCurves;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -26,7 +27,8 @@ struct Args {
     #[arg(long = "data-ingestion-interval-ms", value_parser = clap::value_parser!(u64).range(1..))]
     data_ingestion_interval_ms: u64,
 
-    /// The flat cost table `export_rqe_optimizer_costs.sh` writes
+    /// The flat cost table sketch-bench's
+    /// `study_saturation.py --phase optimizer-cost` writes
     /// (`rqe_atomic_costs.json`).
     #[arg(long = "atomic-costs")]
     atomic_costs: PathBuf,
@@ -42,9 +44,16 @@ struct Args {
     allow_undeployable_families: bool,
 
     /// YAML workload facts: per metric, positive `value_range` and
-    /// `cardinality` per label set, including all labels (the series count).
+    /// `cardinality` per label set, including all labels (the series count),
+    /// plus the `shape` of each grouping sketches may serve.
     #[arg(long = "workload-facts")]
     workload_facts: PathBuf,
+
+    /// sketch-bench's saturation-study directory (`out_grid_1e7_cost/`,
+    /// `out_1e9/`): sketch accuracy is read off its error-vs-N curves at each
+    /// grouping's `shape`.
+    #[arg(long = "saturation-dir")]
+    saturation_dir: PathBuf,
 
     /// Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
     #[arg(long = "w-cpu", value_parser = parse_weight)]
@@ -90,6 +99,7 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
         return Err(MilpError::MissingMetricHints.into());
     };
     let facts = load_workload_facts(&args.workload_facts, hints, args.data_ingestion_interval_ms)?;
+    let curves = SaturationCurves::load(&args.saturation_dir)?;
     let costs = load_flat_atomic_cost_table(&args.atomic_costs)?;
     let Objective::AUCCost { w_cpu, w_mem } = Objective::default();
     let (w_cpu, w_mem) = (args.w_cpu.unwrap_or(w_cpu), args.w_mem.unwrap_or(w_mem));
@@ -112,6 +122,7 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
         &costs,
         objective,
         args.allow_undeployable_families,
+        &|raqe, deployment| curves.accuracy(raqe, deployment, &facts),
     )?;
 
     println!("=== Deployments: {} ===", solution.deployments.len());

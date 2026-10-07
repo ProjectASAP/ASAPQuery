@@ -184,7 +184,7 @@ fn aggregation_config(
             vec![
                 ("depth", Value::from(integer_param("rows")?)),
                 ("width", Value::from(integer_param("cols")?)),
-                ("heapsize", Value::from(max_topk_k(items)?)),
+                ("heapsize", Value::from(heap_size(deployment, items)?)),
             ],
         ),
         (_, capability) => {
@@ -242,6 +242,15 @@ fn missing_param(variant: &str, param: &'static str) -> MilpOutputError {
     }
 }
 
+/// The heap the plan priced: `m · k` for the `m` windows a query merges
+/// (sketch-bench's `heap` param, `rqe_optimizer::heap_capacity`), so the
+/// merged heaps still hold the top k. Never below the largest literal k one
+/// heap serves, which the plan's fixed `TOPK_K` doesn't see.
+fn heap_size(deployment: &Deployment, items: &[&OptimizerItem]) -> Result<u64, MilpOutputError> {
+    let planned = rqe_optimizer::heap_capacity(&deployment.config).unwrap_or(rqe_optimizer::TOPK_K);
+    Ok(planned.max(max_topk_k(items)?))
+}
+
 /// One heap serves every topk query on the deployment, so it is sized for
 /// the largest k.
 fn max_topk_k(items: &[&OptimizerItem]) -> Result<u64, MilpOutputError> {
@@ -276,7 +285,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::optimizer::milp::tests::{config, costs, facts, group, SCRAPE_MS};
+    use crate::optimizer::milp::tests::{config, costs, facts, group, table_accuracy, SCRAPE_MS};
     use crate::optimizer::milp::{build_milp_workload, solve_milp};
 
     fn plan(groups: &str) -> (ControllerConfig, MilpWorkload, MilpSolution) {
@@ -287,11 +296,23 @@ mod tests {
         for cost in &mut costs {
             cost.sketch_config["params"] = match cost.sketch.as_str() {
                 "kll-percall" => json!({"k": 200}),
-                "cms-heap-topk-fastpath-vector2d" => json!({"rows": 3, "cols": 2048}),
+                "cms-heap-topk-fastpath-vector2d" => json!({
+                    "rows": 3,
+                    "cols": 2048,
+                    "heap": cost.sketch_config["params"]["heap"],
+                }),
                 _ => json!({}),
             };
         }
-        let solution = solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+        let solution = solve_milp(
+            &workload,
+            &facts,
+            &costs,
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap();
         (config, workload, solution)
     }
 
@@ -322,8 +343,8 @@ mod tests {
             merge_cpu_secs: 1e-7,
             query_cpu_secs: 1e-7,
             query_accuracy: BTreeMap::from([("mean_relative_value_error".into(), 0.005)]),
-            merge_accuracy: BTreeMap::new(),
-            measured_at: None,
+            accuracy_metric: "mean_relative_value_error".into(),
+            measured_at: crate::optimizer::atomic_costs::test_measured_at(),
         }
     }
 
@@ -368,7 +389,10 @@ mod tests {
         assert_eq!(a.aggregation_sub_type, "sum");
         assert_eq!(a.parameters["depth"], json!(3));
         assert_eq!(a.parameters["width"], json!(2048));
-        assert_eq!(a.parameters["heapsize"], json!(5));
+        assert_eq!(
+            a.parameters["heapsize"],
+            json!(planned_heap(&workload, &solution, topk_value))
+        );
         assert_eq!(
             aggregation_for(&output, topk_count).aggregation_sub_type,
             "count"
@@ -382,19 +406,48 @@ mod tests {
         }
     }
 
+    /// The heap the plan priced (`m · k` over its windows) for the
+    /// deployment serving `query`.
+    fn planned_heap(workload: &MilpWorkload, solution: &MilpSolution, query: &str) -> u64 {
+        let i = workload
+            .raqes
+            .iter()
+            .position(|r| r.id.contains(query))
+            .unwrap_or_else(|| panic!("no raqe for {query}"));
+        let deployment = &solution.deployments[solution.raqes[i].deployment].deployment;
+        rqe_optimizer::heap_capacity(&deployment.config).expect("a heap top-k deployment")
+    }
+
+    /// The engine's heap is the one the plan priced (m · k for the windows it
+    /// merges), not just the query's k, so merged windows keep the top k.
     #[test]
-    fn shared_heap_is_sized_for_the_largest_k() {
+    fn heap_is_the_planned_heap_for_every_query_sharing_it() {
         let small = "topk(5, sum_over_time(http_requests_total[1m]))";
         let large = "topk(10, sum_over_time(http_requests_total[1m]))";
         let (config, workload, solution) = plan(&(group(small, 0.99) + &group(large, 0.99)));
         assert_eq!(solution.deployments.len(), 1);
+        let heap = planned_heap(&workload, &solution, small);
+        assert!(heap >= rqe_optimizer::TOPK_K);
         let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
         for query in [small, large] {
             assert_eq!(
                 aggregation_for(&output, query).parameters["heapsize"],
-                json!(10)
+                json!(heap)
             );
         }
+    }
+
+    /// A k above the plan's `TOPK_K` still gets a heap that holds it.
+    #[test]
+    fn heap_holds_a_k_larger_than_the_planned_heap() {
+        let query = "topk(4096, sum_over_time(http_requests_total[1m]))";
+        let (config, workload, solution) = plan(&group(query, 0.99));
+        assert!(planned_heap(&workload, &solution, query) < 4096);
+        let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+        assert_eq!(
+            aggregation_for(&output, query).parameters["heapsize"],
+            json!(4096)
+        );
     }
 
     #[test]
@@ -404,7 +457,15 @@ mod tests {
         let facts = facts(&config);
         let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
         let costs = vec![dd_cost(json!({"alpha": 0.02}))];
-        let solution = solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+        let solution = solve_milp(
+            &workload,
+            &facts,
+            &costs,
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap();
 
         let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
         let aggregation = aggregation_for(&output, query);
@@ -419,7 +480,15 @@ mod tests {
         let facts = facts(&config);
         let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
         let costs = vec![dd_cost(json!({}))];
-        let solution = solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+        let solution = solve_milp(
+            &workload,
+            &facts,
+            &costs,
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap();
 
         assert!(matches!(
             plan_to_planner_output(&config, &workload, &solution),
@@ -439,8 +508,15 @@ mod tests {
 
         for alpha in [0.0, -0.01, 1.0] {
             let costs = vec![dd_cost(json!({"alpha": alpha}))];
-            let solution =
-                solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+            let solution = solve_milp(
+                &workload,
+                &facts,
+                &costs,
+                Objective::default(),
+                false,
+                &table_accuracy,
+            )
+            .unwrap();
             assert!(matches!(
                 plan_to_planner_output(&config, &workload, &solution),
                 Err(MilpOutputError::InvalidDdsAlpha { .. })
