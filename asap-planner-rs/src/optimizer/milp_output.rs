@@ -39,6 +39,8 @@ pub enum MilpOutputError {
         variant: String,
         param: &'static str,
     },
+    #[error("sketch-bench variant dd: alpha must be finite and in (0, 1), got {alpha}")]
+    InvalidDdsAlpha { alpha: f64 },
     #[error("topk query {0:?} has no literal k")]
     TopkWithoutK(String),
     #[error("query {0:?} is served by two deployments; a query string can name only one")]
@@ -130,13 +132,15 @@ fn aggregation_config(
     items: &[&OptimizerItem],
 ) -> Result<IntermediateAggConfig, MilpOutputError> {
     let variant = deployment.config.sketch.as_str();
-    let param = |name: &'static str| {
+    let integer_param = |name: &'static str| {
         deployment.config.sketch_config["params"][name]
             .as_u64()
-            .ok_or_else(|| MilpOutputError::MissingParam {
-                variant: variant.to_string(),
-                param: name,
-            })
+            .ok_or_else(|| missing_param(variant, name))
+    };
+    let float_param = |name: &'static str| {
+        deployment.config.sketch_config["params"][name]
+            .as_f64()
+            .ok_or_else(|| missing_param(variant, name))
     };
     let (aggregation_type, sub_type, parameters) = match (variant, deployment.capability) {
         ("exact-sum", Capability::Sum) => (AggregationType::MultipleSum, "sum", vec![]),
@@ -149,12 +153,23 @@ fn aggregation_config(
         ("kll-percall", Capability::Quantile) => (
             AggregationType::DatasketchesKLL,
             "",
-            vec![("K", param("k")?)],
+            vec![("K", Value::from(integer_param("k")?))],
         ),
+        ("dd", Capability::Quantile) => {
+            let alpha = float_param("alpha")?;
+            if !(alpha.is_finite() && alpha > 0.0 && alpha < 1.0) {
+                return Err(MilpOutputError::InvalidDdsAlpha { alpha });
+            }
+            (
+                AggregationType::DDSketch,
+                "",
+                vec![("alpha", Value::from(alpha))],
+            )
+        }
         ("hll", Capability::Cardinality) => (
             AggregationType::HLL,
             "",
-            vec![("precision", param("lg_k")?)],
+            vec![("precision", Value::from(integer_param("lg_k")?))],
         ),
         (
             "cms-heap-topk-fastpath-vector2d",
@@ -167,9 +182,9 @@ fn aggregation_config(
                 "sum"
             },
             vec![
-                ("depth", param("rows")?),
-                ("width", param("cols")?),
-                ("heapsize", max_topk_k(items)?),
+                ("depth", Value::from(integer_param("rows")?)),
+                ("width", Value::from(integer_param("cols")?)),
+                ("heapsize", Value::from(max_topk_k(items)?)),
             ],
         ),
         (_, capability) => {
@@ -212,12 +227,19 @@ fn aggregation_config(
         value_column: None,
         parameters: parameters
             .into_iter()
-            .map(|(name, value)| (name.to_string(), Value::from(value)))
+            .map(|(name, value)| (name.to_string(), value))
             .collect(),
         rollup_labels: KeyByLabelNames::empty(),
         grouping_labels,
         aggregated_labels,
     })
+}
+
+fn missing_param(variant: &str, param: &'static str) -> MilpOutputError {
+    MilpOutputError::MissingParam {
+        variant: variant.to_string(),
+        param,
+    }
 }
 
 /// One heap serves every topk query on the deployment, so it is sized for
@@ -245,9 +267,12 @@ fn topk_k(query: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use asap_types::aggregation_config::AggregationConfig;
     use asap_types::enums::QueryLanguage;
     use rqe_optimizer::milp::Objective;
+    use rqe_optimizer::AtomicCostEntry;
     use serde_json::json;
 
     use super::*;
@@ -286,6 +311,20 @@ mod tests {
             .get_aggregation_config(reference.aggregation_id)
             .unwrap()
             .clone()
+    }
+
+    fn dd_cost(params: serde_json::Value) -> AtomicCostEntry {
+        AtomicCostEntry {
+            sketch: "dd".into(),
+            sketch_config: json!({"algorithm": "dd", "params": params}),
+            mem_bytes_per_instance: 100.0,
+            insert_cpu_secs: 1e-7,
+            merge_cpu_secs: 1e-7,
+            query_cpu_secs: 1e-7,
+            query_accuracy: BTreeMap::from([("mean_relative_value_error".into(), 0.005)]),
+            merge_accuracy: BTreeMap::new(),
+            measured_at: None,
+        }
     }
 
     #[test]
@@ -355,6 +394,57 @@ mod tests {
                 aggregation_for(&output, query).parameters["heapsize"],
                 json!(10)
             );
+        }
+    }
+
+    #[test]
+    fn ddsketch_plan_preserves_the_cost_row_alpha() {
+        let query = "quantile_over_time(0.99, http_requests_total[5m])";
+        let config = config(&group(query, 0.99));
+        let facts = facts(&config);
+        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let costs = vec![dd_cost(json!({"alpha": 0.02}))];
+        let solution = solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+
+        let output = plan_to_planner_output(&config, &workload, &solution).unwrap();
+        let aggregation = aggregation_for(&output, query);
+        assert_eq!(aggregation.aggregation_type, AggregationType::DDSketch);
+        assert_eq!(aggregation.parameters["alpha"], json!(0.02));
+    }
+
+    #[test]
+    fn ddsketch_plan_rejects_a_cost_row_without_alpha() {
+        let query = "quantile_over_time(0.99, http_requests_total[5m])";
+        let config = config(&group(query, 0.99));
+        let facts = facts(&config);
+        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let costs = vec![dd_cost(json!({}))];
+        let solution = solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+
+        assert!(matches!(
+            plan_to_planner_output(&config, &workload, &solution),
+            Err(MilpOutputError::MissingParam {
+                variant,
+                param: "alpha",
+            }) if variant == "dd"
+        ));
+    }
+
+    #[test]
+    fn ddsketch_plan_rejects_an_invalid_alpha() {
+        let query = "quantile_over_time(0.99, http_requests_total[5m])";
+        let config = config(&group(query, 0.99));
+        let facts = facts(&config);
+        let workload = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+
+        for alpha in [0.0, -0.01, 1.0] {
+            let costs = vec![dd_cost(json!({"alpha": alpha}))];
+            let solution =
+                solve_milp(&workload, &facts, &costs, Objective::default(), false).unwrap();
+            assert!(matches!(
+                plan_to_planner_output(&config, &workload, &solution),
+                Err(MilpOutputError::InvalidDdsAlpha { .. })
+            ));
         }
     }
 

@@ -41,8 +41,8 @@ struct Args {
     #[arg(long = "allow-undeployable-families", conflicts_with = "output_dir")]
     allow_undeployable_families: bool,
 
-    /// YAML workload facts: per metric, `cardinality` per label set,
-    /// including the set of all its labels (the series count).
+    /// YAML workload facts: per metric, positive `value_range` and
+    /// `cardinality` per label set, including all labels (the series count).
     #[arg(long = "workload-facts")]
     workload_facts: PathBuf,
 
