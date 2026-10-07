@@ -61,8 +61,8 @@ struct Args {
     #[arg(long, value_enum, default_value = "legacy")]
     planner: PlannerArg,
 
-    /// MILP only. YAML workload facts: per metric, `cardinality` per label
-    /// set, including the set of all its labels (the series count).
+    /// MILP only. YAML workload facts: per metric, positive `value_range` and
+    /// `cardinality` per label set, including all labels (the series count).
     #[arg(long = "workload-facts", required_if_eq("planner", "milp"))]
     workload_facts: Option<PathBuf>,
 
