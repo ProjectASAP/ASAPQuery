@@ -265,9 +265,9 @@ fn print_mapping(
     }
 }
 
-fn print_candidate(candidate_number: usize, deployment: &rqe_optimizer::Deployment) {
+fn print_deployment(label: &str, deployment: &rqe_optimizer::Deployment) {
     println!(
-        "candidate {candidate_number}: {} {} {} by {:?} (x={}ms, y={}ms)",
+        "{label}: {} {} {} by {:?} (x={}ms, y={}ms)",
         deployment.config.sketch,
         deployment.config.sketch_config,
         deployment.metric,
@@ -417,7 +417,7 @@ fn main() {
             .take(usize::try_from(print_candidates).expect("u64 fits in usize"))
             .enumerate()
         {
-            print_candidate(index, deployment);
+            print_deployment(&format!("candidate {index}"), deployment);
         }
         return;
     }
@@ -460,9 +460,23 @@ fn main() {
             objective.value(&solution.plan_cost)
         );
         print_plan_cost("  totals", &solution.plan_cost);
-        print_mapping(1, &solution.mapping, &raqes, &deployments);
-        for (raqe, latency) in raqes.iter().zip(&solution.plan_cost.query_latency_ms) {
-            println!("  {}: query_latency={latency:.3e} ms", raqe.id);
+        for (index, planned) in solution.deployments.iter().enumerate() {
+            print_deployment(&format!("deployment {index}"), &planned.deployment);
+            println!(
+                "  retained_instances={} key_tracker={}",
+                planned.retained_instance_count,
+                planned.deployment.key_tracker.is_some(),
+            );
+        }
+        for ((raqe, planned), latency) in raqes
+            .iter()
+            .zip(&solution.raqes)
+            .zip(&solution.plan_cost.query_latency_ms)
+        {
+            println!(
+                "  {} -> deployment {} merged_instances={} query_latency={latency:.3e} ms",
+                raqe.id, planned.deployment, planned.merged_instance_count,
+            );
         }
         return;
     }

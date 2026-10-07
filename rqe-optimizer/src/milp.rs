@@ -45,10 +45,30 @@ impl Objective {
     }
 }
 
+/// The solved plan: the deployments to run and which one serves each RAQE.
 #[derive(Debug, Clone)]
 pub struct MilpSolution {
-    pub mapping: Mapping,
+    /// Active deployments only, in order of the first RAQE each serves.
+    pub deployments: Vec<PlannedDeployment>,
+    /// Index-aligned with the input RAQE slice.
+    pub raqes: Vec<PlannedRaqe>,
     pub plan_cost: PlanCost,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlannedDeployment {
+    pub deployment: Deployment,
+    /// Windows kept per group (per sketch, not × `card(G)`): `x/y` open plus
+    /// `(L − x)/y + 1` closed, for the longest lookback `L` it serves.
+    pub retained_instance_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlannedRaqe {
+    /// Index into [`MilpSolution::deployments`].
+    pub deployment: usize,
+    /// `n = L/x` windows merged per query; 1 means Direct, more means Merge.
+    pub merged_instance_count: u64,
 }
 
 /// Minimize `objective` subject to each RAQE's latency SLA. `facts` must pass
@@ -198,7 +218,54 @@ pub fn minimize(
         })
         .collect();
     let plan_cost = score(raqes, deployments, &mapping, facts);
-    Ok(MilpSolution { mapping, plan_cost })
+    let (deployments, raqes) = plan(raqes, deployments, &mapping);
+    Ok(MilpSolution {
+        deployments,
+        raqes,
+        plan_cost,
+    })
+}
+
+/// Keeps the deployments `mapping` uses, renumbered, with their instance
+/// counts. Every pair in `mapping` is eligible, so the counts exist.
+fn plan(
+    raqes: &[Raqe],
+    candidates: &[Deployment],
+    mapping: &Mapping,
+) -> (Vec<PlannedDeployment>, Vec<PlannedRaqe>) {
+    let mut planned_index: Vec<Option<usize>> = vec![None; candidates.len()];
+    let mut planned_deployments: Vec<PlannedDeployment> = Vec::new();
+    let mut planned_raqes = Vec::with_capacity(raqes.len());
+    // `retained_instance_count` holds the closed windows until the open ones
+    // are added below, once per deployment.
+    for (raqe, &candidate_index) in raqes.iter().zip(mapping) {
+        let deployment = &candidates[candidate_index];
+        let index = *planned_index[candidate_index].get_or_insert_with(|| {
+            planned_deployments.push(PlannedDeployment {
+                deployment: deployment.clone(),
+                retained_instance_count: 0,
+            });
+            planned_deployments.len() - 1
+        });
+        let closed = deployment
+            .closed_instance_count(raqe.lookback_ms)
+            .expect("eligible deployments have whole window counts");
+        let planned = &mut planned_deployments[index];
+        planned.retained_instance_count = planned.retained_instance_count.max(closed);
+        planned_raqes.push(PlannedRaqe {
+            deployment: index,
+            merged_instance_count: deployment
+                .query_instance_count(raqe.lookback_ms)
+                .expect("eligible deployments divide the lookback"),
+        });
+    }
+    for planned in &mut planned_deployments {
+        planned.retained_instance_count += planned
+            .deployment
+            .active_instance_count()
+            .expect("eligible deployments have whole window counts");
+    }
+    (planned_deployments, planned_raqes)
 }
 
 #[cfg(test)]
@@ -208,7 +275,6 @@ mod tests {
     use crate::enumerate::brute_force;
     use crate::test_support::{self, facts};
     use crate::{AtomicCostEntry, Capability};
-    use std::collections::BTreeSet;
 
     /// Window and slide 60 s, merge 1 CPU-sec.
     fn deployment(insert_cpu_secs: f64, memory: f64, query_cpu_secs: f64) -> Deployment {
@@ -220,6 +286,20 @@ mod tests {
             id: id.into(),
             ..test_support::raqe(lookback_ms, 60_000)
         }
+    }
+
+    /// The candidate index serving each RAQE.
+    fn chosen(milp: &MilpSolution, candidates: &[Deployment]) -> Mapping {
+        milp.raqes
+            .iter()
+            .map(|planned| {
+                let deployment = &milp.deployments[planned.deployment].deployment;
+                candidates
+                    .iter()
+                    .position(|candidate| candidate == deployment)
+                    .expect("planned deployments come from the candidates")
+            })
+            .collect()
     }
 
     fn weights(w_cpu: f64, w_mem: f64) -> Objective {
@@ -260,8 +340,7 @@ mod tests {
         let candidates = build_all_candidates(&raqes, &costs, &facts(1, 1), false);
         let milp = minimize(&raqes, &candidates, &facts(1, 1), Objective::default())
             .expect("feasible MILP");
-        let used: BTreeSet<usize> = milp.mapping.iter().copied().collect();
-        raqes.len() - used.len()
+        raqes.len() - milp.deployments.len()
     }
 
     #[test]
@@ -287,9 +366,9 @@ mod tests {
         // CPU 1 + 3/60 with latency 3, or 2 + 1/60 with latency 1.
         let deployments = vec![deployment(1.0, 20.0, 3.0), deployment(2.0, 10.0, 1.0)];
         let solve = |raqes: &[Raqe]| {
-            minimize(raqes, &deployments, &facts(1, 1), Objective::default())
-                .expect("feasible MILP")
-                .mapping
+            let milp = minimize(raqes, &deployments, &facts(1, 1), Objective::default())
+                .expect("feasible MILP");
+            chosen(&milp, &deployments)
         };
 
         assert_eq!(solve(&raqes), vec![0]);
@@ -322,9 +401,9 @@ mod tests {
             deployment(0.05, 2.0 * BYTES_PER_GIB, 0.0),
         ];
         let solve = |objective| {
-            minimize(&raqes, &deployments, &facts(1, 1), objective)
-                .expect("feasible MILP")
-                .mapping
+            let milp =
+                minimize(&raqes, &deployments, &facts(1, 1), objective).expect("feasible MILP");
+            chosen(&milp, &deployments)
         };
 
         assert_eq!(solve(weights(1.0, 0.0)), vec![1]);
@@ -364,7 +443,33 @@ mod tests {
         ];
         let milp = minimize(&raqes, &deployments, &facts(1, 1), Objective::default())
             .expect("feasible MILP");
-        assert_eq!(milp.mapping, vec![1]);
+        assert_eq!(chosen(&milp, &deployments), vec![1]);
         assert!(milp.plan_cost.query_latency_ms[0] <= 1e-4);
+    }
+
+    #[test]
+    fn plan_lists_active_deployments_with_their_instance_counts() {
+        // Window 60 s, slide 20 s; the unused candidate 0 is CPU-heavy.
+        let shared = test_support::deployment(1.0, 1.0, 1.0, 1.0, 60_000, 20_000);
+        let unused = test_support::deployment(1.0, 1e6, 1.0, 1.0, 60_000, 20_000);
+        let raqes = vec![raqe("short", 60_000), raqe("long", 600_000)];
+        let milp = minimize(
+            &raqes,
+            &[unused, shared.clone()],
+            &facts(1, 1),
+            Objective::default(),
+        )
+        .expect("feasible MILP");
+
+        assert_eq!(milp.deployments.len(), 1);
+        assert_eq!(milp.deployments[0].deployment, shared);
+        // 60/20 open + (600 − 60)/20 + 1 closed, for the longer lookback.
+        assert_eq!(milp.deployments[0].retained_instance_count, 3 + 28);
+        let merged: Vec<_> = milp
+            .raqes
+            .iter()
+            .map(|planned| (planned.deployment, planned.merged_instance_count))
+            .collect();
+        assert_eq!(merged, vec![(0, 1), (0, 10)]);
     }
 }
