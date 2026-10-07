@@ -188,16 +188,13 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
     tracing::debug!(?objective, cost_rows = costs.len(), "milp: inputs loaded");
 
     let workload = build_milp_workload(config, &facts, args.data_ingestion_interval_ms)?;
-    let (deployments, solution) = solve_milp(&workload, &facts, &costs, objective)?;
+    let solution = solve_milp(&workload, &facts, &costs, objective)?;
 
-    let mut active: Vec<usize> = solution.mapping.clone();
-    active.sort();
-    active.dedup();
-    println!("=== Deployments: {} ===", active.len());
-    for &d in &active {
-        let dep = &deployments[d];
+    println!("=== Deployments: {} ===", solution.deployments.len());
+    for (d, planned) in solution.deployments.iter().enumerate() {
+        let dep = &planned.deployment;
         println!(
-            "  [{d}] {:?} {} config={} metric={} grouping={:?} window={}ms slide={}ms",
+            "  [{d}] {:?} {} config={} metric={} grouping={:?} window={}ms slide={}ms retained={} key_tracker={}",
             dep.capability,
             dep.config.sketch,
             dep.config.sketch_config,
@@ -205,16 +202,21 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
             dep.grouping_labels,
             dep.window_ms,
             dep.slide_ms,
+            planned.retained_instance_count,
+            dep.key_tracker.is_some(),
         );
     }
     println!("\n=== Raqes: {} ===", workload.raqes.len());
-    for ((raqe, &d), latency_ms) in workload
+    for ((raqe, planned), latency_ms) in workload
         .raqes
         .iter()
-        .zip(&solution.mapping)
+        .zip(&solution.raqes)
         .zip(&solution.plan_cost.query_latency_ms)
     {
-        println!("  {} -> [{d}] latency={latency_ms:.3e}ms", raqe.id);
+        println!(
+            "  {} -> [{}] n={} latency={latency_ms:.3e}ms",
+            raqe.id, planned.deployment, planned.merged_instance_count
+        );
     }
     let cost = &solution.plan_cost;
     println!(
