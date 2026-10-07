@@ -66,7 +66,8 @@ impl Capability {
     /// `AtomicCostEntry.sketch` values serving this capability. These are
     /// sketch-bench *variant* strings, not algorithm names: fastpath and
     /// regularpath have different cost profiles, so `"cms"` would be
-    /// ambiguous. Lists only what `export_rqe_optimizer_costs.sh` measures;
+    /// ambiguous. Lists what `study_saturation.py --phase optimizer-cost`
+    /// measures, plus families it doesn't run yet;
     /// an unmeasured name here is harmless, it just matches no row.
     pub fn families(self) -> &'static [&'static str] {
         match self {
@@ -148,8 +149,8 @@ pub struct FamilyProperties {
 }
 
 /// Panics on a variant with no entry: guessing would misprice it.
-/// Accuracy keys mirror the comparator `export_rqe_optimizer_costs.sh` runs
-/// per variant.
+/// Accuracy keys are the metrics `study_saturation.py` records per variant,
+/// which every cost-table row names as its `accuracy_metric`.
 pub fn family_properties(variant: &str) -> FamilyProperties {
     use AccuracyDirection::{HigherIsBetter, LowerIsBetter};
     let one_sketch_per_group = |metric, direction| FamilyProperties {
@@ -377,56 +378,28 @@ pub fn accuracy_key(sketch: &str) -> (&'static str, AccuracyDirection) {
 /// [`saturation::SaturationCurves::accuracy`].
 pub type Accuracy<'a> = dyn Fn(&Raqe, &Deployment) -> Option<f64> + 'a;
 
-/// The cost table's measured value after the query's `L / x` merges, which is
-/// the exact accumulators' accuracy.
-pub fn table_accuracy(raqe: &Raqe, deployment: &Deployment) -> Option<f64> {
-    Some(table_accuracy_at(
-        &deployment.config,
-        raqe.lookback_ms / deployment.window_ms,
-    ))
+/// The cost table's measured value, which is the exact accumulators'
+/// accuracy: they merge without loss, so the window size doesn't matter.
+pub fn table_accuracy(_raqe: &Raqe, deployment: &Deployment) -> Option<f64> {
+    Some(row_accuracy(&deployment.config))
 }
 
-/// The worse of `config`'s scores at the two measured counts bracketing
-/// `merges` (error is not monotone in the count), in its family's
-/// [`accuracy_key`]. Panics when either lacks it: the family table names
-/// the metric, so its absence means the cost export is broken.
-pub fn table_accuracy_at(config: &AtomicCostEntry, merges: u64) -> f64 {
-    let (metric, direction) = accuracy_key(&config.sketch);
-    let [below, above] = accuracy_at(config, merges).map(|scores| {
-        *scores.get(metric).unwrap_or_else(|| {
-            panic!(
-                "{} {} has no {metric}; the cost export is broken \
-                 (dd omits it when every true quantile is 0 or unanswered)",
-                config.sketch, config.sketch_config
-            )
-        })
-    });
-    match direction {
-        AccuracyDirection::LowerIsBetter => below.max(above),
-        AccuracyDirection::HigherIsBetter => below.min(above),
-    }
-}
-
-/// `config`'s scores at the two measured merge counts bracketing `merges`:
-/// the largest at or below it (count 1 is `query_accuracy`), and the smallest
-/// at or above it, else the largest measured. One window, or a row with no
-/// merge measurements, reads the single-instance scores for both.
-pub fn accuracy_at(config: &AtomicCostEntry, merges: u64) -> [&BTreeMap<String, f64>; 2] {
-    let single = &config.query_accuracy;
-    if merges <= 1 {
-        return [single, single];
-    }
-    let measured = &config.merge_accuracy;
-    let below = measured
-        .range(..=merges)
-        .next_back()
-        .map_or(single, |(_, scores)| scores);
-    let above = measured
-        .range(merges..)
-        .next()
-        .or_else(|| measured.last_key_value())
-        .map_or(single, |(_, scores)| scores);
-    [below, above]
+/// `config`'s accuracy: its `query_accuracy[accuracy_metric]`. Panics when
+/// `accuracy_metric` isn't its family's [`accuracy_key`] or the score is
+/// missing: either means the cost export is broken.
+pub fn row_accuracy(config: &AtomicCostEntry) -> f64 {
+    let (metric, _) = accuracy_key(&config.sketch);
+    assert_eq!(
+        config.accuracy_metric, metric,
+        "{} {}: the row's accuracy_metric isn't its family's; the cost export is broken",
+        config.sketch, config.sketch_config
+    );
+    config.accuracy().unwrap_or_else(|| {
+        panic!(
+            "{} {} has no {metric}; the cost export is broken",
+            config.sketch, config.sketch_config
+        )
+    })
 }
 
 /// A candidate deployment (§3): one configuration, one grouped stream, and a
@@ -509,6 +482,22 @@ pub(crate) mod test_support {
         .collect()
     }
 
+    /// The accuracy metric a row of `sketch` names: its family's.
+    pub fn metric_of(sketch: &str) -> String {
+        accuracy_key(sketch).0.to_string()
+    }
+
+    /// Where a fixture row was "measured": the cost table's canonical point.
+    pub fn measured_at() -> aqpbm_core::MeasuredAt {
+        aqpbm_core::MeasuredAt {
+            items_per_instance: 1_000_000,
+            keys_per_instance: Some(10_000),
+            value_range: None,
+            merge_operand_items: None,
+            distribution: None,
+        }
+    }
+
     /// `groups` groups and `series` raw series scraped every second, so
     /// `λ = series`. Not validated: unit tests set `groups` freely.
     pub fn facts(groups: u64, series: u64) -> WorkloadFacts {
@@ -561,8 +550,8 @@ pub(crate) mod test_support {
                 merge_cpu_secs: merge,
                 query_cpu_secs: query,
                 query_accuracy: perfect_accuracy(),
-                merge_accuracy: BTreeMap::new(),
-                measured_at: None,
+                accuracy_metric: "precision_at_k".into(),
+                measured_at: measured_at(),
             },
             window_ms,
             slide_ms,
@@ -580,52 +569,6 @@ mod tests {
         names.iter().map(|s| s.to_string()).collect()
     }
 
-    #[test]
-    fn accuracy_at_reads_both_measured_merge_counts_bracketing_the_query() {
-        let mut config = deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config;
-        let scores = |v: f64| BTreeMap::from([("err".to_string(), v)]);
-        let at = |c: &AtomicCostEntry, merges| accuracy_at(c, merges).map(|s| s["err"]);
-        config.query_accuracy = scores(0.0);
-        // No merge measurements: every count reads the single instance.
-        assert_eq!(at(&config, 60), [0.0, 0.0]);
-        config.merge_accuracy =
-            BTreeMap::from([(4, scores(4.0)), (16, scores(16.0)), (64, scores(64.0))]);
-        assert_eq!(at(&config, 0), [0.0, 0.0]);
-        assert_eq!(at(&config, 1), [0.0, 0.0]);
-        // Below the smallest measured count, the lower bracket is count 1.
-        assert_eq!(at(&config, 2), [0.0, 4.0]);
-        assert_eq!(at(&config, 4), [4.0, 4.0]);
-        assert_eq!(at(&config, 5), [4.0, 16.0]);
-        assert_eq!(at(&config, 64), [64.0, 64.0]);
-        assert_eq!(at(&config, 1_000), [64.0, 64.0]);
-    }
-
-    /// Both brackets must pass in the metric's own direction: top-k precision
-    /// is higher-is-better, and a bad count between two good ones fails.
-    #[test]
-    fn both_brackets_must_clear_a_higher_is_better_metric() {
-        let mut config = deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config;
-        let precision = |v: f64| BTreeMap::from([("precision_at_k".to_string(), v)]);
-        config.query_accuracy = precision(1.0);
-        config.merge_accuracy = BTreeMap::from([
-            (4, precision(0.97)),
-            (16, precision(0.8)),
-            (64, precision(1.0)),
-        ]);
-        let r = Raqe {
-            accuracy_sla: 0.9,
-            ..raqe(60_000, 60_000)
-        };
-        let ok = |merges| r.meets_sla(&config.sketch, Some(table_accuracy_at(&config, merges)));
-        assert!(ok(1));
-        assert!(ok(4));
-        assert!(!ok(8)); // [4, 16]: 16 fails
-        assert!(!ok(16));
-        assert!(!ok(32)); // [16, 64]
-        assert!(ok(64));
-        assert!(ok(5_000)); // beyond: [64, 64]
-    }
-
     /// One quantile SLA: KLL is checked by rank error, DD by relative value
     /// error, each against the same number.
     #[test]
@@ -638,9 +581,10 @@ mod tests {
         let row = |sketch: &str, metric: &str, value: f64| AtomicCostEntry {
             sketch: sketch.into(),
             query_accuracy: BTreeMap::from([(metric.to_string(), value)]),
+            accuracy_metric: metric.to_string(),
             ..deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config
         };
-        let ok = |c: AtomicCostEntry| r.meets_sla(&c.sketch, Some(table_accuracy_at(&c, 1)));
+        let ok = |c: AtomicCostEntry| r.meets_sla(&c.sketch, Some(row_accuracy(&c)));
         assert!(ok(row("kll-percall", "mean_rank_err", 0.01)));
         assert!(!ok(row("kll-percall", "mean_rank_err", 0.1)));
         assert!(ok(row("dd", "mean_relative_value_error", 0.01)));
@@ -655,9 +599,24 @@ mod tests {
         let config = AtomicCostEntry {
             sketch: "dd".into(),
             query_accuracy: BTreeMap::from([("mean_rank_err".to_string(), 0.0)]),
+            accuracy_metric: "mean_relative_value_error".into(),
             ..deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config
         };
-        table_accuracy_at(&config, 1);
+        row_accuracy(&config);
+    }
+
+    /// The row's declared metric is the one read, and it must be the
+    /// family's: a row naming another is a broken export, not a guess.
+    #[test]
+    #[should_panic(expected = "the row's accuracy_metric isn't its family's")]
+    fn a_row_naming_another_metric_panics() {
+        let config = AtomicCostEntry {
+            sketch: "kll-percall".into(),
+            query_accuracy: BTreeMap::from([("max_rank_err".to_string(), 0.0)]),
+            accuracy_metric: "max_rank_err".into(),
+            ..deployment(0.0, 0.0, 0.0, 0.0, 60_000, 60_000).config
+        };
+        row_accuracy(&config);
     }
 
     #[test]

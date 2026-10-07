@@ -3,23 +3,22 @@
 //! Pareto-optimal subset. Picking one mapping *off* the Pareto front is still
 //! the parked scalarization question (problem statement, "Open for later").
 //!
-//! Cost data is real, not fabricated: `scripts/export_rqe_optimizer_costs.sh`
-//! measures it via `sketch-bench`/`aqpbm-cli` and writes
-//! `DIR/rqe_atomic_costs.json`, an `AtomicCostTable` loaded here verbatim --
-//! no translation layer, since `rqe_optimizer::Deployment` embeds
-//! `AtomicCostEntry` directly.
+//! Cost data is real, not fabricated: `scripts/study_saturation.py --phase
+//! optimizer-cost` measures it via `sketch-bench`/`aqpbm-cli` and writes
+//! [`COST_TABLE`] under the saturation directory, an `AtomicCostTable`
+//! loaded here verbatim -- no translation layer, since
+//! `rqe_optimizer::Deployment` embeds `AtomicCostEntry` directly.
 //!
 //! Every other number this example uses (RAQE definitions, metric labels,
 //! cardinalities and scrape intervals) lives in the two tables below
 //! (`facts`, `raqes`) and nowhere else in this file.
 //!
 //! Sketch accuracy comes from the saturation study's curves, not the cost
-//! table (#156): pass `--saturation-dir DIR` (required), the directory
-//! holding `out_grid_1e7_cost/` and `out_1e9/` from
-//! `scripts/study_saturation.py`.
+//! table (#156). Pass `--saturation-dir DIR` (required), the directory
+//! holding `out_grid_1e7_cost/`, `out_1e9/` and the cost table from
+//! `scripts/study_saturation.py` (#174).
 //!
-//! Run: `scripts/export_rqe_optimizer_costs.sh DIR` once, then pass
-//! `--cost-dir DIR` (required) to this example. Do not run this example
+//! Do not run this example
 //! with no mode flag on a large workload: eager mode retains every feasible
 //! mapping and can exhaust memory. Use `--milp`, `--candidates-only`, or
 //! `--sample-mappings N` instead. Add
@@ -44,13 +43,11 @@ use rqe_optimizer::candidates::{
 use rqe_optimizer::enumerate::{brute_force, for_each_mapping, for_each_mapping_while, unservable};
 use rqe_optimizer::milp::{minimize, Objective};
 use rqe_optimizer::pareto::{pareto_front, ParetoFront};
-use rqe_optimizer::saturation::{DataShape, SaturationCurves};
+use rqe_optimizer::saturation::{DataShape, SaturationCurves, COST_TABLE};
 use rqe_optimizer::{
     validate_facts, AtomicCostTable, Capability, Deployment, LabelSet, MetricFacts, Raqe,
     WorkloadFacts,
 };
-
-const COST_TABLE_FILE: &str = "rqe_atomic_costs.json";
 
 const REQUESTS: &str = "http_requests_total";
 const DURATION: &str = "http_request_duration_seconds";
@@ -72,25 +69,25 @@ fn required_dir(flag: &str, what: &str) -> String {
         .unwrap_or_else(|| panic!("{flag} DIR is required ({what})"))
 }
 
-fn load_saturation_curves() -> SaturationCurves {
-    let dir = required_dir(
+fn saturation_dir() -> String {
+    required_dir(
         "--saturation-dir",
-        "holding out_grid_1e7_cost/ and out_1e9/ from scripts/study_saturation.py",
-    );
-    SaturationCurves::load(std::path::Path::new(&dir))
+        "holding out_grid_1e7_cost/, out_1e9/ and the cost table from scripts/study_saturation.py",
+    )
+}
+
+fn load_saturation_curves() -> SaturationCurves {
+    SaturationCurves::load(std::path::Path::new(&saturation_dir()))
         .unwrap_or_else(|e| panic!("couldn't load saturation curves: {e}"))
 }
 
 fn load_cost_table() -> AtomicCostTable {
-    let cost_dir = required_dir(
-        "--cost-dir",
-        "a directory written by scripts/export_rqe_optimizer_costs.sh",
-    );
-    let path = std::path::Path::new(&cost_dir).join(COST_TABLE_FILE);
+    let path = std::path::Path::new(&saturation_dir()).join(COST_TABLE);
     let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
             "couldn't read {} ({e}) -- run \
-             `scripts/export_rqe_optimizer_costs.sh {cost_dir}` first to generate it",
+             `scripts/study_saturation.py --phase optimizer-cost --out DIR/optimizer_cost` \
+             first to generate it",
             path.display()
         )
     });
@@ -363,7 +360,6 @@ fn reject_unknown_args() {
         "--streaming",
     ];
     const WITH_VALUE: &[&str] = &[
-        "--cost-dir",
         "--latency-sla",
         "--print-candidates",
         "--print-first",

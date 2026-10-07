@@ -371,7 +371,7 @@ pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{facts, perfect_accuracy, METRIC};
+    use crate::test_support::{facts, measured_at, metric_of, perfect_accuracy, METRIC};
     use crate::{table_accuracy, LabelSet};
     use std::collections::BTreeMap;
     fn raqe(id: &str, lookback: Millis, interval: Millis) -> Raqe {
@@ -396,77 +396,9 @@ mod tests {
             merge_cpu_secs: 1.0,
             query_cpu_secs: 1.0,
             query_accuracy: perfect_accuracy(),
-            merge_accuracy: BTreeMap::new(),
-            measured_at: None,
+            accuracy_metric: "precision_at_k".into(),
+            measured_at: measured_at(),
         }
-    }
-    #[test]
-    fn eligibility_checks_accuracy_at_the_queries_merge_count() {
-        let mut config = cost();
-        let precision = |v: f64| BTreeMap::from([("precision_at_k".into(), v)]);
-        // Precision is not monotone in the count: 16 is worse than 4 and 64.
-        config.merge_accuracy = BTreeMap::from([
-            (4, precision(0.8)),
-            (16, precision(0.1)),
-            (64, precision(0.7)),
-        ]);
-        let at_window = |window_ms| Deployment {
-            capability: Capability::TopKByValue,
-            metric: METRIC.into(),
-            spatial_filter: String::new(),
-            grouping_labels: LabelSet::new(),
-            config: config.clone(),
-            window_ms,
-            slide_ms: window_ms,
-            key_tracker: None,
-        };
-        let r = raqe("a", 60_000, 60_000);
-        // One window reads query_accuracy; 2 reads 1 and 4; 4 reads 4 alone.
-        assert!(is_eligible(
-            &r,
-            &at_window(60_000),
-            &facts(1, 1),
-            &table_accuracy
-        ));
-        assert!(is_eligible(
-            &r,
-            &at_window(30_000),
-            &facts(1, 1),
-            &table_accuracy
-        ));
-        assert!(is_eligible(
-            &r,
-            &at_window(15_000),
-            &facts(1, 1),
-            &table_accuracy
-        ));
-        // 12 and 20 merges bracket the bad count 16 from either side; 60
-        // reads 16 and 64, so it fails too even though 64 alone passes.
-        assert!(!is_eligible(
-            &r,
-            &at_window(5_000),
-            &facts(1, 1),
-            &table_accuracy
-        ));
-        assert!(!is_eligible(
-            &r,
-            &at_window(3_000),
-            &facts(1, 1),
-            &table_accuracy
-        ));
-        assert!(!is_eligible(
-            &r,
-            &at_window(1_000),
-            &facts(1, 1),
-            &table_accuracy
-        ));
-        // Past the largest count reads only 64.
-        assert!(is_eligible(
-            &r,
-            &at_window(500),
-            &facts(1, 1),
-            &table_accuracy
-        ));
     }
     #[test]
     fn shared_slide_comes_from_subset_gcd_not_all_divisors() {
@@ -527,6 +459,7 @@ mod tests {
         };
         let named = |sketch: &str| AtomicCostEntry {
             sketch: sketch.into(),
+            accuracy_metric: metric_of(sketch),
             ..cost()
         };
         let candidates = build_all_candidates(
@@ -545,6 +478,7 @@ mod tests {
         let r = raqe("r", 60_000, 60_000);
         let named = |sketch: &str| AtomicCostEntry {
             sketch: sketch.into(),
+            accuracy_metric: metric_of(sketch),
             ..cost()
         };
         let costs = [

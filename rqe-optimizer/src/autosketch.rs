@@ -339,8 +339,8 @@ mod tests {
     use super::*;
     use crate::analytical_cost_model::{score, PhaseCost};
     use crate::candidates::is_eligible;
-    use crate::test_support::{facts, METRIC};
-    use crate::{table_accuracy_at, Capability, LabelSet};
+    use crate::test_support::{facts, measured_at, METRIC};
+    use crate::{row_accuracy, Capability, LabelSet};
     use std::collections::BTreeSet;
 
     fn cms(rows: u64, cols: u64) -> AtomicCostEntry {
@@ -359,8 +359,8 @@ mod tests {
                 "precision_at_k".into(),
                 1.0 - 1.0 / (rows * cols) as f64,
             )]),
-            merge_accuracy: BTreeMap::new(),
-            measured_at: None,
+            accuracy_metric: "precision_at_k".into(),
+            measured_at: measured_at(),
         }
     }
 
@@ -386,7 +386,7 @@ mod tests {
     }
 
     fn table_accuracy(_: &Raqe, config: &AtomicCostEntry) -> Option<f64> {
-        Some(table_accuracy_at(config, 1))
+        Some(row_accuracy(config))
     }
 
     fn cheapest_feasible(raqe: &Raqe, costs: &[AtomicCostEntry]) -> usize {
@@ -498,8 +498,8 @@ mod tests {
             merge_cpu_secs: 1e-6,
             query_cpu_secs: 1e-6,
             query_accuracy: BTreeMap::from([("mean_rank_err".into(), 1.0 / k as f64)]),
-            merge_accuracy: BTreeMap::new(),
-            measured_at: None,
+            accuracy_metric: "mean_rank_err".into(),
+            measured_at: measured_at(),
         }
     }
 

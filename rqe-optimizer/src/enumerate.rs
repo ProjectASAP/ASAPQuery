@@ -127,9 +127,8 @@ pub fn for_each_mapping_while(
 mod tests {
     use super::*;
     use crate::candidates;
-    use crate::test_support::{facts, perfect_accuracy, METRIC};
+    use crate::test_support::{facts, measured_at, perfect_accuracy, METRIC};
     use crate::{table_accuracy, AtomicCostEntry, Capability, Deployment, LabelSet};
-    use std::collections::BTreeMap;
 
     fn cost(sketch: &str) -> AtomicCostEntry {
         AtomicCostEntry {
@@ -140,8 +139,8 @@ mod tests {
             merge_cpu_secs: 1.0,
             query_cpu_secs: 1.0,
             query_accuracy: perfect_accuracy(),
-            merge_accuracy: BTreeMap::new(),
-            measured_at: None,
+            accuracy_metric: "precision_at_k".into(),
+            measured_at: measured_at(),
         }
     }
 

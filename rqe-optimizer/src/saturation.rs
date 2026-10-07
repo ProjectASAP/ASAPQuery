@@ -10,7 +10,8 @@
 //!
 //! The cost table's sketch accuracies are not read: each is one point on a
 //! curve, at the row's `measured_at`, and [`SaturationCurves::check_cost_table`]
-//! checks that the two agree there (#171).
+//! checks that the two agree there (#171). Both come from one study run
+//! (`study_saturation.py --phase optimizer-cost`, #174).
 
 use std::collections::BTreeMap;
 use std::io;
@@ -40,6 +41,10 @@ pub struct DataShape {
 /// The two runs' output directories under `--saturation-dir`. A point in
 /// both is taken whole from the later one.
 const RUN_DIRS: [&str; 2] = ["out_grid_1e7_cost", "out_1e9"];
+
+/// The cost table under the same directory, written by
+/// `study_saturation.py --phase optimizer-cost --out DIR/optimizer_cost`.
+pub const COST_TABLE: &str = "optimizer_cost/rqe_atomic_costs.json";
 
 /// One (sketch, config, data shape) point of the study.
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +132,13 @@ impl GridPoint {
     }
 }
 
+/// Whether some capability plans `sketch`.
+fn is_candidate(sketch: &str) -> bool {
+    Capability::ALL
+        .iter()
+        .any(|capability| capability.families().contains(&sketch))
+}
+
 fn worse(a: f64, b: f64, direction: AccuracyDirection) -> f64 {
     match direction {
         AccuracyDirection::LowerIsBetter => a.max(b),
@@ -182,10 +194,7 @@ impl SaturationCurves {
                     curve: Vec::new(),
                 };
                 let sketch = row["sketch"].as_str();
-                let is_candidate = Capability::ALL
-                    .iter()
-                    .any(|capability| capability.families().contains(&sketch));
-                if is_candidate && point.error_metric != accuracy_key(sketch).0 {
+                if is_candidate(sketch) && point.error_metric != accuracy_key(sketch).0 {
                     return Err(invalid(format!(
                         "{run}: {sketch} curve measured {}, but the optimizer reads {}; \
                          rerun the study",
@@ -268,18 +277,31 @@ impl SaturationCurves {
         self.accuracy(raqe, &deployment, facts)
     }
 
-    /// Checks the cost table against the curves: a sketch row's
-    /// `query_accuracy` is the curve of its config and
-    /// `measured_at.data_shape()`, read at `measured_at.items_per_instance`.
+    /// Checks the cost table against the family table and the curves. A
+    /// candidate family's row must name the family's metric as its
+    /// `accuracy_metric`. A sketch row's accuracy is the curve of its config
+    /// and `measured_at.data_shape()`, read at `measured_at.items_per_instance`.
     /// Rows of sketches the study didn't run (exact accumulators among them)
-    /// are skipped.
+    /// skip the curve check.
     pub fn check_cost_table(&self, costs: &[AtomicCostEntry]) -> CostTableCheck {
         let mut check = CostTableCheck::default();
         for row in costs {
+            let name = format!("{} {}", row.sketch, row.sketch_config["params"]);
+            let metric = &row.accuracy_metric;
+            if is_candidate(&row.sketch) {
+                if let Some((family_metric, _)) = family_properties(&row.sketch).accuracy {
+                    if metric != family_metric {
+                        check.mismatched.push(format!(
+                            "{name}: accuracy_metric is {metric}, but the optimizer reads \
+                             {family_metric}"
+                        ));
+                        continue;
+                    }
+                }
+            }
             let Some(points) = self.points_by_sketch.get(&row.sketch) else {
                 continue;
             };
-            let name = format!("{} {}", row.sketch, row.sketch_config["params"]);
             let params = config_params(row);
             let mut same_config = points
                 .iter()
@@ -291,25 +313,27 @@ impl SaturationCurves {
                     .push(format!("{name}: config not in the saturation grid"));
                 continue;
             }
-            let Some(measured_at) = &row.measured_at else {
-                check.unchecked.push(format!("{name}: no measured_at"));
-                continue;
-            };
-            let shape = measured_at.data_shape();
+            let shape = row.measured_at.data_shape();
             let Some(point) = same_config.find(|point| Some(point.shape) == shape) else {
                 check
                     .unchecked
                     .push(format!("{name}: no grid point at {shape:?}"));
                 continue;
             };
-            let metric = &point.error_metric;
-            let Some(&value) = row.query_accuracy.get(metric) else {
+            if &point.error_metric != metric {
+                check.mismatched.push(format!(
+                    "{name}: accuracy_metric is {metric}, the curve's {}",
+                    point.error_metric
+                ));
+                continue;
+            }
+            let Some(value) = row.accuracy() else {
                 check
                     .mismatched
                     .push(format!("{name}: the table has no {metric}"));
                 continue;
             };
-            let n = measured_at.items_per_instance as f64;
+            let n = row.measured_at.items_per_instance as f64;
             match point.agrees_at(n, value) {
                 None => check
                     .unchecked
@@ -520,8 +544,8 @@ mod tests {
                 merge_cpu_secs: 1.0,
                 query_cpu_secs: 1.0,
                 query_accuracy: BTreeMap::from([("precision_at_k".into(), 1.0)]),
-                merge_accuracy: BTreeMap::new(),
-                measured_at: None,
+                accuracy_metric: crate::test_support::metric_of(sketch),
+                measured_at: crate::test_support::measured_at(),
             },
             window_ms,
             slide_ms: window_ms,
@@ -600,7 +624,7 @@ mod tests {
         AtomicCostEntry {
             sketch_config: serde_json::json!({"params": {"rows": 3, "cols": cols}}),
             query_accuracy: BTreeMap::from([("precision_at_k".into(), precision)]),
-            measured_at: Some(MeasuredAt {
+            measured_at: MeasuredAt {
                 items_per_instance: items,
                 keys_per_instance: Some(1_000),
                 value_range: None,
@@ -610,7 +634,7 @@ mod tests {
                     population_size: 1_000,
                     seed: 1,
                 })),
-            }),
+            },
             ..deployment(TOPK, 1).config
         }
     }
@@ -639,18 +663,30 @@ mod tests {
         );
         assert_eq!(check(&[measured_row(1024, 100, 0.95)]).unchecked.len(), 1);
         let mut pareto = measured_row(1024, 10_000, 0.95);
-        pareto.measured_at.as_mut().unwrap().distribution = None;
+        pareto.measured_at.distribution = None;
         assert_eq!(check(&[pareto]).unchecked.len(), 1);
-        // A table without the curve's metric is a mismatch.
+        // A row naming another metric than its family's is a mismatch.
         let mut other_metric = measured_row(1024, 10_000, 0.95);
         other_metric.query_accuracy = BTreeMap::from([("recall_at_k".into(), 0.95)]);
+        other_metric.accuracy_metric = "recall_at_k".into();
         assert_eq!(check(&[other_metric]).mismatched.len(), 1);
-        // Sketches the study didn't run, exact ones among them, are skipped.
+        // Sketches the study didn't run, exact ones among them, skip the
+        // curve, but still name their family's metric.
         let exact = AtomicCostEntry {
             sketch: "exact-sum".into(),
+            query_accuracy: BTreeMap::from([("relative_error".into(), 0.0)]),
+            accuracy_metric: "relative_error".into(),
             ..measured_row(1024, 10_000, 0.0)
         };
-        assert_eq!(check(&[exact]), CostTableCheck::default());
+        assert_eq!(
+            check(std::slice::from_ref(&exact)),
+            CostTableCheck::default()
+        );
+        let misnamed = AtomicCostEntry {
+            accuracy_metric: "relative_error_mean".into(),
+            ..exact
+        };
+        assert_eq!(check(&[misnamed]).mismatched.len(), 1);
     }
 
     #[test]

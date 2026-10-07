@@ -337,6 +337,7 @@ mod tests {
         });
         let costs = [AtomicCostEntry {
             sketch: sketch.into(),
+            accuracy_metric: crate::test_support::metric_of(sketch),
             ..deployment(1.0, 1.0, 1.0).config
         }];
         let candidates = build_all_candidates(&raqes, &costs, &facts(1, 1), false, &table_accuracy);

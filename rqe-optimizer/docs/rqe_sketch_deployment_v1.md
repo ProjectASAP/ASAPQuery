@@ -20,8 +20,9 @@ and per-RAQE latency.
 - **Configuration**: a family plus its parameters, such as KLL with `k = 200`.
   One row of the cost table.
 - **Cost table**: per configuration, measured memory per instance, CPU per
-  insert, merge and query, and accuracy. Exported by
-  [`scripts/export_rqe_optimizer_costs.sh`](../scripts/export_rqe_optimizer_costs.sh).
+  insert, merge and query, and accuracy in its named `accuracy_metric`.
+  Measured by
+  [`scripts/study_saturation.py --phase optimizer-cost`](../scripts/study_saturation.py).
 - **Window**: the interval `[k × y, k × y + x)` an instance covers; `x` is the
   window size and `y` the slide.
 - **Instance**: one sketch or accumulator object holding one group's samples
@@ -66,16 +67,25 @@ lambda(metric) = card(metric.labels) / scrape_interval      samples/second
 
 `validate_facts` reports every missing or inconsistent fact up front.
 
-The cost table, exported by
-[`scripts/export_rqe_optimizer_costs.sh`](../scripts/export_rqe_optimizer_costs.sh)
-from sketch-bench runs, gives for each configuration:
+The cost table, measured by
+[`scripts/study_saturation.py --phase optimizer-cost`](../scripts/study_saturation.py)
+(#174), gives for each configuration:
 
 - memory per instance;
 - CPU per insert;
 - CPU per query of one instance;
-- CPU per pairwise merge; and
-- measured accuracy values, which only exact accumulators use (see
-  [eligibility](#candidate-deployments)).
+- CPU per pairwise merge;
+- the comparator's accuracy scores, and `accuracy_metric`, the one that is
+  the row's accuracy (only exact accumulators read it; see
+  [eligibility](#candidate-deployments)); and
+- `measured_at`, the data it was measured on.
+
+The study measures every configuration once, serially, at one data shape:
+Zipf θ = 1.1 over 1e4 keys (Pareto `a` = 2 for quantiles), 1e6 items, 5 runs
+after 3 warm-ups. That is the dataset of the AutoSketch vs. ASAP evaluation
+(ASAPQuery#777), so the evaluation's costs and the cost table are one
+measurement. Cost is taken as independent of the data shape. The same study
+measures the saturation curves, so the configurations in both are one grid.
 
 Each metric's facts also carry a fitted `data_shape` per grouping, which keys
 the saturation curves.
@@ -204,11 +214,8 @@ An RAQE `r_i` is eligible for a candidate `D` when:
 3. The accuracy of `D` for `r_i`, in the accuracy metric of `D`'s family
    (`family_properties`, which also gives the direction), clears `tol_i`.
 
-Exact accumulators take that accuracy from the cost table, at both measured
-merge counts bracketing the query's `S_i / D.x` windows (count 1 is the
-single-instance accuracy; beyond the largest measured count, the largest).
-Merge accuracy is not monotone in the count, so the worse bracket is used.
-Sketches take it
+Exact accumulators take that accuracy from the cost table; they merge without
+loss, so the window size doesn't matter. Sketches take it
 from the saturation study's error-vs-N curves (`SaturationCurves`, #156),
 read at the number of items one group receives over the RAQE's whole
 lookback: series per group times scrapes per lookback.
@@ -227,12 +234,14 @@ lookback: series per group times scrapes per lookback.
 
 The cost table's sketch accuracies are not read, but they are one point on
 each curve: a row's `measured_at` (items, Zipf θ and population, or Pareto
-`a`) is a grid point's key. `SaturationCurves::check_cost_table` reads the
-curve there and reports every row that disagrees (beyond 3 seed standard
-errors plus 5%), whose configuration is not in the grid, or whose table lacks
-the curve's `error_metric`. Rows the study has no point for (KLL: the table
-measures Zipf ranks, the study Pareto values) are reported as unchecked.
-`small_problem` refuses to plan when any row disagrees.
+`a`) is a grid point's key. `SaturationCurves::check_cost_table` reports every
+row whose `accuracy_metric` is not its family's or not its curve's
+`error_metric`, whose configuration is not in the grid, or whose accuracy
+disagrees with the curve at `measured_at` (beyond 3 seed standard errors plus
+5%). The study runs every configuration at the cost table's shape too, so
+every sketch row has a grid point; a row without one (a study run with
+`--no-cost-shape`) is reported as unchecked. `small_problem` refuses to plan
+when any row disagrees.
 
 For lower-is-better metrics, passing means `measured <= tol_i`. For
 higher-is-better metrics, passing means `measured >= tol_i`. Direction is
@@ -345,7 +354,7 @@ top-k (sketch-bench's heap size, with 64-bit key hashes); it is not measured.
 ### Instance shape and size law
 
 Each row of the cost table (from
-[`scripts/export_rqe_optimizer_costs.sh`](../scripts/export_rqe_optimizer_costs.sh))
+[`scripts/study_saturation.py --phase optimizer-cost`](../scripts/study_saturation.py))
 is measured on one instance, at whatever key count the benchmark fed it
 (`measured_keys`). A key is one distinct entry an instance stores exactly,
 such as one group's running sum in an exact accumulator. Turning a row into a
