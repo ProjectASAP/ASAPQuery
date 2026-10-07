@@ -1,15 +1,11 @@
-//! Offline runner for the optimization-based sketch/config selector.
-//!
-//! Standalone: not wired into `asap-planner`/`Controller::generate()` yet. Lets
-//! you exercise `run_greedy_pipeline` against real workload configs while the
-//! optimizer module is still under development (Phase 2 of issue #405).
+//! Offline runner for the rqe-optimizer MILP planner: prints the plan and its
+//! cost, and optionally writes the streaming and inference configs.
 
 use std::path::PathBuf;
 
 use asap_planner::optimizer::{
-    build_milp_workload, load_flat_atomic_cost_table, load_optional_selected_atomic_cost_table,
-    load_workload_facts, plan_to_planner_output, reject_avg_queries, run_greedy_pipeline,
-    solve_milp, AtomicCostTable, LabelSetFacts, LabelSetFactsError,
+    build_milp_workload, load_flat_atomic_cost_table, load_workload_facts, plan_to_planner_output,
+    reject_avg_queries, solve_milp, MilpError,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -18,7 +14,7 @@ use rqe_optimizer::milp::Objective;
 #[derive(Parser, Debug)]
 #[command(
     name = "asap-optimizer-cli",
-    about = "Offline runner for the optimization-based sketch/config selector (not wired into asap-planner yet)"
+    about = "Offline runner for the rqe-optimizer MILP planner"
 )]
 struct Args {
     /// Path to a YAML workload config (same format as `asap-planner --input_config`).
@@ -30,68 +26,32 @@ struct Args {
     #[arg(long = "data-ingestion-interval-ms", value_parser = clap::value_parser!(u64).range(1..))]
     data_ingestion_interval_ms: u64,
 
-    /// Greedy only. YAML label-set facts: `series_count` per (metric, spatial
-    /// filter) and `cardinality` per (metric, spatial filter, grouping labels).
-    #[arg(
-        long = "label-set-facts",
-        required_unless_present = "milp",
-        conflicts_with = "milp"
-    )]
-    label_set_facts: Option<PathBuf>,
+    /// The flat cost table `export_rqe_optimizer_costs.sh` writes
+    /// (`rqe_atomic_costs.json`).
+    #[arg(long = "atomic-costs")]
+    atomic_costs: PathBuf,
 
-    /// Greedy: the versioned atomic-cost document sketch-bench's
-    /// `atomic-costs` subcommand exports; requires --atomic-cost-workload.
-    /// Omitted: every benchmarked-family candidate (CMS/HLL/KLL) is dropped,
-    /// leaving only trivial accumulators and EXACT.
-    /// MILP: the flat cost table `export_rqe_optimizer_costs.sh` writes
-    /// (`rqe_atomic_costs.json`); required.
-    #[arg(long = "atomic-costs", required_if_eq("milp", "true"))]
-    atomic_costs: Option<PathBuf>,
-
-    /// Greedy only. JSON `profiles[].workload` value copied from the
-    /// sketch-bench atomic-cost document. This makes the empirical workload
-    /// profile explicit and avoids mixing costs from different traces or time
-    /// windows.
-    #[arg(
-        long = "atomic-cost-workload",
-        requires = "atomic_costs",
-        conflicts_with = "milp"
-    )]
-    atomic_cost_workload: Option<PathBuf>,
-
-    /// Plan with sketch-bench's rqe-optimizer MILP and print the plan.
-    #[arg(long)]
-    milp: bool,
-
-    /// MILP only. Write `streaming_config.yaml` and `inference_config.yaml`
-    /// for the plan here.
-    #[arg(long = "output-dir", requires = "milp")]
+    /// Write `streaming_config.yaml` and `inference_config.yaml` for the plan
+    /// here.
+    #[arg(long = "output-dir")]
     output_dir: Option<PathBuf>,
 
-    /// MILP only. Also plan with families the engine can't deploy; prints the
-    /// plan and writes no configs.
-    #[arg(
-        long = "allow-undeployable-families",
-        requires = "milp",
-        conflicts_with = "output_dir"
-    )]
+    /// Also plan with families the engine can't deploy; prints the plan and
+    /// writes no configs.
+    #[arg(long = "allow-undeployable-families", conflicts_with = "output_dir")]
     allow_undeployable_families: bool,
 
-    /// MILP only. YAML workload facts: per metric, `cardinality` per label
-    /// set, including the set of all its labels (the series count).
-    #[arg(
-        long = "workload-facts",
-        required_if_eq("milp", "true"),
-        requires = "milp"
-    )]
-    workload_facts: Option<PathBuf>,
+    /// YAML workload facts: per metric, `cardinality` per label set,
+    /// including the set of all its labels (the series count).
+    #[arg(long = "workload-facts")]
+    workload_facts: PathBuf,
 
-    /// MILP only. Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
-    #[arg(long = "w-cpu", requires = "milp", value_parser = parse_weight)]
+    /// Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
+    #[arg(long = "w-cpu", value_parser = parse_weight)]
     w_cpu: Option<f64>,
 
-    /// MILP only. Objective weight on memory GiB. Default: rqe-optimizer's.
-    #[arg(long = "w-mem", requires = "milp", value_parser = parse_weight)]
+    /// Objective weight on memory GiB. Default: rqe-optimizer's.
+    #[arg(long = "w-mem", value_parser = parse_weight)]
     w_mem: Option<f64>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -111,56 +71,7 @@ fn main() -> anyhow::Result<()> {
 
     let yaml_str = std::fs::read_to_string(&args.input_config)?;
     let config: ControllerConfig = serde_yaml::from_str(&yaml_str)?;
-    if args.milp {
-        return run_milp(&args, &config);
-    }
-    let facts = LabelSetFacts::from_path(
-        args.label_set_facts
-            .as_deref()
-            .expect("clap requires --label-set-facts without --milp"),
-    )?;
-
-    let atomic_cost_table = match load_optional_selected_atomic_cost_table(
-        args.atomic_costs.as_deref(),
-        args.atomic_cost_workload.as_deref(),
-    )? {
-        Some(table) => table,
-        None => {
-            tracing::warn!(
-                "no --atomic-costs supplied; CMS/HLL/KLL candidates will never be selected"
-            );
-            AtomicCostTable::default()
-        }
-    };
-
-    let (streaming, inference) = run_greedy_pipeline(
-        &config,
-        &facts,
-        args.data_ingestion_interval_ms,
-        &atomic_cost_table,
-    )?;
-
-    let deployed = streaming.get_all_aggregation_configs();
-    println!("=== Deployed streaming configs: {} ===", deployed.len());
-    for (id, cfg) in deployed {
-        println!(
-            "  [{id}] {} sub_type={:?} window={}ms slide={}ms type={:?} metric={} params={:?}",
-            cfg.aggregation_type,
-            cfg.aggregation_sub_type,
-            cfg.window_size_ms,
-            cfg.slide_interval_ms,
-            cfg.window_type,
-            cfg.metric,
-            cfg.parameters,
-        );
-    }
-
-    println!("\n=== Query configs: {} ===", inference.query_configs.len());
-    for qc in &inference.query_configs {
-        println!("  \"{}\" -> {:?}", qc.query, qc.aggregations);
-    }
-
-    Ok(())
+    run_milp(&args, &config)
 }
 
 /// Objective weights must be finite and non-negative: a negative weight
@@ -176,20 +87,10 @@ fn parse_weight(s: &str) -> Result<f64, String> {
 fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
     config.warn_default_slas();
     let Some(hints) = config.metrics.as_deref() else {
-        return Err(LabelSetFactsError::MissingMetricHints.into());
+        return Err(MilpError::MissingMetricHints.into());
     };
-    let facts = load_workload_facts(
-        args.workload_facts
-            .as_deref()
-            .expect("clap requires --workload-facts with --milp"),
-        hints,
-        args.data_ingestion_interval_ms,
-    )?;
-    let costs = load_flat_atomic_cost_table(
-        args.atomic_costs
-            .as_deref()
-            .expect("clap requires --atomic-costs with --milp"),
-    )?;
+    let facts = load_workload_facts(&args.workload_facts, hints, args.data_ingestion_interval_ms)?;
+    let costs = load_flat_atomic_cost_table(&args.atomic_costs)?;
     let Objective::AUCCost { w_cpu, w_mem } = Objective::default();
     let (w_cpu, w_mem) = (args.w_cpu.unwrap_or(w_cpu), args.w_mem.unwrap_or(w_mem));
     // All-zero weights make every plan cost 0, so the solver's pick is arbitrary.

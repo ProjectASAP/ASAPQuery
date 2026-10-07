@@ -12,7 +12,8 @@ use thiserror::Error;
 
 use crate::config::input::ControllerConfig;
 
-use super::pipeline::{extract_hinted_items, OptimizerPipelineError};
+use super::aqe_extractor::{extract_aqes, RQE};
+use super::error::OptimizerError;
 use super::solution::OptimizerItem;
 
 /// `query_accuracy` keys in sketch-bench's cost export. Each is the worst case
@@ -26,8 +27,14 @@ const SLA_EPSILON: f64 = 1e-9;
 
 #[derive(Debug, Error)]
 pub enum MilpError {
+    #[error(
+        "workload config has no `metrics:` hints; they are required to resolve grouping labels"
+    )]
+    MissingMetricHints,
+    #[error("workload metrics missing from `metrics:` hints: {0:?}")]
+    MetricsWithoutHints(Vec<String>),
     #[error(transparent)]
-    Pipeline(#[from] OptimizerPipelineError),
+    Extraction(#[from] OptimizerError),
     #[error("query {query:?}: accuracy_sla {accuracy_sla} must be between 0 and 1")]
     AccuracySlaOutOfRange { query: String, accuracy_sla: f64 },
     #[error("invalid MILP inputs:\n{}", .0.join("\n"))]
@@ -157,6 +164,51 @@ pub fn build_milp_workload(
         raqes,
         raqe_items,
     })
+}
+
+/// The workload's optimizer items, with labels resolved from its `metrics:`
+/// hints. Every workload metric must have a hint.
+fn extract_hinted_items(
+    config: &ControllerConfig,
+    scrape_interval_ms: u64,
+) -> Result<Vec<OptimizerItem>, MilpError> {
+    if config.metrics.is_none() {
+        return Err(MilpError::MissingMetricHints);
+    }
+    let schema = config.schema_from_hints();
+    let rqes = config_to_rqes(config);
+    let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms)?;
+
+    // Requirement extraction treats an unknown metric as having no labels,
+    // which would silently mis-resolve `without (...)` and plain selectors.
+    let mut unhinted: Vec<String> = aqes
+        .iter()
+        .map(|aqe| aqe.requirements.metric.clone())
+        .filter(|metric| schema.get_labels(metric).is_none())
+        .collect();
+    if !unhinted.is_empty() {
+        unhinted.sort();
+        unhinted.dedup();
+        return Err(MilpError::MetricsWithoutHints(unhinted));
+    }
+    Ok(aqes)
+}
+
+/// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.
+/// Each (query, repetition_delay_ms) pair becomes one RQE.
+fn config_to_rqes(config: &ControllerConfig) -> Vec<RQE> {
+    config
+        .query_groups
+        .iter()
+        .flat_map(|qg| {
+            qg.queries.iter().map(|q| RQE {
+                query_string: q.clone(),
+                t_repeat_ms: qg.repetition_delay_ms,
+                accuracy_sla: qg.controller_options.accuracy_sla,
+                latency_sla_ms: qg.controller_options.latency_sla_ms,
+            })
+        })
+        .collect()
 }
 
 /// No limit sorts last.
@@ -543,5 +595,55 @@ metrics:
         assert!(caps.contains(&Capability::Sum) && caps.contains(&Capability::Count));
         let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
         assert_eq!(solution.deployments.len(), 2);
+    }
+
+    #[test]
+    fn workload_requires_metric_hints() {
+        let config: ControllerConfig = serde_yaml::from_str(&format!(
+            "query_groups:\n{}",
+            group("sum(http_requests_total)", 0.99)
+        ))
+        .unwrap();
+        assert!(matches!(
+            extract_hinted_items(&config, SCRAPE_MS),
+            Err(MilpError::MissingMetricHints)
+        ));
+    }
+
+    #[test]
+    fn workload_metric_without_a_hint_is_rejected() {
+        let config = config(&format!(
+            "{}{}",
+            group("sum(http_requests_total)", 0.99),
+            group("max_over_time(unhinted[5m])", 0.99)
+        ));
+        assert!(matches!(
+            extract_hinted_items(&config, SCRAPE_MS),
+            Err(MilpError::MetricsWithoutHints(metrics)) if metrics == ["unhinted"]
+        ));
+    }
+
+    #[test]
+    fn spatial_only_aqe_gets_the_scrape_interval_as_its_range() {
+        let config = config(&group("sum(http_requests_total)", 0.99));
+        let items = extract_hinted_items(&config, SCRAPE_MS).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].requirements.data_range_ms, SCRAPE_MS);
+    }
+
+    #[test]
+    fn config_to_rqes_flattens_groups() {
+        let group_at = |query: &str, t_repeat_ms: u64| {
+            format!("  - queries: [\"{query}\"]\n    repetition_delay_ms: {t_repeat_ms}\n")
+        };
+        let config = config(&format!(
+            "{}{}",
+            group_at("sum_over_time(a[5m])", 60_000),
+            group_at("sum_over_time(b[5m])", 30_000)
+        ));
+        let rqes = config_to_rqes(&config);
+        assert_eq!(rqes.len(), 2);
+        assert_eq!(rqes[0].t_repeat_ms, 60_000);
+        assert_eq!(rqes[1].t_repeat_ms, 30_000);
     }
 }

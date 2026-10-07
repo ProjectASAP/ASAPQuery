@@ -16,10 +16,6 @@ name = "asap-optimizer-cli"
 path = "src/bin/optimizer_cli.rs"
 
 [[bin]]
-name = "candidate-gen-dump"
-path = "src/bin/candidate_gen_dump.rs"
-
-[[bin]]
 name = "benchmark-promql-status"
 path = "src/bin/benchmark_promql_status.rs"
 
