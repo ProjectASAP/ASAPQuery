@@ -19,6 +19,7 @@ use std::io;
 use std::path::Path;
 
 use crate::autosketch::window_adapter;
+use crate::theory;
 use crate::{
     accuracy_key, family_properties, table_accuracy, AccuracyDirection, AtomicCostEntry,
     Capability, Deployment, LabelSet, MetricFacts, Raqe, WorkloadFacts,
@@ -120,6 +121,47 @@ impl GridPoint {
         curve_error_at(&self.curve, self.n_sat, n, direction)
     }
 
+    /// The curves an answer merged from `merges` instances reads: the plain
+    /// curve alone, or the measured shard counts either side of `merges`
+    /// (one is the plain curve). Past the largest count, only the largest.
+    fn bracketing_curves(&self, merges: u64) -> Vec<&[(f64, f64, f64)]> {
+        if merges <= 1 {
+            return vec![&self.curve];
+        }
+        let below = self
+            .merged
+            .range(..=merges)
+            .next_back()
+            .map_or(&self.curve[..], |(_, c)| &c[..]);
+        match self.merged.range(merges..).next() {
+            Some((_, above)) => vec![below, above],
+            None => self
+                .merged
+                .values()
+                .next_back()
+                .map_or(vec![below], |c| vec![&c[..]]),
+        }
+    }
+
+    /// The smallest N the study measured the curves an answer merged from
+    /// `merges` instances reads.
+    fn first_measured_n(&self, merges: u64) -> Option<f64> {
+        self.bracketing_curves(merges)
+            .iter()
+            .map(|c| c.first().map(|p| p.0))
+            .try_fold(0.0, |max: f64, first| first.map(|f| max.max(f)))
+    }
+
+    /// The worst last error measured on the curves an answer merged from
+    /// `merges` instances reads: the floor a fallback extending them can't
+    /// beat.
+    fn last_measured_error(&self, merges: u64, direction: AccuracyDirection) -> Option<f64> {
+        self.bracketing_curves(merges)
+            .iter()
+            .filter_map(|c| c.last().map(|p| p.1))
+            .reduce(|a, b| worse(a, b, direction))
+    }
+
     /// The error at `n` items of the sketch merged from `merges` instances:
     /// the worse of the measured shard counts either side of `merges` (one
     /// is the plain sketch). `None` past the largest measured count, past the
@@ -194,6 +236,15 @@ fn worse(a: f64, b: f64, direction: AccuracyDirection) -> f64 {
         AccuracyDirection::LowerIsBetter => a.max(b),
         AccuracyDirection::HigherIsBetter => a.min(b),
     }
+}
+
+/// Where an accuracy came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccuracySource {
+    /// The cost table (exact accumulators) or the study's curves.
+    Measured,
+    /// The algorithm's published guarantee, where the study measured nothing.
+    Theory,
 }
 
 /// What [`SaturationCurves::check_cost_table`] found, one line per row.
@@ -342,8 +393,24 @@ impl SaturationCurves {
         deployment: &Deployment,
         facts: &WorkloadFacts,
     ) -> Option<f64> {
+        self.accuracy_with_source(raqe, deployment, facts)
+            .map(|(value, _)| value)
+    }
+
+    /// [`SaturationCurves::accuracy`], and where the returned (worst) value
+    /// came from: measured, or the algorithm's guarantee
+    /// ([`crate::theory`]) for a bracketing point the study didn't measure
+    /// (past an unsaturated curve, past the measured merge counts or N, or
+    /// with no merge curve). Below the curves' first N, or outside the grid,
+    /// it stays unknown.
+    pub fn accuracy_with_source(
+        &self,
+        raqe: &Raqe,
+        deployment: &Deployment,
+        facts: &WorkloadFacts,
+    ) -> Option<(f64, AccuracySource)> {
         if family_properties(&deployment.config.sketch).exact {
-            return table_accuracy(raqe, deployment);
+            return table_accuracy(raqe, deployment).map(|v| (v, AccuracySource::Measured));
         }
         let metric_facts = &facts[&deployment.metric];
         let grouping = &deployment.grouping_labels;
@@ -356,10 +423,26 @@ impl SaturationCurves {
         } else {
             1
         };
-        let mut worst = None;
+        let params = config_params(&deployment.config)?;
+        let mut worst: Option<(f64, AccuracySource)> = None;
         for point in points {
-            let error = point.merged_error_at(merges, covered, direction)?;
-            worst = Some(worst.map_or(error, |w| worse(w, error, direction)));
+            let found = match point.merged_error_at(merges, covered, direction) {
+                Some(error) => (error, AccuracySource::Measured),
+                None if covered >= point.first_measured_n(merges)? => {
+                    let bound =
+                        theory::bound(&deployment.config.sketch, &params, point.shape, merges)?;
+                    // No better than the last measurement it extends.
+                    let error = match point.last_measured_error(merges, direction) {
+                        Some(last) => worse(bound, last, direction),
+                        None => bound,
+                    };
+                    (error, AccuracySource::Theory)
+                }
+                None => return None,
+            };
+            if worst.is_none_or(|(w, _)| worse(w, found.0, direction) != w) {
+                worst = Some(found);
+            }
         }
         worst
     }
@@ -803,6 +886,50 @@ mod tests {
             BTreeMap::from([(4, vec![(1e3, 0.02, 0.0)]), (16, vec![(1e3, 0.03, 0.0)])])
         );
         assert!(missing.unwrap_err().to_string().contains("no merge curve"));
+    }
+
+    /// Past an unsaturated curve the study measured nothing: the answer
+    /// falls back to the algorithm's guarantee, and says so. A merged top-k
+    /// answer has no guarantee.
+    #[test]
+    fn an_unmeasured_point_falls_back_to_the_guarantee() {
+        // θ = 1.0, K = 1e5 never saturates; 10 series × 1e8 s = 1e9 items.
+        let facts = workload(10, shape(1.0, 1e5));
+        let r = topk_raqe(100_000_000);
+        let one_window = curves().accuracy_with_source(&r, &deployment(TOPK, 100_000_000), &facts);
+        let params = BTreeMap::from([("rows".to_string(), 3.0), ("cols".to_string(), 1024.0)]);
+        let zipf = MeasuredShape::Zipf {
+            skew: 1.0,
+            keys: 1e5,
+        };
+        let bound = theory::bound(TOPK, &params, zipf, 1).unwrap();
+        assert_eq!(one_window, Some((bound, AccuracySource::Theory)));
+        let merged = curves().accuracy_with_source(&r, &deployment(TOPK, 10_000_000), &facts);
+        assert_eq!(merged, None);
+        // Measured where the curve has it.
+        let measured = curves().accuracy_with_source(
+            &r,
+            &deployment(TOPK, 100_000_000),
+            &workload(10, shape(1.2, 1e3)),
+        );
+        assert_eq!(
+            measured.map(|(_, source)| source),
+            Some(AccuracySource::Measured)
+        );
+    }
+
+    /// A fallback's floor is the worse last measurement of both shard
+    /// counts around the merge count, not only the smaller.
+    #[test]
+    fn a_fallback_floor_reads_both_bracketing_merge_curves() {
+        let point = &curves().points_by_sketch[TOPK][1];
+        let higher = AccuracyDirection::HigherIsBetter;
+        // 4 shards end at 0.88, 16 at 0.80: 8 merges floor at 0.80.
+        assert!((point.last_measured_error(8, higher).unwrap() - 0.8).abs() < 1e-12);
+        assert!((point.last_measured_error(4, higher).unwrap() - 0.88).abs() < 1e-12);
+        assert!((point.last_measured_error(1, higher).unwrap() - 0.9).abs() < 1e-12);
+        // Past the largest count, the largest's.
+        assert!((point.last_measured_error(100, higher).unwrap() - 0.8).abs() < 1e-12);
     }
 
     #[test]

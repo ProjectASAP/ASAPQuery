@@ -16,6 +16,7 @@ pub mod enumerate;
 pub mod milp;
 pub mod pareto;
 pub mod saturation;
+pub mod theory;
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
