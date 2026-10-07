@@ -306,6 +306,7 @@ mod tests {
             },
             query_strings: vec!["q".into()],
             query_frequency_hz: 1.0 / 60.0,
+            occurrences: 1,
             t_repeat_ms: 60_000,
             accuracy_sla: 0.0,
             latency_sla_ms: None,

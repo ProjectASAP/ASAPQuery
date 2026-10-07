@@ -9,7 +9,7 @@ use super::atomic_costs::AtomicCostTable;
 use super::cost_model::CostWeights;
 use super::greedy::greedy_assign;
 use super::label_set_facts::{LabelSetFacts, LabelSetFactsError, LabelSetKey};
-use super::solution::OptimizerSolution;
+use super::solution::{OptimizerItem, OptimizerSolution};
 use super::translator::{translate, TranslationSummary};
 
 #[derive(Debug, Error)]
@@ -51,25 +51,7 @@ pub fn run_greedy_pipeline(
     scrape_interval_ms: u64,
     atomic_cost_table: &AtomicCostTable,
 ) -> Result<(StreamingConfig, InferenceConfig), OptimizerPipelineError> {
-    if config.metrics.is_none() {
-        return Err(LabelSetFactsError::MissingMetricHints.into());
-    }
-    let schema = config.schema_from_hints();
-    let rqes = config_to_rqes(config);
-    let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms)?;
-
-    // Requirement extraction treats an unknown metric as having no labels,
-    // which would silently mis-resolve `without (...)` and plain selectors.
-    let mut unhinted: Vec<String> = aqes
-        .iter()
-        .map(|aqe| aqe.requirements.metric.clone())
-        .filter(|metric| schema.get_labels(metric).is_none())
-        .collect();
-    if !unhinted.is_empty() {
-        unhinted.sort();
-        unhinted.dedup();
-        return Err(LabelSetFactsError::MetricsWithoutHints(unhinted).into());
-    }
+    let aqes = extract_hinted_items(config, scrape_interval_ms)?;
 
     let item_facts = facts.resolve(&aqes, scrape_interval_ms)?;
     for (aqe, item) in aqes.iter().zip(&item_facts) {
@@ -91,6 +73,34 @@ pub fn run_greedy_pipeline(
     )?;
 
     Ok(finish_pipeline(solution, "greedy"))
+}
+
+/// The workload's optimizer items, with labels resolved from its `metrics:`
+/// hints. Every workload metric must have a hint.
+pub(super) fn extract_hinted_items(
+    config: &ControllerConfig,
+    scrape_interval_ms: u64,
+) -> Result<Vec<OptimizerItem>, OptimizerPipelineError> {
+    if config.metrics.is_none() {
+        return Err(LabelSetFactsError::MissingMetricHints.into());
+    }
+    let schema = config.schema_from_hints();
+    let rqes = config_to_rqes(config);
+    let aqes = extract_aqes(&rqes, &schema, scrape_interval_ms)?;
+
+    // Requirement extraction treats an unknown metric as having no labels,
+    // which would silently mis-resolve `without (...)` and plain selectors.
+    let mut unhinted: Vec<String> = aqes
+        .iter()
+        .map(|aqe| aqe.requirements.metric.clone())
+        .filter(|metric| schema.get_labels(metric).is_none())
+        .collect();
+    if !unhinted.is_empty() {
+        unhinted.sort();
+        unhinted.dedup();
+        return Err(LabelSetFactsError::MetricsWithoutHints(unhinted).into());
+    }
+    Ok(aqes)
 }
 
 /// Convert a `ControllerConfig`'s query groups into a flat list of RQEs.

@@ -137,6 +137,7 @@ mod tests {
             },
             query_strings: vec!["test_query".into()],
             query_frequency_hz: freq_hz,
+            occurrences: 1,
             t_repeat_ms: min_t,
             accuracy_sla: 0.0,
             latency_sla_ms: None,
@@ -194,6 +195,7 @@ mod tests {
             },
             query_strings: vec!["avg_query".into()],
             query_frequency_hz: 1.0 / 60.0,
+            occurrences: 1,
             t_repeat_ms: 60_000,
             accuracy_sla: 0.0,
             latency_sla_ms: None,
@@ -237,6 +239,7 @@ mod tests {
             merge_cpu_secs: 0.0,
             query_cpu_secs: 0.0,
             query_accuracy: std::collections::BTreeMap::new(),
+            merge_accuracy: std::collections::BTreeMap::new(),
             measured_at: None,
         }];
         let aqe = make_aqe(Statistic::Topk, 60_000, 60_000, 1.0 / 60.0);
@@ -276,6 +279,7 @@ mod tests {
             merge_cpu_secs: 0.0,
             query_cpu_secs: 0.0,
             query_accuracy: std::collections::BTreeMap::new(),
+            merge_accuracy: std::collections::BTreeMap::new(),
             measured_at: None,
         }];
         let mut aqe = make_aqe(Statistic::Sum, 60_000, 60_000, 1.0 / 60.0);
