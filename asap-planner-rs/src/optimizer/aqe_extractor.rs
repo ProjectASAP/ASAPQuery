@@ -157,6 +157,16 @@ fn decompose_to_leaves(query: &str) -> Vec<String> {
     leaves
 }
 
+/// Whether any leaf of `query` is an `avg` that `decompose_to_leaves` rewrites.
+pub(crate) fn contains_avg(query: &str) -> bool {
+    match parse_binary_arms(query) {
+        Some((lhs, rhs)) => [lhs, rhs]
+            .into_iter()
+            .any(|arm| matches!(arm, BinaryArm::Query(q) if contains_avg(&q))),
+        None => rewrite_avg(query).len() > 1,
+    }
+}
+
 /// Rewrite an `avg` leaf into the sum and count leaves it is computed from:
 /// `avg by (l) (x)` → `sum by (l) (x)`, `count by (l) (x)`, and
 /// `avg_over_time(x[5m])` → `sum_over_time(x[5m])`, `count_over_time(x[5m])`.

@@ -46,14 +46,17 @@ pub enum MilpError {
 }
 
 /// The cheapest plan. Only families in sketch-bench's `DEPLOYABLE_FAMILIES`
-/// are candidates.
+/// are candidates unless `allow_undeployable_families`, whose plan can be
+/// studied but not deployed.
 pub fn solve_milp(
     workload: &MilpWorkload,
     facts: &WorkloadFacts,
     costs: &[AtomicCostEntry],
     objective: Objective,
+    allow_undeployable_families: bool,
 ) -> Result<MilpSolution, MilpError> {
-    let deployments = build_all_candidates(&workload.raqes, costs, facts, false);
+    let deployments =
+        build_all_candidates(&workload.raqes, costs, facts, allow_undeployable_families);
     tracing::debug!(
         candidates = deployments.len(),
         cost_rows = costs.len(),
@@ -251,13 +254,13 @@ fn accuracy_target(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
     use crate::optimizer::workload_facts::parse_workload_facts;
 
-    const SCRAPE_MS: u64 = 15_000;
+    pub(crate) const SCRAPE_MS: u64 = 15_000;
 
     const FACTS: &str = r#"
 metrics:
@@ -271,20 +274,20 @@ metrics:
         cardinality: 1
 "#;
 
-    fn config(groups: &str) -> ControllerConfig {
+    pub(crate) fn config(groups: &str) -> ControllerConfig {
         let yaml = format!(
             "query_groups:\n{groups}\nmetrics:\n  - metric: http_requests_total\n    labels: [instance, job]\n"
         );
         serde_yaml::from_str(&yaml).unwrap()
     }
 
-    fn group(query: &str, accuracy_sla: f64) -> String {
+    pub(crate) fn group(query: &str, accuracy_sla: f64) -> String {
         format!(
             "  - queries: [\"{query}\"]\n    repetition_delay_ms: 60000\n    controller_options: {{accuracy_sla: {accuracy_sla}}}\n"
         )
     }
 
-    fn facts(config: &ControllerConfig) -> WorkloadFacts {
+    pub(crate) fn facts(config: &ControllerConfig) -> WorkloadFacts {
         parse_workload_facts(FACTS, config.metrics.as_deref().unwrap(), SCRAPE_MS).unwrap()
     }
 
@@ -311,7 +314,7 @@ metrics:
         }
     }
 
-    fn costs() -> Vec<AtomicCostEntry> {
+    pub(crate) fn costs() -> Vec<AtomicCostEntry> {
         vec![
             cost("exact-sum", &[(RELATIVE_ERROR, 0.0)]),
             cost("kll-percall", &[(MAX_RANK_ERROR, 0.005)]),
@@ -469,7 +472,7 @@ metrics:
         let config = config(&(group(query, 0.99) + &group(query, 0.99)));
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
-        let solution = solve_milp(&w, &facts, &costs(), Objective::default()).unwrap();
+        let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
         assert_eq!(solution.deployments.len(), 1);
         assert_eq!(solution.raqes[0].deployment, solution.raqes[1].deployment);
         assert_eq!(
@@ -487,7 +490,7 @@ metrics:
         ));
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
-        let err = solve_milp(&w, &facts, &costs(), Objective::default()).unwrap_err();
+        let err = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap_err();
         assert!(matches!(err, MilpError::Unservable(ids) if ids.len() == 1));
     }
 
@@ -498,7 +501,7 @@ metrics:
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
         assert_eq!(w.raqes.len(), 2);
-        let err = solve_milp(&w, &facts, &costs(), Objective::default()).unwrap_err();
+        let err = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap_err();
         assert!(matches!(err, MilpError::Unservable(ids) if ids == [w.raqes[0].id.clone()]));
     }
 
@@ -510,7 +513,7 @@ metrics:
         let config = config(&groups);
         let facts = facts(&config);
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
-        let solution = solve_milp(&w, &facts, &costs(), Objective::default()).unwrap();
+        let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
         let chosen: BTreeMap<Capability, &str> = w
             .raqes
             .iter()
@@ -538,7 +541,7 @@ metrics:
         let caps: Vec<_> = w.raqes.iter().map(|r| r.capability).collect();
         assert_eq!(caps.len(), 2);
         assert!(caps.contains(&Capability::Sum) && caps.contains(&Capability::Count));
-        let solution = solve_milp(&w, &facts, &costs(), Objective::default()).unwrap();
+        let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
         assert_eq!(solution.deployments.len(), 2);
     }
 }

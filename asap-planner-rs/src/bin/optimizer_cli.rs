@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use asap_planner::optimizer::{
     build_milp_workload, load_flat_atomic_cost_table, load_optional_selected_atomic_cost_table,
-    load_workload_facts, run_greedy_pipeline, solve_milp, AtomicCostTable, LabelSetFacts,
-    LabelSetFactsError,
+    load_workload_facts, plan_to_planner_output, run_greedy_pipeline, solve_milp, AtomicCostTable,
+    LabelSetFacts, LabelSetFactsError,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
@@ -59,10 +59,23 @@ struct Args {
     )]
     atomic_cost_workload: Option<PathBuf>,
 
-    /// Plan with sketch-bench's rqe-optimizer MILP and print the plan; writes
-    /// no configs yet.
+    /// Plan with sketch-bench's rqe-optimizer MILP and print the plan.
     #[arg(long)]
     milp: bool,
+
+    /// MILP only. Write `streaming_config.yaml` and `inference_config.yaml`
+    /// for the plan here.
+    #[arg(long = "output-dir", requires = "milp")]
+    output_dir: Option<PathBuf>,
+
+    /// MILP only. Also plan with families the engine can't deploy; prints the
+    /// plan and writes no configs.
+    #[arg(
+        long = "allow-undeployable-families",
+        requires = "milp",
+        conflicts_with = "output_dir"
+    )]
+    allow_undeployable_families: bool,
 
     /// MILP only. YAML workload facts: per metric, `cardinality` per label
     /// set, including the set of all its labels (the series count).
@@ -188,7 +201,13 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
     tracing::debug!(?objective, cost_rows = costs.len(), "milp: inputs loaded");
 
     let workload = build_milp_workload(config, &facts, args.data_ingestion_interval_ms)?;
-    let solution = solve_milp(&workload, &facts, &costs, objective)?;
+    let solution = solve_milp(
+        &workload,
+        &facts,
+        &costs,
+        objective,
+        args.allow_undeployable_families,
+    )?;
 
     println!("=== Deployments: {} ===", solution.deployments.len());
     for (d, planned) in solution.deployments.iter().enumerate() {
@@ -236,6 +255,20 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
             c.cpu_secs_per_sec,
             c.memory_bytes / 1e6
         );
+    }
+
+    if let Some(dir) = &args.output_dir {
+        let output = plan_to_planner_output(config, &workload, &solution)?;
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(
+            dir.join("streaming_config.yaml"),
+            output.to_streaming_yaml_string()?,
+        )?;
+        std::fs::write(
+            dir.join("inference_config.yaml"),
+            output.to_inference_yaml_string()?,
+        )?;
+        println!("\nwrote configs to {}", dir.display());
     }
     Ok(())
 }
