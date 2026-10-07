@@ -4,12 +4,10 @@
 use std::path::PathBuf;
 
 use asap_planner::optimizer::{
-    build_milp_workload, load_flat_atomic_cost_table, load_workload_facts, plan_to_planner_output,
-    reject_avg_queries, solve_milp, MilpError,
+    parse_weight, plan_milp, plan_to_planner_output, reject_avg_queries, MilpInputs, MilpPlan,
 };
 use asap_planner::ControllerConfig;
 use clap::Parser;
-use rqe_optimizer::milp::Objective;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -74,44 +72,25 @@ fn main() -> anyhow::Result<()> {
     run_milp(&args, &config)
 }
 
-/// Objective weights must be finite and non-negative: a negative weight
-/// rewards cost, and NaN poisons every coefficient.
-fn parse_weight(s: &str) -> Result<f64, String> {
-    match s.parse::<f64>() {
-        Ok(w) if w.is_finite() && w >= 0.0 => Ok(w),
-        Ok(w) => Err(format!("must be finite and >= 0, got {w}")),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
 fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
-    config.warn_default_slas();
-    let Some(hints) = config.metrics.as_deref() else {
-        return Err(MilpError::MissingMetricHints.into());
-    };
-    let facts = load_workload_facts(&args.workload_facts, hints, args.data_ingestion_interval_ms)?;
-    let costs = load_flat_atomic_cost_table(&args.atomic_costs)?;
-    let Objective::AUCCost { w_cpu, w_mem } = Objective::default();
-    let (w_cpu, w_mem) = (args.w_cpu.unwrap_or(w_cpu), args.w_mem.unwrap_or(w_mem));
-    // All-zero weights make every plan cost 0, so the solver's pick is arbitrary.
-    anyhow::ensure!(
-        w_cpu > 0.0 || w_mem > 0.0,
-        "--w-cpu and --w-mem are both 0; at least one must be positive"
-    );
-    let objective = Objective::AUCCost { w_cpu, w_mem };
-    tracing::debug!(?objective, cost_rows = costs.len(), "milp: inputs loaded");
-
     // Fail before solving when the plan would be written but can't be.
     if args.output_dir.is_some() {
         reject_avg_queries(config)?;
     }
-    let workload = build_milp_workload(config, &facts, args.data_ingestion_interval_ms)?;
-    let solution = solve_milp(
-        &workload,
-        &facts,
-        &costs,
+    let MilpPlan {
+        workload,
+        solution,
         objective,
-        args.allow_undeployable_families,
+    } = plan_milp(
+        config,
+        &MilpInputs {
+            workload_facts: &args.workload_facts,
+            atomic_costs: &args.atomic_costs,
+            scrape_interval_ms: args.data_ingestion_interval_ms,
+            w_cpu: args.w_cpu,
+            w_mem: args.w_mem,
+            allow_undeployable_families: args.allow_undeployable_families,
+        },
     )?;
 
     println!("=== Deployments: {} ===", solution.deployments.len());
@@ -163,29 +142,8 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
     }
 
     if let Some(dir) = &args.output_dir {
-        let output = plan_to_planner_output(config, &workload, &solution)?;
-        // Serialize both before writing either, so a failure can't leave a
-        // new streaming config next to a stale inference config.
-        let streaming = output.to_streaming_yaml_string()?;
-        let inference = output.to_inference_yaml_string()?;
-        std::fs::create_dir_all(dir)?;
-        std::fs::write(dir.join("streaming_config.yaml"), streaming)?;
-        std::fs::write(dir.join("inference_config.yaml"), inference)?;
+        plan_to_planner_output(config, &workload, &solution)?.write_to_dir(dir)?;
         println!("\nwrote configs to {}", dir.display());
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_weight;
-
-    #[test]
-    fn weights_must_be_finite_and_non_negative() {
-        assert_eq!(parse_weight("0.5"), Ok(0.5));
-        assert_eq!(parse_weight("0"), Ok(0.0));
-        for bad in ["-1", "NaN", "inf", "x"] {
-            assert!(parse_weight(bad).is_err(), "{bad}");
-        }
-    }
 }

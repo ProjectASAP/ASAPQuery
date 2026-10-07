@@ -12,9 +12,13 @@ use thiserror::Error;
 
 use crate::config::input::ControllerConfig;
 
+use std::path::Path;
+
 use super::aqe_extractor::{extract_aqes, RQE};
+use super::atomic_costs::load_flat_atomic_cost_table;
 use super::error::OptimizerError;
 use super::solution::OptimizerItem;
+use super::workload_facts::load_workload_facts;
 
 /// Slack on accuracy tolerances so `1 - sla` rounding (`1 - 0.9 =
 /// 0.0999...98`) doesn't reject a row measured exactly at the boundary.
@@ -98,6 +102,73 @@ pub fn solve_milp(
         "milp: solved"
     );
     Ok(solution)
+}
+
+/// What a MILP planning run reads besides the workload config.
+pub struct MilpInputs<'a> {
+    pub workload_facts: &'a Path,
+    pub atomic_costs: &'a Path,
+    pub scrape_interval_ms: u64,
+    /// Objective weights; `None` takes rqe-optimizer's default.
+    pub w_cpu: Option<f64>,
+    pub w_mem: Option<f64>,
+    pub allow_undeployable_families: bool,
+}
+
+pub struct MilpPlan {
+    pub workload: MilpWorkload,
+    pub solution: MilpSolution,
+    pub objective: Objective,
+}
+
+/// Loads the facts and costs and solves for the cheapest plan.
+pub fn plan_milp(config: &ControllerConfig, inputs: &MilpInputs) -> anyhow::Result<MilpPlan> {
+    config.warn_default_slas();
+    let Some(hints) = config.metrics.as_deref() else {
+        return Err(MilpError::MissingMetricHints.into());
+    };
+    let facts = load_workload_facts(inputs.workload_facts, hints, inputs.scrape_interval_ms)?;
+    let costs = load_flat_atomic_cost_table(inputs.atomic_costs)?;
+    let objective = objective(inputs.w_cpu, inputs.w_mem)?;
+    tracing::debug!(?objective, cost_rows = costs.len(), "milp: inputs loaded");
+
+    let workload = build_milp_workload(config, &facts, inputs.scrape_interval_ms)?;
+    let solution = solve_milp(
+        &workload,
+        &facts,
+        &costs,
+        objective,
+        inputs.allow_undeployable_families,
+    )?;
+    Ok(MilpPlan {
+        workload,
+        solution,
+        objective,
+    })
+}
+
+fn objective(w_cpu: Option<f64>, w_mem: Option<f64>) -> anyhow::Result<Objective> {
+    let Objective::AUCCost {
+        w_cpu: default_cpu,
+        w_mem: default_mem,
+    } = Objective::default();
+    let (w_cpu, w_mem) = (w_cpu.unwrap_or(default_cpu), w_mem.unwrap_or(default_mem));
+    // All-zero weights make every plan cost 0, so the solver's pick is arbitrary.
+    anyhow::ensure!(
+        w_cpu > 0.0 || w_mem > 0.0,
+        "--w-cpu and --w-mem are both 0; at least one must be positive"
+    );
+    Ok(Objective::AUCCost { w_cpu, w_mem })
+}
+
+/// Parses an objective weight flag. Weights must be finite and non-negative:
+/// a negative weight rewards cost, and NaN poisons every coefficient.
+pub fn parse_weight(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(w) if w.is_finite() && w >= 0.0 => Ok(w),
+        Ok(w) => Err(format!("must be finite and >= 0, got {w}")),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// The MILP's view of a workload.
@@ -588,6 +659,15 @@ metrics:
         assert!(caps.contains(&Capability::Sum) && caps.contains(&Capability::Count));
         let solution = solve_milp(&w, &facts, &costs(), Objective::default(), false).unwrap();
         assert_eq!(solution.deployments.len(), 2);
+    }
+
+    #[test]
+    fn weights_must_be_finite_and_non_negative() {
+        assert_eq!(parse_weight("0.5"), Ok(0.5));
+        assert_eq!(parse_weight("0"), Ok(0.0));
+        for bad in ["-1", "NaN", "inf", "x"] {
+            assert!(parse_weight(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

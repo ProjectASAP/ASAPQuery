@@ -171,6 +171,18 @@ impl PlannerOutput {
         Ok(serde_yaml::to_string(&self.inference_yaml)?)
     }
 
+    /// Writes `streaming_config.yaml` and `inference_config.yaml`. Both are
+    /// serialized first, so a failure can't leave a new streaming config next
+    /// to a stale inference config.
+    pub fn write_to_dir(&self, dir: &std::path::Path) -> Result<(), anyhow::Error> {
+        let streaming = self.to_streaming_yaml_string()?;
+        let inference = self.to_inference_yaml_string()?;
+        std::fs::create_dir_all(dir)?;
+        std::fs::write(dir.join("streaming_config.yaml"), streaming)?;
+        std::fs::write(dir.join("inference_config.yaml"), inference)?;
+        Ok(())
+    }
+
     pub fn to_streaming_config(
         &self,
         query_language: QueryLanguage,
