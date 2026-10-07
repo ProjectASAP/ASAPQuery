@@ -380,6 +380,36 @@ impl SaturationCurves {
             }
             points_by_sketch.entry(sketch).or_default().push(point);
         }
+        // The optimizer brackets a shape between grid points, so each
+        // config's Zipf grid must be a full cross of its θ and K values: a
+        // hole would quietly leave every shape around it without accuracy.
+        for (sketch, points) in &points_by_sketch {
+            let mut by_config: BTreeMap<String, BTreeSet<(u64, u64)>> = BTreeMap::new();
+            for point in points {
+                if let MeasuredShape::Zipf { skew, keys } = point.shape {
+                    by_config
+                        .entry(format!("{:?}", point.params))
+                        .or_default()
+                        .insert((skew.to_bits(), keys.to_bits()));
+                }
+            }
+            for (config, shapes) in by_config {
+                let thetas: BTreeSet<u64> = shapes.iter().map(|&(t, _)| t).collect();
+                let keys: BTreeSet<u64> = shapes.iter().map(|&(_, k)| k).collect();
+                let missing: Vec<(f64, f64)> = thetas
+                    .iter()
+                    .flat_map(|&t| keys.iter().map(move |&k| (t, k)))
+                    .filter(|shape| !shapes.contains(shape))
+                    .map(|(t, k)| (f64::from_bits(t), f64::from_bits(k)))
+                    .collect();
+                if !missing.is_empty() {
+                    return Err(invalid(format!(
+                        "{sketch} {config}: the grid isn't a full cross of θ and K; \
+                         missing (θ, K) {missing:?}. Rerun the study's accuracy grid for them"
+                    )));
+                }
+            }
+        }
         Ok(Self { points_by_sketch })
     }
 
@@ -810,6 +840,34 @@ mod tests {
         );
     }
 
+    /// A hole in the grid (a bracketing point the study didn't measure)
+    /// leaves the shape unknown rather than bridging to farther points:
+    /// accuracy needn't be monotone in K.
+    #[test]
+    fn a_hole_in_the_grid_has_no_accuracy() {
+        let mut curves = curves();
+        // Drop θ = 1.2, K = 1e3.
+        let hole = MeasuredShape::Zipf {
+            skew: 1.2,
+            keys: 1e3,
+        };
+        curves
+            .points_by_sketch
+            .get_mut(TOPK)
+            .unwrap()
+            .retain(|p| p.shape != hole);
+        let r = topk_raqe(1_000_000);
+        let d = deployment(TOPK, 1_000_000);
+        assert_eq!(
+            curves.accuracy(&r, &d, &workload(10, shape(1.1, 1e3))),
+            None
+        );
+        // θ = 1.0 at K = 1e3 is still measured.
+        assert!(curves
+            .accuracy(&r, &d, &workload(10, shape(1.0, 1e3)))
+            .is_some());
+    }
+
     #[test]
     fn a_shape_outside_the_grid_or_without_a_fit_has_no_accuracy() {
         let r = topk_raqe(1_000_000);
@@ -1111,6 +1169,39 @@ mod tests {
             ..exact
         };
         assert_eq!(check(&[misnamed]).mismatched.len(), 1);
+    }
+
+    #[test]
+    fn load_refuses_a_grid_that_isnt_a_full_cross() {
+        let dir = std::env::temp_dir().join(format!("rqe-cross-{}", std::process::id()));
+        let header = "family,sketch,config,dist,param,cardinality";
+        let points = ["1.0,1000", "1.2,1000", "1.0,100000"]
+            .map(|shape| format!("topk,{TOPK},rows=3 cols=1024,zipf,{shape}"));
+        for run in RUN_DIRS {
+            std::fs::create_dir_all(dir.join(run)).unwrap();
+            let summary: String = points
+                .iter()
+                .map(|p| format!("{p},1000,0.9,precision_at_k\n"))
+                .collect();
+            let curve: String = points.iter().map(|p| format!("{p},1000,0.9,0\n")).collect();
+            std::fs::write(
+                dir.join(run).join("saturation.csv"),
+                format!("{header},n_sat,final_error,error_metric\n{summary}"),
+            )
+            .unwrap();
+            std::fs::write(
+                dir.join(run).join("saturation_curve.csv"),
+                format!("{header},n,seed_mean_error,seed_se\n{curve}"),
+            )
+            .unwrap();
+        }
+        let loaded = SaturationCurves::load(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        let err = loaded.unwrap_err().to_string();
+        assert!(
+            err.contains("full cross") && err.contains("(1.2, 100000.0)"),
+            "{err}"
+        );
     }
 
     #[test]
