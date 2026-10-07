@@ -43,6 +43,12 @@ pub enum MilpOutputError {
     InvalidDdsAlpha { alpha: f64 },
     #[error("topk query {0:?} has no literal k")]
     TopkWithoutK(String),
+    #[error("{variant}: can't size the heap for a {lookback_ms} ms lookback: {reason}")]
+    HeapSize {
+        variant: String,
+        lookback_ms: u64,
+        reason: &'static str,
+    },
     #[error("query {0:?} is served by two deployments; a query string can name only one")]
     QueryOnTwoDeployments(String),
     #[error(transparent)]
@@ -242,14 +248,29 @@ fn missing_param(variant: &str, param: &'static str) -> MilpOutputError {
     }
 }
 
-/// `m · k` for the `m` windows a query merges, so the merged heaps still hold
-/// the top k. The plan priced `m · TOPK_K` (sketch-bench's `heap` param); a
-/// literal k above `TOPK_K` scales it to `m · k`, which the plan doesn't price.
+/// `m · k` for the most windows `m` a served query merges, so the merged
+/// heaps still hold the top k, and never below the heap the plan priced
+/// (sketch-bench's `heap` param, which can be a measured size above
+/// `m · TOPK_K`). A literal k above `TOPK_K` is one the plan doesn't price.
 fn heap_size(deployment: &Deployment, items: &[&OptimizerItem]) -> Result<u64, MilpOutputError> {
-    let planned =
-        rqe_optimizer::heap_capacity(&deployment.config).expect("cms-heap-topk has a heap");
+    let variant = deployment.config.sketch.as_str();
+    let planned = rqe_optimizer::heap_capacity(&deployment.config)
+        .ok_or_else(|| missing_param(variant, "heap"))?;
     let k = max_topk_k(items)?.max(rqe_optimizer::TOPK_K);
-    Ok(planned / rqe_optimizer::TOPK_K * k)
+    let mut heap = planned;
+    for item in items {
+        let lookback_ms = item.requirements.data_range_ms;
+        let error = |reason| MilpOutputError::HeapSize {
+            variant: variant.to_string(),
+            lookback_ms,
+            reason,
+        };
+        let m = deployment
+            .query_instance_count(lookback_ms)
+            .ok_or_else(|| error("the lookback isn't whole windows"))?;
+        heap = heap.max(m.checked_mul(k).ok_or_else(|| error("m · k overflows"))?);
+    }
+    Ok(heap)
 }
 
 /// One heap serves every topk query on the deployment, so it is sized for
@@ -440,18 +461,48 @@ mod tests {
         }
     }
 
-    /// A deployment merging `m` = 4 windows (heap 4 · TOPK_K) gets `4 · k`:
-    /// the planned heap for a k within `TOPK_K`, scaled for a larger one.
+    /// `query`'s planned top-k deployment, re-windowed to 15 s so its 1 m
+    /// lookback merges m = 4 windows, with the cost row's `heap`.
+    fn merging_deployment(query: &str, heap: serde_json::Value) -> (MilpWorkload, Deployment) {
+        let (_, workload, solution) = plan(&group(query, 0.99));
+        let mut deployment = solution.deployments[0].deployment.clone();
+        (deployment.window_ms, deployment.slide_ms) = (15_000, 15_000);
+        deployment.config.sketch_config["params"]["heap"] = heap;
+        (workload, deployment)
+    }
+
+    /// m comes from the lookback, not the row's heap: a measured heap of 2048
+    /// (above 4 · TOPK_K) stays the floor, and a large k needs 4 · k.
     #[test]
-    fn heap_size_is_merged_windows_times_k() {
-        for (k, heap) in [(5, 4 * rqe_optimizer::TOPK_K), (4096, 4 * 4096)] {
+    fn heap_size_takes_m_from_the_lookback() {
+        for (k, heap) in [(5, 2048), (4096, 4 * 4096)] {
             let query = format!("topk({k}, sum_over_time(http_requests_total[1m]))");
-            let (_, workload, solution) = plan(&group(&query, 0.99));
-            let mut deployment = solution.deployments[0].deployment.clone();
-            deployment.config.sketch_config["params"]["heap"] = json!(4 * rqe_optimizer::TOPK_K);
+            let (workload, deployment) = merging_deployment(&query, json!(2048));
             let items: Vec<&OptimizerItem> = workload.items.iter().collect();
             assert_eq!(heap_size(&deployment, &items).unwrap(), heap, "k = {k}");
         }
+    }
+
+    #[test]
+    fn heap_size_reports_overflow_and_a_missing_heap() {
+        let query = "topk(4611686018427387904, sum_over_time(http_requests_total[1m]))";
+        let (workload, deployment) = merging_deployment(query, json!(2048));
+        let items: Vec<&OptimizerItem> = workload.items.iter().collect();
+        assert!(matches!(
+            heap_size(&deployment, &items),
+            Err(MilpOutputError::HeapSize {
+                reason: "m · k overflows",
+                ..
+            })
+        ));
+        let small = "topk(5, sum_over_time(http_requests_total[1m]))";
+        let (workload, mut deployment) = merging_deployment(small, json!(2048));
+        deployment.config.sketch = "cms-fastpath-vector2d".into();
+        let items: Vec<&OptimizerItem> = workload.items.iter().collect();
+        assert!(matches!(
+            heap_size(&deployment, &items),
+            Err(MilpOutputError::MissingParam { param: "heap", .. })
+        ));
     }
 
     /// A k above the plan's `TOPK_K` gets `m · k`, so its merged heaps still

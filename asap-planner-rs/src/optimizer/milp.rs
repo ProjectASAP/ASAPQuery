@@ -70,7 +70,7 @@ pub fn solve_milp(
     allow_undeployable_families: bool,
     accuracy: &Accuracy,
 ) -> Result<MilpSolution, MilpError> {
-    require_shapes(workload, facts, allow_undeployable_families)?;
+    require_shapes(workload, facts, costs, allow_undeployable_families)?;
     let deployments = build_all_candidates(
         &workload.raqes,
         costs,
@@ -108,18 +108,22 @@ pub fn solve_milp(
     Ok(solution)
 }
 
-/// A Raqe sketches may serve reads their accuracy off the curves at its
-/// grouping's `shape`; without one it could only be reported unservable.
+/// A Raqe a sketch family with cost rows may serve reads its accuracy off
+/// the curves at its grouping's `shape`; without one it could only be
+/// reported unservable. Families without rows are left to that path.
 fn require_shapes(
     workload: &MilpWorkload,
     facts: &WorkloadFacts,
+    costs: &[AtomicCostEntry],
     allow_undeployable_families: bool,
 ) -> Result<(), MilpError> {
     for raqe in &workload.raqes {
         let sketch_served = raqe
             .capability
             .candidate_families(allow_undeployable_families)
-            .any(|family| !family_properties(family).exact);
+            .any(|family| {
+                !family_properties(family).exact && costs.iter().any(|row| row.sketch == family)
+            });
         let has_shape = facts
             .get(&raqe.metric)
             .is_some_and(|m| m.data_shape.contains_key(&raqe.grouping_labels));
@@ -610,6 +614,21 @@ metrics:
                 if raqe.contains(quantile) && *grouping == labels(&["instance", "job"])),
             "{err:?}"
         );
+        // No sketch rows for quantiles: left to the Unservable path.
+        let exact_rows: Vec<_> = costs()
+            .into_iter()
+            .filter(|row| row.sketch == "exact-sum")
+            .collect();
+        let err = solve_milp(
+            &w,
+            &facts,
+            &exact_rows,
+            Objective::default(),
+            false,
+            &table_accuracy,
+        )
+        .unwrap_err();
+        assert!(matches!(err, MilpError::Unservable(_)), "{err:?}");
         let exact_only = config(&group(sum, 0.99));
         let w = build_milp_workload(&exact_only, &facts, SCRAPE_MS).unwrap();
         assert!(solve_milp(

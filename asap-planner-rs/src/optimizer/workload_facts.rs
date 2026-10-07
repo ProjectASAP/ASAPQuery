@@ -59,8 +59,8 @@ struct GroupEntry {
     labels: Vec<String>,
     cardinality: u64,
     /// The data one group's sketch sees, fitted by the caller as the worst
-    /// case over windows and groups. A grouping without one has no sketch
-    /// accuracy, so only exact accumulators serve it.
+    /// case over windows and groups. A grouping a sketch family with cost
+    /// rows would serve must carry one, or solving fails with `MissingShape`.
     #[serde(default)]
     shape: Option<ShapeEntry>,
 }
@@ -113,6 +113,15 @@ pub fn parse_workload_facts(
         let mut data_shape = BTreeMap::new();
         for group in entry.groups {
             let labels: LabelSet = group.labels.into_iter().collect();
+            if cardinality
+                .insert(labels.clone(), group.cardinality)
+                .is_some()
+            {
+                return Err(WorkloadFactsError::DuplicateLabels {
+                    metric: entry.metric,
+                    labels,
+                });
+            }
             if let Some(shape) = group.shape {
                 let ShapeEntry {
                     zipf_s,
@@ -129,22 +138,13 @@ pub fn parse_workload_facts(
                     });
                 }
                 data_shape.insert(
-                    labels.clone(),
+                    labels,
                     DataShape {
-                        zipf_s: shape.zipf_s,
-                        distinct_keys: shape.distinct_keys,
-                        tail_index: shape.tail_index,
+                        zipf_s,
+                        distinct_keys,
+                        tail_index,
                     },
                 );
-            }
-            if cardinality
-                .insert(labels.clone(), group.cardinality)
-                .is_some()
-            {
-                return Err(WorkloadFactsError::DuplicateLabels {
-                    metric: entry.metric,
-                    labels,
-                });
             }
         }
         tracing::debug!(
