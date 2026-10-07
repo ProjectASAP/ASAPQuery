@@ -2,7 +2,8 @@
 //! workload config into `Raqe`s and solves for the cheapest deployments.
 
 use promql_utilities::query_logics::enums::Statistic;
-use rqe_optimizer::candidates::{build_all_candidates, eligible_deployments_for};
+use rqe_optimizer::candidates::build_all_candidates;
+use rqe_optimizer::enumerate::unservable;
 use rqe_optimizer::milp::{minimize, MilpSolution, Objective};
 use rqe_optimizer::{
     validate_facts, AccuracyDirection, AtomicCostEntry, Capability, LabelSet, Raqe, WorkloadFacts,
@@ -36,7 +37,7 @@ pub enum MilpError {
         query: String,
         statistics: Vec<Statistic>,
     },
-    #[error("query {query:?}: topk must rank by value (sum_over_time) or count (count_over_time)")]
+    #[error("query {query:?}: topk ranking (by value or by sample count) is unknown")]
     TopkWeightingUnknown { query: String },
     #[error("no eligible deployment for raqes: {0:?}")]
     Unservable(Vec<String>),
@@ -58,14 +59,16 @@ pub fn solve_milp(
         cost_rows = costs.len(),
         "milp: built candidates"
     );
-    let mut missing = Vec::new();
-    for raqe in &workload.raqes {
-        let eligible = eligible_deployments_for(raqe, &deployments, facts).len();
-        tracing::debug!(raqe = %raqe.id, eligible, "milp: eligible deployments");
-        if eligible == 0 {
-            missing.push(raqe.id.clone());
-        }
-    }
+    // Occurrences of one item are identical Raqes (and contiguous), so
+    // checking the first of each is enough.
+    let one_per_item: Vec<Raqe> = workload
+        .raqes
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| i == 0 || workload.raqe_items[i] != workload.raqe_items[i - 1])
+        .map(|(_, raqe)| raqe.clone())
+        .collect();
+    let missing = unservable(&one_per_item, &deployments, facts);
     if !missing.is_empty() {
         return Err(MilpError::Unservable(missing));
     }
@@ -486,6 +489,17 @@ metrics:
         let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
         let err = solve_milp(&w, &facts, &costs(), Objective::default()).unwrap_err();
         assert!(matches!(err, MilpError::Unservable(ids) if ids.len() == 1));
+    }
+
+    #[test]
+    fn unservable_query_is_reported_once_per_item() {
+        let quantile = group("quantile_over_time(0.99, http_requests_total[5m])", 0.999);
+        let config = config(&(quantile.clone() + &quantile));
+        let facts = facts(&config);
+        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        assert_eq!(w.raqes.len(), 2);
+        let err = solve_milp(&w, &facts, &costs(), Objective::default()).unwrap_err();
+        assert!(matches!(err, MilpError::Unservable(ids) if ids == [w.raqes[0].id.clone()]));
     }
 
     #[test]
