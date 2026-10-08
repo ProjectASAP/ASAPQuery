@@ -17,8 +17,8 @@ BOOM_URL=https://huggingface.co/datasets/Datadog/BOOM/resolve/main
 # task_events uses the same parts; job_events is read in full for job names.
 GOOGLE_TASK_PARTS=120
 GOOGLE_JOB_EVENT_PARTS=500
-# CallGraph and MCRRTUpdate shards cover 3 minutes each: 120 shards = 6 hours.
-ALIBABA_RPC_SHARDS=120
+# CallGraph and MCRRTUpdate shards cover 3 minutes each: 480 shards = 1 day.
+ALIBABA_RPC_SHARDS=480
 # MSMetricsUpdate shards cover 30 minutes, NodeMetricsUpdate 12 hours: 1 day.
 ALIBABA_MS_SHARDS=48
 ALIBABA_NODE_SHARDS=2
