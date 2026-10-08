@@ -62,14 +62,21 @@ struct Args {
     planner: PlannerArg,
 
     /// MILP only. YAML workload facts: per metric, positive `value_range` and
-    /// `cardinality` per label set, including all labels (the series count).
+    /// `cardinality` per label set, including all labels (the series count),
+    /// plus the `shape` of each grouping sketches may serve.
     #[arg(long = "workload-facts", required_if_eq("planner", "milp"))]
     workload_facts: Option<PathBuf>,
 
-    /// MILP only. The flat cost table `export_rqe_optimizer_costs.sh` writes
+    /// MILP only. The flat cost table sketch-bench's
+    /// `study_saturation.py --phase optimizer-cost` writes
     /// (`rqe_atomic_costs.json`).
     #[arg(long = "atomic-costs", required_if_eq("planner", "milp"))]
     atomic_costs: Option<PathBuf>,
+
+    /// MILP only. sketch-bench's saturation-study directory: sketch accuracy
+    /// is read off its error-vs-N curves at each grouping's `shape`.
+    #[arg(long = "saturation-dir", required_if_eq("planner", "milp"))]
+    saturation_dir: Option<PathBuf>,
 
     /// MILP only. Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
     #[arg(long = "w-cpu", value_parser = parse_weight)]
@@ -117,9 +124,11 @@ fn main() -> anyhow::Result<()> {
     anyhow::ensure!(
         args.workload_facts.is_none()
             && args.atomic_costs.is_none()
+            && args.saturation_dir.is_none()
             && args.w_cpu.is_none()
             && args.w_mem.is_none(),
-        "--workload-facts, --atomic-costs, --w-cpu and --w-mem require --planner milp"
+        "--workload-facts, --atomic-costs, --saturation-dir, --w-cpu and --w-mem require \
+         --planner milp"
     );
 
     match args.query_language {
@@ -251,6 +260,10 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
                 .atomic_costs
                 .as_deref()
                 .expect("clap requires --atomic-costs with --planner milp"),
+            saturation_dir: args
+                .saturation_dir
+                .as_deref()
+                .expect("clap requires --saturation-dir with --planner milp"),
             scrape_interval_ms,
             w_cpu: args.w_cpu,
             w_mem: args.w_mem,

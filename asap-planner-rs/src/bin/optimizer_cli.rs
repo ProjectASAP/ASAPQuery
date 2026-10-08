@@ -25,7 +25,8 @@ struct Args {
     #[arg(long = "data-ingestion-interval-ms", value_parser = clap::value_parser!(u64).range(1..))]
     data_ingestion_interval_ms: u64,
 
-    /// The flat cost table `export_rqe_optimizer_costs.sh` writes
+    /// The flat cost table sketch-bench's
+    /// `study_saturation.py --phase optimizer-cost` writes
     /// (`rqe_atomic_costs.json`).
     #[arg(long = "atomic-costs")]
     atomic_costs: PathBuf,
@@ -41,9 +42,16 @@ struct Args {
     allow_undeployable_families: bool,
 
     /// YAML workload facts: per metric, positive `value_range` and
-    /// `cardinality` per label set, including all labels (the series count).
+    /// `cardinality` per label set, including all labels (the series count),
+    /// plus the `shape` of each grouping sketches may serve.
     #[arg(long = "workload-facts")]
     workload_facts: PathBuf,
+
+    /// sketch-bench's saturation-study directory (`out_grid_1e7_cost/`,
+    /// `out_1e9/`): sketch accuracy is read off its error-vs-N curves at each
+    /// grouping's `shape`.
+    #[arg(long = "saturation-dir")]
+    saturation_dir: PathBuf,
 
     /// Objective weight on CPU-sec/sec. Default: rqe-optimizer's.
     #[arg(long = "w-cpu", value_parser = parse_weight)]
@@ -87,6 +95,7 @@ fn run_milp(args: &Args, config: &ControllerConfig) -> anyhow::Result<()> {
         &MilpInputs {
             workload_facts: &args.workload_facts,
             atomic_costs: &args.atomic_costs,
+            saturation_dir: &args.saturation_dir,
             scrape_interval_ms: args.data_ingestion_interval_ms,
             w_cpu: args.w_cpu,
             w_mem: args.w_mem,
