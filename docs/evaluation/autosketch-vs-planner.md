@@ -526,7 +526,8 @@ median of repeated runs for timings:
     MILP solve.
   - *Benchmark time:* AutoSketch benchmarks every probed configuration, as in
     the paper (§5.2, Exp#9: 1–2 minutes per config, about 6.5 minutes per
-    application). Reported two ways, per distinct probed (config, input size):
+    application). Each probed config is benchmarked once per metric, on that
+    metric's data, so the time grows with the metrics dimension. Reported two ways:
     - a **lower bound**, `N_bench · insert_cpu_per_item + one query phase`
       with `N_bench = 1e8`, the size sketch-bench benchmarks at. The paper
       also benchmarks a fixed-size representative workload, not the query
