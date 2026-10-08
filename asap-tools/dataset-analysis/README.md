@@ -51,7 +51,7 @@ Tests: `python -m unittest discover -s tests -p 'test_*.py'`.
 | Google ClusterData 2011-2 | `task_usage` and `task_events` parts 0..119 of 500 (about 7 days), all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5 min | instant, 5m, 1h, 6h, 24h |
 | Alibaba microservices v2022 | `MCRRTUpdate_0..479` (first day) | `MSRTMCR` | 1 min | instant, 5m, 1h, 6h, 24h |
 | | `CallGraph_0..479` (first day) | `CallGraph` | 1 min | 1m, 5m, 1h, 6h, 24h (events, no instant) |
-| | `MSMetricsUpdate_0..47`, `NodeMetricsUpdate_0..1` (first day) | `MSMetrics`, `NodeMetrics` | 1 min | instant, 5m, 1h, 6h, 24h |
+| | `MSMetricsUpdate_0..47` (first day), `NodeMetricsUpdate_0..2` (first 1.5 days: the first shard starts a step late, so two hold no full 24h window) | `MSMetrics`, `NodeMetrics` | 1 min | instant, 5m, 1h, 6h, 24h |
 | Datadog BOOM | `dataset_taxonomy.json` and 20 multivariate series | per-series `target` | none | 20 equal chunks per series |
 
 Citations:

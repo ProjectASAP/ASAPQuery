@@ -19,9 +19,10 @@ GOOGLE_TASK_PARTS=120
 GOOGLE_JOB_EVENT_PARTS=500
 # CallGraph and MCRRTUpdate shards cover 3 minutes each: 480 shards = 1 day.
 ALIBABA_RPC_SHARDS=480
-# MSMetricsUpdate shards cover 30 minutes, NodeMetricsUpdate 12 hours: 1 day.
+# MSMetricsUpdate shards cover 30 minutes: 48 = 1 day. NodeMetricsUpdate shards
+# cover 12 hours, but the first starts a step late: 3 hold a full 24h window.
 ALIBABA_MS_SHARDS=48
-ALIBABA_NODE_SHARDS=2
+ALIBABA_NODE_SHARDS=3
 
 BOOM_SERIES=(
     ds-2187-H ds-2394-D ds-1135-5T ds-1833-D ds-2806-D
