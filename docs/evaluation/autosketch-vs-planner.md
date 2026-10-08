@@ -160,13 +160,15 @@ the single p95 level (2026-10-07). At 95%, a quantile's rank error may reach
 0.05, so a p99 query may return a value between the p94 and the p99.
 
 **Latency** — one absolute SLA applies to every RQE, swept over
-{0.01, 0.1, 1, 10} ms and no limit.
+{0.003, 0.01, 0.03, 0.1, 0.3, 1, 3, 10} ms and no limit.
 - An RQE that no method can meet at a given SLA is excluded from every method
   at that SLA and reported by ID. Costs at different SLAs therefore cover
   different RQE sets; compare methods only at one SLA.
 - ASAP and PerQuery-CostAware must meet the SLA.
 - AutoSketch-Adapted ignores it. Its violations are counted, and its cost is
-  shown for those points but marked as infeasible.
+  shown for those points but marked as infeasible. In practice it meets every
+  SLA: it never merges, so each RQE's latency is within 1.4% of the lowest any
+  deployment reaches, and RQEs no method can meet are excluded for all.
 
 An earlier version set `L_r = α × the fastest latency of r`. It was dropped:
 on the dropped `example` workload, α = 2 forced plans with no merging at 40× the unconstrained
