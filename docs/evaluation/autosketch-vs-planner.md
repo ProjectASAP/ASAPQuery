@@ -1,6 +1,6 @@
 # Evaluation plan: AutoSketch vs. the ASAPQuery planner (paper §6.3)
 
-Status: revised 2026-10-07. One accuracy level, p95 (§5). Costs and accuracy come from one sketch-bench study on asap_sketchlib 0.3.0 (#174, #178–#186, §6). The evaluation code is sketch-bench #138, which #139 and #141 were folded into. The design decisions are settled in §9.
+Status: revised 2026-10-08. One accuracy level, p95 (§5). Costs and accuracy come from one sketch-bench study on asap_sketchlib 0.3.0 (#174, #178–#186, §6). Plans are priced **by use** and their latency is reported, in two versions: no SLA, with each method's cost–latency frontier, and a batch latency SLA (§4, §5; model in sketch-bench #188, `docs/rqe_sketch_deployment_v1.md`, "Cost by use and batch latency"). The synthetic evaluation runs on the mixed template set (§6). The evaluation code is sketch-bench #138, stacked on #188. Results so far are in §11. The design decisions are settled in §9.
 
 ## 1. Question
 
@@ -29,7 +29,7 @@ interval) and sums the results; the planner is invoked once for the batch.
 | AutoSketch Algorithm 4 adaptation (LHS seeds, feasibility-directed width/depth neighbor search, pruning) | ASAPQuery-backend `data_plane/examples/autosketch_comparison.rs` ([#547](https://github.com/ProjectASAP/ASAPQuery-backend/pull/547)) | Merged. CMS/Count Sketch/Bloom only; hardcoded CMS grid; executes sketches to measure accuracy. |
 | Earlier protocol (E1–E3, end-to-end execution) | ASAPQuery-backend `docs/evaluation/autosketch-comparison.md` ([#545](https://github.com/ProjectASAP/ASAPQuery-backend/pull/545)) | Merged. Execution-based; this plan is planner-level and uses estimated costs instead. |
 | Top-K dashboard comparison | ASAPQuery-backend [#602](https://github.com/ProjectASAP/ASAPQuery-backend/pull/602) | Closed, not merged. |
-| RQE deployment MILP (HiGHS): candidates `(capability, config, labels, x, y)`, sharing, latency bounds | sketch-bench `rqe-optimizer/` ([#129](https://github.com/ProjectASAP/sketch-bench/pull/129)); per-phase cost model and weighted objective [#145](https://github.com/ProjectASAP/sketch-bench/pull/145); exact accumulators and top-k families [#144](https://github.com/ProjectASAP/sketch-bench/pull/144) | Merged. **This is the planner we evaluate.** |
+| RQE deployment MILP (HiGHS): candidates `(capability, config, labels, x, y)`, sharing, latency bounds | sketch-bench `rqe-optimizer/` ([#129](https://github.com/ProjectASAP/sketch-bench/pull/129)); per-phase cost model and weighted objective [#145](https://github.com/ProjectASAP/sketch-bench/pull/145); exact accumulators and top-k families [#144](https://github.com/ProjectASAP/sketch-bench/pull/144) | Merged. **This is the planner we evaluate**, with the cost by use and batch latency of sketch-bench #188 (`milp::minimize_usage_cost`). |
 | Measured per-operation costs (`AtomicCostEntry`: memory/instance, insert/merge/query CPU, accuracy) | sketch-bench `scripts/study_saturation.py --phase optimizer-cost` → `rqe_atomic_costs.json` ([#174](https://github.com/ProjectASAP/sketch-bench/issues/174), [#178](https://github.com/ProjectASAP/sketch-bench/pull/178)) | Merged. **Source of CPU and memory** (§6), and of exact accumulators' rows. Measured serially, alone on one machine, at the synthetic data's shape. Each row records its measurement conditions (`measured_at`) and names its `accuracy_metric`; its accuracy is the seed mean, and is cross-checked against the curves when the planner loads. |
 | Saturation study: error vs. `N` per config and data shape | sketch-bench `scripts/study_saturation.py --phase accuracy` ([#130](https://github.com/ProjectASAP/sketch-bench/pull/130), [#186](https://github.com/ProjectASAP/sketch-bench/pull/186)) | Merged. **Source of sketch accuracy**: the planner reads the error curve at each instance's item count. The grid is a full cross of data shapes and includes the cost table's shape as a row and column; the planner refuses a grid with holes. |
 | Accuracy after merging `m` windows | sketch-bench [#131](https://github.com/ProjectASAP/sketch-bench/pull/131); merge curves read by the planner [#179](https://github.com/ProjectASAP/sketch-bench/pull/179); top-k heap sized `m · k` [#182](https://github.com/ProjectASAP/sketch-bench/pull/182) | Merged. KLL reads measured merge curves. A top-k heap of `m · k` is read as one sketch (§6). |
@@ -42,12 +42,14 @@ AutoSketch-Adapted is implemented in sketch-bench `rqe-optimizer/src/autosketch.
 ## 3. Methods compared
 
 All methods read the same `AtomicCostTable`, the same RQEs and the same
-label-set cardinalities and arrival rates, and are scored by the same cost
+label-set cardinalities and arrival rates, and are priced by the same cost
 function (§4).
 
-1. **ASAP** — sketch-bench `rqe-optimizer` MILP over the whole batch, with
-   accuracy and latency constraints, minimizing the §4 objective at each weight
-   setting.
+1. **ASAP** — sketch-bench `rqe-optimizer`'s `milp::minimize_usage_cost` over
+   the whole batch, with sharing: the cheapest plan billed by use (§4) that
+   meets every RQE's accuracy target, at each weight setting. Version 1 also
+   solves it under a sweep of latency bounds to trace its cost–latency
+   frontier; version 2 under each SLA of a grid (§5).
 2. **AutoSketch-Adapted** — Algorithm 4 run independently per RQE:
    - search space: the measured configs of the RQE's capability families
      (`Capability::families()`);
@@ -60,79 +62,94 @@ function (§4).
      merges nothing;
    - no sharing: every RQE gets its own deployment, even when two RQEs pick an
      identical one, so ingest and memory are paid per RQE;
-   - latency is ignored during search, then checked after.
-3. **PerQuery-CostAware** (strawman) — the ASAP MILP solved on each RQE alone,
-   with the same accuracy and latency requirements, and the results summed. It uses the same objective
-   and window choices as ASAP but no batching or sharing. ASAP vs. this ablation
-   isolates the batch/sharing benefit; this ablation vs. AutoSketch-Adapted
-   isolates the objective/window benefit.
-Only AutoSketch-Adapted ignores latency; PerQuery-CostAware must meet the same
-requirements as ASAP, so every point in the cost–latency figure except
-AutoSketch's is a feasible plan.
+   - latency is ignored; its plan is priced and its latency computed like the
+     others'. It is one point, not a frontier.
+3. **PerQuery-CostAware** (ablation) — the same MILP with sharing ruled out:
+   each RQE may use only its own candidates, kept as separate copies, so
+   every RQE pays its own ingest (`minimize_usage_cost`'s `allowed`). Same
+   objective, window choices, latency bounds and SLAs as ASAP. ASAP vs. this
+   ablation isolates the batch/sharing benefit; this ablation vs.
+   AutoSketch-Adapted isolates the objective/window benefit.
 
 A "fewest plans" strawman (minimize the number of deployments, then cost) was
 considered and dropped (decided 2026-10-05).
 
 AutoSketch-Adapted is a planner baseline, not a reproduction of the P4
 compiler: stage/page/ALU constraints are dropped. Its accuracy probes read
-sketch-bench measurements instead of running a benchmark inside the search, but
-the cost of running those benchmarks is charged to its planning time (§9 Q3).
+sketch-bench measurements instead of running a benchmark inside the search;
+the measured time of running those benchmarks is charged to its planning time
+(§7, §9 Q3).
 
 ## 4. Cost model
 
-The cost model is sketch-bench `rqe-optimizer`'s (#145), so every method is
-scored by the function ASAP optimizes. Disk is excluded. Units: CPU in vCPU
-(CPU-seconds per second, the mean over time), memory in GiB.
+Plans are priced **by use**: `cost = w_cpu · AUC(CPU) + w_mem · AUC(memory)`,
+the mean vCPUs and GiB over time, with CPU elastic (a job gets a core
+whenever it is ready). This is billing as on fine-grained autoscaling
+platforms (Cloud Run with request-based billing, Dataflow, Flink with an
+autoscaler), idealized. Billing for provisioned capacity (VMs, containers
+billed by allocation) is not modeled; a peak-billed cost model was
+considered and dropped (2026-10-08). The full model, with every formula and
+a plain-English explanation, is sketch-bench #188,
+`docs/rqe_sketch_deployment_v1.md`, "Cost by use and batch latency"; this
+section summarizes it.
 
 A deployment `D` groups by labels `G` with window `x` and slide `y`; RQE `r`
-has lookback `S` and repeat interval `T`. Per-instance costs are measured
-(§6): memory `m`, insert `c_ins`, merge `c_mrg`, query `c_qry`.
-`λ = card(series) / scrape interval`.
+has lookback `S` and repeat interval `T`, and merges `n = S/x` windows.
+Per-instance costs are measured (§6): memory `m`, insert `c_ins`, merge
+`c_mrg`, query `c_qry`. `inst` is the instances per window (`card(G)`, or 1
+for a sketch shared by all groups); `w = inst · m` is one window's memory.
 
-| Phase | CPU (vCPU) | Memory (bytes) |
+**CPU** (mean vCPUs):
+
+| Part | When | CPU |
 | --- | --- | --- |
-| Ingest | `λ · (x/y) · c_ins` | `card(G) · m · x/y` (open windows) |
-| Merge | `card(G) · (S/x − 1) · c_mrg / T` | `card(G) · m` (one accumulator per group), 0 when `S = x` |
-| Query | `card(G) · c_qry / T` | `card(G) · 8 B`; top-k `k · 16 B` |
-| Storage | 0 | `card(G) · m · ((max S − x)/y + 1)` (closed windows) |
+| Ingest (the precompute) | continuously | `ρ = λ · (x/y) · c_ins` per active deployment |
+| Compaction | each window close | `(k − 1) · inst · c_mrg / y` per active deployment |
+| Query | each firing | `ℓ / T` per RQE, `ℓ = card(G) · c_qry + inst · (n − 1) · c_mrg` |
 
-Ingest and storage are paid once per active deployment; merge and query once
-per RQE it serves. Memory sums every term, as if every query evaluates at once.
+Ingest runs on `k = ⌈ρ⌉` parallel workers split by sample (each keeps its
+own open windows); at each window close a compaction job merges the `k`
+partial copies into one stored instance. A query merges the stored windows
+of its lookback, then estimates. Every job uses at most one core:
+sketch-bench's operations are single-threaded (CPU time equals wall time).
 
-**Objective** — `w_cpu · CPU + w_mem · Memory_GiB`, summed over the plan:
+**Memory** (mean GiB), each part counted once:
 
-1. **CPU only**, `(w_cpu, w_mem) = (1, 0)`: the first run. Memory is still
+| Part | Bytes | Held |
+| --- | --- | --- |
+| Ingest | `w · (x/y) · k` (open windows, per worker) | always |
+| Storage | `w · ((max S − x)/y + 1)` (compacted closed windows) | always |
+| Compaction | `k · w` (the closed window's partial copies) | while it runs |
+| Query | `w · [n > 1]` (merge accumulators) + `card(G)` × output bytes | while it runs |
+
+**Weights:**
+
+1. **CPU only**, `(w_cpu, w_mem) = (1, 0)`, in vCPU. Memory is still
    reported.
 2. **Fargate prices**, `w_cpu = 0.0405` $/vCPU-hour and `w_mem = 0.00445`
-   $/GB-hour (AWS Fargate, us-east-1, Linux/x86, 2026-10-06), so the objective
-   is in $/hour. CPU costs about 9× memory per unit; serverless pricing charges
-   exactly these two resources, which is why it fits the model.
+   $/GB-hour (AWS Fargate, us-east-1, Linux/x86, 2026-10-06), so the cost is
+   in $/hour.
 
-CPU is the mean, i.e. the area under the CPU-over-time curve: plans are sized
-for average load, not bursts. Peak-provisioned pricing (buy machines for the
-peak CPU) and per-instance-family EC2 pricing were considered and dropped
-(2026-10-06).
-
-**Latency** — per-RQE estimate:
-`card(G) · (c_qry + (S/x − 1) · c_mrg)`, the evaluation's CPU time run
-serially on one core (an upper bound; parallel execution across instances
-would reduce it proportionally). `c_qry` is one query of one instance: one
-value of a sum or increase accumulator, one top-k list, or one quantile, so a
-template asking `n` quantiles is `n` RQEs.
+**Latency.** A batch (all queries fired at one instant) finishes when its
+last query does. With elastic CPU no job waits, so a batch's latency is its
+longest **chain**: the newest window's compaction, then the query, each on
+one core, `(k − 1) · inst · c_mrg + ℓ`. A plan's latency is the longest
+chain over its RQEs (the job-placement algorithm in #188's doc, §6, has this
+as its closed form). Median and p90 over the RQEs are reported too.
 
 **Units and per-operation costs.** CPU is CPU time (user + system), in
 core-seconds, measured by sketch-bench:
-- `c_ins` (`insert_cpu_secs`): the insert phase's CPU ÷ N, in CPU-seconds per item;
-- `c_mrg` (`merge_cpu_secs`): merging 16 shards ÷ 15, in CPU-seconds per merge;
-- `c_qry` (`query_cpu_secs`): the query phase's CPU ÷ the number of queries in it, per call
-  (a top-k heap dump is repeated per pass so it is timed above the clock's
-  floor, #151);
-- `m` (`mem_bytes_per_instance`): the self-reported bytes per instance, not process RSS. Top-k counts
-  its heap and exact accumulators their hash table (#151). Exact accumulators
-  are priced per group: memory and merge are divided by the group count they
-  were measured at.
-
-Loads are reported in vCPU (core-seconds per second) and totals in CPU-hours.
+- `c_ins` (`insert_cpu_secs`): the insert phase's CPU ÷ N, per item;
+- `c_mrg` (`merge_cpu_secs`): merging 16 shards ÷ 15, per merge (compaction
+  reuses it for the workers' smaller partial copies, an approximation for
+  KLL and DDSketch);
+- `c_qry` (`query_cpu_secs`): the query phase's CPU ÷ the number of queries
+  in it, per call (a top-k heap dump is repeated per pass so it is timed
+  above the clock's floor, #151);
+- `m` (`mem_bytes_per_instance`): the self-reported bytes per instance, not
+  process RSS. Top-k counts its heap and exact accumulators their hash table
+  (#151). Exact accumulators are priced per group: memory and merge are
+  divided by the group count they were measured at.
 
 ## 5. Constraints
 
@@ -159,20 +176,27 @@ default rank error ≤ 0.01) and fitted per-trace targets. Both were replaced by
 the single p95 level (2026-10-07). At 95%, a quantile's rank error may reach
 0.05, so a p99 query may return a value between the p94 and the p99.
 
-**Latency** — one absolute SLA applies to every RQE, swept over
-{0.003, 0.01, 0.03, 0.1, 0.3, 1, 3, 10} ms and no limit.
-- An RQE that no method can meet at a given SLA is excluded from every method
-  at that SLA and reported by ID. Costs at different SLAs therefore cover
-  different RQE sets; compare methods only at one SLA.
-- ASAP and PerQuery-CostAware must meet the SLA.
-- AutoSketch-Adapted ignores it. Its violations are counted, and its cost is
-  shown for those points but marked as infeasible. In practice it meets every
-  SLA: it never merges, so each RQE's latency is within 1.4% of the lowest any
-  deployment reaches, and RQEs no method can meet are excluded for all.
+**Latency** — the evaluation's message is lower cost **and** lower latency,
+so latency is a reported result, in two versions:
 
-An earlier version set `L_r = α × the fastest latency of r`. It was dropped:
-on the dropped `example` workload, α = 2 forced plans with no merging at 40× the unconstrained
-cost.
+- **Version 1, no SLA.** Each method's cheapest plan, with its latency
+  reported. ASAP and PerQuery are also solved under latency bounds `L`
+  (12 log-spaced from the tightest feasible bound, the largest over RQEs of
+  each RQE's fastest chain, up to the unbounded plan's latency, plus
+  AutoSketch's latency): each gives the cheapest plan at most `L` slow, and
+  together they are the method's cost–latency frontier. AutoSketch is one
+  point. Main message: at AutoSketch's latency, what each method costs.
+- **Version 2, a batch latency SLA.** ASAP and PerQuery must keep the batch
+  latency at most `L`, for `L` ∈ {100, 300, 1000, 3000, 10000} ms. AutoSketch
+  ignores the SLA; whether its latency meets each one is reported.
+
+With elastic CPU, a bound `L` is exactly a filter on pairs (rule out every
+deployment whose chain exceeds `L`), so both versions stay exact MILPs.
+
+Earlier versions bounded each RQE's own latency over a µs-scale SLA grid,
+excluding RQEs no method could meet (2026-10-07), and before that set
+`L_r = α ×` the fastest latency of `r`. Both were replaced by the batch
+latency of a plan priced by use (2026-10-08).
 
 ## 6. Workloads
 
@@ -183,7 +207,7 @@ grid.
 
 | ID | Description | Purpose |
 | --- | --- | --- |
-| `synthetic` | Synthetic PromQL workload: the 10 queries in "Synthetic workload" below, over Zipf data. Main figure. | Cost–latency trade-off across data and requirements |
+| `synthetic` | Synthetic PromQL workload: the 10-template mixed set in "Synthetic workload" below, over Zipf data. Main figure. | Cost–latency trade-off across scales |
 | `traces` | Real-trace RQEs, one workload per dataset: Alibaba 2022 and Google 2011 (BOOM is left out for now). Taken from `asap-tools/dataset-analysis/results/skew_summary.csv` ([#746](https://github.com/ProjectASAP/ASAPQuery/pull/746)): each row's `range_s` is `S` and its `step_s` is `T`. Data parameters are fit over each whole trace; the accuracy target is the p95 level (§5). | Appendix: real-trace results |
 
 ### Synthetic workload
@@ -391,27 +415,19 @@ increase stream.
 
 #### Workload grid
 
-Each dimension has a default (bold). A workload fixes every dimension. The grid
-keeps only what changes the comparison with AutoSketch.
+The evaluated template set is the **mixed** set (the 10 templates, 50
+distinct RQEs). The dashboard set above is kept as a description of a
+dashboard but is not evaluated (2026-10-08). A workload fixes every
+dimension; the sweep is the default, then each dimension alone.
 
 | Dimension | Values | What it varies |
 |---|---|---|
-| Template set | **dashboard**; the 10 templates | Workload realism, and which capabilities appear |
-| Shared replicas `r` | **1**, 8 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated. Many users or dashboards over the same metrics: the sharing benefit. The dashboard has 12 such combinations, so RQEs stop growing past r = 8 (52 at r = 8, 57 at r = 64) |
-| Metrics `m` | **1**, 8, 16 | `m` copies of the template set, copy `i` on its own metric `data_i` with the same data model; nothing is shared across copies, so RQEs grow as 21 · `m` (168, 336). Planning time vs. the number of RQEs |
-| Latency SLA | the §5 grid, **no limit** | §5 |
+| Shared replicas `r` | **1**, 8 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated (50 and 92 RQEs). Many users over the same metrics: the sharing benefit |
+| Metrics `m` | **1**, 8, 16 | `m` copies of the template set, copy `i` on its own metric `data_i` with the same data model; nothing is shared across copies, so RQEs grow as 50 · `m` (400, 800). Planning time vs. the number of RQEs |
 
-The data model is fixed (§6 "Data model and scale"); no grid dimension changes the data.
-
-The sweep is the default workload, then each dimension varied alone with the
-others at their defaults. Every workload runs every baseline (ASAP,
-AutoSketch-Adapted, PerQuery-CostAware) at both weight settings (§4). Per
-(workload, baseline, weights, SLA), report:
-- the objective, mean CPU (vCPU) and memory (GiB), and memory per phase;
-- max and median estimated latency, and SLA violations;
-- active deployments and instances;
-- planning time (AutoSketch: search plus charged benchmark time);
-- RQEs excluded by the SLA or unservable.
+Every workload runs every method at both weight settings, in both latency
+versions (§5). The data model is fixed (§6 "Data model and scale"); no grid
+dimension changes the data.
 
 Replicas with disjoint series (each replica filtering `{label_1="v_i"}`) were
 dropped: the planner rejects spatial filters. The metrics dimension gives
@@ -518,50 +534,47 @@ per-item costs are flat in `N` (sketch-bench #130).
 
 ## 7. Metrics and figures
 
-Reported per (workload, method, weight setting, latency SLA),
-median of repeated runs for timings:
+Reported per (workload, method, weight setting, and bound or SLA), median of
+repeated runs for timings:
 
-- **Planning time.** Reported in two parts, because the two planners spend
-  their time differently:
-  - *Search time:* AutoSketch is the sum over RQEs of Algorithm 4 wall time,
-    using table lookups. ASAP is candidate generation, dominance pruning and
-    MILP solve.
-  - *Benchmark time:* AutoSketch benchmarks every probed configuration, as in
-    the paper (§5.2, Exp#9: 1–2 minutes per config, about 6.5 minutes per
-    application). Each probed config is benchmarked once per metric, on that
-    metric's data, so the time grows with the metrics dimension. Reported two ways:
-    - a **lower bound**, `N_bench · insert_cpu_per_item + one query phase`
-      with `N_bench = 1e8`, the size sketch-bench benchmarks at. The paper
-      also benchmarks a fixed-size representative workload, not the query
-      window's full data;
-    - a **paper-rate estimate**, 60 s per distinct probe.
+- **Cost** by use (§4), with its mean CPU (vCPU, by part: ingest,
+  compaction, query) and memory (GiB, by part: ingest, storage, compaction,
+  query). Absolute costs, never ratios to ASAP.
+- **Latency:** the plan's batch latency (its longest chain), and the median
+  and p90 over its RQEs; per-RQE values in the raw output. Version 2 also
+  reports whether AutoSketch meets each SLA.
+- **Planning time:**
+  - *ASAP and PerQuery:* candidate generation plus MILP solve.
+  - *AutoSketch:* its search (the sum over RQEs of Algorithm 4, using table
+    lookups) **plus its measured benchmark time.** In the paper every probe
+    is a benchmark run (§5.2, Exp#9: 1–2 minutes per config). Here each
+    distinct probed (config, data shape) runs approxbench's accuracy
+    benchmark at 1e8 items, generating the data, computing the exact
+    baseline and scoring, and its wall time is measured
+    (`scripts/autosketch_benchmark_time.py`, serially on an idle machine).
+    A config is charged once per metric, on that metric's data, so the time
+    grows with the metrics dimension. 60 s per probe (the paper's rate) is
+    shown only as a reference.
   - *ASAP's one-time profiling:* the wall time of the sketch-bench study runs
-    that produced its curves and cost table. It is shared by all RQEs
-    and reusable across workloads, so it is reported once, plus amortized per
-    RQE served.
-  - The paper's figure shows search + benchmark per method, stacked.
-- **Objective** at each weight setting (§4), with its inputs: mean CPU (vCPU)
-  and memory (GiB), each split by phase. Baselines are normalized to ASAP at
-  the same weights.
-- **Estimated query latency and latency SLA violations** per method.
-  - Estimated latency per RQE: `card(G) · (c_qry + (S/x − 1) · c_mrg)` (§4). Report its maximum and median over the RQEs, plus the per-RQE values in the raw output.
-  - SLA violations: the number of RQEs whose estimated latency exceeds the SLA. Only AutoSketch-Adapted can have any, since the other methods are constrained.
+    that produced its curves and cost table, reported once.
 - **Estimated accuracy** per RQE: every method meets its target under its own
   reading rule (§6, "Benchmark input").
-- Active deployments and total sketch instances.
+- Active deployments and ingest workers.
 
-Figures:
+Figures (synthetic mixed set):
 
-1. Synthetic workload, objective vs. achieved max estimated latency, one panel
-   per weight setting (main paper figure).
-2. Planning time vs. number of RQEs (synthetic, metrics dimension), log–log.
-3. Objective vs. each workload-grid dimension (synthetic, one dimension at a
-   time).
-4. Objective vs. absolute latency SLA (synthetic default workload, `traces`).
+1. Version 1: each method's cost–latency frontier, one panel per workload ×
+   weight setting (ASAP and PerQuery as lines, AutoSketch as a point). Main
+   paper figure.
+2. Version 2: cost vs. batch latency SLA, one panel per workload × weight
+   setting; AutoSketch's cost as a reference, marked where it meets or
+   misses each SLA.
+3. Planning time vs. number of RQEs (metrics dimension), with AutoSketch's
+   search alone and with its measured benchmark.
 
 ## 8. Who implements what, in which PR
 
-| # | Repo / PR | Scope | Status (2026-10-07) |
+| # | Repo / PR | Scope | Status (2026-10-08) |
 | --- | --- | --- | --- |
 | this | ASAPQuery #777 | This plan | Draft, updated as decisions change |
 | — | sketch-bench #144, #145 | Exact accumulators and top-k families; per-phase cost model and weighted objective | Merged |
@@ -574,7 +587,9 @@ Figures:
 | 1 | sketch-bench #137 | Retained memory, EC2 pricing, `milp::minimize_cost` | Merged; superseded by #145 |
 | 3 | sketch-bench #135 | AutoSketch-Adapted (Algorithm 4), aligned with the paper's EXAMINE rule and seeding | Merged |
 | 2 | sketch-bench #136 | Evaluation table for the trace workloads | Merged |
-| 4 | sketch-bench #138 | Runner, synthetic workload and grid, figures (#139 and #141 folded in; #140 closed) | Open; rebased on main, p95 runs done |
+| — | sketch-bench #188 | Cost by use (ingest workers split by sample, compaction, memory parts), batch latency, `milp::minimize_usage_cost` with a latency bound and `allowed` candidates; design in `docs/rqe_sketch_deployment_v1.md` | Open |
+| — | ASAPQuery #812 | Dataset analysis with 6h and 24h windows over a day of Alibaba (trace workloads) | Open |
+| 4 | sketch-bench #138 | Runner, synthetic workload and grid, both latency versions, AutoSketch's measured benchmark, figures (#139 and #141 folded in; #140 closed) | Open; stacked on #188; synthetic mixed runs done (§11); traces to rerun |
 
 ## 9. Decisions
 
@@ -597,18 +612,27 @@ charged.** In the paper every probe is a benchmark run (§5.2, Algorithm 4
 line 5: "Evaluate T by c"), and benchmarking dominates search time (Exp#9).
 Running sketch-bench inside the search would give the same accuracy answers as
 reading the same measurements, so the plan is unchanged. Planning time adds the
-measured benchmark time of each distinct probed (config, size) point (§7). A
-lookup-only time would understate AutoSketch's planning cost.
+**measured** benchmark time of each distinct probed (config, data shape),
+charged once per metric (§7); a lookup-only time would understate
+AutoSketch's planning cost. An earlier lower bound (`1e8 · c_ins` + one query
+phase) was replaced by the measurement (2026-10-08).
 
 **Q4. AutoSketch window adapter.** `x = S`, `y = T` (or `gcd(S, T)`): one
 sliding sketch per query.
 
-**Q5. Memory model.** Per phase, as in #145 (§4): open windows, one merge
-accumulator per group, query output, and closed windows.
+**Q5. Memory model.** By use (§4): ingest (open windows, one copy per
+worker), storage (compacted closed windows), compaction (partial copies while
+it runs) and query (merge accumulators and output while it runs), each
+counted once.
 
-**Q6. Cost.** `w_cpu · CPU + w_mem · memory`: CPU only first, then Fargate's
-per-vCPU and per-GB prices (§4). Machine-family and peak-provisioned pricing
-were dropped (2026-10-06).
+**Q6. Cost.** By use, `w_cpu · AUC(CPU) + w_mem · AUC(memory)`: CPU only
+first, then Fargate's per-vCPU and per-GB prices (§4). Machine-family pricing
+(2026-10-06) and a peak-billed cost model (2026-10-08) were dropped.
+
+**Q7. Latency.** Reported, not a requirement to violate: the plan's batch
+latency, its longest chain under elastic CPU. Version 1 has no SLA and
+traces each method's cost–latency frontier; version 2 requires a batch
+latency SLA (§5). Decided 2026-10-08.
 
 ## 10. Known limitations
 
@@ -619,11 +643,61 @@ were dropped (2026-10-06).
 - Costs and latencies are estimates from per-operation measurements, not
   end-to-end executions. The execution-based comparison is ASAPQuery-backend
   #545/#547.
+- CPU is idealized as elastic (capacity follows the load at once). Real
+  autoscalers add scale-up delay, warm minimum instances billed while idle
+  and billing granularity, so the cost by use is a lower bound for them.
+- Compaction prices merging the workers' smaller partial copies at the
+  measured per-merge cost, exact for fixed-size sketches and an
+  approximation for KLL and DDSketch.
 - AutoSketch-Adapted's deployments (`x = S`, `y = gcd(S, T)`) are in the ASAP
   candidate set (`candidates.rs` generates every divisor of `S` as a window and
-  `gcd(x, T)` as a slide). So when its plan meets the latency bounds and its
-  configurations also pass ASAP's lookup rule (the two rules differ on
-  size, §6), the ASAP MILP can choose the same deployments and pay for
-  shared ones once; ASAP's cost is never higher. The sanity check reports any
+  `gcd(x, T)` as a slide). So when its configurations also pass ASAP's lookup
+  rule (the two rules differ on size, §6), the ASAP MILP can choose the same
+  deployments and pay for shared ones once; ASAP's unbounded cost is never
+  higher. The sanity check reports any
   case where this does not hold. The result to report is the size of the gap and where it comes
   from, not that a gap exists.
+
+## 11. Results (synthetic mixed set, 2026-10-08)
+
+Absolute costs by use; latency is the plan's batch latency. AutoSketch's
+latency is 1011 ms in every workload. Results, figures and summaries are in
+sketch-bench #138, `rqe-optimizer/results/autosketch-vs-asap-synthetic/`
+(version 1) and `…-synthetic-sla/` (version 2).
+
+**Version 1** (CPU only, vCPU; Fargate in $/hour):
+
+| Workload | RQEs | ASAP cheapest (latency) | PerQuery cheapest (latency) | AutoSketch | ASAP at 1011 ms | PerQuery at 1011 ms |
+|---|---|---|---|---|---|---|
+| mixed | 50 | 3.32 (12.1 s) | 9.55 (3.84 s) | 3410 | 5.12 | 12.0 |
+| mixed, Fargate | 50 | 0.220 $/h (2.94 s) | 0.720 $/h (2.97 s) | 163 $/h | 0.284 $/h | 0.813 $/h |
+| mixed, r = 8 | 92 | 3.39 (2.94 s) | 16.7 (3.84 s) | 4089 | 5.15 | 19.3 |
+| mixed, m = 8 | 400 | 26.5 (12.1 s) | 76.4 (3.84 s) | 27,280 | 41.0 | 96.2 |
+| mixed, m = 16 | 800 | 53.1 (12.1 s) | 153 (3.84 s) | 54,560 | 81.9 | 192 |
+
+The tightest feasible bound is 92 ms in every workload; there ASAP costs
+41.6 vCPU and PerQuery 66.6 (mixed). ASAP's frontier is below PerQuery's at
+every latency, and both are two to three orders of magnitude below
+AutoSketch.
+
+**Version 2** (CPU only, vCPU; AutoSketch meets only the 3 s and 10 s SLAs):
+
+| Workload | SLA | ASAP | PerQuery | AutoSketch |
+|---|---|---|---|---|
+| mixed | 100 ms | 34.5 | 59.2 | 3410 (misses) |
+| mixed | 1 s | 5.12 | 12.0 | 3410 (misses) |
+| mixed | 3 s | 3.32 | 9.74 | 3410 |
+| mixed, m = 16 | 100 ms | 553 | 947 | 54,560 (misses) |
+| mixed, m = 16 | 3 s | 53.2 | 156 | 54,560 |
+
+**Planning time** (AutoSketch: search + measured benchmark, 8 distinct probes
+per metric of 20–37 s each):
+
+| RQEs | ASAP | PerQuery | AutoSketch |
+|---|---|---|---|
+| 50 | 0.76 s | 0.65 s | 0.002 s + 212 s |
+| 400 | 6.8 s | 5.6 s | 0.015 s + 1697 s |
+| 800 | 14.7 s | 11.7 s | 0.031 s + 3394 s |
+
+The trace workloads (Alibaba, Google, with 6h and 24h windows, ASAPQuery
+#812) are still to be rerun on this model.
