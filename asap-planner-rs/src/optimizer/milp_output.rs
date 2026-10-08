@@ -29,6 +29,11 @@ use super::solution::OptimizerItem;
 pub enum MilpOutputError {
     #[error("query {0:?} uses avg, which the engine can't answer from sum and count yet")]
     AvgQuery(String),
+    #[error(
+        "query groups set step_ms or range_duration_ms, whose retention MILP configs \
+         don't set yet (#800): {0:?}"
+    )]
+    RangeQueryOverrides(Vec<String>),
     #[error("sketch-bench variant {variant} ({capability:?}) has no ASAPQuery aggregation type")]
     UndeployableVariant {
         variant: String,
@@ -47,17 +52,27 @@ pub enum MilpOutputError {
     Generator(#[from] ControllerError),
 }
 
-/// Errors on the first avg query: its plan can be costed but not deployed.
-pub fn reject_avg_queries(config: &ControllerConfig) -> Result<(), MilpOutputError> {
-    match config
+/// Errors on queries whose plan can be costed but not written as configs:
+/// avg queries, and range-query overrides, which only size retention.
+pub fn reject_unwritable_queries(config: &ControllerConfig) -> Result<(), MilpOutputError> {
+    if let Some(query) = config
         .query_groups
         .iter()
         .flat_map(|group| &group.queries)
         .find(|query| contains_avg(query))
     {
-        Some(query) => Err(MilpOutputError::AvgQuery(query.clone())),
-        None => Ok(()),
+        return Err(MilpOutputError::AvgQuery(query.clone()));
     }
+    let range_queries: Vec<String> = config
+        .query_groups
+        .iter()
+        .filter(|qg| qg.step_ms.is_some() || qg.range_duration_ms.is_some())
+        .flat_map(|qg| qg.queries.iter().cloned())
+        .collect();
+    if !range_queries.is_empty() {
+        return Err(MilpOutputError::RangeQueryOverrides(range_queries));
+    }
+    Ok(())
 }
 
 /// Streaming and inference YAML for `solution`. Aggregation ids follow the
@@ -68,7 +83,7 @@ pub fn plan_to_planner_output(
     workload: &MilpWorkload,
     solution: &MilpSolution,
 ) -> Result<PlannerOutput, MilpOutputError> {
-    reject_avg_queries(config)?;
+    reject_unwritable_queries(config)?;
 
     let item_of = |raqe: usize| &workload.items[workload.raqe_items[raqe]];
     // Each item once per deployment, however many occurrences it has.
@@ -576,6 +591,24 @@ mod tests {
             .err()
             .unwrap();
         assert!(matches!(err, MilpOutputError::AvgQuery(q) if q == query));
+    }
+
+    /// Range overrides only size retention, so they block writing configs
+    /// but not planning.
+    #[test]
+    fn range_query_overrides_block_only_the_written_configs() {
+        let query = "sum(http_requests_total)";
+        for field in ["step_ms: 60000", "range_duration_ms: 3600000"] {
+            let (config, workload, solution) =
+                plan(&format!("{}    {field}\n", group(query, 0.99)));
+            let err = plan_to_planner_output(&config, &workload, &solution)
+                .err()
+                .unwrap();
+            assert!(
+                matches!(&err, MilpOutputError::RangeQueryOverrides(q) if q == &[query]),
+                "{field}: {err}"
+            );
+        }
     }
 
     #[test]

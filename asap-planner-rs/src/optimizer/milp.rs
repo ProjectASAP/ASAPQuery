@@ -13,9 +13,16 @@ use thiserror::Error;
 
 use crate::config::input::ControllerConfig;
 
+use std::path::Path;
+
+use anyhow::Context;
+use rqe_optimizer::saturation::SaturationCurves;
+
 use super::aqe_extractor::{extract_aqes, RQE};
+use super::atomic_costs::load_flat_atomic_cost_table;
 use super::error::OptimizerError;
 use super::solution::OptimizerItem;
+use super::workload_facts::load_workload_facts;
 
 /// Slack on accuracy tolerances so `1 - sla` rounding (`1 - 0.9 =
 /// 0.0999...98`) doesn't reject a row measured exactly at the boundary.
@@ -23,6 +30,8 @@ const SLA_EPSILON: f64 = 1e-9;
 
 #[derive(Debug, Error)]
 pub enum MilpError {
+    #[error("the MILP planner doesn't support these workload config fields: {0:?}")]
+    UnsupportedFields(Vec<&'static str>),
     #[error(
         "workload config has no `metrics:` hints; they are required to resolve grouping labels"
     )]
@@ -110,6 +119,84 @@ pub fn solve_milp(
     Ok(solution)
 }
 
+/// What a MILP planning run reads besides the workload config.
+pub struct MilpInputs<'a> {
+    pub workload_facts: &'a Path,
+    pub atomic_costs: &'a Path,
+    /// sketch-bench's saturation-study directory; sketch accuracy is read
+    /// off its error-vs-N curves at each grouping's `shape`.
+    pub saturation_dir: &'a Path,
+    pub scrape_interval_ms: u64,
+    /// Objective weights; `None` takes rqe-optimizer's default.
+    pub w_cpu: Option<f64>,
+    pub w_mem: Option<f64>,
+    pub allow_undeployable_families: bool,
+}
+
+pub struct MilpPlan {
+    pub workload: MilpWorkload,
+    pub solution: MilpSolution,
+    pub objective: Objective,
+}
+
+/// Loads the facts, costs and saturation curves and solves for the cheapest
+/// plan.
+pub fn plan_milp(config: &ControllerConfig, inputs: &MilpInputs) -> anyhow::Result<MilpPlan> {
+    config.warn_default_slas();
+    let Some(hints) = config.metrics.as_deref() else {
+        return Err(MilpError::MissingMetricHints.into());
+    };
+    let facts = load_workload_facts(inputs.workload_facts, hints, inputs.scrape_interval_ms)?;
+    let curves = SaturationCurves::load(inputs.saturation_dir).with_context(|| {
+        format!(
+            "loading saturation curves from {}",
+            inputs.saturation_dir.display()
+        )
+    })?;
+    let costs = load_flat_atomic_cost_table(inputs.atomic_costs)?;
+    let objective = objective(inputs.w_cpu, inputs.w_mem)?;
+    tracing::debug!(?objective, cost_rows = costs.len(), "milp: inputs loaded");
+
+    let workload = build_milp_workload(config, &facts, inputs.scrape_interval_ms)?;
+    let solution = solve_milp(
+        &workload,
+        &facts,
+        &costs,
+        objective,
+        inputs.allow_undeployable_families,
+        &|raqe, deployment| curves.accuracy(raqe, deployment, &facts),
+    )?;
+    Ok(MilpPlan {
+        workload,
+        solution,
+        objective,
+    })
+}
+
+fn objective(w_cpu: Option<f64>, w_mem: Option<f64>) -> anyhow::Result<Objective> {
+    let Objective::AUCCost {
+        w_cpu: default_cpu,
+        w_mem: default_mem,
+    } = Objective::default();
+    let (w_cpu, w_mem) = (w_cpu.unwrap_or(default_cpu), w_mem.unwrap_or(default_mem));
+    // All-zero weights make every plan cost 0, so the solver's pick is arbitrary.
+    anyhow::ensure!(
+        w_cpu > 0.0 || w_mem > 0.0,
+        "--w-cpu and --w-mem are both 0; at least one must be positive"
+    );
+    Ok(Objective::AUCCost { w_cpu, w_mem })
+}
+
+/// Parses an objective weight flag. Weights must be finite and non-negative:
+/// a negative weight rewards cost, and NaN poisons every coefficient.
+pub fn parse_weight(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(w) if w.is_finite() && w >= 0.0 => Ok(w),
+        Ok(w) => Err(format!("must be finite and >= 0, got {w}")),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// A Raqe a sketch family with cost rows may serve reads its accuracy off
 /// the curves at its grouping's `shape`; without one it could only be
 /// reported unservable. Families without rows are left to that path.
@@ -157,6 +244,18 @@ pub fn build_milp_workload(
     facts: &WorkloadFacts,
     scrape_interval_ms: u64,
 ) -> Result<MilpWorkload, MilpError> {
+    // The MILP chooses windows and sketch parameters itself.
+    let unsupported: Vec<&'static str> = [
+        ("windowing", config.windowing.is_some()),
+        ("sketch_parameters", config.sketch_parameters.is_some()),
+        ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
+    ]
+    .into_iter()
+    .filter_map(|(field, set)| set.then_some(field))
+    .collect();
+    if !unsupported.is_empty() {
+        return Err(MilpError::UnsupportedFields(unsupported));
+    }
     let mut items = extract_hinted_items(config, scrape_interval_ms)?;
     // Stable Raqe order and ids across runs.
     items.sort_by(|a, b| {
@@ -598,6 +697,29 @@ metrics:
         assert!(matches!(err, MilpError::InvalidInputs(_)));
     }
 
+    /// The MILP picks windows and sketch parameters itself, so these would be
+    /// dropped silently.
+    #[test]
+    fn unsupported_config_fields_are_rejected() {
+        let mut config = config(&group("sum(http_requests_total)", 0.99));
+        config.windowing =
+            Some(serde_yaml::from_str("{type: tumbling, window_size_ms: 60000}").unwrap());
+        config.sketch_parameters = Some(Default::default());
+        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        assert!(
+            matches!(&err, MilpError::UnsupportedFields(f) if f == &["windowing", "sketch_parameters"]),
+            "{err}"
+        );
+        config.windowing = None;
+        config.sketch_parameters = None;
+        config.aggregate_cleanup = Some(serde_yaml::from_str("{}").unwrap());
+        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        assert!(
+            matches!(&err, MilpError::UnsupportedFields(f) if f == &["aggregate_cleanup"]),
+            "{err}"
+        );
+    }
+
     #[test]
     fn solve_shares_one_deployment_across_repeated_queries() {
         let query = "sum by (job) (http_requests_total)";
@@ -771,6 +893,15 @@ metrics:
         )
         .unwrap();
         assert_eq!(solution.deployments.len(), 2);
+    }
+
+    #[test]
+    fn weights_must_be_finite_and_non_negative() {
+        assert_eq!(parse_weight("0.5"), Ok(0.5));
+        assert_eq!(parse_weight("0"), Ok(0.0));
+        for bad in ["-1", "NaN", "inf", "x"] {
+            assert!(parse_weight(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]
