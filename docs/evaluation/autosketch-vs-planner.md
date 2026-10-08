@@ -176,7 +176,7 @@ cost.
 
 Two workloads, decided 2026-10-05. The earlier `example` (8 RQEs from
 `small_problem`) and `scaling` (random RQE batches) workloads were dropped.
-Planning-time scaling is now the replica dimension of the synthetic workload
+Planning-time scaling is now the metrics dimension of the synthetic workload
 grid.
 
 | ID | Description | Purpose |
@@ -395,7 +395,8 @@ keeps only what changes the comparison with AutoSketch.
 | Dimension | Values | What it varies |
 |---|---|---|
 | Template set | **dashboard**; the 10 templates | Workload realism, and which capabilities appear |
-| Replicas `r` | **1**, 8, 64 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated. Many users or dashboards over the same metrics: how the sharing benefit and planning time grow with the number of RQEs |
+| Shared replicas `r` | **1**, 8 | Every replica reads the same stream with a seeded random subset of 3 windows from `W`, 3 quantiles from {0.5, 0.75, 0.9, 0.95, 0.99} and `T` from {10 s, 1 m, 5 m}; identical RQEs are deduplicated. Many users or dashboards over the same metrics: the sharing benefit. The dashboard has 12 such combinations, so RQEs stop growing past r = 8 (52 at r = 8, 57 at r = 64) |
+| Metrics `m` | **1**, 8, 16 | `m` copies of the template set, copy `i` on its own metric `data_i` with the same data model; nothing is shared across copies, so RQEs grow as 21 · `m` (168, 336). Planning time vs. the number of RQEs |
 | Latency SLA | the §5 grid, **no limit** | §5 |
 
 The data model is fixed (§6 "Data model and scale"); no grid dimension changes the data.
@@ -411,8 +412,8 @@ AutoSketch-Adapted, PerQuery-CostAware) at both weight settings (§4). Per
 - RQEs excluded by the SLA or unservable.
 
 Replicas with disjoint series (each replica filtering `{label_1="v_i"}`) were
-dropped: the planner rejects spatial filters, and the shared mode is the case
-that shows sharing.
+dropped: the planner rejects spatial filters. The metrics dimension gives
+disjoint copies without filters, each copy on its own metric (2026-10-08).
 
 #### Planner sensitivity (not part of this comparison)
 
@@ -550,7 +551,7 @@ Figures:
 
 1. Synthetic workload, objective vs. achieved max estimated latency, one panel
    per weight setting (main paper figure).
-2. Planning time vs. number of RQEs (synthetic, replica dimension), log–log.
+2. Planning time vs. number of RQEs (synthetic, metrics dimension), log–log.
 3. Objective vs. each workload-grid dimension (synthetic, one dimension at a
    time).
 4. Objective vs. absolute latency SLA (synthetic default workload, `traces`).
