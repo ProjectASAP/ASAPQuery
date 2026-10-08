@@ -21,7 +21,7 @@ Two tasks:
 
 ```bash
 pip install -r requirements.txt
-./fetch_data.sh /path/to/trace-data        # ~63 GB; re-run to resume
+./fetch_data.sh /path/to/trace-data        # ~207 GB; re-run to resume
 python fit_skew.py --data-root /path/to/trace-data
 ```
 
@@ -37,8 +37,10 @@ This writes `results/skew_summary.csv` (committed) and plots to `out/`
 - `--workers N`: process pool size (default: all cores). Files and fits run
   in parallel.
 
-A full run over the fetched data takes about 2 hours with 24 workers on a
-56-core machine (peak RSS of the main process about 69 GB). Alibaba archives are streamed with `tarfile`, not extracted.
+With 48 workers on a 56-core, 251 GB machine, Google takes about 1 hour
+(peak RSS of the main process 45 GB) and Alibaba about 10.5 hours (98 GB;
+CallGraph's 6h windows over high-cardinality keys dominate). Run the two
+datasets on separate machines with `--queries` to overlap them. Alibaba archives are streamed with `tarfile`, not extracted.
 
 Tests: `python -m unittest discover -s tests -p 'test_*.py'`.
 
@@ -46,10 +48,10 @@ Tests: `python -m unittest discover -s tests -p 'test_*.py'`.
 
 | Dataset | Files | Tables | Step | Ranges |
 |---|---|---|---|---|
-| Google ClusterData 2011-2 | `task_usage` and `task_events` parts 0..119 of 500 (about 7 days), all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5 min | instant, 5m, 1h |
-| Alibaba microservices v2022 | `MCRRTUpdate_0..119` (first 6 hours) | `MSRTMCR` | 1 min | instant, 5m, 1h |
-| | `CallGraph_0..119` (first 6 hours) | `CallGraph` | 1 min | 1m, 5m, 1h (events, no instant) |
-| | `MSMetricsUpdate_0..47`, `NodeMetricsUpdate_0..1` (first day) | `MSMetrics`, `NodeMetrics` | 1 min | instant, 5m, 1h |
+| Google ClusterData 2011-2 | `task_usage` and `task_events` parts 0..119 of 500 (about 7 days), all 500 `job_events` parts, `schema.csv` | `task_usage` joined with task and job attributes | 5 min | instant, 5m, 1h, 6h, 24h |
+| Alibaba microservices v2022 | `MCRRTUpdate_0..479` (first day) | `MSRTMCR` | 1 min | instant, 5m, 1h, 6h, 24h |
+| | `CallGraph_0..479` (first day) | `CallGraph` | 1 min | 1m, 5m, 1h, 6h, 24h (events, no instant) |
+| | `MSMetricsUpdate_0..47` (first day), `NodeMetricsUpdate_0..2` (first 1.5 days: the first shard starts a step late, so two hold no full 24h window) | `MSMetrics`, `NodeMetrics` | 1 min | instant, 5m, 1h, 6h, 24h |
 | Datadog BOOM | `dataset_taxonomy.json` and 20 multivariate series | per-series `target` | none | 20 equal chunks per series |
 
 Citations:
