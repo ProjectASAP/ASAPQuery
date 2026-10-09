@@ -1,0 +1,1764 @@
+[
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 32,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 6976.0,
+    "insert_cpu_secs": 6.265340000000001e-08,
+    "merge_cpu_secs": 5.413333333333334e-06,
+    "query_cpu_secs": 3.7792968750000003e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.65625,
+      "recall_at_k": 0.71875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 128,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 18688.0,
+    "insert_cpu_secs": 6.18736e-08,
+    "merge_cpu_secs": 1.7613333333333333e-05,
+    "query_cpu_secs": 6.916015624999999e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.65625,
+      "recall_at_k": 0.71875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 512,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 65536.0,
+    "insert_cpu_secs": 6.518740000000001e-08,
+    "merge_cpu_secs": 7.207999999999999e-05,
+    "query_cpu_secs": 1.6177734374999998e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.65625,
+      "recall_at_k": 0.71875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 2048,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 252928.0,
+    "insert_cpu_secs": 7.059499999999999e-08,
+    "merge_cpu_secs": 0.00032728,
+    "query_cpu_secs": 6.457617187500001e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.65625,
+      "recall_at_k": 0.71875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 32,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 16192.0,
+    "insert_cpu_secs": 6.1587e-08,
+    "merge_cpu_secs": 5.560000000000001e-06,
+    "query_cpu_secs": 3.781250000000001e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.96875,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 128,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 27904.0,
+    "insert_cpu_secs": 6.185199999999999e-08,
+    "merge_cpu_secs": 1.84e-05,
+    "query_cpu_secs": 7.859375000000002e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.96875,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 512,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 74752.0,
+    "insert_cpu_secs": 6.19184e-08,
+    "merge_cpu_secs": 7.300000000000001e-05,
+    "query_cpu_secs": 1.2935546875e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.96875,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 2048,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 262144.0,
+    "insert_cpu_secs": 6.91748e-08,
+    "merge_cpu_secs": 0.00033804,
+    "query_cpu_secs": 6.837500000000001e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.96875,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 32,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 53056.0,
+    "insert_cpu_secs": 6.16722e-08,
+    "merge_cpu_secs": 8.2e-06,
+    "query_cpu_secs": 3.8242187500000003e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 128,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 64768.0,
+    "insert_cpu_secs": 6.1706e-08,
+    "merge_cpu_secs": 2.041333333333333e-05,
+    "query_cpu_secs": 6.98046875e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 512,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 111616.0,
+    "insert_cpu_secs": 6.14122e-08,
+    "merge_cpu_secs": 7.725333333333335e-05,
+    "query_cpu_secs": 1.1986328125e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 2048,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 299008.0,
+    "insert_cpu_secs": 6.754019999999999e-08,
+    "merge_cpu_secs": 0.00035854666666666665,
+    "query_cpu_secs": 6.094140624999999e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 32,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 200512.0,
+    "insert_cpu_secs": 6.269700000000001e-08,
+    "merge_cpu_secs": 3.785333333333333e-05,
+    "query_cpu_secs": 3.830078125e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 128,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 212224.0,
+    "insert_cpu_secs": 6.26222e-08,
+    "merge_cpu_secs": 4.638666666666667e-05,
+    "query_cpu_secs": 7.076171875e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 512,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 259072.0,
+    "insert_cpu_secs": 6.40812e-08,
+    "merge_cpu_secs": 0.00011037333333333334,
+    "query_cpu_secs": 1.3744140625e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 2048,
+        "rows": 3
+      }
+    },
+    "mem_bytes_per_instance": 446464.0,
+    "insert_cpu_secs": 7.235159999999999e-08,
+    "merge_cpu_secs": 0.00043508,
+    "query_cpu_secs": 5.171679687500001e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 32,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 9024.0,
+    "insert_cpu_secs": 7.2015e-08,
+    "merge_cpu_secs": 5.56e-06,
+    "query_cpu_secs": 3.927734375e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.9583333333333334,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 128,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 20736.0,
+    "insert_cpu_secs": 7.218340000000001e-08,
+    "merge_cpu_secs": 1.8999999999999998e-05,
+    "query_cpu_secs": 6.255859375e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.9583333333333334,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 512,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 67584.0,
+    "insert_cpu_secs": 7.499360000000001e-08,
+    "merge_cpu_secs": 7.936e-05,
+    "query_cpu_secs": 1.3486328125e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.9583333333333334,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 256,
+        "heap": 2048,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 254976.0,
+    "insert_cpu_secs": 8.19924e-08,
+    "merge_cpu_secs": 0.00035636000000000006,
+    "query_cpu_secs": 5.7841796874999995e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 0.9583333333333334,
+      "recall_at_k": 0.96875,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 32,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 24384.0,
+    "insert_cpu_secs": 7.196319999999999e-08,
+    "merge_cpu_secs": 7.280000000000001e-06,
+    "query_cpu_secs": 3.73046875e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 128,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 36096.0,
+    "insert_cpu_secs": 7.12484e-08,
+    "merge_cpu_secs": 1.9866666666666664e-05,
+    "query_cpu_secs": 7.066406249999999e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 512,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 82944.0,
+    "insert_cpu_secs": 7.1533e-08,
+    "merge_cpu_secs": 7.865333333333333e-05,
+    "query_cpu_secs": 1.3716796875e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 1024,
+        "heap": 2048,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 270336.0,
+    "insert_cpu_secs": 7.94168e-08,
+    "merge_cpu_secs": 0.00038251999999999996,
+    "query_cpu_secs": 6.1431640625e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 32,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 85824.0,
+    "insert_cpu_secs": 8.616900000000001e-08,
+    "merge_cpu_secs": 1.258666666666667e-05,
+    "query_cpu_secs": 3.7773437499999997e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 128,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 97536.0,
+    "insert_cpu_secs": 8.598960000000001e-08,
+    "merge_cpu_secs": 2.5119999999999997e-05,
+    "query_cpu_secs": 6.916015625000001e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 512,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 144384.0,
+    "insert_cpu_secs": 8.74834e-08,
+    "merge_cpu_secs": 9.321333333333334e-05,
+    "query_cpu_secs": 1.5720703124999998e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 4096,
+        "heap": 2048,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 331776.0,
+    "insert_cpu_secs": 9.83654e-08,
+    "merge_cpu_secs": 0.0004201999999999999,
+    "query_cpu_secs": 5.9945312500000004e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 32,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 331584.0,
+    "insert_cpu_secs": 9.09876e-08,
+    "merge_cpu_secs": 8.155999999999998e-05,
+    "query_cpu_secs": 3.8046875000000004e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 128,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 343296.0,
+    "insert_cpu_secs": 9.143559999999999e-08,
+    "merge_cpu_secs": 9e-05,
+    "query_cpu_secs": 6.937499999999999e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 512,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 390144.0,
+    "insert_cpu_secs": 9.460219999999999e-08,
+    "merge_cpu_secs": 0.00015136,
+    "query_cpu_secs": 1.3550781250000001e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "cms-heap-topk-fastpath-vector2d",
+    "sketch_config": {
+      "algorithm": "cms-heap-topk-fastpath-vector2d",
+      "params": {
+        "cols": 16384,
+        "heap": 2048,
+        "rows": 5
+      }
+    },
+    "mem_bytes_per_instance": 577536.0,
+    "insert_cpu_secs": 1.0425599999999999e-07,
+    "merge_cpu_secs": 0.00052852,
+    "query_cpu_secs": 5.976757812500001e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "est_top_k_count": 32.0,
+      "k": 32.0,
+      "precision_at_k": 1.0,
+      "recall_at_k": 1.0,
+      "true_top_k_count": 32.0
+    },
+    "accuracy_metric": "precision_at_k",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "hll",
+    "sketch_config": {
+      "algorithm": "hll",
+      "params": {
+        "lg_k": 12
+      }
+    },
+    "mem_bytes_per_instance": 4096.0,
+    "insert_cpu_secs": 3.19e-09,
+    "merge_cpu_secs": 3.173333333333333e-06,
+    "query_cpu_secs": 4.07451171875e-05,
+    "query_accuracy": {
+      "absolute_error": 114.0,
+      "accuracy_runs": 1.0,
+      "estimate": 9881.0,
+      "relative_error": 0.01166938732683351,
+      "truth": 9995.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "hll",
+    "sketch_config": {
+      "algorithm": "hll",
+      "params": {
+        "lg_k": 14
+      }
+    },
+    "mem_bytes_per_instance": 16384.0,
+    "insert_cpu_secs": 3.2448e-09,
+    "merge_cpu_secs": 1.1693333333333334e-05,
+    "query_cpu_secs": 0.00013052250976562502,
+    "query_accuracy": {
+      "absolute_error": 36.0,
+      "accuracy_runs": 1.0,
+      "estimate": 10031.0,
+      "relative_error": 0.003467473528715946,
+      "truth": 9995.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "hll",
+    "sketch_config": {
+      "algorithm": "hll",
+      "params": {
+        "lg_k": 16
+      }
+    },
+    "mem_bytes_per_instance": 65536.0,
+    "insert_cpu_secs": 3.3302e-09,
+    "merge_cpu_secs": 3.909333333333334e-05,
+    "query_cpu_secs": 0.00028885131835937496,
+    "query_accuracy": {
+      "absolute_error": 24.0,
+      "accuracy_runs": 1.0,
+      "estimate": 10019.0,
+      "relative_error": 0.0023005367970329754,
+      "truth": 9995.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": 10000,
+      "value_range": [
+        1.0,
+        10000.0
+      ],
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.1,
+        "population_size": 10000,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "kll-percall",
+    "sketch_config": {
+      "algorithm": "kll-percall",
+      "params": {
+        "k": 50
+      }
+    },
+    "mem_bytes_per_instance": 1600.0,
+    "insert_cpu_secs": 2.50456e-08,
+    "merge_cpu_secs": 3.173333333333333e-06,
+    "query_cpu_secs": 2.6693069306930694e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_rank_err": 0.028037,
+      "mean_rank_err": 0.009828891089108909
+    },
+    "accuracy_metric": "mean_rank_err",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "kll-percall",
+    "sketch_config": {
+      "algorithm": "kll-percall",
+      "params": {
+        "k": 200
+      }
+    },
+    "mem_bytes_per_instance": 6400.0,
+    "insert_cpu_secs": 2.54608e-08,
+    "merge_cpu_secs": 7.093333333333334e-06,
+    "query_cpu_secs": 5.661386138613862e-06,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_rank_err": 0.011574,
+      "mean_rank_err": 0.002891914191419142
+    },
+    "accuracy_metric": "mean_rank_err",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "kll-percall",
+    "sketch_config": {
+      "algorithm": "kll-percall",
+      "params": {
+        "k": 800
+      }
+    },
+    "mem_bytes_per_instance": 25600.0,
+    "insert_cpu_secs": 2.3648400000000003e-08,
+    "merge_cpu_secs": 9.346666666666666e-06,
+    "query_cpu_secs": 3.868910891089109e-05,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_rank_err": 0.002291,
+      "mean_rank_err": 0.0005414851485148513
+    },
+    "accuracy_metric": "mean_rank_err",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "dd",
+    "sketch_config": {
+      "algorithm": "dd",
+      "params": {
+        "alpha": 0.005
+      }
+    },
+    "mem_bytes_per_instance": 6680.0,
+    "insert_cpu_secs": 1.5887200000000003e-08,
+    "merge_cpu_secs": 1.1866666666666668e-06,
+    "query_cpu_secs": 1.603960396039604e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_relative_value_error": 0.004968158570351805,
+      "mean_relative_value_error": 0.0022870611112797393,
+      "scored_points": 101.0,
+      "unanswered_points": 0.0
+    },
+    "accuracy_metric": "mean_relative_value_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "dd",
+    "sketch_config": {
+      "algorithm": "dd",
+      "params": {
+        "alpha": 0.01
+      }
+    },
+    "mem_bytes_per_instance": 3344.0,
+    "insert_cpu_secs": 1.6487399999999996e-08,
+    "merge_cpu_secs": 7.733333333333333e-07,
+    "query_cpu_secs": 1.3663366336633667e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_relative_value_error": 0.009920804600694355,
+      "mean_relative_value_error": 0.00490212809561385,
+      "scored_points": 101.0,
+      "unanswered_points": 0.0
+    },
+    "accuracy_metric": "mean_relative_value_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "dd",
+    "sketch_config": {
+      "algorithm": "dd",
+      "params": {
+        "alpha": 0.02
+      }
+    },
+    "mem_bytes_per_instance": 1672.0,
+    "insert_cpu_secs": 1.58858e-08,
+    "merge_cpu_secs": 5.333333333333333e-07,
+    "query_cpu_secs": 1.188118811881188e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_relative_value_error": 0.019412708915678492,
+      "mean_relative_value_error": 0.009645356060512198,
+      "scored_points": 101.0,
+      "unanswered_points": 0.0
+    },
+    "accuracy_metric": "mean_relative_value_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "dd",
+    "sketch_config": {
+      "algorithm": "dd",
+      "params": {
+        "alpha": 0.05
+      }
+    },
+    "mem_bytes_per_instance": 672.0,
+    "insert_cpu_secs": 2.2923e-08,
+    "merge_cpu_secs": 4.1333333333333333e-07,
+    "query_cpu_secs": 1.1287128712871286e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "grid_points": 101.0,
+      "items": 1000000.0,
+      "max_relative_value_error": 0.049644785899805866,
+      "mean_relative_value_error": 0.024618048538218917,
+      "scored_points": 101.0,
+      "unanswered_points": 0.0
+    },
+    "accuracy_metric": "mean_relative_value_error",
+    "measured_at": {
+      "items_per_instance": 1000000,
+      "keys_per_instance": null,
+      "value_range": null,
+      "merge_operand_items": 62500,
+      "distribution": {
+        "kind": "pareto",
+        "alpha": 2.0,
+        "scale": 1000.0,
+        "seed": 42
+      }
+    }
+  },
+  {
+    "sketch": "exact-sum",
+    "sketch_config": {
+      "algorithm": "exact-sum",
+      "params": {}
+    },
+    "mem_bytes_per_instance": 127.87055276381909,
+    "insert_cpu_secs": 1.6415699999999998e-07,
+    "merge_cpu_secs": 1.672509212730318e-07,
+    "query_cpu_secs": 3.9923618090452264e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "groups_per_instance": 9950.0,
+      "missing_groups": 0.0,
+      "relative_error": 0.0,
+      "relative_error_mean": 0.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 200000,
+      "keys_per_instance": 9950,
+      "value_range": [
+        1.0,
+        1000.0
+      ],
+      "merge_operand_items": 12500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.2,
+        "population_size": 1000,
+        "seed": 3
+      }
+    }
+  },
+  {
+    "sketch": "exact-min",
+    "sketch_config": {
+      "algorithm": "exact-min",
+      "params": {}
+    },
+    "mem_bytes_per_instance": 127.87055276381909,
+    "insert_cpu_secs": 1.6431700000000003e-07,
+    "merge_cpu_secs": 1.68156783919598e-07,
+    "query_cpu_secs": 4.000603015075376e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "groups_per_instance": 9950.0,
+      "missing_groups": 0.0,
+      "relative_error": 0.0,
+      "relative_error_mean": 0.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 200000,
+      "keys_per_instance": 9950,
+      "value_range": [
+        1.0,
+        1000.0
+      ],
+      "merge_operand_items": 12500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.2,
+        "population_size": 1000,
+        "seed": 3
+      }
+    }
+  },
+  {
+    "sketch": "exact-max",
+    "sketch_config": {
+      "algorithm": "exact-max",
+      "params": {}
+    },
+    "mem_bytes_per_instance": 127.87055276381909,
+    "insert_cpu_secs": 1.66754e-07,
+    "merge_cpu_secs": 1.7009447236180904e-07,
+    "query_cpu_secs": 3.959396984924623e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "groups_per_instance": 9950.0,
+      "missing_groups": 0.0,
+      "relative_error": 0.0,
+      "relative_error_mean": 0.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 200000,
+      "keys_per_instance": 9950,
+      "value_range": [
+        1.0,
+        1000.0
+      ],
+      "merge_operand_items": 12500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.2,
+        "population_size": 1000,
+        "seed": 3
+      }
+    }
+  },
+  {
+    "sketch": "exact-increase",
+    "sketch_config": {
+      "algorithm": "exact-increase",
+      "params": {}
+    },
+    "mem_bytes_per_instance": 220.08201005025126,
+    "insert_cpu_secs": 1.71554e-07,
+    "merge_cpu_secs": 2.0374003350083754e-07,
+    "query_cpu_secs": 4.356783919597989e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "groups_per_instance": 9950.0,
+      "missing_groups": 0.0,
+      "relative_error": 0.0,
+      "relative_error_mean": 0.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 200000,
+      "keys_per_instance": 9950,
+      "value_range": null,
+      "merge_operand_items": 12500,
+      "distribution": {
+        "kind": "uniform",
+        "lower_bound": 0.0,
+        "upper_bound": 10.0,
+        "seed": 3
+      }
+    }
+  },
+  {
+    "sketch": "exact-delta-set",
+    "sketch_config": {
+      "algorithm": "exact-delta-set",
+      "params": {}
+    },
+    "mem_bytes_per_instance": 116.34412060301507,
+    "insert_cpu_secs": 1.60274e-07,
+    "merge_cpu_secs": 1.6313567839195982e-07,
+    "query_cpu_secs": 4.0884422110552766e-07,
+    "query_accuracy": {
+      "accuracy_runs": 1.0,
+      "groups_per_instance": 9950.0,
+      "missing_groups": 0.0,
+      "relative_error": 0.0,
+      "relative_error_mean": 0.0
+    },
+    "accuracy_metric": "relative_error",
+    "measured_at": {
+      "items_per_instance": 200000,
+      "keys_per_instance": 9950,
+      "value_range": [
+        1.0,
+        1000.0
+      ],
+      "merge_operand_items": 12500,
+      "distribution": {
+        "kind": "zipf",
+        "skewness": 1.2,
+        "population_size": 1000,
+        "seed": 3
+      }
+    }
+  }
+]
