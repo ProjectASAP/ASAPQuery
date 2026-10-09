@@ -359,6 +359,271 @@ evaluates at once. The default weights are `(1, 0)`: CPU only.
 Per-RAQE latency bounds forbid the pairs over them (`z_{i,D} = 0`). The solver
 never enumerates full mappings.
 
+### Cost by use and batch latency
+
+Status: agreed design (ProjectASAP/ASAPQuery#777), implemented in
+`rqe-optimizer/src/usage.rs` (resource use, cost, latency) and
+`milp::minimize_usage_cost`. The MILP minimizes the cost of a plan billed by
+use, in two versions:
+
+- **Version 1, no latency constraint:** the cheapest plan; its latency is
+  reported. Sweeping an optional latency bound traces each method's
+  cost–latency Pareto frontier.
+- **Version 2, a batch latency SLA:** the cheapest plan whose batch latency,
+  from the job placement (§6), is at most the SLA `L`, for a grid of SLAs.
+Evaluated first on the synthetic mixed template set; methods: ASAP (this
+MILP, with sharing), PerQuery (the same MILP without sharing) and
+AutoSketch-Adapted (fixed configs chosen by memory).
+
+#### 1. Definitions
+
+| Symbol | Meaning |
+|---|---|
+| `D`, `i` | a candidate deployment; a RAQE |
+| `x_D`, `y_D` | `D`'s window and slide; a window closes every `y_D` |
+| `S_i`, `T_i` | RAQE `i`'s lookback and interval; it fires at `t = k · T_i` |
+| `card(G)` | groups of `D`'s grouping |
+| `inst_D` | instances per window: `card(G)`, or 1 for a sketch shared by all groups, plus `card(G)` for a key tracker if the family needs one |
+| `λ_D` | samples/s arriving for `D`'s metric: `card(series) / scrape interval`, already a rate |
+| `c_ins`, `c_mrg`, `c_qry` | measured CPU-seconds per insert, per pairwise merge, per query of one instance |
+| `m` | measured bytes per instance; `w_D = Σ_parts inst · m`, one window of all instances |
+| `n_{i,D} = S_i / x_D` | windows a query merges |
+| batch | all query jobs issued at one instant |
+
+**Measurement assumption (sketch-bench as is).** Every sketch operation is
+single-threaded and compute-bound: sketch-bench's CPU time equals its wall
+time (e.g. an insert phase of 62.65 ms CPU and 62.65 ms wall). So a job uses
+at most one core and, on a full core, takes its CPU time. The cost table's
+`*_cpu_secs` are all the model needs.
+
+#### 2. Cost model
+
+`cost = w1 · AUC(CPU) + w2 · AUC(memory)`: the mean vCPUs and GiB over time,
+priced per vCPU and per GiB (CPU only: `(1, 0)`; Fargate's prices). CPU is
+elastic: a job gets a core whenever it is ready.
+
+This is billing by use, as on fine-grained autoscaling platforms (Cloud Run
+with request-based billing, Dataflow streaming, Flink on Kubernetes with an
+autoscaler), idealized: capacity follows the load at once. Billing for
+provisioned capacity (VMs, or containers billed by allocation such as
+Fargate) is not modeled. Since a job holds its memory only while it runs, its
+memory × time is the same whenever it runs, and queueing a job would save
+nothing.
+
+#### 3. CPU: parts and how each is computed
+
+Every "mean vCPUs" below is a long-run average rate, CPU-seconds per second,
+over the same period: a whole number of hyperperiods `H = lcm(T_i, y_D)`,
+over which every job pattern repeats exactly. A part with `w` CPU-seconds per
+event every `P` seconds runs `H / P` times per hyperperiod, so its mean is
+`(H / P) · w / H = w / P`; ingest is already a rate. So the three columns add.
+
+| Part | When | CPU-seconds | Mean vCPUs |
+|---|---|---|---|
+| Ingest (the precompute) | continuously, as samples arrive | — | `ρ_D = λ_D · (x_D / y_D) · c_ins` |
+| Compaction | at each window close | `c_D = (k_D − 1) · Σ_parts inst · c_mrg` | `c_D / y_D` |
+| Query job of RAQE `i` | at each firing | `ℓ_{i,D} = card(G) · c_qry + Σ_parts inst · (n_{i,D} − 1) · c_mrg` | `ℓ_{i,D} / T_i` |
+
+- Ingest runs on `k_D = ⌈ρ_D⌉` parallel workers (at least one; each uses at
+  most one core), **split by sample**: each worker reads a share of the input
+  (e.g. some Kafka partitions or scrape targets) with no shuffle by group, so
+  it keeps its own open window instance of every group it sees.
+- When a window closes (the watermark passes its end), a **compaction** job
+  merges the `k_D` partial instances of each group into one stored instance.
+  With `k_D = 1` there is none.
+- Each firing of RAQE `i` issues one **query job**: merge the `n_{i,D}`
+  stored instances of each group for the query window, then estimate. Merging
+  is part of the query. It reads the newest window, which closes at the firing
+  time, so it starts after that window's compaction.
+
+`AUC(CPU) = Σ_D ρ_D + Σ_D c_D / y_D + Σ_i ℓ_{i,D} / T_i`: ingest is already
+a rate; only compaction (per window close, every `y_D`) and queries (per
+firing, every `T_i`) are divided by their period. It is fixed by the plan,
+whatever the schedule.
+
+In words:
+
+- `ρ_D`: every second, `λ_D` samples arrive (the scrape interval is already
+  inside `λ_D`), and each is inserted into the `x_D / y_D` windows still
+  open, at `c_ins` CPU-seconds each: CPU-seconds per second.
+- `c_D`: closing a window merges, for every instance, the `k_D` workers'
+  partial copies into one, which takes `k_D − 1` merges. This happens once
+  per slide.
+- `ℓ_{i,D}`: a query merges each instance's `n_{i,D}` stored windows
+  (`n − 1` merges per instance), then answers once per group. This happens
+  once per interval. (A sketch shared by all groups merges one instance but
+  still answers every group.)
+- `AUC(CPU)` adds the three rates: work per second, in vCPUs.
+
+#### 4. Memory: parts and how each is computed
+
+Each part is counted once: a window counts as ingest memory while open and as
+storage once compacted, and a query reads stored instances in place.
+
+| Part | What | Bytes | Held |
+|---|---|---|---|
+| Ingest | open windows, one copy per worker | `I_D = w_D · (x_D / y_D) · k_D` | always |
+| Storage | closed windows for the longest lookback served (one compacted copy) | `stored_D = max_i w_D · ((S_i − x_D) / y_D + 1)` | always |
+| Compaction | the closed window's `k_D` partial copies, until merged | `k_D · w_D` (0 when `k_D = 1`) | while the compaction job runs |
+| Query | the accumulators the merge creates (none when `n = 1`) and the output | `q_{i,D} = w_D · [n_{i,D} > 1] + card(G) · output bytes` | while the query job runs |
+
+`AUC(memory) = Σ_D (I_D + stored_D + k_D · w_D · (compaction run time) / y_D)
++ Σ_i q_{i,D} · (query run time) / T_i`. CPU is elastic, so every job runs on its
+own core: a compaction runs for `c_D` and a query for `ℓ_{i,D}`.
+
+In words:
+
+- `I_D`: every worker keeps one instance per group for each of the
+  `x_D / y_D` windows still open, and there are `k_D` workers.
+- `stored_D`: closed windows are kept until the longest lookback that `D`
+  serves no longer needs them. That is `(S − x)/y + 1` windows per group.
+- Compaction: when a window closes, a new one opens, so ingest still holds
+  `x_D / y_D` open windows. The closed window's `k_D` partial copies stay in
+  memory until the compaction has merged them. The merged copy takes the
+  storage slot that the oldest window frees at the same moment, so it is not
+  counted twice.
+- `q_{i,D}`: a merge builds one accumulator per instance (a direct query,
+  with `n = 1`, reads the stored window and needs none), plus the answer for
+  every group.
+- `AUC(memory)`: ingest and storage are held all the time. A compaction's
+  and a query's memory are held only while they run, a fraction
+  `run time / y_D` or `run time / T_i` of the time.
+
+#### 5. Batch latency and the SLA
+
+A batch's **latency** is the time from its issue until its last query job
+finishes, compaction included. A plan's **query latency** is its worst batch
+latency, given by the job placement (§6). Version 1 reports it; version 2
+requires it to be at most the SLA `L`. Per-RAQE latency bounds
+(`Raqe::latency_sla_ms`) are not used.
+
+CPU is elastic, so no job waits for a core, and a batch's latency is its
+longest **chain**: the newest window's compaction, then the query, each on a
+full core, `c_D + ℓ_{i,D}` (`analytical_cost_model::chain_ms`). A plan's query
+latency is the longest chain over its RAQEs.
+
+In words: the trade-off between cost and latency comes from the plan. A cheap
+plan keeps short windows and merges many of them at query time (long
+chains); a faster one precomputes more at ingest (more open windows, more CPU
+and memory). With no bound the MILP picks the cheapest plan, whatever its
+latency; a bound `L` asks for the cheapest plan at least that fast.
+
+#### 6. Job placement algorithm
+
+The job placement decides when each job runs on the available CPU, and so
+gives every batch's latency. It is defined for any CPU capacity; billing by
+use makes CPU elastic, so it runs with unlimited capacity.
+
+```text
+capacity for jobs  K = C − Σ_D ρ_D      (C = ∞ when CPU is elastic)
+event-driven, over the hyperperiod H = lcm(T_i, y_D), twice
+(events: query issues, window closes, completions):
+  ready = compaction jobs (triggered at window closes)
+        + query jobs whose newest window is compacted
+  order: issue / trigger time (older first), then compaction before query
+         (it unblocks queries), then longest remaining work first
+  give rates in that order: job j gets a_j = min(1, K − rates already given)
+  a job at rate a_j finishes when its remaining work / a_j elapses
+  recompute the rates at every event
+outputs: per-RAQE and per-batch latency, worst batch latency
+```
+
+In words:
+
+1. **Reserve ingest.** Ingest runs all the time and takes `Σ ρ_D` vCPUs; the
+   rest, `K`, is shared by compaction and query jobs.
+2. **Issue jobs.** Each window close triggers a compaction job for its
+   deployment. Each firing issues a query job, which becomes ready only once
+   its deployment's newest window is compacted.
+3. **Prioritize.** Ready jobs run oldest batch first, so no batch starves.
+   Within a batch, compaction runs before queries, because queries wait for
+   it. Then the longest remaining work runs first, so a long job doesn't end
+   up running alone at the end of the batch.
+4. **Share capacity as rates.** In that order, each job gets up to one core
+   (a single-threaded job can't use more) from the capacity still free. The
+   last one served may get only a fraction and runs slower in proportion.
+5. **Advance to the next event.** Time jumps to the next query issue, window
+   close or completion; remaining work drops by rate × elapsed time, and the
+   rates are recomputed.
+6. **Read off the results.** A query's latency is its finish minus its
+   issue, and a batch's latency is that of its last query.
+
+With elastic CPU (`K = ∞`) every job starts as soon as it is ready on its own
+core, so the placement has a closed form: a compaction runs for `c_D`, a
+query for `ℓ_{i,D}`, and a batch's latency is its longest chain
+`c_D + ℓ_{i,D}`. The code uses this closed form (`usage::usage_cost`), and
+it is what makes both MILP versions exact.
+
+#### 7. MILP formulation
+
+Variables: `z_{i,D} ∈ {0,1}` (RAQE `i` uses `D`, for eligible pairs `E`),
+`u_D ∈ {0,1}` (`D` is active), `stored_D ≥ 0`. Constants per candidate and
+pair are §3 and §4's.
+
+```text
+minimize  w1 · [ Σ_D (ρ_D + c_D / y_D) · u_D + Σ_(i,D) (ℓ_{i,D} / T_i) · z_{i,D} ]
+        + w2 · [ Σ_D ((I_D + k_D · w_D · c_D / y_D) · u_D + stored_D)
+                 + Σ_(i,D) (q_{i,D} · ℓ_{i,D} / T_i) · z_{i,D} ]
+s.t.      Σ_D z_{i,D} = 1                        for every RAQE i
+          z_{i,D} ≤ u_D ≤ Σ_i z_{i,D}             for (i, D) ∈ E
+          stored_D ≥ w_D · ((S_i − x_D) / y_D + 1) · z_{i,D}
+version 2, a batch latency SLA L (or version 1's frontier bound L):
+          z_{i,D} = 0  if c_D + ℓ_{i,D} > L
+```
+
+In words:
+
+- The objective is the price of the mean vCPUs (ingest and compaction per
+  active deployment, plus each RAQE's query work per second), plus the price
+  of the mean memory (ingest and storage per active deployment, each
+  compaction's partial copies for the fraction of time it runs, and each
+  query's memory for the fraction of time it runs).
+- Every RAQE is served by exactly one eligible deployment.
+- A deployment is active if and only if some RAQE uses it, so its ingest is
+  paid once, however many RAQEs share it.
+- A deployment stores enough closed windows for the longest lookback it
+  serves (a linearized max).
+- Version 2 (and version 1's frontier bound): a pair whose chain (the newest
+  window's compaction, then the query, each on a full core) is longer than
+  `L` is ruled out. By the placement's closed form, the plan's batch latency
+  is then at most `L`, exactly: the SLA is met. Chains are
+  compared with `L` with a relative slack of `1e-9`, so float error can't rule
+  out a chain equal to `L`.
+
+#### 8. Solution method
+
+Every term is linear in `u` and `z`, with or without a bound, so the MILP is
+solved exactly
+(`milp::minimize_usage_cost`; costs are scaled by each RAQE's cheapest pair
+so the solver sees magnitudes near 1). The solved plan's cost and latency are
+then computed from its resource use (`usage::usage_cost`).
+
+- **PerQuery** is the same MILP with sharing ruled out. `minimize_usage_cost`
+  takes `allowed`, the candidate indices each RAQE may use. PerQuery gives
+  each RAQE its own candidates, with a separate copy of any deployment that
+  two RAQEs could both use. Two RAQEs share a deployment only by choosing the
+  same candidate index (`u_D` is per index), so their copies stay apart and
+  each pays its own ingest.
+- **AutoSketch** keeps its memory-chosen configs and is priced by the same
+  function: its cost by use and its latency, the longest chain. It ignores
+  latency, so it is one point, not a frontier.
+- **Version 1:** ASAP and PerQuery are solved with no bound (the cheapest
+  plan), and for a sweep of bounds `L` from the smallest feasible one (the
+  largest, over RAQEs, of each RAQE's fastest chain) up to the unbounded
+  plan's latency. Each solve gives a (latency, cost) point; together they are
+  the method's frontier. `L` = AutoSketch's latency gives each method's cost
+  at no more than AutoSketch's latency.
+- **Version 2:** ASAP and PerQuery are solved at each SLA of a fixed grid;
+  an SLA below the smallest feasible bound has no plan. AutoSketch ignores
+  the SLA; its latency either meets it or not.
+
+#### 9. Outputs
+
+Per (method, weight setting, bound or SLA): cost; mean CPU and memory, by
+part; query latency and per-RAQE latency; planning time. Figures: version 1,
+each method's cost–latency frontier for each workload (ASAP and PerQuery as
+lines, AutoSketch as a point); version 2, each method's cost at each SLA.
+
 ## Analytical cost model
 
 The analytical model combines the empirical per-operation Sketch Bench
@@ -494,8 +759,9 @@ latency_i = card(G) × c_qry + I × (n_i − 1) × c_mrg
 
 summed over the sketch and its key tracker, if any.
 
-It is not a wall-clock SLA: it assumes no parallel execution across groups and
-no cheaper k-way merge.
+On its own it is not a wall-clock SLA: it assumes no parallel execution across
+groups and no cheaper k-way merge. In "Cost by use and batch latency" above it
+is one firing's query job `ℓ_{i,D}` (merge, then estimate) on one core.
 
 ## Procedure
 
@@ -524,7 +790,8 @@ each phase's CPU and memory, together with the selected deployment mapping.
   largest shard count and N the study measured merge curves at (#158).
 - **Query-result sharing:** v1 charges every RAQE its own query and merge CPU.
   Revisit when RAQE semantics and execution timing identify safe reuse cases.
-- **Latency SLAs:** the MILP takes optional per-RAQE latency bounds; the
+- **Latency SLAs:** `minimize` takes optional per-RAQE latency bounds;
+  `minimize_usage_cost` has none and reports the batch latency (above). The
   enumerator reports latency but does not reject a mapping for it.
 - **Memory model:** query memory sums every RAQE's merge and output memory, as
   if all queries run at once; real concurrency is not modeled. Query output

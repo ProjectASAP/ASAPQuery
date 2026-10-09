@@ -227,6 +227,205 @@ pub fn minimize(
     })
 }
 
+/// Relative slack when comparing a chain with a latency bound, so float error
+/// in summing µs-scale work can't rule out a chain equal to the bound.
+const LATENCY_SLACK: f64 = 1e-9;
+
+/// A [`minimize_usage_cost`] solution, with its cost billed by use and its
+/// latency.
+#[derive(Debug, Clone)]
+pub struct UsageSolution {
+    pub milp: MilpSolution,
+    /// One candidate index per RAQE.
+    pub mapping: Mapping,
+    pub cost: crate::usage::UsageCost,
+}
+
+/// Minimize the cost billed by use, `w_cpu · AUC(CPU) + w_mem · AUC(memory)`
+/// (per vCPU, per GiB; `docs/rqe_sketch_deployment_v1.md`, "Cost by use and
+/// batch latency"). The latency is reported. `latency_bound_ms`, when given,
+/// rules out every pair whose chain (`analytical_cost_model::chain_ms`)
+/// exceeds it, so sweeping it traces the cost–latency Pareto frontier; it is
+/// not an SLA to meet or violate. Per-RAQE latency bounds
+/// (`Raqe::latency_sla_ms`) are not used. Every term is linear, so this is
+/// exact.
+///
+/// `allowed`, when given, lists for each RAQE the candidate indices it may
+/// use, e.g. only its own candidates for PerQuery (no sharing). Two RAQEs
+/// share a deployment only by choosing the same candidate index, so giving
+/// each RAQE its own copies of identical deployments keeps them apart, each
+/// paying its own ingest.
+#[allow(clippy::too_many_arguments)]
+pub fn minimize_usage_cost(
+    raqes: &[Raqe],
+    deployments: &[Deployment],
+    facts: &WorkloadFacts,
+    w_cpu: f64,
+    w_mem: f64,
+    accuracy: &Accuracy,
+    allowed: Option<&[Vec<usize>]>,
+    latency_bound_ms: Option<f64>,
+) -> Result<UsageSolution, ResolutionError> {
+    let secs = |ms: u64| ms as f64 / 1000.0;
+    let gib = |bytes: f64| bytes / BYTES_PER_GIB;
+    // Per candidate: ingest vCPUs and bytes (every worker's open windows),
+    // compaction CPU-seconds per window and the bytes it holds.
+    let ingest_cpu: Vec<f64> = deployments
+        .iter()
+        .map(|d| analytical_cost_model::ingest(d, facts).cpu_secs_per_sec)
+        .collect();
+    let ingest_bytes: Vec<f64> = deployments
+        .iter()
+        .map(|d| {
+            analytical_cost_model::ingest(d, facts).memory_bytes
+                * analytical_cost_model::ingest_workers(d, facts)
+        })
+        .collect();
+    let compaction: Vec<f64> = deployments
+        .iter()
+        .map(|d| analytical_cost_model::compaction_secs(d, facts))
+        .collect();
+    let compaction_bytes: Vec<f64> = deployments
+        .iter()
+        .map(|d| analytical_cost_model::compaction_bytes(d, facts))
+        .collect();
+    let eligible: Vec<Vec<usize>> = raqes
+        .iter()
+        .enumerate()
+        .map(|(i, raqe)| {
+            eligible_deployments_for(raqe, deployments, facts, accuracy)
+                .into_iter()
+                .filter(|d| allowed.is_none_or(|allowed| allowed[i].contains(d)))
+                .filter(|&d| {
+                    latency_bound_ms.is_none_or(|bound| {
+                        analytical_cost_model::chain_ms(raqe, &deployments[d], facts)
+                            <= bound * (1.0 + LATENCY_SLACK)
+                    })
+                })
+                .collect()
+        })
+        .collect();
+    if eligible.iter().any(Vec::is_empty) {
+        return Err(ResolutionError::Infeasible);
+    }
+    // Per pair: query work (CPU-sec), its memory and the storage it needs.
+    let work = |i: usize, d: usize| {
+        analytical_cost_model::query_latency_ms(&raqes[i], &deployments[d], facts) / 1000.0
+    };
+    let query_bytes = |i: usize, d: usize| {
+        analytical_cost_model::merge(&raqes[i], &deployments[d], facts).memory_bytes
+            + analytical_cost_model::query(&raqes[i], &deployments[d], facts).memory_bytes
+    };
+    let storage = |i: usize, d: usize| {
+        analytical_cost_model::storage_bytes(&raqes[i], &deployments[d], facts)
+    };
+    // Per-deployment and per-pair costs, priced.
+    let deployment_cost = |d: usize| {
+        let slide = secs(deployments[d].slide_ms);
+        w_cpu * (ingest_cpu[d] + compaction[d] / slide)
+            + w_mem * gib(ingest_bytes[d] + compaction_bytes[d] * compaction[d] / slide)
+    };
+    let pair_cost = |i: usize, d: usize| {
+        let interval = secs(raqes[i].interval_ms);
+        w_cpu * work(i, d) / interval + w_mem * gib(query_bytes(i, d) * work(i, d) / interval)
+    };
+
+    // Scale: each RAQE alone on its cheapest pair, so HiGHS sees magnitudes
+    // near 1.
+    let reference: f64 = (0..raqes.len())
+        .map(|i| {
+            eligible[i]
+                .iter()
+                .map(|&d| deployment_cost(d) + pair_cost(i, d) + w_mem * gib(storage(i, d)))
+                .fold(f64::INFINITY, f64::min)
+        })
+        .sum();
+    let reference = if reference.is_normal() {
+        reference
+    } else {
+        1.0
+    };
+
+    let mut variables = ProblemVariables::new();
+    let active: Vec<Variable> = deployments
+        .iter()
+        .map(|_| variables.add(variable().binary()))
+        .collect();
+    let assignments: Vec<Vec<(usize, Variable)>> = eligible
+        .iter()
+        .map(|choices| {
+            choices
+                .iter()
+                .map(|&d| (d, variables.add(variable().binary())))
+                .collect()
+        })
+        .collect();
+    // Priced storage per deployment, scaled: the max over the RAQEs it serves.
+    let stored: Vec<Variable> = deployments
+        .iter()
+        .map(|_| variables.add(variable().min(0)))
+        .collect();
+
+    let mut goal: Expression = stored.iter().sum();
+    for (d, &u) in active.iter().enumerate() {
+        goal.add_mul(deployment_cost(d) / reference, u);
+    }
+    for (i, choices) in assignments.iter().enumerate() {
+        for &(d, z) in choices {
+            goal.add_mul(pair_cost(i, d) / reference, z);
+        }
+    }
+
+    let mut model = variables.minimise(goal).using(default_solver);
+    for (i, choices) in assignments.iter().enumerate() {
+        let sum: Expression = choices.iter().map(|&(_, z)| z).sum();
+        model.add_constraint(sum.eq(1));
+        for &(d, z) in choices {
+            model.add_constraint((z - active[d]).leq(0));
+            let needed = w_mem * gib(storage(i, d)) / reference;
+            if needed > 0.0 {
+                model.add_constraint((needed * z - stored[d]).leq(0));
+            }
+        }
+    }
+    for (d, &u) in active.iter().enumerate() {
+        let used: Expression = assignments
+            .iter()
+            .flat_map(|choices| choices.iter())
+            .filter(|(index, _)| *index == d)
+            .map(|&(_, z)| z)
+            .sum();
+        model.add_constraint((u - used).leq(0));
+    }
+
+    let solved = model.solve()?;
+    let mapping: Mapping = assignments
+        .iter()
+        .map(|choices| {
+            choices
+                .iter()
+                .find_map(|&(d, z)| (solved.value(z) > 0.5).then_some(d))
+                .expect("the MILP assigns every RAQE one deployment")
+        })
+        .collect();
+    let cost = crate::usage::usage_cost(
+        &crate::usage::PlanLoad::new(raqes, deployments, &mapping, facts),
+        w_cpu,
+        w_mem,
+    );
+    let plan_cost = score(raqes, deployments, &mapping, facts);
+    let (planned, planned_raqes) = plan(raqes, deployments, &mapping);
+    Ok(UsageSolution {
+        milp: MilpSolution {
+            deployments: planned,
+            raqes: planned_raqes,
+            plan_cost,
+        },
+        mapping,
+        cost,
+    })
+}
+
 /// Keeps the deployments `mapping` uses, renumbered, with their instance
 /// counts. Every pair in `mapping` is eligible, so the counts exist.
 fn plan(
@@ -392,6 +591,125 @@ mod tests {
             ..raqes[0].clone()
         };
         assert_eq!(solve(&[bounded]), vec![1]);
+    }
+
+    /// Two RAQEs, 100 groups, and candidates that trade ingest for queries.
+    fn usage_workload() -> (Vec<Raqe>, Vec<Deployment>, WorkloadFacts) {
+        let raqes = vec![raqe("frequent", 60_000), raqe("long", 600_000)];
+        // (memory, insert, merge, query, window, slide): cheap ingest with
+        // slow queries; costlier ingest with fast ones; a 10-minute window
+        // that answers `long` without merging but keeps 10 windows open.
+        let deployments = vec![
+            test_support::deployment(0.5 * BYTES_PER_GIB, 1e-3, 1e-4, 4e-3, 60_000, 60_000),
+            test_support::deployment(0.1 * BYTES_PER_GIB, 3e-3, 1e-5, 1e-5, 60_000, 60_000),
+            test_support::deployment(2.0 * BYTES_PER_GIB, 2e-4, 1e-5, 1e-5, 600_000, 60_000),
+        ];
+        (raqes, deployments, facts(100, 100))
+    }
+
+    #[test]
+    fn usage_cost_matches_brute_force() {
+        use crate::usage::{usage_cost, PlanLoad};
+        let (raqes, deployments, facts) = usage_workload();
+        for (w_cpu, w_mem) in [(1.0, 0.0), (0.0, 1.0), (1.0, 4.0)] {
+            let best = brute_force(&raqes, &deployments, &facts, &table_accuracy)
+                .iter()
+                .map(|mapping| {
+                    usage_cost(
+                        &PlanLoad::new(&raqes, &deployments, mapping, &facts),
+                        w_cpu,
+                        w_mem,
+                    )
+                    .value
+                })
+                .min_by(f64::total_cmp)
+                .expect("servable");
+            let got = minimize_usage_cost(
+                &raqes,
+                &deployments,
+                &facts,
+                w_cpu,
+                w_mem,
+                &table_accuracy,
+                None,
+                None,
+            )
+            .expect("feasible");
+            assert!(
+                (got.cost.value - best).abs() <= 1e-9 * best,
+                "({w_cpu}, {w_mem}): {} vs {best}",
+                got.cost.value
+            );
+        }
+    }
+
+    #[test]
+    fn a_latency_bound_gives_the_cheapest_plan_that_fast_by_brute_force() {
+        use crate::usage::{usage_cost, PlanLoad};
+        let (raqes, deployments, facts) = usage_workload();
+        let price = |mapping: &Mapping| {
+            usage_cost(
+                &PlanLoad::new(&raqes, &deployments, mapping, &facts),
+                1.0,
+                0.0,
+            )
+        };
+        let mut previous = (0.0, f64::INFINITY);
+        // Looser bounds never cost more and never give a faster plan.
+        for bound in [300.0, 1e3, 1e4, 1e6] {
+            let best = brute_force(&raqes, &deployments, &facts, &table_accuracy)
+                .iter()
+                .map(price)
+                .filter(|cost| cost.latency_ms <= bound)
+                .map(|cost| cost.value)
+                .min_by(f64::total_cmp)
+                .expect("servable within the bound");
+            let got = minimize_usage_cost(
+                &raqes,
+                &deployments,
+                &facts,
+                1.0,
+                0.0,
+                &table_accuracy,
+                None,
+                Some(bound),
+            )
+            .expect("feasible");
+            assert!((got.cost.value - best).abs() <= 1e-9 * best, "{bound}");
+            assert!(got.cost.latency_ms <= bound);
+            assert!(got.cost.value <= previous.1 * (1.0 + 1e-12));
+            previous = (got.cost.latency_ms, got.cost.value);
+        }
+    }
+
+    #[test]
+    fn allowed_candidates_keep_identical_deployments_apart() {
+        // Two RAQEs at one cadence, each with its own copy of one deployment.
+        let raqes = vec![raqe("a", 60_000), raqe("b", 60_000)];
+        let one = test_support::deployment(BYTES_PER_GIB, 1e-3, 1e-5, 1e-5, 60_000, 60_000);
+        let deployments = vec![one.clone(), one];
+        let facts = facts(100, 100);
+        let solve = |allowed: Option<&[Vec<usize>]>| {
+            minimize_usage_cost(
+                &raqes,
+                &deployments,
+                &facts,
+                1.0,
+                0.0,
+                &table_accuracy,
+                allowed,
+                None,
+            )
+            .expect("feasible")
+        };
+        // Free to choose: both use one copy and ingest once.
+        let shared = solve(None);
+        assert_eq!(shared.mapping[0], shared.mapping[1]);
+        // Each on its own copy: two deployments, ingest paid twice.
+        let own = solve(Some(&[vec![0], vec![1]]));
+        assert_eq!(own.mapping, vec![0, 1]);
+        let ingest = analytical_cost_model::ingest(&deployments[0], &facts).cpu_secs_per_sec;
+        assert!((own.cost.cpu - shared.cost.cpu - ingest).abs() < 1e-12 * own.cost.cpu);
     }
 
     #[test]

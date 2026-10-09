@@ -254,6 +254,43 @@ pub(crate) fn query_latency_ms(raqe: &Raqe, deployment: &Deployment, facts: &Wor
             .sum::<f64>()
 }
 
+/// Parallel ingest workers of `deployment`, split by sample: `k = ⌈ρ⌉` for
+/// its ingest CPU `ρ`, at least one, since sketch-bench's operations are
+/// single-threaded (a worker uses at most one core).
+pub fn ingest_workers(deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
+    ingest(deployment, facts).cpu_secs_per_sec.ceil().max(1.0)
+}
+
+/// CPU-seconds to compact one closed window: merge the `k` workers' partial
+/// instances of every group into one, `(k − 1) · Σ_parts instances · c_mrg`.
+/// Zero with one worker.
+pub fn compaction_secs(deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
+    let extra = ingest_workers(deployment, facts) - 1.0;
+    extra
+        * priced_parts(deployment, facts)
+            .map(|(config, instances, _)| instances * config.merge_cpu_secs)
+            .sum::<f64>()
+}
+
+/// Bytes a compaction holds while it runs: the closed window's `k` partial
+/// copies, `k · Σ_parts instances · m` (one window's ingest memory per
+/// worker, times `k`). The compacted result takes the storage slot the oldest
+/// window frees, so it is not counted again. Zero with one worker.
+pub fn compaction_bytes(deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
+    let workers = ingest_workers(deployment, facts);
+    if workers <= 1.0 {
+        return 0.0;
+    }
+    workers * ingest(deployment, facts).memory_bytes / open_window_count(deployment)
+}
+
+/// One firing's chain on its own cores, ms: the newest window's compaction,
+/// then the query (merge, then estimate). With elastic CPU this is the
+/// firing's latency.
+pub fn chain_ms(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
+    1000.0 * compaction_secs(deployment, facts) + query_latency_ms(raqe, deployment, facts)
+}
+
 pub fn score(
     raqes: &[Raqe],
     deployments: &[Deployment],
