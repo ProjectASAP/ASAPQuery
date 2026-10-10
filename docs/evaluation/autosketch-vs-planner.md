@@ -658,46 +658,108 @@ latency SLA (§5). Decided 2026-10-08.
   case where this does not hold. The result to report is the size of the gap and where it comes
   from, not that a gap exists.
 
-## 11. Results (synthetic mixed set, 2026-10-08)
+## 11. Results (synthetic, 2026-10-10: Hydra candidates and roll-ups)
 
-Absolute costs by use; latency is the plan's batch latency. AutoSketch's
-latency is 1011 ms in every workload. Results, figures and summaries are in
-sketch-bench #138, `rqe-optimizer/results/autosketch-vs-asap-synthetic/`
-(version 1) and `…-synthetic-sla/` (version 2).
+Absolute costs by use; latency is a plan's batch latency. Results, figures and
+the full analysis are in sketch-bench #203,
+`rqe-optimizer/results/autosketch-vs-asap-hydra/`.
 
-**Version 1** (CPU only, vCPU; Fargate in $/hour):
+**What changed since the 2026-10-08 run (sketch-bench #138)**
+- **Roll-ups (#190).** ASAP may serve a coarse RQE from a finer deployment by
+  merging its groups. A fourth method, **ASAP (no roll-ups)**, is the same
+  MILP with each RQE limited to its own grouping: the ablation.
+- **Hydra (#193 design; #195–#202).** hydra-hll, hydra-univmon-cardinality
+  and hydra-kll grids are candidates for ASAP and PerQuery. Their accuracy is
+  measured on datasets with the eval's own label schemas, held to the worst
+  error over the covered groups and the worst over N and seeds. Their cost
+  rows come from those datasets. AutoSketch keeps skipping Hydra.
+- **Template sets.** **Classic** is the earlier 10 templates. **All** adds a
+  multi-grouping set (#196): templates 11–17 on two metrics, `http` (region ×
+  service × endpoint × status) and `flows` (dst_subnet × dst_port × proto).
+  These are distinct counts and p99s over several groupings of one stream, in
+  the style of anomaly detection. Some RQEs cover only groups holding ≥ 1% or
+  ≥ 5% of the records. Every RQE is held to the worse of its smallest and
+  largest covered group (sketch-bench#189).
+- **Inputs.** KLL memory is asap_sketchlib's real allocation (#192), and the
+  cost table is re-measured.
 
-| Workload | RQEs | ASAP cheapest (latency) | PerQuery cheapest (latency) | AutoSketch | ASAP at 1011 ms | PerQuery at 1011 ms |
-|---|---|---|---|---|---|---|
-| mixed | 50 | 3.32 (12.1 s) | 9.55 (3.84 s) | 3410 | 5.12 | 12.0 |
-| mixed, Fargate | 50 | 0.220 $/h (2.94 s) | 0.720 $/h (2.97 s) | 163 $/h | 0.284 $/h | 0.813 $/h |
-| mixed, r = 8 | 92 | 3.39 (2.94 s) | 16.7 (3.84 s) | 4089 | 5.15 | 19.3 |
-| mixed, m = 8 | 400 | 26.5 (12.1 s) | 76.4 (3.84 s) | 27,280 | 41.0 | 96.2 |
-| mixed, m = 16 | 800 | 53.1 (12.1 s) | 153 (3.84 s) | 54,560 | 81.9 | 192 |
+**Version 1**, the cheapest plan (CPU only in vCPU; Fargate in $/hour).
+AutoSketch's latency is 1015 ms in every workload.
 
-The tightest feasible bound is 92 ms in every workload; there ASAP costs
-41.6 vCPU and PerQuery 66.6 (mixed). ASAP's frontier is below PerQuery's at
-every latency, and both are two to three orders of magnitude below
-AutoSketch.
+| Workload | RQEs | ASAP (latency) | ASAP, no roll-ups | PerQuery (latency) | AutoSketch | ASAP at 1015 ms | PerQuery at 1015 ms |
+|---|---|---|---|---|---|---|---|
+| mixed | 50 | 3.54 (13.4 s) | 3.54 | 10.5 (3.33 s) | 3,720 | 5.67 | 13.5 |
+| mixed, Fargate | 50 | 0.230 $/h | 0.230 | 0.752 $/h | 176 $/h | 0.307 | 0.864 |
+| mixed, m = 16 | 800 | 56.6 (13.4 s) | 56.6 | 168 (3.33 s) | 59,450 | 90.8 | 215 |
+| multi-grouping | 104 | 3.79 (13.4 s) | 3.94 | 11.3 (3.33 s) | 3,720 | 5.93 | 14.2 |
+| multi-grouping, Fargate | 104 | 0.245 $/h | 0.257 | 0.799 $/h | 176 $/h | 0.322 | 0.910 |
+| multi-grouping, r = 8 | 200 | 3.94 (2.68 s) | 4.08 | 19.9 (3.33 s) | 4,460 | 5.98 | 23.1 |
+| multi-grouping, m = 8 | 832 | 30.4 (13.4 s) | 31.5 | 90.3 (3.33 s) | 29,780 | 47.4 | 114 |
+| multi-grouping, m = 16 | 1664 | 60.7 (13.4 s) | 63.0 | 181 (3.33 s) | 59,560 | 94.9 | 228 |
 
-**Version 2** (CPU only, vCPU; AutoSketch meets only the 3 s and 10 s SLAs):
+**Version 2**, cost at a batch-latency SLA (CPU only, vCPU). AutoSketch meets
+only the 3 s and 10 s SLAs. On the multi-grouping set, the per-(service,
+endpoint) queries make 490 ms the tightest feasible bound, so the 100 and
+300 ms SLAs have no plan.
 
-| Workload | SLA | ASAP | PerQuery | AutoSketch |
+| Workload | SLA | ASAP | ASAP, no roll-ups | PerQuery | AutoSketch |
+|---|---|---|---|---|---|
+| mixed | 100 ms | 36.7 | 36.7 | 64.5 | 3,720 (misses) |
+| mixed | 1 s | 5.67 | 5.67 | 13.5 | 3,720 (misses) |
+| mixed | 3 s | 3.60 | 3.60 | 10.8 | 3,720 |
+| mixed, m = 16 | 100 ms | 588 | 588 | 1,030 | 59,450 (misses) |
+| mixed, m = 16 | 3 s | 57.6 | 57.6 | 173 | 59,450 |
+| multi-grouping | 1 s | 5.93 | 6.07 | 14.2 | 3,720 (misses) |
+| multi-grouping | 3 s | 3.85 | 4.00 | 11.6 | 3,720 |
+| multi-grouping, m = 16 | 1 s | 94.9 | 97.2 | 228 | 59,560 (misses) |
+| multi-grouping, m = 16 | 3 s | 61.7 | 64.0 | 186 | 59,560 |
+
+**Roll-ups help ASAP only a little.**
+- On the multi-grouping set, ASAP serves 40% of RQEs from a finer deployment
+  (42 of 104, and the same share at r = 8, m = 8, m = 16). That halves its
+  deployments, from 30 to 14 (480 to 224 at m = 16).
+- But cost drops only 3.3–3.6% under CPU weights and 4.4–4.8% under Fargate,
+  and by the same amount at every frontier point and SLA.
+- The deployments roll-ups remove are small: HLL and DDSketch at coarse
+  groupings. Cost is dominated by ingest and storage at the finest groupings,
+  which every plan needs anyway.
+- ASAP's ~3× advantage over PerQuery comes from sharing deployments across
+  RQEs at the same grouping.
+- On classic, roll-ups never apply, because every stream has one grouping.
+
+**Hydra is never chosen.**
+- Hydra grids are eligible for many RQEs, but neither ASAP nor PerQuery
+  picks one in any workload, weight setting, bound or SLA.
+- A Hydra insert fans out to every label subset in every row: 1.9 µs per
+  record on `flows` and 5.1 µs on `http`, against 3.85 ns for a per-group HLL.
+  One grid is therefore 8–11 vCPU of ingest, against ASAP's 0.05–1.9 vCPU for
+  the whole stream.
+- The closest case is flows under Fargate weights, where a Hydra-only plan
+  costs 1.8× ASAP's while using 4.4× less memory.
+- A check on real traces (Alibaba 2022, Google 2011) agrees. Hydra meets
+  0.05 only for groups holding ≥ 1–5% of the records. Per-group sketches that
+  grow with n use less memory than a grid at the W those groups need.
+- hydra-univmon-cardinality saturates (about 100% error at N ≥ 1e6).
+- **Decision (per §9): Hydra is not implemented in ASAPQuery.**
+
+**Planning time** (AutoSketch: search plus its measured benchmark, i.e.
+approxbench accuracy runs at 1e8 items):
+
+| Workload | RQEs | ASAP | PerQuery | AutoSketch |
 |---|---|---|---|---|
-| mixed | 100 ms | 34.5 | 59.2 | 3410 (misses) |
-| mixed | 1 s | 5.12 | 12.0 | 3410 (misses) |
-| mixed | 3 s | 3.32 | 9.74 | 3410 |
-| mixed, m = 16 | 100 ms | 553 | 947 | 54,560 (misses) |
-| mixed, m = 16 | 3 s | 53.2 | 156 | 54,560 |
+| mixed | 50 | 0.72 s | 0.64 s | 0.002 s + 212 s |
+| mixed, m = 16 | 800 | 13.7 s | 11.4 s | 0.035 s + 3,394 s |
+| multi-grouping | 104 | 1.05 s | 0.83 s | 0.004 s + 481 s |
+| multi-grouping, m = 16 | 1664 | 18.1 s | 13.9 s | 0.069 s + 7,702 s |
 
-**Planning time** (AutoSketch: search + measured benchmark, 8 distinct probes
-per metric of 20–37 s each):
-
-| RQEs | ASAP | PerQuery | AutoSketch |
-|---|---|---|---|
-| 50 | 0.76 s | 0.65 s | 0.002 s + 212 s |
-| 400 | 6.8 s | 5.6 s | 0.015 s + 1697 s |
-| 800 | 14.7 s | 11.7 s | 0.031 s + 3394 s |
+**Caveats.**
+- The cost model charges a per-group sketch its insert only, not routing a
+  sample to its group's sketch (about 100 ns per record per deployment on
+  real traces). Adding it doesn't change the Hydra conclusion: ASAP's flows
+  ingest would be about 1.3 vCPU against a grid's 8.2.
+- Template 12 groups by (dst_subnet, proto). Its (dst_subnet, dst_port)
+  grouping has 1e6 groups and took about 49 s per firing, which put every
+  plan's batch latency above the largest SLA.
 
 The trace workloads (Alibaba, Google, with 6h and 24h windows, ASAPQuery
 #812) are still to be rerun on this model.
