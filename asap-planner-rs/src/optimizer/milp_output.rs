@@ -48,6 +48,15 @@ pub enum MilpOutputError {
     InvalidDdsAlpha { alpha: f64 },
     #[error("query {0:?} is served by two deployments; a query string can name only one")]
     QueryOnTwoDeployments(String),
+    #[error(
+        "query {query:?} is grouped by {raqe:?} but served by a deployment grouped by \
+         {deployment:?}: a roll-up, which the engine can't read yet"
+    )]
+    RollupUnsupported {
+        query: String,
+        raqe: Vec<String>,
+        deployment: Vec<String>,
+    },
     #[error(transparent)]
     Generator(#[from] ControllerError),
 }
@@ -84,6 +93,21 @@ pub fn plan_to_planner_output(
     solution: &MilpSolution,
 ) -> Result<PlannerOutput, MilpOutputError> {
     reject_unwritable_queries(config)?;
+    // sketch-bench lets a deployment serve a RAQE grouped by a subset of its
+    // grouping (a roll-up, sketch-bench#190). The engine reads a deployment
+    // only at its own grouping, and `aggregation_config` takes the labels
+    // from the first RAQE served, so refuse a roll-up rather than write
+    // configs at the wrong grouping.
+    for (raqe, planned) in workload.raqes.iter().zip(&solution.raqes) {
+        let deployment = &solution.deployments[planned.deployment].deployment;
+        if raqe.grouping_labels != deployment.grouping_labels {
+            return Err(MilpOutputError::RollupUnsupported {
+                query: raqe.id.clone(),
+                raqe: raqe.grouping_labels.iter().cloned().collect(),
+                deployment: deployment.grouping_labels.iter().cloned().collect(),
+            });
+        }
+    }
 
     let item_of = |raqe: usize| &workload.items[workload.raqe_items[raqe]];
     // Each item once per deployment, however many occurrences it has.
@@ -139,7 +163,8 @@ pub fn plan_to_planner_output(
 }
 
 /// `items` are the optimizer items of the Raqes `deployment` serves; they
-/// share its capability and grouping, so the first one decides the labels.
+/// share its capability and grouping (`plan_to_planner_output` refuses
+/// roll-ups), so the first one decides the labels.
 fn aggregation_config(
     deployment: &Deployment,
     items: &[&OptimizerItem],
@@ -624,6 +649,26 @@ mod tests {
             .unwrap();
         assert!(
             matches!(err, MilpOutputError::UndeployableVariant { ref variant, .. } if variant == "hydra-kll")
+        );
+    }
+
+    #[test]
+    fn rollup_is_refused() {
+        // A deployment by (instance, job) serving a query by (job): the
+        // engine would build the aggregation at the query's grouping.
+        let query = "sum by (job) (http_requests_total)";
+        let (config, workload, mut solution) = plan(&group(query, 0.99));
+        solution.deployments[0]
+            .deployment
+            .grouping_labels
+            .insert("instance".into());
+        let err = plan_to_planner_output(&config, &workload, &solution)
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&err, MilpOutputError::RollupUnsupported { query: q, raqe, deployment }
+                if q.contains(query) && raqe == &["job"] && deployment == &["instance", "job"]),
+            "{err}"
         );
     }
 
