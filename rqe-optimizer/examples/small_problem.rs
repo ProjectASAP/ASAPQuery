@@ -205,6 +205,19 @@ fn raqes() -> Vec<Raqe> {
             latency_sla_ms: None,
             topk_k: None,
         },
+        // Shares KLL with the per-endpoint p99s by rolling up.
+        Raqe {
+            id: "latency_p99_1h_by_service".to_string(),
+            capability: Capability::Quantile,
+            lookback_ms: 3_600_000,
+            interval_ms: 60_000,
+            metric: duration(),
+            spatial_filter: String::new(),
+            grouping_labels: s.clone(),
+            accuracy_sla: 0.05,
+            latency_sla_ms: None,
+            topk_k: None,
+        },
         Raqe {
             id: "latency_p99_1d".to_string(),
             capability: Capability::Quantile,
@@ -503,8 +516,17 @@ fn main() {
             .zip(&solution.raqes)
             .zip(&solution.plan_cost.query_latency_ms)
         {
+            let served_by = &solution.deployments[planned.deployment].deployment;
+            let roll_up = if served_by.grouping_labels == raqe.grouping_labels {
+                String::new()
+            } else {
+                format!(
+                    " rolls up {:?} -> {:?}",
+                    served_by.grouping_labels, raqe.grouping_labels
+                )
+            };
             println!(
-                "  {} -> deployment {} merged_instances={} query_latency={latency:.3e} ms",
+                "  {} -> deployment {} merged_instances={} query_latency={latency:.3e} ms{roll_up}",
                 raqe.id, planned.deployment, planned.merged_instance_count,
             );
         }

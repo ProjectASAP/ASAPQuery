@@ -1,10 +1,11 @@
 //! v1 brute-force solver for the RAQE -> sketch-deployment mapping problem.
-//! `docs/rqe_sketch_deployment_v1.md` is the problem statement; doc comments
-//! cite its section numbers.
+//! `docs/rqe_sketch_deployment_v1.md` is the problem statement;
+//! `rqe_optimizer_candidates.md` and `rqe_optimizer_cost_model.md` hold the
+//! detailed planning design.
 //!
 //! Three independent stages, so an ILP can replace [`enumerate`] alone:
-//! [`candidates`] builds 𝒟 and per-RAQE eligibility (§3), [`enumerate`]
-//! searches (§4), [`analytical_cost_model`] scores (§5).
+//! [`candidates`] builds 𝒟 and per-RAQE eligibility, [`enumerate`] searches,
+//! and [`analytical_cost_model`] scores.
 //!
 //! Every number the algorithm uses is caller-supplied, except the query
 //! output size estimates in [`analytical_cost_model`].
@@ -32,10 +33,12 @@ pub(crate) fn secs(ms: Millis) -> f64 {
     ms as f64 / 1000.0
 }
 
-/// A group-by key, compared as a set (§3's `labels_i == labels_D` rule).
+/// A group-by key, compared as a set: a deployment serves a RAQE with the
+/// same one, or a subset of it when the family is
+/// [`mergeable_across_groups`](FamilyProperties::mergeable_across_groups).
 pub type LabelSet = BTreeSet<String>;
 
-/// What an RAQE's statistic needs (§1). A variant becomes a candidate only
+/// What an RAQE's statistic needs. A variant becomes a candidate only
 /// if it is in both `families()` and [`DEPLOYABLE_FAMILIES`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Capability {
@@ -209,6 +212,10 @@ pub fn heap_capacity(config: &AtomicCostEntry) -> Option<u64> {
 pub struct FamilyProperties {
     /// Windows fold into one. A family without it only serves `L == x`.
     pub mergeable_across_windows: bool,
+    /// Groups' states fold into their parent group's: a deployment grouped by
+    /// `G` serves a RAQE grouped by any subset of `G` (a roll-up). Not top-k,
+    /// whose heaps drop items that are in the parent's top k but no child's.
+    pub mergeable_across_groups: bool,
     /// One sketch of fixed size holds every group: the design doc's Shared +
     /// Fixed cell. Memory, merge and storage don't scale with `card(G)`.
     /// Exact accumulators are Shared + PerKey and `false` here, because the
@@ -232,6 +239,7 @@ pub fn family_properties(variant: &str) -> FamilyProperties {
     use AccuracyDirection::{HigherIsBetter, LowerIsBetter};
     let one_sketch_per_group = |metric, direction| FamilyProperties {
         mergeable_across_windows: true,
+        mergeable_across_groups: true,
         one_fixed_size_sketch_for_all_groups: false,
         needs_delta_set_key_tracker: false,
         exact: false,
@@ -243,7 +251,15 @@ pub fn family_properties(variant: &str) -> FamilyProperties {
         ..one_sketch_per_group("relative_error", LowerIsBetter)
     };
     match variant {
-        "exact-sum" | "exact-min" | "exact-max" | "exact-increase" => exact,
+        "exact-sum" | "exact-min" | "exact-max" => exact,
+        // Not rolled up: its merge joins two pieces of one counter in time
+        // (the later start after a drop is a reset), so merging two groups'
+        // counters is wrong. A coarse increase is the sum of per-series
+        // increases, which needs per-series state and a sum, not this merge.
+        "exact-increase" => FamilyProperties {
+            mergeable_across_groups: false,
+            ..exact
+        },
         KEY_TRACKER_FAMILY => FamilyProperties {
             accuracy: None,
             ..exact
@@ -253,9 +269,13 @@ pub fn family_properties(variant: &str) -> FamilyProperties {
         "dd" => one_sketch_per_group("mean_relative_value_error", LowerIsBetter),
         "cms-heap-topk-fastpath-vector2d"
         | "countsketch-heap-topk-fastpath-vector2d"
-        | "univmon-topk" => one_sketch_per_group("precision_at_k", HigherIsBetter),
+        | "univmon-topk" => FamilyProperties {
+            mergeable_across_groups: false,
+            ..one_sketch_per_group("precision_at_k", HigherIsBetter)
+        },
         "hydra-kll" => FamilyProperties {
             mergeable_across_windows: true,
+            mergeable_across_groups: false,
             one_fixed_size_sketch_for_all_groups: true,
             needs_delta_set_key_tracker: true,
             exact: false,
@@ -275,6 +295,7 @@ pub struct MetricFacts {
     pub scrape_interval_ms: Millis,
     /// `card(X)`: distinct value combinations of each label set `X` in use.
     /// Must include `labels` itself, whose cardinality is the series count.
+    /// A label set never has more groups than any superset of it.
     pub cardinality: BTreeMap<LabelSet, u64>,
     /// `(lo, hi)`: smallest and largest positive sample value, if known.
     /// Sizes DDSketch; without it, DDSketch keeps the measured memory.
@@ -365,13 +386,33 @@ pub fn validate_facts(raqes: &[Raqe], facts: &WorkloadFacts) -> Result<(), Vec<S
                 Some(_) => false,
             };
         }
-        if let (Some(&groups), Some(&series)) =
-            (cardinality.get(grouping), cardinality.get(all_labels))
-        {
-            if groups > series {
-                problems.insert(format!(
-                    "{metric}: {grouping:?} has {groups} groups but only {series} series"
-                ));
+    }
+    // Dropping labels never adds groups. A roll-up's merge count,
+    // `card(G_d) · L/x − card(G_r)`, relies on it, so it is checked between
+    // the label sets a plan can use: every RAQE grouping on the metric, and
+    // its full label set. A label set no RAQE groups by is never read.
+    let mut used: BTreeMap<&str, BTreeSet<&LabelSet>> = BTreeMap::new();
+    for raqe in raqes {
+        if let Some(metric_facts) = facts.get(&raqe.metric) {
+            used.entry(&raqe.metric)
+                .or_insert_with(|| BTreeSet::from([&metric_facts.labels]))
+                .insert(&raqe.grouping_labels);
+        }
+    }
+    for (metric, label_sets) in &used {
+        let cardinality = &facts[*metric].cardinality;
+        for coarse in label_sets {
+            for fine in label_sets {
+                if let (Some(&coarse_groups), Some(&fine_groups)) =
+                    (cardinality.get(*coarse), cardinality.get(*fine))
+                {
+                    if coarse.is_subset(fine) && coarse_groups > fine_groups {
+                        problems.insert(format!(
+                            "{metric}: {coarse:?} has {coarse_groups} groups but its superset \
+                             {fine:?} only {fine_groups}"
+                        ));
+                    }
+                }
             }
         }
     }
@@ -397,7 +438,7 @@ pub enum AccuracyDirection {
     HigherIsBetter,
 }
 
-/// One repeating query expression (§1).
+/// One repeating query expression.
 #[derive(Debug, Clone)]
 pub struct Raqe {
     pub id: String,
@@ -487,7 +528,7 @@ pub fn row_accuracy(config: &AtomicCostEntry) -> f64 {
     })
 }
 
-/// A candidate deployment (§3): one configuration, one grouped stream, and a
+/// A candidate deployment (`docs/rqe_optimizer_candidates.md`): one configuration, one grouped stream, and a
 /// sliding sketch window. Retention is an execution/storage concern, not an
 /// optimizer candidate dimension.
 #[derive(Debug, Clone, PartialEq)]
@@ -548,7 +589,7 @@ impl Deployment {
 /// A full mapping: one deployment index (into the `deployments` slice passed
 /// to `enumerate::brute_force`) per RAQE, aligned with the `raqes` slice's
 /// order. `z_{i,D} = 1 <=> mapping[i] == D`'s index; `u_D = 1 <=>` `D`'s
-/// index appears anywhere in `mapping` (§4) -- `y` is never stored
+/// index appears anywhere in `mapping` -- `y` is never stored
 /// separately, it's always derived from `mapping`.
 pub type Mapping = Vec<usize>;
 
@@ -650,6 +691,51 @@ pub(crate) mod test_support {
             window_ms,
             slide_ms,
             key_tracker: None,
+        }
+    }
+
+    pub fn label_set(names: &[&str]) -> LabelSet {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// 5 services × 10 endpoints, one series per endpoint, scraped every
+    /// second: the coarse and fine groupings of a roll-up.
+    pub fn service_endpoint_facts() -> WorkloadFacts {
+        let service = label_set(&["service"]);
+        let service_endpoint = label_set(&["service", "endpoint"]);
+        WorkloadFacts::from([(
+            METRIC.to_string(),
+            MetricFacts {
+                labels: service_endpoint.clone(),
+                scrape_interval_ms: 1_000,
+                cardinality: BTreeMap::from([(service, 5), (service_endpoint, 50)]),
+                value_range: None,
+                data_shape: BTreeMap::new(),
+            },
+        )])
+    }
+
+    /// A per-group KLL deployment by `grouping`, every per-instance cost 1.
+    pub fn kll_by(grouping: &[&str], window_ms: Millis) -> Deployment {
+        let base = deployment(1.0, 1.0, 1.0, 1.0, window_ms, window_ms);
+        Deployment {
+            capability: Capability::Quantile,
+            grouping_labels: label_set(grouping),
+            config: AtomicCostEntry {
+                sketch: "kll-percall".into(),
+                sketch_config: serde_json::json!({"params": {"k": 200}}),
+                accuracy_metric: metric_of("kll-percall"),
+                ..base.config
+            },
+            ..base
+        }
+    }
+
+    pub fn quantile_by(grouping: &[&str], lookback_ms: Millis, interval_ms: Millis) -> Raqe {
+        Raqe {
+            capability: Capability::Quantile,
+            grouping_labels: label_set(grouping),
+            ..raqe(lookback_ms, interval_ms)
         }
     }
 }
@@ -865,26 +951,73 @@ mod tests {
         );
     }
 
-    #[test]
-    fn rejects_more_groups_than_series() {
-        let facts = WorkloadFacts::from([(
+    /// Facts where `(service)` has more groups than its superset
+    /// `(service, endpoint)`, and `(pod)` has none at all.
+    fn inconsistent_facts() -> WorkloadFacts {
+        WorkloadFacts::from([(
             METRIC.to_string(),
             MetricFacts {
-                labels: labels(&["service", "endpoint"]),
+                labels: labels(&["service", "endpoint", "pod"]),
                 scrape_interval_ms: 15_000,
                 cardinality: BTreeMap::from([
                     (labels(&["service"]), 60),
                     (labels(&["service", "endpoint"]), 50),
+                    (labels(&["pod"]), 0),
+                    (labels(&["service", "endpoint", "pod"]), 30_000),
                 ]),
                 value_range: None,
                 data_shape: BTreeMap::new(),
             },
-        )]);
+        )])
+    }
+
+    /// Between two RAQE groupings, the subset may not have more groups.
+    #[test]
+    fn rejects_a_used_label_set_with_more_groups_than_a_used_superset() {
+        let grouped = |l: &[&str]| Raqe {
+            grouping_labels: labels(l),
+            ..raqe(60_000, 60_000)
+        };
+        assert_eq!(
+            validate_facts(
+                &[grouped(&["service"]), grouped(&["service", "endpoint"])],
+                &inconsistent_facts()
+            )
+            .unwrap_err(),
+            [format!(
+                "{METRIC}: {{\"service\"}} has 60 groups but its superset \
+                 {{\"endpoint\", \"service\"}} only 50"
+            )]
+        );
+    }
+
+    /// A RAQE grouping may not have more groups than the series.
+    #[test]
+    fn rejects_a_grouping_with_more_groups_than_series() {
+        let mut facts = inconsistent_facts();
+        let cardinality = &mut facts.get_mut(METRIC).unwrap().cardinality;
+        cardinality.insert(labels(&["service", "endpoint", "pod"]), 40);
         let r = Raqe {
             grouping_labels: labels(&["service"]),
             ..raqe(60_000, 60_000)
         };
-        let problems = validate_facts(&[r], &facts).unwrap_err();
-        assert!(problems[0].contains("60 groups but only 50 series"));
+        assert_eq!(
+            validate_facts(&[r], &facts).unwrap_err(),
+            [format!(
+                "{METRIC}: {{\"service\"}} has 60 groups but its superset \
+                 {{\"endpoint\", \"pod\", \"service\"}} only 40"
+            )]
+        );
+    }
+
+    /// Label sets no RAQE groups by are never read, so inconsistencies there
+    /// don't reject the workload.
+    #[test]
+    fn ignores_label_sets_no_raqe_uses() {
+        let r = Raqe {
+            grouping_labels: labels(&["service"]),
+            ..raqe(60_000, 60_000)
+        };
+        assert_eq!(validate_facts(&[r], &inconsistent_facts()), Ok(()));
     }
 }

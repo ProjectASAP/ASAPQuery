@@ -1,4 +1,4 @@
-//! Candidate generation and eligibility (§3).
+//! Candidate generation and eligibility (`docs/rqe_optimizer_candidates.md`).
 
 use crate::analytical_cost_model;
 use crate::{
@@ -60,8 +60,15 @@ fn measured_at_group_count(config: &AtomicCostEntry, groups: u64) -> bool {
 
 /// Windows and slides are multiples of the metric's scrape interval: anything
 /// finer only splits one scrape's samples.
+///
+/// Deployments are grouped by `grouping` and built from the families whose
+/// [`mergeable_across_groups`](crate::FamilyProperties::mergeable_across_groups)
+/// equals `mergeable_across_groups`. Their windows, slides and heaps come from
+/// `group`, the RAQEs they may serve.
 fn candidate_deployments(
     group: &[&Raqe],
+    grouping: &LabelSet,
+    mergeable_across_groups: bool,
     costs: &[AtomicCostEntry],
     metric_facts: &MetricFacts,
     allow_undeployable_families: bool,
@@ -89,6 +96,8 @@ fn candidate_deployments(
             capability
                 .candidate_families(allow_undeployable_families)
                 .any(|family| family == c.sketch)
+                && crate::family_properties(&c.sketch).mergeable_across_groups
+                    == mergeable_across_groups
         })
         .collect();
     let heap_rows = heap_rows_by_shape(&family_rows);
@@ -152,7 +161,7 @@ fn candidate_deployments(
                         capability,
                         metric: group[0].metric.clone(),
                         spatial_filter: group[0].spatial_filter.clone(),
-                        grouping_labels: group[0].grouping_labels.clone(),
+                        grouping_labels: grouping.clone(),
                         config: config.clone(),
                         window_ms,
                         slide_ms,
@@ -319,8 +328,34 @@ pub fn build_all_candidates_unpruned(
     }
     groups
         .iter()
-        .flat_map(|(&(_, metric, _, _), group)| {
-            candidate_deployments(group, costs, &facts[metric], allow_undeployable_families)
+        .flat_map(|(&(capability, metric, filter, grouping), exact_group)| {
+            // A family that rolls up may also serve RAQEs grouped by a subset,
+            // so its windows must suit theirs too.
+            let subset_group: Vec<&Raqe> = raqes
+                .iter()
+                .filter(|r| {
+                    r.capability == capability
+                        && r.metric == metric
+                        && r.spatial_filter == filter
+                        && r.grouping_labels.is_subset(grouping)
+                })
+                .collect();
+            [
+                (exact_group.as_slice(), false),
+                (subset_group.as_slice(), true),
+            ]
+            .into_iter()
+            .flat_map(|(group, mergeable_across_groups)| {
+                candidate_deployments(
+                    group,
+                    grouping,
+                    mergeable_across_groups,
+                    costs,
+                    &facts[metric],
+                    allow_undeployable_families,
+                )
+            })
+            .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -329,10 +364,12 @@ pub fn build_all_candidates_unpruned(
 /// mapping without making any modeled objective worse.
 ///
 /// This comparison is local to a (capability, metric, spatial_filter,
-/// grouping) group, where query output size is common. It compares ingest CPU
-/// and memory, then latency (merge and query CPU), merge memory and stored
-/// memory for each RAQE the dominated candidate can serve, all as the
-/// analytical cost model prices them: a sketch shared by all groups and a
+/// grouping) group. It compares ingest CPU and memory; compaction per window
+/// (it starts every chain) and per second (CPU-seconds and byte-seconds per
+/// slide, as cost by use bills it); then, for each RAQE the dominated
+/// candidate can serve, the query job's CPU (merge and query, its latency),
+/// its memory (merge accumulators and output) and stored memory. All are as
+/// the analytical cost model prices them: a sketch shared by all groups and a
 /// sketch per group don't scale alike with `card(G)`.
 pub fn prune_dominated_candidates(
     raqes: &[Raqe],
@@ -373,10 +410,12 @@ pub fn prune_dominated_candidates(
 
 /// One candidate's costs, computed once for every pairwise comparison.
 struct CandidateCosts {
-    /// Ingest CPU and memory.
-    ingest: [f64; 2],
-    /// Per RAQE: latency, merge memory and stored memory if the candidate
-    /// serves it, else `None`.
+    /// Per deployment: ingest CPU and memory; compaction CPU-seconds per
+    /// window (it starts every chain); and compaction CPU and byte-seconds
+    /// per second, as cost by use bills them every slide.
+    ingest: [f64; 5],
+    /// Per RAQE: latency, query memory (merge and output) and stored memory
+    /// if the candidate serves it, else `None`.
     per_raqe: Vec<Option<[f64; 3]>>,
 }
 
@@ -388,20 +427,30 @@ impl CandidateCosts {
         accuracy: &Accuracy,
     ) -> Self {
         let ingest = analytical_cost_model::ingest(candidate, facts);
+        let compaction_secs = analytical_cost_model::compaction_secs(candidate, facts);
+        let slide_secs = crate::secs(candidate.slide_ms);
         let per_raqe = raqes
             .iter()
             .map(|raqe| {
                 is_eligible(raqe, candidate, facts, accuracy).then(|| {
                     [
                         analytical_cost_model::query_latency_ms(raqe, candidate, facts),
-                        analytical_cost_model::merge(raqe, candidate, facts).memory_bytes,
+                        analytical_cost_model::merge(raqe, candidate, facts).memory_bytes
+                            + analytical_cost_model::query(raqe, candidate, facts).memory_bytes,
                         analytical_cost_model::storage_bytes(raqe, candidate, facts),
                     ]
                 })
             })
             .collect();
         Self {
-            ingest: [ingest.cpu_secs_per_sec, ingest.memory_bytes],
+            ingest: [
+                ingest.cpu_secs_per_sec,
+                ingest.memory_bytes,
+                compaction_secs,
+                compaction_secs / slide_secs,
+                analytical_cost_model::compaction_bytes(candidate, facts) * compaction_secs
+                    / slide_secs,
+            ],
             per_raqe,
         }
     }
@@ -502,7 +551,9 @@ pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &A
     r.capability == d.capability
         && r.metric == d.metric
         && r.spatial_filter == d.spatial_filter
-        && r.grouping_labels == d.grouping_labels
+        && (r.grouping_labels == d.grouping_labels
+            || (properties.mergeable_across_groups
+                && r.grouping_labels.is_subset(&d.grouping_labels)))
         && d.window_ms != 0
         && d.slide_ms != 0
         && d.window_ms.is_multiple_of(d.slide_ms)
@@ -889,6 +940,46 @@ mod tests {
     }
 
     #[test]
+    fn prunes_the_candidate_with_larger_query_output() {
+        // Two heaps that differ only in the `k` they answer: the larger one
+        // outputs 100 entries per group, not 32, at the same CPU.
+        let r = raqe("r", 60_000, 60_000);
+        let answering = |k: u64| {
+            let mut d = crate::test_support::deployment(1.0, 1.0, 1.0, 0.0, 60_000, 60_000);
+            d.config.sketch_config =
+                serde_json::json!({"params": {"heap": 1u64 << 40, "topk_k": k}});
+            d
+        };
+        let retained = prune_dominated_candidates(
+            &[r],
+            &facts(1, 1),
+            vec![answering(100), answering(32)],
+            &table_accuracy,
+        );
+        assert_eq!(retained, vec![answering(32)]);
+    }
+
+    #[test]
+    fn retains_candidate_with_cheaper_compaction() {
+        // A direct RAQE never merges at query time, so merge CPU shows up only
+        // in compaction. `cheap_ingest` ingests on 2 workers (ρ = 2) and
+        // compacts for 100 s; `cheap_compaction` ingests on 3 (ρ = 3) and
+        // compacts for 2 s. Neither is no worse on every cost.
+        let r = raqe("r", 60_000, 60_000);
+        let cheap_ingest = crate::test_support::deployment(1.0, 1.0, 100.0, 1.0, 60_000, 60_000);
+        let cheap_compaction = crate::test_support::deployment(1.0, 1.5, 1.0, 1.0, 60_000, 60_000);
+
+        let retained = prune_dominated_candidates(
+            &[r],
+            &facts(1, 2),
+            vec![cheap_ingest.clone(), cheap_compaction.clone()],
+            &table_accuracy,
+        );
+
+        assert_eq!(retained, vec![cheap_ingest, cheap_compaction]);
+    }
+
+    #[test]
     fn retains_candidate_with_lower_query_latency() {
         let r = raqe("r", 60_000, 60_000);
         let cost = cost();
@@ -1036,5 +1127,109 @@ mod tests {
             true,
             &table_accuracy,
         );
+    }
+
+    #[test]
+    fn a_mergeable_deployment_serves_a_coarser_grouping_only() {
+        use crate::test_support::{kll_by, quantile_by, service_endpoint_facts};
+        let facts = service_endpoint_facts();
+        let serves = |d: &Deployment, grouping: &[&str]| {
+            is_eligible(
+                &quantile_by(grouping, 60_000, 60_000),
+                d,
+                &facts,
+                &table_accuracy,
+            )
+        };
+        let by_endpoint = kll_by(&["service", "endpoint"], 60_000);
+        assert!(serves(&by_endpoint, &["service", "endpoint"]));
+        assert!(serves(&by_endpoint, &["service"]));
+        assert!(serves(&by_endpoint, &[]));
+        assert!(!serves(&by_endpoint, &["pod"]));
+        assert!(!serves(
+            &kll_by(&["service"], 60_000),
+            &["service", "endpoint"]
+        ));
+    }
+
+    #[test]
+    fn a_rate_serves_only_its_own_grouping() {
+        use crate::test_support::{kll_by, quantile_by, service_endpoint_facts};
+        let facts = service_endpoint_facts();
+        let by_endpoint = kll_by(&["service", "endpoint"], 60_000);
+        let increase_by_endpoint = Deployment {
+            capability: Capability::RateOrIncrease,
+            config: AtomicCostEntry {
+                sketch: "exact-increase".into(),
+                accuracy_metric: metric_of("exact-increase"),
+                ..by_endpoint.config.clone()
+            },
+            ..by_endpoint
+        };
+        let rate_by = |grouping: &[&str]| Raqe {
+            capability: Capability::RateOrIncrease,
+            ..quantile_by(grouping, 60_000, 60_000)
+        };
+        let serves = |r: &Raqe| is_eligible(r, &increase_by_endpoint, &facts, &table_accuracy);
+        assert!(serves(&rate_by(&["service", "endpoint"])));
+        assert!(!serves(&rate_by(&["service"])));
+    }
+
+    #[test]
+    fn top_k_serves_only_its_own_grouping() {
+        use crate::test_support::{deployment, label_set, service_endpoint_facts};
+        let facts = service_endpoint_facts();
+        let by_endpoint = Deployment {
+            grouping_labels: label_set(&["service", "endpoint"]),
+            ..deployment(1.0, 1.0, 1.0, 1.0, 60_000, 60_000)
+        };
+        let serves = |grouping: &[&str]| {
+            let r = Raqe {
+                grouping_labels: label_set(grouping),
+                ..raqe("r", 60_000, 60_000)
+            };
+            is_eligible(&r, &by_endpoint, &facts, &table_accuracy)
+        };
+        assert!(serves(&["service", "endpoint"]));
+        assert!(!serves(&["service"]));
+    }
+
+    /// A 1 h fine RAQE alone never yields a 90 min window. Its 90 min coarse
+    /// sibling does, but only for the family that can serve both.
+    #[test]
+    fn fine_candidates_take_windows_from_coarser_raqes() {
+        use crate::test_support::{label_set, quantile_by, service_endpoint_facts};
+        const HOUR: Millis = 3_600_000;
+        const NINETY_MINUTES: Millis = 5_400_000;
+        let fine = ["service", "endpoint"];
+        let topk_by = |grouping: &[&str], lookback_ms| Raqe {
+            grouping_labels: label_set(grouping),
+            ..raqe("r", lookback_ms, lookback_ms)
+        };
+        let raqes = [
+            quantile_by(&fine, HOUR, HOUR),
+            quantile_by(&["service"], NINETY_MINUTES, NINETY_MINUTES),
+            topk_by(&fine, HOUR),
+            topk_by(&["service"], NINETY_MINUTES),
+        ];
+        let kll = AtomicCostEntry {
+            sketch: "kll-percall".into(),
+            sketch_config: serde_json::json!({"params": {"k": 200}}),
+            accuracy_metric: metric_of("kll-percall"),
+            ..cost()
+        };
+        let candidates =
+            build_all_candidates_unpruned(&raqes, &[kll, cost()], &service_endpoint_facts(), false);
+        let fine_windows = |sketch: &str| {
+            candidates
+                .iter()
+                .filter(|d| d.config.sketch == sketch && d.grouping_labels == label_set(&fine))
+                .map(|d| d.window_ms)
+                .collect::<BTreeSet<_>>()
+        };
+        assert!(fine_windows("kll-percall").contains(&NINETY_MINUTES));
+        let topk_windows = fine_windows("cms-heap-topk-fastpath-vector2d");
+        assert!(topk_windows.contains(&HOUR));
+        assert!(!topk_windows.contains(&NINETY_MINUTES));
     }
 }

@@ -1,4 +1,4 @@
-//! Analytical scoring built from measured per-operation costs (§5).
+//! Analytical scoring built from measured per-operation costs (`docs/rqe_optimizer_cost_model.md`).
 //!
 //! Costs split into four phases, each with CPU and memory:
 //! - ingest: inserts into open windows, and their state;
@@ -11,12 +11,17 @@
 //! Measured costs are per instance. A deployment holds `card(G)` instances
 //! per window, or one if its family keeps [one fixed-size sketch for all
 //! groups](crate::FamilyProperties::one_fixed_size_sketch_for_all_groups).
+//! A RAQE grouped by `G_r`, a subset of the deployment's `G_d`, is read by
+//! merging each `G_r` group's instances into one (a roll-up), so merge and
+//! query are priced at `G_r`, ingest and storage at `G_d`.
 //! Exact accumulators hold many groups in one instance, but the export
 //! divides their memory and merge cost by the group count, so `card(G) ×`
 //! prices them correctly too. A [key tracker](crate::Deployment::key_tracker)
 //! is priced like an exact accumulator on the same windows, in every phase.
 
-use crate::{secs, AtomicCostEntry, Capability, Deployment, Mapping, Millis, Raqe, WorkloadFacts};
+use crate::{
+    secs, AtomicCostEntry, Capability, Deployment, LabelSet, Mapping, Millis, Raqe, WorkloadFacts,
+};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const BYTES_PER_GIB: f64 = (1u64 << 30) as f64;
@@ -73,9 +78,9 @@ impl PlanCost {
     }
 }
 
-/// `card(G)`: cardinality of `G`, the number of groups.
-fn group_count(deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
-    facts[&deployment.metric].cardinality[&deployment.grouping_labels] as f64
+/// `card(grouping)` on `deployment`'s metric: the number of groups.
+fn group_count(deployment: &Deployment, grouping: &LabelSet, facts: &WorkloadFacts) -> f64 {
+    facts[&deployment.metric].cardinality[grouping] as f64
 }
 
 /// The sketch and its key tracker, if any, each with its instances per
@@ -98,7 +103,7 @@ fn priced_parts<'a>(
         "{}: key tracker present iff the family needs one, or the plan is mispriced",
         deployment.config.sketch
     );
-    let groups = group_count(deployment, facts);
+    let groups = group_count(deployment, &deployment.grouping_labels, facts);
     let sketch_instances = if properties.one_fixed_size_sketch_for_all_groups {
         1.0
     } else {
@@ -113,8 +118,8 @@ fn priced_parts<'a>(
 }
 
 /// `m`: memory of one `config` instance (`deployment`'s sketch or its key
-/// tracker) holding `span_ms` of one group's samples: a
-/// window `x`, or the lookback `L` for a query's merge accumulator.
+/// tracker) holding `span_ms` of one `grouping` group's samples: a window `x`
+/// of `G_d`, or the lookback `L` of `G_r` for a query's merge accumulator.
 /// DDSketch on a metric with a known value range holds one store (values are
 /// positive) of [`dd_bucket_count`] buckets, capped by the values it holds,
 /// `λ · span / card(G)`, as `dd_footprint` caps them by count. The range is the metric's, so this is
@@ -124,14 +129,15 @@ pub(crate) fn instance_memory_bytes(
     config: &AtomicCostEntry,
     deployment: &Deployment,
     facts: &WorkloadFacts,
+    grouping: &LabelSet,
     span_ms: Millis,
 ) -> f64 {
     let metric = &facts[&deployment.metric];
     let alpha = config.sketch_config["params"]["alpha"].as_f64();
     match (config.sketch.as_str(), metric.value_range, alpha) {
         ("dd", Some((lo, hi)), Some(alpha)) => {
-            let values =
-                metric.arrival_rate_per_sec() * secs(span_ms) / group_count(deployment, facts);
+            let values = metric.arrival_rate_per_sec() * secs(span_ms)
+                / group_count(deployment, grouping, facts);
             dd_bucket_count(lo, hi, alpha).min(values.ceil().max(1.0)) * DD_BYTES_PER_BUCKET
         }
         _ => config.mem_bytes_per_instance,
@@ -158,6 +164,36 @@ fn merged_window_count(raqe: &Raqe, deployment: &Deployment) -> f64 {
         .expect("only eligible pairs are costed") as f64
 }
 
+/// States one query of `raqe` ends with on `part`: one per `G_r` group, or
+/// one for a sketch shared by all groups.
+fn answered_instances(
+    raqe: &Raqe,
+    deployment: &Deployment,
+    facts: &WorkloadFacts,
+    part: Part,
+) -> f64 {
+    if part == Part::Sketch && deployment.properties().one_fixed_size_sketch_for_all_groups {
+        1.0
+    } else {
+        group_count(deployment, &raqe.grouping_labels, facts)
+    }
+}
+
+/// Merges one query of `raqe` does on `part`, which holds `sketch_instances`
+/// per window. Each folds two states into one, so it is the states read,
+/// `sketch_instances · L/x`, less the `answered_instances` left. Without a
+/// roll-up, `card(G) · (L/x − 1)`.
+fn merge_count(
+    raqe: &Raqe,
+    deployment: &Deployment,
+    facts: &WorkloadFacts,
+    sketch_instances: f64,
+    part: Part,
+) -> f64 {
+    sketch_instances * merged_window_count(raqe, deployment)
+        - answered_instances(raqe, deployment, facts, part)
+}
+
 /// Per part: CPU `λ · (x/y) · c_ins`; memory `instances · m · (x/y)`.
 pub(crate) fn ingest(deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
     let open_windows = open_window_count(deployment);
@@ -167,28 +203,39 @@ pub(crate) fn ingest(deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCos
         cost += PhaseCost {
             cpu_secs_per_sec: arrival_rate * open_windows * config.insert_cpu_secs,
             memory_bytes: instances
-                * instance_memory_bytes(config, deployment, facts, deployment.window_ms)
+                * instance_memory_bytes(
+                    config,
+                    deployment,
+                    facts,
+                    &deployment.grouping_labels,
+                    deployment.window_ms,
+                )
                 * open_windows,
         };
     }
     cost
 }
 
-/// Per part: CPU `instances · (L/x − 1) · c_mrg / T`; memory `instances · m`,
-/// every merged accumulator held at once, each holding the whole lookback. A
-/// direct query (`L == x`) merges nothing and costs neither.
+/// Per part: CPU [`merge_count`]` · c_mrg / T`; memory `answered_instances ·
+/// m`, every merged accumulator held at once, each holding the whole lookback.
+/// A direct query (`L == x`) without a roll-up merges nothing and costs neither.
 pub(crate) fn merge(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
-    let merges_per_instance = merged_window_count(raqe, deployment) - 1.0;
-    if merges_per_instance == 0.0 {
-        return PhaseCost::default();
-    }
     let mut cost = PhaseCost::default();
-    for (config, instances, _) in priced_parts(deployment, facts) {
+    for (config, sketch_instances, part) in priced_parts(deployment, facts) {
+        let merges = merge_count(raqe, deployment, facts, sketch_instances, part);
+        if merges == 0.0 {
+            continue;
+        }
         cost += PhaseCost {
-            cpu_secs_per_sec: instances * merges_per_instance * config.merge_cpu_secs
-                / secs(raqe.interval_ms),
-            memory_bytes: instances
-                * instance_memory_bytes(config, deployment, facts, raqe.lookback_ms),
+            cpu_secs_per_sec: merges * config.merge_cpu_secs / secs(raqe.interval_ms),
+            memory_bytes: answered_instances(raqe, deployment, facts, part)
+                * instance_memory_bytes(
+                    config,
+                    deployment,
+                    facts,
+                    &raqe.grouping_labels,
+                    raqe.lookback_ms,
+                ),
         };
     }
     cost
@@ -206,10 +253,10 @@ fn query_cpu_secs(raqe: &Raqe, config: &AtomicCostEntry, part: Part) -> f64 {
     }
 }
 
-/// CPU `card(G) · Σ c_qry / T`, one probe per group of each part; memory
-/// `card(G) ·` output bytes per group.
+/// CPU `card(G_r) · Σ c_qry / T`, one probe per answered group of each part;
+/// memory `card(G_r) ·` output bytes per group.
 pub(crate) fn query(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> PhaseCost {
-    let groups = group_count(deployment, facts);
+    let groups = group_count(deployment, &raqe.grouping_labels, facts);
     let output_bytes_per_group = match raqe.capability {
         Capability::TopKByValue | Capability::TopKByCount => {
             crate::answered_k(&deployment.config) as f64 * OUTPUT_BYTES_PER_TOPK_ENTRY
@@ -234,22 +281,28 @@ pub(crate) fn storage_bytes(raqe: &Raqe, deployment: &Deployment, facts: &Worklo
     priced_parts(deployment, facts)
         .map(|(config, instances, _)| {
             instances
-                * instance_memory_bytes(config, deployment, facts, deployment.window_ms)
+                * instance_memory_bytes(
+                    config,
+                    deployment,
+                    facts,
+                    &deployment.grouping_labels,
+                    deployment.window_ms,
+                )
                 * closed_windows
         })
         .sum()
 }
 
 /// Serial CPU time of one query, in ms, summed over parts:
-/// `card(G) · c_qry + instances · (L/x − 1) · c_mrg`.
+/// `card(G_r) · c_qry + `[`merge_count`]` · c_mrg`.
 pub(crate) fn query_latency_ms(raqe: &Raqe, deployment: &Deployment, facts: &WorkloadFacts) -> f64 {
-    let groups = group_count(deployment, facts);
-    let merges_per_instance = merged_window_count(raqe, deployment) - 1.0;
+    let groups = group_count(deployment, &raqe.grouping_labels, facts);
     1000.0
         * priced_parts(deployment, facts)
-            .map(|(config, instances, part)| {
+            .map(|(config, sketch_instances, part)| {
                 groups * query_cpu_secs(raqe, config, part)
-                    + instances * merges_per_instance * config.merge_cpu_secs
+                    + merge_count(raqe, deployment, facts, sketch_instances, part)
+                        * config.merge_cpu_secs
             })
             .sum::<f64>()
 }
@@ -365,7 +418,7 @@ mod tests {
 
         let window = |d: &Deployment| d.window_ms;
         assert_eq!(
-            instance_memory_bytes(&dd.config, &dd, &ranged, window(&dd)),
+            instance_memory_bytes(&dd.config, &dd, &ranged, &dd.grouping_labels, window(&dd)),
             80.0
         ); // 10 buckets × 8 B
         assert_eq!(ingest(&dd, &ranged).memory_bytes, 80.0);
@@ -390,12 +443,24 @@ mod tests {
 
         // No range, or not DDSketch: the measured size.
         assert_eq!(
-            instance_memory_bytes(&dd.config, &dd, &facts(1, 1), window(&dd)),
+            instance_memory_bytes(
+                &dd.config,
+                &dd,
+                &facts(1, 1),
+                &dd.grouping_labels,
+                window(&dd)
+            ),
             1_000.0
         );
         let cms = deployment(1_000.0, 0.0, 0.0, 0.0, 60_000, 60_000);
         assert_eq!(
-            instance_memory_bytes(&cms.config, &cms, &ranged, window(&cms)),
+            instance_memory_bytes(
+                &cms.config,
+                &cms,
+                &ranged,
+                &cms.grouping_labels,
+                window(&cms)
+            ),
             1_000.0
         );
     }
@@ -514,5 +579,59 @@ mod tests {
         let mut deployment = deployment(100.0, 1.0, 1.0, 1.0, 60_000, 60_000);
         deployment.config.sketch = "hydra-kll".into();
         ingest(&deployment, &facts(1, 1));
+    }
+
+    /// p99 by service from KLL by (service, endpoint), every per-instance
+    /// cost 1: each query reads 50 fine states per window and leaves 5.
+    #[test]
+    fn a_roll_up_merges_every_fine_window_into_its_coarse_group() {
+        use crate::test_support::{kll_by, quantile_by, service_endpoint_facts};
+        let facts = service_endpoint_facts();
+        let by_endpoint = kll_by(&["service", "endpoint"], 60_000);
+        let hourly = quantile_by(&["service"], 3_600_000, 60_000);
+        let merges = 50.0 * 60.0 - 5.0;
+        assert_eq!(
+            merge(&hourly, &by_endpoint, &facts),
+            PhaseCost {
+                cpu_secs_per_sec: merges / 60.0,
+                memory_bytes: 5.0,
+            }
+        );
+        assert_eq!(
+            query(&hourly, &by_endpoint, &facts).cpu_secs_per_sec,
+            5.0 / 60.0
+        );
+        assert_eq!(
+            query_latency_ms(&hourly, &by_endpoint, &facts),
+            1000.0 * (5.0 + merges)
+        );
+        // A direct query still folds each service's 10 endpoints into one.
+        let direct = quantile_by(&["service"], 60_000, 60_000);
+        assert_eq!(
+            merge(&direct, &by_endpoint, &facts).cpu_secs_per_sec,
+            45.0 / 60.0
+        );
+    }
+
+    /// A roll-up's DDSketch accumulator holds a coarse group's values: 50
+    /// samples/s over a 2 s lookback into 5 services is 20 values each, past
+    /// the 10-bucket range, so 80 B per service, not the 16 B two per-endpoint
+    /// values would need.
+    #[test]
+    fn a_dd_roll_up_sizes_its_accumulator_at_the_coarse_grouping() {
+        use crate::test_support::{kll_by, quantile_by, service_endpoint_facts};
+        let mut facts = service_endpoint_facts();
+        facts
+            .get_mut(crate::test_support::METRIC)
+            .unwrap()
+            .value_range = Some((1.0, 1000.0));
+        let mut by_endpoint = kll_by(&["service", "endpoint"], 1_000);
+        by_endpoint.config.sketch = "dd".into();
+        by_endpoint.config.sketch_config = serde_json::json!({"params": {"alpha": 1.0 / 3.0}});
+        let by_service = quantile_by(&["service"], 2_000, 2_000);
+        assert_eq!(
+            merge(&by_service, &by_endpoint, &facts).memory_bytes,
+            5.0 * 80.0
+        );
     }
 }

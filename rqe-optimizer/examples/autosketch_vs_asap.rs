@@ -13,7 +13,7 @@
 //! ```
 //!
 //! Every plan is priced by use (`usage::usage_cost`, sketch-bench
-//! `docs/rqe_sketch_deployment_v1.md`, "Cost by use and batch latency"):
+//! `docs/rqe_optimizer_cost_model.md`, "Cost by use and batch latency"):
 //! `w_cpu · AUC(CPU) + w_mem · AUC(memory)`, CPU elastic, at each weight
 //! setting of #777 §4 (CPU only; Fargate's per-vCPU and per-GB prices). A
 //! batch's latency is its longest chain (the newest window's compaction,
@@ -670,7 +670,7 @@ fn frontier_bounds(lo: f64, hi: f64, n: usize, extra: f64) -> Vec<f64> {
 }
 
 /// Every method's plan for `w`, priced by use at each weight setting, with
-/// its latency (`docs/rqe_sketch_deployment_v1.md`, "Cost by use and batch
+/// its latency (`docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
 /// latency"): version 1 (no latency constraint; frontier) in `results`,
 /// version 2 (each SLA of `slas`) in `sla_results`.
 fn evaluate(w: &Workload, runs: usize, weights: &[(&str, f64, f64)], slas: &[f64]) -> Value {

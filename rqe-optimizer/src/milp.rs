@@ -1,6 +1,7 @@
-//! MILP solver for one scalarized RAQE deployment optimization (§4).
+//! MILP solver for one scalarized RAQE deployment optimization.
 //!
-//! The model is documented in `docs/rqe_sketch_deployment_v1.md`. It avoids
+//! Candidate construction is documented in `docs/rqe_optimizer_candidates.md`
+//! and the cost model in `docs/rqe_optimizer_cost_model.md`. It avoids
 //! enumerating the Cartesian product of eligible deployment choices.
 
 use crate::analytical_cost_model::{self, score, PhaseCost, PlanCost, BYTES_PER_GIB};
@@ -68,6 +69,8 @@ pub struct PlannedRaqe {
     /// Index into [`MilpSolution::deployments`].
     pub deployment: usize,
     /// `n = L/x` windows merged per query; 1 means Direct, more means Merge.
+    /// A roll-up (the RAQE's grouping differs from its deployment's) also
+    /// merges each coarse group's fine groups, even when `n = 1`.
     pub merged_instance_count: u64,
 }
 
@@ -242,7 +245,7 @@ pub struct UsageSolution {
 }
 
 /// Minimize the cost billed by use, `w_cpu · AUC(CPU) + w_mem · AUC(memory)`
-/// (per vCPU, per GiB; `docs/rqe_sketch_deployment_v1.md`, "Cost by use and
+/// (per vCPU, per GiB; `docs/rqe_optimizer_cost_model.md`, "Cost by use and
 /// batch latency"). The latency is reported. `latency_bound_ms`, when given,
 /// rules out every pair whose chain (`analytical_cost_model::chain_ms`)
 /// exceeds it, so sweeping it traces the cost–latency Pareto frontier; it is

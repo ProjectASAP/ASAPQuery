@@ -7,7 +7,7 @@ template set per metric, 50 · m RQEs). One accuracy level, p95: 95% in each
 family's own metric (rank, relative value and relative error at most 0.05;
 top-k precision at least 0.95).
 
-**Cost model: cost by use** (sketch-bench `docs/rqe_sketch_deployment_v1.md`,
+**Cost model: cost by use** (sketch-bench `docs/rqe_optimizer_cost_model.md`,
 "Cost by use and batch latency", #188): `w_cpu · AUC(CPU) + w_mem ·
 AUC(memory)`, CPU elastic, at two weight settings (CPU only, in vCPU; AWS
 Fargate's per-vCPU and per-GB prices, in $/hour). CPU covers ingest (on

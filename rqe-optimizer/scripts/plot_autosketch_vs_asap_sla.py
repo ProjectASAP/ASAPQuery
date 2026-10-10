@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Plot version 2 (a batch latency SLA) of the AutoSketch vs. ASAP evaluation
-(ProjectASAP/ASAPQuery#777; sketch-bench docs/rqe_sketch_deployment_v1.md,
+(ProjectASAP/ASAPQuery#777; sketch-bench docs/rqe_optimizer_cost_model.md,
 "Cost by use and batch latency") from the `sla_results` of
 `autosketch_vs_asap synthetic` runs.
 

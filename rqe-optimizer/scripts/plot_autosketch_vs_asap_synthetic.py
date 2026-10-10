@@ -2,7 +2,7 @@
 """Plot the synthetic AutoSketch vs. ASAP evaluation (ProjectASAP/ASAPQuery#777,
 section 7) from the JSON files of `autosketch_vs_asap synthetic`.
 
-Every plan is priced by use (sketch-bench docs/rqe_sketch_deployment_v1.md,
+Every plan is priced by use (sketch-bench docs/rqe_optimizer_cost_model.md,
 "Cost by use and batch latency"): w_cpu * AUC(CPU) + w_mem * AUC(memory), with
 CPU elastic, and its query latency (the longest chain) is reported. ASAP and
 PerQuery-CostAware are solved without a bound and for a sweep of latency

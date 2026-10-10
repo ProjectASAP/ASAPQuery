@@ -1,7 +1,7 @@
 # Synthetic mixed set: AutoSketch vs. ASAP under a batch latency SLA (version 2)
 
 Version 2 of the evaluation in ProjectASAP/ASAPQuery#777, with the cost model
-of sketch-bench `docs/rqe_sketch_deployment_v1.md`, "Cost by use and batch
+of sketch-bench `docs/rqe_optimizer_cost_model.md`, "Cost by use and batch
 latency":
 
 - **Cost by use:** `w_cpu · AUC(CPU) + w_mem · AUC(memory)`, CPU elastic, for

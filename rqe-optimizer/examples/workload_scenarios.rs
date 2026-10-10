@@ -4,10 +4,11 @@
 //! one workload solved with the MILP and printed as the deployments it runs
 //! and the queries each one serves.
 //!
-//! A deployment serves only queries with its own capability, metric and
-//! grouping (`candidates::is_eligible`), so the mixed-grouping and
-//! mixed-type sweeps cost the same as solving each part alone. They are
-//! baselines for when the model shares across groupings.
+//! A deployment serves only queries with its own capability and metric, and
+//! its own grouping or, for a family that merges across groups, a subset of
+//! it (a roll-up; `candidates::is_eligible`). So the mixed-type sweeps cost
+//! the same as solving each part alone, while the mixed-grouping sweeps can
+//! share one fine deployment across groupings.
 //!
 //! Run:
 //! `cargo run --release -p rqe-optimizer --example workload_scenarios --

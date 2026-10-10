@@ -213,12 +213,16 @@ fn curve_error_at(
     }
 }
 
-/// KLL and the heap top-k sketches lose accuracy when merged (#131): a
-/// merged answer reads their merge curve. The other sketches merge exactly.
+/// KLL, the heap top-k sketches and UnivMon lose accuracy when merged
+/// (#131): a merged answer reads their merge curve. UnivMon's counters add
+/// exactly, but each level's heavy-hitter heap is rebuilt from the union of
+/// the two heaps, so a key heavy only in the union is lost. The other
+/// sketches merge exactly.
 fn merges_lossily(sketch: &str) -> bool {
     matches!(
         sketch,
         "kll-percall"
+            | "univmon-cardinality"
             | "cms-heap-topk-fastpath-vector2d"
             | "countsketch-heap-topk-fastpath-vector2d"
             | "univmon-topk"
@@ -362,8 +366,9 @@ impl SaturationCurves {
         // accuracy.
         let mut lossy: BTreeMap<&str, bool> = BTreeMap::new();
         for (sketch, point) in points.values() {
-            // Heap top-k merges as one sketch when sized m · k, so only KLL
-            // needs the curves.
+            // Heap top-k merges as one sketch when sized m · k, so only the
+            // non-heap lossy sketches (KLL, univmon-cardinality, univmon-topk)
+            // need the curves.
             if is_candidate(sketch) && merges_lossily(sketch) && !has_heap(sketch) {
                 *lossy.entry(sketch).or_default() |= !point.merged.is_empty();
             }
@@ -446,7 +451,9 @@ impl SaturationCurves {
             return table_accuracy(raqe, deployment).map(|v| (v, AccuracySource::Measured));
         }
         let metric_facts = &facts[&deployment.metric];
-        let grouping = &deployment.grouping_labels;
+        // The answered groups: the RAQE's, coarser than the deployment's on a
+        // roll-up, whose answer is the merged coarse group's.
+        let grouping = &raqe.grouping_labels;
         let shape = metric_facts.data_shape.get(grouping)?;
         let k = raqe.topk_k();
         let base = with_topk_k(&config_params(&deployment.config)?, TOPK_K);
@@ -464,7 +471,12 @@ impl SaturationCurves {
         let covered = items_per_group(metric_facts, grouping, raqe.lookback_ms);
         let (_, direction) = accuracy_key(&deployment.config.sketch);
         let merges = if merges_lossily(&deployment.config.sketch) {
-            let merges = deployment.query_instance_count(raqe.lookback_ms)?;
+            // A roll-up also merges each coarse group's children, the average
+            // `card(G_d) / card(G_r)` of them.
+            // ponytail: average fan-out; the largest group's is sketch-bench#189.
+            let fan_out = metric_facts.cardinality[&deployment.grouping_labels]
+                .div_ceil(metric_facts.cardinality[grouping]);
+            let merges = deployment.query_instance_count(raqe.lookback_ms)? * fan_out;
             // A heap of m · k merged from m windows reads as one sketch: the
             // merged heaps are taken to still hold the true top k.
             match (
@@ -821,6 +833,16 @@ mod tests {
 
     const TOPK: &str = "cms-heap-topk-fastpath-vector2d";
 
+    /// UnivMon's heaps are rebuilt on merge, so its cardinality reads merge
+    /// curves like KLL; HLL's register max and DDSketch's bucket sums are
+    /// exact.
+    #[test]
+    fn univmon_cardinality_merges_lossily_hll_and_dd_do_not() {
+        assert!(merges_lossily("univmon-cardinality"));
+        assert!(!merges_lossily("hll"));
+        assert!(!merges_lossily("dd"));
+    }
+
     /// Top-k rows=3 cols=1024 at θ ∈ {1.0, 1.2}, K ∈ {1e3, 1e5}. Precision
     /// falls with N; θ = 1.0 is worse, and K = 1e5 never saturates. Merged
     /// from 4 shards it loses 0.02 more, from 16 shards 0.1.
@@ -982,6 +1004,45 @@ mod tests {
         assert!((at(1_000_000).unwrap() - 0.8).abs() < 1e-12);
         // 100 windows: past the largest measured count, unmeasured.
         assert_eq!(at(100_000), None);
+    }
+
+    /// p99 by service from KLL by (service, endpoint) reads the coarse
+    /// group's shape and items, merged from its 10 endpoints.
+    #[test]
+    fn a_kll_roll_up_reads_the_merge_curve_at_fan_out_times_windows() {
+        use crate::test_support::{kll_by, label_set, quantile_by, service_endpoint_facts};
+        let curve = |error: f64| vec![(1e3, error, 0.0), (1e4, error + 0.01, 0.0)];
+        let kll = GridPoint {
+            params: parse_config("k=200"),
+            shape: MeasuredShape::Pareto { tail_index: 2.0 },
+            error_metric: "mean_rank_err".into(),
+            n_sat: None,
+            curve: curve(0.01),
+            merged: BTreeMap::from([(4, curve(0.02)), (16, curve(0.05))]),
+        };
+        let curves = SaturationCurves {
+            points_by_sketch: BTreeMap::from([("kll-percall".to_string(), vec![kll])]),
+        };
+        let mut facts = service_endpoint_facts();
+        let metric = facts.get_mut(METRIC).unwrap();
+        // Only the coarse grouping's shape is on the grid.
+        metric
+            .data_shape
+            .insert(label_set(&["service"]), shape(1.0, 1.0));
+        metric.data_shape.insert(
+            label_set(&["service", "endpoint"]),
+            DataShape {
+                tail_index: 9.0,
+                ..shape(1.0, 1.0)
+            },
+        );
+        // 10 series per service × 100 s = 1e3 items, in one window.
+        let by_service = quantile_by(&["service"], 100_000, 100_000);
+        let accuracy =
+            |grouping: &[&str]| curves.accuracy(&by_service, &kll_by(grouping, 100_000), &facts);
+        assert_eq!(accuracy(&["service"]), Some(0.01));
+        // 10 merged endpoints sit between 4 and 16 shards: the worse, 16.
+        assert_eq!(accuracy(&["service", "endpoint"]), Some(0.05));
     }
 
     /// A heap of m · k merged from m windows reads as one sketch: the plain

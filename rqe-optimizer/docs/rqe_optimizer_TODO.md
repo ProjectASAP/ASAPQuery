@@ -10,14 +10,16 @@ implemented, what is next, and what is intentionally deferred.
 - Workload facts are per metric: full label set, scrape interval, and
   cardinality per label set. The arrival rate is derived from them, and
   `validate_facts` reports bad facts up front.
-- Eligibility enforces capability, metric, spatial filter, grouping, alignment, and the RQE's
+- Eligibility enforces capability, metric, spatial filter, grouping (equal,
+  or a subset for a family that merges across groups: a roll-up), alignment, and the RQE's
   measured accuracy, by each family's own metric, against the RAQE's SLA.
 - Candidate generation uses legal windows and subset gcds of query intervals,
   keeping only multiples of the scrape interval. A deployment may serve
   multiple compatible RQEs.
-- Candidate dominance safely removes a deployment only when another covers all
-  of its RQEs with no worse instance memory, ingest CPU and memory, per-RQE
-  latency, or stored memory.
+- Candidate dominance safely removes a deployment only when another at the
+  same grouping covers all of its RQEs with no worse ingest CPU and memory,
+  compaction (per window and per slide), per-RQE query-job CPU, query memory
+  (merge and output), or stored memory.
 - The analytical model scores four phases, each with CPU and memory: ingest
   (open windows), merge, query, and storage (closed windows, `(S − x)/y + 1`
   for the longest lookback), plus per-RQE latency.
@@ -53,12 +55,12 @@ implemented, what is next, and what is intentionally deferred.
 ## Explicitly deferred
 
 - Query-result sharing across RQEs.
-- Real query concurrency; memory assumes every query runs at once.
+- Real query concurrency in the snapshot objective, whose memory assumes every
+  query runs at once (cost by use holds query memory only while it runs).
 - Bursty load; CPU is a mean over time.
-- A per-family instance shape for families holding every group in one
-  fixed-size instance (HydraKLL, sketch-bench#142).
-- Top-k `k` other than the benchmark's 32, and key labels `K`.
+- Admitting Hydra.
+- Key labels `K` (PerGroup + PerKey sizes).
 - RQE churn, replanning, and migration cost.
-- Precomputed rollups; v1 merges selected base instances at query time.
+- Temporal pre-merging; v1 merges selected base instances at query time.
 - A policy for choosing one mapping from the reported Pareto frontier.
 - Additional capabilities beyond frequency, quantile, cardinality, and top-k.
