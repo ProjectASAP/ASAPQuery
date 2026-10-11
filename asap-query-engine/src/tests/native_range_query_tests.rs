@@ -737,10 +737,9 @@ mod tests {
         let empty_keys_result = empty_keys_engine
             .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
             .expect("an empty keys read must not fail native execution");
-        assert!(
-            empty_keys_result.is_some(),
-            "empty keys may produce no samples, but values data must still pass the read stage"
-        );
+        let (_, empty_keys_result) =
+            empty_keys_result.expect("values data must pass the read stage when keys are empty");
+        assert!(matrix_values(empty_keys_result).is_empty());
 
         let empty_values_engine = create_range_engine_dual_input_with_windows(
             "event_frequency",

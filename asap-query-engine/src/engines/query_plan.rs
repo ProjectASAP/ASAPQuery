@@ -14,14 +14,14 @@ pub(crate) struct NodeId(usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StoreReadStrategy {
-    WindowGrid,
+    WindowGrid(WindowCompositionSpec),
     SlidingExactCover(WindowCompositionSpec),
 }
 
 impl StoreReadStrategy {
     fn for_window(window: &WindowCompositionSpec) -> Self {
         match window.window_type {
-            WindowType::Tumbling => Self::WindowGrid,
+            WindowType::Tumbling => Self::WindowGrid(window.clone()),
             WindowType::Sliding => Self::SlidingExactCover(window.clone()),
         }
     }
@@ -170,24 +170,26 @@ impl QueryPlan {
             StoreReadStrategy::for_window(&estimate_spec.values.window),
         );
         let values = Self::push_prepare_buckets(&mut nodes, values_read);
-        let keys = match (&context.base.store_plan.keys_query, &estimate_spec.keys) {
-            (None, KeyInputSpec::FromValues) => None,
-            (Some(query), KeyInputSpec::Separate { window, .. }) => {
-                let read = Self::push_read(
-                    &mut nodes,
-                    query,
-                    StoreReadRole::Keys,
-                    StoreReadStrategy::for_window(window),
-                );
-                Some(Self::push_prepare_buckets(&mut nodes, read))
-            }
-            (Some(_), KeyInputSpec::FromValues) => {
-                return Err("Query plan has a keys read without a keys specification".to_string());
-            }
-            (None, KeyInputSpec::Separate { .. }) => {
-                return Err("Query plan has a keys specification without a keys read".to_string());
-            }
-        };
+        let keys = context
+            .base
+            .store_plan
+            .keys_query
+            .as_ref()
+            .map(|query| match &estimate_spec.keys {
+                KeyInputSpec::Separate { window, .. } => {
+                    let read = Self::push_read(
+                        &mut nodes,
+                        query,
+                        StoreReadRole::Keys,
+                        StoreReadStrategy::for_window(window),
+                    );
+                    Ok(Self::push_prepare_buckets(&mut nodes, read))
+                }
+                KeyInputSpec::FromValues => {
+                    Err("Query plan has a keys read without a keys specification".to_string())
+                }
+            })
+            .transpose()?;
         let resolved = Self::push(&mut nodes, QueryPlanNode::ResolveKeys { values, keys });
         let mut root = Self::push(
             &mut nodes,
@@ -281,6 +283,69 @@ impl QueryPlan {
                     ));
                 }
             }
+            if let QueryPlanNode::Estimate {
+                input,
+                statistic,
+                spec,
+                ..
+            } = node
+            {
+                spec.validate_for(*statistic)?;
+                self.validate_estimate_reads(*input, spec)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_estimate_reads(
+        &self,
+        resolved: NodeId,
+        spec: &RangeEstimateSpec,
+    ) -> Result<(), String> {
+        let QueryPlanNode::ResolveKeys { values, keys } = &self.nodes[resolved.0] else {
+            return Err(format!(
+                "Estimate input n{} must resolve value and key reads",
+                resolved.0
+            ));
+        };
+        self.validate_read_window(*values, StoreReadRole::Values, &spec.values.window)?;
+        match (&spec.keys, keys) {
+            (KeyInputSpec::FromValues, None) => Ok(()),
+            (KeyInputSpec::Separate { window, .. }, Some(keys)) => {
+                self.validate_read_window(*keys, StoreReadRole::Keys, window)
+            }
+            (KeyInputSpec::FromValues, Some(_)) => {
+                Err("Self-keyed estimate must not have a separate key read".to_string())
+            }
+            (KeyInputSpec::Separate { .. }, None) => {
+                Err("Separate-key estimate must have a key read".to_string())
+            }
+        }
+    }
+
+    fn validate_read_window(
+        &self,
+        prepared: NodeId,
+        expected_role: StoreReadRole,
+        expected_window: &WindowCompositionSpec,
+    ) -> Result<(), String> {
+        let QueryPlanNode::PrepareBuckets { input } = &self.nodes[prepared.0] else {
+            return Err(format!("Read n{} must prepare buckets", prepared.0));
+        };
+        let QueryPlanNode::StoreRead { role, strategy, .. } = &self.nodes[input.0] else {
+            return Err(format!(
+                "Prepared node n{} must read from the store",
+                prepared.0
+            ));
+        };
+        if *role != expected_role {
+            return Err(format!("Store read n{} has the wrong role", input.0));
+        }
+        if strategy != &StoreReadStrategy::for_window(expected_window) {
+            return Err(format!(
+                "Store read n{} window does not match its estimate",
+                input.0
+            ));
         }
         Ok(())
     }
@@ -397,7 +462,13 @@ impl QueryPlan {
 
     fn describe_read_strategy(strategy: &StoreReadStrategy) -> String {
         match strategy {
-            StoreReadStrategy::WindowGrid => "WindowGrid".to_string(),
+            StoreReadStrategy::WindowGrid(window) => format!(
+                "WindowGrid(lookback={}ms, window={}ms, step={}ms, {})",
+                window.lookback_ms,
+                window.window_size_ms,
+                window.bucket_step_ms,
+                Self::describe_timestamps(&window.output_timestamps),
+            ),
             StoreReadStrategy::SlidingExactCover(window) => format!(
                 "SlidingExactCover(lookback={}ms, window={}ms, step={}ms, {})",
                 window.lookback_ms,
@@ -464,6 +535,27 @@ impl RangeEstimateSpec {
                 &context.base.aggregated_labels,
             ),
         })
+    }
+
+    fn validate_for(&self, statistic: Statistic) -> Result<(), String> {
+        let window = &self.values.window;
+        if window.window_type != WindowType::Sliding
+            || window.bucket_step_ms == 0
+            || !matches!(statistic, Statistic::Increase | Statistic::Rate)
+        {
+            return Ok(());
+        }
+        if let Some(&timestamp) = window
+            .output_timestamps
+            .iter()
+            .find(|&&timestamp| !timestamp.is_multiple_of(window.bucket_step_ms))
+        {
+            return Err(format!(
+                "Exact Prometheus counter bounds are unavailable for off-grid Sliding timestamp {} (grid interval {}ms)",
+                timestamp, window.bucket_step_ms
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -546,7 +638,6 @@ mod tests {
             },
             output_timestamps: vec![1_000],
             query_range_ms: 1_000,
-            buckets_per_step: 1,
             lookback_bucket_count: 1,
             tumbling_window_ms: 1_000,
             window_type: WindowType::Tumbling,
@@ -588,6 +679,8 @@ mod tests {
         assert!(explanation.contains("role=Keys"));
         assert!(explanation
             .contains("n2 StoreRead(SlidingExactCover(lookback=2000ms, window=1000ms, step=500ms"));
+        assert!(explanation
+            .contains("n0 StoreRead(WindowGrid(lookback=1000ms, window=1000ms, step=1000ms"));
         assert!(explanation.ends_with("root: n5"));
     }
 
@@ -697,6 +790,90 @@ mod tests {
         assert_eq!(error, "Separate keys query is missing its lookback");
     }
 
+    #[test]
+    fn rejects_off_grid_sliding_counter_plans() {
+        let mut context = context();
+        context.window_type = WindowType::Sliding;
+        context.output_timestamps = vec![1_500];
+        context.base.metadata.statistic_to_compute = Statistic::Rate;
+
+        let error = QueryPlan::compile_range(
+            &context,
+            PlanOptions {
+                limit_topk: false,
+                format_output: false,
+            },
+            &[],
+        )
+        .expect_err("off-grid Sliding counters must not compile");
+
+        assert!(error.contains("off-grid Sliding timestamp 1500"));
+    }
+
+    #[test]
+    fn direct_execution_rejects_an_off_grid_sliding_counter_plan() {
+        let mut context = context();
+        context.window_type = WindowType::Sliding;
+        let mut plan = QueryPlan::compile_range(
+            &context,
+            PlanOptions {
+                limit_topk: false,
+                format_output: false,
+            },
+            &[],
+        )
+        .unwrap();
+        let QueryPlanNode::Estimate {
+            statistic, spec, ..
+        } = &mut plan.nodes[3]
+        else {
+            panic!("fourth node must estimate the resolved value read");
+        };
+        *statistic = Statistic::Rate;
+        spec.values.window.output_timestamps = Arc::from([1_500]);
+
+        let error = plan
+            .execute(&RecordingRuntime(RefCell::new(Vec::new())))
+            .expect_err("direct execution must validate its plan");
+        assert!(matches!(
+            error,
+            QueryPlanExecutionError::InvalidPlan(message)
+                if message.contains("off-grid Sliding timestamp 1500")
+        ));
+    }
+
+    #[test]
+    fn rejects_a_read_window_that_does_not_match_its_estimate() {
+        let mut context = context();
+        context.window_type = WindowType::Sliding;
+        let mut plan = QueryPlan::compile_range(
+            &context,
+            PlanOptions {
+                limit_topk: false,
+                format_output: false,
+            },
+            &[],
+        )
+        .unwrap();
+
+        let QueryPlanNode::StoreRead { strategy, .. } = &mut plan.nodes[0] else {
+            panic!("first node must read values");
+        };
+        *strategy = StoreReadStrategy::WindowGrid(WindowCompositionSpec {
+            output_timestamps: Arc::from([1_000]),
+            lookback_ms: 1_000,
+            window_type: WindowType::Tumbling,
+            window_size_ms: 1_000,
+            bucket_step_ms: 1_000,
+        });
+
+        assert_eq!(
+            plan.validate()
+                .expect_err("mismatched plan must fail validation"),
+            "Store read n0 window does not match its estimate"
+        );
+    }
+
     struct PlanOwnedReadRuntime(RefCell<Vec<(StoreReadRole, StoreReadStrategy)>>);
 
     impl QueryPlanRuntime for PlanOwnedReadRuntime {
@@ -759,7 +936,16 @@ mod tests {
                         bucket_step_ms: 1_000,
                     }),
                 ),
-                (StoreReadRole::Keys, StoreReadStrategy::WindowGrid),
+                (
+                    StoreReadRole::Keys,
+                    StoreReadStrategy::WindowGrid(WindowCompositionSpec {
+                        output_timestamps: Arc::from([1_000]),
+                        lookback_ms: 3_000,
+                        window_type: WindowType::Tumbling,
+                        window_size_ms: 1_000,
+                        bucket_step_ms: 1_000,
+                    }),
+                ),
             ]
         );
     }
@@ -857,7 +1043,13 @@ mod tests {
                         end_timestamp: 1,
                     },
                     role: StoreReadRole::Values,
-                    strategy: StoreReadStrategy::WindowGrid,
+                    strategy: StoreReadStrategy::WindowGrid(WindowCompositionSpec {
+                        output_timestamps: Arc::from([1]),
+                        lookback_ms: 1,
+                        window_type: WindowType::Tumbling,
+                        window_size_ms: 1,
+                        bucket_step_ms: 1,
+                    }),
                 },
                 QueryPlanNode::PrepareBuckets { input: NodeId(0) },
             ],

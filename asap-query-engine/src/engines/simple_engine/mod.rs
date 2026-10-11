@@ -143,8 +143,6 @@ pub struct RangeQueryExecutionContext {
     pub output_timestamps: Vec<u64>,
     /// Exact range-vector duration used for extrapolation, in milliseconds.
     pub query_range_ms: u64,
-    /// Number of buckets per step (step / tumbling_window)
-    pub buckets_per_step: usize,
     /// Number of buckets in lookback window
     pub lookback_bucket_count: usize,
     /// Tumbling window size in ms
@@ -242,7 +240,7 @@ impl NativePlanRuntime<'_> {
             ));
         }
         let data = match strategy {
-            StoreReadStrategy::WindowGrid => self
+            StoreReadStrategy::WindowGrid(_) => self
                 .engine
                 .execute_store_query(query)
                 .map_err(QueryExecutionError::Native)?,
@@ -911,10 +909,6 @@ impl SimpleEngine {
             },
             output_timestamps: vec![query_time],
             query_range_ms: lookback_ms,
-            // Placeholder: no real "step" for a single instant point. Only
-            // feeds a debug-log string today -- not type-enforced, recheck
-            // before using it for anything functional.
-            buckets_per_step: 1,
             lookback_bucket_count,
             tumbling_window_ms,
             window_type,
@@ -2743,30 +2737,8 @@ impl SimpleEngine {
             "Range query estimate parameters"
         );
 
-        // Whether the value accumulator's own get_keys() is even consulted
-        // depends on the query SHAPE (dual- vs single-population), not on a
-        // per-group fallback — mirrors collect_all_results exactly:
-        //   - dual-population (KeysSource::PerStep below, separate
-        //     keys_query present): always expand via the keys aggregation's
-        //     per-step merge (#583). The value accumulator's own get_keys()
-        //     is never consulted, even if the value accumulator itself
-        //     happens to be self-keyed (e.g. a CountMinSketchWithHeap value
-        //     paired with a DeltaSetAggregator keys aggregation is a real
-        //     capability-matched config, see sql.rs). Otherwise a
-        //     self-keyed value accumulator's own (possibly different,
-        //     window-to-window-shifting) keys would silently override the
-        //     keys aggregation's expansion. See #587 review.
-        //   - single-population (KeysSource::Fixed below, no separate
-        //     keys_query): the value accumulator's own get_keys() takes
-        //     priority whenever present (#584, self-keyed accumulators like
-        //     top-k), evaluated AFTER merging the window's value buckets
-        //     (a top-k heap's keys can depend on that window's data),
-        //     falling back to the store-level group key otherwise.
-        // Named alias purely to keep declarations under
-        // clippy::type_complexity -- used by both KeysSource::PerStep's own
-        // bucket_map field below and the step-major `groups` binding
-        // further down (#581 stage E.4 review: previously duplicated as the
-        // raw type at the PerStep site instead of using this alias).
+        // Separate keys always determine expansion; self-keyed values use
+        // their own keys after the value window is merged.
         type GroupBucketMap = BucketMap;
 
         enum KeysSource<'a> {
@@ -2778,13 +2750,8 @@ impl SimpleEngine {
             },
         }
 
-        // Resolve, for every value group, which groups exist at all (a
-        // one-time operation — see design doc) and where their expansion
-        // keys come from. A group with keys data but no value data
-        // anywhere in the queried range is skipped with a warning instead
-        // of failing the whole range query (#583; previously
-        // `.ok_or_else(...)?` here hard-failed everything for one missing
-        // group). See #582 review for collect_results_separate_keys parity.
+        // Groups with keys but no values are skipped rather than failing the
+        // complete range query.
         let groups: Vec<(GroupBucketMap, KeysSource)> = match (&spec.keys, &keys_raw_data) {
             (
                 KeyInputSpec::Separate {
@@ -2809,7 +2776,7 @@ impl SimpleEngine {
                             warn!(
                                 "Range query: group {:?} has keys data but no value data \
                              anywhere in the queried range — skipping this group instead \
-                             of failing the whole query (#583)",
+                             of failing the whole query",
                                 group_key
                             );
                             None
@@ -2817,12 +2784,8 @@ impl SimpleEngine {
                     },
                 )
                 .collect(),
-            // #584/#587: keep every group, including group_key=None — that's
-            // exactly where a self-keyed single-population accumulator
-            // (e.g. top-k) is typically stored. An empty fallback list here
-            // is fine; the per-step loop below tries the value
-            // accumulator's own get_keys() first and only falls back to
-            // this list.
+            // Keep every group because self-keyed accumulators may use a
+            // None outer group key.
             (KeyInputSpec::FromValues, None) => all_data
                 .iter()
                 .map(|(group_key, bucket_map)| {
@@ -2841,23 +2804,7 @@ impl SimpleEngine {
             }
         };
 
-        // Precompute per-group setup (bucket_map, keys_source) once, before
-        // the step-major loop below revisits every group at every output
-        // timestamp -- doing this per-step instead would repeat identical
-        // work once per timestamp instead of once per group.
-        //
-        // Memory tradeoff vs. the old group-major shape (#581 stage E.2
-        // review): every group's value bucket_map is now held simultaneously
-        // for the whole step-major loop's duration, instead of one group's
-        // bucket_map at a time (built, used, dropped, next group). Keys-side
-        // PerStep bucket maps were already built eagerly for every group
-        // beforehand (see `groups` above), so this brings the value side in
-        // line with that, not a new pattern -- but for a range query over a
-        // very high-cardinality label set this is a real (if likely modest)
-        // increase in peak memory. Inherent to step-major: ranking a
-        // timestamp's candidates needs every group's bucket_map available at
-        // that timestamp, so they can't be built lazily one group at a time
-        // anymore.
+        // Step-major ranking needs every group's buckets at each timestamp.
         for (bucket_map, keys_source) in &groups {
             debug!(
                 "Group with {} start-timestamps ({} keys start-timestamps)",
@@ -2875,12 +2822,7 @@ impl SimpleEngine {
         // non-topk query pays zero cost for this.
         let row_label_order = &spec.row_label_order;
 
-        // Step-major: for each output timestamp, visit every group, not the
-        // other way around. Required for topk correctness -- ranking a
-        // timestamp's candidates means seeing every group's value at that
-        // timestamp before truncating, which a group-major loop can't do
-        // (#581). One loop shape for topk and non-topk alike, rather than
-        // maintaining two.
+        // Visit every group at each timestamp so ranking sees all candidates.
         for &current_time in value_window.output_timestamps.iter() {
             let current_time_i64 = i64::try_from(current_time).map_err(|_| {
                 QueryExecutionError::Native(
@@ -2908,13 +2850,8 @@ impl SimpleEngine {
             let mut step_results: Vec<(KeyByLabelValues, f64)> = Vec::new();
 
             for (bucket_map, keys_source) in &groups {
-                // #583: dual-population groups resolve their expansion keys
-                // from the keys aggregation, per step — not a single
-                // snapshot reused for every step. If nothing resolves at
-                // this step, skip it before ever touching the value merge
-                // below (avoids wasted merge work on steps outside the
-                // key's lifetime). Fixed (single-population) groups have no
-                // separate keys accumulator to merge here at all.
+                // Separate keys resolve per step; self-keyed groups do not
+                // merge a separate key accumulator.
                 let keys_precompute: Option<Box<dyn AggregateCore>> = match keys_source {
                     KeysSource::PerStep {
                         bucket_map: keys_bucket_map,
@@ -2929,26 +2866,16 @@ impl SimpleEngine {
                         // (up to ~1e8 positions for a real timestamp) purely
                         // to see what's in keys_bucket_map, an in-memory map
                         // already bounded by real data. Bypass that walk
-                        // entirely for this aggregation type (#581 stage
-                        // E.4 review).
+                        // entirely for this aggregation type.
                         let keys_window_buckets = if *key_accumulator_type
                             == AggregationType::DeltaSetAggregator
                         {
-                            // #588/#606 force DeltaSetAggregator's own
-                            // config to Tumbling at planning time -- but
-                            // that's a planner convention, not a runtime
-                            // invariant this code can trust blindly.
-                            // AggregationConfig can be (and in this crate's
-                            // own tests routinely is) constructed directly,
-                            // bypassing the planner. A Sliding DeltaSetAgg
-                            // has no coherent "replay from the beginning"
-                            // semantics to begin with, so this asserts
-                            // rather than silently reinterpreting it (#581
-                            // stage E.4 review).
+                            // Replaying from the beginning has no coherent
+                            // Sliding semantics.
                             assert_eq!(
                                 keys_window.window_type,
                                 WindowType::Tumbling,
-                                "DeltaSetAggregator keys config must be Tumbling (#588/#606) -- \
+                                "DeltaSetAggregator keys config must be Tumbling -- \
                                  the replay-from-the-beginning fast path has no correct meaning \
                                  for Sliding"
                             );
