@@ -628,6 +628,8 @@ pub(crate) mod test_support {
             value_range: None,
             merge_operand_items: None,
             distribution: None,
+            dataset: None,
+            schema_width: None,
         }
     }
 

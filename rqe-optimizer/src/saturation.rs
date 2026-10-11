@@ -1320,6 +1320,8 @@ mod tests {
                     population_size: 1_000,
                     seed: 1,
                 })),
+                dataset: None,
+                schema_width: None,
             },
             ..deployment(TOPK, 1).config
         }

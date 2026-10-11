@@ -92,6 +92,8 @@ fn cost_row(sketch: &str, params: serde_json::Value) -> AtomicCostEntry {
             value_range: None,
             merge_operand_items: None,
             distribution: None,
+            dataset: None,
+            schema_width: None,
         },
     }
 }
