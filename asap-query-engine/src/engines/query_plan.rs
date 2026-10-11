@@ -170,26 +170,20 @@ impl QueryPlan {
             StoreReadStrategy::for_window(&estimate_spec.values.window),
         );
         let values = Self::push_prepare_buckets(&mut nodes, values_read);
-        let keys = context
-            .base
-            .store_plan
-            .keys_query
-            .as_ref()
-            .map(|query| match &estimate_spec.keys {
-                KeyInputSpec::Separate { window, .. } => {
+        let keys = match &estimate_spec.keys {
+            KeyInputSpec::FromValues => None,
+            KeyInputSpec::Separate { window, .. } => {
+                context.base.store_plan.keys_query.as_ref().map(|query| {
                     let read = Self::push_read(
                         &mut nodes,
                         query,
                         StoreReadRole::Keys,
                         StoreReadStrategy::for_window(window),
                     );
-                    Ok(Self::push_prepare_buckets(&mut nodes, read))
-                }
-                KeyInputSpec::FromValues => {
-                    Err("Query plan has a keys read without a keys specification".to_string())
-                }
-            })
-            .transpose()?;
+                    Self::push_prepare_buckets(&mut nodes, read)
+                })
+            }
+        };
         let resolved = Self::push(&mut nodes, QueryPlanNode::ResolveKeys { values, keys });
         let mut root = Self::push(
             &mut nodes,
