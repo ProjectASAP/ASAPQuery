@@ -39,7 +39,7 @@ repetition_delay_ms: 60000
 cases:
   - name: olly-09-sum-memory
     query: SELECT SUM(value) FROM backend_process_resident_memory_bytes WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: olly-05-max-over-time-cache-lag
     query: SELECT job, instance, MAX(value) FROM cache_refresh_lag_seconds WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
     expected: supported
@@ -51,7 +51,7 @@ cases:
     expected: supported
   - name: olly-21-histogram-quantile-0.95
     query: SELECT QUANTILE(0.95, value) FROM order_service_http_request_duration_seconds WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
-    expected: unsupported
+    expected: supported
   - name: olly-23-topk-max-over-time-backlog
     query: SELECT job, instance, MAX(value) AS v FROM backend_retry_backlog_depth WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 2
     expected: supported

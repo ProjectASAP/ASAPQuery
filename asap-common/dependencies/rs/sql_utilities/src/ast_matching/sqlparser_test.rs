@@ -83,6 +83,28 @@ mod tests {
     }
 
     #[test]
+    fn test_global_aggregate_parses_with_empty_grouping_labels() {
+        let query = parse_sql_query(
+            "SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()",
+        )
+        .expect("global aggregate parses");
+
+        assert!(query.labels.is_empty());
+    }
+
+    #[test]
+    fn test_nested_global_aggregates_parse_with_empty_grouping_labels() {
+        let query = parse_sql_query(
+            "SELECT SUM(total) FROM (SELECT SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW())",
+        )
+        .expect("nested global aggregates parse");
+
+        // Matching and execution may reject nested queries, but parsing retains both layers.
+        assert!(query.labels.is_empty());
+        assert!(query.subquery.expect("inner query").labels.is_empty());
+    }
+
+    #[test]
     fn test_pattern_matching() {
         let schema = create_test_schema();
         let time = std::time::SystemTime::now()
