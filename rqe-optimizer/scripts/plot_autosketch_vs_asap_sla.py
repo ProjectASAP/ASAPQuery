@@ -46,7 +46,7 @@ def title(data):
     m = re.search(r"templates=(\w+)/shared=(\d+)(?:/metrics=(\d+))?", data["workload"])
     if not m:
         return data["workload"]
-    name = {"classic": "mixed", "all": "mixed + multi-grouping"}.get(m.group(1), m.group(1))
+    name = {"classic": "mixed", "all": "mixed + multi-grouping", "multigroup": "multi-grouping"}.get(m.group(1), m.group(1))
     if m.group(3):
         return f"{name}, m = {m.group(3)}"
     if m.group(2) != "1":

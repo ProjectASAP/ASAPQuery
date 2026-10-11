@@ -52,7 +52,7 @@ WEIGHT_TITLES = {"cpu": "CPU only", "fargate": "Fargate prices"}
 
 
 # Each template set's title (export_autosketch_eval_table.py's TEMPLATE_SETS).
-TEMPLATE_TITLES = {"classic": "mixed", "all": "mixed + multi-grouping"}
+TEMPLATE_TITLES = {"classic": "mixed", "all": "mixed + multi-grouping", "multigroup": "multi-grouping"}
 
 
 def point(data):
