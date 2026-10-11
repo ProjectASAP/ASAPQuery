@@ -137,6 +137,14 @@ multi-grouping metric's labels, cardinalities and skew). An RQE:
 | `min_N`, `max_N` | items per group per window (mean group) |
 | `covers_share`, `covered_min_N`, `covered_max_N` | the coverage rule (only groups holding at least this share of records, plus the largest; `null`: every group) and the items of its smallest and largest covered group, where accuracy is read |
 
+Classic tables also have `workloads[0].e2e`, for running a plan end to end
+(sketch-bench#204). The runner does not read it, so the plans are unchanged.
+
+| Field | Meaning |
+|---|---|
+| `e2e.queries` | one entry per PromQL query and repeat interval: `promql`, `interval_secs`, and the `rqes` it reads (template 10's ratio reads two) |
+| `e2e.metrics` | the metrics to generate: gauge `data` (sums, quantiles, top-k by sum) and counter `data_total` (rates), with `labels` in the `schemas` format (`label_0` is `child_of: job`, 1,000 per job, so 1e4 series), samples/s per series, and each stream's value shape |
+
 ### Accuracy and cost
 
 | File | Rows | Used for |
