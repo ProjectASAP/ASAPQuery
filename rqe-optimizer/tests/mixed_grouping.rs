@@ -35,6 +35,7 @@ fn facts() -> WorkloadFacts {
             ]),
             value_range: None,
             data_shape: BTreeMap::new(),
+            hydra_dataset: None,
         },
     )])
 }
@@ -51,6 +52,7 @@ fn raqe(id: &str, capability: Capability, grouping: &[&str], accuracy_sla: f64) 
         accuracy_sla,
         latency_sla_ms: None,
         topk_k: None,
+        accuracy_covers_share: None,
     }
 }
 

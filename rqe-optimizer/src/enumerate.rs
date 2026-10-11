@@ -161,6 +161,7 @@ mod tests {
             accuracy_sla: 0.5,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         }
     }
 

@@ -18,6 +18,10 @@
 //! divides their memory and merge cost by the group count, so `card(G) ×`
 //! prices them correctly too. A [key tracker](crate::Deployment::key_tracker)
 //! is priced like an exact accumulator on the same windows, in every phase.
+//! A Hydra grid over a schema `Λ` (the deployment's grouping) is one such
+//! fixed-size sketch, `I_d = I_r = 1`: its measured insert is per record with
+//! the subset fan-out included, a query probes it once per `G_r` group, and
+//! its tracker keeps `card(Λ)` keys per window.
 
 use crate::{
     secs, AtomicCostEntry, Capability, Deployment, LabelSet, Mapping, Millis, Raqe, WorkloadFacts,

@@ -10,15 +10,20 @@ bounds (their cost-latency frontiers); AutoSketch-Adapted is one plan.
 
 Writes, next to the inputs:
   fig_frontier.png        cost vs. query latency, one column per workload, one
-                          row per weight setting; ASAP and PerQuery frontiers
-                          as lines, AutoSketch as a point; every point labeled
-                          with its cost
+                          row per weight setting; ASAP, ASAP (no roll-ups)
+                          and PerQuery frontiers as lines, AutoSketch as a
+                          point; every point labeled with its cost
+  fig_rollup_ablation.png the roll-up ablation: per workload, ASAP's and ASAP
+                          (no roll-ups)'s unbounded cost as grouped bars, one
+                          panel per weight setting, absolute values labeled
   fig_planning_time.png   planning time vs. RQEs over the metrics dimension;
                           AutoSketch's is its search plus its measured
                           benchmark (60 s per probe only as a labeled reference)
   summary_synthetic.md    every workload and weight setting: each method's
                           unbounded plan, its cost at AutoSketch's latency, and
-                          the frontier points
+                          the frontier points; the roll-up ablation (RQEs
+                          rolled up, deployments and cost with and without
+                          roll-ups, saving %)
 
 Usage: scripts/plot_autosketch_vs_asap_synthetic.py DIR
 """
@@ -33,12 +38,15 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-METHODS = ["asap", "perquery", "autosketch"]
-LABELS = {"asap": "ASAP", "perquery": "PerQuery-CostAware", "autosketch": "AutoSketch-Adapted"}
-# Categorical slots 1-3 of the dataviz reference palette, with marker shapes as
-# a second encoding.
-COLORS = {"asap": "#2a78d6", "perquery": "#eb6834", "autosketch": "#1baf7a"}
-MARKERS = {"asap": "o", "perquery": "s", "autosketch": "D"}
+METHODS = ["asap", "asap-norollup", "perquery", "autosketch"]
+LABELS = {"asap": "ASAP", "asap-norollup": "ASAP (no roll-ups)",
+          "perquery": "PerQuery-CostAware", "autosketch": "AutoSketch-Adapted"}
+# Categorical slots 1-3 and 7 of the dataviz reference palette, with marker
+# shapes (and the ablation's dashes) as a second encoding.
+COLORS = {"asap": "#2a78d6", "asap-norollup": "#4a3aa7", "perquery": "#eb6834",
+          "autosketch": "#1baf7a"}
+MARKERS = {"asap": "o", "asap-norollup": "^", "perquery": "s", "autosketch": "D"}
+LINESTYLES = {"asap-norollup": "--"}
 UNITS = {"cpu": "vCPU", "fargate": "$/hour"}
 WEIGHT_TITLES = {"cpu": "CPU only", "fargate": "Fargate prices"}
 
@@ -77,7 +85,8 @@ def records(data, method, weights):
 
 
 def unbounded(data, method, weights):
-    return next(r for r in records(data, method, weights) if r["bound_ms"] is None)
+    """The method's unbounded plan; None for results without the method."""
+    return next((r for r in records(data, method, weights) if r["bound_ms"] is None), None)
 
 
 def at_autosketch_latency(data, method, weights):
@@ -105,12 +114,14 @@ def fig_frontier(runs, out):
             ax = axes[row][col]
             for m in METHODS:
                 pts = frontier(data, m, w)
+                if not pts:
+                    continue
                 style = dict(color=COLORS[m], marker=MARKERS[m], markersize=4, linewidth=1.5,
                              label=LABELS[m])
                 if m == "autosketch":
                     ax.plot(*zip(*pts), linestyle="none", **style)
                 else:
-                    ax.plot(*zip(*pts), **style)
+                    ax.plot(*zip(*pts), linestyle=LINESTYLES.get(m, "-"), **style)
                 for x, y in pts:
                     ax.annotate(fmt(y), (x, y), textcoords="offset points", xytext=(3, 3),
                                 fontsize=5, color="#52514e")
@@ -126,9 +137,51 @@ def fig_frontier(runs, out):
                 ax.set_ylabel(f"{WEIGHT_TITLES.get(w, w)}: cost by use ({UNITS.get(w, w)})",
                               fontsize=7)
     handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, fontsize=8)
+    fig.legend(handles, labels, loc="upper center", ncol=4, fontsize=8)
     fig.tight_layout(rect=(0, 0, 1, 0.93))
     fig.savefig(out / "fig_frontier.png", dpi=150)
+    plt.close(fig)
+
+
+def fig_rollup_ablation(runs, out):
+    """Per workload with the ablation: ASAP's and ASAP (no roll-ups)'s unbounded
+    cost, grouped bars, one panel per weight setting."""
+    runs = {k: d for k, d in runs.items()
+            if any(unbounded(d, "asap-norollup", w["name"]) for w in d["weights"])}
+    if not runs:
+        return
+    weights = [w["name"] for w in next(iter(runs.values()))["weights"]]
+    fig, axes = plt.subplots(1, len(weights), squeeze=False,
+                             figsize=((1.2 * len(runs) + 1.0) * len(weights), 3.6))
+    width = 0.38
+    for col, w in enumerate(weights):
+        ax = axes[0][col]
+        for i, m in enumerate(("asap", "asap-norollup")):
+            xs, ys = [], []
+            for x, data in enumerate(runs.values()):
+                r = unbounded(data, m, w)
+                if r is not None:
+                    xs.append(x + (i - 0.5) * width)
+                    ys.append(r["objective"])
+            bars = ax.bar(xs, ys, width=width * 0.95, color=COLORS[m], label=LABELS[m],
+                          hatch="//" if m == "asap-norollup" else None, edgecolor="white",
+                          linewidth=0.5)
+            ax.bar_label(bars, labels=[fmt(y) for y in ys], fontsize=6, color="#52514e",
+                         padding=2)
+        ax.set_xticks(range(len(runs)))
+        ax.set_xticklabels([f"{title(k).replace(', ', chr(10))}\n({d['rqes']} RQEs)"
+                            for k, d in runs.items()],
+                           fontsize=6)
+        ax.set_ylabel(f"cost by use, unbounded ({UNITS.get(w, w)})", fontsize=7)
+        ax.set_title(WEIGHT_TITLES.get(w, w), fontsize=8)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.grid(True, axis="y", color="#e5e4e0", linewidth=0.5)
+        ax.set_axisbelow(True)
+        ax.margins(y=0.12)
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=2, fontsize=8)
+    fig.tight_layout(rect=(0, 0, 1, 0.9))
+    fig.savefig(out / "fig_rollup_ablation.png", dpi=150)
     plt.close(fig)
 
 
@@ -204,6 +257,8 @@ def summary(runs, out):
         for w in [x["name"] for x in data["weights"]]:
             for m in METHODS:
                 r = unbounded(data, m, w)
+                if r is None:
+                    continue
                 planning = r.get("planning_secs")
                 if m == "autosketch" and "benchmark_secs_measured" in a:
                     planning = planning + a["benchmark_secs_measured"]
@@ -216,17 +271,40 @@ def summary(runs, out):
         lines.append("")
         lines.append("Frontier points (latency ms, cost), by weights:\n")
         for w in [x["name"] for x in data["weights"]]:
-            for m in ("asap", "perquery"):
+            for m in ("asap", "asap-norollup", "perquery"):
                 pts = ", ".join(f"({fmt(x)}, {fmt(y)})" for x, y in frontier(data, m, w))
-                lines.append(f"- {w}, {LABELS[m]}: {pts}")
+                if pts:
+                    lines.append(f"- {w}, {LABELS[m]}: {pts}")
         lines.append("")
+        lines.extend(rollup_section(data, unbounded))
     (out / "summary_synthetic.md").write_text("\n".join(lines))
+
+
+def rollup_section(data, plan):
+    """The roll-up ablation's markdown lines: per weight setting, `plan(data,
+    method, weights)` with and without roll-ups; none without the ablation."""
+    rows = []
+    for w in [x["name"] for x in data["weights"]]:
+        with_, without = plan(data, "asap", w), plan(data, "asap-norollup", w)
+        if with_ is None or without is None:
+            continue
+        saving = 100 * (without["objective"] - with_["objective"]) / without["objective"]
+        rows.append(f"| {w} | {with_.get('rolled_up_rqes', '—')} | "
+                    f"{with_['active_deployments']} | {without['active_deployments']} | "
+                    f"{fmt(with_['objective'])} | {fmt(without['objective'])} | {saving:.1f}% |")
+    if not rows:
+        return []
+    return ["Roll-up ablation (ASAP vs. ASAP without roll-ups):\n",
+            "| weights | RQEs rolled up | deployments with | deployments without | "
+            "cost with | cost without | saving |",
+            "|---|---|---|---|---|---|---|", *rows, ""]
 
 
 def main():
     out = pathlib.Path(sys.argv[1])
     runs = load(out)
     fig_frontier(runs, out)
+    fig_rollup_ablation(runs, out)
     fig_planning_time(runs, out)
     summary(runs, out)
 

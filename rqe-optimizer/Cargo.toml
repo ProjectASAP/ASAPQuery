@@ -10,3 +10,4 @@ description = "v1 brute-force solver for the RQE -> sketch-deployment mapping pr
 aqpbm-core = { workspace = true, default-features = false }
 serde_json.workspace = true
 good_lp.workspace = true
+csv.workspace = true

@@ -222,10 +222,18 @@ univmon-cardinality, KLL and DDSketch. These don't, and serve only
   only bare `rate`/`increase`, which keep every label.)
 - **Top-k** (CMS-heap, CountSketch-heap, univmon-topk). A coarse group's top
   `k` can hold keys that are in none of its fine groups' heaps.
-- **Hydra**. It inserts every label subset of its schema, so a coarse
-  grouping inside the schema is answered directly from the grid, never by
-  merging fine groups; it is not a candidate today
-  ([Hydra](rqe_optimizer_hydra.md)).
+- **Hydra** (hydra-hll, hydra-univmon-cardinality, hydra-kll; planned only
+  with undeployable families allowed). It inserts every label subset of its
+  schema `Λ`, so any non-empty `G_r ⊆ Λ` is answered directly from the grid,
+  never by merging fine groups. A metric with a Hydra dataset
+  (`MetricFacts::hydra_dataset`) gets one grid per (capability, filter,
+  window, slide, config), over its full schema only (every schema label,
+  not the per-series ones), because that is the width the study measures
+  cost and accuracy at; its cost rows must name that dataset
+  (`measured_at.dataset`). Its accuracy is held to the worst case: the max
+  error over the covered groups, worst over the measured N and seeds
+  (`hydra_saturation.csv`), while per-group sketches read seed-mean curves.
+  The design is in [Hydra](rqe_optimizer_hydra.md).
 
 - **Cost**: ingest, compaction and storage stay at `G_d`; the query job merges
   `I_d · n − I_r` times and answers `card(G_r)` groups

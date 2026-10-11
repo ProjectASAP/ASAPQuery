@@ -77,6 +77,7 @@ fn query(
         accuracy_sla,
         latency_sla_ms: None,
         topk_k: None,
+        accuracy_covers_share: None,
     }
 }
 
@@ -306,6 +307,7 @@ fn facts() -> WorkloadFacts {
             (by_service_endpoint(), data_shape(1_000.0)),
         ]
         .into(),
+        hydra_dataset: None,
     };
     let duration_range = Some((0.001, 60.0));
     let per_service_metrics = (0..PER_SERVICE_METRIC_COUNT).map(|service_index| {

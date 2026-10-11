@@ -84,13 +84,20 @@ impl Capability {
             Capability::Min => &["exact-min"],
             Capability::Max => &["exact-max"],
             Capability::RateOrIncrease => &["exact-increase"],
-            Capability::Quantile => &["kll-percall", "dd"],
+            // Hydra (one grid for every subgrouping of a schema) is planned only
+            // with undeployable families allowed: ASAPQuery doesn't run it yet.
+            Capability::Quantile => &["kll-percall", "dd", "hydra-kll"],
             // univmon-cardinality is registered under KeyedCardinality in
             // sketch-bench, but its ground truth (`KeyedCardinalityGT`) is
             // "count of keys with a nonzero total" -- plain distinct-key
             // count, same target as HLL. Second candidate, not a second
             // capability.
-            Capability::Cardinality => &["hll", "univmon-cardinality"],
+            Capability::Cardinality => &[
+                "hll",
+                "univmon-cardinality",
+                "hydra-hll",
+                "hydra-univmon-cardinality",
+            ],
             // The sketch is the same; ASAPQuery deploys the two kinds with
             // different `count_events`, so they never share one.
             Capability::TopKByValue | Capability::TopKByCount => &[
@@ -224,6 +231,12 @@ pub struct FamilyProperties {
     /// The sketch can't list its groups, so a DeltaSet records which keys
     /// each window saw, for the query to probe.
     pub needs_delta_set_key_tracker: bool,
+    /// Hydra: one grid over a label schema `Λ` (the deployment's
+    /// `grouping_labels`) answers any non-empty subgrouping of it directly,
+    /// from the subkeys every insert fans out to. Not a roll-up: nothing is
+    /// merged across groups. Its accuracy is measured per grouping
+    /// (`hydra_saturation.csv`).
+    pub answers_any_subgrouping: bool,
     /// Answers without error, so its accuracy comes from the cost table
     /// rather than a saturation curve.
     pub exact: bool,
@@ -242,8 +255,19 @@ pub fn family_properties(variant: &str) -> FamilyProperties {
         mergeable_across_groups: true,
         one_fixed_size_sketch_for_all_groups: false,
         needs_delta_set_key_tracker: false,
+        answers_any_subgrouping: false,
         exact: false,
         accuracy: Some((metric, direction)),
+    };
+    // One grid holds every group; a DeltaSet lists the keys to probe.
+    let hydra = |metric| FamilyProperties {
+        mergeable_across_windows: true,
+        mergeable_across_groups: false,
+        one_fixed_size_sketch_for_all_groups: true,
+        needs_delta_set_key_tracker: true,
+        answers_any_subgrouping: true,
+        exact: false,
+        accuracy: Some((metric, LowerIsBetter)),
     };
     // `relative_error` is the worst group's, not `relative_error_mean`.
     let exact = FamilyProperties {
@@ -273,14 +297,8 @@ pub fn family_properties(variant: &str) -> FamilyProperties {
             mergeable_across_groups: false,
             ..one_sketch_per_group("precision_at_k", HigherIsBetter)
         },
-        "hydra-kll" => FamilyProperties {
-            mergeable_across_windows: true,
-            mergeable_across_groups: false,
-            one_fixed_size_sketch_for_all_groups: true,
-            needs_delta_set_key_tracker: true,
-            exact: false,
-            accuracy: Some(("mean_rank_err", LowerIsBetter)),
-        },
+        "hydra-hll" | "hydra-univmon-cardinality" => hydra("relative_error"),
+        "hydra-kll" => hydra("mean_rank_err"),
         _ => panic!("{variant} has no FamilyProperties; add it to family_properties"),
     }
 }
@@ -303,6 +321,12 @@ pub struct MetricFacts {
     /// Fitted data parameters per grouping `G`, for reading sketch accuracy
     /// off the saturation curves. Without one, no sketch serves `G`.
     pub data_shape: BTreeMap<LabelSet, saturation::DataShape>,
+    /// The `hydra_saturation.csv` dataset whose schema and shares match this
+    /// metric's, and that schema `Λ` (its labels; `cardinality` must hold
+    /// it). Hydra grids are built only over `Λ`, the width the study
+    /// measures, from cost rows measured on the dataset. Without one, no
+    /// Hydra candidate is built on the metric.
+    pub hydra_dataset: Option<(String, LabelSet)>,
 }
 
 impl MetricFacts {
@@ -386,6 +410,18 @@ pub fn validate_facts(raqes: &[Raqe], facts: &WorkloadFacts) -> Result<(), Vec<S
                 Some(_) => false,
             };
         }
+        if let Some((_, schema)) = &metric_facts.hydra_dataset {
+            if !schema.is_subset(all_labels) {
+                problems.insert(format!(
+                    "{metric}: Hydra schema {schema:?} is not a subset of its labels {all_labels:?}"
+                ));
+            }
+            if cardinality.get(schema).is_none_or(|&groups| groups == 0) {
+                problems.insert(format!(
+                    "{metric}: Hydra schema {schema:?} needs a nonzero cardinality"
+                ));
+            }
+        }
     }
     // Dropping labels never adds groups. A roll-up's merge count,
     // `card(G_d) · L/x − card(G_r)`, relies on it, so it is checked between
@@ -468,6 +504,10 @@ pub struct Raqe {
     /// A top-k RAQE's `k`; `None` means [`TOPK_K`]. Ignored for other
     /// capabilities.
     pub topk_k: Option<u64>,
+    /// The groups the accuracy SLA covers: those holding at least this
+    /// share of the metric's records, plus always the largest; `None` for
+    /// every group. Read only by Hydra's accuracy, measured per coverage.
+    pub accuracy_covers_share: Option<f64>,
 }
 
 impl Raqe {
@@ -645,6 +685,7 @@ pub(crate) mod test_support {
                 cardinality: BTreeMap::from([(LabelSet::new(), groups), (labels, series)]),
                 value_range: None,
                 data_shape: BTreeMap::new(),
+                hydra_dataset: None,
             },
         )])
     }
@@ -661,6 +702,7 @@ pub(crate) mod test_support {
             accuracy_sla: 0.5,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         }
     }
 
@@ -713,6 +755,7 @@ pub(crate) mod test_support {
                 cardinality: BTreeMap::from([(service, 5), (service_endpoint, 50)]),
                 value_range: None,
                 data_shape: BTreeMap::new(),
+                hydra_dataset: None,
             },
         )])
     }
@@ -855,6 +898,7 @@ mod tests {
                 ]),
                 value_range: None,
                 data_shape: BTreeMap::new(),
+                hydra_dataset: None,
             },
         )]);
         let r = Raqe {
@@ -874,6 +918,7 @@ mod tests {
                 cardinality: BTreeMap::from([(labels(&["service"]), 0)]),
                 value_range: Some((0.0, 1.0)),
                 data_shape: BTreeMap::new(),
+                hydra_dataset: None,
             },
         )]);
         let raqes = [
@@ -969,6 +1014,7 @@ mod tests {
                 ]),
                 value_range: None,
                 data_shape: BTreeMap::new(),
+                hydra_dataset: None,
             },
         )])
     }
@@ -1021,5 +1067,35 @@ mod tests {
             ..raqe(60_000, 60_000)
         };
         assert_eq!(validate_facts(&[r], &inconsistent_facts()), Ok(()));
+    }
+
+    /// Hydra's schema must be the metric's labels with a known group count.
+    #[test]
+    fn rejects_a_hydra_schema_outside_the_labels_or_without_cardinality() {
+        let mut facts = test_support::facts(1, 1);
+        let metric_facts = facts.get_mut(METRIC).unwrap();
+        let mut outside = metric_facts.labels.clone();
+        outside.insert("pod".into());
+        metric_facts.hydra_dataset = Some(("hydra_test".into(), outside.clone()));
+        let problems = validate_facts(&[raqe(60_000, 60_000)], &facts).unwrap_err();
+        assert_eq!(
+            problems,
+            [
+                format!(
+                    "{METRIC}: Hydra schema {outside:?} is not a subset of its labels {:?}",
+                    facts[METRIC].labels
+                ),
+                format!("{METRIC}: Hydra schema {outside:?} needs a nonzero cardinality"),
+            ]
+        );
+        let metric_facts = facts.get_mut(METRIC).unwrap();
+        let schema = metric_facts.labels.clone();
+        metric_facts.cardinality.insert(schema.clone(), 0);
+        metric_facts.hydra_dataset = Some(("hydra_test".into(), schema));
+        let problems = validate_facts(&[raqe(60_000, 60_000)], &facts).unwrap_err();
+        assert!(
+            problems.iter().any(|p| p.contains("Hydra schema")),
+            "{problems:?}"
+        );
     }
 }

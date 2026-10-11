@@ -7,13 +7,16 @@
 Writes, into OUT:
   fig_cost_vs_sla.png  one panel per workload (columns) and weight setting
                        (rows): cost by use (absolute, labeled) at each SLA,
-                       ASAP and PerQuery as lines over the SLAs they can meet,
+                       ASAP, ASAP (no roll-ups, dashed) and PerQuery as
+                       lines over the SLAs they can meet,
                        AutoSketch as a horizontal reference at its one plan's
                        cost, a filled marker where its latency meets the SLA
                        and a cross where it misses
   summary_sla.md       per workload, weights and SLA: each method's cost,
                        latency, CPU and GiB; AutoSketch's planning time as
-                       search + measured benchmark
+                       search + measured benchmark; the roll-up ablation
+                       (RQEs rolled up, deployments and cost with and
+                       without roll-ups, saving %)
 
 Usage: scripts/plot_autosketch_vs_asap_sla.py OUT RESULT.json...
 """
@@ -28,9 +31,13 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-METHODS = ["asap", "perquery", "autosketch"]
-LABELS = {"asap": "ASAP", "perquery": "PerQuery-CostAware", "autosketch": "AutoSketch-Adapted"}
-COLORS = {"asap": "#1f77b4", "perquery": "#ff7f0e", "autosketch": "#2ca02c"}
+METHODS = ["asap", "asap-norollup", "perquery", "autosketch"]
+LABELS = {"asap": "ASAP", "asap-norollup": "ASAP (no roll-ups)",
+          "perquery": "PerQuery-CostAware", "autosketch": "AutoSketch-Adapted"}
+COLORS = {"asap": "#1f77b4", "asap-norollup": "#4a3aa7", "perquery": "#ff7f0e",
+          "autosketch": "#2ca02c"}
+MARKERS = {"asap": "o", "asap-norollup": "^", "perquery": "o"}
+LINESTYLES = {"asap-norollup": "--"}
 UNITS = {"cpu": "vCPU", "fargate": "$/hour"}
 
 
@@ -71,13 +78,13 @@ def figure(runs, out):
     for col, data in enumerate(runs):
         for row, w in enumerate(weights):
             ax = axes[row][col]
-            for m in ("asap", "perquery"):
+            for m in ("asap", "asap-norollup", "perquery"):
                 pts = [(r["sla_ms"], r["objective"]) for r in rows(data, m, w)
                        if not r.get("infeasible") and "objective" in r]
                 if not pts:
                     continue
-                ax.plot(*zip(*pts), marker="o", markersize=4, linewidth=2, color=COLORS[m],
-                        label=LABELS[m])
+                ax.plot(*zip(*pts), marker=MARKERS[m], markersize=4, linewidth=2,
+                        linestyle=LINESTYLES.get(m, "-"), color=COLORS[m], label=LABELS[m])
                 for x, y in pts:
                     ax.annotate(fmt(y), (x, y), textcoords="offset points", xytext=(3, 3),
                                 fontsize=6, color="#333333")
@@ -104,7 +111,7 @@ def figure(runs, out):
             if col == 0:
                 ax.set_ylabel(f"cost by use ({UNITS.get(w, w)})", fontsize=8)
     handles, labels = axes[0][0].get_legend_handles_labels()
-    fig.legend(handles, labels, loc="upper center", ncol=3, fontsize=8,
+    fig.legend(handles, labels, loc="upper center", ncol=4, fontsize=8,
                title="AutoSketch: ● meets the SLA, × misses it", title_fontsize=7)
     fig.tight_layout(rect=(0, 0, 1, 0.9))
     fig.savefig(out / "fig_cost_vs_sla.png", dpi=150)
@@ -142,7 +149,32 @@ def summary(runs, out):
                                  f"{fmt(r['latency_ms'])} | {fmt(r['cpu'])} | {fmt(r['gib'])} | "
                                  f"{meets} |")
         lines.append("")
+        lines.extend(rollup_section(data))
     (out / "summary_sla.md").write_text("\n".join(lines))
+
+
+def rollup_section(data):
+    """The roll-up ablation at each weight setting and SLA where both ASAP and
+    ASAP (no roll-ups) have a plan; none without the ablation."""
+    out = []
+    for w in [x["name"] for x in data["weights"]]:
+        for sla in data["sla_grid_ms"]:
+            with_, without = (next((r for r in rows(data, m, w) if r["sla_ms"] == sla
+                                    and "objective" in r), None)
+                              for m in ("asap", "asap-norollup"))
+            if with_ is None or without is None:
+                continue
+            saving = 100 * (without["objective"] - with_["objective"]) / without["objective"]
+            out.append(f"| {w} | {fmt(sla)} | {with_.get('rolled_up_rqes', '—')} | "
+                       f"{with_['active_deployments']} | {without['active_deployments']} | "
+                       f"{fmt(with_['objective'])} | {fmt(without['objective'])} | "
+                       f"{saving:.1f}% |")
+    if not out:
+        return []
+    return ["Roll-up ablation (ASAP vs. ASAP without roll-ups):\n",
+            "| weights | SLA (ms) | RQEs rolled up | deployments with | deployments without | "
+            "cost with | cost without | saving |",
+            "|---|---|---|---|---|---|---|---|", *out, ""]
 
 
 def main():

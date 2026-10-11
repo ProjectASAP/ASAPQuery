@@ -116,6 +116,7 @@ fn facts() -> WorkloadFacts {
             (label_set(&["service", "endpoint"]), data_shape(1_000.0)),
         ]
         .into(),
+        hydra_dataset: None,
     };
     [
         (REQUESTS.to_string(), http_metric_facts(None)),
@@ -156,6 +157,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.1,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         Raqe {
             id: "req_rate_1d".to_string(),
@@ -168,6 +170,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.1,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         Raqe {
             id: "req_rate_5m_tick".to_string(),
@@ -180,6 +183,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.1,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         Raqe {
             id: "latency_p99_1h".to_string(),
@@ -192,6 +196,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.05,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         Raqe {
             id: "latency_p99_6h_tick".to_string(),
@@ -204,6 +209,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.05,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         // Shares KLL with the per-endpoint p99s by rolling up.
         Raqe {
@@ -217,6 +223,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.05,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         Raqe {
             id: "latency_p99_1d".to_string(),
@@ -229,6 +236,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.05,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         Raqe {
             id: "distinct_services_1h".to_string(),
@@ -241,6 +249,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.1,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
         // The higher-is-better case: top-k's metric is precision@k, so 0.9 is
         // a *floor*, not a ceiling on error. Served by cms-heap, whose measured precision is
@@ -257,6 +266,7 @@ fn raqes() -> Vec<Raqe> {
             accuracy_sla: 0.9,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         },
     ]
 }

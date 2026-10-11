@@ -482,6 +482,7 @@ mod tests {
             accuracy_sla: 1.0 - error_budget,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         }
     }
 

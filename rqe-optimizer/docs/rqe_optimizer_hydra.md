@@ -1,8 +1,10 @@
 # RQE optimizer: admitting Hydra
 
-Status: design, not implemented. Hydra is never a candidate today:
-`hydra-kll` has `FamilyProperties` (`rqe-optimizer/src/lib.rs`) but is in no
-capability's family list, and the other four Hydra variants have none. This
+Status: hydra-hll, hydra-univmon-cardinality and hydra-kll are candidates
+when undeployable families are allowed (the §6.3 eval runner), built over a
+metric's full schema with accuracy from `hydra_saturation.csv`
+([Candidates](rqe_optimizer_candidates.md), roll-ups section). They are not
+in `DEPLOYABLE_FAMILIES`, so ASAPQuery's planner never sees them. This
 document says, for each Hydra combination sketch-bench benchmarks, what
 accuracy guarantee it has, how it is costed, how it would enter the
 candidates and the MILP, and what sketch-bench must measure first. Symbols

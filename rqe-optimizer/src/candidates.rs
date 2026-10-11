@@ -44,30 +44,16 @@ fn subset_gcds(values: impl IntoIterator<Item = Millis>) -> BTreeSet<Millis> {
     gcds
 }
 
-/// Whether a fixed-size sketch shared by all groups (HydraKLL) was measured
-/// holding at least `groups` subpopulations. A necessary check, not Hydra's
-/// admission rule: a group's error depends on the grid's fanned-out mass
-/// against the group's own size, not on the group count alone, so admission
-/// needs the measured predicate of `docs/rqe_optimizer_hydra.md` §2.4.
-/// HydraKLL is in no capability's family list, so this decides nothing today.
-fn measured_at_group_count(config: &AtomicCostEntry, groups: u64) -> bool {
-    config
-        .query_accuracy
-        .get("subpopulations")
-        .is_some_and(|&measured| groups as f64 <= measured)
-}
-
 /// Windows and slides are multiples of the metric's scrape interval: anything
 /// finer only splits one scrape's samples.
 ///
-/// Deployments are grouped by `grouping` and built from the families whose
-/// [`mergeable_across_groups`](crate::FamilyProperties::mergeable_across_groups)
-/// equals `mergeable_across_groups`. Their windows, slides and heaps come from
+/// Deployments are grouped by `grouping` and built from the cost rows that
+/// pass `row`. Their windows, slides and heaps come from
 /// `group`, the RAQEs they may serve.
 fn candidate_deployments(
     group: &[&Raqe],
     grouping: &LabelSet,
-    mergeable_across_groups: bool,
+    row: impl Fn(&AtomicCostEntry) -> bool,
     costs: &[AtomicCostEntry],
     metric_facts: &MetricFacts,
     allow_undeployable_families: bool,
@@ -95,8 +81,7 @@ fn candidate_deployments(
             capability
                 .candidate_families(allow_undeployable_families)
                 .any(|family| family == c.sketch)
-                && crate::family_properties(&c.sketch).mergeable_across_groups
-                    == mergeable_across_groups
+                && row(c)
         })
         .collect();
     let heap_rows = heap_rows_by_shape(&family_rows);
@@ -325,38 +310,83 @@ pub fn build_all_candidates_unpruned(
             .or_default()
             .push(raqe);
     }
-    groups
-        .iter()
-        .flat_map(|(&(capability, metric, filter, grouping), exact_group)| {
-            // A family that rolls up may also serve RAQEs grouped by a subset,
-            // so its windows must suit theirs too.
-            let subset_group: Vec<&Raqe> = raqes
+    // RAQEs of `(capability, metric, filter)` grouped by a subset of
+    // `grouping`, non-empty ones only for Hydra.
+    let subset_group =
+        |(capability, metric, filter, grouping): (Capability, &str, &str, &LabelSet),
+         non_empty: bool| {
+            raqes
                 .iter()
                 .filter(|r| {
                     r.capability == capability
                         && r.metric == metric
                         && r.spatial_filter == filter
                         && r.grouping_labels.is_subset(grouping)
+                        && !(non_empty && r.grouping_labels.is_empty())
                 })
-                .collect();
+                .collect::<Vec<&Raqe>>()
+        };
+    let mut candidates: Vec<Deployment> = groups
+        .iter()
+        .flat_map(|(&key, exact_group)| {
+            let (_, metric, _, grouping) = key;
+            // A family that rolls up may also serve RAQEs grouped by a subset,
+            // so its windows must suit theirs too.
+            let subset_group = subset_group(key, false);
+            let properties = |c: &AtomicCostEntry| crate::family_properties(&c.sketch);
             [
-                (exact_group.as_slice(), false),
-                (subset_group.as_slice(), true),
-            ]
-            .into_iter()
-            .flat_map(|(group, mergeable_across_groups)| {
                 candidate_deployments(
-                    group,
+                    exact_group,
                     grouping,
-                    mergeable_across_groups,
+                    |c| {
+                        !properties(c).answers_any_subgrouping
+                            && !properties(c).mergeable_across_groups
+                    },
                     costs,
                     &facts[metric],
                     allow_undeployable_families,
-                )
-            })
-            .collect::<Vec<_>>()
+                ),
+                candidate_deployments(
+                    &subset_group,
+                    grouping,
+                    |c| {
+                        !properties(c).answers_any_subgrouping
+                            && properties(c).mergeable_across_groups
+                    },
+                    costs,
+                    &facts[metric],
+                    allow_undeployable_families,
+                ),
+            ]
+            .concat()
         })
-        .collect()
+        .collect();
+    // Hydra, on a metric with a measured dataset: one grid over its full
+    // schema `Λ`, the width the study measures cost and accuracy at, from
+    // the rows measured on that dataset. `Λ` is a label set, not an ordered
+    // list: the library encodes subkeys in schema order, and every metric
+    // keeps one order (the eval datasets fix it), so the set names the grid.
+    let streams: BTreeSet<(Capability, &str, &str)> = groups
+        .keys()
+        .map(|&(capability, metric, filter, _)| (capability, metric, filter))
+        .collect();
+    for (capability, metric, filter) in streams {
+        let Some((dataset, schema)) = &facts[metric].hydra_dataset else {
+            continue;
+        };
+        candidates.extend(candidate_deployments(
+            &subset_group((capability, metric, filter, schema), true),
+            schema,
+            |c| {
+                crate::family_properties(&c.sketch).answers_any_subgrouping
+                    && c.measured_at.dataset.as_ref() == Some(dataset)
+            },
+            costs,
+            &facts[metric],
+            allow_undeployable_families,
+        ));
+    }
+    candidates
 }
 
 /// Remove a candidate only when another candidate can replace it in every
@@ -545,14 +575,19 @@ pub fn eligible_deployments_for(
 
 /// Whether `d` can serve `r`. Every rule lives here, so the MILP, enumeration
 /// and candidate pruning agree on what is valid.
-pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &Accuracy) -> bool {
+pub fn is_eligible(r: &Raqe, d: &Deployment, _facts: &WorkloadFacts, accuracy: &Accuracy) -> bool {
     let properties = d.properties();
     r.capability == d.capability
         && r.metric == d.metric
         && r.spatial_filter == d.spatial_filter
-        && (r.grouping_labels == d.grouping_labels
-            || (properties.mergeable_across_groups
-                && r.grouping_labels.is_subset(&d.grouping_labels)))
+        && (if properties.answers_any_subgrouping {
+            // Hydra: any non-empty subset of its schema, read directly.
+            !r.grouping_labels.is_empty() && r.grouping_labels.is_subset(&d.grouping_labels)
+        } else {
+            r.grouping_labels == d.grouping_labels
+                || (properties.mergeable_across_groups
+                    && r.grouping_labels.is_subset(&d.grouping_labels))
+        })
         && d.window_ms != 0
         && d.slide_ms != 0
         && d.window_ms.is_multiple_of(d.slide_ms)
@@ -560,8 +595,6 @@ pub fn is_eligible(r: &Raqe, d: &Deployment, facts: &WorkloadFacts, accuracy: &A
         && r.interval_ms.is_multiple_of(d.slide_ms)
         && (properties.mergeable_across_windows || r.lookback_ms == d.window_ms)
         && properties.needs_delta_set_key_tracker == d.key_tracker.is_some()
-        && (!properties.one_fixed_size_sketch_for_all_groups
-            || measured_at_group_count(&d.config, facts[&d.metric].cardinality[&d.grouping_labels]))
         && heap_capacity(&d.config).is_none_or(|heap| {
             d.heap_needed(r.lookback_ms, r.topk_k())
                 .is_some_and(|need| heap >= need)
@@ -588,6 +621,7 @@ mod tests {
             accuracy_sla: 0.5,
             latency_sla_ms: None,
             topk_k: None,
+            accuracy_covers_share: None,
         }
     }
     fn cost() -> AtomicCostEntry {
@@ -1088,17 +1122,19 @@ mod tests {
 
         assert_eq!(retained, vec![direct, halves]);
     }
-    /// A whole-sketch hydra-kll row measured at `subpopulations` groups, and
-    /// a per-key DeltaSet row.
-    fn hydra_and_tracker(subpopulations: f64) -> [AtomicCostEntry; 2] {
+    /// A whole-grid hydra-kll row measured on `hydra_test`, and a per-key
+    /// DeltaSet row.
+    fn hydra_and_tracker() -> [AtomicCostEntry; 2] {
         [
             AtomicCostEntry {
                 sketch: "hydra-kll".into(),
                 mem_bytes_per_instance: 1000.0,
-                query_accuracy: BTreeMap::from([
-                    ("mean_rank_err".into(), 0.1),
-                    ("subpopulations".into(), subpopulations),
-                ]),
+                query_accuracy: BTreeMap::from([("mean_rank_err".into(), 0.1)]),
+                accuracy_metric: metric_of("hydra-kll"),
+                measured_at: aqpbm_core::MeasuredAt {
+                    dataset: Some("hydra_test".into()),
+                    ..crate::test_support::measured_at()
+                },
                 ..cost()
             },
             AtomicCostEntry {
@@ -1118,7 +1154,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "exact-delta-set rows in the cost table")]
     fn two_tracker_rows_are_refused() {
-        let [hydra, tracker] = hydra_and_tracker(100.0);
+        let [hydra, tracker] = hydra_and_tracker();
         build_all_candidates(
             &[quantile_raqe()],
             &[hydra, tracker.clone(), tracker],
@@ -1230,5 +1266,118 @@ mod tests {
         let topk_windows = fine_windows("cms-heap-topk-fastpath-vector2d");
         assert!(topk_windows.contains(&HOUR));
         assert!(!topk_windows.contains(&NINETY_MINUTES));
+    }
+
+    /// Schema region (2) × service (5) × endpoint (10 per service), measured
+    /// as the Hydra dataset `hydra_test`, plus a per-series label `x`; every
+    /// RAQE grouping on it has a cardinality.
+    fn region_service_endpoint_facts() -> WorkloadFacts {
+        use crate::test_support::label_set;
+        let schema = label_set(&["region", "service", "endpoint"]);
+        WorkloadFacts::from([(
+            METRIC.to_string(),
+            MetricFacts {
+                labels: label_set(&["region", "service", "endpoint", "x"]),
+                scrape_interval_ms: 1_000,
+                cardinality: BTreeMap::from([
+                    (label_set(&["region"]), 2),
+                    (label_set(&["service"]), 5),
+                    (label_set(&["region", "service"]), 10),
+                    (label_set(&["service", "endpoint"]), 50),
+                    (schema.clone(), 100),
+                    (label_set(&["region", "service", "endpoint", "x"]), 1_000),
+                ]),
+                value_range: None,
+                data_shape: BTreeMap::new(),
+                hydra_dataset: Some(("hydra_test".into(), schema)),
+            },
+        )])
+    }
+
+    fn quantile_by(grouping: &[&str]) -> Raqe {
+        crate::test_support::quantile_by(grouping, 60_000, 60_000)
+    }
+
+    /// A Hydra grid over its schema answers every non-empty subset of it,
+    /// coarse or not a prefix, directly; nothing outside it, nor the
+    /// ungrouped query. A per-group sketch serves only subsets of its own
+    /// grouping that roll up.
+    #[test]
+    fn hydra_serves_any_non_empty_subset_of_its_schema() {
+        use crate::test_support::{kll_by, label_set};
+        let facts = region_service_endpoint_facts();
+        let [hydra, tracker] = hydra_and_tracker();
+        let grid = Deployment {
+            grouping_labels: label_set(&["region", "service"]),
+            config: hydra,
+            key_tracker: Some(tracker),
+            ..kll_by(&[], 60_000)
+        };
+        let serves = |grouping: &[&str]| {
+            is_eligible(&quantile_by(grouping), &grid, &facts, &|_, _| Some(0.0))
+        };
+        assert!(serves(&["region", "service"]));
+        assert!(serves(&["service"]));
+        assert!(serves(&["region"]));
+        assert!(!serves(&[]));
+        assert!(!serves(&["service", "endpoint"]));
+        assert!(!serves(&["region", "service", "endpoint"]));
+        // Its own measured accuracy still decides.
+        let r = quantile_by(&["service"]);
+        assert!(!is_eligible(&r, &grid, &facts, &|_, _| Some(0.9)));
+    }
+
+    /// One Hydra grid per stream, over its full schema (without `x`), from
+    /// the rows measured on its dataset only, with the windows of the RAQEs
+    /// it can serve; none on a metric without a dataset.
+    #[test]
+    fn hydra_grids_are_built_at_the_full_schema_from_its_dataset_rows() {
+        use crate::test_support::label_set;
+        let mut facts = region_service_endpoint_facts();
+        // Minute scrapes: windows of whole minutes only.
+        facts.get_mut(METRIC).unwrap().scrape_interval_ms = 60_000;
+        let raqes = [
+            quantile_by(&["region"]),
+            crate::test_support::quantile_by(&["service", "endpoint"], 120_000, 120_000),
+        ];
+        let [hydra, tracker] = hydra_and_tracker();
+        let elsewhere = |dataset: Option<&str>| AtomicCostEntry {
+            mem_bytes_per_instance: 2000.0,
+            measured_at: aqpbm_core::MeasuredAt {
+                dataset: dataset.map(str::to_string),
+                ..crate::test_support::measured_at()
+            },
+            ..hydra.clone()
+        };
+        let costs = [
+            hydra.clone(),
+            elsewhere(Some("hydra_other")),
+            elsewhere(None),
+            tracker,
+        ];
+        let grids = |facts: &WorkloadFacts| {
+            build_all_candidates_unpruned(&raqes, &costs, facts, true)
+                .into_iter()
+                .filter(|d| d.config.sketch == "hydra-kll")
+                .map(|d| {
+                    (
+                        d.grouping_labels,
+                        d.window_ms,
+                        d.config.mem_bytes_per_instance as u64,
+                    )
+                })
+                .collect::<BTreeSet<_>>()
+        };
+        let schema = label_set(&["region", "service", "endpoint"]);
+        assert_eq!(
+            grids(&facts),
+            BTreeSet::from([
+                (schema.clone(), 60_000, 1000),
+                (schema.clone(), 120_000, 1000),
+            ])
+        );
+        // No Hydra dataset: no grid at all, and not as a plain candidate.
+        facts.get_mut(METRIC).unwrap().hydra_dataset = None;
+        assert!(grids(&facts).is_empty());
     }
 }

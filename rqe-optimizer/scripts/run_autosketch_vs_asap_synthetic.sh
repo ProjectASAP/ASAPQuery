@@ -36,7 +36,7 @@ run)
     done < "$TABLES/plan.tsv" |
         xargs -P "$JOBS" -L 1 sh -c \
             'timeout "$JOB_TIMEOUT" "$0" synthetic --table "$1" --target "$2" --runs "$RUNS" \
-                --saturation-dir "$SATURATION_DIR" --out "$3" 2>> "$3.log" \
+                --saturation-dir "$SATURATION_DIR" --no-chosen --out "$3" 2>> "$3.log" \
                 || echo "$3" >> "$OUT/failed.txt"' \
             "$BIN"
     ;;
