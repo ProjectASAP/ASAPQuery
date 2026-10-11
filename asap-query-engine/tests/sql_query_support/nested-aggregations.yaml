@@ -1,0 +1,307 @@
+# SQL equivalents of promql-compliance/suites/nested-aggregations.yaml; case
+# names match. Each PromQL aggregation stage is one SELECT layer:
+#   anchor  sum by (job, instance) (data)
+#           -> SELECT job, instance, SUM(value) AS v FROM data WHERE <1s> GROUP BY job, instance
+#   stage   agg by (job) (x)          -> SELECT job, AGG(v) AS m FROM (x) GROUP BY job
+#   stage   topk by (job) (3, x)      -> SELECT job, ..., v FROM (x) ORDER BY v DESC LIMIT 3 BY job
+# The instant-vector anchor aggregates over one ingestion interval (1s).
+tables:
+  - name: data
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 60000
+
+cases:
+  - name: one-stage-sum
+    query: SELECT job, SUM(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+  - name: one-stage-count
+    query: SELECT job, COUNT(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+  - name: one-stage-avg
+    query: SELECT job, AVG(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+  - name: one-stage-min
+    query: SELECT job, MIN(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+  - name: one-stage-max
+    query: SELECT job, MAX(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+  - name: one-stage-topk-3
+    query: SELECT job, instance, v FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) ORDER BY v DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: bare-topk-by-job-then-sum
+    query: SELECT job, SUM(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: one-stage-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+  - name: one-stage-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+  - name: one-stage-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: sum by (job)
+  - name: two-stage-sum-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-sum-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-sum-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-sum-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-sum-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-sum-then-topk-3
+    query: SELECT job, m FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-sum-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-sum-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-sum-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, SUM(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: count by (job)
+  - name: two-stage-count-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-count-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-count-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-count-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-count-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-count-then-topk-3
+    query: SELECT job, m FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-count-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-count-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-count-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, COUNT(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: avg by (job)
+  - name: two-stage-avg-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-avg-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-avg-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-avg-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-avg-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-avg-then-topk-3
+    query: SELECT job, m FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-avg-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-avg-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-avg-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, AVG(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: min by (job)
+  - name: two-stage-min-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-min-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-min-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-min-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-min-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-min-then-topk-3
+    query: SELECT job, m FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-min-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-min-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-min-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, MIN(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: max by (job)
+  - name: two-stage-max-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-max-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-max-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-max-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-max-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-max-then-topk-3
+    query: SELECT job, m FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-max-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-max-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-max-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, MAX(v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: topk by (job) (3, ...), which keeps per-instance rows
+  - name: two-stage-topk-3-then-sum
+    query: SELECT job, SUM(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-count
+    query: SELECT job, COUNT(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-avg
+    query: SELECT job, AVG(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-min
+    query: SELECT job, MIN(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-max
+    query: SELECT job, MAX(v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-topk-3
+    query: SELECT job, instance, v FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) ORDER BY v DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-topk-3-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, v) FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: quantile by (job) (0.5, ...)
+  - name: two-stage-quantile-0-5-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-topk-3
+    query: SELECT job, m FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-5-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, QUANTILE(0.5, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: quantile by (job) (0.75, ...)
+  - name: two-stage-quantile-0-75-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-topk-3
+    query: SELECT job, m FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-75-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, QUANTILE(0.75, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+
+  # Middle stage: quantile by (job) (0.9, ...)
+  - name: two-stage-quantile-0-9-then-sum
+    query: SELECT job, SUM(m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-count
+    query: SELECT job, COUNT(m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-avg
+    query: SELECT job, AVG(m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-min
+    query: SELECT job, MIN(m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-max
+    query: SELECT job, MAX(m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-topk-3
+    query: SELECT job, m FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) ORDER BY m DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-quantile-0-5
+    query: SELECT job, QUANTILE(0.5, m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-quantile-0-75
+    query: SELECT job, QUANTILE(0.75, m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported
+  - name: two-stage-quantile-0-9-then-quantile-0-9
+    query: SELECT job, QUANTILE(0.9, m) FROM (SELECT job, QUANTILE(0.9, v) AS m FROM (SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance) GROUP BY job) GROUP BY job
+    expected: unsupported

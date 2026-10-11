@@ -1,0 +1,21 @@
+# SQL equivalents of promql-compliance/suites/topk-ordering.yaml; case names
+# match. Instant vectors aggregate over one ingestion interval (1s); per-group
+# top-k uses `LIMIT k BY`.
+tables:
+  - name: ordered_data
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 60000
+
+cases:
+  - name: topk-tied
+    query: SELECT job, instance, SUM(value) AS v FROM ordered_data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 6
+    expected: supported
+  - name: topk-tied-by-job
+    query: SELECT job, instance, SUM(value) AS v FROM ordered_data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: topk-tied-without-instance
+    query: SELECT job, instance, SUM(value) AS v FROM ordered_data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job
+    expected: unsupported

@@ -1,0 +1,114 @@
+tables:
+  - name: cpu_usage
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [L1, L2, L3]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 10000
+
+cases:
+  # Single-layer aggregations
+  - name: sum_by_label
+    query: SELECT L1, SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: supported
+  - name: count_by_label
+    query: SELECT L1, COUNT(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: supported
+  # The planner plans AVG as Sum + Count, but the engine only resolves
+  # single-statistic SQL queries.
+  - name: avg_by_label
+    query: SELECT L1, AVG(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: unsupported
+  - name: min_by_label
+    query: SELECT L1, MIN(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: supported
+  - name: max_by_label
+    query: SELECT L1, MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: supported
+  - name: quantile_by_label
+    query: SELECT L1, QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: supported
+  - name: sum_by_all_labels
+    query: SELECT L1, L2, L3, SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2, L3
+    expected: supported
+  - name: count_distinct_by_label
+    query: SELECT L1, COUNT(DISTINCT L2) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: supported
+
+  # No GROUP BY: the pattern parser rejects an empty GROUP BY.
+  - name: sum_no_group_by
+    query: SELECT SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+    expected: unsupported
+  - name: count_no_group_by
+    query: SELECT COUNT(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+    expected: unsupported
+  - name: min_no_group_by
+    query: SELECT MIN(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+    expected: unsupported
+  - name: max_no_group_by
+    query: SELECT MAX(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile_no_group_by
+    query: SELECT QUANTILE(0.95, value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+    expected: unsupported
+  - name: count_distinct_no_group_by
+    query: SELECT COUNT(DISTINCT L2) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW()
+    expected: unsupported
+
+  # Time-range forms, with GROUP BY
+  - name: absolute_between_group_by
+    query: SELECT L1, SUM(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, '2025-10-01 00:00:10') AND '2025-10-01 00:00:10' GROUP BY L1
+    expected: supported
+  - name: half_open_bounds_group_by
+    query: SELECT L1, SUM(value) FROM cpu_usage WHERE time >= DATEADD(s, -10, NOW()) AND time < NOW() GROUP BY L1
+    expected: supported
+  - name: mirrored_half_open_bounds_group_by
+    query: SELECT L1, SUM(value) FROM cpu_usage WHERE DATEADD(s, -10, NOW()) <= time AND NOW() > time GROUP BY L1
+    expected: supported
+  - name: absolute_half_open_bounds_group_by
+    query: SELECT L1, SUM(value) FROM cpu_usage WHERE time >= DATEADD(s, -10, '2025-10-01 00:00:10') AND time < '2025-10-01 00:00:10' GROUP BY L1
+    expected: supported
+  # Only half-open `>= ... <` ranges are accepted, matching ClickHouse's
+  # [start, end) scan; a closed `<=` upper bound would be off by one.
+  - name: closed_comparison_bounds_group_by
+    query: SELECT L1, SUM(value) FROM cpu_usage WHERE time >= DATEADD(s, -10, NOW()) AND time <= NOW() GROUP BY L1
+    expected: unsupported
+  - name: no_time_filter_group_by
+    query: SELECT L1, SUM(value) FROM cpu_usage GROUP BY L1
+    expected: unsupported
+
+  # Top-k
+  - name: topk_sum_by_label
+    query: SELECT L1, SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1 ORDER BY total DESC LIMIT 5
+    expected: supported
+  - name: topk_sum_by_two_labels
+    query: SELECT L1, L2, SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2 ORDER BY total DESC LIMIT 5
+    expected: supported
+  - name: topk_count_by_label
+    query: SELECT L1, COUNT(value) AS c FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1 ORDER BY c DESC LIMIT 5
+    expected: supported
+  - name: topk_count_star_by_label
+    query: SELECT L1, COUNT(*) AS c FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1 ORDER BY c DESC LIMIT 5
+    expected: unsupported
+  - name: topk_count_by_two_labels
+    query: SELECT L1, L2, COUNT(value) AS c FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2 ORDER BY c DESC LIMIT 5
+    expected: supported
+
+  # Binary operators
+  - name: binary_aggregate_divide_aggregate
+    query: SELECT L1, SUM(value) / COUNT(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: unsupported
+  - name: binary_aggregate_times_scalar
+    query: SELECT L1, SUM(value) * 2 FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: unsupported
+  - name: two_aggregates
+    query: SELECT L1, SUM(value), COUNT(value) FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1
+    expected: unsupported
+
+  # Nested aggregations
+  - name: nested_avg_of_quantile
+    query: SELECT L1, AVG(result) FROM (SELECT L1, L2, QUANTILE(0.95, value) AS result FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2) GROUP BY L1
+    expected: unsupported
+  - name: nested_sum_of_sum
+    query: SELECT L1, SUM(total) FROM (SELECT L1, L2, SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -10, NOW()) AND NOW() GROUP BY L1, L2) GROUP BY L1
+    expected: unsupported

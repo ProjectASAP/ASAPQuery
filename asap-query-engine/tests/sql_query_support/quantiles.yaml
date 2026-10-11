@@ -1,0 +1,123 @@
+# SQL equivalents of promql-compliance/suites/quantiles.yaml; case names match.
+# `[5m]` range functions aggregate over a 300s window; instant vectors over
+# one ingestion interval (1s). A per-series result groups by (job, instance).
+tables:
+  - name: quantile_dense
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+  - name: quantile_wide
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 60000
+
+cases:
+  - name: quantile-over-time-0.1
+    query: SELECT job, instance, QUANTILE(0.1, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.2
+    query: SELECT job, instance, QUANTILE(0.2, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.3
+    query: SELECT job, instance, QUANTILE(0.3, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.4
+    query: SELECT job, instance, QUANTILE(0.4, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.5
+    query: SELECT job, instance, QUANTILE(0.5, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.6
+    query: SELECT job, instance, QUANTILE(0.6, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.7
+    query: SELECT job, instance, QUANTILE(0.7, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.75
+    query: SELECT job, instance, QUANTILE(0.75, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.8
+    query: SELECT job, instance, QUANTILE(0.8, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.9
+    query: SELECT job, instance, QUANTILE(0.9, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.95
+    query: SELECT job, instance, QUANTILE(0.95, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-0.99
+    query: SELECT job, instance, QUANTILE(0.99, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-over-time-ratio-0.9-0.5
+    query: SELECT job, instance, QUANTILE(0.9, value) / QUANTILE(0.5, value) FROM quantile_dense WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: unsupported
+
+  - name: quantile-0.1
+    query: SELECT QUANTILE(0.1, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.2
+    query: SELECT QUANTILE(0.2, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.3
+    query: SELECT QUANTILE(0.3, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.4
+    query: SELECT QUANTILE(0.4, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.5
+    query: SELECT QUANTILE(0.5, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.6
+    query: SELECT QUANTILE(0.6, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.7
+    query: SELECT QUANTILE(0.7, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.75
+    query: SELECT QUANTILE(0.75, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.8
+    query: SELECT QUANTILE(0.8, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.9
+    query: SELECT QUANTILE(0.9, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.95
+    query: SELECT QUANTILE(0.95, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: quantile-0.99
+    query: SELECT QUANTILE(0.99, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+
+  - name: quantile-0.5-by-job
+    query: SELECT job, QUANTILE(0.5, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: quantile-0.75-by-job
+    query: SELECT job, QUANTILE(0.75, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: quantile-0.9-by-job
+    query: SELECT job, QUANTILE(0.9, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: quantile-0.95-by-job
+    query: SELECT job, QUANTILE(0.95, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: quantile-0.99-by-job
+    query: SELECT job, QUANTILE(0.99, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: quantile-0.5-by-job-instance
+    query: SELECT job, instance, QUANTILE(0.5, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-0.75-by-job-instance
+    query: SELECT job, instance, QUANTILE(0.75, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-0.9-by-job-instance
+    query: SELECT job, instance, QUANTILE(0.9, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-0.95-by-job-instance
+    query: SELECT job, instance, QUANTILE(0.95, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: quantile-0.99-by-job-instance
+    query: SELECT job, instance, QUANTILE(0.99, value) FROM quantile_wide WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported

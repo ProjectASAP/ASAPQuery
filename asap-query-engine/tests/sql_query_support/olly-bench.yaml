@@ -1,0 +1,57 @@
+# SQL equivalents of promql-compliance/suites/olly-bench.yaml; case names match.
+# `[5m]` range functions aggregate over a 300s window; instant vectors over
+# one ingestion interval (1s).
+#
+# Skipped, no SQL equivalent:
+# - counter rate/increase: olly-01, olly-02, olly-03, olly-04, olly-08,
+#   olly-11, olly-13, olly-14, olly-15, olly-16, olly-18, olly-19, olly-20,
+#   olly-24, olly-25, olly-26
+# - PromQL subquery `[10m:]`: olly-10, olly-27
+# - bare selector (raw samples): olly-07
+#
+# histogram_quantile over bucket counters maps to QUANTILE over a table of raw
+# observations, grouped by the `sum by` labels minus `le`. rate() drops out
+# because scaling every bucket by the same factor leaves the quantile unchanged.
+tables:
+  - name: backend_process_resident_memory_bytes
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+  - name: backend_retry_backlog_depth
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+  - name: cache_refresh_lag_seconds
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+  - name: user_service_cache_refresh_lag_seconds
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+  - name: order_service_http_request_duration_seconds
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 60000
+
+cases:
+  - name: olly-09-sum-memory
+    query: SELECT SUM(value) FROM backend_process_resident_memory_bytes WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: olly-05-max-over-time-cache-lag
+    query: SELECT job, instance, MAX(value) FROM cache_refresh_lag_seconds WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: olly-06-max-over-time-user-cache-lag
+    query: SELECT job, instance, MAX(value) FROM user_service_cache_refresh_lag_seconds WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: olly-12-topk-sum-memory-by-job
+    query: SELECT job, SUM(value) AS v FROM backend_process_resident_memory_bytes WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job ORDER BY v DESC LIMIT 2
+    expected: supported
+  - name: olly-21-histogram-quantile-0.95
+    query: SELECT QUANTILE(0.95, value) FROM order_service_http_request_duration_seconds WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
+    expected: unsupported
+  - name: olly-23-topk-max-over-time-backlog
+    query: SELECT job, instance, MAX(value) AS v FROM backend_retry_backlog_depth WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 2
+    expected: supported
