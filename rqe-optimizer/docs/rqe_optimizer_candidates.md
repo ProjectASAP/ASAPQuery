@@ -3,7 +3,8 @@
 This document is the canonical design for candidate construction, eligibility
 (accuracy included), finer-to-coarser roll-ups and dominance pruning. What a
 candidate costs, and the MILP that maps RAQEs to candidates, are in
-[Cost models](rqe_optimizer_cost_model.md).
+[Cost models](rqe_optimizer_cost_model.md); Hydra is in
+[Hydra](rqe_optimizer_hydra.md).
 
 ## Candidate deployments
 
@@ -223,7 +224,8 @@ univmon-cardinality, KLL and DDSketch. These don't, and serve only
   `k` can hold keys that are in none of its fine groups' heaps.
 - **Hydra**. It inserts every label subset of its schema, so a coarse
   grouping inside the schema is answered directly from the grid, never by
-  merging fine groups; it is not a candidate today.
+  merging fine groups; it is not a candidate today
+  ([Hydra](rqe_optimizer_hydra.md)).
 
 - **Cost**: ingest, compaction and storage stay at `G_d`; the query job merges
   `I_d · n − I_r` times and answers `card(G_r)` groups

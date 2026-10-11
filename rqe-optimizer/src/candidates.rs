@@ -44,13 +44,12 @@ fn subset_gcds(values: impl IntoIterator<Item = Millis>) -> BTreeSet<Millis> {
     gcds
 }
 
-/// Whether a fixed-size sketch shared by all groups was measured holding at
-/// least `groups` of them. Its accuracy degrades as groups grow, and the row
-/// holds one measured point (`subpopulations`). Models a sketch keyed by the
-/// joined `G` value alone, so it holds exactly `card(G)` subpopulations; the
-/// current rows fan out to every label subset (sketch-bench#165).
-// ponytail: one point, so larger groupings are never planned. Rows at more
-// group counts (sketch-bench#143 S5) loosen this with no code change.
+/// Whether a fixed-size sketch shared by all groups (HydraKLL) was measured
+/// holding at least `groups` subpopulations. A necessary check, not Hydra's
+/// admission rule: a group's error depends on the grid's fanned-out mass
+/// against the group's own size, not on the group count alone, so admission
+/// needs the measured predicate of `docs/rqe_optimizer_hydra.md` §2.4.
+/// HydraKLL is in no capability's family list, so this decides nothing today.
 fn measured_at_group_count(config: &AtomicCostEntry, groups: u64) -> bool {
     config
         .query_accuracy

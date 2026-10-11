@@ -146,7 +146,7 @@ modeled.
 
 ## Planning design
 
-The optimizer has two companion design documents:
+The optimizer has three companion design documents:
 
 - [Candidate generation and eligibility](rqe_optimizer_candidates.md):
   candidate construction, eligibility (accuracy included), finer-to-coarser
@@ -154,6 +154,9 @@ The optimizer has two companion design documents:
 - [Cost models](rqe_optimizer_cost_model.md): the one cost table, the
   canonical cost-by-use and batch-latency model with its MILP, and the
   supported snapshot-AUC objective.
+- [Hydra](rqe_optimizer_hydra.md): what admitting Hydra needs (accuracy
+  guarantees per combination, cost model, candidates and MILP edges, and
+  sketch-bench measurements). Not implemented.
 
 
 ## Procedure
@@ -209,7 +212,7 @@ generation and pruning, eligibility checks, analytical objectives, and
 streaming Pareto filtering. The separation between candidate generation,
 enumeration, objectives, and Pareto filtering remains the intended boundary
 for future solver work. Hydra, a shared-subpopulation deployment rather than
-a fine-state roll-up, is future work.
+a fine-state roll-up, is designed in [Hydra](rqe_optimizer_hydra.md).
 
 Exporter bugs, benchmark-dataset choices, and historic run counts belong in
 `rqe_optimizer_TODO.md` or issue tracking, not in this problem statement.

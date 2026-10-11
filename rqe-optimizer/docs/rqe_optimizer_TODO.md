@@ -58,7 +58,7 @@ implemented, what is next, and what is intentionally deferred.
 - Real query concurrency in the snapshot objective, whose memory assumes every
   query runs at once (cost by use holds query memory only while it runs).
 - Bursty load; CPU is a mean over time.
-- Admitting Hydra.
+- Admitting Hydra ([rqe_optimizer_hydra.md](rqe_optimizer_hydra.md)).
 - Key labels `K` (PerGroup + PerKey sizes).
 - RQE churn, replanning, and migration cost.
 - Temporal pre-merging; v1 merges selected base instances at query time.
