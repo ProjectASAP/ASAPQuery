@@ -1,0 +1,21 @@
+[kll] series=1000000 workers=1 rate=0
+    achieved=87929/s cpu=1.00 cores sender_cpu=0.08 cores rss=9997MB
+[kll] series=1000000 workers=2 rate=0
+    achieved=201571/s cpu=1.70 cores sender_cpu=0.19 cores rss=10954MB
+[kll] series=1000000 workers=4 rate=0
+    achieved=417426/s cpu=3.07 cores sender_cpu=0.40 cores rss=11471MB
+[kll] series=1000000 workers=8 rate=0
+    achieved=762420/s cpu=5.28 cores sender_cpu=0.78 cores rss=11400MB
+[kll] series=1000000 workers=14 rate=0
+    achieved=970472/s cpu=6.86 cores sender_cpu=0.94 cores rss=11196MB
+[hydra_kll] series=1000000 workers=1 rate=0
+    achieved=252922/s cpu=1.00 cores sender_cpu=0.23 cores rss=268MB
+[hydra_kll] series=1000000 workers=2 rate=0
+    achieved=547228/s cpu=1.99 cores sender_cpu=0.51 cores rss=486MB
+[hydra_kll] series=1000000 workers=4 rate=0
+    achieved=974032/s cpu=3.70 cores sender_cpu=0.98 cores rss=566MB
+[hydra_kll] series=1000000 workers=8 rate=0
+    achieved=2135905/s cpu=8.00 cores sender_cpu=2.04 cores rss=398MB
+[hydra_kll] series=1000000 workers=14 rate=0
+    achieved=1660197/s cpu=9.65 cores sender_cpu=1.58 cores rss=651MB
+EXIT=0
