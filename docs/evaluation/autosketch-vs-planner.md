@@ -658,7 +658,7 @@ latency SLA (§5). Decided 2026-10-08.
   case where this does not hold. The result to report is the size of the gap and where it comes
   from, not that a gap exists.
 
-## 11. Results (synthetic, 2026-10-10: Hydra candidates and roll-ups)
+## 11. Results (synthetic, 2026-10-11: Hydra candidates, roll-ups, cube)
 
 Absolute costs by use; latency is a plan's batch latency. Results, figures and
 the full analysis are in sketch-bench #203,
@@ -673,59 +673,73 @@ the full analysis are in sketch-bench #203,
   measured on datasets with the eval's own label schemas, held to the worst
   error over the covered groups and the worst over N and seeds. Their cost
   rows come from those datasets. AutoSketch keeps skipping Hydra.
-- **Template sets.** **Classic** is the earlier 10 templates. **All** adds a
-  multi-grouping set (#196): templates 11–17 on two metrics, `http` (region ×
-  service × endpoint × status) and `flows` (dst_subnet × dst_port × proto).
-  These are distinct counts and p99s over several groupings of one stream, in
-  the style of anomaly detection. Some RQEs cover only groups holding ≥ 1% or
-  ≥ 5% of the records. Every RQE is held to the worse of its smallest and
-  largest covered group (sketch-bench#189).
+- **Template sets.** **Classic** is the earlier 10 templates.
+  **Multi-grouping** is templates 11–17 (#196) on two metrics, `http`
+  (region × service × endpoint × status) and `flows` (dst_subnet × dst_port ×
+  proto): distinct counts and p99s over several groupings of one stream, in
+  the style of anomaly detection. Template 16 is p99 latency
+  `GROUP BY CUBE(region, service, endpoint)`, all 7 groupings. Some RQEs
+  cover only groups holding ≥ 1% or ≥ 5% of the records. Every RQE is held
+  to the worse of its smallest and largest covered group (sketch-bench#189).
+  **All** is classic plus multi-grouping (mixed + multi-grouping).
 - **Inputs.** KLL memory is asap_sketchlib's real allocation (#192), and the
   cost table is re-measured.
 
-**Version 1**, the cheapest plan (CPU only in vCPU; Fargate in $/hour).
-AutoSketch's latency is 1015 ms in every workload.
+**Version 1**, the cheapest plan (CPU only in vCPU; Fargate in $/hour), and
+each method's cost at AutoSketch's latency (1015 ms with the classic
+templates, 490 ms on multi-grouping alone).
 
-| Workload | RQEs | ASAP (latency) | ASAP, no roll-ups | PerQuery (latency) | AutoSketch | ASAP at 1015 ms | PerQuery at 1015 ms |
+| Workload | RQEs | ASAP (latency) | ASAP, no roll-ups | PerQuery (latency) | AutoSketch (latency) | ASAP at AutoSketch's latency | PerQuery at AutoSketch's latency |
 |---|---|---|---|---|---|---|---|
-| mixed | 50 | 3.54 (13.4 s) | 3.54 | 10.5 (3.33 s) | 3,720 | 5.67 | 13.5 |
+| mixed | 50 | 3.54 (13.4 s) | 3.54 | 10.5 (3.33 s) | 3,716 (1015 ms) | 5.67 | 13.5 |
 | mixed, Fargate | 50 | 0.230 $/h | 0.230 | 0.752 $/h | 176 $/h | 0.307 | 0.864 |
-| mixed, m = 16 | 800 | 56.6 (13.4 s) | 56.6 | 168 (3.33 s) | 59,450 | 90.8 | 215 |
-| multi-grouping | 104 | 3.79 (13.4 s) | 3.94 | 11.3 (3.33 s) | 3,720 | 5.93 | 14.2 |
-| multi-grouping, Fargate | 104 | 0.245 $/h | 0.257 | 0.799 $/h | 176 $/h | 0.322 | 0.910 |
-| multi-grouping, r = 8 | 200 | 3.94 (2.68 s) | 4.08 | 19.9 (3.33 s) | 4,460 | 5.98 | 23.1 |
-| multi-grouping, m = 8 | 832 | 30.4 (13.4 s) | 31.5 | 90.3 (3.33 s) | 29,780 | 47.4 | 114 |
-| multi-grouping, m = 16 | 1664 | 60.7 (13.4 s) | 63.0 | 181 (3.33 s) | 59,560 | 94.9 | 228 |
+| mixed, m = 16 | 800 | 56.6 (13.4 s) | 56.6 | 168 (3.33 s) | 59,452 | 90.8 | 215 |
+| multi-grouping | 62 | 0.221 (0.56 s) | 0.551 | 1.07 (0.96 s) | 10.2 (490 ms) | 0.324 | 1.33 |
+| multi-grouping, Fargate | 62 | 0.0137 $/h | 0.0339 | 0.0597 $/h | 0.430 $/h | 0.0187 | 0.0701 |
+| multi-grouping, r = 8 | 124 | 0.242 (0.56 s) | 0.573 | 2.04 (0.96 s) | 12.3 | 0.344 | 2.33 |
+| multi-grouping, m = 16 | 992 | 3.53 (0.56 s) | 8.81 | 17.1 (0.96 s) | 163 | 5.18 | 21.2 |
+| mixed + multi-grouping | 112 | 3.76 (13.4 s) | 4.09 | 11.6 (3.33 s) | 3,726 (1015 ms) | 5.90 | 14.5 |
+| mixed + multi-grouping, Fargate | 112 | 0.243 $/h | 0.264 | 0.812 $/h | 176 $/h | 0.321 | 0.923 |
+| mixed + multi-grouping, r = 8 | 216 | 3.90 (2.68 s) | 4.23 | 20.5 (3.33 s) | 4,468 | 5.95 | 23.7 |
+| mixed + multi-grouping, m = 8 | 896 | 30.1 (13.4 s) | 32.7 | 92.7 (3.33 s) | 29,808 | 47.2 | 116 |
+| mixed + multi-grouping, m = 16 | 1792 | 60.2 (13.4 s) | 65.4 | 185 (3.33 s) | 59,615 | 94.3 | 232 |
 
-**Version 2**, cost at a batch-latency SLA (CPU only, vCPU). AutoSketch meets
-only the 3 s and 10 s SLAs. On the multi-grouping set, the per-(service,
-endpoint) queries make 490 ms the tightest feasible bound, so the 100 and
-300 ms SLAs have no plan.
+**Version 2**, cost at a batch-latency SLA (CPU only, vCPU). With the
+classic templates AutoSketch meets only the 3 s and 10 s SLAs; on
+multi-grouping alone it meets every feasible one. With the multi-grouping
+templates, the per-(service, endpoint) queries make 490 ms the tightest
+feasible bound, so the 100 and 300 ms SLAs have no plan.
 
 | Workload | SLA | ASAP | ASAP, no roll-ups | PerQuery | AutoSketch |
 |---|---|---|---|---|---|
-| mixed | 100 ms | 36.7 | 36.7 | 64.5 | 3,720 (misses) |
-| mixed | 1 s | 5.67 | 5.67 | 13.5 | 3,720 (misses) |
-| mixed | 3 s | 3.60 | 3.60 | 10.8 | 3,720 |
-| mixed, m = 16 | 100 ms | 588 | 588 | 1,030 | 59,450 (misses) |
-| mixed, m = 16 | 3 s | 57.6 | 57.6 | 173 | 59,450 |
-| multi-grouping | 1 s | 5.93 | 6.07 | 14.2 | 3,720 (misses) |
-| multi-grouping | 3 s | 3.85 | 4.00 | 11.6 | 3,720 |
-| multi-grouping, m = 16 | 1 s | 94.9 | 97.2 | 228 | 59,560 (misses) |
-| multi-grouping, m = 16 | 3 s | 61.7 | 64.0 | 186 | 59,560 |
+| mixed | 100 ms | 36.7 | 36.7 | 64.5 | 3,716 (misses) |
+| mixed | 1 s | 5.67 | 5.67 | 13.5 | 3,716 (misses) |
+| mixed | 3 s | 3.60 | 3.60 | 10.8 | 3,716 |
+| mixed, m = 16 | 100 ms | 588 | 588 | 1,030 | 59,452 (misses) |
+| mixed, m = 16 | 3 s | 57.6 | 57.6 | 173 | 59,452 |
+| multi-grouping | 1 s | 0.221 | 0.551 | 1.07 | 10.2 |
+| multi-grouping, m = 16 | 1 s | 3.53 | 8.81 | 17.1 | 163 |
+| mixed + multi-grouping | 1 s | 5.90 | 6.23 | 14.5 | 3,726 (misses) |
+| mixed + multi-grouping | 3 s | 3.82 | 4.15 | 11.9 | 3,726 |
+| mixed + multi-grouping, m = 16 | 1 s | 94.3 | 99.6 | 232 | 59,615 (misses) |
+| mixed + multi-grouping, m = 16 | 3 s | 61.1 | 66.4 | 190 | 59,615 |
 
-**Roll-ups help ASAP only a little.**
-- On the multi-grouping set, ASAP serves 40% of RQEs from a finer deployment
-  (42 of 104, and the same share at r = 8, m = 8, m = 16). That halves its
-  deployments, from 30 to 14 (480 to 224 at m = 16).
-- But cost drops only 3.3–3.6% under CPU weights and 4.4–4.8% under Fargate,
-  and by the same amount at every frontier point and SLA.
-- The deployments roll-ups remove are small: HLL and DDSketch at coarse
-  groupings. Cost is dominated by ingest and storage at the finest groupings,
-  which every plan needs anyway.
-- ASAP's ~3× advantage over PerQuery comes from sharing deployments across
-  RQEs at the same grouping.
-- On classic, roll-ups never apply, because every stream has one grouping.
+**Roll-ups cut multi-grouping cost by 60%.**
+- On multi-grouping, ASAP serves 52 of 62 RQEs from a finer deployment. Its
+  deployments drop from 26 to 5 and its cost from 0.551 to 0.221 vCPU
+  (0.0339 to 0.0137 $/h), with the same 58–60% at r = 8, m = 8 and m = 16, at
+  every frontier point and SLA.
+- The cube is the clearest case: one KLL deployment at (region, service,
+  endpoint) answers all 14 p99 RQEs. Every deployment ingests the whole
+  stream, so cost grows with the number of groupings kept.
+- A KLL or DDSketch merge summarizes the pooled data of the merged groups, so
+  a roll-up answers a coarse group's p99, not a quantile of quantiles (KLL
+  reads its measured merge curve).
+- On mixed + multi-grouping, roll-ups save 8% (4.09 to 3.76 vCPU; 34 to 13
+  deployments): the classic templates, whose streams have one grouping each,
+  are most of the cost.
+- On classic, roll-ups never apply. ASAP's ~3× advantage over PerQuery there
+  comes from sharing deployments across RQEs at the same grouping.
 
 **Hydra is never chosen.**
 - Hydra grids are eligible for many RQEs, but neither ASAP nor PerQuery
@@ -749,8 +763,10 @@ approxbench accuracy runs at 1e8 items):
 |---|---|---|---|---|
 | mixed | 50 | 0.72 s | 0.64 s | 0.002 s + 212 s |
 | mixed, m = 16 | 800 | 13.7 s | 11.4 s | 0.035 s + 3,394 s |
-| multi-grouping | 104 | 1.05 s | 0.83 s | 0.004 s + 481 s |
-| multi-grouping, m = 16 | 1664 | 18.1 s | 13.9 s | 0.069 s + 7,702 s |
+| multi-grouping | 62 | 0.41 s | 0.22 s | 0.002 s + 269 s |
+| multi-grouping, m = 16 | 992 | 7.0 s | 4.1 s | 0.037 s + 4,309 s |
+| mixed + multi-grouping | 112 | 1.12 s | 0.88 s | 0.004 s + 481 s |
+| mixed + multi-grouping, m = 16 | 1792 | 22.5 s | 16.7 s | 0.079 s + 7,702 s |
 
 **Caveats.**
 - The cost model charges a per-group sketch its insert only, not routing a
