@@ -2622,7 +2622,7 @@ impl SimpleEngine {
         });
         let keys = match &context.base.store_plan.keys_query {
             None => KeyInputSpec::FromValues,
-            Some(query) => {
+            Some(_) => {
                 let window_type = context.keys_window_type.ok_or_else(|| {
                     QueryExecutionError::Native(
                         "Separate keys query is missing its window type".into(),
@@ -2647,7 +2647,6 @@ impl SimpleEngine {
                     })?,
                 });
                 KeyInputSpec::Separate {
-                    query: query.clone(),
                     aggregation_type: context.base.agg_info.aggregation_type_for_key,
                     strategy: StoreReadStrategy::for_window(window, window_type),
                 }
@@ -2658,7 +2657,6 @@ impl SimpleEngine {
             statistic: context.base.metadata.statistic_to_compute,
             query_kwargs: context.base.metadata.query_kwargs.clone(),
             values: ValueEstimateInput {
-                query: context.base.store_plan.values_query.clone(),
                 aggregation_type: context.base.agg_info.aggregation_type_for_value,
                 strategy: StoreReadStrategy::for_window(values_window, context.window_type),
             },

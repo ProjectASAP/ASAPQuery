@@ -56,7 +56,6 @@ pub(crate) struct WindowCompositionSpec {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValueEstimateInput {
-    pub query: StoreQueryParams,
     pub aggregation_type: AggregationType,
     pub strategy: StoreReadStrategy,
 }
@@ -65,7 +64,6 @@ pub(crate) struct ValueEstimateInput {
 pub(crate) enum KeyInputSpec {
     FromValues,
     Separate {
-        query: StoreQueryParams,
         aggregation_type: AggregationType,
         strategy: StoreReadStrategy,
     },
@@ -183,16 +181,17 @@ impl QueryPlan {
         let estimate_spec = RangeEstimateSpec::compile(context)?;
         let values_read = Self::push_read(
             &mut nodes,
-            &estimate_spec.values.query,
+            &context.base.store_plan.values_query,
             StoreReadRole::Values,
             estimate_spec.values.strategy.clone(),
         );
         let values = Self::push_prepare_buckets(&mut nodes, values_read);
         let keys = match &estimate_spec.keys {
             KeyInputSpec::FromValues => None,
-            KeyInputSpec::Separate {
-                query, strategy, ..
-            } => {
+            KeyInputSpec::Separate { strategy, .. } => {
+                let query = context.base.store_plan.keys_query.as_ref().ok_or_else(|| {
+                    "Separate-key estimate is missing its store query".to_string()
+                })?;
                 let read =
                     Self::push_read(&mut nodes, query, StoreReadRole::Keys, strategy.clone());
                 Some(Self::push_prepare_buckets(&mut nodes, read))
@@ -489,14 +488,12 @@ impl RangeEstimateSpec {
             bucket_step_ms: context.tumbling_window_ms,
         });
         let values = ValueEstimateInput {
-            query: context.base.store_plan.values_query.clone(),
             aggregation_type: context.base.agg_info.aggregation_type_for_value,
             strategy: StoreReadStrategy::for_window(values_window, context.window_type),
         };
         let keys = match &context.base.store_plan.keys_query {
             None => KeyInputSpec::FromValues,
-            Some(query) => KeyInputSpec::Separate {
-                query: query.clone(),
+            Some(_) => KeyInputSpec::Separate {
                 aggregation_type: context.base.agg_info.aggregation_type_for_key,
                 strategy: StoreReadStrategy::for_window(
                     Arc::new(WindowCompositionSpec {
