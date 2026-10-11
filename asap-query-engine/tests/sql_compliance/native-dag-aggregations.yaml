@@ -1,0 +1,23 @@
+# SQL equivalents of promql-compliance/suites/native-dag-aggregations.yaml;
+# case names match. Instant vectors aggregate over one ingestion interval (1s).
+tables:
+  - name: data
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 60000
+
+cases:
+  - name: tumbling-sum
+    query: SELECT SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: keyed-count
+    query: SELECT job, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: grouped-quantile-labels
+    query: SELECT job, QUANTILE(0.99, value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: self-keyed-topk
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 2
+    expected: supported

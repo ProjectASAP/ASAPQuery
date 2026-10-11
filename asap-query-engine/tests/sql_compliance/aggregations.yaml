@@ -1,0 +1,194 @@
+# SQL equivalents of promql-compliance/suites/aggregations.yaml; case names match.
+#
+# Translation: `[5m]` range functions aggregate over a 300s window; instant
+# vectors aggregate over one ingestion interval (1s). A per-series result
+# groups by every label (job, instance). Per-group top-k uses `LIMIT k BY`.
+#
+# Skipped, no SQL equivalent for counter rate/increase: increase, rate,
+# topk-3-rate, topk-3-rate-by-job, topk-3-rate-by-job-instance,
+# sum-by-job-rate, sum-by-job-instance-rate.
+tables:
+  - name: data
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [job, instance]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 60000
+
+cases:
+  - name: sum-over-time
+    query: SELECT job, instance, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: count-over-time
+    query: SELECT job, instance, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: avg-over-time
+    query: SELECT job, instance, AVG(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: unsupported
+  - name: min-over-time
+    query: SELECT job, instance, MIN(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: max-over-time
+    query: SELECT job, instance, MAX(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+
+  - name: topk-1-bare
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 1
+    expected: supported
+  - name: topk-3-bare
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3
+    expected: supported
+  - name: topk-5-bare
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 5
+    expected: supported
+  - name: topk-10-bare
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 10
+    expected: supported
+  - name: topk-3-bare-by-job
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: topk-3-bare-by-job-instance
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job, instance
+    expected: unsupported
+
+  - name: topk-1-sum-over-time
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 1
+    expected: supported
+  - name: topk-3-sum-over-time
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3
+    expected: supported
+  - name: topk-5-sum-over-time
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 5
+    expected: supported
+  - name: topk-10-sum-over-time
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 10
+    expected: supported
+  - name: topk-1-sum-over-time-by-job
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 1 BY job
+    expected: unsupported
+  - name: topk-3-sum-over-time-by-job
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: topk-5-sum-over-time-by-job
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 5 BY job
+    expected: unsupported
+  - name: topk-10-sum-over-time-by-job
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 10 BY job
+    expected: unsupported
+  - name: topk-1-sum-over-time-by-job-instance
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 1 BY job, instance
+    expected: unsupported
+  - name: topk-3-sum-over-time-by-job-instance
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 3 BY job, instance
+    expected: unsupported
+  - name: topk-5-sum-over-time-by-job-instance
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 5 BY job, instance
+    expected: unsupported
+  - name: topk-10-sum-over-time-by-job-instance
+    query: SELECT job, instance, SUM(value) AS v FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY v DESC LIMIT 10 BY job, instance
+    expected: unsupported
+
+  - name: topk-1-count-over-time
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 1
+    expected: supported
+  - name: topk-3-count-over-time
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 3
+    expected: supported
+  - name: topk-5-count-over-time
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 5
+    expected: supported
+  - name: topk-10-count-over-time
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 10
+    expected: supported
+  - name: topk-1-count-over-time-by-job
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 1 BY job
+    expected: unsupported
+  - name: topk-3-count-over-time-by-job
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 3 BY job
+    expected: unsupported
+  - name: topk-5-count-over-time-by-job
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 5 BY job
+    expected: unsupported
+  - name: topk-10-count-over-time-by-job
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 10 BY job
+    expected: unsupported
+  - name: topk-1-count-over-time-by-job-instance
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 1 BY job, instance
+    expected: unsupported
+  - name: topk-3-count-over-time-by-job-instance
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 3 BY job, instance
+    expected: unsupported
+  - name: topk-5-count-over-time-by-job-instance
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 5 BY job, instance
+    expected: unsupported
+  - name: topk-10-count-over-time-by-job-instance
+    query: SELECT job, instance, COUNT(value) AS c FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance ORDER BY c DESC LIMIT 10 BY job, instance
+    expected: unsupported
+
+  - name: sum
+    query: SELECT SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: sum-by-job
+    query: SELECT job, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: sum-by-job-instance
+    query: SELECT job, instance, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: count
+    query: SELECT COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW()
+    expected: unsupported
+  - name: count-by-job
+    query: SELECT job, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: count-by-job-instance
+    query: SELECT job, instance, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+
+  - name: sum-by-job-sum-over-time
+    query: SELECT job, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: sum-by-job-instance-sum-over-time
+    query: SELECT job, instance, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: sum-sum-over-time
+    query: SELECT SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
+    expected: unsupported
+  - name: sum-without-job-sum-over-time
+    query: SELECT instance, SUM(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY instance
+    expected: supported
+  - name: sum-count-over-time
+    query: SELECT COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
+    expected: unsupported
+  - name: sum-by-job-count-over-time
+    query: SELECT job, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: sum-by-job-instance-count-over-time
+    query: SELECT job, instance, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: sum-without-job-count-over-time
+    query: SELECT instance, COUNT(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY instance
+    expected: supported
+  - name: min-min-over-time
+    query: SELECT MIN(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
+    expected: unsupported
+  - name: min-by-job-min-over-time
+    query: SELECT job, MIN(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: min-by-job-instance-min-over-time
+    query: SELECT job, instance, MIN(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: min-without-job-min-over-time
+    query: SELECT instance, MIN(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY instance
+    expected: supported
+  - name: max-max-over-time
+    query: SELECT MAX(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW()
+    expected: unsupported
+  - name: max-by-job-max-over-time
+    query: SELECT job, MAX(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job
+    expected: supported
+  - name: max-by-job-instance-max-over-time
+    query: SELECT job, instance, MAX(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY job, instance
+    expected: supported
+  - name: max-without-job-max-over-time
+    query: SELECT instance, MAX(value) FROM data WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY instance
+    expected: supported

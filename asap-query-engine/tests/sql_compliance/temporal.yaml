@@ -1,0 +1,19 @@
+# SQL equivalents of promql-compliance/suites/temporal.yaml; case names match.
+# The off-grid-rate suite has no SQL counterpart: its only case is a rate().
+#
+# Skipped, no SQL equivalent for counter rate: request-rate.
+tables:
+  - name: http_requests_total
+    time_column: time
+    value_columns: [value]
+    metadata_columns: [host]
+data_ingestion_interval_ms: 1000
+repetition_delay_ms: 60000
+
+cases:
+  - name: sum-over-time
+    query: SELECT host, SUM(value) FROM http_requests_total WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY host
+    expected: supported
+  - name: sum-over-time-plus-one
+    query: SELECT host, SUM(value) + 1 FROM http_requests_total WHERE time BETWEEN DATEADD(s, -300, NOW()) AND NOW() GROUP BY host
+    expected: unsupported
