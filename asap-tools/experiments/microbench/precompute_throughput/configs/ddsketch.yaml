@@ -1,0 +1,18 @@
+# P4: per-series quantile sketch (DDSketch alternative to P3).
+aggregations:
+- aggregationId: 1
+  aggregationType: DDSketch
+  aggregationSubType: ''
+  parameters:
+    alpha: 0.01
+  labels:
+    grouping: [l0, l1, l2, l3, l4]
+    aggregated: []
+    rollup: []
+  metric: bench_metric
+  spatialFilter: ''
+  windowType: tumbling
+  windowSizeMs: 10000
+  slideIntervalMs: 10000
+metrics:
+  bench_metric: [l0, l1, l2, l3, l4]

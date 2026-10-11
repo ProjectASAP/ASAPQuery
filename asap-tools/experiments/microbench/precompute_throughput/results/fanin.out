@@ -1,0 +1,7 @@
+[kll_fanin_1to1] series=100000 workers=8 rate=0
+    achieved=724664/s cpu=5.01 cores sender_cpu=0.73 cores rss=1236MB
+[kll_fanin_100groups] series=100000 workers=8 rate=0
+    achieved=2975636/s cpu=7.57 cores sender_cpu=3.30 cores rss=139MB
+[kll_fanin_1group] series=100000 workers=8 rate=0
+    achieved=3747939/s cpu=8.00 cores sender_cpu=3.75 cores rss=39MB
+EXIT=0

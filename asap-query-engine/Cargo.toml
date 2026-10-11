@@ -82,6 +82,10 @@ name = "bench_precompute_sketch"
 path = "src/bin/bench_precompute_sketch.rs"
 
 [[bin]]
+name = "bench_ingest_sender"
+path = "src/bin/bench_ingest_sender.rs"
+
+[[bin]]
 name = "e2e_quickstart_resource_test"
 path = "src/bin/e2e_quickstart_resource_test.rs"
 

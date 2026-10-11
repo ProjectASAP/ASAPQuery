@@ -1,0 +1,241 @@
+[kll] series=1000 workers=8 rate=0
+    achieved=1401062/s cpu=7.08 cores sender_cpu=4.03 cores rss=41MB
+[kll] series=1000 workers=8 rate=140106
+    achieved=140093/s cpu=1.40 cores sender_cpu=0.40 cores rss=23MB
+[kll] series=1000 workers=8 rate=350266
+    achieved=350281/s cpu=3.44 cores sender_cpu=1.00 cores rss=25MB
+[kll] series=1000 workers=8 rate=700531
+    achieved=700508/s cpu=5.42 cores sender_cpu=1.97 cores rss=25MB
+[kll] series=1000 workers=8 rate=1050797
+    achieved=1050767/s cpu=5.19 cores sender_cpu=3.02 cores rss=28MB
+[kll] series=1000 workers=8 rate=1260956
+    achieved=1260934/s cpu=6.12 cores sender_cpu=3.57 cores rss=42MB
+[ddsketch] series=1000 workers=8 rate=0
+    achieved=1239313/s cpu=6.21 cores sender_cpu=3.53 cores rss=37MB
+[ddsketch] series=1000 workers=8 rate=123931
+    achieved=123915/s cpu=1.26 cores sender_cpu=0.36 cores rss=19MB
+[ddsketch] series=1000 workers=8 rate=309828
+    achieved=309862/s cpu=3.12 cores sender_cpu=0.88 cores rss=19MB
+[ddsketch] series=1000 workers=8 rate=619657
+    achieved=619640/s cpu=5.15 cores sender_cpu=1.75 cores rss=21MB
+[ddsketch] series=1000 workers=8 rate=929485
+    achieved=929414/s cpu=5.04 cores sender_cpu=2.60 cores rss=21MB
+[ddsketch] series=1000 workers=8 rate=1115382
+    achieved=1115416/s cpu=5.51 cores sender_cpu=3.14 cores rss=27MB
+[cms_heap] series=1000 workers=8 rate=0
+    achieved=1930599/s cpu=7.96 cores sender_cpu=5.48 cores rss=15MB
+[cms_heap] series=1000 workers=8 rate=193060
+    achieved=193071/s cpu=1.63 cores sender_cpu=0.56 cores rss=14MB
+[cms_heap] series=1000 workers=8 rate=482650
+    achieved=482646/s cpu=4.04 cores sender_cpu=1.39 cores rss=14MB
+[cms_heap] series=1000 workers=8 rate=965299
+    achieved=965268/s cpu=5.52 cores sender_cpu=2.74 cores rss=15MB
+[cms_heap] series=1000 workers=8 rate=1447949
+    achieved=1447948/s cpu=6.09 cores sender_cpu=4.20 cores rss=15MB
+[cms_heap] series=1000 workers=8 rate=1737539
+    achieved=1737541/s cpu=7.22 cores sender_cpu=5.04 cores rss=14MB
+[hydra_kll] series=1000 workers=8 rate=0
+    achieved=635363/s cpu=6.25 cores sender_cpu=1.75 cores rss=723MB
+[hydra_kll] series=1000 workers=8 rate=63536
+    achieved=63563/s cpu=1.19 cores sender_cpu=0.18 cores rss=567MB
+[hydra_kll] series=1000 workers=8 rate=158841
+    achieved=158831/s cpu=2.80 cores sender_cpu=0.44 cores rss=588MB
+[hydra_kll] series=1000 workers=8 rate=317682
+    achieved=317673/s cpu=5.12 cores sender_cpu=0.90 cores rss=587MB
+[hydra_kll] series=1000 workers=8 rate=476522
+    achieved=476521/s cpu=5.26 cores sender_cpu=1.35 cores rss=616MB
+[hydra_kll] series=1000 workers=8 rate=571827
+    achieved=571813/s cpu=5.61 cores sender_cpu=1.59 cores rss=642MB
+[raw] series=1000 workers=8 rate=0
+    achieved=206636/s cpu=2.71 cores sender_cpu=0.57 cores rss=29MB
+[raw] series=1000 workers=8 rate=20664
+    achieved=20666/s cpu=0.25 cores sender_cpu=0.06 cores rss=11MB
+[raw] series=1000 workers=8 rate=51659
+    achieved=51665/s cpu=0.64 cores sender_cpu=0.15 cores rss=11MB
+[raw] series=1000 workers=8 rate=103318
+    achieved=103329/s cpu=1.29 cores sender_cpu=0.29 cores rss=11MB
+[raw] series=1000 workers=8 rate=154977
+    achieved=154976/s cpu=1.90 cores sender_cpu=0.43 cores rss=12MB
+[raw] series=1000 workers=8 rate=185972
+    achieved=185964/s cpu=2.30 cores sender_cpu=0.52 cores rss=11MB
+[kll] series=10000 workers=8 rate=0
+    achieved=1356776/s cpu=6.89 cores sender_cpu=1.64 cores rss=166MB
+[kll] series=10000 workers=8 rate=135678
+    achieved=135660/s cpu=1.30 cores sender_cpu=0.17 cores rss=127MB
+[kll] series=10000 workers=8 rate=339194
+    achieved=339317/s cpu=3.26 cores sender_cpu=0.40 cores rss=137MB
+[kll] series=10000 workers=8 rate=678388
+    achieved=678695/s cpu=5.06 cores sender_cpu=0.79 cores rss=155MB
+[kll] series=10000 workers=8 rate=1017582
+    achieved=1017459/s cpu=5.16 cores sender_cpu=1.24 cores rss=164MB
+[kll] series=10000 workers=8 rate=1221098
+    achieved=1220931/s cpu=6.18 cores sender_cpu=1.46 cores rss=161MB
+[ddsketch] series=10000 workers=8 rate=0
+    achieved=1268864/s cpu=6.34 cores sender_cpu=1.51 cores rss=94MB
+[ddsketch] series=10000 workers=8 rate=126886
+    achieved=126659/s cpu=1.19 cores sender_cpu=0.16 cores rss=66MB
+[ddsketch] series=10000 workers=8 rate=317216
+    achieved=316994/s cpu=2.94 cores sender_cpu=0.37 cores rss=73MB
+[ddsketch] series=10000 workers=8 rate=634432
+    achieved=633939/s cpu=4.76 cores sender_cpu=0.73 cores rss=89MB
+[ddsketch] series=10000 workers=8 rate=951648
+    achieved=951650/s cpu=4.72 cores sender_cpu=1.14 cores rss=91MB
+[ddsketch] series=10000 workers=8 rate=1141978
+    achieved=1142235/s cpu=5.57 cores sender_cpu=1.35 cores rss=96MB
+[cms_heap] series=10000 workers=8 rate=0
+    achieved=2441448/s cpu=7.99 cores sender_cpu=2.75 cores rss=22MB
+[cms_heap] series=10000 workers=8 rate=244145
+    achieved=244053/s cpu=1.66 cores sender_cpu=0.29 cores rss=21MB
+[cms_heap] series=10000 workers=8 rate=610362
+    achieved=610316/s cpu=4.14 cores sender_cpu=0.72 cores rss=21MB
+[cms_heap] series=10000 workers=8 rate=1220724
+    achieved=1220785/s cpu=5.22 cores sender_cpu=1.37 cores rss=21MB
+[cms_heap] series=10000 workers=8 rate=1831086
+    achieved=1831006/s cpu=6.14 cores sender_cpu=2.14 cores rss=21MB
+[cms_heap] series=10000 workers=8 rate=2197304
+    achieved=2197247/s cpu=7.33 cores sender_cpu=2.56 cores rss=21MB
+[hydra_kll] series=10000 workers=8 rate=0
+    achieved=1725496/s cpu=7.75 cores sender_cpu=1.93 cores rss=766MB
+[hydra_kll] series=10000 workers=8 rate=172550
+    achieved=172664/s cpu=1.44 cores sender_cpu=0.20 cores rss=551MB
+[hydra_kll] series=10000 workers=8 rate=431374
+    achieved=431330/s cpu=3.50 cores sender_cpu=0.49 cores rss=580MB
+[hydra_kll] series=10000 workers=8 rate=862748
+    achieved=862837/s cpu=5.12 cores sender_cpu=0.95 cores rss=592MB
+[hydra_kll] series=10000 workers=8 rate=1294122
+    achieved=1294065/s cpu=5.50 cores sender_cpu=1.50 cores rss=611MB
+[hydra_kll] series=10000 workers=8 rate=1552946
+    achieved=1552890/s cpu=6.56 cores sender_cpu=1.78 cores rss=640MB
+[raw] series=10000 workers=8 rate=0
+    achieved=217411/s cpu=2.53 cores sender_cpu=0.25 cores rss=37MB
+[raw] series=10000 workers=8 rate=21741
+    achieved=21666/s cpu=0.25 cores sender_cpu=0.02 cores rss=22MB
+[raw] series=10000 workers=8 rate=54353
+    achieved=54331/s cpu=0.64 cores sender_cpu=0.06 cores rss=22MB
+[raw] series=10000 workers=8 rate=108705
+    achieved=108893/s cpu=1.30 cores sender_cpu=0.13 cores rss=23MB
+[raw] series=10000 workers=8 rate=163058
+    achieved=162990/s cpu=1.84 cores sender_cpu=0.19 cores rss=23MB
+[raw] series=10000 workers=8 rate=195669
+    achieved=195658/s cpu=2.21 cores sender_cpu=0.22 cores rss=23MB
+[kll] series=100000 workers=8 rate=0
+    achieved=709399/s cpu=4.97 cores sender_cpu=0.70 cores rss=1250MB
+[kll] series=100000 workers=8 rate=70940
+    achieved=71063/s cpu=0.80 cores sender_cpu=0.07 cores rss=1091MB
+[kll] series=100000 workers=8 rate=177350
+    achieved=177723/s cpu=1.96 cores sender_cpu=0.19 cores rss=1139MB
+[kll] series=100000 workers=8 rate=354700
+    achieved=354385/s cpu=3.45 cores sender_cpu=0.37 cores rss=1149MB
+[kll] series=100000 workers=8 rate=532050
+    achieved=532828/s cpu=4.16 cores sender_cpu=0.54 cores rss=1156MB
+[kll] series=100000 workers=8 rate=638459
+    achieved=635660/s cpu=4.57 cores sender_cpu=0.64 cores rss=1195MB
+[ddsketch] series=100000 workers=8 rate=0
+    achieved=571847/s cpu=4.42 cores sender_cpu=0.57 cores rss=447MB
+[ddsketch] series=100000 workers=8 rate=57185
+    achieved=57731/s cpu=0.69 cores sender_cpu=0.06 cores rss=416MB
+[ddsketch] series=100000 workers=8 rate=142962
+    achieved=142261/s cpu=1.58 cores sender_cpu=0.15 cores rss=429MB
+[ddsketch] series=100000 workers=8 rate=285923
+    achieved=288786/s cpu=2.81 cores sender_cpu=0.30 cores rss=441MB
+[ddsketch] series=100000 workers=8 rate=428885
+    achieved=418300/s cpu=3.55 cores sender_cpu=0.42 cores rss=460MB
+[ddsketch] series=100000 workers=8 rate=514662
+    achieved=528089/s cpu=4.06 cores sender_cpu=0.53 cores rss=450MB
+[cms_heap] series=100000 workers=8 rate=0
+    achieved=2328142/s cpu=8.00 cores sender_cpu=2.26 cores rss=34MB
+[cms_heap] series=100000 workers=8 rate=232814
+    achieved=233324/s cpu=1.68 cores sender_cpu=0.23 cores rss=33MB
+[cms_heap] series=100000 workers=8 rate=582035
+    achieved=582096/s cpu=3.96 cores sender_cpu=0.59 cores rss=32MB
+[cms_heap] series=100000 workers=8 rate=1164071
+    achieved=1164208/s cpu=4.81 cores sender_cpu=1.19 cores rss=34MB
+[cms_heap] series=100000 workers=8 rate=1746106
+    achieved=1746063/s cpu=6.18 cores sender_cpu=1.85 cores rss=36MB
+[cms_heap] series=100000 workers=8 rate=2095328
+    achieved=2095430/s cpu=7.43 cores sender_cpu=2.18 cores rss=35MB
+[hydra_kll] series=100000 workers=8 rate=0
+    achieved=1940465/s cpu=7.79 cores sender_cpu=1.91 cores rss=682MB
+[hydra_kll] series=100000 workers=8 rate=194046
+    achieved=193323/s cpu=1.51 cores sender_cpu=0.20 cores rss=373MB
+[hydra_kll] series=100000 workers=8 rate=485116
+    achieved=484718/s cpu=3.57 cores sender_cpu=0.50 cores rss=419MB
+[hydra_kll] series=100000 workers=8 rate=970232
+    achieved=970082/s cpu=4.68 cores sender_cpu=0.99 cores rss=491MB
+[hydra_kll] series=100000 workers=8 rate=1455349
+    achieved=1455277/s cpu=5.76 cores sender_cpu=1.52 cores rss=527MB
+[hydra_kll] series=100000 workers=8 rate=1746418
+    achieved=1746575/s cpu=6.90 cores sender_cpu=1.81 cores rss=530MB
+[raw] series=100000 workers=8 rate=0
+    achieved=207098/s cpu=2.55 cores sender_cpu=0.20 cores rss=59MB
+[raw] series=100000 workers=8 rate=20710
+    achieved=19999/s cpu=0.24 cores sender_cpu=0.02 cores rss=33MB
+[raw] series=100000 workers=8 rate=51774
+    achieved=51196/s cpu=0.61 cores sender_cpu=0.05 cores rss=34MB
+[raw] series=100000 workers=8 rate=103549
+    achieved=103330/s cpu=1.22 cores sender_cpu=0.10 cores rss=36MB
+[raw] series=100000 workers=8 rate=155323
+    achieved=155459/s cpu=1.84 cores sender_cpu=0.16 cores rss=38MB
+[raw] series=100000 workers=8 rate=186388
+    achieved=186660/s cpu=2.24 cores sender_cpu=0.19 cores rss=38MB
+[kll] series=1000000 workers=8 rate=0
+    achieved=890078/s cpu=5.75 cores sender_cpu=0.93 cores rss=11503MB
+[kll] series=1000000 workers=8 rate=89008
+    achieved=89330/s cpu=1.02 cores sender_cpu=0.09 cores rss=9720MB
+[kll] series=1000000 workers=8 rate=222520
+    achieved=228523/s cpu=2.42 cores sender_cpu=0.24 cores rss=10766MB
+[kll] series=1000000 workers=8 rate=445039
+    achieved=462245/s cpu=4.04 cores sender_cpu=0.48 cores rss=11302MB
+[kll] series=1000000 workers=8 rate=667559
+    achieved=667353/s cpu=4.81 cores sender_cpu=0.69 cores rss=11265MB
+[kll] series=1000000 workers=8 rate=801070
+    achieved=844366/s cpu=5.57 cores sender_cpu=0.87 cores rss=11218MB
+[ddsketch] series=1000000 workers=8 rate=0
+    achieved=830503/s cpu=5.54 cores sender_cpu=0.86 cores rss=4018MB
+[ddsketch] series=1000000 workers=8 rate=83050
+    achieved=82663/s cpu=1.04 cores sender_cpu=0.09 cores rss=3066MB
+[ddsketch] series=1000000 workers=8 rate=207626
+    achieved=207457/s cpu=2.33 cores sender_cpu=0.21 cores rss=3750MB
+[ddsketch] series=1000000 workers=8 rate=415251
+    achieved=398583/s cpu=3.65 cores sender_cpu=0.42 cores rss=3984MB
+[ddsketch] series=1000000 workers=8 rate=622877
+    achieved=607307/s cpu=4.50 cores sender_cpu=0.63 cores rss=3999MB
+[ddsketch] series=1000000 workers=8 rate=747452
+    achieved=845942/s cpu=5.49 cores sender_cpu=0.87 cores rss=3969MB
+[cms_heap] series=1000000 workers=8 rate=0
+    achieved=2313963/s cpu=8.00 cores sender_cpu=2.23 cores rss=34MB
+[cms_heap] series=1000000 workers=8 rate=231396
+    achieved=231189/s cpu=1.71 cores sender_cpu=0.22 cores rss=32MB
+[cms_heap] series=1000000 workers=8 rate=578491
+    achieved=578646/s cpu=3.93 cores sender_cpu=0.57 cores rss=33MB
+[cms_heap] series=1000000 workers=8 rate=1156982
+    achieved=1157007/s cpu=4.76 cores sender_cpu=1.14 cores rss=34MB
+[cms_heap] series=1000000 workers=8 rate=1735472
+    achieved=1735383/s cpu=6.28 cores sender_cpu=1.74 cores rss=33MB
+[cms_heap] series=1000000 workers=8 rate=2082567
+    achieved=2082859/s cpu=7.54 cores sender_cpu=2.07 cores rss=36MB
+[hydra_kll] series=1000000 workers=8 rate=0
+    achieved=2115471/s cpu=8.00 cores sender_cpu=2.04 cores rss=398MB
+[hydra_kll] series=1000000 workers=8 rate=211547
+    achieved=211592/s cpu=1.63 cores sender_cpu=0.21 cores rss=300MB
+[hydra_kll] series=1000000 workers=8 rate=528868
+    achieved=529039/s cpu=3.76 cores sender_cpu=0.52 cores rss=347MB
+[hydra_kll] series=1000000 workers=8 rate=1057736
+    achieved=1058089/s cpu=4.69 cores sender_cpu=1.04 cores rss=349MB
+[hydra_kll] series=1000000 workers=8 rate=1586603
+    achieved=1586631/s cpu=6.26 cores sender_cpu=1.58 cores rss=363MB
+[hydra_kll] series=1000000 workers=8 rate=1903924
+    achieved=1903699/s cpu=7.54 cores sender_cpu=1.89 cores rss=382MB
+[raw] series=1000000 workers=8 rate=0
+    achieved=206462/s cpu=2.60 cores sender_cpu=0.19 cores rss=54MB
+[raw] series=1000000 workers=8 rate=20646
+    achieved=21199/s cpu=0.26 cores sender_cpu=0.02 cores rss=33MB
+[raw] series=1000000 workers=8 rate=51615
+    achieved=51665/s cpu=0.63 cores sender_cpu=0.05 cores rss=34MB
+[raw] series=1000000 workers=8 rate=103231
+    achieved=103729/s cpu=1.27 cores sender_cpu=0.10 cores rss=36MB
+[raw] series=1000000 workers=8 rate=154846
+    achieved=155258/s cpu=1.89 cores sender_cpu=0.15 cores rss=39MB
+[raw] series=1000000 workers=8 rate=185816
+    achieved=185723/s cpu=2.23 cores sender_cpu=0.18 cores rss=40MB
+EXIT=0

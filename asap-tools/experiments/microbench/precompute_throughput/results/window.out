@@ -1,0 +1,9 @@
+[kll_tumbling] series=100000 workers=8 rate=0
+    achieved=693174/s cpu=4.91 cores sender_cpu=0.69 cores rss=1274MB
+[kll_sliding] series=100000 workers=8 rate=0
+    achieved=58624/s cpu=6.99 cores sender_cpu=0.06 cores rss=29719MB
+[ddsketch_tumbling] series=100000 workers=8 rate=0
+    achieved=598238/s cpu=4.50 cores sender_cpu=0.60 cores rss=455MB
+[ddsketch_sliding] series=100000 workers=8 rate=0
+    achieved=108663/s cpu=5.85 cores sender_cpu=0.11 cores rss=6150MB
+EXIT=0

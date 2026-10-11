@@ -72,6 +72,11 @@ struct Args {
     #[arg(long, default_value_t = 5000)]
     wall_clock_grace_period_ms: i64,
 
+    /// Windows the store keeps per aggregation. Without it (and with no
+    /// inference config to derive it from) the store grows without bound.
+    #[arg(long)]
+    num_aggregates_to_retain: Option<u64>,
+
     // --- CSV file ingest (alternative to HTTP) ---
     /// Path to a local CSV file to ingest instead of listening for HTTP writes
     #[arg(long)]
@@ -121,7 +126,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args = Args::parse();
 
     info!("Loading streaming config from: {}", args.streaming_config);
-    let streaming_config = Arc::new(StreamingConfig::from_yaml_file(&args.streaming_config)?);
+    let mut streaming_config = StreamingConfig::from_yaml_file(&args.streaming_config)?;
+    if let Some(retain) = args.num_aggregates_to_retain {
+        for config in streaming_config.aggregation_configs.values_mut() {
+            config.num_aggregates_to_retain = Some(retain);
+        }
+    }
+    let streaming_config = Arc::new(streaming_config);
 
     info!(
         "Loaded {} aggregation configs",
