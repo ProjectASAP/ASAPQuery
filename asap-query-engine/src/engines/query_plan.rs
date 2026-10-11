@@ -14,15 +14,28 @@ pub(crate) struct NodeId(usize);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum StoreReadStrategy {
-    WindowGrid(WindowCompositionSpec),
-    SlidingExactCover(WindowCompositionSpec),
+    WindowGrid(Arc<WindowCompositionSpec>),
+    SlidingExactCover(Arc<WindowCompositionSpec>),
 }
 
 impl StoreReadStrategy {
-    fn for_window(window: &WindowCompositionSpec) -> Self {
-        match window.window_type {
+    pub(crate) fn for_window(window: Arc<WindowCompositionSpec>, window_type: WindowType) -> Self {
+        match window_type {
             WindowType::Tumbling => Self::WindowGrid(window.clone()),
             WindowType::Sliding => Self::SlidingExactCover(window.clone()),
+        }
+    }
+
+    pub(crate) fn window(&self) -> &Arc<WindowCompositionSpec> {
+        match self {
+            Self::WindowGrid(window) | Self::SlidingExactCover(window) => window,
+        }
+    }
+
+    pub(crate) fn window_type(&self) -> WindowType {
+        match self {
+            Self::WindowGrid(_) => WindowType::Tumbling,
+            Self::SlidingExactCover(_) => WindowType::Sliding,
         }
     }
 }
@@ -37,34 +50,43 @@ pub(crate) enum StoreReadRole {
 pub(crate) struct WindowCompositionSpec {
     pub output_timestamps: Arc<[u64]>,
     pub lookback_ms: u64,
-    pub window_type: WindowType,
     pub window_size_ms: u64,
     pub bucket_step_ms: u64,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ValueEstimateInput {
+    pub query: StoreQueryParams,
     pub aggregation_type: AggregationType,
-    pub window: WindowCompositionSpec,
+    pub strategy: StoreReadStrategy,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) enum KeyInputSpec {
     FromValues,
     Separate {
+        query: StoreQueryParams,
         aggregation_type: AggregationType,
-        window: WindowCompositionSpec,
+        strategy: StoreReadStrategy,
     },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RangeLabelLayout {
+    pub output_labels: KeyByLabelNames,
+    pub grouping_labels: KeyByLabelNames,
+    pub aggregated_labels: KeyByLabelNames,
+    pub row_label_order: KeyByLabelNames,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct RangeEstimateSpec {
     pub query_range_ms: u64,
+    pub statistic: Statistic,
+    pub query_kwargs: std::collections::HashMap<String, String>,
     pub values: ValueEstimateInput,
     pub keys: KeyInputSpec,
-    pub grouping_labels: KeyByLabelNames,
-    pub aggregated_labels: KeyByLabelNames,
-    pub row_label_order: KeyByLabelNames,
+    pub labels: Arc<RangeLabelLayout>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,9 +105,6 @@ pub(crate) enum QueryPlanNode {
     },
     Estimate {
         input: NodeId,
-        statistic: Statistic,
-        query_kwargs: std::collections::HashMap<String, String>,
-        output_labels: KeyByLabelNames,
         spec: RangeEstimateSpec,
     },
     AggregateVector {
@@ -96,8 +115,7 @@ pub(crate) enum QueryPlanNode {
     LimitTopK {
         input: NodeId,
         k: String,
-        grouping_labels: KeyByLabelNames,
-        row_label_order: KeyByLabelNames,
+        labels: Arc<RangeLabelLayout>,
     },
     Format {
         input: NodeId,
@@ -165,23 +183,19 @@ impl QueryPlan {
         let estimate_spec = RangeEstimateSpec::compile(context)?;
         let values_read = Self::push_read(
             &mut nodes,
-            &context.base.store_plan.values_query,
+            &estimate_spec.values.query,
             StoreReadRole::Values,
-            StoreReadStrategy::for_window(&estimate_spec.values.window),
+            estimate_spec.values.strategy.clone(),
         );
         let values = Self::push_prepare_buckets(&mut nodes, values_read);
         let keys = match &estimate_spec.keys {
             KeyInputSpec::FromValues => None,
-            KeyInputSpec::Separate { window, .. } => {
-                context.base.store_plan.keys_query.as_ref().map(|query| {
-                    let read = Self::push_read(
-                        &mut nodes,
-                        query,
-                        StoreReadRole::Keys,
-                        StoreReadStrategy::for_window(window),
-                    );
-                    Self::push_prepare_buckets(&mut nodes, read)
-                })
+            KeyInputSpec::Separate {
+                query, strategy, ..
+            } => {
+                let read =
+                    Self::push_read(&mut nodes, query, StoreReadRole::Keys, strategy.clone());
+                Some(Self::push_prepare_buckets(&mut nodes, read))
             }
         };
         let resolved = Self::push(&mut nodes, QueryPlanNode::ResolveKeys { values, keys });
@@ -189,16 +203,11 @@ impl QueryPlan {
             &mut nodes,
             QueryPlanNode::Estimate {
                 input: resolved,
-                statistic: context.base.metadata.statistic_to_compute,
-                query_kwargs: context.base.metadata.query_kwargs.clone(),
-                output_labels: context.base.metadata.query_output_labels.clone(),
                 spec: estimate_spec.clone(),
             },
         );
-        if options.limit_topk && context.base.metadata.statistic_to_compute == Statistic::Topk {
-            let k = context
-                .base
-                .metadata
+        if options.limit_topk && estimate_spec.statistic == Statistic::Topk {
+            let k = estimate_spec
                 .query_kwargs
                 .get("k")
                 .cloned()
@@ -210,13 +219,12 @@ impl QueryPlan {
                 QueryPlanNode::LimitTopK {
                     input: root,
                     k,
-                    grouping_labels: context.base.grouping_labels.clone(),
-                    row_label_order: estimate_spec.row_label_order.clone(),
+                    labels: Arc::clone(&estimate_spec.labels),
                 },
             );
         }
         let materialize_metric_name = !query_time_aggregations.is_empty()
-            && context.base.metadata.statistic_to_compute == Statistic::Topk
+            && estimate_spec.statistic == Statistic::Topk
             && context.base.metadata.keep_metric_name;
         if materialize_metric_name {
             root = Self::push(
@@ -228,7 +236,7 @@ impl QueryPlan {
                 },
             );
         }
-        let mut labels = context.base.metadata.query_output_labels.clone();
+        let mut labels = estimate_spec.labels.output_labels.clone();
         for aggregation in query_time_aggregations {
             root = Self::push(
                 &mut nodes,
@@ -245,8 +253,7 @@ impl QueryPlan {
                 &mut nodes,
                 QueryPlanNode::Format {
                     input: root,
-                    include_metric_name: context.base.metadata.statistic_to_compute
-                        == Statistic::Topk
+                    include_metric_name: estimate_spec.statistic == Statistic::Topk
                         && context.base.metadata.keep_metric_name,
                     metric: context.base.metric.clone(),
                 },
@@ -277,14 +284,7 @@ impl QueryPlan {
                     ));
                 }
             }
-            if let QueryPlanNode::Estimate {
-                input,
-                statistic,
-                spec,
-                ..
-            } = node
-            {
-                spec.validate_for(*statistic)?;
+            if let QueryPlanNode::Estimate { input, spec } = node {
                 self.validate_estimate_reads(*input, spec)?;
             }
         }
@@ -302,11 +302,11 @@ impl QueryPlan {
                 resolved.0
             ));
         };
-        self.validate_read_window(*values, StoreReadRole::Values, &spec.values.window)?;
+        self.validate_read_window(*values, StoreReadRole::Values, &spec.values.strategy)?;
         match (&spec.keys, keys) {
             (KeyInputSpec::FromValues, None) => Ok(()),
-            (KeyInputSpec::Separate { window, .. }, Some(keys)) => {
-                self.validate_read_window(*keys, StoreReadRole::Keys, window)
+            (KeyInputSpec::Separate { strategy, .. }, Some(keys)) => {
+                self.validate_read_window(*keys, StoreReadRole::Keys, strategy)
             }
             (KeyInputSpec::FromValues, Some(_)) => {
                 Err("Self-keyed estimate must not have a separate key read".to_string())
@@ -321,7 +321,7 @@ impl QueryPlan {
         &self,
         prepared: NodeId,
         expected_role: StoreReadRole,
-        expected_window: &WindowCompositionSpec,
+        expected_strategy: &StoreReadStrategy,
     ) -> Result<(), String> {
         let QueryPlanNode::PrepareBuckets { input } = &self.nodes[prepared.0] else {
             return Err(format!("Read n{} must prepare buckets", prepared.0));
@@ -335,7 +335,9 @@ impl QueryPlan {
         if *role != expected_role {
             return Err(format!("Store read n{} has the wrong role", input.0));
         }
-        if strategy != &StoreReadStrategy::for_window(expected_window) {
+        if strategy.window_type() != expected_strategy.window_type()
+            || !Arc::ptr_eq(strategy.window(), expected_strategy.window())
+        {
             return Err(format!(
                 "Store read n{} window does not match its estimate",
                 input.0
@@ -425,17 +427,15 @@ impl QueryPlan {
                 ),
                 QueryPlanNode::Estimate {
                     input,
-                    statistic,
-                    query_kwargs,
                     spec,
-                    ..
                 } => {
-                    let mut kwargs: Vec<_> = query_kwargs.iter().collect();
+                    let mut kwargs: Vec<_> = spec.query_kwargs.iter().collect();
                     kwargs.sort_unstable_by_key(|(key, _)| *key);
                     format!(
-                        "n{index} Estimate(n{}, {statistic}, {kwargs:?}, {})",
+                        "n{index} Estimate(n{}, {}, {kwargs:?}, {})",
                         input.0,
-                        Self::describe_timestamps(&spec.values.window.output_timestamps)
+                        spec.statistic,
+                        Self::describe_timestamps(&spec.values.strategy.window().output_timestamps)
                     )
                 },
                 QueryPlanNode::LimitTopK { input, k, .. } => {
@@ -455,22 +455,18 @@ impl QueryPlan {
     }
 
     fn describe_read_strategy(strategy: &StoreReadStrategy) -> String {
-        match strategy {
-            StoreReadStrategy::WindowGrid(window) => format!(
-                "WindowGrid(lookback={}ms, window={}ms, step={}ms, {})",
-                window.lookback_ms,
-                window.window_size_ms,
-                window.bucket_step_ms,
-                Self::describe_timestamps(&window.output_timestamps),
-            ),
-            StoreReadStrategy::SlidingExactCover(window) => format!(
-                "SlidingExactCover(lookback={}ms, window={}ms, step={}ms, {})",
-                window.lookback_ms,
-                window.window_size_ms,
-                window.bucket_step_ms,
-                Self::describe_timestamps(&window.output_timestamps),
-            ),
-        }
+        let window = strategy.window();
+        format!(
+            "{}(lookback={}ms, window={}ms, step={}ms, {})",
+            match strategy {
+                StoreReadStrategy::WindowGrid(_) => "WindowGrid",
+                StoreReadStrategy::SlidingExactCover(_) => "SlidingExactCover",
+            },
+            window.lookback_ms,
+            window.window_size_ms,
+            window.bucket_step_ms,
+            Self::describe_timestamps(&window.output_timestamps),
+        )
     }
 
     fn describe_timestamps(timestamps: &[u64]) -> String {
@@ -485,71 +481,59 @@ impl QueryPlan {
 
 impl RangeEstimateSpec {
     pub(crate) fn compile(context: &RangeQueryExecutionContext) -> Result<Self, String> {
-        let output_timestamps: Arc<[u64]> = Arc::from(context.output_timestamps.clone());
+        let output_timestamps: Arc<[u64]> = Arc::from(context.output_timestamps.as_slice());
+        let values_window = Arc::new(WindowCompositionSpec {
+            output_timestamps: Arc::clone(&output_timestamps),
+            lookback_ms: (context.lookback_bucket_count as u64) * context.tumbling_window_ms,
+            window_size_ms: context.window_size_ms,
+            bucket_step_ms: context.tumbling_window_ms,
+        });
         let values = ValueEstimateInput {
+            query: context.base.store_plan.values_query.clone(),
             aggregation_type: context.base.agg_info.aggregation_type_for_value,
-            window: WindowCompositionSpec {
-                output_timestamps: Arc::clone(&output_timestamps),
-                lookback_ms: (context.lookback_bucket_count as u64) * context.tumbling_window_ms,
-                window_type: context.window_type,
-                window_size_ms: context.window_size_ms,
-                bucket_step_ms: context.tumbling_window_ms,
-            },
+            strategy: StoreReadStrategy::for_window(values_window, context.window_type),
         };
         let keys = match &context.base.store_plan.keys_query {
             None => KeyInputSpec::FromValues,
-            Some(_) => KeyInputSpec::Separate {
+            Some(query) => KeyInputSpec::Separate {
+                query: query.clone(),
                 aggregation_type: context.base.agg_info.aggregation_type_for_key,
-                window: WindowCompositionSpec {
-                    output_timestamps,
-                    lookback_ms: context
-                        .keys_lookback_ms
-                        .ok_or_else(|| "Separate keys query is missing its lookback".to_string())?,
-                    window_type: context.keys_window_type.ok_or_else(|| {
+                strategy: StoreReadStrategy::for_window(
+                    Arc::new(WindowCompositionSpec {
+                        output_timestamps,
+                        lookback_ms: context.keys_lookback_ms.ok_or_else(|| {
+                            "Separate keys query is missing its lookback".to_string()
+                        })?,
+                        window_size_ms: context.keys_window_size_ms.ok_or_else(|| {
+                            "Separate keys query is missing its window size".to_string()
+                        })?,
+                        bucket_step_ms: context.keys_tumbling_window_ms.ok_or_else(|| {
+                            "Separate keys query is missing its bucket step".to_string()
+                        })?,
+                    }),
+                    context.keys_window_type.ok_or_else(|| {
                         "Separate keys query is missing its window type".to_string()
                     })?,
-                    window_size_ms: context.keys_window_size_ms.ok_or_else(|| {
-                        "Separate keys query is missing its window size".to_string()
-                    })?,
-                    bucket_step_ms: context.keys_tumbling_window_ms.ok_or_else(|| {
-                        "Separate keys query is missing its bucket step".to_string()
-                    })?,
-                },
+                ),
             },
         };
         Ok(Self {
             query_range_ms: context.query_range_ms,
+            statistic: context.base.metadata.statistic_to_compute,
+            query_kwargs: context.base.metadata.query_kwargs.clone(),
             values,
             keys,
-            grouping_labels: context.base.grouping_labels.clone(),
-            aggregated_labels: context.base.aggregated_labels.clone(),
-            row_label_order: crate::engines::simple_engine::SimpleEngine::topk_row_label_order(
-                &context.base.metadata,
-                &context.base.grouping_labels,
-                &context.base.aggregated_labels,
-            ),
+            labels: Arc::new(RangeLabelLayout {
+                output_labels: context.base.metadata.query_output_labels.clone(),
+                grouping_labels: context.base.grouping_labels.clone(),
+                aggregated_labels: context.base.aggregated_labels.clone(),
+                row_label_order: crate::engines::simple_engine::SimpleEngine::topk_row_label_order(
+                    &context.base.metadata,
+                    &context.base.grouping_labels,
+                    &context.base.aggregated_labels,
+                ),
+            }),
         })
-    }
-
-    fn validate_for(&self, statistic: Statistic) -> Result<(), String> {
-        let window = &self.values.window;
-        if window.window_type != WindowType::Sliding
-            || window.bucket_step_ms == 0
-            || !matches!(statistic, Statistic::Increase | Statistic::Rate)
-        {
-            return Ok(());
-        }
-        if let Some(&timestamp) = window
-            .output_timestamps
-            .iter()
-            .find(|&&timestamp| !timestamp.is_multiple_of(window.bucket_step_ms))
-        {
-            return Err(format!(
-                "Exact Prometheus counter bounds are unavailable for off-grid Sliding timestamp {} (grid interval {}ms)",
-                timestamp, window.bucket_step_ms
-            ));
-        }
-        Ok(())
     }
 }
 
@@ -759,7 +743,7 @@ mod tests {
 
         match &plan.nodes[3] {
             QueryPlanNode::Estimate { spec, .. } => {
-                assert_eq!(spec.values.window.lookback_ms, 1_000);
+                assert_eq!(spec.values.strategy.window().lookback_ms, 1_000);
             }
             _ => panic!("fourth node must estimate the resolved value read"),
         }
@@ -785,13 +769,13 @@ mod tests {
     }
 
     #[test]
-    fn rejects_off_grid_sliding_counter_plans() {
+    fn compiles_off_grid_sliding_counter_plan_for_engine_preflight() {
         let mut context = context();
         context.window_type = WindowType::Sliding;
         context.output_timestamps = vec![1_500];
         context.base.metadata.statistic_to_compute = Statistic::Rate;
 
-        let error = QueryPlan::compile_range(
+        QueryPlan::compile_range(
             &context,
             PlanOptions {
                 limit_topk: false,
@@ -799,41 +783,7 @@ mod tests {
             },
             &[],
         )
-        .expect_err("off-grid Sliding counters must not compile");
-
-        assert!(error.contains("off-grid Sliding timestamp 1500"));
-    }
-
-    #[test]
-    fn direct_execution_rejects_an_off_grid_sliding_counter_plan() {
-        let mut context = context();
-        context.window_type = WindowType::Sliding;
-        let mut plan = QueryPlan::compile_range(
-            &context,
-            PlanOptions {
-                limit_topk: false,
-                format_output: false,
-            },
-            &[],
-        )
-        .unwrap();
-        let QueryPlanNode::Estimate {
-            statistic, spec, ..
-        } = &mut plan.nodes[3]
-        else {
-            panic!("fourth node must estimate the resolved value read");
-        };
-        *statistic = Statistic::Rate;
-        spec.values.window.output_timestamps = Arc::from([1_500]);
-
-        let error = plan
-            .execute(&RecordingRuntime(RefCell::new(Vec::new())))
-            .expect_err("direct execution must validate its plan");
-        assert!(matches!(
-            error,
-            QueryPlanExecutionError::InvalidPlan(message)
-                if message.contains("off-grid Sliding timestamp 1500")
-        ));
+        .expect("the engine, not the compiled plan, classifies off-grid fallback");
     }
 
     #[test]
@@ -853,13 +803,12 @@ mod tests {
         let QueryPlanNode::StoreRead { strategy, .. } = &mut plan.nodes[0] else {
             panic!("first node must read values");
         };
-        *strategy = StoreReadStrategy::WindowGrid(WindowCompositionSpec {
+        *strategy = StoreReadStrategy::WindowGrid(Arc::new(WindowCompositionSpec {
             output_timestamps: Arc::from([1_000]),
             lookback_ms: 1_000,
-            window_type: WindowType::Tumbling,
             window_size_ms: 1_000,
             bucket_step_ms: 1_000,
-        });
+        }));
 
         assert_eq!(
             plan.validate()
@@ -922,23 +871,21 @@ mod tests {
             vec![
                 (
                     StoreReadRole::Values,
-                    StoreReadStrategy::SlidingExactCover(WindowCompositionSpec {
+                    StoreReadStrategy::SlidingExactCover(Arc::new(WindowCompositionSpec {
                         output_timestamps: Arc::from([1_000]),
                         lookback_ms: 2_000,
-                        window_type: WindowType::Sliding,
                         window_size_ms: 1_000,
                         bucket_step_ms: 1_000,
-                    }),
+                    })),
                 ),
                 (
                     StoreReadRole::Keys,
-                    StoreReadStrategy::WindowGrid(WindowCompositionSpec {
+                    StoreReadStrategy::WindowGrid(Arc::new(WindowCompositionSpec {
                         output_timestamps: Arc::from([1_000]),
                         lookback_ms: 3_000,
-                        window_type: WindowType::Tumbling,
                         window_size_ms: 1_000,
                         bucket_step_ms: 1_000,
-                    }),
+                    })),
                 ),
             ]
         );
@@ -994,9 +941,6 @@ mod tests {
         let plan = QueryPlan {
             nodes: vec![QueryPlanNode::Estimate {
                 input: NodeId(1),
-                statistic: Statistic::Sum,
-                query_kwargs: HashMap::new(),
-                output_labels: KeyByLabelNames::empty(),
                 spec: RangeEstimateSpec::compile(&context()).unwrap(),
             }],
             root: NodeId(0),
@@ -1037,13 +981,12 @@ mod tests {
                         end_timestamp: 1,
                     },
                     role: StoreReadRole::Values,
-                    strategy: StoreReadStrategy::WindowGrid(WindowCompositionSpec {
+                    strategy: StoreReadStrategy::WindowGrid(Arc::new(WindowCompositionSpec {
                         output_timestamps: Arc::from([1]),
                         lookback_ms: 1,
-                        window_type: WindowType::Tumbling,
                         window_size_ms: 1,
                         bucket_step_ms: 1,
-                    }),
+                    })),
                 },
                 QueryPlanNode::PrepareBuckets { input: NodeId(0) },
             ],

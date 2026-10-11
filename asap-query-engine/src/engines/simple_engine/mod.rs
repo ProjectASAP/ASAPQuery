@@ -12,6 +12,8 @@ use crate::engines::query_plan::{
     KeyInputSpec, NodeId, PlanOptions, QueryPlan, QueryPlanExecutionError, QueryPlanNode,
     QueryPlanRuntime, RangeEstimateSpec, StoreReadRole, StoreReadStrategy,
 };
+#[cfg(feature = "native_query_legacy_test_support")]
+use crate::engines::query_plan::{RangeLabelLayout, ValueEstimateInput, WindowCompositionSpec};
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{
     plan_exact_cover, CompositionError, SlidingWindowSpec,
@@ -315,18 +317,12 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     "ResolveKeys received incompatible inputs".into(),
                 )),
             },
-            QueryPlanNode::Estimate {
-                statistic,
-                query_kwargs,
-                output_labels,
-                spec,
-                ..
-            } => match inputs {
+            QueryPlanNode::Estimate { spec, .. } => match inputs {
                 [NativePlanOutput::Resolved(reads)] => self
                     .engine
-                    .estimate_range_query(spec, *statistic, query_kwargs, reads.clone())
+                    .estimate_range_query(spec, reads.clone())
                     .map(|values| NativePlanOutput::Results {
-                        labels: output_labels.clone(),
+                        labels: spec.labels.output_labels.clone(),
                         values,
                     }),
                 _ => Err(QueryExecutionError::Native(
@@ -352,14 +348,11 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                 )),
             },
             QueryPlanNode::LimitTopK {
-                k,
-                grouping_labels,
-                row_label_order,
-                ..
+                k, labels: layout, ..
             } => match inputs {
                 [NativePlanOutput::Results { labels, values }] => self
                     .engine
-                    .limit_range_topk(values, k, row_label_order, grouping_labels)
+                    .limit_range_topk(values, k, &layout.row_label_order, &layout.grouping_labels)
                     .map_err(QueryExecutionError::Native)
                     .map(|values| NativePlanOutput::Results {
                         labels: labels.clone(),
@@ -2579,12 +2572,9 @@ impl SimpleEngine {
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         let reads = self.read_range_query_inputs(context)?;
-        let estimate_spec =
-            RangeEstimateSpec::compile(context).map_err(QueryExecutionError::Native)?;
+        let estimate_spec = Self::legacy_range_estimate_spec(context)?;
         let mut results = self.estimate_range_query(
             &estimate_spec,
-            context.base.metadata.statistic_to_compute,
-            &context.base.metadata.query_kwargs,
             ResolvedRangeReads {
                 values: self.compose_range_read(&reads.values),
                 keys: reads
@@ -2617,6 +2607,73 @@ impl SimpleEngine {
                 && context.base.metadata.keep_metric_name,
             &context.base.metric,
         ))
+    }
+
+    #[cfg(feature = "native_query_legacy_test_support")]
+    fn legacy_range_estimate_spec(
+        context: &RangeQueryExecutionContext,
+    ) -> Result<RangeEstimateSpec, QueryExecutionError> {
+        let output_timestamps: Arc<[u64]> = Arc::from(context.output_timestamps.as_slice());
+        let values_window = Arc::new(WindowCompositionSpec {
+            output_timestamps: Arc::clone(&output_timestamps),
+            lookback_ms: (context.lookback_bucket_count as u64) * context.tumbling_window_ms,
+            window_size_ms: context.window_size_ms,
+            bucket_step_ms: context.tumbling_window_ms,
+        });
+        let keys = match &context.base.store_plan.keys_query {
+            None => KeyInputSpec::FromValues,
+            Some(query) => {
+                let window_type = context.keys_window_type.ok_or_else(|| {
+                    QueryExecutionError::Native(
+                        "Separate keys query is missing its window type".into(),
+                    )
+                })?;
+                let window = Arc::new(WindowCompositionSpec {
+                    output_timestamps,
+                    lookback_ms: context.keys_lookback_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Separate keys query is missing its lookback".into(),
+                        )
+                    })?,
+                    window_size_ms: context.keys_window_size_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Separate keys query is missing its window size".into(),
+                        )
+                    })?,
+                    bucket_step_ms: context.keys_tumbling_window_ms.ok_or_else(|| {
+                        QueryExecutionError::Native(
+                            "Separate keys query is missing its bucket step".into(),
+                        )
+                    })?,
+                });
+                KeyInputSpec::Separate {
+                    query: query.clone(),
+                    aggregation_type: context.base.agg_info.aggregation_type_for_key,
+                    strategy: StoreReadStrategy::for_window(window, window_type),
+                }
+            }
+        };
+        Ok(RangeEstimateSpec {
+            query_range_ms: context.query_range_ms,
+            statistic: context.base.metadata.statistic_to_compute,
+            query_kwargs: context.base.metadata.query_kwargs.clone(),
+            values: ValueEstimateInput {
+                query: context.base.store_plan.values_query.clone(),
+                aggregation_type: context.base.agg_info.aggregation_type_for_value,
+                strategy: StoreReadStrategy::for_window(values_window, context.window_type),
+            },
+            keys,
+            labels: Arc::new(RangeLabelLayout {
+                output_labels: context.base.metadata.query_output_labels.clone(),
+                grouping_labels: context.base.grouping_labels.clone(),
+                aggregated_labels: context.base.aggregated_labels.clone(),
+                row_label_order: Self::topk_row_label_order(
+                    &context.base.metadata,
+                    &context.base.grouping_labels,
+                    &context.base.aggregated_labels,
+                ),
+            }),
+        })
     }
 
     #[cfg(feature = "native_query_legacy_test_support")]
@@ -2708,8 +2765,6 @@ impl SimpleEngine {
     fn estimate_range_query(
         &self,
         spec: &RangeEstimateSpec,
-        statistic: Statistic,
-        query_kwargs: &HashMap<String, String>,
         reads: ResolvedRangeReads,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         use crate::engines::query_result::RangeVectorElement;
@@ -2719,7 +2774,8 @@ impl SimpleEngine {
             values: ComposedRangeRead { groups: all_data },
             keys: keys_raw_data,
         } = reads;
-        let value_window = &spec.values.window;
+        let value_strategy = &spec.values.strategy;
+        let value_window = value_strategy.window();
         let lookback_ms = value_window.lookback_ms;
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
@@ -2746,7 +2802,7 @@ impl SimpleEngine {
             PerStep {
                 bucket_map: GroupBucketMap,
                 aggregation_type: AggregationType,
-                window: &'a crate::engines::query_plan::WindowCompositionSpec,
+                strategy: &'a StoreReadStrategy,
             },
         }
 
@@ -2756,7 +2812,8 @@ impl SimpleEngine {
             (
                 KeyInputSpec::Separate {
                     aggregation_type,
-                    window,
+                    strategy,
+                    ..
                 },
                 Some(keys_map),
             ) => keys_map
@@ -2769,7 +2826,7 @@ impl SimpleEngine {
                             KeysSource::PerStep {
                                 bucket_map: key_bucket_map.clone(),
                                 aggregation_type: *aggregation_type,
-                                window,
+                                strategy,
                             },
                         )),
                         None => {
@@ -2820,7 +2877,7 @@ impl SimpleEngine {
         // this is actually a topk query with limiting requested -- gates
         // both the per-step sort/truncate below and nothing else, so a
         // non-topk query pays zero cost for this.
-        let row_label_order = &spec.row_label_order;
+        let row_label_order = &spec.labels.row_label_order;
 
         // Visit every group at each timestamp so ranking sees all candidates.
         for &current_time in value_window.output_timestamps.iter() {
@@ -2856,8 +2913,9 @@ impl SimpleEngine {
                     KeysSource::PerStep {
                         bucket_map: keys_bucket_map,
                         aggregation_type: key_accumulator_type,
-                        window: keys_window,
+                        strategy: keys_strategy,
                     } => {
+                        let keys_window = keys_strategy.window();
                         // DeltaSetAggregator's keys window is always
                         // [0, current_time) ("replay from the beginning"),
                         // which saturating_sub's keys_window_start to 0 --
@@ -2867,52 +2925,52 @@ impl SimpleEngine {
                         // to see what's in keys_bucket_map, an in-memory map
                         // already bounded by real data. Bypass that walk
                         // entirely for this aggregation type.
-                        let keys_window_buckets = if *key_accumulator_type
-                            == AggregationType::DeltaSetAggregator
-                        {
-                            // Replaying from the beginning has no coherent
-                            // Sliding semantics.
-                            assert_eq!(
-                                keys_window.window_type,
-                                WindowType::Tumbling,
-                                "DeltaSetAggregator keys config must be Tumbling -- \
+                        let keys_window_buckets =
+                            if *key_accumulator_type == AggregationType::DeltaSetAggregator {
+                                // Replaying from the beginning has no coherent
+                                // Sliding semantics.
+                                assert_eq!(
+                                    keys_strategy.window_type(),
+                                    WindowType::Tumbling,
+                                    "DeltaSetAggregator keys config must be Tumbling -- \
                                  the replay-from-the-beginning fast path has no correct meaning \
                                  for Sliding"
-                            );
-                            let replay_end = if value_window.window_type == WindowType::Sliding {
-                                Self::align_down_with_warning(
-                                    current_time,
-                                    value_window.bucket_step_ms,
-                                    "DeltaSetAggregator replay end",
-                                )
+                                );
+                                let replay_end =
+                                    if value_strategy.window_type() == WindowType::Sliding {
+                                        Self::align_down_with_warning(
+                                            current_time,
+                                            value_window.bucket_step_ms,
+                                            "DeltaSetAggregator replay end",
+                                        )
+                                    } else {
+                                        current_time
+                                    };
+                                Self::collect_bucket_map_entries_before(keys_bucket_map, replay_end)
                             } else {
-                                current_time
-                            };
-                            Self::collect_bucket_map_entries_before(keys_bucket_map, replay_end)
-                        } else {
-                            let keys_window_end = if keys_window.window_type == WindowType::Sliding
-                            {
-                                Self::align_down_with_warning(
-                                    current_time,
+                                let keys_window_end =
+                                    if keys_strategy.window_type() == WindowType::Sliding {
+                                        Self::align_down_with_warning(
+                                            current_time,
+                                            keys_window.bucket_step_ms,
+                                            "Sliding key window end",
+                                        )
+                                    } else {
+                                        current_time
+                                    };
+                                let keys_window_start =
+                                    keys_window_end.saturating_sub(keys_window.lookback_ms);
+                                Self::window_buckets_for_step(
+                                    keys_bucket_map,
+                                    keys_window_start,
+                                    keys_window_end,
                                     keys_window.bucket_step_ms,
-                                    "Sliding key window end",
+                                    keys_strategy.window_type(),
+                                    keys_window.window_size_ms,
                                 )
-                            } else {
-                                current_time
                             };
-                            let keys_window_start =
-                                keys_window_end.saturating_sub(keys_window.lookback_ms);
-                            Self::window_buckets_for_step(
-                                keys_bucket_map,
-                                keys_window_start,
-                                keys_window_end,
-                                keys_window.bucket_step_ms,
-                                keys_window.window_type,
-                                keys_window.window_size_ms,
-                            )
-                        };
 
-                        if keys_window.window_type == WindowType::Sliding {
+                        if keys_strategy.window_type() == WindowType::Sliding {
                             let expected =
                                 (keys_window.lookback_ms / keys_window.window_size_ms) as usize;
                             if keys_window_buckets.len() < expected {
@@ -2947,7 +3005,7 @@ impl SimpleEngine {
 
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
-                let window_end = if value_window.window_type == WindowType::Sliding {
+                let window_end = if value_strategy.window_type() == WindowType::Sliding {
                     Self::align_down_with_warning(
                         current_time,
                         value_window.bucket_step_ms,
@@ -2963,13 +3021,13 @@ impl SimpleEngine {
                     window_start,
                     window_end,
                     value_window.bucket_step_ms,
-                    value_window.window_type,
+                    value_strategy.window_type(),
                     value_window.window_size_ms,
                 );
 
                 trace!(
                     current_time,
-                    window_type = ?value_window.window_type,
+                    window_type = ?value_strategy.window_type(),
                     window_start,
                     window_end,
                     grid_step_ms = value_window.bucket_step_ms,
@@ -2978,7 +3036,7 @@ impl SimpleEngine {
                     "Composed query output window from stored buckets"
                 );
 
-                if value_window.window_type == WindowType::Sliding {
+                if value_strategy.window_type() == WindowType::Sliding {
                     let expected = (lookback_ms / value_window.window_size_ms) as usize;
                     if window_buckets.len() < expected {
                         debug!(
@@ -3023,11 +3081,11 @@ impl SimpleEngine {
                         Some(merged.as_ref()),
                         keys_precompute.as_deref(),
                         &fallback_key,
-                        &spec.grouping_labels,
-                        &spec.aggregated_labels,
+                        &spec.labels.grouping_labels,
+                        &spec.labels.aggregated_labels,
                         row_label_order,
-                        &statistic,
-                        query_kwargs,
+                        &spec.statistic,
+                        &spec.query_kwargs,
                         Some(&query_bounds),
                     )
                     .into_iter()
