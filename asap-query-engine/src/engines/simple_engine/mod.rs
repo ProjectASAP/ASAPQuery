@@ -9,7 +9,8 @@ use crate::data_model::{
     StreamingConfig,
 };
 use crate::engines::query_plan::{
-    NodeId, PlanOptions, QueryPlan, QueryPlanExecutionError, QueryPlanNode, QueryPlanRuntime,
+    KeyInputSpec, NodeId, PlanOptions, QueryPlan, QueryPlanExecutionError, QueryPlanNode,
+    QueryPlanRuntime, RangeEstimateSpec, StoreReadRole, StoreReadStrategy,
 };
 use crate::engines::query_result::{InstantVectorElement, QueryResult};
 use crate::engines::sliding_window_composition::{
@@ -142,8 +143,6 @@ pub struct RangeQueryExecutionContext {
     pub output_timestamps: Vec<u64>,
     /// Exact range-vector duration used for extrapolation, in milliseconds.
     pub query_range_ms: u64,
-    /// Number of buckets per step (step / tumbling_window)
-    pub buckets_per_step: usize,
     /// Number of buckets in lookback window
     pub lookback_bucket_count: usize,
     /// Tumbling window size in ms
@@ -182,6 +181,7 @@ pub struct RangeQueryExecutionContext {
     pub keys_tumbling_window_ms: Option<u64>,
 }
 
+#[cfg(feature = "native_query_legacy_test_support")]
 #[derive(Clone)]
 struct RangeQueryReads {
     values: TimestampedBucketsMap,
@@ -221,12 +221,15 @@ struct RangePipelineOutput {
 
 struct NativePlanRuntime<'a> {
     engine: &'a SimpleEngine,
-    context: &'a RangeQueryExecutionContext,
-    reads: std::cell::RefCell<Option<RangeQueryReads>>,
 }
 
 impl NativePlanRuntime<'_> {
-    fn reads(&self) -> Result<RangeQueryReads, QueryExecutionError> {
+    fn read(
+        &self,
+        query: &StoreQueryParams,
+        role: StoreReadRole,
+        strategy: &StoreReadStrategy,
+    ) -> Result<TimestampedBucketsMap, QueryExecutionError> {
         #[cfg(feature = "native_query_legacy_test_support")]
         if matches!(
             self.engine.native_range_execution_mode,
@@ -236,15 +239,35 @@ impl NativePlanRuntime<'_> {
                 "test-only native store failure".to_string(),
             ));
         }
-        if self.reads.borrow().is_none() {
-            *self.reads.borrow_mut() = Some(self.engine.read_range_query_inputs(self.context)?);
+        let data = match strategy {
+            StoreReadStrategy::WindowGrid(_) => self
+                .engine
+                .execute_store_query(query)
+                .map_err(QueryExecutionError::Native)?,
+            StoreReadStrategy::SlidingExactCover(window) => {
+                self.engine.execute_sliding_cover_query(
+                    query,
+                    &window.output_timestamps,
+                    window.lookback_ms,
+                    window.window_size_ms,
+                    window.bucket_step_ms,
+                )?
+            }
+        };
+        if data.is_empty() && role == StoreReadRole::Values {
+            return Err(QueryExecutionError::NoLocalData(format!(
+                "No data found for metric: {}",
+                query.metric
+            )));
         }
-        Ok(self
-            .reads
-            .borrow()
-            .as_ref()
-            .expect("reads initialized")
-            .clone())
+        let bucket_count = data.values().map(Vec::len).sum::<usize>();
+        debug!(
+            role = ?role,
+            group_count = data.len(),
+            bucket_count,
+            "Range query store read completed"
+        );
+        Ok(data)
     }
 }
 
@@ -259,25 +282,19 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
         inputs: &[Self::Output],
     ) -> Result<Self::Output, Self::Error> {
         match node {
-            QueryPlanNode::StoreRead { query, strategy: _ } => {
-                let reads = self.reads()?;
-                if query.aggregation_id == self.context.base.store_plan.values_query.aggregation_id
-                {
-                    Ok(NativePlanOutput::Read(reads.values))
-                } else {
-                    reads.keys.map(NativePlanOutput::Read).ok_or_else(|| {
-                        QueryExecutionError::Native(
-                            "Query plan requested missing key read".to_string(),
-                        )
-                    })
-                }
-            }
-            QueryPlanNode::ComposeWindows { .. } => match inputs {
+            QueryPlanNode::StoreRead {
+                query,
+                role,
+                strategy,
+            } => self
+                .read(query, *role, strategy)
+                .map(NativePlanOutput::Read),
+            QueryPlanNode::PrepareBuckets { .. } => match inputs {
                 [NativePlanOutput::Read(data)] => Ok(NativePlanOutput::Composed(
                     self.engine.compose_range_read(data),
                 )),
                 _ => Err(QueryExecutionError::Native(
-                    "ComposeWindows expected store data".into(),
+                    "PrepareBuckets expected store data".into(),
                 )),
             },
             QueryPlanNode::ResolveKeys { keys, .. } => match (inputs, keys) {
@@ -298,10 +315,16 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                     "ResolveKeys received incompatible inputs".into(),
                 )),
             },
-            QueryPlanNode::Estimate { output_labels, .. } => match inputs {
+            QueryPlanNode::Estimate {
+                statistic,
+                query_kwargs,
+                output_labels,
+                spec,
+                ..
+            } => match inputs {
                 [NativePlanOutput::Resolved(reads)] => self
                     .engine
-                    .estimate_range_query(self.context, reads.clone())
+                    .estimate_range_query(spec, *statistic, query_kwargs, reads.clone())
                     .map(|values| NativePlanOutput::Results {
                         labels: output_labels.clone(),
                         values,
@@ -329,20 +352,14 @@ impl QueryPlanRuntime for NativePlanRuntime<'_> {
                 )),
             },
             QueryPlanNode::LimitTopK {
-                k, grouping_labels, ..
+                k,
+                grouping_labels,
+                row_label_order,
+                ..
             } => match inputs {
                 [NativePlanOutput::Results { labels, values }] => self
                     .engine
-                    .limit_range_topk(
-                        values,
-                        k,
-                        &SimpleEngine::topk_row_label_order(
-                            &self.context.base.metadata,
-                            &self.context.base.grouping_labels,
-                            &self.context.base.aggregated_labels,
-                        ),
-                        grouping_labels,
-                    )
+                    .limit_range_topk(values, k, row_label_order, grouping_labels)
                     .map_err(QueryExecutionError::Native)
                     .map(|values| NativePlanOutput::Results {
                         labels: labels.clone(),
@@ -892,10 +909,6 @@ impl SimpleEngine {
             },
             output_timestamps: vec![query_time],
             query_range_ms: lookback_ms,
-            // Placeholder: no real "step" for a single instant point. Only
-            // feeds a debug-log string today -- not type-enforced, recheck
-            // before using it for anything functional.
-            buckets_per_step: 1,
             lookback_bucket_count,
             tumbling_window_ms,
             window_type,
@@ -1214,7 +1227,7 @@ impl SimpleEngine {
     /// bare-row topk has no named-output-label concept at all), so this
     /// falls back to the aggregation config's own `grouping_labels ++
     /// aggregated_labels` order in that case.
-    fn topk_row_label_order(
+    pub(crate) fn topk_row_label_order(
         metadata: &QueryMetadata,
         grouping_labels: &KeyByLabelNames,
         aggregated_labels: &KeyByLabelNames,
@@ -2489,7 +2502,12 @@ impl SimpleEngine {
         enable_topk_formatting: bool,
         query_time_aggregations: &[asap_types::query_config::QueryTimeAggregation],
     ) -> Result<RangePipelineOutput, QueryExecutionError> {
-        Self::reject_off_grid_sliding_counter_query(context)?;
+        Self::reject_off_grid_sliding_counter_query(
+            context.window_type,
+            context.tumbling_window_ms,
+            &context.output_timestamps,
+            context.base.metadata.statistic_to_compute,
+        )?;
         #[cfg(feature = "native_query_legacy_test_support")]
         if matches!(
             self.native_range_execution_mode,
@@ -2539,11 +2557,7 @@ impl SimpleEngine {
         )
         .map_err(QueryExecutionError::Native)?;
         debug!(plan = %plan.explain(), "Compiled native query plan");
-        let runtime = NativePlanRuntime {
-            engine: self,
-            context,
-            reads: std::cell::RefCell::new(None),
-        };
+        let runtime = NativePlanRuntime { engine: self };
         match plan.execute(&runtime).map_err(|error| match error {
             QueryPlanExecutionError::InvalidPlan(reason) => QueryExecutionError::Native(reason),
             QueryPlanExecutionError::Node { source, .. } => source,
@@ -2565,8 +2579,12 @@ impl SimpleEngine {
         enable_topk_formatting: bool,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         let reads = self.read_range_query_inputs(context)?;
+        let estimate_spec =
+            RangeEstimateSpec::compile(context).map_err(QueryExecutionError::Native)?;
         let mut results = self.estimate_range_query(
-            context,
+            &estimate_spec,
+            context.base.metadata.statistic_to_compute,
+            &context.base.metadata.query_kwargs,
             ResolvedRangeReads {
                 values: self.compose_range_read(&reads.values),
                 keys: reads
@@ -2601,6 +2619,7 @@ impl SimpleEngine {
         ))
     }
 
+    #[cfg(feature = "native_query_legacy_test_support")]
     fn read_range_query_inputs(
         &self,
         context: &RangeQueryExecutionContext,
@@ -2662,26 +2681,25 @@ impl SimpleEngine {
     }
 
     fn reject_off_grid_sliding_counter_query(
-        context: &RangeQueryExecutionContext,
+        window_type: WindowType,
+        bucket_step_ms: u64,
+        output_timestamps: &[u64],
+        statistic: Statistic,
     ) -> Result<(), QueryExecutionError> {
-        if context.window_type != WindowType::Sliding
-            || context.tumbling_window_ms == 0
-            || !matches!(
-                context.base.metadata.statistic_to_compute,
-                Statistic::Increase | Statistic::Rate
-            )
+        if window_type != WindowType::Sliding
+            || bucket_step_ms == 0
+            || !matches!(statistic, Statistic::Increase | Statistic::Rate)
         {
             return Ok(());
         }
-        if let Some(&timestamp) = context
-            .output_timestamps
+        if let Some(&timestamp) = output_timestamps
             .iter()
-            .find(|&&timestamp| !timestamp.is_multiple_of(context.tumbling_window_ms))
+            .find(|&&timestamp| !timestamp.is_multiple_of(bucket_step_ms))
         {
             return Err(QueryExecutionError::NoLocalData(format!(
                 "Exact Prometheus counter bounds are unavailable for off-grid Sliding \
                  timestamp {} (grid interval {}ms)",
-                timestamp, context.tumbling_window_ms
+                timestamp, bucket_step_ms
             )));
         }
         Ok(())
@@ -2689,7 +2707,9 @@ impl SimpleEngine {
 
     fn estimate_range_query(
         &self,
-        context: &RangeQueryExecutionContext,
+        spec: &RangeEstimateSpec,
+        statistic: Statistic,
+        query_kwargs: &HashMap<String, String>,
         reads: ResolvedRangeReads,
     ) -> Result<Vec<crate::engines::query_result::RangeVectorElement>, QueryExecutionError> {
         use crate::engines::query_result::RangeVectorElement;
@@ -2699,173 +2719,92 @@ impl SimpleEngine {
             values: ComposedRangeRead { groups: all_data },
             keys: keys_raw_data,
         } = reads;
-        let lookback_ms = (context.lookback_bucket_count as u64) * context.tumbling_window_ms;
+        let value_window = &spec.values.window;
+        let lookback_ms = value_window.lookback_ms;
 
         let mut results: HashMap<KeyByLabelValues, RangeVectorElement> = HashMap::new();
 
         // Determine accumulator type for merger selection
-        let accumulator_type = &context.base.agg_info.aggregation_type_for_value;
-        let key_accumulator_type = context.base.agg_info.aggregation_type_for_key;
+        let accumulator_type = &spec.values.aggregation_type;
 
         // Calculate step parameters
-        let buckets_per_step = context.buckets_per_step;
-        let lookback_bucket_count = context.lookback_bucket_count;
-        let tumbling_window_ms = context.tumbling_window_ms;
-        let window_type = context.window_type;
-        let keys_lookback_ms = context.keys_lookback_ms;
-        let keys_tumbling_window_ms = context.keys_tumbling_window_ms;
-        let keys_window_type = context.keys_window_type;
-        let keys_window_size_ms = context.keys_window_size_ms;
-
-        // Named distinctly from `WindowType` (Sliding/Tumbling, picks how a
-        // step's window is composed from `bucket_map` below) -- this describes step-to-step overlap in
-        // the OUTPUT iteration, an unrelated concept that happens to reuse
-        // the words "sliding"/"hopping". See #581.
-        let step_overlap_mode = if buckets_per_step <= lookback_bucket_count {
-            "sliding (slide <= size)"
-        } else {
-            "hopping (slide > size)"
-        };
         debug!(
-            "Range query params: {} output timestamp(s) [{}..{}], tumbling_window_ms={}, \
-             buckets_per_step (slide)={}, lookback_bucket_count (size)={}, mode={}",
-            context.output_timestamps.len(),
-            context.output_timestamps.first().copied().unwrap_or(0),
-            context.output_timestamps.last().copied().unwrap_or(0),
-            tumbling_window_ms,
-            buckets_per_step,
-            lookback_bucket_count,
-            step_overlap_mode
+            output_count = value_window.output_timestamps.len(),
+            first_output = value_window.output_timestamps.first().copied().unwrap_or(0),
+            last_output = value_window.output_timestamps.last().copied().unwrap_or(0),
+            lookback_ms,
+            bucket_step_ms = value_window.bucket_step_ms,
+            "Range query estimate parameters"
         );
 
-        // Whether the value accumulator's own get_keys() is even consulted
-        // depends on the query SHAPE (dual- vs single-population), not on a
-        // per-group fallback — mirrors collect_all_results exactly:
-        //   - dual-population (KeysSource::PerStep below, separate
-        //     keys_query present): always expand via the keys aggregation's
-        //     per-step merge (#583). The value accumulator's own get_keys()
-        //     is never consulted, even if the value accumulator itself
-        //     happens to be self-keyed (e.g. a CountMinSketchWithHeap value
-        //     paired with a DeltaSetAggregator keys aggregation is a real
-        //     capability-matched config, see sql.rs). Otherwise a
-        //     self-keyed value accumulator's own (possibly different,
-        //     window-to-window-shifting) keys would silently override the
-        //     keys aggregation's expansion. See #587 review.
-        //   - single-population (KeysSource::Fixed below, no separate
-        //     keys_query): the value accumulator's own get_keys() takes
-        //     priority whenever present (#584, self-keyed accumulators like
-        //     top-k), evaluated AFTER merging the window's value buckets
-        //     (a top-k heap's keys can depend on that window's data),
-        //     falling back to the store-level group key otherwise.
-        // PerStep bundles everything a dual-population group's per-step
-        // resolution needs (bucket_map, lookback_ms, tumbling_window_ms) in
-        // one place, built once at group-construction time — rather than
-        // three separate Option fields at function scope that only
-        // happened to be Some together by convention, each re-unwrapped via
-        // .expect() on every iteration of the per-step loop. Making the
-        // invalid state (PerStep present but one companion value missing)
-        // unrepresentable is the same reasoning that motivated this enum
-        // over two raw Option fields in the first place — just applied all
-        // the way through instead of partway.
-        // Named alias purely to keep declarations under
-        // clippy::type_complexity -- used by both KeysSource::PerStep's own
-        // bucket_map field below and the step-major `groups` binding
-        // further down (#581 stage E.4 review: previously duplicated as the
-        // raw type at the PerStep site instead of using this alias).
+        // Separate keys always determine expansion; self-keyed values use
+        // their own keys after the value window is merged.
         type GroupBucketMap = BucketMap;
 
-        enum KeysSource {
+        enum KeysSource<'a> {
             Fixed(Option<KeyByLabelValues>),
             PerStep {
                 bucket_map: GroupBucketMap,
-                lookback_ms: u64,
-                tumbling_window_ms: u64,
-                stored_window_size_ms: u64,
-                window_type: WindowType,
+                aggregation_type: AggregationType,
+                window: &'a crate::engines::query_plan::WindowCompositionSpec,
             },
         }
 
-        // Resolve, for every value group, which groups exist at all (a
-        // one-time operation — see design doc) and where their expansion
-        // keys come from. A group with keys data but no value data
-        // anywhere in the queried range is skipped with a warning instead
-        // of failing the whole range query (#583; previously
-        // `.ok_or_else(...)?` here hard-failed everything for one missing
-        // group). See #582 review for collect_results_separate_keys parity.
-        let groups: Vec<(GroupBucketMap, KeysSource)> = match &keys_raw_data {
-            Some(keys_map) => {
-                // keys_raw_data is Some, so context.keys_lookback_ms /
-                // context.keys_tumbling_window_ms are guaranteed Some too
-                // (both derived from the same keys_query.is_some() check in
-                // finish_range_context) -- resolved once here instead of
-                // re-unwrapped per group per step.
-                let keys_lookback_ms =
-                    keys_lookback_ms.expect("keys_raw_data implies keys_lookback_ms is Some");
-                let keys_tumbling_window_ms = keys_tumbling_window_ms
-                    .expect("keys_raw_data implies keys_tumbling_window_ms is Some");
-                let keys_window_type =
-                    keys_window_type.expect("keys_raw_data implies keys_window_type is Some");
-                let keys_window_size_ms =
-                    keys_window_size_ms.expect("keys_raw_data implies keys_window_size_ms is Some");
-                keys_map
-                    .groups
-                    .iter()
-                    .filter_map(
-                        |(group_key, key_bucket_map)| match all_data.get(group_key) {
-                            Some(value_bucket_map) => Some((
-                                value_bucket_map.clone(),
-                                KeysSource::PerStep {
-                                    bucket_map: key_bucket_map.clone(),
-                                    lookback_ms: keys_lookback_ms,
-                                    tumbling_window_ms: keys_tumbling_window_ms,
-                                    stored_window_size_ms: keys_window_size_ms,
-                                    window_type: keys_window_type,
-                                },
-                            )),
-                            None => {
-                                warn!(
-                                    "Range query: group {:?} has keys data but no value data \
+        // Groups with keys but no values are skipped rather than failing the
+        // complete range query.
+        let groups: Vec<(GroupBucketMap, KeysSource)> = match (&spec.keys, &keys_raw_data) {
+            (
+                KeyInputSpec::Separate {
+                    aggregation_type,
+                    window,
+                },
+                Some(keys_map),
+            ) => keys_map
+                .groups
+                .iter()
+                .filter_map(
+                    |(group_key, key_bucket_map)| match all_data.get(group_key) {
+                        Some(value_bucket_map) => Some((
+                            value_bucket_map.clone(),
+                            KeysSource::PerStep {
+                                bucket_map: key_bucket_map.clone(),
+                                aggregation_type: *aggregation_type,
+                                window,
+                            },
+                        )),
+                        None => {
+                            warn!(
+                                "Range query: group {:?} has keys data but no value data \
                              anywhere in the queried range — skipping this group instead \
-                             of failing the whole query (#583)",
-                                    group_key
-                                );
-                                None
-                            }
-                        },
-                    )
-                    .collect()
-            }
-            // #584/#587: keep every group, including group_key=None — that's
-            // exactly where a self-keyed single-population accumulator
-            // (e.g. top-k) is typically stored. An empty fallback list here
-            // is fine; the per-step loop below tries the value
-            // accumulator's own get_keys() first and only falls back to
-            // this list.
-            None => all_data
+                             of failing the whole query",
+                                group_key
+                            );
+                            None
+                        }
+                    },
+                )
+                .collect(),
+            // Keep every group because self-keyed accumulators may use a
+            // None outer group key.
+            (KeyInputSpec::FromValues, None) => all_data
                 .iter()
                 .map(|(group_key, bucket_map)| {
                     (bucket_map.clone(), KeysSource::Fixed(group_key.clone()))
                 })
                 .collect(),
+            (KeyInputSpec::Separate { .. }, None) => {
+                return Err(QueryExecutionError::Native(
+                    "Invalid plan: separate key specification has no key reads".into(),
+                ));
+            }
+            (KeyInputSpec::FromValues, Some(_)) => {
+                return Err(QueryExecutionError::Native(
+                    "Invalid plan: self-keyed specification has separate key reads".into(),
+                ));
+            }
         };
 
-        // Precompute per-group setup (bucket_map, keys_source) once, before
-        // the step-major loop below revisits every group at every output
-        // timestamp -- doing this per-step instead would repeat identical
-        // work once per timestamp instead of once per group.
-        //
-        // Memory tradeoff vs. the old group-major shape (#581 stage E.2
-        // review): every group's value bucket_map is now held simultaneously
-        // for the whole step-major loop's duration, instead of one group's
-        // bucket_map at a time (built, used, dropped, next group). Keys-side
-        // PerStep bucket maps were already built eagerly for every group
-        // beforehand (see `groups` above), so this brings the value side in
-        // line with that, not a new pattern -- but for a range query over a
-        // very high-cardinality label set this is a real (if likely modest)
-        // increase in peak memory. Inherent to step-major: ranking a
-        // timestamp's candidates needs every group's bucket_map available at
-        // that timestamp, so they can't be built lazily one group at a time
-        // anymore.
+        // Step-major ranking needs every group's buckets at each timestamp.
         for (bucket_map, keys_source) in &groups {
             debug!(
                 "Group with {} start-timestamps ({} keys start-timestamps)",
@@ -2881,25 +2820,16 @@ impl SimpleEngine {
         // this is actually a topk query with limiting requested -- gates
         // both the per-step sort/truncate below and nothing else, so a
         // non-topk query pays zero cost for this.
-        let row_label_order = Self::topk_row_label_order(
-            &context.base.metadata,
-            &context.base.grouping_labels,
-            &context.base.aggregated_labels,
-        );
+        let row_label_order = &spec.row_label_order;
 
-        // Step-major: for each output timestamp, visit every group, not the
-        // other way around. Required for topk correctness -- ranking a
-        // timestamp's candidates means seeing every group's value at that
-        // timestamp before truncating, which a group-major loop can't do
-        // (#581). One loop shape for topk and non-topk alike, rather than
-        // maintaining two.
-        for &current_time in &context.output_timestamps {
+        // Visit every group at each timestamp so ranking sees all candidates.
+        for &current_time in value_window.output_timestamps.iter() {
             let current_time_i64 = i64::try_from(current_time).map_err(|_| {
                 QueryExecutionError::Native(
                     "Output timestamp exceeds signed timestamp range".to_string(),
                 )
             })?;
-            let query_range_ms = i64::try_from(context.query_range_ms).map_err(|_| {
+            let query_range_ms = i64::try_from(spec.query_range_ms).map_err(|_| {
                 QueryExecutionError::Native(
                     "Query range exceeds signed timestamp range".to_string(),
                 )
@@ -2920,20 +2850,13 @@ impl SimpleEngine {
             let mut step_results: Vec<(KeyByLabelValues, f64)> = Vec::new();
 
             for (bucket_map, keys_source) in &groups {
-                // #583: dual-population groups resolve their expansion keys
-                // from the keys aggregation, per step — not a single
-                // snapshot reused for every step. If nothing resolves at
-                // this step, skip it before ever touching the value merge
-                // below (avoids wasted merge work on steps outside the
-                // key's lifetime). Fixed (single-population) groups have no
-                // separate keys accumulator to merge here at all.
+                // Separate keys resolve per step; self-keyed groups do not
+                // merge a separate key accumulator.
                 let keys_precompute: Option<Box<dyn AggregateCore>> = match keys_source {
                     KeysSource::PerStep {
                         bucket_map: keys_bucket_map,
-                        lookback_ms: keys_lookback_ms,
-                        tumbling_window_ms: keys_tumbling_window_ms,
-                        stored_window_size_ms: keys_stored_window_size_ms,
-                        window_type: keys_window_type,
+                        aggregation_type: key_accumulator_type,
+                        window: keys_window,
                     } => {
                         // DeltaSetAggregator's keys window is always
                         // [0, current_time) ("replay from the beginning"),
@@ -2943,63 +2866,55 @@ impl SimpleEngine {
                         // (up to ~1e8 positions for a real timestamp) purely
                         // to see what's in keys_bucket_map, an in-memory map
                         // already bounded by real data. Bypass that walk
-                        // entirely for this aggregation type (#581 stage
-                        // E.4 review).
-                        let keys_window_buckets =
-                            if key_accumulator_type == AggregationType::DeltaSetAggregator {
-                                // #588/#606 force DeltaSetAggregator's own
-                                // config to Tumbling at planning time -- but
-                                // that's a planner convention, not a runtime
-                                // invariant this code can trust blindly.
-                                // AggregationConfig can be (and in this crate's
-                                // own tests routinely is) constructed directly,
-                                // bypassing the planner. A Sliding DeltaSetAgg
-                                // has no coherent "replay from the beginning"
-                                // semantics to begin with, so this asserts
-                                // rather than silently reinterpreting it (#581
-                                // stage E.4 review).
-                                assert_eq!(
-                                *keys_window_type,
+                        // entirely for this aggregation type.
+                        let keys_window_buckets = if *key_accumulator_type
+                            == AggregationType::DeltaSetAggregator
+                        {
+                            // Replaying from the beginning has no coherent
+                            // Sliding semantics.
+                            assert_eq!(
+                                keys_window.window_type,
                                 WindowType::Tumbling,
-                                "DeltaSetAggregator keys config must be Tumbling (#588/#606) -- \
+                                "DeltaSetAggregator keys config must be Tumbling -- \
                                  the replay-from-the-beginning fast path has no correct meaning \
                                  for Sliding"
                             );
-                                let replay_end = if window_type == WindowType::Sliding {
-                                    Self::align_down_with_warning(
-                                        current_time,
-                                        tumbling_window_ms,
-                                        "DeltaSetAggregator replay end",
-                                    )
-                                } else {
-                                    current_time
-                                };
-                                Self::collect_bucket_map_entries_before(keys_bucket_map, replay_end)
-                            } else {
-                                let keys_window_end = if *keys_window_type == WindowType::Sliding {
-                                    Self::align_down_with_warning(
-                                        current_time,
-                                        *keys_tumbling_window_ms,
-                                        "Sliding key window end",
-                                    )
-                                } else {
-                                    current_time
-                                };
-                                let keys_window_start =
-                                    keys_window_end.saturating_sub(*keys_lookback_ms);
-                                Self::window_buckets_for_step(
-                                    keys_bucket_map,
-                                    keys_window_start,
-                                    keys_window_end,
-                                    *keys_tumbling_window_ms,
-                                    *keys_window_type,
-                                    *keys_stored_window_size_ms,
+                            let replay_end = if value_window.window_type == WindowType::Sliding {
+                                Self::align_down_with_warning(
+                                    current_time,
+                                    value_window.bucket_step_ms,
+                                    "DeltaSetAggregator replay end",
                                 )
+                            } else {
+                                current_time
                             };
+                            Self::collect_bucket_map_entries_before(keys_bucket_map, replay_end)
+                        } else {
+                            let keys_window_end = if keys_window.window_type == WindowType::Sliding
+                            {
+                                Self::align_down_with_warning(
+                                    current_time,
+                                    keys_window.bucket_step_ms,
+                                    "Sliding key window end",
+                                )
+                            } else {
+                                current_time
+                            };
+                            let keys_window_start =
+                                keys_window_end.saturating_sub(keys_window.lookback_ms);
+                            Self::window_buckets_for_step(
+                                keys_bucket_map,
+                                keys_window_start,
+                                keys_window_end,
+                                keys_window.bucket_step_ms,
+                                keys_window.window_type,
+                                keys_window.window_size_ms,
+                            )
+                        };
 
-                        if *keys_window_type == WindowType::Sliding {
+                        if keys_window.window_type == WindowType::Sliding {
                             let expected =
-                                (*keys_lookback_ms / *keys_stored_window_size_ms) as usize;
+                                (keys_window.lookback_ms / keys_window.window_size_ms) as usize;
                             if keys_window_buckets.len() < expected {
                                 debug!(
                                     "Skipping incomplete Sliding key cover at t={}",
@@ -3017,7 +2932,7 @@ impl SimpleEngine {
                             continue;
                         }
 
-                        let mut key_merger = create_window_merger(key_accumulator_type);
+                        let mut key_merger = create_window_merger(*key_accumulator_type);
                         key_merger.initialize(keys_window_buckets);
                         match key_merger.get_merged() {
                             Ok(merged_keys) => Some(merged_keys),
@@ -3032,10 +2947,10 @@ impl SimpleEngine {
 
                 // Window covers [current_time - lookback_ms, current_time)
                 // This means we look at buckets that START within this range
-                let window_end = if window_type == WindowType::Sliding {
+                let window_end = if value_window.window_type == WindowType::Sliding {
                     Self::align_down_with_warning(
                         current_time,
-                        tumbling_window_ms,
+                        value_window.bucket_step_ms,
                         "Sliding value window end",
                     )
                 } else {
@@ -3047,24 +2962,24 @@ impl SimpleEngine {
                     bucket_map,
                     window_start,
                     window_end,
-                    tumbling_window_ms,
-                    window_type,
-                    context.window_size_ms,
+                    value_window.bucket_step_ms,
+                    value_window.window_type,
+                    value_window.window_size_ms,
                 );
 
                 trace!(
                     current_time,
-                    window_type = ?window_type,
+                    window_type = ?value_window.window_type,
                     window_start,
                     window_end,
-                    grid_step_ms = tumbling_window_ms,
-                    stored_window_size_ms = context.window_size_ms,
+                    grid_step_ms = value_window.bucket_step_ms,
+                    stored_window_size_ms = value_window.window_size_ms,
                     selected_bucket_count = window_buckets.len(),
                     "Composed query output window from stored buckets"
                 );
 
-                if window_type == WindowType::Sliding {
-                    let expected = (lookback_ms / context.window_size_ms) as usize;
+                if value_window.window_type == WindowType::Sliding {
+                    let expected = (lookback_ms / value_window.window_size_ms) as usize;
                     if window_buckets.len() < expected {
                         debug!(
                             "Skipping incomplete Sliding value cover at t={}",
@@ -3108,11 +3023,11 @@ impl SimpleEngine {
                         Some(merged.as_ref()),
                         keys_precompute.as_deref(),
                         &fallback_key,
-                        &context.base.grouping_labels,
-                        &context.base.aggregated_labels,
-                        &row_label_order,
-                        &context.base.metadata.statistic_to_compute,
-                        &context.base.metadata.query_kwargs,
+                        &spec.grouping_labels,
+                        &spec.aggregated_labels,
+                        row_label_order,
+                        &statistic,
+                        query_kwargs,
                         Some(&query_bounds),
                     )
                     .into_iter()

@@ -713,6 +713,56 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn range_query_empty_values_fail_but_empty_keys_are_allowed() {
+        let mut value = CountMinSketchAccumulator::new(2, 3);
+        value.inner.update("host-a;evt-1", 1.0);
+        let mut keys = SetAggregatorAccumulator::new();
+        keys.add_key(KeyByLabelValues {
+            labels: vec!["host-a".to_string(), "evt-1".to_string()],
+        });
+        let query = "count(event_frequency) by (host, event)";
+
+        let empty_keys_engine = create_range_engine_dual_input_with_windows(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![(1_000, None, Box::new(value) as Box<dyn AggregateCore>)],
+            vec![],
+            query,
+            1_000,
+            1_000,
+        );
+        let empty_keys_result = empty_keys_engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("an empty keys read must not fail native execution");
+        let (_, empty_keys_result) =
+            empty_keys_result.expect("values data must pass the read stage when keys are empty");
+        assert!(matrix_values(empty_keys_result).is_empty());
+
+        let empty_values_engine = create_range_engine_dual_input_with_windows(
+            "event_frequency",
+            AggregationType::CountMinSketch,
+            AggregationType::SetAggregator,
+            vec![],
+            vec!["host", "event"],
+            vec![],
+            vec![(1_000, None, Box::new(keys) as Box<dyn AggregateCore>)],
+            query,
+            1_000,
+            1_000,
+        );
+        let empty_values_result = empty_values_engine
+            .handle_range_query_promql(query.to_string(), 1.0, 1.5, 1.0)
+            .expect("empty values are reported as no local data, not an execution error");
+        assert!(
+            empty_values_result.is_none(),
+            "values reads must retain the NoLocalData behavior"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn range_query_tumbling_dual_population_keeps_key_steps_isolated() {
         let mut value_1 = CountMinSketchAccumulator::new(2, 3);
         value_1.inner.update("host-a;evt-1", 1.0);
