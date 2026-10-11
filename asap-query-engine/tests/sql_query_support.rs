@@ -1,4 +1,4 @@
-//! SQL compliance runner: plans each suite query in isolation and builds the
+//! SQL query support runner: plans each suite query in isolation and builds the
 //! engine's execution context for it, without ingesting data or executing.
 //!
 //! A query is `supported` when both the planner accepts it and the engine
@@ -14,7 +14,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-const SUITES_DIR: &str = "tests/sql_compliance";
+const SUITES_DIR: &str = "tests/sql_query_support";
 const SUITE_EXTENSION: &str = "yaml";
 /// Fixed evaluation time (seconds) so NOW()-relative queries plan and match
 /// deterministically.
@@ -138,7 +138,7 @@ fn sql_queries_match_expected_support() {
     }
     assert!(
         mismatches.is_empty(),
-        "SQL compliance mismatches:\n{}",
+        "SQL query support mismatches:\n{}",
         mismatches.join("\n")
     );
 }
