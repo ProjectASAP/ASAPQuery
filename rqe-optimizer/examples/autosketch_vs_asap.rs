@@ -45,7 +45,15 @@
 //! gives the workload: RQEs, and each stream's groups, rate and data shape
 //! (the family's `grid_param`/`grid_K`, the worst case rounded to the grid).
 //! Each stream (`traces`: dataset, query and kind; `synthetic`: the table's
-//! `stream`) is one metric, which is where sharing comes from.
+//! `stream`) is one metric, which is where sharing comes from. A stream of a
+//! metric with a label schema (the table's `schemas`) has the schema's labels,
+//! and its RQEs name their `grouping`, so one stream carries several
+//! groupings and a fine deployment can serve a coarse RQE (a roll-up).
+//! Accuracy is read at the mean group's items per window, or, for an RQE with
+//! a `covers_share` (`null`: every group), at its smallest and its largest
+//! covered group's (`min_covered_share` and `max_covered_share` of the
+//! stream's), the worse of the two: a per-group sketch's error need not fall
+//! as N grows (sketch-bench#189), so either may be the hardest group.
 //!
 //! Costs and accuracy come from `--saturation-dir`, the same inputs the
 //! planner reads (#174): the cost table `optimizer_cost/rqe_atomic_costs.json`
@@ -62,11 +70,11 @@ use rqe_optimizer::analytical_cost_model::chain_ms;
 use rqe_optimizer::autosketch;
 use rqe_optimizer::candidates::{build_all_candidates, eligible_deployments_for, is_eligible};
 use rqe_optimizer::milp::minimize_usage_cost;
-use rqe_optimizer::saturation::{DataShape, SaturationCurves, COST_TABLE};
+use rqe_optimizer::saturation::{AccuracySource, DataShape, SaturationCurves, COST_TABLE};
 use rqe_optimizer::usage::{usage_cost, PlanLoad};
 use rqe_optimizer::{
-    validate_facts, AtomicCostEntry, AtomicCostTable, Capability, Deployment, LabelSet, Mapping,
-    MetricFacts, Millis, Raqe, WorkloadFacts,
+    accuracy_key, validate_facts, AccuracyDirection, AtomicCostEntry, AtomicCostTable, Capability,
+    Deployment, LabelSet, Mapping, MetricFacts, Millis, Raqe, WorkloadFacts,
 };
 use serde_json::{json, Value};
 
@@ -101,19 +109,64 @@ struct Workload {
     metric_of: BTreeMap<String, String>,
     /// RQEs of streams with more keys than samples/s, left out.
     excluded_high_cardinality: Vec<String>,
+    /// The table's `covers_share` by RQE id, for RQEs that name one (`None`:
+    /// every group).
+    covers_share: BTreeMap<String, Option<f64>>,
+    /// Facts for reading an RQE's accuracy at its smallest covered group, by
+    /// RQE id, for RQEs with a `covers_share` (`null` too): its stream's,
+    /// with the series scaled so the mean group gets that group's items.
+    covered_facts: BTreeMap<String, WorkloadFacts>,
+    /// The same, at its largest covered group.
+    largest_facts: BTreeMap<String, WorkloadFacts>,
     curves: SaturationCurves,
     notes: Vec<String>,
 }
 
 impl Workload {
-    /// ASAP's accuracy: the planner's own lookup.
+    /// The facts `r`'s accuracy is read with.
+    fn accuracy_facts(&self, r: &Raqe) -> &WorkloadFacts {
+        self.covered_facts.get(&r.id).unwrap_or(&self.facts)
+    }
+
+    /// `read` at `r`'s accuracy facts, and for an RQE with a largest covered
+    /// group also at its, the worse in `sketch`'s direction; unknown if
+    /// either is.
+    fn worse_read<T>(
+        &self,
+        r: &Raqe,
+        sketch: &str,
+        read: impl Fn(&WorkloadFacts) -> Option<(f64, T)>,
+    ) -> Option<(f64, T)> {
+        let smallest = read(self.accuracy_facts(r))?;
+        let Some(facts) = self.largest_facts.get(&r.id) else {
+            return Some(smallest);
+        };
+        let largest = read(facts)?;
+        let largest_worse = match accuracy_key(sketch).1 {
+            AccuracyDirection::LowerIsBetter => largest.0 > smallest.0,
+            AccuracyDirection::HigherIsBetter => largest.0 < smallest.0,
+        };
+        Some(if largest_worse { largest } else { smallest })
+    }
+
+    /// ASAP's accuracy: the planner's own lookup, and where it came from.
+    fn accuracy_with_source(&self, r: &Raqe, d: &Deployment) -> Option<(f64, AccuracySource)> {
+        self.worse_read(r, &d.config.sketch, |facts| {
+            self.curves.accuracy_with_source(r, d, facts)
+        })
+    }
+
+    /// ASAP's accuracy.
     fn asap_accuracy(&self, r: &Raqe, d: &Deployment) -> Option<f64> {
-        self.curves.accuracy(r, d, &self.facts)
+        self.accuracy_with_source(r, d).map(|(value, _)| value)
     }
 
     /// AutoSketch's: one unmerged sketch per query window.
     fn autosketch_accuracy(&self, r: &Raqe, c: &AtomicCostEntry) -> Option<f64> {
-        self.curves.autosketch_accuracy(r, c, &self.facts)
+        self.worse_read(r, &c.sketch, |facts| {
+            Some((self.curves.autosketch_accuracy(r, c, facts)?, ()))
+        })
+        .map(|(value, _)| value)
     }
 }
 
@@ -199,6 +252,7 @@ fn capability_of(r: &Value) -> Capability {
         // `topk(k, sum by (...) (...))`: ranked by summed value.
         (Some("topk"), _) => Capability::TopKByValue,
         (Some("quantile"), _) | (None, "values") => Capability::Quantile,
+        (Some("cardinality"), _) => Capability::Cardinality,
         other => panic!("unknown capability {other:?}"),
     }
 }
@@ -279,6 +333,9 @@ fn from_table(
     let mut metric_of = BTreeMap::new();
     let mut skipped_families = 0;
     let mut stream_series: BTreeMap<String, u64> = BTreeMap::new();
+    let mut covers_share = BTreeMap::new();
+    let mut min_covered_share = BTreeMap::new();
+    let mut max_covered_share = BTreeMap::new();
     for r in workload["rqes"].as_array().unwrap() {
         let id = r["id"].as_str().unwrap().to_string();
         let metric = r["metric"].as_str().unwrap_or(dataset);
@@ -295,36 +352,53 @@ fn from_table(
         let capability = capability_of(r);
         let rate = r["label_set"]["arrival_rate_per_sec"].as_f64().unwrap();
         let groups = groups_of(r, capability);
-        let grouping = if groups > 1 {
-            label_set(&["g"])
-        } else {
-            LabelSet::new()
+        // A schema metric's RQE names its grouping (its `groups` are that
+        // grouping's); otherwise the stream has one label `g`, the grouping.
+        let schema = &workload["schemas"][metric];
+        let grouping: LabelSet = match r["grouping"].as_array() {
+            Some(labels) => labels
+                .iter()
+                .map(|l| l.as_str().unwrap().to_string())
+                .collect(),
+            None if groups > 1 => label_set(&["g"]),
+            None => LabelSet::new(),
         };
-        // One metric per stream, labels {g, x}: `g` is the grouping (card =
-        // groups), and with one scrape a second `{g, x}` has one series per
-        // sample/s. A stream's RQEs differ only in range, so take the
-        // largest per-RQE rate (conservative). Rates below `groups`
+        // `null` covers every group, so its smallest is read too.
+        if let Some(share) = r.get("covers_share") {
+            covers_share.insert(id.clone(), share.as_f64());
+            min_covered_share.insert(id.clone(), r["min_covered_share"].as_f64().unwrap());
+            max_covered_share.insert(id.clone(), r["max_covered_share"].as_f64().unwrap());
+        }
+        // One metric per stream, labels {g, x} (or the schema's and x), and
+        // with one scrape a second the full label set has one series per
+        // sample/s. A stream's RQEs differ only in range and grouping, so
+        // take the largest per-RQE rate (conservative). Rates below `groups`
         // samples/s are rounded up so every group has a series.
         let series = (rate * SCRAPE_MS as f64 / 1000.0).round() as u64;
         let most = stream_series.entry(stream.clone()).or_default();
         *most = (*most).max(series);
-        let metric = facts.entry(stream.clone()).or_insert_with(|| MetricFacts {
-            labels: label_set(&["g", "x"]),
-            scrape_interval_ms: SCRAPE_MS,
-            cardinality: [
-                (label_set(&["g", "x"]), 0),
-                (label_set(&["g"]), groups),
-                (LabelSet::new(), 1),
-            ]
-            .into(),
-            value_range: None,
-            data_shape: BTreeMap::new(),
+        let metric = facts.entry(stream.clone()).or_insert_with(|| {
+            let mut labels: LabelSet = match schema["labels"].as_array() {
+                Some(labels) => labels
+                    .iter()
+                    .map(|l| l["name"].as_str().unwrap().to_string())
+                    .collect(),
+                None => label_set(&["g"]),
+            };
+            labels.insert("x".to_string());
+            MetricFacts {
+                cardinality: [(labels.clone(), 0), (LabelSet::new(), 1)].into(),
+                labels,
+                scrape_interval_ms: SCRAPE_MS,
+                value_range: None,
+                data_shape: BTreeMap::new(),
+            }
         });
         // A stream's RQEs may see different group counts (keys per window
         // grow with the range): take the largest (conservative).
-        let card = metric.cardinality.get_mut(&label_set(&["g"])).unwrap();
+        let card = metric.cardinality.entry(grouping.clone()).or_default();
         *card = (*card).max(groups);
-        let total = metric.cardinality.get_mut(&label_set(&["g", "x"])).unwrap();
+        let total = metric.cardinality.get_mut(&metric.labels).unwrap();
         *total = (*total).max(series).max(groups);
         // Queries one evaluation issues per instance (the table's q_r); tables
         // written before it existed charge one query phase per evaluation.
@@ -397,7 +471,11 @@ fn from_table(
     // Such streams are left out, and their RQEs listed.
     let high_cardinality: BTreeSet<String> = facts
         .iter()
-        .filter(|(stream, m)| m.cardinality[&label_set(&["g"])] > stream_series[*stream])
+        .filter(|(stream, m)| {
+            m.cardinality
+                .iter()
+                .any(|(labels, &card)| labels != &m.labels && card > stream_series[*stream])
+        })
         .map(|(stream, _)| stream.clone())
         .collect();
     let excluded_high_cardinality: Vec<String> = raqes
@@ -407,6 +485,23 @@ fn from_table(
         .collect();
     raqes.retain(|r| !high_cardinality.contains(&r.metric));
     facts.retain(|stream, _| !high_cardinality.contains(stream));
+    // Only the items per group read the series count: scaled by share·groups,
+    // the mean group gets the smallest (largest) covered group's items.
+    let scaled = |shares: &BTreeMap<String, f64>| {
+        raqes
+            .iter()
+            .filter_map(|r| {
+                let share = shares.get(&r.id)?;
+                let mut m = facts[&r.metric].clone();
+                let groups = m.cardinality[&r.grouping_labels] as f64;
+                let series = m.cardinality.get_mut(&m.labels).unwrap();
+                *series = (*series as f64 * share * groups).round() as u64;
+                Some((r.id.clone(), [(r.metric.clone(), m)].into()))
+            })
+            .collect()
+    };
+    let covered_facts = scaled(&min_covered_share);
+    let largest_facts = scaled(&max_covered_share);
     let name = if dataset.starts_with("synthetic") {
         format!("{dataset}/t{}", target.as_deref().unwrap_or("p95"))
     } else {
@@ -419,6 +514,9 @@ fn from_table(
         costs,
         metric_of,
         excluded_high_cardinality,
+        covers_share,
+        covered_facts,
+        largest_facts,
         curves,
         notes: vec![
             format!("{skipped_families} families skipped: they serve another capability"),
@@ -564,7 +662,7 @@ fn summarize(
         .zip(&latencies)
         .map(|((r, &di), &latency)| {
             let d = &deployments[di];
-            json!({
+            let mut choice = json!({
                 "rqe": r.id,
                 "sketch": d.config.sketch,
                 "params": d.config.sketch_config["params"],
@@ -576,10 +674,17 @@ fn summarize(
                 "deployment": di,
                 "asap_accuracy": w.asap_accuracy(r, d),
                 "accuracy_source": w
-                    .curves
-                    .accuracy_with_source(r, d, &w.facts)
+                    .accuracy_with_source(r, d)
                     .map(|(_, source)| format!("{source:?}")),
-            })
+            });
+            // A roll-up: the deployment is grouped finer than the RQE.
+            if d.grouping_labels != r.grouping_labels {
+                choice["deployment_grouping"] = json!(d.grouping_labels);
+            }
+            if let Some(share) = w.covers_share.get(&r.id) {
+                choice["covers_share"] = json!(share);
+            }
+            choice
         })
         .collect();
     json!({
@@ -705,6 +810,15 @@ fn evaluate(w: &Workload, runs: usize, weights: &[(&str, f64, f64)], slas: &[f64
     );
     if let Err(problems) = validate_facts(&raqes, &w.facts) {
         panic!("invalid facts: {problems:?}");
+    }
+    for (r, facts) in raqes.iter().flat_map(|r| {
+        [&w.covered_facts, &w.largest_facts]
+            .into_iter()
+            .filter_map(move |f| Some((r, f.get(&r.id)?)))
+    }) {
+        if let Err(problems) = validate_facts(std::slice::from_ref(r), facts) {
+            panic!("invalid covered facts: {problems:?}");
+        }
     }
 
     // AutoSketch: one plan, independent of the weights.
@@ -1020,6 +1134,205 @@ mod tests {
         // Float residue in summing µs-scale work is not a miss.
         assert!(meets_sla(100.0 * (1.0 + 1e-12), 100.0));
         assert!(!meets_sla(100.1, 100.0));
+    }
+
+    /// A saturation dir with the committed cost table and inline HLL curves
+    /// (each lg_k, uniform over 1e6 keys), so the test runs without the
+    /// study's (gitignored) curves. `tag` keeps parallel tests' dirs apart.
+    fn hll_saturation_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("hll-saturation-{tag}-{}", std::process::id()));
+        let costs = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/results/autosketch-vs-asap-inputs/saturation/optimizer_cost/rqe_atomic_costs.json"
+        );
+        std::fs::create_dir_all(dir.join("optimizer_cost")).unwrap();
+        std::fs::copy(costs, dir.join(COST_TABLE)).unwrap();
+        for run in ["out_grid_1e7_cost", "out_1e9"] {
+            let mut summary = "family,sketch,config,dist,param,cardinality,n_sat,final_error,\
+                               error_metric,insert_cpu_secs,merge_cpu_secs,query_cpu_secs,memory_bytes\n"
+                .to_string();
+            let mut curve =
+                "family,sketch,config,dist,param,cardinality,n,seed_mean_error,seed_se\n"
+                    .to_string();
+            for lg_k in [12, 14, 16].iter().filter(|_| run == "out_grid_1e7_cost") {
+                let point = format!("cardinality,hll,lg_k={lg_k},zipf,0.0,1000000");
+                summary += &format!("{point},1000,0.01,relative_error,,,,\n");
+                for n in ["1000", "100000", "10000000"] {
+                    curve += &format!("{point},{n},0.01,0.0\n");
+                }
+            }
+            std::fs::create_dir_all(dir.join(run)).unwrap();
+            std::fs::write(dir.join(run).join("saturation.csv"), summary).unwrap();
+            std::fs::write(dir.join(run).join("saturation_curve.csv"), curve).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn a_schema_stream_carries_every_grouping_and_rolls_up() {
+        let rqe = |grouping: &[&str], groups: u64, covers: Option<f64>, smallest: f64| {
+            json!({
+                "id": format!("t/{}", grouping.join(",")), "query_id": "q", "kind": "keys",
+                "capability": "cardinality", "metric": "http", "stream": "http/user_id",
+                "grouping": grouping, "covers_share": covers, "min_covered_share": smallest,
+                "max_covered_share": 0.5,
+                "lookback_secs": 300, "interval_secs": 60, "queries_per_instance": 1,
+                "label_set": {"groups": groups, "arrival_rate_per_sec": 2e6},
+                "families": [{"family": "hll", "sketch": "hll", "target": 0.02,
+                              "grid_param": 0.0, "grid_K": 1e6}],
+            })
+        };
+        let names = ["region", "service", "endpoint", "status"];
+        let table = json!({"workloads": [{
+            "dataset": "synthetic/test",
+            "schemas": {"http": {"labels": names.map(|n| json!({"name": n}))}},
+            "rqes": [
+                rqe(&["region"], 4, Some(0.05), 0.05),
+                rqe(&["region", "service"], 100, None, 0.001),
+            ],
+        }]});
+        let path = std::env::temp_dir().join(format!("schema-table-{}.json", std::process::id()));
+        std::fs::write(&path, table.to_string()).unwrap();
+        let inputs = hll_saturation_dir("schema");
+        let w = from_table(
+            path.to_str().unwrap(),
+            None,
+            Some("p95".into()),
+            inputs.to_str().unwrap(),
+        );
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir_all(&inputs).unwrap();
+        let facts = &w.facts["synthetic/test/http/user_id"];
+        assert_eq!(
+            facts.labels,
+            label_set(&["region", "service", "endpoint", "status", "x"])
+        );
+        assert_eq!(facts.cardinality[&label_set(&["region"])], 4);
+        assert_eq!(facts.cardinality[&label_set(&["region", "service"])], 100);
+        assert_eq!(facts.cardinality[&facts.labels], 2_000_000);
+        // Accuracy is read at the smallest covered group's items: 5% of the
+        // stream's, so 4 · 5% of the series for {region}'s mean group.
+        let covered = &w.covered_facts["t/region"]["synthetic/test/http/user_id"];
+        assert_eq!(covered.cardinality[&covered.labels], 400_000);
+        // `null` covers every group: 100 · 0.1% of the series.
+        let every = &w.covered_facts["t/region,service"]["synthetic/test/http/user_id"];
+        assert_eq!(every.cardinality[&every.labels], 200_000);
+        // One {region, service} deployment serves both RQEs.
+        let result = evaluate(&w, 1, &WEIGHTS[..1], &[1e4]);
+        let asap = result["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["method"] == "asap" && r["bound_ms"].is_null())
+            .unwrap();
+        assert_eq!(asap["active_deployments"], 1);
+        let coarse = &asap["chosen"][0];
+        assert_eq!(coarse["rqe"], "t/region");
+        assert_eq!(coarse["deployment_grouping"], json!(["region", "service"]));
+        assert_eq!(coarse["covers_share"], 0.05);
+    }
+
+    /// `r`'s HLL accuracy (ASAP's, AutoSketch's) and the reads at its
+    /// smallest and largest covered groups, on curves with `errors` at N =
+    /// 1e3 .. 1e7; `r` covers groups of 1% and 50% of a 1000 samples/s
+    /// stream (3e3 and 1.5e5 items per 5m window, read at the worse of the
+    /// bracketing N). A classic RQE on another
+    /// stream reads the mean group alone.
+    fn covered_reads(errors: [f64; 5]) -> [Option<f64>; 4] {
+        let inputs = hll_saturation_dir(&format!("{errors:?}"));
+        let mut curve =
+            "family,sketch,config,dist,param,cardinality,n,seed_mean_error,seed_se\n".to_string();
+        for lg_k in [12, 14, 16] {
+            for (n, error) in ["1e3", "1e4", "1e5", "1e6", "1e7"].iter().zip(errors) {
+                curve += &format!("cardinality,hll,lg_k={lg_k},zipf,0.0,1000000,{n},{error},0.0\n");
+            }
+        }
+        let curves = inputs
+            .join("out_grid_1e7_cost")
+            .join("saturation_curve.csv");
+        std::fs::write(curves, curve).unwrap();
+        let rqe = |id: &str, stream: &str, extra: Value| {
+            let mut r = json!({
+                "id": id, "query_id": "q", "kind": "keys", "capability": "cardinality",
+                "stream": stream, "lookback_secs": 300, "interval_secs": 60,
+                "queries_per_instance": 1,
+                "label_set": {"groups": 4, "arrival_rate_per_sec": 1000.0},
+                "families": [{"family": "hll", "sketch": "hll", "target": 0.02,
+                              "grid_param": 0.0, "grid_K": 1e6}],
+            });
+            r.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            r
+        };
+        let table = json!({"workloads": [{
+            "dataset": "synthetic/test",
+            "schemas": {"http": {"labels": [{"name": "region"}]}},
+            "rqes": [
+                rqe("covered", "http/user_id", json!({
+                    "metric": "http", "grouping": ["region"], "covers_share": 0.01,
+                    "min_covered_share": 0.01, "max_covered_share": 0.5})),
+                rqe("classic", "classic/user_id", json!({})),
+            ],
+        }]});
+        let path = inputs.join("table.json");
+        std::fs::write(&path, table.to_string()).unwrap();
+        let w = from_table(
+            path.to_str().unwrap(),
+            None,
+            Some("p95".into()),
+            inputs.to_str().unwrap(),
+        );
+        std::fs::remove_dir_all(&inputs).unwrap();
+        let [covered, classic] = [&w.raqes[0], &w.raqes[1]];
+        let hll = |r: &Raqe| {
+            let costs = &w.costs[&r.metric];
+            rqe_optimizer::candidates::build_all_candidates_unpruned(
+                std::slice::from_ref(r),
+                costs,
+                &w.facts,
+                false,
+            )
+            .into_iter()
+            .find(|d| d.config.sketch == "hll")
+            .unwrap()
+        };
+        // A classic RQE: the mean group's read, as before.
+        let d = hll(classic);
+        assert!(!w.largest_facts.contains_key(&classic.id));
+        assert_eq!(
+            w.asap_accuracy(classic, &d),
+            w.curves.accuracy(classic, &d, &w.facts)
+        );
+        assert_eq!(
+            w.autosketch_accuracy(classic, &d.config),
+            w.curves.autosketch_accuracy(classic, &d.config, &w.facts)
+        );
+        let d = hll(covered);
+        let autosketch = w.autosketch_accuracy(covered, &d.config);
+        assert_eq!(autosketch, w.asap_accuracy(covered, &d));
+        [
+            w.asap_accuracy(covered, &d),
+            autosketch,
+            w.curves.accuracy(covered, &d, &w.covered_facts["covered"]),
+            w.curves.accuracy(covered, &d, &w.largest_facts["covered"]),
+        ]
+    }
+
+    #[test]
+    fn a_covered_rqe_is_held_to_the_worse_of_its_smallest_and_largest_group() {
+        // Relative error: a 3% target accepts at most 0.03.
+        let at = |target: f64, error: Option<f64>| error.unwrap() <= target;
+        // Error grows with N (#189): the largest group rejects what the
+        // smallest accepts.
+        let [asap, autosketch, smallest, largest] = covered_reads([0.01, 0.01, 0.05, 0.05, 0.05]);
+        assert!(at(0.03, smallest) && !at(0.03, largest));
+        assert_eq!((asap, autosketch), (largest, largest));
+        assert!(!at(0.03, asap));
+        // Error falls with N: the smallest group rejects.
+        let [asap, autosketch, smallest, largest] = covered_reads([0.05, 0.05, 0.01, 0.01, 0.01]);
+        assert!(!at(0.03, smallest) && at(0.03, largest));
+        assert_eq!((asap, autosketch), (smallest, smallest));
     }
 
     #[test]

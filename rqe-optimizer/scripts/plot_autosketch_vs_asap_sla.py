@@ -35,11 +35,11 @@ UNITS = {"cpu": "vCPU", "fargate": "$/hour"}
 
 
 def title(data):
-    """`mixed, r = 8` from `synthetic/templates=all/shared=8/tp95`."""
+    """`mixed, r = 8` from `synthetic/templates=classic/shared=8/tp95`."""
     m = re.search(r"templates=(\w+)/shared=(\d+)(?:/metrics=(\d+))?", data["workload"])
     if not m:
         return data["workload"]
-    name = "mixed" if m.group(1) == "all" else m.group(1)
+    name = {"classic": "mixed", "all": "mixed + multi-grouping"}.get(m.group(1), m.group(1))
     if m.group(3):
         return f"{name}, m = {m.group(3)}"
     if m.group(2) != "1":

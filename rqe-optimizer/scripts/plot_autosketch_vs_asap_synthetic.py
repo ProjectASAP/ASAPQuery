@@ -43,19 +43,24 @@ UNITS = {"cpu": "vCPU", "fargate": "$/hour"}
 WEIGHT_TITLES = {"cpu": "CPU only", "fargate": "Fargate prices"}
 
 
+# Each template set's title (export_autosketch_eval_table.py's TEMPLATE_SETS).
+TEMPLATE_TITLES = {"classic": "mixed", "all": "mixed + multi-grouping"}
+
+
 def point(data):
-    """(shared, metrics) of a result's workload name."""
-    m = re.search(r"shared=(\d+)(?:/metrics=(\d+))?", data["workload"])
-    return int(m.group(1)), int(m.group(2) or 1)
+    """(templates, shared, metrics) of a result's workload name."""
+    m = re.search(r"templates=(\w+)/shared=(\d+)(?:/metrics=(\d+))?", data["workload"])
+    return m.group(1), int(m.group(2)), int(m.group(3) or 1)
 
 
 def title(key):
-    shared, metrics = key
+    templates, shared, metrics = key
+    name = TEMPLATE_TITLES.get(templates, templates)
     if shared > 1:
-        return f"mixed, r = {shared}"
+        return f"{name}, r = {shared}"
     if metrics > 1:
-        return f"mixed, m = {metrics}"
-    return "mixed"
+        return f"{name}, m = {metrics}"
+    return name
 
 
 def load(directory):
@@ -128,10 +133,11 @@ def fig_frontier(runs, out):
 
 
 def fig_planning_time(runs, out):
-    """Over the metrics dimension (shared = 1), CPU-only weights."""
+    """Over the metrics dimension (shared = 1) of the `all` set, CPU-only
+    weights."""
     series = {"asap": [], "perquery": [], "search": [], "measured": [], "paper": []}
-    for (shared, _), data in runs.items():
-        if shared != 1:
+    for (templates, shared, _), data in runs.items():
+        if templates != "all" or shared != 1:
             continue
         n = data["rqes"]
         a = data["autosketch"]
@@ -165,7 +171,7 @@ def fig_planning_time(runs, out):
     ax.set_xscale("log")
     ax.set_yscale("log")
     ax.grid(True, which="major", color="#e5e4e0", linewidth=0.5)
-    ax.set_xlabel("RQEs (mixed set, m = 1, 8, 16 metrics)", fontsize=8)
+    ax.set_xlabel(f"RQEs ({TEMPLATE_TITLES['all']}, m = 1, 8, 16 metrics)", fontsize=8)
     ax.set_ylabel("planning time (s)", fontsize=8)
     ax.tick_params(labelsize=7)
     ax.legend(fontsize=6, loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=2)
@@ -175,7 +181,7 @@ def fig_planning_time(runs, out):
 
 
 def summary(runs, out):
-    lines = ["# Synthetic mixed set: AutoSketch vs. ASAP, cost by use\n",
+    lines = ["# Synthetic workload: AutoSketch vs. ASAP, cost by use\n",
              "Cost by use: `w_cpu · AUC(CPU) + w_mem · AUC(memory)` (CPU only, in vCPU; "
              "Fargate prices, in $/hour). Latency: a plan's query latency (its longest "
              "chain, compaction then query, CPU elastic), and the median over its RQEs. "
