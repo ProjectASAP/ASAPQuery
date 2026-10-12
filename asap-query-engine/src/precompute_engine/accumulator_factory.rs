@@ -1932,14 +1932,14 @@ mod tests {
 
         let key = KeyByLabelValues::new_with_labels(vec!["10.0.0.1".to_string()]);
         for _ in 0..5 {
-            updater.update_keyed(&key, 10.0, 0);
+            updater.update_keyed(&key, 1.6, 0);
         }
         let acc = updater.take_accumulator();
         let cms = acc
             .as_any()
             .downcast_ref::<CountMinSketchWithHeapAccumulator>()
             .unwrap();
-        assert_eq!(cms.query_key(&key), 50.0, "sum of 5×10 == 50");
+        assert_eq!(cms.query_key(&key), 10.0, "sum of 5×round(1.6) == 10");
     }
 
     #[test]

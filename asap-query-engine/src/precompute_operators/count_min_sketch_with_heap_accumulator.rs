@@ -223,6 +223,30 @@ mod tests {
     }
 
     #[test]
+    fn fastpath_fixed_stream_matches_expected_estimates_and_topk() {
+        let mut cms = CountMinSketchWithHeapAccumulator::new(3, 1024, 2);
+        cms.update("api", 7);
+        cms.update("worker", 3);
+        cms.update("api", 5);
+        cms.update("batch", 1);
+
+        let api = KeyByLabelValues::new_with_labels(vec!["api".to_owned()]);
+        let worker = KeyByLabelValues::new_with_labels(vec!["worker".to_owned()]);
+        assert_eq!(cms.query_key(&api), 12.0);
+        assert_eq!(cms.query_key(&worker), 3.0);
+
+        let keys: std::collections::HashSet<_> = cms
+            .get_topk_keys()
+            .into_iter()
+            .map(|key| key.labels)
+            .collect();
+        assert_eq!(
+            keys,
+            std::collections::HashSet::from([vec!["api".to_owned()], vec!["worker".to_owned()]])
+        );
+    }
+
+    #[test]
     fn test_count_min_sketch_with_heap_merge() {
         let mut left = CountMinSketchWithHeapAccumulator::new(3, 1024, 5);
         let mut right = CountMinSketchWithHeapAccumulator::new(3, 1024, 3);
