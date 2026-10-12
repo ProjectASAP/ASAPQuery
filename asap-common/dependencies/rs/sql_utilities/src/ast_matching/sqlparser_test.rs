@@ -105,6 +105,15 @@ mod tests {
     }
 
     #[test]
+    fn test_nested_global_aggregates_remain_unsupported_by_matcher() {
+        check_query(
+            "SELECT SUM(total) FROM (SELECT SUM(value) AS total FROM cpu_usage WHERE time BETWEEN DATEADD(s, -1, NOW()) AND NOW())",
+            vec![],
+            Some(QueryError::NestedQueryUnsupported),
+        );
+    }
+
+    #[test]
     fn test_pattern_matching() {
         let schema = create_test_schema();
         let time = std::time::SystemTime::now()

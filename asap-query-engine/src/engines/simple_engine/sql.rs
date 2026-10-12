@@ -503,6 +503,12 @@ impl SimpleEngine {
                     "No query_config entry for SQL spatio-temporal query. Attempting capability-based matching."
                 );
             let requirements = self.build_query_requirements_sql(match_result, topk);
+            // A global aggregate has no output grouping labels. Capability
+            // requirements cannot express whether a candidate is internally
+            // keyed, so only an exact query configuration can safely serve it.
+            if topk.is_none() && requirements.grouping_labels.labels.is_empty() {
+                return None;
+            }
             self.streaming_config
                 .read()
                 .unwrap()
