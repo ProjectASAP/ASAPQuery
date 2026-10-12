@@ -38,6 +38,19 @@ impl StoreReadStrategy {
             Self::SlidingExactCover(_) => WindowType::Sliding,
         }
     }
+
+    fn matches(&self, other: &Self) -> bool {
+        if self.window_type() != other.window_type() {
+            return false;
+        }
+        let window = self.window();
+        let other_window = other.window();
+        Arc::ptr_eq(window, other_window)
+            || (window.lookback_ms == other_window.lookback_ms
+                && window.window_size_ms == other_window.window_size_ms
+                && window.bucket_step_ms == other_window.bucket_step_ms
+                && window.output_timestamps == other_window.output_timestamps)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -334,9 +347,7 @@ impl QueryPlan {
         if *role != expected_role {
             return Err(format!("Store read n{} has the wrong role", input.0));
         }
-        if strategy.window_type() != expected_strategy.window_type()
-            || !Arc::ptr_eq(strategy.window(), expected_strategy.window())
-        {
+        if !strategy.matches(expected_strategy) {
             return Err(format!(
                 "Store read n{} window does not match its estimate",
                 input.0
@@ -480,6 +491,12 @@ impl QueryPlan {
 
 impl RangeEstimateSpec {
     pub(crate) fn compile(context: &RangeQueryExecutionContext) -> Result<Self, String> {
+        if context.window_size_ms == 0 {
+            return Err("Value window size must be greater than zero".to_string());
+        }
+        if context.tumbling_window_ms == 0 {
+            return Err("Value bucket step must be greater than zero".to_string());
+        }
         let output_timestamps: Arc<[u64]> = Arc::from(context.output_timestamps.as_slice());
         let values_window = Arc::new(WindowCompositionSpec {
             output_timestamps: Arc::clone(&output_timestamps),
@@ -501,12 +518,30 @@ impl RangeEstimateSpec {
                         lookback_ms: context.keys_lookback_ms.ok_or_else(|| {
                             "Separate keys query is missing its lookback".to_string()
                         })?,
-                        window_size_ms: context.keys_window_size_ms.ok_or_else(|| {
-                            "Separate keys query is missing its window size".to_string()
-                        })?,
-                        bucket_step_ms: context.keys_tumbling_window_ms.ok_or_else(|| {
-                            "Separate keys query is missing its bucket step".to_string()
-                        })?,
+                        window_size_ms: context
+                            .keys_window_size_ms
+                            .ok_or_else(|| {
+                                "Separate keys query is missing its window size".to_string()
+                            })
+                            .and_then(|size| {
+                                if size == 0 {
+                                    Err("Separate keys query has zero window size".to_string())
+                                } else {
+                                    Ok(size)
+                                }
+                            })?,
+                        bucket_step_ms: context
+                            .keys_tumbling_window_ms
+                            .ok_or_else(|| {
+                                "Separate keys query is missing its bucket step".to_string()
+                            })
+                            .and_then(|step| {
+                                if step == 0 {
+                                    Err("Separate keys query has zero bucket step".to_string())
+                                } else {
+                                    Ok(step)
+                                }
+                            })?,
                     }),
                     context.keys_window_type.ok_or_else(|| {
                         "Separate keys query is missing its window type".to_string()
@@ -763,6 +798,44 @@ mod tests {
         .expect_err("incomplete separate key settings must fail loudly");
 
         assert_eq!(error, "Separate keys query is missing its lookback");
+    }
+
+    #[test]
+    fn rejects_zero_sized_windows_before_execution() {
+        let mut value_context = context();
+        value_context.window_size_ms = 0;
+        assert_eq!(
+            QueryPlan::compile_range(
+                &value_context,
+                PlanOptions {
+                    limit_topk: false,
+                    format_output: false,
+                },
+                &[],
+            )
+            .expect_err("zero value window must fail before estimation"),
+            "Value window size must be greater than zero"
+        );
+
+        let mut key_context = context();
+        key_context.base.store_plan.keys_query =
+            Some(key_context.base.store_plan.values_query.clone());
+        key_context.keys_window_type = Some(WindowType::Sliding);
+        key_context.keys_lookback_ms = Some(1_000);
+        key_context.keys_window_size_ms = Some(0);
+        key_context.keys_tumbling_window_ms = Some(1_000);
+        assert_eq!(
+            QueryPlan::compile_range(
+                &key_context,
+                PlanOptions {
+                    limit_topk: false,
+                    format_output: false,
+                },
+                &[],
+            )
+            .expect_err("zero key window must fail before estimation"),
+            "Separate keys query has zero window size"
+        );
     }
 
     #[test]
