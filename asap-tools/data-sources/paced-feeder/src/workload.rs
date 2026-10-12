@@ -40,24 +40,21 @@ impl Workload {
         (format!("g{group}"), format!("i{instance}"))
     }
 
-    /// All samples for one-second tick `tick`, with event time starting at
-    /// `start_ms`. Samples within the second are spaced evenly.
-    pub fn tick_rows(&self, tick: u64, start_ms: i64) -> Vec<Row> {
+    /// Samples for sub-second slot `slot` of one-second tick `tick`, one per
+    /// series, with event time starting at `start_ms`. Slots within the second
+    /// are spaced evenly.
+    pub fn slot_rows(&self, tick: u64, slot: u32, start_ms: i64) -> Vec<Row> {
         let per_sec = u64::from(self.samples_per_sec);
-        let tick_start_ms = start_ms + tick as i64 * 1_000;
-        let mut rows = Vec::with_capacity(self.rows_per_tick());
-        for k in 0..per_sec {
-            let timestamp_ms = tick_start_ms + (k * 1_000 / per_sec) as i64;
-            let sample_index = tick * per_sec + k;
-            for series in 0..self.num_series() {
-                rows.push(Row {
-                    series,
-                    timestamp_ms,
-                    value: self.value(series, sample_index),
-                });
-            }
-        }
-        rows
+        let slot = u64::from(slot);
+        let timestamp_ms = start_ms + tick as i64 * 1_000 + (slot * 1_000 / per_sec) as i64;
+        let sample_index = tick * per_sec + slot;
+        (0..self.num_series())
+            .map(|series| Row {
+                series,
+                timestamp_ms,
+                value: self.value(series, sample_index),
+            })
+            .collect()
     }
 
     /// Pareto(shape, scale) by inverse transform: `scale · U^(-1/shape)` with
@@ -99,29 +96,33 @@ mod tests {
     }
 
     #[test]
-    fn tick_has_every_series_at_every_sub_second_slot() {
+    fn each_slot_has_every_series_at_its_timestamp() {
         let w = workload();
-        let rows = w.tick_rows(5, 10_000);
-        assert_eq!(rows.len(), 3 * 2 * 2);
-        let first: Vec<_> = rows.iter().filter(|r| r.timestamp_ms == 15_000).collect();
-        let second: Vec<_> = rows.iter().filter(|r| r.timestamp_ms == 15_500).collect();
-        assert_eq!(first.len(), 6);
-        assert_eq!(second.len(), 6);
+        for (slot, timestamp_ms) in [(0, 15_000), (1, 15_500)] {
+            let rows = w.slot_rows(5, slot, 10_000);
+            assert_eq!(rows.len(), 6);
+            assert!(rows.iter().all(|r| r.timestamp_ms == timestamp_ms));
+            assert!(rows.iter().map(|r| r.series).eq(0..6));
+        }
     }
 
     #[test]
     fn values_depend_only_on_seed_series_and_sample_index() {
         let w = workload();
-        // Same tick, different start time: same values.
-        let a: Vec<f64> = w.tick_rows(4, 0).iter().map(|r| r.value).collect();
-        let b: Vec<f64> = w.tick_rows(4, 1_000_000).iter().map(|r| r.value).collect();
+        // Same slot, different start time: same values.
+        let a: Vec<f64> = w.slot_rows(4, 1, 0).iter().map(|r| r.value).collect();
+        let b: Vec<f64> = w
+            .slot_rows(4, 1, 1_000_000)
+            .iter()
+            .map(|r| r.value)
+            .collect();
         assert_eq!(a, b);
         // A different seed changes them.
         let other = Workload { seed: 8, ..w };
         assert_ne!(
             a,
             other
-                .tick_rows(4, 0)
+                .slot_rows(4, 1, 0)
                 .iter()
                 .map(|r| r.value)
                 .collect::<Vec<_>>()

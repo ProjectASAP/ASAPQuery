@@ -39,8 +39,8 @@ struct Args {
     /// Metric name sent as `__name__` (remote write only).
     #[arg(long, default_value = "data")]
     metric: String,
-    /// Target table, optionally `database.table` (ClickHouse only). Must have
-    /// columns `ts DateTime64(3), label_0 String, instance String, value Float64`.
+    /// Target table, optionally `database.table` (ClickHouse only), made of
+    /// `[A-Za-z0-9_]` characters. Must have columns `ts DateTime64(3), label_0 String, instance String, value Float64`.
     #[arg(long, default_value = "data")]
     table: String,
     #[arg(long, env = "CLICKHOUSE_USER")]
@@ -205,6 +205,20 @@ async fn main() -> Result<()> {
     if args.groups == 0 || args.series_per_group == 0 || args.samples_per_sec == 0 {
         bail!("--groups, --series-per-group and --samples-per-sec must be positive");
     }
+    // Timestamps are in ms, so more samples per second would repeat a timestamp
+    // within a series, which remote write drops and ClickHouse keeps.
+    if args.samples_per_sec > 1_000 {
+        bail!("--samples-per-sec must be at most 1000");
+    }
+    // The table name is interpolated into the INSERT query.
+    if args.table.is_empty()
+        || !args
+            .table
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
+    {
+        bail!("--table must be made of [A-Za-z0-9_.] characters");
+    }
     if args.pareto_shape <= 0.0 || args.pareto_scale <= 0.0 {
         bail!("--pareto-shape and --pareto-scale must be positive");
     }
@@ -248,28 +262,37 @@ async fn main() -> Result<()> {
         tokio::time::sleep_until(scheduled.into()).await;
         let started = Instant::now();
 
-        let rows = Arc::new(workload.tick_rows(tick, start_ms));
-        let mut tasks = tokio::task::JoinSet::new();
-        for begin in (0..rows.len()).step_by(batch_rows) {
-            let end = (begin + batch_rows).min(rows.len());
-            let (rows, sink) = (Arc::clone(&rows), Arc::clone(&sink));
-            let permit = Arc::clone(&permits).acquire_owned().await?;
-            tasks.spawn(async move {
-                let _permit = permit;
-                let body = sink.encoder.encode(&rows[begin..end]);
-                let bytes = body.len();
-                sink.send(body).await.map(|()| bytes)
-            });
-        }
+        let (mut rows, mut bytes) = (0, 0);
+        // A slot's requests all return before the next slot's are sent, so a
+        // series' samples never arrive out of timestamp order.
+        for slot in 0..args.samples_per_sec {
+            let slot_rows = Arc::new(workload.slot_rows(tick, slot, start_ms));
+            let mut tasks = tokio::task::JoinSet::new();
+            for begin in (0..slot_rows.len()).step_by(batch_rows) {
+                let end = (begin + batch_rows).min(slot_rows.len());
+                let (slot_rows, sink) = (Arc::clone(&slot_rows), Arc::clone(&sink));
+                let permit = Arc::clone(&permits).acquire_owned().await?;
+                tasks.spawn(async move {
+                    let _permit = permit;
+                    let body = sink.encoder.encode(&slot_rows[begin..end]);
+                    let bytes = body.len();
+                    sink.send(body).await.map(|()| (end - begin, bytes))
+                });
+            }
 
-        let mut bytes = 0;
-        while let Some(joined) = tasks.join_next().await {
-            match joined? {
-                Ok(n) => bytes += n,
-                Err(e) => {
-                    failed_requests += 1;
-                    if errors.len() < 10 {
-                        errors.push(format!("tick {tick}: {e:#}"));
+            while let Some(joined) = tasks.join_next().await {
+                // A panicked task counts as a failed request, so the stats of
+                // the ticks before it are still written.
+                match joined.map_err(anyhow::Error::from).and_then(|sent| sent) {
+                    Ok((n_rows, n_bytes)) => {
+                        rows += n_rows;
+                        bytes += n_bytes;
+                    }
+                    Err(e) => {
+                        failed_requests += 1;
+                        if errors.len() < 10 {
+                            errors.push(format!("tick {tick}: {e:#}"));
+                        }
                     }
                 }
             }
@@ -277,7 +300,7 @@ async fn main() -> Result<()> {
 
         let stats = TickStats {
             tick,
-            rows: rows.len(),
+            rows,
             bytes,
             start_lag_ms: started.duration_since(scheduled).as_secs_f64() * 1e3,
             elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
@@ -289,6 +312,12 @@ async fn main() -> Result<()> {
             );
         }
         ticks.push(stats);
+        // Nothing got through, e.g. a wrong --url, table or credentials: stop
+        // rather than fail every request for the rest of the run.
+        if rows == 0 {
+            eprintln!("tick {tick}: every request failed, stopping");
+            break;
+        }
     }
 
     // A run that keeps up still spans the full duration, even though the last

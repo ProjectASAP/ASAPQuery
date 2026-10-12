@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn remote_write_decodes_to_one_series_per_row() {
         let w = workload();
-        let rows = w.tick_rows(2, 1_700_000_000_000);
+        let rows = w.slot_rows(2, 0, 1_700_000_000_000);
         let body = RemoteWriteEncoder::new(&w, "data").encode(&rows);
 
         let raw = snap::raw::Decoder::new().decompress_vec(&body).unwrap();
@@ -191,7 +191,7 @@ mod tests {
     #[test]
     fn row_binary_round_trips_every_column() {
         let w = workload();
-        let rows = w.tick_rows(0, 42_000);
+        let rows = w.slot_rows(0, 0, 42_000);
         let buf = RowBinaryEncoder::new(&w).encode(&rows);
 
         let mut cursor = buf.as_slice();

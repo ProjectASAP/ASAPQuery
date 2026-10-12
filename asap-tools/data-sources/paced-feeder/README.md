@@ -53,9 +53,11 @@ credentials.
 
 ## Pacing and stats
 
-Each tick's rows are split into `--batch-rows` requests and sent with up to
-`--concurrency` in flight. The next tick starts only after every request of
-the current one returns, so a series' samples never arrive out of order. The
+Each tick sends its `--samples-per-sec` sub-second slots in turn. A slot's
+rows are split into `--batch-rows` requests and sent with up to
+`--concurrency` in flight, and the next slot starts only after every request
+of the current one returns, so a series' samples never arrive out of order.
+`--samples-per-sec` is at most 1000, so timestamps (in ms) never repeat. The
 default batch size is 50,000 rows for remote write, which keeps a compressed
 request under axum's 2 MB body limit in ASAPQuery's ingest, and 100,000 for
 ClickHouse, where every INSERT creates a part.
@@ -67,8 +69,10 @@ plus totals:
 - `max_start_lag_ms`;
 - the first errors.
 
-A run with `overrun_ticks > 0` did not keep up. Any failed request makes the
-feeder exit non-zero.
+A run with `overrun_ticks > 0` did not keep up. Rows and bytes count only
+successful requests. Any failed request makes the feeder exit non-zero, and a
+tick in which every request fails (e.g. a wrong `--url`, table or credentials)
+stops the run early; the stats are still written.
 
 Measured on a CloudLab c6320 (feeder pinned to 2 cores, 10 s at 1e6 rows/s):
 
