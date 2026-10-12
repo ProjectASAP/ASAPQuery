@@ -43,7 +43,6 @@ OmegaConf.register_new_resolver(
 def main(cfg: DictConfig):
     # Validate configuration
     config.validate_config(cfg)
-    config.require_legacy_planner(cfg, "experiment_run_grafana_demo")
     # Validate experiment configuration
     config.validate_experiment_config(cfg.experiment_params)
     # Convert config to args-like object for backward compatibility

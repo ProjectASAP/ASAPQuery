@@ -34,7 +34,6 @@ CONTROLLER_REMOTE_OUTPUT_DIR = None
 def main(cfg: DictConfig):
     # Validate configuration
     config.validate_config(cfg)
-    config.require_legacy_planner(cfg, "experiment_only_ingest_path")
     # Validate experiment configuration (queries not required for ingest path experiments)
     config.validate_experiment_config(cfg.experiment_params, require_queries=False)
 
