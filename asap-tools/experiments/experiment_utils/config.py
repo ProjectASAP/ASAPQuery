@@ -5,6 +5,7 @@ Contains functions for validating configs, generating controller configs, etc.
 
 import math
 import os
+import shutil
 import copy
 import yaml
 from typing import Any, Dict, List, Tuple
@@ -536,6 +537,29 @@ def get_prometheus_data_ingestion_interval_ms(prometheus_config):
         raise ValueError(f"Invalid scrape interval string: {s}")
 
 
+PLANNER_OUTPUT_FILES = ("streaming_config.yaml", "inference_config.yaml")
+
+
+def check_prebuilt_controller_output(src):
+    for name in PLANNER_OUTPUT_FILES:
+        path = os.path.join(src, name)
+        if not os.path.isfile(path):
+            raise ValueError(f"controller.prebuilt_output_dir has no {name}: {path}")
+
+
+def copy_prebuilt_controller_output(src, dest):
+    """Replaces `dest` with the planner configs in `src`."""
+    check_prebuilt_controller_output(src)
+    if os.path.realpath(src) == os.path.realpath(dest):
+        raise ValueError(
+            f"controller.prebuilt_output_dir is the experiment's own output dir: {dest}"
+        )
+    shutil.rmtree(dest, ignore_errors=True)
+    os.makedirs(dest)
+    for name in PLANNER_OUTPUT_FILES:
+        shutil.copy2(os.path.join(src, name), dest)
+
+
 class Args:
     """Helper class to convert Hydra config to argparse-like namespace for backward compatibility."""
 
@@ -611,12 +635,7 @@ class Args:
             self.controller_prebuilt_output_dir = hydra.utils.to_absolute_path(
                 self.controller_prebuilt_output_dir
             )
-            for name in ("streaming_config.yaml", "inference_config.yaml"):
-                path = os.path.join(self.controller_prebuilt_output_dir, name)
-                if not os.path.isfile(path):
-                    raise ValueError(
-                        f"controller.prebuilt_output_dir has no {name}: {path}"
-                    )
+            check_prebuilt_controller_output(self.controller_prebuilt_output_dir)
 
         # Aggregate cleanup configuration
         # Valid policies: "circular_buffer", "read_based", "no_cleanup"

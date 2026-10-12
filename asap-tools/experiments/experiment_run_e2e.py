@@ -1,6 +1,5 @@
 import os
 import json
-import shutil
 import time
 
 import hydra
@@ -322,10 +321,8 @@ def main(cfg: DictConfig):
                     f"Skipping the planner: using configs from "
                     f"{args.controller_prebuilt_output_dir}"
                 )
-                shutil.copytree(
-                    args.controller_prebuilt_output_dir,
-                    CONTROLLER_LOCAL_OUTPUT_DIR,
-                    dirs_exist_ok=True,
+                config.copy_prebuilt_controller_output(
+                    args.controller_prebuilt_output_dir, CONTROLLER_LOCAL_OUTPUT_DIR
                 )
                 sync.rsync_streaming_configs(
                     provider,

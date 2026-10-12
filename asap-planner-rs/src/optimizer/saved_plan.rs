@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context};
-use rqe_optimizer::{AtomicCostEntry, Deployment};
+use rqe_optimizer::{AtomicCostEntry, Deployment, LabelSet};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -17,7 +17,7 @@ use crate::planner_output::PlannerOutput;
 
 use super::aqe_extractor::decompose_to_leaves;
 use super::milp::workload_from_config;
-use super::milp_output::deployments_to_planner_output;
+use super::milp_output::{deployments_to_planner_output, reject_unwritable_queries};
 
 #[derive(Deserialize)]
 struct Table {
@@ -76,8 +76,9 @@ struct Chosen {
     slide_secs: u64,
     /// Index of the plan's deployment.
     deployment: usize,
-    /// Present only when the deployment's grouping differs from the RQE's.
-    deployment_grouping: Option<Value>,
+    /// Present only when the deployment's grouping differs from the RQE's
+    /// (a roll-up), which the converter refuses.
+    deployment_grouping: Option<LabelSet>,
 }
 
 /// Which plan of the file to write.
@@ -164,7 +165,17 @@ pub fn saved_plan_output(
             selector.sla_ms,
         );
     };
-    let chosen: HashMap<&str, &Chosen> = plan.chosen.iter().map(|c| (c.rqe.as_str(), c)).collect();
+    let mut chosen: HashMap<&str, &Chosen> = HashMap::new();
+    for c in &plan.chosen {
+        ensure!(
+            chosen.insert(&c.rqe, c).is_none(),
+            "the plan picks RQE {:?} twice",
+            c.rqe
+        );
+    }
+    let config = e2e_config(e2e)?;
+    // Before the leaf split, which turns an avg into two leaves.
+    reject_unwritable_queries(&config)?;
 
     // Leaf query string and repeat interval -> the plan RQE it reads.
     let mut rqe_of: HashMap<(String, u64), &str> = HashMap::new();
@@ -190,7 +201,6 @@ pub fn saved_plan_output(
         }
     }
 
-    let config = e2e_config(e2e)?;
     let workload = workload_from_config(&config, scrape_interval_ms)?;
 
     // Plan deployment index -> its position in `deployments`, in order of
@@ -210,18 +220,32 @@ pub fn saved_plan_output(
             let pick = chosen
                 .get(rqe)
                 .with_context(|| format!("the plan doesn't serve RQE {rqe:?}"))?;
+            let (window_ms, slide_ms) = (pick.window_secs * 1000, pick.slide_secs * 1000);
+            // sketch-bench's `is_eligible` window rules: a pick that breaks
+            // them belongs to another workload table.
             ensure!(
-                pick.deployment_grouping.is_none(),
-                "RQE {rqe:?} is served by a roll-up, which the engine can't read yet"
+                slide_ms != 0
+                    && window_ms.is_multiple_of(slide_ms)
+                    && raqe.lookback_ms.is_multiple_of(window_ms)
+                    && raqe.interval_ms.is_multiple_of(slide_ms),
+                "RQE {rqe:?}'s {}s window sliding every {}s can't serve {leaf:?} \
+                 ({} ms lookback every {} ms); does --plan match --workload-table?",
+                pick.window_secs,
+                pick.slide_secs,
+                raqe.lookback_ms,
+                raqe.interval_ms
             );
             let deployment = Deployment {
                 capability: raqe.capability,
                 metric: raqe.metric.clone(),
                 spatial_filter: raqe.spatial_filter.clone(),
-                grouping_labels: raqe.grouping_labels.clone(),
+                grouping_labels: pick
+                    .deployment_grouping
+                    .clone()
+                    .unwrap_or_else(|| raqe.grouping_labels.clone()),
                 config: cost_entry(pick)?,
-                window_ms: pick.window_secs * 1000,
-                slide_ms: pick.slide_secs * 1000,
+                window_ms,
+                slide_ms,
                 key_tracker: None,
             };
             let at = *position.entry(pick.deployment).or_insert_with(|| {
@@ -338,9 +362,13 @@ mod tests {
     }
 
     fn run(plan: Value, sla_ms: Option<f64>) -> anyhow::Result<PlannerOutput> {
+        run_on(TABLE, plan, sla_ms)
+    }
+
+    fn run_on(table: &str, plan: Value, sla_ms: Option<f64>) -> anyhow::Result<PlannerOutput> {
         let dir = tempfile::tempdir().unwrap();
         let (table_path, plan_path) = (dir.path().join("table.json"), dir.path().join("plan.json"));
-        std::fs::write(&table_path, TABLE).unwrap();
+        std::fs::write(&table_path, table).unwrap();
         std::fs::write(&plan_path, plan.to_string()).unwrap();
         let selector = PlanSelector {
             method: "asap",
@@ -384,10 +412,43 @@ mod tests {
 
     #[test]
     fn refuses_a_roll_up() {
-        let mut p50 = shared_p50();
-        p50["deployment_grouping"] = json!(["job"]);
-        let err = refusal(plans(p50), None);
+        let mut plan = plans(shared_p50());
+        plan["plans"][0]["chosen"][0]["deployment_grouping"] = json!(["job", "label_0"]);
+        let err = refusal(plan, None);
         assert!(err.contains("roll-up"), "{err}");
+    }
+
+    #[test]
+    fn refuses_a_pick_from_another_table() {
+        // A 7s window doesn't divide the 5m lookback.
+        let p50 = pick("p50", 0, "dd", json!({"alpha": 0.02}), 7);
+        let err = refusal(plans(p50), None);
+        assert!(err.contains("does --plan match --workload-table"), "{err}");
+    }
+
+    #[test]
+    fn refuses_an_avg_before_splitting_it() {
+        let table = TABLE.replace(
+            r#""sum by (job) (data)", "interval_secs": 1"#,
+            r#""avg by (job) (data)", "interval_secs": 1"#,
+        );
+        let err = run_on(&table, plans(shared_p50()), None)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("avg"), "{err}");
+        assert!(!err.contains("leaves"), "{err}");
+    }
+
+    #[test]
+    fn refuses_an_rqe_picked_twice() {
+        let mut plan = plans(shared_p50());
+        plan["plans"][0]["chosen"]
+            .as_array_mut()
+            .unwrap()
+            .push(shared_p50());
+        let err = refusal(plan, None);
+        assert!(err.contains(r#"picks RQE "p50" twice"#), "{err}");
     }
 
     #[test]
