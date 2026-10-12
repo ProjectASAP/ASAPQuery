@@ -449,7 +449,7 @@ mod tests {
         for (start, end, candidates) in buckets {
             let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
             for (host, value) in *candidates {
-                sketch.inner.update(host, *value);
+                sketch.update(host, value.round() as i32);
             }
             let output = PrecomputedOutput::new(*start, *end, None, 1);
             store

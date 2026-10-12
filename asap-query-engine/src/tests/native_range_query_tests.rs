@@ -936,8 +936,8 @@ mod tests {
         // keys, at every step, so a wrong implementation is caught by
         // key-set mismatch, not just a wrong value.
         for heap in [&mut heap_1, &mut heap_2] {
-            heap.inner.update("host-x;evt-x", 30.0);
-            heap.inner.update("host-y;evt-y", 20.0);
+            heap.update("host-x;evt-x", 30);
+            heap.update("host-y;evt-y", 20);
         }
 
         let mut keys_1000 = DeltaSetAggregatorAccumulator::new();
@@ -2282,9 +2282,9 @@ mod tests {
         // call, this None-keyed group is dropped and the range query returns
         // empty instead of the expanded top-k keys.
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
-        sketch.inner.update("host-a", 30.0);
-        sketch.inner.update("host-b", 20.0);
-        sketch.inner.update("host-c", 10.0);
+        sketch.update("host-a", 30);
+        sketch.update("host-b", 20);
+        sketch.update("host-c", 10);
 
         let query = "topk(5, transfer_events)";
         let engine =
@@ -2491,9 +2491,9 @@ mod tests {
         ));
 
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
-        sketch.inner.update("host-a", 30.0);
-        sketch.inner.update("host-b", 20.0);
-        sketch.inner.update("host-c", 10.0);
+        sketch.update("host-a", 30);
+        sketch.update("host-b", 20);
+        sketch.update("host-c", 10);
 
         // Non-None outer key -- e.g. Some(KeyByLabelValues{labels: [""]}),
         // exactly what real worker.rs ingestion produces for "" grouping.

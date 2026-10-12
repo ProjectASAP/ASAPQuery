@@ -1477,7 +1477,7 @@ mod topk_pipeline_tests {
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
         for i in 1..=15u64 {
             let srcip = format!("10.0.0.{i}");
-            sketch.inner.update(&srcip, (i * 10) as f64);
+            sketch.update(&srcip, (i * 10) as i32);
         }
 
         let output =
@@ -1547,9 +1547,9 @@ mod topk_pipeline_tests {
         // heap keys join in that order regardless of query_output_labels'
         // own order.
         let mut sketch = CountMinSketchWithHeapAccumulator::new(3, 1024, 32);
-        sketch.inner.update("10.0.0.1;shared-src", 100.0);
-        sketch.inner.update("10.0.0.2;shared-src", 200.0);
-        sketch.inner.update("10.0.0.3;other-src", 50.0);
+        sketch.update("10.0.0.1;shared-src", 100);
+        sketch.update("10.0.0.2;shared-src", 200);
+        sketch.update("10.0.0.3;other-src", 50);
 
         let output =
             PrecomputedOutput::new(window.start_timestamp, window.end_timestamp, None, AGG_ID);

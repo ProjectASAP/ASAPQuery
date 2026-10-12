@@ -2,98 +2,72 @@ use crate::data_model::{
     AggregateCore, AggregationType, KeyByLabelValues, MergeableAccumulator,
     MultipleSubpopulationAggregate, SerializableToSink,
 };
-use asap_sketchlib::{message_pack_format::MessagePackCodec, CmsHeapItem, CountMinSketchWithHeap};
+use asap_sketchlib::{CMSHeap, DataInput, FastPath, HeapItem, Vector2D};
 use asap_types::traits::SerializationError;
 use serde_json::Value;
 use std::collections::HashMap;
 
 use promql_utilities::query_logics::enums::Statistic;
 
-/// Count-Min Sketch with Heap accumulator — wraps `asap_sketchlib::sketches::CountMinSketchWithHeap`.
-/// Core struct, update/merge/serde logic live in `asap_sketchlib::sketches::countminsketch_topk`.
-/// This file retains QE-specific trait impls, legacy deserializers, and JSON output.
-#[derive(Debug, Clone)]
+/// Count-Min Sketch with Heap accumulator backed by the benchmarked FastPath implementation.
+#[derive(Clone)]
 pub struct CountMinSketchWithHeapAccumulator {
-    pub inner: CountMinSketchWithHeap,
+    inner: CMSHeap<Vector2D<i32>, FastPath>,
 }
 
-// Re-export HeapItem so existing code using CountMinSketchWithHeapAccumulator::HeapItem still works.
-pub use asap_sketchlib::CmsHeapItem as HeapItemReexport;
+impl std::fmt::Debug for CountMinSketchWithHeapAccumulator {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("CountMinSketchWithHeapAccumulator")
+            .field("rows", &self.inner.rows())
+            .field("cols", &self.inner.cols())
+            .field("heap_size", &self.inner.heap().capacity())
+            .finish()
+    }
+}
 
 impl CountMinSketchWithHeapAccumulator {
     pub fn new(row_num: usize, col_num: usize, heap_size: usize) -> Self {
         Self {
-            inner: CountMinSketchWithHeap::new(row_num, col_num, heap_size),
+            inner: CMSHeap::new(row_num, col_num, heap_size),
+        }
+    }
+
+    pub fn update(&mut self, key: &str, count: i32) {
+        if count > 0 {
+            self.inner.insert_many(&DataInput::Str(key), count);
         }
     }
 
     pub fn query_key(&self, key: &KeyByLabelValues) -> f64 {
         let key_string = key.labels.join(";");
-        self.inner.estimate(&key_string)
-    }
-
-    /// This function seems will never be used anymore. Keep it for possible future use.
-    pub fn deserialize_from_json(data: &Value) -> Result<Self, Box<dyn std::error::Error>> {
-        let row_num = data["row_num"]
-            .as_f64()
-            .ok_or("Missing or invalid 'row_num' field")? as usize;
-        let col_num = data["col_num"]
-            .as_f64()
-            .ok_or("Missing or invalid 'col_num' field")? as usize;
-        let heap_size = data["heap_size"]
-            .as_f64()
-            .ok_or("Missing or invalid 'heap_size' field")? as usize;
-
-        let sketch_data = data["sketch"]
-            .as_array()
-            .ok_or("Missing or invalid 'sketch' field")?;
-
-        let mut sketch = Vec::new();
-        for row in sketch_data {
-            let row_array = row.as_array().ok_or("Invalid row in sketch data")?;
-            let mut sketch_row = Vec::new();
-            for cell in row_array {
-                let value = cell.as_f64().ok_or("Invalid cell value in sketch data")?;
-                sketch_row.push(value);
-            }
-            sketch.push(sketch_row);
-        }
-
-        let topk_heap_data = data["topk_heap"]
-            .as_array()
-            .ok_or("Missing or invalid 'topk_heap' field")?;
-
-        let mut topk_heap = Vec::new();
-        for item in topk_heap_data {
-            let key = item["key"]
-                .as_str()
-                .ok_or("Missing or invalid 'key' in heap item")?
-                .to_string();
-            let value = item["value"]
-                .as_f64()
-                .ok_or("Missing or invalid 'value' in heap item")?;
-            topk_heap.push(CmsHeapItem { key, value });
-        }
-
-        Ok(Self {
-            inner: CountMinSketchWithHeap::from_legacy_matrix(
-                sketch, topk_heap, row_num, col_num, heap_size,
-            ),
-        })
-    }
-
-    pub fn deserialize_from_bytes(_buffer: &[u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        Err("deserialize_from_bytes for CountMinSketchWithHeapAccumulator not implemented".into())
+        self.inner.estimate(&DataInput::Str(&key_string)) as f64
     }
 
     /// Get all keys from the top-k heap.
     pub fn get_topk_keys(&self) -> Vec<KeyByLabelValues> {
         self.inner
-            .topk_heap_items()
+            .heap()
+            .heap()
             .iter()
             .map(|item| {
-                let labels: Vec<String> = item.key.split(';').map(|s| s.to_string()).collect();
+                let key = match &item.key {
+                    HeapItem::String(key) => key,
+                    other => panic!("expected string heap key, got {other:?}"),
+                };
+                let labels: Vec<String> = key.split(';').map(str::to_owned).collect();
                 KeyByLabelValues { labels }
+            })
+            .collect()
+    }
+
+    fn sketch_matrix(&self) -> Vec<Vec<i32>> {
+        let storage = self.inner.cms().as_storage();
+        (0..storage.rows())
+            .map(|row| {
+                (0..storage.cols())
+                    .map(|col| *storage.get(row, col).expect("matrix index is in bounds"))
+                    .collect()
             })
             .collect()
     }
@@ -103,12 +77,17 @@ impl SerializableToSink for CountMinSketchWithHeapAccumulator {
     fn serialize_to_json(&self) -> Result<Value, SerializationError> {
         let heap_items: Vec<Value> = self
             .inner
-            .topk_heap_items()
+            .heap()
+            .heap()
             .iter()
             .map(|item| {
+                let key = match &item.key {
+                    HeapItem::String(key) => key,
+                    other => panic!("expected string heap key, got {other:?}"),
+                };
                 serde_json::json!({
-                    "key": item.key,
-                    "value": item.value
+                    "key": key,
+                    "value": item.count
                 })
             })
             .collect();
@@ -116,19 +95,17 @@ impl SerializableToSink for CountMinSketchWithHeapAccumulator {
         Ok(serde_json::json!({
             "row_num": self.inner.rows(),
             "col_num": self.inner.cols(),
-            "heap_size": self.inner.heap_size,
-            "sketch": self.inner.sketch_matrix(),
+            "heap_size": self.inner.heap().capacity(),
+            "sketch": self.sketch_matrix(),
             "topk_heap": heap_items
         }))
     }
 
     fn serialize_to_bytes(&self) -> Result<Vec<u8>, SerializationError> {
-        self.inner
-            .to_msgpack()
-            .map_err(|e| SerializationError::Bytes {
-                type_name: "CountMinSketchWithHeapAccumulator",
-                source: e.to_string().into(),
-            })
+        Err(SerializationError::Bytes {
+            type_name: "CountMinSketchWithHeapAccumulator",
+            source: "byte serialization is not supported for FastPath CMSHeap".into(),
+        })
     }
 }
 
@@ -213,7 +190,10 @@ impl MergeableAccumulator<CountMinSketchWithHeapAccumulator> for CountMinSketchW
         let mut iter = accumulators.into_iter();
         let mut merged = iter.next().unwrap();
         for acc in iter {
-            merged.inner.merge(&acc.inner)?;
+            if merged.inner.rows() != acc.inner.rows() || merged.inner.cols() != acc.inner.cols() {
+                return Err("CountMinSketchWithHeap dimension mismatch".into());
+            }
+            merged.inner.merge(&acc.inner);
         }
         Ok(merged)
     }
@@ -228,8 +208,8 @@ mod tests {
         let cms = CountMinSketchWithHeapAccumulator::new(4, 1000, 20);
         assert_eq!(cms.inner.rows(), 4);
         assert_eq!(cms.inner.cols(), 1000);
-        assert_eq!(cms.inner.heap_size, 20);
-        assert_eq!(cms.inner.topk_heap_items().len(), 0);
+        assert_eq!(cms.inner.heap().capacity(), 20);
+        assert_eq!(cms.inner.heap().len(), 0);
     }
 
     #[test]
@@ -244,50 +224,17 @@ mod tests {
 
     #[test]
     fn test_count_min_sketch_with_heap_merge() {
-        // Build controlled state via from_legacy_matrix (works regardless of backend config).
-        let sketch1 = vec![
-            vec![10.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            vec![0.0, 20.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        ];
-        let heap1 = vec![
-            CmsHeapItem {
-                key: "key1".to_string(),
-                value: 100.0,
-            },
-            CmsHeapItem {
-                key: "key2".to_string(),
-                value: 50.0,
-            },
-        ];
-        let sketch2 = vec![
-            vec![5.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            vec![0.0, 15.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-        ];
-        let heap2 = vec![
-            CmsHeapItem {
-                key: "key3".to_string(),
-                value: 75.0,
-            },
-            CmsHeapItem {
-                key: "key1".to_string(),
-                value: 80.0,
-            },
-        ];
+        let mut left = CountMinSketchWithHeapAccumulator::new(3, 1024, 5);
+        let mut right = CountMinSketchWithHeapAccumulator::new(3, 1024, 3);
+        left.update("key1", 100);
+        right.update("key1", 80);
+        right.update("key2", 75);
 
-        let cms1 = CountMinSketchWithHeapAccumulator {
-            inner: CountMinSketchWithHeap::from_legacy_matrix(sketch1, heap1, 2, 10, 5),
-        };
-        let cms2 = CountMinSketchWithHeapAccumulator {
-            inner: CountMinSketchWithHeap::from_legacy_matrix(sketch2, heap2, 2, 10, 3),
-        };
-
-        let result = CountMinSketchWithHeapAccumulator::merge_accumulators(vec![cms1, cms2]);
-        assert!(result.is_ok());
-        let merged = result.unwrap();
-        assert_eq!(merged.inner.sketch_matrix()[0][0], 15.0);
-        assert_eq!(merged.inner.sketch_matrix()[1][1], 35.0);
-        assert_eq!(merged.inner.heap_size, 3);
-        assert!(merged.inner.topk_heap_items().len() <= 3);
+        let merged = CountMinSketchWithHeapAccumulator::merge_accumulators(vec![left, right])
+            .expect("matching sketches merge");
+        let key = KeyByLabelValues::new_with_labels(vec!["key1".to_owned()]);
+        assert_eq!(merged.query_key(&key), 180.0);
+        assert_eq!(merged.inner.heap().capacity(), 5);
     }
 
     #[test]
@@ -298,7 +245,7 @@ mod tests {
         let merged = result.unwrap();
         assert_eq!(merged.inner.rows(), cms.inner.rows());
         assert_eq!(merged.inner.cols(), cms.inner.cols());
-        assert_eq!(merged.inner.heap_size, cms.inner.heap_size);
+        assert_eq!(merged.inner.heap().capacity(), cms.inner.heap().capacity());
     }
 
     #[test]
@@ -319,12 +266,12 @@ mod tests {
     #[test]
     fn test_get_topk_keys() {
         let mut cms = CountMinSketchWithHeapAccumulator::new(2, 3, 5);
-        cms.inner.update("label1;label2", 100.0);
-        cms.inner.update("label3;label4", 50.0);
+        cms.update("label1;label2", 100);
+        cms.update("label3;label4", 50);
 
         let keys = cms.get_topk_keys();
         assert_eq!(keys.len(), 2);
-        // Top-k order can differ between Legacy and Sketchlib backends (heap ordering / estimates).
+        // Heap ordering is not part of the top-k interface.
         let label_sets: std::collections::HashSet<_> =
             keys.iter().map(|k| k.labels.clone()).collect();
         assert!(label_sets.contains(&vec!["label1".to_string(), "label2".to_string()]));
@@ -343,5 +290,14 @@ mod tests {
         let keys = multi_trait.get_keys();
         assert!(keys.is_some());
         assert_eq!(keys.unwrap().len(), 0);
+    }
+
+    #[test]
+    fn byte_serialization_is_unsupported() {
+        let cms = CountMinSketchWithHeapAccumulator::new(3, 50, 10);
+
+        let error = cms.serialize_to_bytes().unwrap_err();
+
+        assert!(error.to_string().contains("not supported"));
     }
 }
