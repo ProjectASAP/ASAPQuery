@@ -379,8 +379,15 @@ mod tests {
     #[test]
     fn fixed_size_keyed_sketch_memory_ignores_groups_but_query_reads_each() {
         let costs = AtomicCosts::default();
-        let (a, one) = direct_candidate(Statistic::Sum, AggregationType::CountMinSketch, 1);
-        let (_, five) = direct_candidate(Statistic::Sum, AggregationType::CountMinSketch, 5);
+        let (a, mut one) = direct_candidate(Statistic::Sum, AggregationType::MultipleSum, 1);
+        let (_, mut five) = direct_candidate(Statistic::Sum, AggregationType::MultipleSum, 5);
+        for candidate in [&mut one, &mut five] {
+            candidate
+                .config
+                .as_mut()
+                .expect("deployed candidate")
+                .aggregation_type = AggregationType::CountMinSketch;
+        }
         // Only the paired key tracker grows: one 1-label entry per extra group.
         let key_entry_bytes = LABEL_VALUE_CODE_BYTES * HASH_TABLE_SLACK;
         assert!(

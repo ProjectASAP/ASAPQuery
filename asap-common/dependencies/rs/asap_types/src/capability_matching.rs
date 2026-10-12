@@ -33,6 +33,7 @@ pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
             AggregationType::CountMinSketch,
         ],
         Statistic::Count => &[
+            AggregationType::MultipleSum,
             AggregationType::CountMinSketch,
             AggregationType::CountMinSketchWithHeap,
         ],
@@ -43,6 +44,26 @@ pub fn compatible_agg_types(stat: Statistic) -> &'static [AggregationType] {
         Statistic::Rate | Statistic::Increase => {
             &[AggregationType::Increase, AggregationType::MultipleIncrease]
         }
+        Statistic::Cardinality => &[
+            AggregationType::SetAggregator,
+            AggregationType::DeltaSetAggregator,
+            AggregationType::HLL,
+        ],
+        Statistic::Topk => &[AggregationType::CountMinSketchWithHeap],
+    }
+}
+
+/// Returns the aggregation types the optimizer should consider for a statistic.
+///
+/// This is intentionally narrower than [`compatible_agg_types`]: the latter
+/// also recognizes deployed legacy configurations. The optimizer favors the
+/// exact multi-population summaries that it can provision today.
+pub fn compatible_agg_types_for_planner(stat: Statistic) -> &'static [AggregationType] {
+    match stat {
+        Statistic::Sum | Statistic::Count => &[AggregationType::MultipleSum],
+        Statistic::Min | Statistic::Max => &[AggregationType::MultipleMinMax],
+        Statistic::Quantile => &[AggregationType::DatasketchesKLL, AggregationType::HydraKLL],
+        Statistic::Rate | Statistic::Increase => &[AggregationType::MultipleIncrease],
         Statistic::Cardinality => &[
             AggregationType::SetAggregator,
             AggregationType::DeltaSetAggregator,
@@ -1574,6 +1595,58 @@ mod tests {
         // Backwards compat: existing exact types stay supported.
         assert!(types.contains(&AggregationType::SetAggregator));
         assert!(types.contains(&AggregationType::DeltaSetAggregator));
+    }
+
+    #[test]
+    fn planner_uses_exact_families_for_sum_and_count() {
+        for stat in [Statistic::Sum, Statistic::Count] {
+            let types = compatible_agg_types_for_planner(stat);
+            assert_eq!(types, &[AggregationType::MultipleSum]);
+            assert!(compatible_agg_types(stat).contains(&AggregationType::MultipleSum));
+        }
+    }
+
+    #[test]
+    fn count_matches_multiple_sum_config() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            42,
+            make_config(
+                42,
+                "requests",
+                "MultipleSum",
+                "count",
+                1_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+        configs.insert(
+            43,
+            make_config(
+                43,
+                "requests",
+                "DeltaSetAggregator",
+                "",
+                1_000,
+                "tumbling",
+                &[],
+                "",
+            ),
+        );
+
+        let result = find_compatible_aggregation(
+            &configs,
+            &req("requests", &[Statistic::Count], 1_000, &[], ""),
+        );
+
+        assert_eq!(
+            result
+                .expect("MultipleSum/count should serve count")
+                .aggregation_id_for_value,
+            42
+        );
     }
 
     #[test]

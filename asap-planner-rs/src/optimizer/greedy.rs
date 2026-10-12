@@ -335,22 +335,11 @@ mod tests {
         assert!(matches!(error, OptimizerError::UnservableItems { .. }));
     }
 
-    /// A grouped query served by CMS needs a key aggregation the engine can
+    /// A grouped query served by MultipleSum needs a key aggregation the engine can
     /// list groups from, referenced alongside the value in its query config.
     #[test]
-    fn cms_assignment_deploys_a_key_aggregation_the_engine_matches() {
-        let table = vec![AtomicCostEntry {
-            sketch: "cms-fastpath-vector2d".into(),
-            sketch_config: serde_json::json!({
-                "algorithm": "cms-fastpath-vector2d",
-                "params": { "rows": 3, "cols": 512 }
-            }),
-            mem_bytes_per_instance: 1.0,
-            insert_cpu_secs: 0.0,
-            merge_cpu_secs: 0.0,
-            query_cpu_secs: 0.0,
-            query_accuracy: std::collections::BTreeMap::new(),
-        }];
+    fn multiple_sum_assignment_deploys_a_key_aggregation_the_engine_matches() {
+        let table = vec![];
         let mut aqe = make_aqe(Statistic::Sum, 60_000, 60_000, 1.0 / 60.0);
         aqe.requirements.grouping_labels = KeyByLabelNames::new(vec!["svc".into()]);
         let solution = greedy_assign(
@@ -368,7 +357,7 @@ mod tests {
         let deployed = solution.deployed_configs();
         assert_eq!(
             deployed[&value_id].aggregation_type,
-            AggregationType::CountMinSketch
+            AggregationType::MultipleSum
         );
         assert_eq!(
             deployed[&key_id].aggregation_type,

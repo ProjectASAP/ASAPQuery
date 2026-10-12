@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use asap_types::aggregation_config::AggregationConfig;
-use asap_types::capability_matching::{compatible_agg_types, key_agg_window_valid};
+use asap_types::capability_matching::{compatible_agg_types_for_planner, key_agg_window_valid};
 use asap_types::enums::WindowType;
 use promql_utilities::data_model::KeyByLabelNames;
 use promql_utilities::query_logics::enums::{AggregationType, Statistic};
@@ -79,7 +79,7 @@ pub fn enumerate_candidates_with_facts(
     let stat = item.requirements.statistics[0];
     let range_a_ms = item.requirements.data_range_ms;
 
-    for &agg_type in compatible_agg_types(stat) {
+    for &agg_type in compatible_agg_types_for_planner(stat) {
         if OPTIMIZER_SKIPPED_AGG_TYPES.contains(&agg_type) {
             continue;
         }
@@ -312,7 +312,9 @@ fn derive_sub_type(stat: Statistic, agg_type: AggregationType) -> String {
         (Statistic::Min, _) => "min",
         (Statistic::Max, _) => "max",
         (Statistic::Sum, AggregationType::CountMinSketch | AggregationType::MultipleSum) => "sum",
-        (Statistic::Count, AggregationType::CountMinSketch) => "count",
+        (Statistic::Count, AggregationType::CountMinSketch | AggregationType::MultipleSum) => {
+            "count"
+        }
         _ => "",
     }
     .to_string()
@@ -470,6 +472,21 @@ mod tests {
         for cfg in multiple_sum_configs {
             assert_eq!(cfg.aggregation_sub_type, "sum");
         }
+    }
+
+    #[test]
+    fn count_candidates_use_exact_multiple_sum_with_count_sub_type() {
+        let candidates = enumerate_candidates(&make_aqe(Statistic::Count, 300_000, 60_000), 15_000);
+        let configs: Vec<_> = candidates
+            .iter()
+            .filter_map(|candidate| candidate.config.as_ref())
+            .collect();
+
+        assert!(!configs.is_empty(), "expected at least one count candidate");
+        assert!(configs.iter().all(|config| {
+            config.aggregation_type == AggregationType::MultipleSum
+                && config.aggregation_sub_type == "count"
+        }));
     }
 
     fn labels(names: &[&str]) -> KeyByLabelNames {
