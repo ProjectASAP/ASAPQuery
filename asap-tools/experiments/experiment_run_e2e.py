@@ -45,6 +45,7 @@ def main(cfg: DictConfig):
     config.validate_config(cfg)
     # Validate experiment configuration
     config.validate_experiment_config(cfg.experiment_params)
+    milp = config.milp_planner(cfg)
 
     # Convert config to args-like object for backward compatibility
     # (also constructs the infrastructure provider, exposed as args.provider)
@@ -173,8 +174,9 @@ def main(cfg: DictConfig):
         config.generate_controller_client_configs(
             cfg.experiment_params,
             local_experiment_root_dir,
-            cfg.aggregate_cleanup,
-            cfg.get("sketch_parameters", None),
+            # The MILP rejects both; it chooses sketch parameters and cleanup itself.
+            None if milp else cfg.aggregate_cleanup,
+            None if milp else cfg.get("sketch_parameters", None),
             cfg.get("windowing", None),
         )
     )
@@ -323,6 +325,7 @@ def main(cfg: DictConfig):
                 punting=args.controller_punting,
                 discovery_backend=discovery_backend,
                 data_ingestion_interval_ms=data_ingestion_interval_ms,
+                milp=milp,
             )
             sync.rsync_controller_config_remote_to_local(
                 provider,

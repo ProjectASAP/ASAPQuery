@@ -7,12 +7,13 @@ import math
 import os
 import copy
 import yaml
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 import constants
 from experiment_utils.providers.factory import create_provider
+from experiment_utils.services.misc import MilpPlanner
 
 # Keys the planner's `ControllerOptions` accepts.
 CONTROLLER_OPTION_KEYS = {"accuracy_sla", "latency_sla_ms"}
@@ -735,6 +736,49 @@ def validate_config(cfg: DictConfig, script_name: str = "experiment_run_e2e"):
         raise ValueError(
             "backend.type=clickhouse requires experiment_params.dataset to be set. "
             "Use experiment_type=clickhouse or add a dataset section to your experiment config."
+        )
+
+
+def milp_planner(cfg: DictConfig) -> Optional[MilpPlanner]:
+    """`planner.*` as the planner's MILP inputs, or None for the legacy planner.
+
+    Fails on settings --planner milp can't honor rather than dropping them.
+    """
+    planner = cfg.get("planner")
+    if planner is None or not planner.get("use_optimizer", False):
+        return None
+    conflicts = [
+        f"planner.{key} is unset"
+        for key in ("saturation_dir", "workload_facts")
+        if not planner.get(key)
+    ]
+    if cfg.controller.punting:
+        conflicts.append("controller.punting=true")
+    if cfg.controller.get("auto_discover_labels", False):
+        conflicts.append("controller.auto_discover_labels=true")
+    if cfg.get("windowing") is not None:
+        conflicts.append("windowing is set")
+    if conflicts:
+        raise ValueError(
+            "planner.use_optimizer=true (asap-planner --planner milp) conflicts with: "
+            + "; ".join(conflicts)
+            + ". Pass planner.use_optimizer=false for the legacy planner."
+        )
+    return MilpPlanner(
+        saturation_dir=planner.saturation_dir,
+        workload_facts=planner.workload_facts,
+        w_cpu=planner.get("w_cpu"),
+        w_mem=planner.get("w_mem"),
+    )
+
+
+def require_legacy_planner(cfg: DictConfig, script_name: str) -> None:
+    """For scripts whose planner runs can't use --planner milp."""
+    planner = cfg.get("planner")
+    if planner is not None and planner.get("use_optimizer", False):
+        raise ValueError(
+            f"{script_name} supports only the legacy planner; "
+            "pass planner.use_optimizer=false."
         )
 
 

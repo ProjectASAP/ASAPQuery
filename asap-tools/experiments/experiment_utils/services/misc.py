@@ -24,6 +24,43 @@ class DiscoveryBackend:
     database: Optional[str]
 
 
+# Atomic cost table under the saturation dir (rqe_optimizer::saturation::COST_TABLE).
+COST_TABLE = "optimizer_cost/rqe_atomic_costs.json"
+
+
+@dataclass
+class MilpPlanner:
+    """Remote inputs for `asap-planner --planner milp` (sketch-bench's rqe-optimizer)."""
+
+    saturation_dir: str
+    workload_facts: str
+    w_cpu: Optional[float] = None
+    w_mem: Optional[float] = None
+
+    def cli_args(self) -> str:
+        args = (
+            f" --planner milp --workload-facts {self.workload_facts}"
+            f" --atomic-costs {os.path.join(self.saturation_dir, COST_TABLE)}"
+            f" --saturation-dir {self.saturation_dir}"
+        )
+        return args + self._weight_args()
+
+    def compose_generator_args(self) -> str:
+        args = (
+            f" --saturation-dir {self.saturation_dir}"
+            f" --workload-facts {self.workload_facts}"
+        )
+        return args + self._weight_args()
+
+    def _weight_args(self) -> str:
+        args = ""
+        if self.w_cpu is not None:
+            args += f" --w-cpu {self.w_cpu}"
+        if self.w_mem is not None:
+            args += f" --w-mem {self.w_mem}"
+        return args
+
+
 class DeathstarService(BaseService):
     """Service for managing DeathStar benchmark."""
 
@@ -206,6 +243,7 @@ class ControllerService(BaseService):
         discovery_backend: Optional[DiscoveryBackend],
         data_ingestion_interval_ms: int,
         query_language: str = "promql",
+        milp: Optional[MilpPlanner] = None,
         **kwargs,
     ) -> None:
         """
@@ -222,6 +260,7 @@ class ControllerService(BaseService):
                 SQL mode:    DiscoveryBackend(type="clickhouse", url=<url>, database=<db>)
             data_ingestion_interval_ms: Data ingestion interval in milliseconds (required for all modes)
             query_language: 'promql' (default) or 'sql'
+            milp: Plan with --planner milp instead of the legacy planner.
             **kwargs: Additional configuration
         """
         if self.use_container:
@@ -233,6 +272,7 @@ class ControllerService(BaseService):
                 discovery_backend,
                 data_ingestion_interval_ms,
                 query_language,
+                milp,
             )
         else:
             return self._start_bare_metal(
@@ -243,6 +283,7 @@ class ControllerService(BaseService):
                 discovery_backend,
                 data_ingestion_interval_ms,
                 query_language,
+                milp,
             )
 
     @staticmethod
@@ -268,6 +309,7 @@ class ControllerService(BaseService):
         discovery_backend: Optional[DiscoveryBackend],
         data_ingestion_interval_ms: int,
         query_language: str,
+        milp: Optional[MilpPlanner] = None,
     ) -> None:
         controller_log = os.path.join(controller_remote_output_dir, "controller.log")
         # Force UTC so naive (no Z/offset) datetime-string time literals in SQL
@@ -286,6 +328,8 @@ class ControllerService(BaseService):
         cmd += self._discovery_args(discovery_backend)
         if punting:
             cmd += " --enable-punting"
+        if milp is not None:
+            cmd += milp.cli_args()
         cmd += " -v"
         cmd += f" > {controller_log} 2>&1"
         cmd_dir = os.path.join(self.provider.get_home_dir(), "code", "asap-planner-rs")
@@ -307,6 +351,7 @@ class ControllerService(BaseService):
         discovery_backend: Optional[DiscoveryBackend],
         data_ingestion_interval_ms: int,
         query_language: str,
+        milp: Optional[MilpPlanner] = None,
     ):
         controller_dir = os.path.join(
             self.provider.get_home_dir(), "code", "asap-planner-rs"
@@ -338,6 +383,8 @@ class ControllerService(BaseService):
         generate_cmd += self._discovery_args(discovery_backend)
         if punting:
             generate_cmd += " --punting"
+        if milp is not None:
+            generate_cmd += milp.compose_generator_args()
 
         controller_log = os.path.join(controller_remote_output_dir, "controller.log")
         cmd = (
