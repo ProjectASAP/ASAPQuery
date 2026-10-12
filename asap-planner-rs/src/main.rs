@@ -1,5 +1,6 @@
 use asap_planner::optimizer::{
-    parse_weight, plan_milp, plan_to_planner_output, reject_unwritable_queries, MilpInputs,
+    parse_weight, plan_milp, plan_to_planner_output, reject_unwritable_queries, MilpConfig,
+    MilpInputs,
 };
 use asap_planner::{
     Controller, ControllerConfig, ElasticController, ElasticRuntimeOptions, RuntimeOptions,
@@ -247,10 +248,11 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
         "--data-ingestion-interval-ms must be positive"
     );
     let config: ControllerConfig = serde_yaml::from_str(&std::fs::read_to_string(config_path)?)?;
+    let config = MilpConfig::Promql(&config);
     // Fail before solving: the plan is always written.
-    reject_unwritable_queries(&config)?;
+    reject_unwritable_queries(config)?;
     let plan = plan_milp(
-        &config,
+        config,
         &MilpInputs {
             workload_facts: args
                 .workload_facts
@@ -270,7 +272,7 @@ fn run_milp(args: &Args) -> anyhow::Result<()> {
             allow_undeployable_families: false,
         },
     )?;
-    plan_to_planner_output(&config, &plan.workload, &plan.solution)?
+    plan_to_planner_output(config, &plan.workload, &plan.solution)?
         .write_to_dir(&args.output_dir)?;
     Ok(())
 }

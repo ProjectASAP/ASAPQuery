@@ -11,7 +11,7 @@ use rqe_optimizer::{
 };
 use thiserror::Error;
 
-use crate::config::input::ControllerConfig;
+use crate::config::input::{ControllerConfig, MetricDefinition};
 
 use std::path::Path;
 
@@ -119,6 +119,49 @@ pub fn solve_milp(
     Ok(solution)
 }
 
+/// The workload config the MILP plans, by query language.
+#[derive(Debug, Clone, Copy)]
+pub enum MilpConfig<'a> {
+    Promql(&'a ControllerConfig),
+}
+
+impl MilpConfig<'_> {
+    /// Each workload metric's labels.
+    fn hints(self) -> Result<Vec<MetricDefinition>, MilpError> {
+        match self {
+            MilpConfig::Promql(config) => {
+                config.metrics.clone().ok_or(MilpError::MissingMetricHints)
+            }
+        }
+    }
+
+    fn items(self, scrape_interval_ms: u64) -> Result<Vec<OptimizerItem>, MilpError> {
+        match self {
+            MilpConfig::Promql(config) => {
+                reject_fields([
+                    ("windowing", config.windowing.is_some()),
+                    ("sketch_parameters", config.sketch_parameters.is_some()),
+                    ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
+                ])?;
+                extract_hinted_items(config, scrape_interval_ms)
+            }
+        }
+    }
+}
+
+/// The MILP chooses windows and sketch parameters itself.
+fn reject_fields(fields: [(&'static str, bool); 3]) -> Result<(), MilpError> {
+    let unsupported: Vec<&'static str> = fields
+        .into_iter()
+        .filter_map(|(field, set)| set.then_some(field))
+        .collect();
+    if unsupported.is_empty() {
+        Ok(())
+    } else {
+        Err(MilpError::UnsupportedFields(unsupported))
+    }
+}
+
 /// What a MILP planning run reads besides the workload config.
 pub struct MilpInputs<'a> {
     pub workload_facts: &'a Path,
@@ -141,12 +184,11 @@ pub struct MilpPlan {
 
 /// Loads the facts, costs and saturation curves and solves for the cheapest
 /// plan.
-pub fn plan_milp(config: &ControllerConfig, inputs: &MilpInputs) -> anyhow::Result<MilpPlan> {
-    config.warn_default_slas();
-    let Some(hints) = config.metrics.as_deref() else {
-        return Err(MilpError::MissingMetricHints.into());
-    };
-    let facts = load_workload_facts(inputs.workload_facts, hints, inputs.scrape_interval_ms)?;
+pub fn plan_milp(config: MilpConfig, inputs: &MilpInputs) -> anyhow::Result<MilpPlan> {
+    let MilpConfig::Promql(promql) = config;
+    promql.warn_default_slas();
+    let hints = config.hints()?;
+    let facts = load_workload_facts(inputs.workload_facts, &hints, inputs.scrape_interval_ms)?;
     let curves = SaturationCurves::load(inputs.saturation_dir).with_context(|| {
         format!(
             "loading saturation curves from {}",
@@ -240,23 +282,11 @@ pub struct MilpWorkload {
 /// dashboards running the same query at the same cadence become two
 /// identical Raqes, which the MILP serves from one shared deployment.
 pub fn build_milp_workload(
-    config: &ControllerConfig,
+    config: MilpConfig,
     facts: &WorkloadFacts,
     scrape_interval_ms: u64,
 ) -> Result<MilpWorkload, MilpError> {
-    // The MILP chooses windows and sketch parameters itself.
-    let unsupported: Vec<&'static str> = [
-        ("windowing", config.windowing.is_some()),
-        ("sketch_parameters", config.sketch_parameters.is_some()),
-        ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
-    ]
-    .into_iter()
-    .filter_map(|(field, set)| set.then_some(field))
-    .collect();
-    if !unsupported.is_empty() {
-        return Err(MilpError::UnsupportedFields(unsupported));
-    }
-    let mut items = extract_hinted_items(config, scrape_interval_ms)?;
+    let mut items = config.items(scrape_interval_ms)?;
     // Stable Raqe order and ids across runs.
     items.sort_by(|a, b| {
         (&a.query_strings, a.t_repeat_ms)
@@ -500,7 +530,7 @@ metrics:
 
     fn workload(groups: &str) -> MilpWorkload {
         let config = config(groups);
-        build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap()
+        build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS).unwrap()
     }
 
     fn labels(names: &[&str]) -> LabelSet {
@@ -673,7 +703,8 @@ metrics:
     #[test]
     fn accuracy_sla_above_one_is_rejected() {
         let config = config(&group("sum by (job) (http_requests_total)", 1.5));
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(matches!(err, MilpError::AccuracySlaOutOfRange { .. }));
     }
 
@@ -683,7 +714,8 @@ metrics:
             "sum by (job) (http_requests_total{job='api'})",
             0.99,
         ));
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         let MilpError::InvalidInputs(problems) = err else {
             panic!("expected InvalidInputs, got {err:?}");
         };
@@ -693,7 +725,8 @@ metrics:
     #[test]
     fn missing_cardinality_is_rejected() {
         let config = config(&group("sum by (instance) (http_requests_total)", 0.99));
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(matches!(err, MilpError::InvalidInputs(_)));
     }
 
@@ -705,7 +738,8 @@ metrics:
         config.windowing =
             Some(serde_yaml::from_str("{type: tumbling, window_size_ms: 60000}").unwrap());
         config.sketch_parameters = Some(Default::default());
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(
             matches!(&err, MilpError::UnsupportedFields(f) if f == &["windowing", "sketch_parameters"]),
             "{err}"
@@ -713,7 +747,8 @@ metrics:
         config.windowing = None;
         config.sketch_parameters = None;
         config.aggregate_cleanup = Some(serde_yaml::from_str("{}").unwrap());
-        let err = build_milp_workload(&config, &facts(&config), SCRAPE_MS).unwrap_err();
+        let err = build_milp_workload(MilpConfig::Promql(&config), &facts(&config), SCRAPE_MS)
+            .unwrap_err();
         assert!(
             matches!(&err, MilpError::UnsupportedFields(f) if f == &["aggregate_cleanup"]),
             "{err}"
@@ -725,7 +760,7 @@ metrics:
         let query = "sum by (job) (http_requests_total)";
         let config = config(&(group(query, 0.99) + &group(query, 0.99)));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let solution = solve_milp(
             &w,
             &facts,
@@ -756,7 +791,7 @@ metrics:
             .unwrap()
             .data_shape
             .clear();
-        let w = build_milp_workload(&both, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&both), &facts, SCRAPE_MS).unwrap();
         let err = solve_milp(
             &w,
             &facts,
@@ -787,7 +822,7 @@ metrics:
         .unwrap_err();
         assert!(matches!(err, MilpError::Unservable(_)), "{err:?}");
         let exact_only = config(&group(sum, 0.99));
-        let w = build_milp_workload(&exact_only, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&exact_only), &facts, SCRAPE_MS).unwrap();
         assert!(solve_milp(
             &w,
             &facts,
@@ -807,7 +842,7 @@ metrics:
             0.999,
         ));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let err = solve_milp(
             &w,
             &facts,
@@ -825,7 +860,7 @@ metrics:
         let quantile = group("quantile_over_time(0.99, http_requests_total[5m])", 0.999);
         let config = config(&(quantile.clone() + &quantile));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         assert_eq!(w.raqes.len(), 2);
         let err = solve_milp(
             &w,
@@ -846,7 +881,7 @@ metrics:
             + &group("topk(5, http_requests_total)", 0.99);
         let config = config(&groups);
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let solution = solve_milp(
             &w,
             &facts,
@@ -879,7 +914,7 @@ metrics:
         // rewrite; sharing would undercount ingest and memory.
         let config = config(&group("avg by (job) (http_requests_total)", 0.99));
         let facts = facts(&config);
-        let w = build_milp_workload(&config, &facts, SCRAPE_MS).unwrap();
+        let w = build_milp_workload(MilpConfig::Promql(&config), &facts, SCRAPE_MS).unwrap();
         let caps: Vec<_> = w.raqes.iter().map(|r| r.capability).collect();
         assert_eq!(caps.len(), 2);
         assert!(caps.contains(&Capability::Sum) && caps.contains(&Capability::Count));

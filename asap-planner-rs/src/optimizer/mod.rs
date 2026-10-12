@@ -10,8 +10,8 @@ pub use aqe_extractor::{extract_aqes, RQE};
 pub use atomic_costs::{load_flat_atomic_cost_table, AtomicCostEntry, AtomicCostTable};
 pub use error::OptimizerError;
 pub use milp::{
-    build_milp_workload, parse_weight, plan_milp, solve_milp, MilpError, MilpInputs, MilpPlan,
-    MilpWorkload,
+    build_milp_workload, parse_weight, plan_milp, solve_milp, MilpConfig, MilpError, MilpInputs,
+    MilpPlan, MilpWorkload,
 };
 pub use milp_output::{plan_to_planner_output, reject_unwritable_queries, MilpOutputError};
 pub use solution::OptimizerItem;
