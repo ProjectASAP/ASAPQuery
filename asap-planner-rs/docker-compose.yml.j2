@@ -9,7 +9,9 @@ services:
       - TZ=UTC
     volumes:
       - {{ input_config_path }}:/app/input/config.yaml:ro
-      - {{ output_dir }}:/app/output
+      - {{ output_dir }}:/app/output{% if saturation_dir %}
+      - {{ saturation_dir }}:/app/saturation:ro
+      - {{ workload_facts }}:/app/input/workload_facts.yaml:ro{% endif %}
     command: [
       "--input_config", "/app/input/config.yaml",
       "--output_dir", "/app/output",
@@ -17,7 +19,13 @@ services:
       "--streaming_engine", "{{ streaming_engine }}",
       "--query-language", "{{ query_language }}"{% if prometheus_url %},
       "--prometheus-url", "{{ prometheus_url }}"{% endif %}{% if punting %},
-      "--enable-punting"{% endif %}
+      "--enable-punting"{% endif %}{% if saturation_dir %},
+      "--planner", "milp",
+      "--workload-facts", "/app/input/workload_facts.yaml",
+      "--atomic-costs", "/app/saturation/optimizer_cost/rqe_atomic_costs.json",
+      "--saturation-dir", "/app/saturation"{% endif %}{% if w_cpu is not none %},
+      "--w-cpu", "{{ w_cpu }}"{% endif %}{% if w_mem is not none %},
+      "--w-mem", "{{ w_mem }}"{% endif %}
     ]
     network_mode: "host"
     restart: no

@@ -21,6 +21,10 @@ def generate_compose_file(
     punting: bool,
     prometheus_url: Optional[str],
     query_language: str,
+    saturation_dir: Optional[str] = None,
+    workload_facts: Optional[str] = None,
+    w_cpu: Optional[float] = None,
+    w_mem: Optional[float] = None,
 ):
     """Generate docker-compose.yml from template with provided variables."""
 
@@ -46,6 +50,10 @@ def generate_compose_file(
         "punting": punting,
         "prometheus_url": prometheus_url,
         "query_language": query_language,
+        "saturation_dir": saturation_dir,
+        "workload_facts": workload_facts,
+        "w_cpu": w_cpu,
+        "w_mem": w_mem,
     }
 
     # Render the template
@@ -134,7 +142,17 @@ def main():
         help="Data ingestion interval in milliseconds",
     )
 
+    # Set together: the planner runs --planner milp (sketch-bench's rqe-optimizer).
+    parser.add_argument(
+        "--saturation-dir", help="Host path of sketch-bench's saturation-study dir"
+    )
+    parser.add_argument("--workload-facts", help="Host path of the workload-facts YAML")
+    parser.add_argument("--w-cpu", type=float, help="MILP objective weight on CPU")
+    parser.add_argument("--w-mem", type=float, help="MILP objective weight on memory")
+
     args = parser.parse_args()
+    if (args.saturation_dir is None) != (args.workload_facts is None):
+        parser.error("--saturation-dir and --workload-facts go together")
 
     generate_compose_file(
         template_path=args.template_path,
@@ -148,6 +166,10 @@ def main():
         punting=args.punting,
         prometheus_url=args.prometheus_url,
         query_language=args.query_language,
+        saturation_dir=args.saturation_dir,
+        workload_facts=args.workload_facts,
+        w_cpu=args.w_cpu,
+        w_mem=args.w_mem,
     )
 
 

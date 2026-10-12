@@ -91,6 +91,17 @@ controller:
   punting: ???  # REQUIRED: Enable query punting based on performance heuristics (should_be_performant check)
   auto_discover_labels: false  # Query Prometheus for metric labels instead of using config hints
 
+# Planner: sketch-bench's rqe-optimizer MILP (asap-planner --planner milp), or
+# the legacy planner when use_optimizer is false. The MILP needs punting and
+# auto_discover_labels off and no windowing; it picks sketch parameters and
+# cleanup itself.
+planner:
+  use_optimizer: true
+  saturation_dir: null  # Remote path of sketch-bench's saturation-study dir (atomic costs read from optimizer_cost/rqe_atomic_costs.json inside it)
+  workload_facts: null  # Remote path of the workload-facts YAML
+  w_cpu: null  # MILP objective weight on CPU-sec/sec; null = rqe-optimizer's default
+  w_mem: null  # MILP objective weight on memory GiB; null = rqe-optimizer's default
+
 # Optional manual planner windowing override. Omit this block to preserve the
 # default tumbling-window behavior. For tumbling windows, omit
 # slide_interval_ms. For sliding windows, both sizes are explicit.

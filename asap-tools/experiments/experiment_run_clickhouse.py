@@ -339,6 +339,7 @@ def main(cfg: DictConfig) -> None:
         + config.required_cloudlab_params(cfg),
         script_name="experiment_run_clickhouse",
     )
+    config.require_legacy_planner(cfg, "experiment_run_clickhouse")
     config.validate_experiment_config(cfg.experiment_params)
 
     provider = create_provider(cfg)
