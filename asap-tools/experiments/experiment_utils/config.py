@@ -9,6 +9,7 @@ import copy
 import yaml
 from typing import Any, Dict, List, Tuple
 
+import hydra.utils
 from omegaconf import DictConfig, ListConfig, OmegaConf
 
 import constants
@@ -605,6 +606,17 @@ class Args:
         # Controller configuration
         self.controller_punting = cfg.controller.punting
         self.controller_auto_discover_labels = cfg.controller.auto_discover_labels
+        self.controller_prebuilt_output_dir = cfg.controller.get("prebuilt_output_dir")
+        if self.controller_prebuilt_output_dir:
+            self.controller_prebuilt_output_dir = hydra.utils.to_absolute_path(
+                self.controller_prebuilt_output_dir
+            )
+            for name in ("streaming_config.yaml", "inference_config.yaml"):
+                path = os.path.join(self.controller_prebuilt_output_dir, name)
+                if not os.path.isfile(path):
+                    raise ValueError(
+                        f"controller.prebuilt_output_dir has no {name}: {path}"
+                    )
 
         # Aggregate cleanup configuration
         # Valid policies: "circular_buffer", "read_based", "no_cleanup"

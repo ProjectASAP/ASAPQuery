@@ -244,6 +244,17 @@ pub fn build_milp_workload(
     facts: &WorkloadFacts,
     scrape_interval_ms: u64,
 ) -> Result<MilpWorkload, MilpError> {
+    let workload = workload_from_config(config, scrape_interval_ms)?;
+    validate_facts(&workload.raqes, facts).map_err(MilpError::InvalidInputs)?;
+    Ok(workload)
+}
+
+/// [`build_milp_workload`] without the facts check, for a plan solved
+/// elsewhere.
+pub fn workload_from_config(
+    config: &ControllerConfig,
+    scrape_interval_ms: u64,
+) -> Result<MilpWorkload, MilpError> {
     // The MILP chooses windows and sketch parameters itself.
     let unsupported: Vec<&'static str> = [
         ("windowing", config.windowing.is_some()),
@@ -298,10 +309,8 @@ pub fn build_milp_workload(
     tracing::debug!(
         items = items.len(),
         raqes = raqes.len(),
-        metrics_with_facts = facts.len(),
         "milp inputs: built raqes"
     );
-    validate_facts(&raqes, facts).map_err(MilpError::InvalidInputs)?;
     Ok(MilpWorkload {
         items,
         raqes,
