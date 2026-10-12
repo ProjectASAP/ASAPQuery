@@ -640,7 +640,6 @@ impl SimpleEngine {
         let lookback_ms =
             Self::widen_query_window(&mut extended_store_plan.values_query, start_ms, end_ms);
 
-        let buckets_per_step = (step_ms / tumbling_window_ms) as usize;
         let lookback_bucket_count = (lookback_ms / tumbling_window_ms) as usize;
 
         // #583: widen keys_query the same way, using the instant window
@@ -692,7 +691,6 @@ impl SimpleEngine {
             // start_ms+step_ms, ..., the last value <= end_ms.
             output_timestamps: (start_ms..=end_ms).step_by(step_ms as usize).collect(),
             query_range_ms: lookback_ms,
-            buckets_per_step,
             lookback_bucket_count,
             tumbling_window_ms,
             window_type,
