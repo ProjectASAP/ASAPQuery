@@ -11,14 +11,14 @@ use rqe_optimizer::{
 };
 use thiserror::Error;
 
-use crate::config::input::{ControllerConfig, MetricDefinition};
+use crate::config::input::{ControllerConfig, MetricDefinition, SQLControllerConfig};
 
 use std::path::Path;
 
 use anyhow::Context;
 use rqe_optimizer::saturation::SaturationCurves;
 
-use super::aqe_extractor::{extract_aqes, RQE};
+use super::aqe_extractor::{extract_aqes, extract_sql_aqes, sql_metric, RQE};
 use super::atomic_costs::load_flat_atomic_cost_table;
 use super::error::OptimizerError;
 use super::solution::OptimizerItem;
@@ -38,6 +38,10 @@ pub enum MilpError {
     MissingMetricHints,
     #[error("workload metrics missing from `metrics:` hints: {0:?}")]
     MetricsWithoutHints(Vec<String>),
+    #[error("table {0:?} lists no metadata_columns; the MILP planner doesn't discover them")]
+    TableWithoutMetadataColumns(String),
+    #[error("two SQL value columns both name metric {0:?}")]
+    DuplicateSqlMetric(String),
     #[error(transparent)]
     Extraction(#[from] OptimizerError),
     #[error("query {query:?}: accuracy_sla {accuracy_sla} must be between 0 and 1")]
@@ -123,14 +127,35 @@ pub fn solve_milp(
 #[derive(Debug, Clone, Copy)]
 pub enum MilpConfig<'a> {
     Promql(&'a ControllerConfig),
+    Sql(&'a SQLControllerConfig),
 }
 
 impl MilpConfig<'_> {
-    /// Each workload metric's labels.
-    fn hints(self) -> Result<Vec<MetricDefinition>, MilpError> {
+    /// Each workload metric's labels. A SQL table's value columns are its
+    /// metrics (named by `sql_metric`), labelled by its metadata columns.
+    pub(crate) fn hints(self) -> Result<Vec<MetricDefinition>, MilpError> {
         match self {
             MilpConfig::Promql(config) => {
                 config.metrics.clone().ok_or(MilpError::MissingMetricHints)
+            }
+            MilpConfig::Sql(config) => {
+                let mut hints: Vec<MetricDefinition> = Vec::new();
+                for table in &config.tables {
+                    if table.metadata_columns.is_empty() {
+                        return Err(MilpError::TableWithoutMetadataColumns(table.name.clone()));
+                    }
+                    for column in &table.value_columns {
+                        let metric = sql_metric(&table.name, column);
+                        if hints.iter().any(|hint| hint.metric == metric) {
+                            return Err(MilpError::DuplicateSqlMetric(metric));
+                        }
+                        hints.push(MetricDefinition {
+                            metric,
+                            labels: table.metadata_columns.clone(),
+                        });
+                    }
+                }
+                Ok(hints)
             }
         }
     }
@@ -144,6 +169,26 @@ impl MilpConfig<'_> {
                     ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
                 ])?;
                 extract_hinted_items(config, scrape_interval_ms)
+            }
+            MilpConfig::Sql(config) => {
+                reject_fields([
+                    ("windowing", config.windowing.is_some()),
+                    ("sketch_parameters", config.sketch_parameters.is_some()),
+                    ("aggregate_cleanup", config.aggregate_cleanup.is_some()),
+                ])?;
+                let rqes: Vec<RQE> = config
+                    .query_groups
+                    .iter()
+                    .flat_map(|qg| {
+                        qg.queries.iter().map(|q| RQE {
+                            query_string: q.clone(),
+                            t_repeat_ms: qg.repetition_delay_ms,
+                            accuracy_sla: qg.controller_options.accuracy_sla,
+                            latency_sla_ms: qg.controller_options.latency_sla_ms,
+                        })
+                    })
+                    .collect();
+                Ok(extract_sql_aqes(&rqes, &config.tables, scrape_interval_ms)?)
             }
         }
     }
@@ -185,8 +230,9 @@ pub struct MilpPlan {
 /// Loads the facts, costs and saturation curves and solves for the cheapest
 /// plan.
 pub fn plan_milp(config: MilpConfig, inputs: &MilpInputs) -> anyhow::Result<MilpPlan> {
-    let MilpConfig::Promql(promql) = config;
-    promql.warn_default_slas();
+    if let MilpConfig::Promql(promql) = config {
+        promql.warn_default_slas();
+    }
     let hints = config.hints()?;
     let facts = load_workload_facts(inputs.workload_facts, &hints, inputs.scrape_interval_ms)?;
     let curves = SaturationCurves::load(inputs.saturation_dir).with_context(|| {
@@ -412,15 +458,11 @@ fn item_to_raqe(item: &OptimizerItem) -> Result<Raqe, MilpError> {
     // A top-k Raqe asks for its query's literal k (the largest, should an
     // item carry several), which sizes and prices the heap.
     let topk_k = match capability {
-        Capability::TopKByValue | Capability::TopKByCount => Some(
-            item.query_strings
-                .iter()
-                .map(|q| super::milp_output::topk_k(q))
-                .try_fold(0, |max, k| Some(max.max(k?)))
-                .ok_or_else(|| MilpError::TopkWithoutK {
-                    query: query.clone(),
-                })?,
-        ),
+        Capability::TopKByValue | Capability::TopKByCount => {
+            Some(item.topk_k.ok_or_else(|| MilpError::TopkWithoutK {
+                query: query.clone(),
+            })?)
+        }
         _ => None,
     };
 
@@ -495,7 +537,7 @@ pub(super) mod tests {
 
     pub(crate) const SCRAPE_MS: u64 = 15_000;
 
-    const FACTS: &str = r#"
+    pub(crate) const FACTS: &str = r#"
 metrics:
   - metric: http_requests_total
     value_range: [1.0, 1000.0]
@@ -652,7 +694,7 @@ metrics:
         ));
         assert_eq!(w.raqes[0].topk_k, Some(7));
         let mut item = w.items[0].clone();
-        item.query_strings = vec!["topk(scalar(up), http_requests_total)".into()];
+        item.topk_k = None;
         assert!(matches!(
             item_to_raqe(&item),
             Err(MilpError::TopkWithoutK { .. })

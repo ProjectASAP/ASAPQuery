@@ -182,7 +182,7 @@ fn build_tables_yaml(config: &SQLControllerConfig) -> Vec<YamlValue> {
         .collect()
 }
 
-fn build_sql_streaming_yaml(
+pub(crate) fn build_sql_streaming_yaml(
     config: &SQLControllerConfig,
     dedup_map: &IndexMap<String, IntermediateAggConfig>,
     id_map: &HashMap<String, u32>,
@@ -205,7 +205,7 @@ fn build_sql_streaming_yaml(
     Ok(YamlValue::Mapping(root))
 }
 
-fn build_sql_inference_yaml(
+pub(crate) fn build_sql_inference_yaml(
     config: &SQLControllerConfig,
     cleanup_policy: CleanupPolicy,
     query_plan_map: &IndexMap<String, QueryPlanEntry>,
