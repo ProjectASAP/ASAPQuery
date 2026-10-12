@@ -1,9 +1,16 @@
 #!/bin/bash
 # Add a git worktree for an issue number (uses gh to resolve the branch)
 
+cd_into=0
+if [ "$1" = "-c" ] || [ "$1" = "--cd" ]; then
+  cd_into=1
+  shift
+fi
+
 if [ -z "$1" ]; then
-  echo "Usage: gwt.sh <issue-number>"
+  echo "Usage: gwt.sh [-c|--cd] <issue-number>"
   echo "Example: gwt.sh 97"
+  echo "  -c, --cd   open a shell in the worktree afterwards"
   exit 1
 fi
 
@@ -30,15 +37,26 @@ if [ "$branch_count" -gt 1 ]; then
 fi
 
 branch_name="$branches"
+worktree_dir=".agent/worktrees/$branch_name"
 
 echo "Found branch: $branch_name"
-echo "Fetching from origin..."
-git fetch origin "$branch_name"
 
-echo "Creating worktree at .agent/worktrees/$branch_name..."
-mkdir -p .agent/worktrees
-if git show-ref --verify --quiet "refs/heads/$branch_name"; then
-  git worktree add ".agent/worktrees/$branch_name" "$branch_name"
+if [ -d "$worktree_dir" ]; then
+  echo "Worktree already exists at $worktree_dir"
 else
-  git worktree add --track -b "$branch_name" ".agent/worktrees/$branch_name" "origin/$branch_name"
+  echo "Fetching from origin..."
+  git fetch origin "$branch_name"
+
+  echo "Creating worktree at $worktree_dir..."
+  mkdir -p .agent/worktrees
+  if git show-ref --verify --quiet "refs/heads/$branch_name"; then
+    git worktree add "$worktree_dir" "$branch_name" || exit 1
+  else
+    git worktree add --track -b "$branch_name" "$worktree_dir" "origin/$branch_name" || exit 1
+  fi
+fi
+
+# ponytail: a script can't cd its parent shell, so spawn a new one there; `exit` returns.
+if [ "$cd_into" -eq 1 ]; then
+  cd "$worktree_dir" && exec "${SHELL:-bash}"
 fi
