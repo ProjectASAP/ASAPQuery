@@ -162,16 +162,17 @@ fn main() -> anyhow::Result<()> {
              --planner milp"
         );
     }
-    if args.planner != PlannerArg::Legacy {
-        match args.planner {
-            PlannerArg::Milp => run_milp(&args)?,
-            PlannerArg::Saved => run_saved(&args)?,
-            PlannerArg::Legacy => unreachable!(),
-        }
-        println!("Generated configs in {}", args.output_dir.display());
-        return Ok(());
+    let output_dir = args.output_dir.clone();
+    match args.planner {
+        PlannerArg::Milp => run_milp(&args)?,
+        PlannerArg::Saved => run_saved(&args)?,
+        PlannerArg::Legacy => run_legacy(args, engine)?,
     }
+    println!("Generated configs in {}", output_dir.display());
+    Ok(())
+}
 
+fn run_legacy(args: Args, engine: StreamingEngine) -> anyhow::Result<()> {
     match args.query_language {
         QueryLanguage::promql => {
             let scrape_interval_ms = args.data_ingestion_interval_ms.ok_or_else(|| {
@@ -249,8 +250,6 @@ fn main() -> anyhow::Result<()> {
             ElasticController::from_file(&config_path, opts)?.generate_to_dir(&args.output_dir)?;
         }
     }
-
-    println!("Generated configs in {}", args.output_dir.display());
     Ok(())
 }
 

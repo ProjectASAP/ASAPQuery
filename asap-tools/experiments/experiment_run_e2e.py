@@ -322,7 +322,14 @@ def main(cfg: DictConfig):
                     f"{args.controller_prebuilt_output_dir}"
                 )
                 config.copy_prebuilt_controller_output(
-                    args.controller_prebuilt_output_dir, CONTROLLER_LOCAL_OUTPUT_DIR
+                    args.controller_prebuilt_output_dir,
+                    CONTROLLER_LOCAL_OUTPUT_DIR,
+                    os.path.join(
+                        local_experiment_root_dir,
+                        "controller_client_configs",
+                        f"{experiment_mode}_controller_input.yaml",
+                    ),
+                    data_ingestion_interval_ms,
                 )
                 sync.rsync_streaming_configs(
                     provider,

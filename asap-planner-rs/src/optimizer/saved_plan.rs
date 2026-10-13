@@ -8,7 +8,7 @@ use std::io::Read;
 use std::path::Path;
 
 use anyhow::{bail, ensure, Context};
-use rqe_optimizer::{AtomicCostEntry, Deployment, LabelSet};
+use rqe_optimizer::{heap_capacity, AtomicCostEntry, Deployment, LabelSet, Raqe};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -220,21 +220,6 @@ pub fn saved_plan_output(
             let pick = chosen
                 .get(rqe)
                 .with_context(|| format!("the plan doesn't serve RQE {rqe:?}"))?;
-            let (window_ms, slide_ms) = (pick.window_secs * 1000, pick.slide_secs * 1000);
-            // sketch-bench's `is_eligible` window rules: a pick that breaks
-            // them belongs to another workload table.
-            ensure!(
-                slide_ms != 0
-                    && window_ms.is_multiple_of(slide_ms)
-                    && raqe.lookback_ms.is_multiple_of(window_ms)
-                    && raqe.interval_ms.is_multiple_of(slide_ms),
-                "RQE {rqe:?}'s {}s window sliding every {}s can't serve {leaf:?} \
-                 ({} ms lookback every {} ms); does --plan match --workload-table?",
-                pick.window_secs,
-                pick.slide_secs,
-                raqe.lookback_ms,
-                raqe.interval_ms
-            );
             let deployment = Deployment {
                 capability: raqe.capability,
                 metric: raqe.metric.clone(),
@@ -244,17 +229,27 @@ pub fn saved_plan_output(
                     .clone()
                     .unwrap_or_else(|| raqe.grouping_labels.clone()),
                 config: cost_entry(pick)?,
-                window_ms,
-                slide_ms,
+                window_ms: pick.window_secs * 1000,
+                slide_ms: pick.slide_secs * 1000,
                 key_tracker: None,
             };
+            ensure!(
+                can_serve(raqe, &deployment),
+                "RQE {rqe:?}'s {} {}s window sliding every {}s can't serve {leaf:?} \
+                 ({} ms lookback every {} ms); does --plan match --workload-table?",
+                pick.sketch,
+                pick.window_secs,
+                pick.slide_secs,
+                raqe.lookback_ms,
+                raqe.interval_ms
+            );
             let at = *position.entry(pick.deployment).or_insert_with(|| {
                 deployments.push(deployment.clone());
                 deployments.len() - 1
             });
             // One plan deployment is one sketch: every Raqe it serves must agree.
             ensure!(
-                same_sketch(&deployments[at], &deployment),
+                deployments[at] == deployment,
                 "plan deployment {} serves Raqes that need different sketches: {:?} and {deployment:?}",
                 pick.deployment,
                 deployments[at]
@@ -277,26 +272,22 @@ pub fn saved_plan_output(
     )?)
 }
 
-fn same_sketch(a: &Deployment, b: &Deployment) -> bool {
-    (
-        a.capability,
-        &a.metric,
-        &a.spatial_filter,
-        &a.grouping_labels,
-        &a.config.sketch,
-        &a.config.sketch_config,
-        a.window_ms,
-        a.slide_ms,
-    ) == (
-        b.capability,
-        &b.metric,
-        &b.spatial_filter,
-        &b.grouping_labels,
-        &b.config.sketch,
-        &b.config.sketch_config,
-        b.window_ms,
-        b.slide_ms,
-    )
+/// The rules of sketch-bench's `is_eligible` that need no workload facts or
+/// accuracy: a pick that breaks them belongs to another workload table.
+/// Grouping is left to the converter's roll-up check.
+fn can_serve(r: &Raqe, d: &Deployment) -> bool {
+    let properties = d.properties();
+    d.window_ms != 0
+        && d.slide_ms != 0
+        && d.window_ms.is_multiple_of(d.slide_ms)
+        && r.lookback_ms.is_multiple_of(d.window_ms)
+        && r.interval_ms.is_multiple_of(d.slide_ms)
+        && (properties.mergeable_across_windows || r.lookback_ms == d.window_ms)
+        && !properties.needs_delta_set_key_tracker
+        && heap_capacity(&d.config).is_none_or(|heap| {
+            d.heap_needed(r.lookback_ms, r.topk_k())
+                .is_some_and(|need| heap >= need)
+        })
 }
 
 /// The sketch config the YAML is written from. Costs and accuracy don't
@@ -362,14 +353,14 @@ mod tests {
     }
 
     fn run(plan: Value, sla_ms: Option<f64>) -> anyhow::Result<PlannerOutput> {
-        run_on(TABLE, plan, sla_ms)
+        run_on(TABLE, plan.to_string().as_bytes(), sla_ms)
     }
 
-    fn run_on(table: &str, plan: Value, sla_ms: Option<f64>) -> anyhow::Result<PlannerOutput> {
+    fn run_on(table: &str, plan: &[u8], sla_ms: Option<f64>) -> anyhow::Result<PlannerOutput> {
         let dir = tempfile::tempdir().unwrap();
         let (table_path, plan_path) = (dir.path().join("table.json"), dir.path().join("plan.json"));
         std::fs::write(&table_path, table).unwrap();
-        std::fs::write(&plan_path, plan.to_string()).unwrap();
+        std::fs::write(&plan_path, plan).unwrap();
         let selector = PlanSelector {
             method: "asap",
             weights: "cpu",
@@ -432,12 +423,47 @@ mod tests {
             r#""sum by (job) (data)", "interval_secs": 1"#,
             r#""avg by (job) (data)", "interval_secs": 1"#,
         );
-        let err = run_on(&table, plans(shared_p50()), None)
+        let err = run_on(&table, plans(shared_p50()).to_string().as_bytes(), None)
             .err()
             .expect("refused")
             .to_string();
         assert!(err.contains("avg"), "{err}");
         assert!(!err.contains("leaves"), "{err}");
+    }
+
+    #[test]
+    fn reads_a_gzipped_plan() {
+        use std::io::Write;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(plans(shared_p50()).to_string().as_bytes())
+            .unwrap();
+        let output = run_on(TABLE, &gz.finish().unwrap(), None).unwrap();
+        assert_eq!(output.streaming_aggregation_count(), 2);
+    }
+
+    #[test]
+    fn refuses_a_query_naming_too_few_rqes() {
+        let table = TABLE.replace(r#""rqes": ["p90", "p50"]"#, r#""rqes": ["p90"]"#);
+        let err = run_on(&table, plans(shared_p50()).to_string().as_bytes(), None)
+            .err()
+            .expect("refused")
+            .to_string();
+        assert!(err.contains("has 2 leaves but names 1 RQEs"), "{err}");
+    }
+
+    #[test]
+    fn refuses_a_query_on_two_deployments() {
+        // The ratio's legs share one item, so they must share a deployment.
+        let p50 = pick("p50", 1, "dd", json!({"alpha": 0.02}), 300);
+        let err = refusal(plans(p50), None);
+        assert!(err.contains("served by two deployments"), "{err}");
+    }
+
+    #[test]
+    fn refuses_a_pick_needing_a_key_tracker() {
+        let p50 = pick("p50", 0, "hydra-kll", json!({}), 300);
+        let err = refusal(plans(p50), None);
+        assert!(err.contains("does --plan match --workload-table"), "{err}");
     }
 
     #[test]
